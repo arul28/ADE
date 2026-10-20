@@ -341,6 +341,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (scheduledWorkPaused != null) chat.scheduledWorkPaused = scheduledWorkPaused;
   const continueAfterRestart = asBool(value.continueAfterRestart);
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
+  const promptSuggestionsEnabled = asBool(value.promptSuggestionsEnabled);
+  if (promptSuggestionsEnabled != null) chat.promptSuggestionsEnabled = promptSuggestionsEnabled;
   const piExtensionsEnabled = asBool(value.piExtensionsEnabled);
   if (piExtensionsEnabled != null) chat.piExtensionsEnabled = piExtensionsEnabled;
   const claudePluginUiEnabled = asBool(value.claudePluginUiEnabled);

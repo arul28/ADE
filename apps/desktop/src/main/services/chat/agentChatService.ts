@@ -445,6 +445,7 @@ import {
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
+import { createNextPromptSuggestion, sanitizePromptSuggestion } from "./nextPromptSuggestion";
 import {
   exceedsInlineFileLimit,
   imageNotInlinedHintPart,
@@ -12626,6 +12627,36 @@ export function createAgentChatService(args: {
     clearInferredAttention: (sessionId, startedAt) =>
       sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
   });
+  // ADE's next-prompt suggestion for providers without a native one. Runs on
+  // the same single model that names the chat: the vendor's cheap helper
+  // (Luna, Composer), or the chat's own model, at that model's lowest effort.
+  const nextPromptSuggestion = createNextPromptSuggestion({
+    logger,
+    hasPendingInput: (sessionId) => hasLivePendingInput(managedSessions.get(sessionId)),
+    runPrompt: async ({ sessionId, ...prompt }) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return null;
+      const auth = await detectAuth().catch(() => []);
+      const [modelId] = buildSessionIntelligenceModelCandidates({
+        availableModels: await getAvailableRegistryModels(auth),
+        provider: managed.session.provider,
+        sessionModelId: managed.session.modelId,
+        sessionModel: managed.session.model,
+      });
+      if (!modelId) return null;
+      return await runSessionIntelligencePrompt({
+        ...prompt,
+        modelId,
+        taskType: "session_summary",
+        providerAccount: sessionProviderAccount(managed),
+      });
+    },
+    emitSuggestion: (sessionId, suggestion, turnId) => {
+      // Straight to the live stream: a suggestion is not chat activity, so it
+      // must not keep an idle agent awake.
+      emitTransientChatEnvelope(sessionId, { type: "prompt_suggestion", suggestion, turnId });
+    },
+  });
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -12662,6 +12693,7 @@ export function createAgentChatService(args: {
     // the chat is over, so a streak counter for it is pure retention.
     autoResume.forgetSession(sessionId);
     turnEndQuestion.forget(sessionId);
+    nextPromptSuggestion.forget(sessionId);
     for (const listener of chatSessionEndedListeners) {
       try {
         listener(sessionId);
@@ -21983,6 +22015,25 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    try {
+      nextPromptSuggestion.onTurnDone({
+        sessionId: managed.session.id,
+        turnId: event.turnId,
+        completed: event.status === "completed",
+        isSubagentWithParent: managed.session.spawnKind === "subagent"
+          && Boolean(managed.session.orchestrationParentSessionId?.trim()),
+        isEnabled: () => projectConfigService.get().effective.ai?.chat?.promptSuggestionsEnabled === true,
+        backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
+        nativeSuggestions: managed.session.provider === "claude",
+        entries: managed.recentConversationEntries,
+        isStillCurrent: () => !managed.deleted && managedSessions.get(managed.session.id) === managed,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.prompt_suggestion_check_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (managed.runtime?.kind === "claude") {
       void refreshClaudeContextUsageSnapshot(
         managed,
@@ -22643,6 +22694,12 @@ export function createAgentChatService(args: {
       normalizedEvent,
       currentTurnStartedAt,
     );
+    if (
+      normalizedEvent.type === "user_message"
+      || (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
+    ) {
+      nextPromptSuggestion.onTurnActivity(managed.session.id);
+    }
     if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
     }
@@ -29551,8 +29608,8 @@ export function createAgentChatService(args: {
     }
 
     if ((msg as any).type === "prompt_suggestion") {
-      const suggestion = [record.suggestion, record.prompt, record.text]
-        .find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+      const suggestion = sanitizePromptSuggestion([record.suggestion, record.prompt, record.text]
+        .find((value): value is string => typeof value === "string" && value.trim().length > 0));
       if (suggestion) {
         emitLiveOnlyChatEvent(managed, {
           type: "prompt_suggestion",
@@ -32014,9 +32071,10 @@ export function createAgentChatService(args: {
         // prompt_suggestion — follow-up suggestions forwarded to the UI
         if ((msg as any).type === "prompt_suggestion") {
           const suggestionMsg = msg as Record<string, unknown>;
-          const suggestionText =
+          const suggestionText = sanitizePromptSuggestion(
             [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
-              .find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim() ?? null;
+              .find((v): v is string => typeof v === "string" && v.trim().length > 0),
+          ) || null;
           if (suggestionText) {
             emitLiveOnlyChatEvent(managed, {
               type: "prompt_suggestion",

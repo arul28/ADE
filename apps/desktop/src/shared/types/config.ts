@@ -2095,6 +2095,13 @@ export type AiChatConfig = {
    * a reboot). On unless set to false. Settled and archived chats stay asleep.
    */
   continueAfterRestart?: boolean;
+  /**
+   * Suggest the next prompt in the empty composer for providers that do not
+   * suggest one themselves (Claude Code always does). Off unless set to true:
+   * each finished turn costs one small call on the chat's helper model. Lives
+   * in `.ade/local.yaml`, so it is per project and per machine.
+   */
+  promptSuggestionsEnabled?: boolean;
 };
 export type AiConfig = {
   compaction?: Record<string, ProviderCompactionSettings>;

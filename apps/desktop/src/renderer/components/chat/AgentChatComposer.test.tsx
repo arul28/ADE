@@ -917,21 +917,31 @@ describe("AgentChatComposer", () => {
     expect(onSendSteerNow).not.toHaveBeenCalled();
   });
 
-  it("accepts the prompt suggestion with Tab", () => {
+  it("offers the prompt suggestion: Tab fills it in, Esc dismisses it, an active turn hides it", () => {
     const onDraftChange = vi.fn();
-    renderComposer({
+    const onDismissPromptSuggestion = vi.fn();
+    const props = {
       turnActive: false,
       draft: "",
       promptSuggestion: "Audit the Work tab",
       onDraftChange,
-    });
+      onDismissPromptSuggestion,
+    };
+    const { rerender } = renderComposer(props);
 
+    expect(screen.getByText("Audit the Work tab")).toBeTruthy();
     const textbox = screen.getByRole("textbox");
-    expect(textbox.getAttribute("placeholder")).toBe("Audit the Work tab");
-
     fireEvent.keyDown(textbox, { key: "Tab" });
-
     expect(onDraftChange).toHaveBeenCalledWith("Audit the Work tab");
+
+    fireEvent.keyDown(textbox, { key: "Escape" });
+    expect(onDismissPromptSuggestion).toHaveBeenCalledTimes(1);
+
+    onDraftChange.mockClear();
+    rerender(<AgentChatComposer {...buildComposerProps({ ...props, turnActive: true })} />);
+    expect(screen.queryByText("Audit the Work tab")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Tab" });
+    expect(onDraftChange).not.toHaveBeenCalled();
   });
 
   it("selects a slash command from the command picker", async () => {

@@ -49,6 +49,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/shared/modelPermissions.ts` | The canonical per-provider permission vocabulary a model chip and the composer footer share: each provider's own modes and labels (Claude `default`→"Manual" … `bypassPermissions`→"Bypass", Codex presets, OpenCode, Cursor modes, Droid tiers), the default for a fresh chip, and the map from a stored value (native or a legacy generic one) back to the `--permissions` word the CLI accepts. |
 | `apps/desktop/src/main/services/chat/claudePlanMode.ts` | Plan-mode transitions for Claude sessions, extracted from `agentChatService.ts` so the invariant is unit-testable. Entering plan mode sets `claudePermissionMode = "plan"` and stashes the suspended access mode in `claudePrePlanAccessMode` (persisted and rehydrated with the session); leaving restores it. `isSessionInPlanMode` is the single predicate the `ExitPlanMode` gate uses. Moving the access mode is what makes plan mode real: while it stayed on the pre-plan value, a `bypassPermissions` session read as bypass throughout, so the composer chip never left Bypass and the gate auto-approved the plan with no card. See [Agent Routing](agent-routing.md#interaction-mode). |
 | `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending to the provider's cheap model (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet). Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
+| `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | ADE's next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`). After a completed turn with no open card, no subagent parent and no running background work, one helper call (fresh OS temp dir, 15s, fails quiet) returns `{suggestion}`, sanitized to one line of at most 120 characters; it is emitted as the live-only `prompt_suggestion` event only if no user message or turn start came first. `sanitizePromptSuggestion` also collapses native Claude suggestions to one line. See [Next prompt suggestions](#next-prompt-suggestions). |
 | `apps/desktop/src/main/services/chat/parentWakeBatcher.ts` | `createParentWakeBatcher`: holds an idle parent's wake while a sibling subagent is still running (up to `PARENT_WAKE_BATCH_HOLD_MS`, 15 s), so children that finish together wake it once; a busy parent takes each result inline at once. Each child's promise settles with its batch's delivery, and batched children's completion rows are written only after the wake landed. See [Spawn types and completion reporting](#spawn-types-and-completion-reporting). |
 | `apps/desktop/src/main/services/chat/chatLaunchDefaults.ts` | Machine launch defaults: the last model and permission/effort config a person chose, stored at `<ADE home>/chat-launch-defaults.json` and served by `chat.getLaunchDefaults` to every client. Only a person's top-level Work chat writes it; agents, the CTO, spawned and automation chats never do. See [Agent Routing](agent-routing.md#machine-launch-defaults). |
 | `apps/desktop/src/shared/steerOrder.ts`, `apps/desktop/src/renderer/components/chat/usePendingSteerReorder.ts` | Queued-message reordering. `moveSteerId` / `applySteerOrder` are the shared order helpers the service (`moveSteer`, the `queue_reordered` event) and the renderer use; `usePendingSteerReorder` is the composer's drag and keyboard (↑/↓/Home/End) reorder with an optimistic order held until the host confirms. Codex and OpenCode keep their own queues and are not reorderable (`queuedSteersCanReorder`). See [Composer and UI](composer-and-ui.md). |
@@ -4543,6 +4544,29 @@ config service):
 - `ai.chat.claudePluginUiEnabled` -- draw what Claude Code mods show (status
   lines, toasts, a band above the prompt, panes) in ADE chat. Defaults to
   **false**. The mods' hooks run either way. See [Claude mod UI](#claude-mod-ui).
+- `ai.chat.promptSuggestionsEnabled` -- suggest the next prompt for providers
+  without a native suggestion (Settings › Chat › Next prompt). Defaults to
+  **false**. Per project and per machine, read on the machine that runs the
+  chat. See [Next prompt suggestions](#next-prompt-suggestions).
+
+### Next prompt suggestions
+
+The empty prompt box shows a one-line guess at the next message after a turn,
+cut short with an ellipsis so it never makes the box taller. **Tab** fills it
+in with the caret at the end; **Esc** hides it until the next turn.
+
+- **Claude Code** sends its own (`promptSuggestions` on the SDK query). Claude
+  holds it back on a chat's first turn, in plan mode, and near plan usage
+  limits. ADE never adds one for a Claude chat.
+- **Every other provider** gets one from ADE when
+  `ai.chat.promptSuggestionsEnabled` is on (`chat/nextPromptSuggestion.ts`):
+  after a completed turn with no open card, no subagent parent and no running
+  background work, one call on the model that names the chat (Luna for Codex,
+  Composer for Cursor, otherwise the chat's own model) at its lowest effort,
+  from a scratch folder, capped at 120 characters.
+- Both go out as the live-only `prompt_suggestion` event and are never saved
+  to the transcript. A user message or a new turn before ADE's answer arrives
+  drops it.
 
 ## Related docs
 

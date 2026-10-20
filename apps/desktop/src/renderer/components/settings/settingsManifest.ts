@@ -599,6 +599,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Composer",
   },
   {
+    id: "chat.prompt-suggestions",
+    label: "Next prompt suggestions",
+    keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer"],
+    tab: "chat",
+    anchor: "prompt-suggestions",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    // The setting is the host's project configuration, which the hosted client cannot write.
+    web: "hidden",
+    group: "Composer",
+  },
+  {
     id: "chat.claude-mods",
     label: "Show what Claude mods draw",
     keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
