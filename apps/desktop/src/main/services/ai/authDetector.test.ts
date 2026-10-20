@@ -251,6 +251,9 @@ describe("authDetector", () => {
   it("does not treat droid exec list-tools as proof of authentication", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-"));
     process.env.HOME = tempHomeDir;
+    // `os.homedir()` does not follow HOME inside the test worker; Droid's own
+    // override keeps its sign-in lookup off the real `~/.factory`.
+    process.env.FACTORY_HOME_OVERRIDE = tempHomeDir;
     // Use the explicit developer override so this test exercises auth probing
     // without depending on a host installation or tools cache.
     const droidBinDir = path.join(tempHomeDir, ".local", "bin");
@@ -307,6 +310,7 @@ describe("authDetector", () => {
   it("skips deep Droid auth probes during default detection without stored credentials", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-shallow-"));
     process.env.HOME = tempHomeDir;
+    process.env.FACTORY_HOME_OVERRIDE = tempHomeDir;
     const droidBinDir = path.join(tempHomeDir, ".local", "bin");
     fs.mkdirSync(droidBinDir, { recursive: true });
     const fakeDroidPath = path.join(droidBinDir, "droid");
@@ -344,6 +348,20 @@ describe("authDetector", () => {
           && (argv[0] === "exec" || argv[0] === "account" || argv[0] === "whoami");
       });
       expect(droidDeepProbeCalls).toHaveLength(0);
+
+      // `droid` login writes its encrypted credential to auth.v2.file. ADE
+      // cannot read it, so it is a sign-in to use, not a verified one.
+      fs.mkdirSync(path.join(tempHomeDir, ".factory"), { recursive: true });
+      fs.writeFileSync(path.join(tempHomeDir, ".factory", "auth.v2.file"), "encrypted");
+      // Past the one-minute auth cache, on the same default (shallow) path.
+      const later = Date.now() + 61_000;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(later);
+      try {
+        const signedIn = (await detectCliAuthStatuses()).find((entry) => entry.cli === "droid");
+        expect(signedIn).toMatchObject({ cli: "droid", installed: true, authenticated: true, verified: false });
+      } finally {
+        nowSpy.mockRestore();
+      }
     } finally {
       statSpy.mockRestore();
     }

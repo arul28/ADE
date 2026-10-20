@@ -24,7 +24,7 @@ import { pinnedToolForProvider, pinnedToolPresence, resolvePinnedCursorAgentCli 
 import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
+import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -537,24 +537,23 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
 }
 
 /**
- * Best-effort check for a Factory credential ADE can see without launching droid.
+ * Best-effort check for a Factory credential ADE can see without launching droid,
+ * and which kind: an API key ADE can read, or the CLI's encrypted sign-in.
  *
- * KNOWN GAP, do not rediscover from scratch: on v0.186.0 `~/.factory/settings.json`
- * holds UI preferences only — the real file on a signed-out machine is
- * `{"logoAnimation":"off"}` — and no credential-shaped file exists anywhere under
- * `~/.factory` (verified: cache/, certs/, droids/, logs/, sessions/, snapshots/,
- * telemetry/, temp/ and four small JSON state files, none of them auth). A stack
- * trace in `~/.factory/logs` names a dedicated
- * `packages/runtime/auth/src/credentials/CredentialsStorage.ts`, so tokens almost
- * certainly live somewhere else in a format we have not seen. Confirming that
- * needs a signed-in Factory account, which this machine does not have, so the
- * settings.json read stays (harmless, and correct if Factory ever writes there)
- * and `false` continues to mean "no credential ADE can see" — never "signed out".
- * Callers must not turn a false here into `verified: true`.
+ * `droid` login keeps its credential encrypted in `<factory home>/auth.v2.file`,
+ * next to the key in `auth.v2.key` (seen on a signed-in machine, 2026-10-20,
+ * CLI v0.70.0 and the pinned v0.244.0: `droid` rewrote auth.v2.file on sign-in,
+ * and an SDK session ran on it with no API key). ADE cannot decrypt it, so a
+ * present file means "a sign-in ADE can see", not a verified one; the only
+ * authoritative check is a real `droid exec` round trip (see
+ * inspectDroidCliPresence). `~/.factory/settings.json` holds UI preferences
+ * only on the versions seen so far; the token read there stays in case Factory
+ * ever writes one. `null` means "no credential ADE can see", never "signed
+ * out"; callers must not turn it, or a `sign_in`, into `verified: true`.
  */
-async function hasDroidConfiguredCredentials(): Promise<boolean> {
+async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
   if (process.env.FACTORY_API_KEY?.trim()) {
-    return true;
+    return "key";
   }
 
   const settingsPath = path.join(homedir(), ".factory", "settings.json");
@@ -567,10 +566,18 @@ async function hasDroidConfiguredCredentials(): Promise<boolean> {
         : typeof parsed.token === "string" && parsed.token.trim().length > 0
           ? parsed.token
           : null;
-    return Boolean(tokenLike);
+    if (tokenLike) return "key";
   } catch {
-    return false;
+    // No readable settings token; the sign-in file below is the usual case.
   }
+
+  try {
+    const signIn = await readFile(path.join(factoryConfigHome(), "auth.v2.file"));
+    if (signIn.length > 0) return "sign_in";
+  } catch {
+    // No CLI sign-in on disk.
+  }
+  return null;
 }
 
 async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { deep?: boolean }): Promise<{
@@ -579,8 +586,9 @@ async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { dee
   verified: boolean;
 }> {
   if (!options?.deep) {
-    const authenticated = await hasDroidConfiguredCredentials();
-    return { installed: true, authenticated, verified: authenticated };
+    const seen = await droidCredentialSeen();
+    // An encrypted sign-in ADE cannot read is "available", not verified.
+    return { installed: true, authenticated: seen !== null, verified: seen === "key" };
   }
 
   const probes = CLI_AUTH_PROBES.droid ?? [];
@@ -600,8 +608,9 @@ async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { dee
     return { installed: false, authenticated: false, verified: false };
   }
 
-  if (await hasDroidConfiguredCredentials()) {
-    return { installed: true, authenticated: true, verified: true };
+  const seen = await droidCredentialSeen();
+  if (seen) {
+    return { installed: true, authenticated: true, verified: seen === "key" };
   }
 
   // Nothing further to ask. Droid v0.186.0 exposes no cheap auth probe, and the

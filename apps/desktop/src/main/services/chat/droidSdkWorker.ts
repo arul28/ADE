@@ -203,7 +203,7 @@ async function ensureSession(): Promise<void> {
   if (!pendingResumePromise) {
     pendingResumePromise = (async () => {
       const sdk = await getSdk();
-      const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(state));
+      const resumed = await sdk.resumeSession(resumeId, { ...resumeSessionOptions(state), ...(await cliSignInTransport(sdk, state)) });
       if (disposed || session) {
         // The worker was disposed (or another recovery already adopted a handle)
         // while this resume was in flight; discard it instead of leaking.
@@ -237,7 +237,7 @@ function loadDroidModels(): Promise<ReadonlyArray<unknown>> {
     const read = (async () => {
       if (!initState) throw new Error("Droid SDK worker is not initialized.");
       const sdk = await getSdk();
-      return await sdk.listModels({ execPath: initState.droidPath, cwd: initState.laneRoot });
+      return await sdk.listModels({ execPath: initState.droidPath, cwd: initState.laneRoot, ...(await cliSignInTransport(sdk, initState)) });
     })();
     droidModelsPromise = read;
     // A failed read is retried by the next reset instead of being cached.
@@ -308,6 +308,31 @@ function sessionOptions(
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
   };
+}
+
+/**
+ * Droid's own sign-in, when there is no API key.
+ *
+ * From @factory/droid-sdk 0.7.0 the SDK's built-in transport throws "No
+ * Factory API key found" unless `apiKey` or FACTORY_API_KEY is set, although
+ * the Droid CLI it spawns can run on the user's `droid` login. Handing the SDK
+ * a transport ADE opened itself skips that check and leaves auth to the CLI,
+ * as it was before 0.7.0. With a key in the environment the SDK's own path is
+ * used, unchanged. Each call opens a new transport: a session or client owns
+ * and closes the one it is given.
+ */
+async function cliSignInTransport(
+  sdk: DroidSdkModule,
+  init: Pick<DroidSdkWorkerInit, "droidPath" | "laneRoot">,
+): Promise<{ transport?: DroidSdkNodeTypes.CreateSessionOptions["transport"] }> {
+  if (process.env.FACTORY_API_KEY?.trim()) return {};
+  const transport = new sdk.ProcessTransport({
+    droidExecPath: init.droidPath,
+    cwd: init.laneRoot,
+    env: { ...process.env, FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" } as Record<string, string>,
+  });
+  await transport.connect();
+  return { transport };
 }
 
 function resumeSessionOptions(init: DroidSdkWorkerInit): DroidSdkNodeTypes.ResumeSessionOptions {
@@ -616,7 +641,7 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
       // 0.9.x `resumeSession` no longer accepts `cwd`: the session's persisted
       // working directory is authoritative, and the spawned CLI runs in this
       // worker's cwd (the lane root) regardless.
-      session = await sdk.resumeSession(resumeId, resumeSessionOptions(init));
+      session = await sdk.resumeSession(resumeId, { ...resumeSessionOptions(init), ...(await cliSignInTransport(sdk, init)) });
       // Deliberately NOT seeded from the mode Droid reports here. That reading
       // cannot tell a Spec this ADE entered from one the user configured in
       // ~/.factory/settings.json, and exiting the latter would be exactly the
@@ -630,13 +655,13 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         message: "Droid SDK resume failed; creating a new session.",
         detail: { resumeSessionId: resumeId, error: errorMessage(error) },
       });
-      session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+      session = await sdk.createSession({ ...sessionOptions(sdk, init, init.settings), ...(await cliSignInTransport(sdk, init)) });
       sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
       enteredSpecMode = init.settings.interactionMode === "spec";
       recordCreatedSessionEfforts(init.settings);
     }
   } else {
-    session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+    session = await sdk.createSession({ ...sessionOptions(sdk, init, init.settings), ...(await cliSignInTransport(sdk, init)) });
     sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
     enteredSpecMode = init.settings.interactionMode === "spec";
     recordCreatedSessionEfforts(init.settings);
@@ -766,7 +791,7 @@ async function forkSessionLocked(): Promise<{ newSessionId: string }> {
   await forked.close().catch(() => undefined);
   let resumed: DroidSession | null = null;
   try {
-    resumed = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
+    resumed = await sdk.resumeSession(sourceSessionId, { ...resumeSessionOptions(initState), ...(await cliSignInTransport(sdk, initState)) });
     session = resumed;
     // Re-apply the LATEST settings, not the worker's init snapshot: the source
     // may have changed model, left Spec, or stopped stating a mode since then.
