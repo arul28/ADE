@@ -315,6 +315,7 @@ function cleanupRecord(parked: string, destination: string): ProjectMoveRecord {
   });
 }
 
+// DARWIN-GATE: project move is macOS-only; its Settings entry and engine are disabled elsewhere.
 describe.skipIf(process.platform !== "darwin")("deleteParkedOriginal", () => {
   it.each(["parked project root", "parked .ade directory"])("refuses a symlinked %s without touching its target", async (kind) => {
     const destination = path.join(tmp, "drive", "new-project");
