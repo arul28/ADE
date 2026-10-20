@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AiChatConfig } from "../../../shared/types";
+import { captureError } from "../../../shared/sentry/capture";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { showToast } from "../app/toast/toastStore";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
@@ -34,7 +35,11 @@ export function useChatConfigToggle(key: BooleanChatKey) {
       })
       .catch((error) => {
         if (cancelled) return;
-        console.warn(`[settings] couldn't load ai.chat.${key}:`, error);
+        captureError(error, {
+          tags: { feature: "settings", action: "chat_config_load" },
+          fingerprint: ["settings", "chat_config_load", key],
+          handled: true,
+        });
         setStatus("failed");
       });
     return () => {

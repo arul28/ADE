@@ -10475,17 +10475,20 @@ describe("AgentChatPane submit recovery", () => {
     setTimeoutSpy.mockRestore();
 
     await waitFor(() => {
-      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+      expect(screen.getByText("Continue primary work")).toBeTruthy();
+      expect(screen.queryByText("Continue background work")).toBeNull();
     });
 
     fireEvent.click(backgroundTab);
     await waitFor(() => {
-      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue background work");
+      expect(screen.getByText("Continue background work")).toBeTruthy();
+      expect(screen.queryByText("Continue primary work")).toBeNull();
     });
 
     fireEvent.click(primaryTab);
     await waitFor(() => {
-      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+      expect(screen.getByText("Continue primary work")).toBeTruthy();
+      expect(screen.queryByText("Continue background work")).toBeNull();
     });
   });
 
