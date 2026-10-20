@@ -11,7 +11,7 @@
  * Two more shots film the chats those checks start on the Mac Studio and on
  * the Windows PC. After every step it saves a frame at 2x.
  *
- * Output (`--out`, default /tmp/ade-film): one folder of JPEG frames per shot
+ * Output (`--out`, default in the OS temp directory under ade-film): one folder of JPEG frames per shot
  * and `film.json`, which lists each shot's frames with the pointer position,
  * the clicks, the camera targets and named moments. `encode-film.mjs` turns
  * the folders into videos for the website.
@@ -19,6 +19,7 @@
  *   node scripts/demo/capture-film.mjs [--url http://localhost:5173/] [--only <shot|stills>]
  */
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { launchChrome, pageTools, wait } from "./cdp.mjs";
 
@@ -32,7 +33,7 @@ const arg = (name, fallback) => {
   return index === -1 ? fallback : process.argv[index + 1];
 };
 const BASE = arg("url", "http://localhost:5173/");
-const OUT = path.resolve(arg("out", "/tmp/ade-film"));
+const OUT = path.resolve(arg("out", path.join(os.tmpdir(), "ade-film")));
 const ONLY = arg("only", null);
 
 function appUrl({ platform = null, sessionId = null, film = true } = {}) {

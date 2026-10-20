@@ -5,10 +5,11 @@
  * any frame quickly, a poster of each shot's first frame, the machine
  * stills, and `film.json` (the capture's frame data).
  *
- *   node scripts/demo/encode-film.mjs [--in /tmp/ade-film] [--out ../web/public/film]
+ *   node scripts/demo/encode-film.mjs [--in <OS temp dir>/ade-film] [--out ../web/public/film]
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,13 +18,13 @@ const arg = (name, fallback) => {
   const index = process.argv.indexOf(`--${name}`);
   return index === -1 ? fallback : process.argv[index + 1];
 };
-const IN = path.resolve(arg("in", "/tmp/ade-film"));
+const IN = path.resolve(arg("in", path.join(os.tmpdir(), "ade-film")));
 const OUT = path.resolve(arg("out", path.join(here, "../../../web/public/film")));
 /** Frames per second the videos are stamped with; the page seeks by frame, so this only sets the time scale. */
 const FPS = 30;
 
 function ffmpeg(args) {
-  const result = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { stdio: "inherit" });
+  const result = spawnSync("ffmpeg", ["-v", "error", "-y", ...args], { stdio: "inherit", windowsHide: true });
   if (result.status !== 0) throw new Error(`ffmpeg failed: ${args.join(" ")}`);
 }
 

@@ -4,17 +4,38 @@
  * pointer and the keyboard), so the app reacts exactly as it does to a person.
  */
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const CHROME = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function chromeCandidates() {
+  if (process.env.CHROME_PATH) return [process.env.CHROME_PATH];
+  if (process.platform === "win32") {
+    const roots = [process.env.LOCALAPPDATA, process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"]].filter(Boolean);
+    return roots.map((root) => path.join(root, "Google", "Chrome", "Application", "chrome.exe"));
+  }
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+  }
+  return ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"];
+}
+
+function resolveChrome() {
+  const chrome = chromeCandidates().find((candidate) => candidate === process.env.CHROME_PATH || existsSync(candidate));
+  if (!chrome) throw new Error("Chrome was not found; set CHROME_PATH to its executable");
+  return chrome;
+}
 
 export const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function launchChrome({ width, height }) {
+  const chromePath = resolveChrome();
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), "ade-film-chrome-"));
-  const child = spawn(CHROME, [
+  const child = spawn(chromePath, [
     "--headless=new",
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
@@ -26,34 +47,50 @@ export async function launchChrome({ width, height }) {
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
     "about:blank",
-  ], { stdio: ["ignore", "ignore", "pipe"] });
-  const port = await new Promise((resolve, reject) => {
-    let buffer = "";
-    const timer = setTimeout(() => reject(new Error("Chrome did not start")), 15_000);
-    child.stderr.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const match = buffer.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//);
-      if (match) {
-        clearTimeout(timer);
-        resolve(Number(match[1]));
-      }
-    });
-    child.on("exit", () => reject(new Error("Chrome exited")));
-  });
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const page = targets.find((target) => target.type === "page");
-  const client = await connect(page.webSocketDebuggerUrl);
-  return {
-    client,
-    async close() {
-      try {
-        await client.send("Browser.close");
-      } catch {
+  ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let buffer = "";
+      const timer = setTimeout(() => {
         child.kill("SIGTERM");
-      }
-      await fs.rm(profile, { recursive: true, force: true }).catch(() => {});
-    },
-  };
+        reject(new Error("Chrome did not start"));
+      }, 15_000);
+      child.stderr.on("data", (chunk) => {
+        buffer += chunk.toString();
+        const match = buffer.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//);
+        if (match) {
+          clearTimeout(timer);
+          resolve(Number(match[1]));
+        }
+      });
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("exit", () => {
+        clearTimeout(timer);
+        reject(new Error("Chrome exited"));
+      });
+    });
+    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = targets.find((target) => target.type === "page");
+    const client = await connect(page.webSocketDebuggerUrl);
+    return {
+      client,
+      async close() {
+        try {
+          await client.send("Browser.close");
+        } catch {
+          child.kill("SIGTERM");
+        }
+        await fs.rm(profile, { recursive: true, force: true }).catch(() => {});
+      },
+    };
+  } catch (error) {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    await fs.rm(profile, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function connect(url) {
