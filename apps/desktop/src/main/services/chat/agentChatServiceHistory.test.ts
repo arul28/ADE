@@ -4,6 +4,7 @@ import {
   claudeSdkResumeSessionCompat,
   createAgentChatService,
   createService,
+  flushAllQueuedTranscriptWrites,
   fs,
   getSessionMessages,
   getSubagentMessages,
@@ -912,6 +913,8 @@ describe("createAgentChatService", () => {
           "../../../shared/chatTranscript",
         );
         vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+        // The appends are real file I/O; fake time must not run past them.
+        await flushAllQueuedTranscriptWrites();
         await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
 
         expect(service.residentChatEventHistorySessionCount()).toBe(1);
