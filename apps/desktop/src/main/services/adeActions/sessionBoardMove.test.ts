@@ -879,7 +879,8 @@ describe("a move over a live structured card", () => {
   });
 
   it("moves as before when the chat service cannot answer the question", async () => {
-    const sessions = makeSessionService(row({ runtimeState: "running" }));
+    const failedAt = "2026-09-11T10:00:00.000Z";
+    const sessions = makeSessionService(row({ runtimeState: "running", lastTurnFailedAt: failedAt }));
     const actions = createSessionBoardMoveActions({
       sessionService: sessions.service,
       agentChatService: {
@@ -889,6 +890,8 @@ describe("a move over a live structured card", () => {
       logger: silentLogger,
     });
     expect(await actions.moveOnBoard({ sessionId: "chat-1", to: "done" }))
-      .toMatchObject({ ok: true, changed: true, to: "done" });
+      .toMatchObject({ ok: true, from: "needs_you", changed: true, to: "done" });
+    expect(sessions.calls).toContain("settle");
+    expect(sessions.current.lastTurnFailedAt).toBe(failedAt);
   });
 });

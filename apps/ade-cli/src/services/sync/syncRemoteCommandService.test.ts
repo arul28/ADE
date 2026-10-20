@@ -1936,6 +1936,35 @@ describe("createSyncRemoteCommandService", () => {
     }));
   });
 
+  it("rests failed chats when detail and list reads have no live summary", async () => {
+    const failedAt = "2026-07-31T12:00:00.000Z";
+    const failedSession = {
+      id: "failed-chat",
+      laneId: "lane-1",
+      status: "running",
+      toolType: "codex-chat",
+      runtimeState: "running",
+      lastTurnFailedAt: failedAt,
+    };
+    const { service } = createService({
+      sessionService: {
+        get: vi.fn().mockReturnValue(failedSession),
+        list: vi.fn().mockReturnValue([failedSession]),
+      },
+      agentChatService: {
+        getSessionSummary: vi.fn().mockResolvedValue(null),
+        listSessions: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const detail = await service.execute(makePayload("work.getSession", { sessionId: "failed-chat" })) as Record<string, unknown>;
+    const list = await service.execute(makePayload("work.listSessions", {})) as Array<Record<string, unknown>>;
+
+    expect(detail).toMatchObject({ status: "running", runtimeState: "idle", lastTurnFailedAt: failedAt });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ status: "running", runtimeState: "idle", lastTurnFailedAt: failedAt });
+  });
+
   it("refuses work.updateSessionMeta title writes when Cursor owns the chat name", async () => {
     const updateMeta = vi.fn();
     const getSessionSummary = vi.fn().mockResolvedValue({
@@ -3210,6 +3239,10 @@ describe("lanes.refreshSnapshots conditional responses", () => {
     const laneService = {
       refreshSnapshots: vi.fn().mockResolvedValue({ refreshedCount: 1, lanes }),
       listStateSnapshots: vi.fn().mockReturnValue([]),
+      getSummary: vi.fn().mockResolvedValue(lanes[0]),
+      getStackChain: vi.fn().mockResolvedValue([]),
+      getChildren: vi.fn().mockResolvedValue([]),
+      getStateSnapshot: vi.fn().mockResolvedValue(null),
     };
     const sessionService = { list: vi.fn().mockReturnValue(options?.sessions ?? []) };
     const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
@@ -3264,6 +3297,42 @@ describe("lanes.refreshSnapshots conditional responses", () => {
       bucket: "awaiting-input",
       runningCount: 1,
       awaitingInputCount: 1,
+    });
+  });
+
+  it("counts unprojected failed chats as ended in lane list and detail snapshots", async () => {
+    const failedAt = "2026-07-31T12:00:00.000Z";
+    const { service } = createLaneListService({
+      sessions: [{
+        id: "failed-chat",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "running",
+        toolType: "codex-chat",
+        lastTurnFailedAt: failedAt,
+        lastOutputPreview: "The turn failed",
+      }],
+      chats: [],
+    });
+
+    const list = await service.execute(makePayload("lanes.refreshSnapshots")) as {
+      snapshots: Array<{ runtime: Record<string, unknown> }>;
+    };
+    const detail = await service.execute(makePayload("lanes.getDetail", { laneId: "lane-1" })) as {
+      runtime: Record<string, unknown>;
+    };
+
+    expect(list.snapshots[0]?.runtime).toMatchObject({
+      bucket: "ended",
+      runningCount: 0,
+      endedCount: 1,
+      sessionCount: 1,
+    });
+    expect(detail.runtime).toMatchObject({
+      bucket: "ended",
+      runningCount: 0,
+      endedCount: 1,
+      sessionCount: 1,
     });
   });
 

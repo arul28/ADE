@@ -655,15 +655,21 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
   /// it without a pull-to-refresh.
   func testActiveProjectRosterOverlayTakesLiveTurnStateForKnownChats() {
     let lane = makeLane(id: "lane-1", name: "Lane")
-    let cases: [(name: String, localRuntime: String, settledAt: String?, roster: RemoteRosterChatStatus, expected: CanonicalSessionPhase)] = [
-      ("done chat starts a turn", "idle", nil, .running, .running),
-      ("settled chat gets a message", "idle", "2026-07-22T01:00:00.000Z", .running, .running),
-      ("working chat finishes its turn", "running", nil, .idle, .ready),
+    let cases: [(name: String, localRuntime: String, settledAt: String?, failedAt: String?, roster: RemoteRosterChatStatus, expectedRuntime: String, expected: CanonicalSessionPhase)] = [
+      ("done chat starts a turn", "idle", nil, nil, .running, "running", .running),
+      ("settled chat gets a message", "idle", "2026-07-22T01:00:00.000Z", nil, .running, "running", .running),
+      ("live turn recovers a previous failure", "running", nil, "2026-07-22T01:01:00.000Z", .running, "running", .running),
+      ("working chat finishes its turn", "running", nil, nil, .idle, "idle", .ready),
+      // The replicated row can still claim `runtimeState: running` from an
+      // earlier full refresh. The host's failed state must clear that stale
+      // liveness before the shared derivation sees the persisted failure.
+      ("failed turn retires stale local liveness", "running", nil, "2026-07-22T01:01:00.000Z", .failed, "idle", .failed),
     ]
     for testCase in cases {
       var local = makeSession(id: "chat-1", laneId: lane.id, laneName: lane.name)
       local.runtimeState = testCase.localRuntime
       local.settledAt = testCase.settledAt
+      local.lastTurnFailedAt = testCase.failedAt
       var rosterChat = makeRosterChat(id: local.id, laneId: lane.id)
       rosterChat.status = testCase.roster
       let roster = makeRoster(projectId: "project-1", name: "Project", lanes: [], chats: [rosterChat])
@@ -671,6 +677,7 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
       let projection = overlayActiveProjectRoster(localSessions: [local], localLanes: [lane], roster: roster)
 
       XCTAssertEqual(projection.sessions.count, 1, testCase.name)
+      XCTAssertEqual(projection.sessions[0].runtimeState, testCase.expectedRuntime, testCase.name)
       let phase = workCanonicalSessionState(session: projection.sessions[0], summary: nil).phase
       XCTAssertEqual(phase, testCase.expected, testCase.name)
     }
