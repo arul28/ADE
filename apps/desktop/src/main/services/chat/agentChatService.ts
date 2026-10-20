@@ -27333,6 +27333,21 @@ export function createAgentChatService(args: {
     resetDeliveredDirectiveEpoch(managed);
   };
 
+  /**
+   * A provider thread can be replaced during a send whose prompt was already
+   * prepared against the old thread. Reset its directive keys for the next
+   * send, and move the active dispatch onto the new generation so a successful
+   * recovery attempt can record what it actually delivered to the new thread.
+   */
+  const rearmDeliveredDirectiveEpochForNewThread = (managed: ManagedChatSession): void => {
+    managed.directiveEpochGeneration = (managed.directiveEpochGeneration ?? 0) + 1;
+    managed.directiveEpochResetPending = false;
+    resetDeliveredDirectiveEpoch(managed);
+    if ((managed.directiveDispatchDepth ?? 0) > 0) {
+      managed.directiveDispatchGeneration = managed.directiveEpochGeneration;
+    }
+  };
+
   const sendCodexMessage = async (
     managed: ManagedChatSession,
     args: {
@@ -53466,9 +53481,11 @@ export function createAgentChatService(args: {
     }
     const pooled = acquired.pooled;
     const nextCursorSdkAgentId = pooled.agentId?.trim() || null;
+    let cursorThreadWasReplaced = false;
     if (forcedAgentRotation && nextCursorSdkAgentId) {
       const previousAgentId = forcedAgentRotation.previousAgentId ?? persistedCursorSdkAgentId;
       stageCursorSdkAgentRotationRecovery(managed, previousAgentId ?? "(unknown)", nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_recreated_after_forced_rotation", {
         sessionId: managed.session.id,
         previousAgentId: previousAgentId ?? null,
@@ -53476,6 +53493,7 @@ export function createAgentChatService(args: {
       });
     } else if (recoveredMissingCursorSdkAgentId && nextCursorSdkAgentId) {
       stageCursorSdkAgentRotationRecovery(managed, recoveredMissingCursorSdkAgentId, nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_recreated_after_missing_resume", {
         sessionId: managed.session.id,
         previousAgentId: recoveredMissingCursorSdkAgentId,
@@ -53487,11 +53505,15 @@ export function createAgentChatService(args: {
       && nextCursorSdkAgentId !== persistedCursorSdkAgentId
     ) {
       stageCursorSdkAgentRotationRecovery(managed, persistedCursorSdkAgentId, nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_rotated_after_resume", {
         sessionId: managed.session.id,
         previousAgentId: persistedCursorSdkAgentId,
         nextAgentId: nextCursorSdkAgentId,
       });
+    }
+    if (cursorThreadWasReplaced) {
+      rearmDeliveredDirectiveEpochForNewThread(managed);
     }
     const rt: CursorRuntime = {
       kind: "cursor",
