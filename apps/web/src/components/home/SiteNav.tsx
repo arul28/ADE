@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Github, Star } from "lucide-react";
+import { ArrowUpRight, Github, Star } from "lucide-react";
 import { LINKS } from "../../lib/links";
 import type { InstallPlatform } from "../../lib/installTargets";
 import {
@@ -78,17 +78,7 @@ export function SiteNav() {
           <a href={`${LINKS.docs}/changelog`} target="_blank" rel="noreferrer" className={linkClass}>
             Changelog
           </a>
-          <a
-            href={LINKS.webClient}
-            target="_blank"
-            rel="noreferrer"
-            data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
-            data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
-            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className={linkClass}
-          >
-            Web app
-          </a>
+
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
@@ -123,6 +113,17 @@ export function SiteNav() {
               </span>
             )}
           </a>
+          <a
+            href={LINKS.webClient}
+            target="_blank"
+            rel="noreferrer"
+            data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.07] px-4 text-[14px] font-medium text-white transition-colors hover:border-white/40 hover:bg-white/[0.12]"
+          >
+            Open web app <ArrowUpRight className="h-4 w-4" />
+          </a>
           <button
             type="button"
             onClick={() => openInstall(platform)}
@@ -130,7 +131,7 @@ export function SiteNav() {
               platform === "windows" ? MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS : MARKETING_CTA_LABELS.DOWNLOAD_MAC
             }
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="h-8 rounded-full bg-[color:var(--color-violet-bright)] px-4 text-[13px] font-medium text-[#0a0a0f] transition-colors hover:bg-[#c4b5fd]"
+            className="h-9 rounded-full bg-[color:var(--color-violet-bright)] px-5 text-[14px] font-medium text-[#0a0a0f] transition-colors hover:bg-[#c4b5fd]"
           >
             Download
           </button>

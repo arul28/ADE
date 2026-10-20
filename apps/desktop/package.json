@@ -30,6 +30,8 @@
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
     "build:ade-media": "node ./scripts/build-ade-media.mjs",
     "test:ade-media": "swift test --package-path ./native/ADEMedia",
+    "build:demo": "node ./scripts/demo/build-demo-snapshot.mjs && vite build --base /demo/ --outDir ../../../web/public/demo --emptyOutDir",
+    "build:film": "node ./scripts/demo/capture-film.mjs && node ./scripts/demo/encode-film.mjs",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "bench:webclient": "node ./scripts/bench-webclient.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",

@@ -1,0 +1,1 @@
+var e=new URL(`ade-scene-three.js`,import.meta.url).href;export{e as default};

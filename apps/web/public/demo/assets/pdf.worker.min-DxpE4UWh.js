@@ -1,0 +1,1 @@
+function e(e){return new Worker(`/demo/assets/pdf.worker.min-NppcoSpD.js`,{name:e?.name})}export{e as default};

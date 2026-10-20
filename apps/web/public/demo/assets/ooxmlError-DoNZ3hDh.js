@@ -1,0 +1,1 @@
+var e=class extends Error{reason;constructor(e,t,n){super(t),this.name=`OoxmlError`,this.reason=e,n!==void 0&&(this.cause=n)}};function t(t){return t instanceof e&&t.message?t.message:t instanceof Error&&/too large to stream/i.test(t.message)?`This file is too large to preview. Open it externally.`:`The file could not be parsed.`}export{t as n,e as t};

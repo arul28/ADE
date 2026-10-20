@@ -1,0 +1,121 @@
+{
+  "number": 1811,
+  "title": "fix(chat): workflow pane shows each agent live, in a cleaner layout",
+  "headBranch": "ade/claude-workflow-subagent-status-ui",
+  "baseBranch": "main",
+  "additions": 632,
+  "deletions": 172,
+  "body": "## Why\nWhen a Claude chat ran a dynamic workflow, the chat's side pane showed only \"no agent rows published\" and one long-running row under Subagents, even though Claude Code was reporting every agent's progress. ADE was throwing those progress updates away, so you couldn't see what any of the workflow's agents were doing.\n\n## What changed\n- **Live per-agent status.** A workflow's progress updates now reach the pane, on every route including custom providers such as the DeepSeek preset. The updates were being dropped because ADE mistook a background workflow for a background shell command (a progress update carries no task type, and the workflow sits in the same list of background tasks as shells).\n- **Redesigned workflow section.** The run name sits next to its own Stop button, and the status line wraps between items, never mid-item. Phases are a vertical list with `done/total` counts: finished phases collapse, the active phase opens, and phases that haven't started are dimmed. Each agent shows its name on one line, then `model · last tool · 4s ago` while running, or `model · tokens · tools · time` when finished.\n- **No duplicates.** The workflow and its agents no longer appear a second time under Subagents, and no longer split into a phantom second run.\n- **Clicking an agent opens its transcript.** Workflow agents' transcripts are saved in their own folder, outside where the SDK looks for subagent transcripts, so ADE now looks there too.\n- An agent waiting for its turn is no longer counted as running. The run's duration is now its real start-to-finish time, and its totals add up the agents.\n\n## Evidence\n- Ran three real workflows in the dev app on the DeepSeek preset (`hp_f93c5d42…`). Before the fix, the chat log showed one `task_started` and no agent rows. After it, each agent's start and result arrived as it happened.\n- The log line `agent_chat.claude_workflow_sdk_progress_received` (from a temporary probe, since removed) showed the SDK sending `workflow_progress` right after the turn ended, and the classifier then dropping it.\n- Desktop typecheck passes. `/quality` and `/test` results to follow.\n\n## Not checked\n- A workflow on a native Anthropic route; only the DeepSeek preset route was run live.\n- No before/after Work-tab performance measurements. The only new timer is a 5-second refresh, active only while a workflow with activity timestamps is running.\n\n## Choices I made\n- I first built a backup reader of Claude Code's on-disk workflow files (a 2-second poller), then removed it once the real cause turned up: with the classifier fixed, the SDK's own progress covers everything. The other option was to keep it as a second source, at roughly 500 lines of polling.",
+  "files": [
+    {
+      "filename": "apps/desktop/src/main/services/chat/agentChatService.ts",
+      "additions": 25,
+      "deletions": 1
+    },
+    {
+      "filename": "apps/desktop/src/main/services/chat/agentChatServiceClaudeSubagents.test.ts",
+      "additions": 75,
+      "deletions": 1
+    },
+    {
+      "filename": "apps/desktop/src/main/services/chat/claudeWorkflowProgress.ts",
+      "additions": 11,
+      "deletions": 1
+    },
+    {
+      "filename": "apps/desktop/src/main/services/chat/claudeWorkflowTranscript.ts",
+      "additions": 162,
+      "deletions": 0
+    },
+    {
+      "filename": "apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.test.tsx",
+      "additions": 52,
+      "deletions": 28
+    },
+    {
+      "filename": "apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx",
+      "additions": 16,
+      "deletions": 6
+    },
+    {
+      "filename": "apps/desktop/src/renderer/components/chat/ChatWorkflowActiveCard.tsx",
+      "additions": 286,
+      "deletions": 132
+    },
+    {
+      "filename": "apps/desktop/src/shared/chatSubagents.ts",
+      "additions": 1,
+      "deletions": 1
+    },
+    {
+      "filename": "apps/desktop/src/shared/types/chat.ts",
+      "additions": 2,
+      "deletions": 0
+    },
+    {
+      "filename": "docs/features/chat/README.md",
+      "additions": 2,
+      "deletions": 2
+    }
+  ],
+  "checks": [
+    "install",
+    "secret-scan",
+    "typecheck-tunnel-relay",
+    "test-tunnel-relay",
+    "typecheck-account-directory",
+    "test-account-directory",
+    "build-runtime-binaries (darwin-arm64, macos-15, ade-darwin-arm64)",
+    "build-runtime-binaries (darwin-x64, macos-15-intel, ade-darwin-x64)",
+    "build-runtime-binaries (linux-x64, ubuntu-latest, ade-linux-x64)",
+    "build-runtime-binaries (linux-arm64, ubuntu-24.04-arm, ade-linux-arm64)",
+    "build-runtime-binaries (win32-x64, windows-latest, ade-win32-x64.exe)",
+    "ios-gate",
+    "typecheck-desktop",
+    "typecheck-ade-cli",
+    "typecheck-web",
+    "typecheck-webhook-relay",
+    "typecheck-push-relay",
+    "lint-desktop",
+    "test-desktop (1)",
+    "test-desktop (2)",
+    "test-desktop (3)",
+    "test-desktop (4)",
+    "test-desktop (5)",
+    "test-desktop (6)",
+    "test-desktop (7)",
+    "test-desktop (8)",
+    "test-ade-cli",
+    "test-sdk",
+    "test-chat-ui",
+    "test-webhook-relay",
+    "test-push-relay",
+    "build",
+    "validate-docs",
+    "test-ios",
+    "ci-pass",
+    "Vercel Preview Comments"
+  ],
+  "commits": [
+    {
+      "sha": "f7f8ec61e1bf22d18c1595f0800ee3c1f103b192",
+      "subject": "wip: checkpoint before quality",
+      "authoredAt": "2026-10-19T16:35:56Z"
+    },
+    {
+      "sha": "74130909fe03818755e0bf5ef4586fb70e2216b0",
+      "subject": "quality: apply review fixes",
+      "authoredAt": "2026-10-19T16:45:30Z"
+    },
+    {
+      "sha": "8cdf3978e978fb000407f4226c508cc0b28676e8",
+      "subject": "test: pin workflow pane behavior and background workflow progress",
+      "authoredAt": "2026-10-19T16:53:31Z"
+    },
+    {
+      "sha": "4434f95418c04dec503c7c90217cef378729b9ca",
+      "subject": "fix(chat): workflow card reads healed state; drawer counts running wo…",
+      "authoredAt": "2026-10-19T16:58:28Z"
+    }
+  ]
+}

@@ -1,4 +1,7 @@
 import { createBrowserMockMusic } from "./browserMockMusic";
+import { playDemoReply, startManualDemoClock, type DemoChildChat } from "./browserMockDemoReplies";
+import { getAppearanceState } from "./state/appearanceStore";
+import { DEFAULT_SCENE_PREFERENCES } from "./scene/scenePreferences";
 /**
  * Browser-safe mock for `window.ade`.
  * Injected only when the Electron preload bridge is absent (i.e. opening the
@@ -275,6 +278,7 @@ function createMockArchive() {
     { kind: "chat", id: "mock-archived-chat-2", title: "Investigate flaky test", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(30), sizeBytes: 1_250_000, toolType: "codex-chat" },
     { kind: "lane", id: "lane-reclaimed", title: "reclaimed-experiment", laneId: "lane-reclaimed", laneName: "reclaimed-experiment", laneColor: "#a3e635", archivedAt: daysAgo(60), sizeBytes: null, worktreePresent: false, branchRef: "ade/reclaimed-experiment" },
   ];
+  if (BROWSER_MOCK_DEMO) items = [];
   const ageDays = (item: ArchivedItem) => (Date.now() - Date.parse(item.archivedAt)) / (24 * 60 * 60_000);
   const remove = async (args: ArchiveActionArgs, _pin?: unknown): Promise<ArchiveActionResult> => {
     const result: ArchiveActionResult = { done: [], failed: [] };
@@ -466,6 +470,7 @@ function browserMockPlatform(): string {
 type MockAppControlState = "off" | "live" | "recording" | "permission";
 
 function browserMockAppControlState(): MockAppControlState {
+  if (BROWSER_MOCK_DEMO) return "off";
   const raw = browserMockOverride("adeAppControl", "ade.mock.appControl")?.trim().toLowerCase();
   return raw === "off" || raw === "recording" || raw === "permission" ? raw : "live";
 }
@@ -804,6 +809,107 @@ const adeDbSnapshotByPath = import.meta.glob<any>(
 const ADE_DB_SNAPSHOT =
   adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
 const USE_ADE_DB_SNAPSHOT = Boolean(ADE_DB_SNAPSHOT?.project);
+/**
+ * The public demo (`scripts/demo/build-demo-snapshot.mjs`) marks its snapshot
+ * `demo: true`. The preview then starts like a real, settled install: no
+ * welcome video, no archive reminder, no attached App Control app.
+ */
+const BROWSER_MOCK_DEMO = ADE_DB_SNAPSHOT?.demo === true;
+/**
+ * The website's film capture (`?demoFilm=1`): the story starts on the New Chat
+ * page, so the finished chat with the same prompt is left out, and prepared
+ * replies run on a clock the capture moves by hand.
+ */
+const BROWSER_MOCK_FILM = BROWSER_MOCK_DEMO
+  && typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("demoFilm") === "1";
+const BROWSER_MOCK_FILM_HIDDEN_CHAT = "demo-chat-checkout";
+if (BROWSER_MOCK_FILM) startManualDemoClock();
+
+/**
+ * The demo's times are written when it is built. Move every timestamp in it
+ * forward by the time since then, so "9m ago" stays 9 minutes ago on any day
+ * and a working chat never looks stalled.
+ */
+/**
+ * The demo machine has one saved custom provider, DeepSeek V4.1 Flash from
+ * OpenCode Go running in the Claude Code harness, so the model picker's Custom
+ * tab shows what the feature is. Written before the app reads its preferences.
+ */
+if (BROWSER_MOCK_DEMO && typeof window !== "undefined") {
+  try {
+    const key = "ade.userPreferences.v1";
+    const prefs = JSON.parse(window.localStorage.getItem(key) ?? "{}") ?? {};
+    if (!Array.isArray(prefs.harnessPresets) || prefs.harnessPresets.length === 0) {
+      const at = new Date().toISOString();
+      prefs.harnessPresets = [{
+        id: "demo-deepseek-in-claude-code",
+        name: "DeepSeek V4.1 Flash in Claude Code",
+        harness: "claude",
+        source: { kind: "opencode", providerId: "opencode-go" },
+        model: "opencode/opencode-go/deepseek-v4.1-flash",
+        subagentModel: "inherit",
+        agentOverrides: {},
+        agentEfforts: {},
+        accentColor: "#e07a4f",
+        logo: { kind: "provider", providerId: "deepseek" },
+        createdAt: at,
+        updatedAt: at,
+      }];
+    }
+    // The demo has no clipboard hand-off to explain.
+    prefs.launchPromptClipboardNoticeEnabled = false;
+    window.localStorage.setItem(key, JSON.stringify(prefs));
+    // One fixed window picture, so every visit (and every captured frame)
+    // looks the same, unless the visitor picked one. The preference stores
+    // keep their own copy, so the picture is set through them once they exist.
+    if (prefs.interfacePreferences?.scene?.choiceMade !== true) {
+      const scene = {
+        ...DEFAULT_SCENE_PREFERENCES,
+        mode: "image" as const,
+        imageId: "ade:midnight-city",
+        // The film is video: a dot texture over the picture costs several MB.
+        ...(BROWSER_MOCK_FILM ? { texture: "none" as const } : {}),
+        choiceMade: true,
+      };
+      // Loaded late on purpose: importing the app store here would make it
+      // read the preferences before the lines above write them.
+      setTimeout(() => {
+        void import("./state/appStore").then(({ useAppStore }) => {
+          useAppStore.getState().setInterfacePreferences({ scene });
+          getAppearanceState().setInterfacePreferences({ scene });
+        });
+      }, 0);
+    }
+    // No GitHub star prompt in the demo: it has no account to star with.
+    setTimeout(() => {
+      void import("./state/appStore").then(({ rootAppStoreApi }) => {
+        rootAppStoreApi.getState().updateStarPill((prev) => ({ ...prev, starred: true, lastCheckedAt: Date.now() }));
+      });
+    }, 0);
+  } catch {
+    // Storage can be off (private windows); the Custom tab then shows its empty state.
+  }
+}
+
+if (BROWSER_MOCK_DEMO && typeof ADE_DB_SNAPSHOT?.exportedAt === "string") {
+  const shiftMs = Date.now() - Date.parse(ADE_DB_SNAPSHOT.exportedAt);
+  const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+  const shift = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return isoTimestamp.test(value) ? new Date(Date.parse(value) + shiftMs).toISOString() : value;
+    }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) value[i] = shift(value[i]);
+      return value;
+    }
+    if (value && typeof value === "object") {
+      for (const key of Object.keys(value)) (value as Record<string, unknown>)[key] = shift((value as Record<string, unknown>)[key]);
+    }
+    return value;
+  };
+  if (Number.isFinite(shiftMs) && shiftMs > 0) shift(ADE_DB_SNAPSHOT);
+}
 const USE_STATS_DASHBOARD_SNAPSHOT = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.statsDashboardVersion === 1;
 
 const MOCK_PROJECT =
@@ -1581,7 +1687,8 @@ const MOCK_LANES: any[] = USE_ADE_DB_SNAPSHOT
       const real = buildMockLanesFromAdeSnapshot(
         Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [],
       );
-      return [...real, ...mockSidebarGroupLanes(real)];
+      // The demo shows only its own project's lanes.
+      return BROWSER_MOCK_DEMO ? real : [...real, ...mockSidebarGroupLanes(real)];
     })()
   : BUILTIN_MOCK_LANES;
 
@@ -1678,7 +1785,7 @@ const ADE_DB_SESSIONS: any[] =
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
 const MOCK_SESSIONS: any[] = [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
-];
+].filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT));
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
   string,
   { events?: any[]; path?: string | null }
@@ -2074,6 +2181,118 @@ function emitBrowserMockChatEvent(sessionId: string, event: Record<string, unkno
   const envelope = { sessionId, timestamp: new Date().toISOString(), event };
   if (persist) browserMockSentEvents.set(sessionId, [...(browserMockSentEvents.get(sessionId) ?? []), envelope]);
   for (const listener of browserMockChatListeners) listener(envelope);
+}
+
+const browserMockSessionListeners = new Set<(event: { sessionId: string; reason: "meta-updated" | "created" }) => void>();
+
+function notifyBrowserMockSessionsChanged(sessionId: string, reason: "meta-updated" | "created" = "meta-updated"): void {
+  for (const listener of browserMockSessionListeners) listener({ sessionId, reason });
+}
+
+/** Marks a demo chat as working or done in the session list, and tells the Work list. */
+function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): void {
+  const row = MOCK_SESSIONS.find((entry) => entry.id === sessionId);
+  if (!row) return;
+  row.status = running ? "running" : "completed";
+  row.runtimeState = running ? "running" : "exited";
+  row.endedAt = running ? null : new Date().toISOString();
+  notifyBrowserMockSessionsChanged(sessionId);
+}
+
+/** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
+function createBrowserMockDemoChat(args: any): any {
+  const lane = MOCK_LANES.find((row) => row.id === args.laneId) ?? MOCK_LANES.find((row) => row.laneType === "primary") ?? MOCK_LANES[0];
+  const id = `demo-chat-${Date.now().toString(36)}`;
+  const at = new Date().toISOString();
+  const provider = String(args.provider ?? "claude");
+  const model = String(args.model ?? "claude-opus-5-5");
+  const modelId = String(args.modelId ?? args.model ?? "anthropic/claude-opus-5-5");
+  MOCK_SESSIONS.unshift({
+    id,
+    chatSessionId: id,
+    laneId: lane?.id ?? "",
+    laneName: lane?.name ?? "",
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: null,
+    toolType: `${provider}-chat`,
+    title: args.title ?? "New chat",
+    status: "completed",
+    runtimeState: "exited",
+    startedAt: at,
+    endedAt: at,
+    archivedAt: null,
+    exitCode: null,
+    transcriptPath: `.ade/transcripts/${id}.chat.jsonl`,
+    lastOutputPreview: null,
+    summary: null,
+    resumeMetadata: { provider, model, modelId, reasoningEffort: args.reasoningEffort ?? "medium", permissionMode: args.permissionMode ?? "full-auto" },
+  });
+  return {
+    id,
+    laneId: lane?.id ?? "",
+    provider,
+    model,
+    modelId,
+    reasoningEffort: args.reasoningEffort ?? "medium",
+    permissionMode: args.permissionMode ?? "full-auto",
+    status: "idle",
+    createdAt: at,
+    lastActivityAt: at,
+  };
+}
+
+/** Names a new demo chat after its first message, as ADE's title step would. */
+function titleBrowserMockDemoChat(sessionId: string, text: string): void {
+  const row = MOCK_SESSIONS.find((entry) => entry.id === sessionId);
+  if (!row || (row.title && row.title !== "New chat")) return;
+  const plain = text
+    .replace(/@\w+:[^\s,.]+(\?[^\s,]*)?/g, "")
+    .replace(/^\s*use\s+/i, "")
+    .replace(/^[\s,]*(to\s+)?/i, "")
+    .trim();
+  const first = plain.split(/[,.;]/)[0]?.trim() ?? "";
+  row.title = first ? first.charAt(0).toUpperCase() + first.slice(1) : "New chat";
+  row.goal = row.title;
+}
+
+/** A subagent's own chat, started by a prepared reply: a session row under the lead's chat. */
+function startBrowserMockDemoChild(child: DemoChildChat): void {
+  if (MOCK_SESSIONS.some((row) => row.id === child.sessionId)) return;
+  const parent = MOCK_SESSIONS.find((row) => row.id === child.parentSessionId);
+  const at = new Date().toISOString();
+  MOCK_SESSIONS.push({
+    ...(parent ?? {}),
+    id: child.sessionId,
+    chatSessionId: child.sessionId,
+    title: child.title,
+    goal: child.title,
+    manuallyNamed: true,
+    pinned: false,
+    toolType: `${child.provider}-chat`,
+    status: "running",
+    runtimeState: "running",
+    startedAt: at,
+    endedAt: null,
+    transcriptPath: `.ade/transcripts/${child.sessionId}.chat.jsonl`,
+    lastOutputPreview: null,
+    summary: null,
+    resumeMetadata: { provider: child.provider, model: child.model, modelId: child.modelId, reasoningEffort: "high", permissionMode: "full-auto" },
+    orchestrationParentSessionId: child.parentSessionId,
+    spawnKind: "subagent",
+  });
+  notifyBrowserMockSessionsChanged(child.sessionId, "created");
+}
+
+function finishBrowserMockDemoChild(sessionId: string): void {
+  const row = MOCK_SESSIONS.find((entry) => entry.id === sessionId);
+  if (!row) return;
+  row.status = "completed";
+  row.runtimeState = "exited";
+  row.endedAt = new Date().toISOString();
+  notifyBrowserMockSessionsChanged(sessionId);
 }
 
 function setBrowserMockThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
@@ -2490,6 +2709,10 @@ const INTEGRATION_PRS: any[] = [
  * changes requested (plus one earlier merged PR), a draft with checks
  * running, and an open approved PR with passing checks.
  */
+const ADE_DB_SNAPSHOT_PR_LANES = new Set<string>(
+  (Array.isArray(ADE_DB_SNAPSHOT?.prs) ? ADE_DB_SNAPSHOT.prs : []).map((pr: any) => String(pr.laneId ?? "")),
+);
+
 function mockLiveLanePrs(): any[] {
   const lanes = MOCK_LANES.filter(
     (lane: any) => lane.laneType !== "primary" && !String(lane.name ?? "").startsWith("t3code/"),
@@ -2506,14 +2729,14 @@ function mockLiveLanePrs(): any[] {
     out.push({
       laneId: doneLane.id,
       projectId: MOCK_PROJECT.id ?? "mock-project",
-      repoOwner: "arul28",
+      repoOwner: "acme-labs",
       repoName: "ADE",
       githubNodeId: null,
       baseBranch: "main",
       lastSyncedAt: now,
       id: "mock-sidebar-pr-1227",
       githubPrNumber: 1227,
-      githubUrl: "https://github.com/arul28/ADE/pull/1227",
+      githubUrl: "https://github.com/acme-labs/acme-shop/pull/1227",
       title: String(doneLane.name),
       headBranch: String(doneLane.branchRef).replace(/^refs\/heads\//, ""),
       state: "merged",
@@ -2528,13 +2751,15 @@ function mockLiveLanePrs(): any[] {
     });
   }
   lanes.forEach((lane: any, index: number) => {
+    // A lane whose real PR came with the snapshot keeps that one.
+    if (ADE_DB_SNAPSHOT_PR_LANES.has(lane.id)) return;
     const look = looks[index]!;
     const branch = String(lane.branchRef ?? "").replace(/^refs\/heads\//, "");
     const number = 1301 + index;
     const base = {
       laneId: lane.id,
       projectId: MOCK_PROJECT.id ?? "mock-project",
-      repoOwner: "arul28",
+      repoOwner: "acme-labs",
       repoName: "ADE",
       githubNodeId: null,
       baseBranch: "main",
@@ -2544,7 +2769,7 @@ function mockLiveLanePrs(): any[] {
       ...base,
       id: `mock-live-pr-${number}`,
       githubPrNumber: number,
-      githubUrl: `https://github.com/arul28/ADE/pull/${number}`,
+      githubUrl: `https://github.com/acme-labs/acme-shop/pull/${number}`,
       title: String(lane.name ?? branch),
       headBranch: branch,
       ...look,
@@ -2557,7 +2782,7 @@ function mockLiveLanePrs(): any[] {
         ...base,
         id: `mock-live-pr-${number}-earlier`,
         githubPrNumber: 1240,
-        githubUrl: "https://github.com/arul28/ADE/pull/1240",
+        githubUrl: "https://github.com/acme-labs/acme-shop/pull/1240",
         title: `${String(lane.name ?? branch)}: first pass`,
         headBranch: `${branch}-v1`,
         state: "merged",
@@ -3091,7 +3316,7 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
       ],
       reviews: [
         { reviewer: "coderabbitai", reviewerAvatarUrl: null, reviewerIsBot: true, state: "commented", body: null, submittedAt: iso(300) },
-        { reviewer: "arul28", reviewerAvatarUrl: null, state: "changes_requested", body: null, submittedAt: iso(200) },
+        { reviewer: "acme-labs", reviewerAvatarUrl: null, state: "changes_requested", body: null, submittedAt: iso(200) },
       ],
       status: { mergeConflicts: true, isMergeable: false, behindBaseBy: 12 },
       files: files([
@@ -3125,7 +3350,7 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
         "ci / build (macos)", "ci / build (windows)", "ci / e2e", "CodeRabbit",
       ].map((name, index) => check(name, "passed", 2 + index)),
       reviews: [
-        { reviewer: "arul28", reviewerAvatarUrl: null, state: "approved", body: null, submittedAt: iso(50) },
+        { reviewer: "acme-labs", reviewerAvatarUrl: null, state: "approved", body: null, submittedAt: iso(50) },
       ],
       status: { mergeConflicts: false, isMergeable: true, behindBaseBy: 0 },
       files: files([
@@ -3578,11 +3803,11 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       isDraft: false,
       baseBranch: "main",
       headBranch: "ade/auto-lane-naming",
-      author: "arul",
+      author: "ada",
       createdAt: new Date(Date.now() - 5 * 86_400_000).toISOString(),
       updatedAt: oneHourAgo,
       mergedAt: oneHourAgo,
-      mergedBy: { login: "arul", avatarUrl: null },
+      mergedBy: { login: "ada", avatarUrl: null },
       mergeMethod: "squash",
       additions: 412,
       deletions: 88,
@@ -3617,11 +3842,11 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       isDraft: false,
       baseBranch: "main",
       headBranch: "ade/web-machine-selection",
-      author: "arul",
+      author: "ada",
       createdAt: new Date(Date.now() - 12 * 86_400_000).toISOString(),
       updatedAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
       mergedAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
-      mergedBy: { login: "arul", avatarUrl: null },
+      mergedBy: { login: "ada", avatarUrl: null },
       mergeMethod: "merge",
       additions: 96,
       deletions: 14,
@@ -3907,9 +4132,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     // `hasUsableProviderConnection` still reads false, so nothing auth-gated
     // changes, while `hasLocalProviderConnectionSignal` (the Limits surface's
     // question) reads true.
-    authAvailable: false,
-    runtimeDetected: provider === "claude" || provider === "codex",
-    runtimeAvailable: false,
+    // The demo signs in every provider except Cursor, whose Cloud surface has no mock.
+    authAvailable: BROWSER_MOCK_DEMO && provider !== "cursor",
+    runtimeDetected: (BROWSER_MOCK_DEMO && provider !== "cursor") || provider === "claude" || provider === "codex",
+    runtimeAvailable: BROWSER_MOCK_DEMO && provider !== "cursor",
     usageAvailable: provider === "claude" || provider === "codex",
     path: null,
     blocker: null,
@@ -3955,6 +4181,45 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       muse: BROWSER_MOCK_PROVIDER_CONNECTION("muse"),
     },
   };
+
+  // The public demo is a signed-in machine with the usual subscriptions, so
+  // the model picker lists real models instead of sign-in prompts.
+  if (BROWSER_MOCK_DEMO) {
+    BROWSER_MOCK_AI_STATUS.mode = "subscription";
+    BROWSER_MOCK_AI_STATUS.availableProviders = {
+      claude: {
+        binary: { present: true, source: "path", path: "/opt/homebrew/bin/claude" },
+        auth: { ready: true, mode: "subscription", detail: "Claude Max" },
+      },
+      codex: true,
+      cursor: false,
+      droid: true,
+      muse: true,
+      grok: true,
+      copilot: true,
+      kimi: true,
+      qwen: true,
+      devin: true,
+    };
+    BROWSER_MOCK_AI_STATUS.availableModelIds = [
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-sonnet-5-5",
+      "anthropic/claude-haiku-5-5",
+      "openai/gpt-6-sol",
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-sol",
+      "openai/gpt-6-astra",
+      "xai/grok-4-6",
+      "opencode/opencode-go/deepseek-v4.1-flash",
+      "opencode/opencode-go/kimi-k2.7-code",
+      "opencode/opencode-go/glm-5.3",
+    ];
+    // The composer's @ menu lists models from the signed-in CLIs.
+    BROWSER_MOCK_AI_STATUS.detectedAuth = [
+      { type: "cli-subscription", cli: "claude", authenticated: true },
+      { type: "cli-subscription", cli: "codex", authenticated: true },
+    ];
+  }
 
   // A demo quota fixture, so the Limits surface in the browser preview renders
   // the shape it renders in the app: two providers, several windows, and more
@@ -4002,17 +4267,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     remote: { targetId, projectId, runtimeName, hostname, gitOriginUrl },
   });
   const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
-    { rootPath: "/Users/arul/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/ADE.git", pinned: true },
-    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/arul28/ADE"),
-    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/arul/ADE", 3 * 86_400_000, "https://github.com/arul28/ADE"),
-    { rootPath: "/Users/arul/Projects/berth", displayName: "berth", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/berth.git" },
-    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "berth", "berth", "/Users/admin/Projects/berth", 6 * 3_600_000, "https://github.com/arul28/berth"),
-    { rootPath: "/Users/arul/Projects/portfolio-site", displayName: "portfolio-site", lastOpenedAt: browserMockAgo(5 * 3_600_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/portfolio-site.git" },
-    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "beat-lab", "beat-lab", "/Users/admin/Music/beat-lab", 26 * 3_600_000, "https://github.com/arul28/beat-lab"),
-    { rootPath: "/Users/arul/Projects/ios-companion", displayName: "ios-companion", lastOpenedAt: browserMockAgo(2 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
-    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "game-engine", "game-engine", "C:/Users/arul/dev/game-engine", 4 * 86_400_000, "https://github.com/arul28/game-engine"),
-    { rootPath: "/Users/arul/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:arul28/dotfiles.git" },
-    { rootPath: "/Users/arul/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+    { rootPath: "/Users/ada/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/acme-shop.git", pinned: true },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/acme-labs/acme-shop"),
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/ada/ADE", 3 * 86_400_000, "https://github.com/acme-labs/acme-shop"),
+    { rootPath: "/Users/ada/Projects/storefront", displayName: "storefront", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/storefront.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "storefront", "storefront", "/Users/admin/Projects/storefront", 6 * 3_600_000, "https://github.com/acme-labs/storefront"),
+    { rootPath: "/Users/ada/Projects/docs-site", displayName: "docs-site", lastOpenedAt: browserMockAgo(5 * 3_600_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/docs-site.git" },
+    browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "design-system", "design-system", "/Users/admin/Music/design-system", 26 * 3_600_000, "https://github.com/acme-labs/design-system"),
+    { rootPath: "/Users/ada/Projects/ios-companion", displayName: "ios-companion", lastOpenedAt: browserMockAgo(2 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
+    browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "mobile-app", "mobile-app", "C:/Users/ada/dev/mobile-app", 4 * 86_400_000, "https://github.com/acme-labs/mobile-app"),
+    { rootPath: "/Users/ada/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/dotfiles.git" },
+    { rootPath: "/Users/ada/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
   ];
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     accounts: [
@@ -4040,17 +4305,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         url: usageProviderAccountUrl("claude"),
       },
       {
-        id: "claude:arul.sharma@example.com",
+        id: "claude:ada@example.com",
         instanceId: "claude-side",
         label: "Side",
         provider: "claude",
-        email: "arul.sharma@example.com",
+        email: "ada@example.com",
         plan: "Claude Max 5x",
         machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }],
         url: usageProviderAccountUrl("claude"),
       },
       { id: "cursor:dev@example.com", label: "Default", provider: "cursor", email: "dev@example.com", plan: "Cursor Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
-      { id: "copilot:arul28", label: "arul28", provider: "copilot", plan: "Copilot Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
+      { id: "copilot:acme-labs", label: "acme-labs", provider: "copilot", plan: "Copilot Pro", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
       { id: "opencode:dev@example.com", label: "Default", provider: "opencode", email: "dev@example.com", plan: "OpenCode Go", machines: [{ machineKey: "studio", label: "studio-mbp", checkedAt: now }] },
       {
         id: "codex:dev@example.com",
@@ -4137,14 +4402,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       {
         provider: "claude",
         windowType: "weekly",
-        accountId: "claude:arul.sharma@example.com",
+        accountId: "claude:ada@example.com",
         percentUsed: 84,
         resetsAt: browserMockResetAt(1 * 86_400_000 + 3 * 3_600_000),
         resetsInMs: 1 * 86_400_000 + 3 * 3_600_000,
         pacing: browserMockPacing(84, 80, 27),
       },
       { provider: "cursor", windowType: "monthly", accountId: "cursor:dev@example.com", percentUsed: 38, resetsAt: browserMockResetAt(17 * 86_400_000), resetsInMs: 17 * 86_400_000 },
-      { provider: "copilot", windowType: "monthly", accountId: "copilot:arul28", percentUsed: 97, resetsAt: browserMockResetAt(9 * 86_400_000), resetsInMs: 9 * 86_400_000 },
+      { provider: "copilot", windowType: "monthly", accountId: "copilot:acme-labs", percentUsed: 97, resetsAt: browserMockResetAt(9 * 86_400_000), resetsInMs: 9 * 86_400_000 },
       { provider: "opencode", windowType: "weekly", accountId: "opencode:dev@example.com", percentUsed: 12, resetsAt: browserMockResetAt(4 * 86_400_000), resetsInMs: 4 * 86_400_000 },
     ],
     pacing: browserMockPacing(48, 42, 151),
@@ -4672,8 +4937,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       const signedInStatus = {
         signedIn: true,
         userId: "user_2xMockAccount",
-        email: "arul@ade.dev",
-        name: "Arul Sharma",
+        email: "ada@example.com",
+        name: "Ada Lovelace",
         expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         provider: "github" as const,
         imageUrl: null,
@@ -5032,7 +5297,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       getLatestRelease: resolved({
         version: "1.0.0",
-        htmlUrl: "https://github.com/arul28/ADE/releases/latest",
+        htmlUrl: "https://github.com/acme-labs/acme-shop/releases/latest",
         publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
         updateAvailable: false,
       }),
@@ -5050,6 +5315,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       getWelcomeVideoState: async () => {
         const state = readBrowserMockWelcomeVideoState();
+        if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
         return browserMockGateState() && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
@@ -6374,7 +6640,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const limit = Number.isFinite(args?.limit)
           ? Math.max(1, Math.floor(args.limit))
           : rows.length;
-        return rows.slice(0, limit);
+        // Copies, as the host sends: the demo updates rows in place, and the
+        // Work list only redraws a row whose object changed.
+        return rows.slice(0, limit).map((row) => ({ ...row }));
       },
       get: async (sessionId: string) =>
         MOCK_SESSIONS.find((session) => session.id === sessionId) ?? null,
@@ -6394,7 +6662,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           : raw;
       },
       getDelta: resolvedArg(null),
-      onChanged: noop,
+      onChanged: (listener: (event: { sessionId: string; reason: "meta-updated" | "created" }) => void) => {
+        browserMockSessionListeners.add(listener);
+        return () => browserMockSessionListeners.delete(listener);
+      },
     },
     personalChats: {
       call: async ({ action, args = {} }: any) => {
@@ -6667,7 +6938,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const session = MOCK_SESSIONS.find((row) => row.id === sessionId);
         return mockAgentChatSummaryFromSession(session) ?? null;
       },
-      create: resolvedArg({ id: "mock" }),
+      create: async (args: any = {}) => (BROWSER_MOCK_DEMO ? createBrowserMockDemoChat(args) : { id: "mock" }),
       launchCli: resolvedArg({ sessionId: "mock-cli", ptyId: "mock-pty", pid: null, attachedLinearIssueIds: [] } as any),
       suggestLaneName: resolvedArg("browser-mock-chat"),
       generateAutoLaneIdentity: async (args: any = {}) => ({
@@ -6850,20 +7121,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // The brain-owned move. The preview has one paired machine with the
       // repository, so the setup modal can be walked end to end.
       getCrossMachineHandoffOptions: async (args: AgentChatCrossMachineHandoffSessionArgs) => ({
-        machines: [{
-          machineKey: "mock-remote",
-          name: "Mock remote",
-          online: true,
-          unavailableReason: null,
-          hasRepository: true,
-        }],
+        machines: BROWSER_MOCK_DEMO
+          ? [
+              { machineKey: "mock-remote", name: "Mac Studio", online: true, unavailableReason: null, hasRepository: true },
+              { machineKey: "mock-windows", name: "Windows PC", online: true, unavailableReason: null, hasRepository: true },
+              { machineKey: "mock-linux", name: "Linux server", online: false, unavailableReason: "Asleep", hasRepository: true },
+            ]
+          : [{
+              machineKey: "mock-remote",
+              name: "Mock remote",
+              online: true,
+              unavailableReason: null,
+              hasRepository: true,
+            }],
         blockers: [],
         changes: null,
         current: browserMockCrossMachineMoves.get(args.sourceSessionId) ?? null,
       }),
       previewCrossMachineHandoff: async (args: AgentChatPreviewCrossMachineHandoffArgs) => ({
         machineKey: "mock-remote",
-        machineName: "Mock remote",
+        machineName: BROWSER_MOCK_DEMO ? "Mac Studio" : "Mock remote",
         hasRepository: true,
         preflight: {
           providerAuthorized: true,
@@ -6883,7 +7160,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           state: args.whenTurnEnds ? "pending" : "sending",
           checkpoint: null,
           targetMachineKey: "mock-remote",
-          targetMachineName: "Mock remote",
+          targetMachineName: BROWSER_MOCK_DEMO ? "Mac Studio" : "Mock remote",
           mode: args.mode ?? "brief",
           targetModelId: args.targetModelId,
           includeChanges: args.includeChanges === true,
@@ -6949,6 +7226,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           text,
           ...(args.displayText !== undefined ? { displayText: args.displayText } : {}),
         }, true);
+        // The public demo answers with a prepared reply that streams like a real turn.
+        if (BROWSER_MOCK_DEMO) {
+          titleBrowserMockDemoChat(args.sessionId, text);
+          setBrowserMockDemoChatRunning(args.sessionId, true);
+          playDemoReply(args.sessionId, text, {
+            emit: (sessionId, event) => {
+              // A finished turn leaves the chat idle, as the host reports it.
+              if (event.type === "done") setBrowserMockDemoChatRunning(sessionId, false);
+              emitBrowserMockChatEvent(sessionId, event, true);
+            },
+            startChild: startBrowserMockDemoChild,
+            finishChild: finishBrowserMockDemoChild,
+          });
+        }
       },
       // The staged queue behaves like the host's: a steer stages a queued
       // bubble, a cancel retires it, and a move publishes the new order.
@@ -7143,14 +7434,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             subtitle: [row.laneName, row.status].filter(Boolean).join(" · "),
             lastActivityAt: epoch(row.endedAt) ?? epoch(row.startedAt),
           }));
-        const machines: ChatMentionSuggestion[] = [{
+        const machines: ChatMentionSuggestion[] = (BROWSER_MOCK_DEMO ? ["Mac Studio", "Windows PC"] : ["Mock Mac Studio"]).map((title, index) => ({
           kind: "machine",
-          id: "mock-machine-key",
-          title: "Mock Mac Studio",
+          id: BROWSER_MOCK_DEMO ? title.toLowerCase().replace(/\s+/g, "-") : `mock-machine-key-${index}`,
+          title,
           subtitle: "online · 2 projects",
           lastActivityAt: Date.now(),
           machine: { online: true, isThisMachine: false },
-        }];
+        }));
         const byKind: Record<ChatMentionKind, ChatMentionSuggestion[]> = {
           chat: chats,
           lane: lanes,
@@ -8328,9 +8619,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         authSource: "app",
         writeAuthSource: "gh",
         tokenType: "oauth",
-        repo: { owner: "arul28", name: "ADE" },
+        repo: { owner: "acme-labs", name: "acme-shop" },
         hasOrigin: true,
-        userLogin: "arul",
+        userLogin: "ada",
         scopes: ["repo", "workflow"],
         ghCliPath: "/opt/homebrew/bin/gh",
         ghAuthError: null,
@@ -8382,7 +8673,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         connected: true,
       }),
       getRemoteStatus: resolved({
-        repo: { owner: "arul28", name: "ADE" },
+        repo: { owner: "acme-labs", name: "acme-shop" },
         hasOrigin: true,
       }),
       setToken: resolvedArg({
@@ -8392,9 +8683,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         storageScope: "app",
         authSource: "pat",
         tokenType: "classic",
-        repo: { owner: "arul28", name: "ADE" },
+        repo: { owner: "acme-labs", name: "acme-shop" },
         hasOrigin: true,
-        userLogin: "arul",
+        userLogin: "ada",
         scopes: ["repo", "workflow"],
         ghCliPath: "/opt/homebrew/bin/gh",
         ghAuthError: null,
@@ -8410,7 +8701,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         storageScope: "app",
         authSource: "none",
         tokenType: "unknown",
-        repo: { owner: "arul28", name: "ADE" },
+        repo: { owner: "acme-labs", name: "acme-shop" },
         hasOrigin: true,
         userLogin: null,
         scopes: [],
@@ -8424,7 +8715,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getAppUserAuthStatus: resolved({
         configured: true,
         tokenStored: true,
-        userLogin: "arul",
+        userLogin: "ada",
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
         refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
         credentialState: "authorized",
@@ -8448,7 +8739,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         authStatus: {
           configured: true,
           tokenStored: true,
-          userLogin: "arul",
+          userLogin: "ada",
           expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
           refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
           credentialState: "authorized",
@@ -8472,9 +8763,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       getRequestBudget: resolved({ pausedUntil: null, failureKind: null, retryAt: null }),
       isRepoStarred: resolved("unknown"),
-      detectRepo: resolved({ owner: "arul28", name: "ADE" }),
+      detectRepo: resolved({ owner: "acme-labs", name: "acme-shop" }),
       getAppInstallationStatus: resolved({
-        repo: { owner: "arul28", name: "ADE" },
+        repo: { owner: "acme-labs", name: "acme-shop" },
         appName: "ADE",
         appSlug: "ade-for-github",
         installUrl: "https://github.com/apps/ade-for-github/installations/new",
@@ -8494,7 +8785,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         appUserAuthFailure: null,
       }),
       listRepoAutolinks: resolved([]),
-      createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?type=pr&repo=arul28%2FADE&number=<num>", isAlphanumeric: false }),
+      createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?type=pr&repo=acme-labs%2Facme-shop&number=<num>", isAlphanumeric: false }),
       listRepoLabels: resolved([]),
       listRepoCollaborators: resolved([]),
       onStatusChanged: noop,
