@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { BUNDLED_AGENT_SKILLS } from "../../scripts/bundled-agent-skills.mjs";
-import { adeBundledAgentSkills, buildAdeBootstrapGuidance } from "./adeCliGuidance";
+import { adeBundledAgentSkills, adeDeprecatedAgentSkillAliases, buildAdeBootstrapGuidance } from "./adeCliGuidance";
 
 const agentSkillsRoot = fileURLToPath(new URL("../../resources/agent-skills", import.meta.url));
 
@@ -79,9 +79,12 @@ describe("bundled agent skill rosters", () => {
 
   it("names every skill in the bootstrap guidance the providers actually receive", () => {
     // The list is only worth keeping in sync because of what it renders into.
+    // Deprecated aliases stay on disk so their old names resolve, but are not
+    // advertised: one name per skill.
     const bootstrap = buildAdeBootstrapGuidance([]);
     for (const skillName of readSkillDirectoriesOnDisk()) {
-      expect(bootstrap).toContain(`\`${skillName}\``);
+      if (adeDeprecatedAgentSkillAliases.has(skillName)) expect(bootstrap).not.toContain(`\`${skillName}\``);
+      else expect(bootstrap).toContain(`\`${skillName}\``);
     }
   });
 });

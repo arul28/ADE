@@ -24,12 +24,18 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 }
 
 describe("buildMacDesktopDirective", () => {
-  it("emits exactly one line, and only for a lane whose desktop tool is on", () => {
-    expect(buildMacDesktopDirective(true)).toBe(MAC_DESKTOP_PROMPT_LINE);
-    expect(MAC_DESKTOP_PROMPT_LINE.split("\n")).toHaveLength(1);
+  // The line names the screen of the machine running the chat: a Windows
+  // brain's agent was once told it had a macOS screen (2026-10-20).
+  it.each([
+    { host: "darwin", command: "ade mac-desktop", wrongHost: /Windows|ade screen/ },
+    { host: "win32", command: "ade screen", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
+  ] as const)("emits exactly one $host line, and only for a lane whose desktop tool is on", ({ host, command, wrongHost }) => {
+    const line = buildMacDesktopDirective(true, host)!;
+    expect(line.split("\n")).toHaveLength(1);
     // It must name the command and the skill, or the line buys nothing.
-    expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade mac-desktop");
-    expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade-computer-use");
+    expect(line).toContain(command);
+    expect(line).toContain("ade-computer-use");
+    expect(line).not.toMatch(wrongHost);
   });
 
   it("says nothing for a lane with no desktop", () => {

@@ -1,6 +1,6 @@
 ---
 name: ade-harnesses
-description: Use this skill when you need to run a chat, a CLI session, or a subagent on a specific setup — any model you pay for inside any harness (e.g. OpenCode Go's DeepSeek inside Claude Code), a saved Custom provider (a "harness preset" internally), one of this machine's provider accounts, or one stored API key — instead of whatever ADE would pick by default. Covers listing what is reachable (`ade harness routes`, `ade chat models`, `ade providers accounts list`), launching with `--via`, `--preset`, `--credential`, or `--instance`, checking a pairing (`ade harness test`), and running one in a plain terminal (`ade harness env`).
+description: Use this skill to run a chat, CLI session or subagent on a specific setup instead of ADE's default: any model inside any harness, a saved Custom provider, one provider account, or one stored API key. Covers `ade harness routes`, launching with `--via`, `--preset`, `--credential` or `--instance`, and `ade harness test`.
 ---
 
 # ADE harnesses: picking what a session runs on

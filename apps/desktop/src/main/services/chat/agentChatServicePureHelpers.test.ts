@@ -87,37 +87,31 @@ describe("buildComputerUseDirective", () => {
     expect(result).toMatch(/Never close, quit, hide, minimize or reset an app or window you did not open/);
   });
 
-  it("sends a Mac host's agent to the lane screen first, and fences the real-screen tools", () => {
-    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
-      macDesktopAvailable: true,
-    })!;
-    expect(result).toContain("### Mac Desktop — this lane's own screen (use it for desktop apps)");
-    // Web work goes to ADE's browser unless the user names a desktop browser.
-    expect(result).toContain("use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default");
-    expect(result).toContain("only when the user names that app or asks for the Mac Desktop");
-    // `open` is a blank copy that shares the app's data; `stop` quits what the lane opened.
-    expect(result).toContain("`open` starts a separate, blank copy of the app");
-    expect(result).toContain("shares that app's data (cookies, history) with the user");
-    expect(result).toContain("`ade mac-desktop stop` quits the apps the lane opened");
-    expect(result).toContain("ade mac-desktop record start --caption");
-    expect(result).toMatch(/do not fall back to the user's real screen/);
-    // Same words as the Apple lane hint: an ok result is not a confirmed step,
-    // and a failed recording is reported, never swapped for an older one.
-    expect(result).toContain("an ok result only means the input was sent");
-    expect(result).toContain("Confirm the final state before `record stop`");
-    expect(result).toContain("Never attach an older recording or a file you did not just record.");
-    expect(result).toContain("`type \"<text>\" --submit`");
-    expect(result).toContain("`ade mac-desktop show`");
-    // Viewing the screen no longer starts it.
-    expect(result).toContain("viewing the screen does not start it");
-    // A login shell can put an installed, older `ade` first on PATH.
-    expect(result).toContain("$ADE_CLI_PATH");
-    // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
-    expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
+  // The lane screen is the screen of the machine running the chat. A Windows
+  // brain's agent was once told it had a macOS screen (2026-10-20).
+  it.each([
+    { host: "Mac", options: { macDesktopAvailable: true }, command: "`ade mac-desktop`", proof: "`ade mac-desktop proof`", wrongHost: /macOS[^\n]*ade screen|Windows/ },
+    { host: "Windows", options: { windowsDesktopAvailable: true }, command: "`ade screen`", proof: "`ade screen proof`", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
+  ])("sends a $host host's agent to the lane screen first, and fences the real-screen tools", ({ options, command, proof, wrongHost }) => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
+    expect(result).toContain(command);
+    expect(result).toContain(proof);
+    expect(result).not.toMatch(wrongHost);
+    // The manual is the skill; the block names it before the first action.
+    expect(result).toContain("**ade-computer-use**");
+    // Tools outside `ade` drive the user's real screen: only on request.
+    expect(result).toMatch(/`mcp__computer_use`[^\n]*drive the user's real screen/);
     // Proof of desktop work is the lane screen. The user's screen is an explicit flag.
     expect(result).toMatch(/capture the lane's screen/);
     expect(result).toMatch(/--real-screen/);
-    expect(result).not.toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
+    expect(result).not.toMatch(/`ade proof capture` and `ade proof record` are refused/);
+  });
+
+  it("keeps a Mac host's agent off the user's screen when the lane screen refuses", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
+      macDesktopAvailable: true,
+    })!;
+    expect(result).toMatch(/do not fall back to the user's real screen/);
   });
 
   it("says nothing about a lane screen on a host that cannot give one", () => {
@@ -144,7 +138,7 @@ describe("buildComputerUseDirective", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
-    expect(result).toContain("If it is not exposed, do not stall");
+    expect(result).toContain("if it is not exposed, do not stall");
     expect(result).toContain("Respect the backend the user requested");
     expect(result).toContain("mcp__computer_use");
     expect(result).toContain("do not bootstrap `@oai/sky`");
@@ -188,7 +182,7 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("ade proof");
     expect(result).toContain("ingest_computer_use_artifacts");
     expect(result).toContain("capture visual proof first");
-    expect(result).toContain("Console logs and text files are supporting diagnostics only");
+    expect(result).toContain("logs are supporting diagnostics only");
   });
 });
 

@@ -1,6 +1,7 @@
 ---
 name: ade-ios-simulator
 description: Deprecated alias for ade-apple. Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator via `ade apple` (formerly `ade ios-sim`).
+disable-model-invocation: true
 ---
 
 # Moved to ade-apple

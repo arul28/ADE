@@ -298,7 +298,7 @@ are the authoritative capability reference. A live measurement
 found that repeating the generated inventory in the prompt added about 11.8k
 characters (roughly 2,945 estimated tokens) on top of about 28.8k tokens of MCP
 tool schemas, so `buildCtoCapabilityManifest` now carries only cross-tool
-operating rules. Tool search is now `auto` for CTO sessions, and `alwaysLoad` remains enabled;
+operating rules. Tool search is left to the Claude CLI's default for CTO sessions (on against Anthropic's API), and `alwaysLoad` remains enabled;
 removing the duplicate prose reduces context without making tools undiscoverable.
 
 Every chat-control dep — `steerChat`, `cancelSteer`, `listSubagents`,
@@ -347,7 +347,7 @@ Three deferral mechanisms layer on top of the same map:
 
 | Provider | Mechanism |
 | --- | --- |
-| Claude | ToolSearch. The CTO's `ENABLE_TOOL_SEARCH` pin was removed and is now `"auto"` for every session. It was previously pinned off because deferring one flat catalog risked a CTO that could not find `spawnChat`; packs removed that risk, and the parity gate is `ctoToolPacks.test.ts`, which asserts the three properties the flip depends on — derived `alwaysLoad`, registration identical regardless of which optional services are wired, and a visibility pass that never adds or drops a key. |
+| Claude | ToolSearch. The CTO's `ENABLE_TOOL_SEARCH` pin was removed. ADE no longer sets the variable for any session (it forced `"auto"` until 2026-10-20, which kept every schema inline at normal catalog sizes; see Agent prompt in `docs/perf/macos-baseline.md`), so the CLI's default applies: tool search on against Anthropic's API, off against a third-party base URL. It was previously pinned off because deferring one flat catalog risked a CTO that could not find `spawnChat`; packs removed that risk, and the parity gate is `ctoToolPacks.test.ts`, which asserts the three properties the flip depends on — derived `alwaysLoad`, registration identical regardless of which optional services are wired, and a visibility pass that never adds or drops a key. |
 | Codex | `deferLoading` per tool, built by `buildCodexDynamicToolSpecs` with the `codexDeferCtoTool` predicate: a tool with no pack metadata is never deferred, a core/`alwaysLoad` tool is never deferred, and an extension tool stops being deferred once its pack is loaded. |
 | Cursor / Droid / OpenCode | No native mechanism, so the trimmed descriptions *are* the deferral. The HTTP MCP lease and the SDK MCP server both build from `createCtoAdvertisedToolMap`. |
 

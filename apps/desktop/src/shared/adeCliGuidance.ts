@@ -34,6 +34,14 @@ export const adeBundledAgentSkills = [
 ] as const;
 
 /**
+ * Old skill names kept so `ade skill show <old name>` and `/ade:<old name>`
+ * still resolve. They are not advertised: each SKILL.md declares
+ * `disable-model-invocation`, and the prompt's skill line leaves them out, so
+ * no agent pays for two names of one skill.
+ */
+export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade-desktop", "ade-ios-simulator"]);
+
+/**
  * The status protocol agents actually get. Note what is NOT here: settling.
  * `ade chat settle` was removed in 2026-07 — deciding that work is finished is
  * a subjective call agents are unreliable at, and a self-settling chat drops
@@ -98,6 +106,13 @@ export function buildAdeSessionActivityGuidance(args: {
   cliPath: string | null | undefined;
   shell: "posix" | "powershell";
   target?: AdeSessionActivityTarget;
+  /**
+   * Name the session through `ADE_CHAT_SESSION_ID` instead of spelling its id.
+   * Only for an "environment" target whose provider process belongs to this
+   * one session: the prompt then carries no per-chat value, so a new chat in
+   * the same lane reuses the provider's prompt cache.
+   */
+  sessionIdFromEnvironment?: boolean;
 }): string | null {
   const sessionId = args.sessionId.trim();
   if (!sessionId || !args.cliPath?.trim()) return null;
@@ -109,7 +124,11 @@ export function buildAdeSessionActivityGuidance(args: {
   const quoteShellValue = (value: string): string => args.shell === "powershell"
     ? `'${value.replace(/'/g, "''")}'`
     : `'${value.replace(/'/g, "'\\''")}'`;
-  const safeSessionId = quoteShellValue(sessionId);
+  const sessionIdFromEnvironment = args.sessionIdFromEnvironment === true && target.type === "environment";
+  let safeSessionId = quoteShellValue(sessionId);
+  if (sessionIdFromEnvironment) {
+    safeSessionId = args.shell === "powershell" ? "$env:ADE_CHAT_SESSION_ID" : '"$ADE_CHAT_SESSION_ID"';
+  }
   const safeCliPath = quoteShellValue(cliPath);
   let safeRuntimeSocketPath: string | null = null;
   if (runtimeSocketPath) {
@@ -242,7 +261,7 @@ export function buildAdeBootstrapGuidance(
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state; use `ade help <command>` instead of guessing.",
     "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
-    `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
+    `Skills: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only

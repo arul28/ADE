@@ -355,14 +355,19 @@ Gating:
   client, and the phone all render the tool for a lane whose runtime host is a
   Mac, read-only, because the display lives on that Mac.
 
-The agent-facing prompt cost is exactly one line.
-`buildMacDesktopDirective` (`ai/tools/macDesktopPrompt.ts`) returns
-`MAC_DESKTOP_PROMPT_LINE` only when the lane state says `enabled: true` — it has
-a display, or the tool is granted — and `null` otherwise. `composeLaunchDirectives`
-in `agentChatService.ts` drops the null, so a lane with the tool off produces a
-byte-identical system prompt to one built before the feature existed. Personal
-chats never get the line. The line itself points at `ade mac-desktop` and the
-bundled **ade-computer-use** skill rather than restating the surface.
+The agent-facing prompt cost is exactly one line, sent once.
+`buildMacDesktopDirective` (`ai/tools/macDesktopPrompt.ts`) returns a line only
+when the lane has a display, and `null` otherwise; `composeLaunchDirectives` in
+`agentChatService.ts` drops the null, so a lane without a screen produces a
+byte-identical prompt to one built before the feature existed. The line names
+the screen of the machine that runs the chat (`seatHostPlatform`): a Mac brain
+gets `MAC_DESKTOP_PROMPT_LINE` (`ade mac-desktop`), a Windows brain gets
+`WINDOWS_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
+computer-use block (`deliveredDirectiveKeys.laneScreen`): sent when the lane
+gains a screen or the line changes, and again after the provider thread is
+replaced, not on every turn. Personal chats never get it. Before 2026-10-20 the
+Mac line rode every turn on every host, which told a Windows lane's agent it
+had a macOS screen.
 
 See [Mac Desktop](../mac-desktop/README.md).
 

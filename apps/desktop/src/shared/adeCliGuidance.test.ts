@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
 import {
   adeBundledAgentSkills,
+  adeDeprecatedAgentSkillAliases,
   buildAdeBootstrapGuidance,
   buildAdeCliAgentGuidance,
   buildAdePosixTrackedCliActivityGuidance,
@@ -20,9 +21,11 @@ describe("ADE CLI guidance", () => {
 
     // The canonical builder is a thin alias over the bootstrap.
     expect(guidance).toBe(buildAdeBootstrapGuidance(roots));
-    // It still advertises the bundled skill index so the model knows what exists.
+    // It still advertises the bundled skill index so the model knows what
+    // exists, minus the deprecated aliases (one name per skill).
     for (const skillName of adeBundledAgentSkills) {
-      expect(guidance).toContain(`\`${skillName}\``);
+      if (adeDeprecatedAgentSkillAliases.has(skillName)) expect(guidance).not.toContain(`\`${skillName}\``);
+      else expect(guidance).toContain(`\`${skillName}\``);
     }
     // The old always-on rulebook is gone — those rules now live in the skills.
     expect(guidance).not.toContain("### Minimum operating rules");
@@ -62,6 +65,7 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade lanes rename");
     // The skill index is still advertised so the model knows what exists.
     for (const skillName of adeBundledAgentSkills) {
+      if (adeDeprecatedAgentSkillAliases.has(skillName)) continue;
       expect(bootstrap).toContain(`\`${skillName}\``);
     }
   });

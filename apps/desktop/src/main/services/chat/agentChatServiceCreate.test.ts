@@ -1774,9 +1774,10 @@ describe("createAgentChatService", () => {
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("system prompt");
-      expect(opts?.systemPrompt?.append).toContain(
-        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
-      );
+      // The session is named through its env var, so the prompt holds no
+      // per-chat value and a second chat in the lane reuses the prompt cache.
+      expect(opts?.systemPrompt?.append).toContain("This ADE chat session's id is in `$ADE_CHAT_SESSION_ID`");
+      expect(opts?.systemPrompt?.append).not.toContain(session.id);
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {

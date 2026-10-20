@@ -184,7 +184,6 @@ import {
 } from "../../../shared/codexComposerCommands";
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { redactCommandLine } from "../../../shared/secretRedaction";
-import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
@@ -4834,7 +4833,9 @@ type EpochDirective =
   /** The computer-use block, keyed by lane and available backends. */
   | "computerUse"
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
-  | "appleDevice";
+  | "appleDevice"
+  /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
+  | "laneScreen";
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 type ManagedChatSession = {
@@ -8873,17 +8874,6 @@ export function buildLinearSessionDirective(
 }
 
 /**
- * How the agent shows proof inside its answer. The user reads the answer, not
- * the drawer, so the proof goes next to the claim it proves.
- */
-const PROOF_IN_ANSWER_GUIDANCE = [
-  "Show proof in your answer, directly under the claim it proves. Every proof command prints a `cite:` line such as `![caption](ade-proof://<id>)`; paste it on its own line in your message. Pictures show inline and videos play inline.",
-  `For a before/after, write a fenced \`\`\`${PROOF_COMPARE_FENCE_LANGUAGE} block with the lines \`before: <id> <label>\`, \`after: <id> <label>\` and an optional \`caption: <one sentence>\`. You may also compose an image yourself (a crop, a side-by-side), file it with \`ade proof attach\`, and cite it.`,
-  "Give each item a caption that says what it shows, and an honest caveat when it does not show everything (mock data, a partial state, a step you could not check). Cite as many items as the claims need, and choose the ones that show the claim instead of every capture. Prefer proof that ADE captured or recorded over a file you made yourself.",
-  "To put proof on a pull request, run `ade proof publish --pr <number or URL> <id> <id>` with the items that show the change; it posts one comment with each picture and video under its caption.",
-].join("\n");
-
-/**
  * Identity of one rendering of the computer-use directive.
  *
  * The directive's text is derived entirely from which backends are available,
@@ -8928,72 +8918,32 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
-  // Either seat means "this lane has its own screen". Exactly one is set per
-  // host: the seat follows the runtime host's platform.
+  // The full manuals live in the ade-computer-use and ade-proof-artifacts
+  // skills; this block is only what must hold before the agent opens them. It
+  // rides the first turn of every chat on every provider, so every line here
+  // is paid by chats that never touch a screen (it was ~9.4k chars).
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
-  const recordingSurfaces = [
-    ...(options.macDesktopAvailable ? ["Apple", "Mac Desktop"] : []),
-    ...(options.windowsDesktopAvailable ? ["Windows Desktop"] : []),
-    "App Control",
-    "browser",
-  ].join(", ");
+  // Exactly one seat is set per host: the seat follows the platform of the
+  // machine that runs this chat, not the machine the user is looking at.
+  const laneScreenLine = options.windowsDesktopAvailable
+    ? "This lane has its own Windows screen: use `ade screen` (also `ade windows-desktop`; it is not a Mac) for any Windows app — start, open, observe, then act on the handles it returns. The default seat is private; the user's main desktop needs their yes (`ade screen start --shared --reason \"…\"`), never `--allow-prompt` or `--consent` yourself."
+    : options.macDesktopAvailable
+    ? "This lane has its own macOS screen: use `ade mac-desktop` for any macOS app — `start` (viewing does not start it), `open`, `observe`, then act on the handles it returns. It never touches the user's screen or pointer. If it refuses, report it; do not fall back to the user's real screen."
+    : null;
 
   // --- Header (always when we have any capability) ---
   sections.push(
     [
       "## Computer Use",
-      "You have computer-use capabilities available. The proof drawer is for reviewer-visible evidence: screenshots/images, screen recordings, and browser captures or traces.",
-      "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
-      "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
-      "",
-      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
-      options.macDesktopAvailable || options.windowsDesktopAvailable
-        ? "`mcp__computer_use` — like every tool outside `ade` that clicks, types or captures: any other computer-use MCP server or plugin, `osascript`/System Events, `cliclick`, `screencapture`, a browser-automation CLI, a Chrome you open yourself — drives the user's real screen, pointer and focus. This lane has its own screen, so do not use them for task work; use them only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute. If an ADE surface cannot do a step, say which step and ask instead of switching tools."
-        : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
-      "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
-      "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
-      "Web pages and localhost go in ADE's browser (`ade browser`, the **ade-browser** skill), which shares the user's sign-ins. To sign in as a test account or a second role, open an isolated tab with `ade browser open <url> --profile <name>` so the user stays signed in; never use a headless or external browser for that.",
-      "Use the user's own browser only when the user asks for it (\"look at the tab I have open\", \"use my Chrome\"): run `ade browser attach`, tell the user which machine and tab it attached to, and run `ade browser detach` when done. Never attach on your own initiative.",
-      "App Control (`ade app-control`, the **ade-app-control** skill) drives an Electron app through its DOM — your dev build, or an installed app started with a debug port — one session per lane: `launch` or `connect`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
-      "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
-      "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
-      `Every recording (${recordingSurfaces}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
+      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: an iOS app → `ade apple`, a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
+      ...(laneScreenLine ? [laneScreenLine] : []),
+      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
+      ownScreen
+        ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
+        : "When the `mcp__computer_use` tools are present, they drive the user's real screen: start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+      "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching.",
     ].join("\n"),
   );
-
-  // --- Windows Desktop (this Windows host can give the lane its own screen) ---
-  if (options.windowsDesktopAvailable) {
-    sections.push(
-      [
-        "### Windows Desktop — this lane's own screen (use it for desktop apps)",
-        "For anything that needs a Windows app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's Windows Desktop with `ade screen` (aliases `ade windows-desktop`, `ade mac-desktop`; they are the same Windows screen here, not a Mac). Read the **ade-computer-use** skill before your first action.",
-        "Seats: the default is **private** — a separate Windows session of the user's own account. It shows their wallpaper and taskbar, but it has its own pointer and keyboard and it is NOT the user's screen, so real input (point clicks, drags) needs no lease there. The **shared** seat is the user's main desktop, used only after the user says yes; it takes over the window they are using. `ade screen status --text` names the seat, the holder and the exact next step.",
-        "Pick the surface: any Windows app → `ade screen`; a dev Electron app you launch or attach to → `ade app-control`; a web page or localhost → `ade browser` (the default for web tasks; open a real browser on the Windows screen only when the user asks for it — `open chrome`/`msedge` there gets a lane-private profile, not the user's).",
-        "The user's steps — setup, saving the Windows password, taking the private screen from another lane — are theirs: ask them. When the private screen is held or unavailable, run `ade screen start --shared --reason \"<what for>\"`: it puts the question to the user in this chat and starts the shared seat if they allow it. Never pass `--allow-prompt` or `--consent` yourself.",
-        "The loop: `ade screen start`, `ade screen open <app or file>` (it prints the windows that appeared, or why none did), `ade screen observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press s --ctrl`, `scroll`). Windows modifier keys are `--ctrl`, `--alt`, `--shift`, `--win`; `--cmd` is sent as Ctrl. Raise, minimize or close your own lane windows with `ade screen focus|minimize|close --window <id>`.",
-        "Notepad and other editors restore the user's open tabs, which can hold private files: open a new blank file you created for the task (`ade screen open notepad -- <path>`), and observe the screen before you record or file proof.",
-        "For proof, wrap the work in `ade screen record start --caption \"<what it shows>\"` … `ade screen record stop` (mark steps with `ade proof step \"<text>\"`), or file a still with `ade screen proof --caption \"<what>\"`; cite the `cite` line it prints. To show the screen to the user, run `ade screen show`.",
-        "Errors name the fix and print the next step: `WINDOWS_DESKTOP_SETUP_REQUIRED` (ask the user to set up), `WINDOWS_DESKTOP_HELD` (another lane, or a Windows session ADE did not start, holds the private screen: ask the user, or `start --shared`), `WINDOWS_DESKTOP_LOCKED` (ask the user to unlock), `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` (`start --shared`), `WINDOWS_DESKTOP_CONSENT_REQUIRED` (the user did not allow the main desktop).",
-        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade screen observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
-      ].join("\n"),
-    );
-  } else if (options.macDesktopAvailable) {
-    // --- Mac Desktop (this host can give the lane its own screen) ---
-    sections.push(
-      [
-        "### Mac Desktop — this lane's own screen (use it for desktop apps)",
-        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-computer-use** skill before your first action.",
-        "Pick the surface: an iOS/SwiftUI app → `ade apple`; any macOS app, including Electron and custom-drawn apps (DAWs, games, canvases) → `ade mac-desktop`; an Electron app whose DOM you need (labels, selectors, hover) → `ade app-control`; a web page or localhost → `ade browser`.",
-        "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
-        "Every acting command reports `hit:` (the element it hit) and `effect:` (observed / unconfirmed / not_checked); when the effect is `unconfirmed`, observe again before you act or report.",
-        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole. Do not stop on your own when you finish. When the user asks you to close what you opened, run `ade mac-desktop quit` (it also quits apps you released) and then `ade mac-desktop stop`.",
-        "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). When an app lists few elements (an Electron window, a DAW, a game), click a point read off the screenshot: `click --x <x> --y <y>` (`--right`, `--double`). None of this moves the user's pointer or needs approval. `--real` does move it, so use it only for a hover-only control or a drop onto another app, after `ade mac-desktop lease`. For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
-        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
-        "If recording fails, say so. Never attach an older recording or a file you did not just record.",
-        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; do not quit apps yourself. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
-      ].join("\n"),
-    );
-  }
 
   // --- Ghost OS section (only if a Ghost OS backend is detected) ---
   const ghostOsBackend = backendStatus?.backends.find(
@@ -9032,12 +8982,13 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      options.windowsDesktopAvailable
-        ? "Proof is intentional. For work on the lane's Windows Desktop, file a still with `ade screen proof` or `ade proof capture`, and a video with `ade screen record` or `ade proof record`; they capture the lane's screen (private or shared seat), and `ade proof capture/record` are refused until the lane screen is started. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
-        : options.macDesktopAvailable
-        ? "Proof is intentional. For work on the lane's Mac Desktop, file a still with `ade mac-desktop proof` or `ade proof capture`, and a video with `ade mac-desktop record` or `ade proof record`; all of them capture the lane's screen, never the user's, and `ade proof capture/record` are refused until the lane screen is started. `--real-screen` captures the user's whole real screen — use it only when the user asks. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
-        : "Proof is intentional. File proof from the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`), or use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. `ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — use it only when the user asks. Add logs only as secondary context unless the user explicitly asks for them.",
-      PROOF_IN_ANSWER_GUIDANCE,
+      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
+        + (options.windowsDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
+        + (ownScreen
+          ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
+          : "`ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — only when the user asks."),
+      "Every proof command prints a `cite:` line; paste it on its own line in your answer, directly under the claim it proves. Read the **ade-proof-artifacts** skill for before/after blocks, recordings, PR publishing and keeping the drawer clean.",
     ].join("\n"),
   );
 
@@ -9937,9 +9888,17 @@ function buildSpawnSelfReportGuidance(
 function buildAdeSessionLineageGuidance(
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
   opts?: SpawnSelfReportGuidanceOpts,
+  /**
+   * Point at `ADE_CHAT_SESSION_ID` instead of spelling the id. Only for a
+   * provider process that belongs to this one session (the Claude SDK query):
+   * a prompt with no per-chat value lets a new chat reuse the prompt cache.
+   */
+  sessionIdFromEnvironment = false,
 ): string | null {
   if (!session) return null;
-  const sessionBinding = `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
+  const sessionBinding = sessionIdFromEnvironment
+    ? "This ADE chat session's id is in `$ADE_CHAT_SESSION_ID`; pass it as `--session` to its status commands."
+    : `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
   const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
@@ -12048,10 +12007,12 @@ export function createAgentChatService(args: {
     session: Pick<AgentChatSession, "id">,
     runtime: { cliPath: string; runtimeSocketPath: string | null; personal: boolean } | null,
     target: AdeSessionActivityTarget = { type: "environment" },
+    sessionIdFromEnvironment = false,
   ): string | null => {
     if (!runtime) return null;
     return buildAdeSessionActivityGuidance({
       sessionId: session.id,
+      sessionIdFromEnvironment,
       cliPath: runtime.cliPath,
       shell: process.platform === "win32" ? "powershell" : "posix",
       // A personal chat names its scope on the command itself, so it reaches
@@ -12064,9 +12025,12 @@ export function createAgentChatService(args: {
   const buildSessionActivityGuidance = (
     session: Pick<AgentChatSession, "id" | "surface" | "personalProfile">,
     enabled: boolean,
+    options: { sessionIdFromEnvironment?: boolean } = {},
   ): string | null => sessionActivityGuidanceForRuntime(
     session,
     resolveSessionActivityRuntime(session, enabled),
+    { type: "environment" },
+    options.sessionIdFromEnvironment === true,
   );
 
   const buildOpenCodeSessionActivityGuidance = (
@@ -43803,9 +43767,16 @@ export function createAgentChatService(args: {
         ]
         : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
+      // A lane chat's query process is this session's alone and carries
+      // ADE_CHAT_SESSION_ID, so its system prompt names the session through
+      // that variable. With no per-chat value left in it, a second chat in the
+      // lane reads the whole system prompt from the prompt cache instead of
+      // writing it again (2026-10-20: 26.5k cache-write tokens per new chat).
+      const claudeSessionIdFromEnvironment = !assistantSession;
       const claudeActivityGuidance = buildSessionActivityGuidance(
         managed.session,
         !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
+        { sessionIdFromEnvironment: claudeSessionIdFromEnvironment },
       );
       const claudeHarnessPrompt = assistantSession
         ? null
@@ -43834,17 +43805,15 @@ export function createAgentChatService(args: {
         : {
         type: "preset",
         preset: "claude_code",
+        // The harness prompt opens with the lane worktree and its write rule,
+        // so no second "ADE Workspace" copy of them follows.
         append: [
           claudeHarnessPrompt,
-          "",
-          "## ADE Workspace",
-          `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-          "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
           "",
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session), claudeSessionIdFromEnvironment) ?? "",
         ].join("\n"),
       };
       // An assistant chat loads the user's own layer (their CLAUDE.md, MCP
@@ -43867,29 +43836,33 @@ export function createAgentChatService(args: {
       }
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
-      // Enable provider tool search for every session, CTO included. When
-      // enabled, the SDK defers tool definitions and loads them on demand via
-      // its ToolSearch capability, keeping the context window lean.
+      // Tool search is left to the pinned CLI's default, for every session,
+      // CTO included: on against Anthropic's API (tool schemas are deferred and
+      // loaded on demand through ToolSearch), off against a third-party base
+      // URL (a harness route) that may not support deferred tools. ADE used to
+      // force "auto", which only defers once tools pass a share of the context
+      // window, so with a normal catalog every schema was sent inline: a bare
+      // `claude -p hi` measured 30.6k input tokens on its first turn by
+      // default and 48.5k with "auto" (2026-10-20, Haiku 5.5, CLI 0.3.300).
       //
-      // The CTO was pinned to "0" while its operator tools were a single flat
-      // catalog: deferring them risked a CTO that could not find spawnChat.
-      // Packs removed that risk on the ADE side — `createCtoOperatorTools`
-      // derives `alwaysLoad` from the pack rather than a hand-set flag, the tool
-      // map is registered identically whether or not optional services are
-      // wired, and `applyCtoToolPackVisibility` never adds or drops a key. Those
-      // three are asserted in `ctoToolPacks.test.ts`, which is the parity gate
-      // this flip is conditioned on.
+      // The CTO's operator tools are safe to defer: `createCtoOperatorTools`
+      // derives `alwaysLoad` from the pack rather than a hand-set flag, the
+      // tool map is registered identically whether or not optional services
+      // are wired, and `applyCtoToolPackVisibility` never adds or drops a key
+      // (`ctoToolPacks.test.ts`). If a CTO is ever seen failing to find a core
+      // tool, set ENABLE_TOOL_SEARCH here for the CTO only.
       //
-      // Note the remaining unknown, so a future reader does not have to
-      // rediscover it: "auto" hands the eager/deferred decision to the SDK, so
-      // this asserts ADE's map is self-consistent, NOT that the SDK keeps every
-      // core tool eagerly loaded. If a CTO is ever seen failing to find a core
-      // tool, put this ternary back — it is a one-line revert.
-      opts.env = stripHostRuntimeEnv({
+      // The brain's own environment is not a source for it: every Claude
+      // process an older ADE started carried the forced "auto", so a brain
+      // launched from one of their shells inherits it (and the session env
+      // copies the brain's). A user's choice belongs in their Claude settings
+      // `env`, which the CLI reads itself.
+      const claudeQueryEnv: Record<string, string> = {
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
-        ENABLE_TOOL_SEARCH: "auto",
-      });
+      };
+      delete claudeQueryEnv.ENABLE_TOOL_SEARCH;
+      opts.env = stripHostRuntimeEnv(claudeQueryEnv);
     }
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
@@ -51375,6 +51348,22 @@ export function createAgentChatService(args: {
         });
     const shouldInjectAppleDeviceDirective = appleDevice != null
       && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
+    // The lane-screen line names the screen of the machine that runs this
+    // chat — a Windows brain's lane screen is a Windows Desktop driven with
+    // `ade screen`, not a Mac. It used to ride every turn, Mac-worded on every
+    // host; it is now sent when the lane gains a screen (or the screen
+    // changes) and again only after the provider thread is replaced.
+    const laneScreenDirective = personalSession
+      ? null
+      : buildMacDesktopDirective(
+          macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
+          macDesktopRuntime?.seatHostPlatform?.(),
+        );
+    const laneScreenDirectiveKey = laneScreenDirective
+      ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(laneScreenDirective)}`
+      : null;
+    const shouldInjectLaneScreenDirective = laneScreenDirectiveKey != null
+      && managed.deliveredDirectiveKeys.laneScreen !== laneScreenDirectiveKey;
     const expandedSlashCommandPrompt = providerSlashCommand && !personalSession
       ? expandAdeSlashCommand(managed, trimmed)
       : null;
@@ -51424,12 +51413,7 @@ export function createAgentChatService(args: {
           // with the tool off contributes `null` here, which
           // `composeLaunchDirectives` drops — so its prompt is byte-identical
           // to the pre-Mac-Desktop one.
-          personalSession
-            ? null
-            : buildMacDesktopDirective(
-                macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
-                macDesktopRuntime?.seatHostPlatform?.() ?? null,
-              ),
+          shouldInjectLaneScreenDirective ? laneScreenDirective : null,
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
@@ -51480,6 +51464,7 @@ export function createAgentChatService(args: {
         : {
             ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
             ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+            ...(shouldInjectLaneScreenDirective ? { laneScreen: laneScreenDirectiveKey } : {}),
           },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
