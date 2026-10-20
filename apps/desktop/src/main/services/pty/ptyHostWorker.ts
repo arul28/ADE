@@ -1,6 +1,7 @@
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import * as nodePty from "node-pty";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { processOutputToString, windowsTaskkillInvocation } from "../shared/processExecution";
 
 type SpawnMessage = {
   type: "spawn";
@@ -127,28 +128,64 @@ function errorPayload(error: unknown): { message: string; stack?: string; code?:
   };
 }
 
-function disposePty(ptyId: string, signal?: string): void {
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 2_500;
+
+function killPtyAfterTree(ptyId: string, pty: IPty, signal: string | undefined): void {
+  try {
+    killPty(pty, signal);
+  } catch (error) {
+    // The parent marks the session dead when the host reports nothing more.
+    send({ type: "operationError", ptyId, operation: "dispose", error: errorPayload(error) });
+  }
+  // Lets the parent stop a host this dispose emptied once the cleanup ran.
+  send({ type: "disposed", ptyId });
+}
+
+function reportTreeKill(ptyId: string, status: number | null, stderr: string, error: unknown): void {
+  if (status === 0 && !error) return;
+  send({
+    type: "operationError",
+    ptyId,
+    operation: "dispose-tree",
+    error: errorPayload(error ?? new Error(`taskkill exited ${status ?? "?"}: ${stderr.trim().slice(0, 300)}`)),
+  });
+}
+
+/**
+ * On Windows, node-pty's kill() ends the ConPTY leader but not what it
+ * started, and `taskkill /T` can only find the tree while the leader lives,
+ * so the tree goes first. This host still holds the live PTY, so its PID
+ * cannot be stale. `sync` is for shutdown only: elsewhere a blocking taskkill
+ * would stall every other PTY this host serves.
+ */
+function disposePty(ptyId: string, signal?: string, { sync = false }: { sync?: boolean } = {}): void {
   const pty = ptys.get(ptyId);
   if (!pty) return;
   resumeForExit(ptyId, pty);
   ptys.delete(ptyId);
   flow.delete(ptyId);
-  // On Windows, node-pty's kill() ends the ConPTY leader but not what it
-  // started, and `taskkill /T` can only find the tree while the leader lives.
-  // This host still holds the live PTY, so its PID cannot be stale here.
-  if (process.platform === "win32" && pty.pid > 0) {
-    spawnSync("taskkill.exe", ["/PID", String(pty.pid), "/T", "/F"], { windowsHide: true, timeout: 5_000 });
+  if (process.platform !== "win32" || !(pty.pid > 0)) {
+    killPtyAfterTree(ptyId, pty, signal);
+    return;
   }
-  try {
-    killPty(pty, signal);
-  } catch {
-    // Best effort; the parent will mark the session dead if the host exits.
+  const invocation = windowsTaskkillInvocation(pty.pid, { force: true });
+  const options = { windowsHide: true, timeout: WINDOWS_TREE_KILL_TIMEOUT_MS };
+  if (sync) {
+    const result = spawnSync(invocation.command, invocation.args, options);
+    reportTreeKill(ptyId, result.status, processOutputToString(result.stderr), result.error);
+    killPtyAfterTree(ptyId, pty, signal);
+    return;
   }
+  execFile(invocation.command, invocation.args, options, (error, _stdout, stderr) => {
+    reportTreeKill(ptyId, error ? null : 0, processOutputToString(stderr), error);
+    killPtyAfterTree(ptyId, pty, signal);
+  });
 }
 
+/** Shutdown: the process exits next, so the cleanup must finish first. */
 function disposeAll(signal?: string): void {
   for (const ptyId of [...ptys.keys()]) {
-    disposePty(ptyId, signal);
+    disposePty(ptyId, signal, { sync: true });
   }
 }
 

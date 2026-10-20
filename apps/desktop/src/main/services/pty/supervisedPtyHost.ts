@@ -48,6 +48,7 @@ type HostMessage =
   | { type: "data"; ptyId: string; data: string }
   | { type: "exit"; ptyId: string; exitCode: number | null; signal?: number | string | null }
   | { type: "operationError"; ptyId: string; operation: string; error?: HostErrorPayload }
+  | { type: "disposed"; ptyId: string }
   | { type: "fatal"; error?: HostErrorPayload };
 
 type PendingSpawn = {
@@ -62,8 +63,6 @@ type QueuedRequest = Exclude<ChildRequest, SpawnRequest>;
 type HostChildState = {
   child: ChildProcess;
   ptyIds: Set<string>;
-  /** Left empty while it finishes a dispose; never given a new PTY. */
-  retiring?: boolean;
   stdoutTail: string;
   stderrTail: string;
 };
@@ -325,7 +324,7 @@ class SupervisedPtyHost {
       // A shared host outlives this PTY, so a spawn that completes late must
       // still be ended there; IPC order puts this after the spawn request.
       const disposing = this.disposeInHost(ptyId);
-      this.detachPtyFromChild(ptyId, "SIGKILL", disposing ? HOST_SIGKILL_GRACE_MS : 0);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing);
       pending.reject(error);
     }, HOST_SPAWN_TIMEOUT_MS);
     timer.unref?.();
@@ -442,7 +441,7 @@ class SupervisedPtyHost {
   private childForNewPty(ptyId: string): HostChildState {
     for (const candidate of new Set(this.childrenByPty.values())) {
       const { child } = candidate;
-      if (candidate.retiring || child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
+      if (child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
       if (candidate.ptyIds.size >= MAX_PTYS_PER_HOST) continue;
       candidate.ptyIds.add(ptyId);
       this.childrenByPty.set(ptyId, candidate);
@@ -571,6 +570,10 @@ class SupervisedPtyHost {
       if (childState.ptyIds.size === 0) this.stopChild(childState, "SIGTERM");
       return;
     }
+    if (message.type === "disposed") {
+      if (childState.ptyIds.size === 0) this.stopChild(childState, "SIGTERM");
+      return;
+    }
     if (message.type === "operationError") {
       this.logger.warn("pty.host_operation_failed", {
         ptyId: message.ptyId,
@@ -633,21 +636,25 @@ class SupervisedPtyHost {
     }
   }
 
-  /** `stopAfterMs` gives an emptied host time to finish a dispose it was sent. */
-  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals, stopAfterMs = 0): void {
+  /**
+   * `awaitDisposed`: the host was sent a dispose for this PTY, so an emptied
+   * host is stopped when it reports `disposed`, or after HOST_KILL_GRACE_MS.
+   * Once out of childrenByPty, an emptied host is never given a new PTY.
+   */
+  private detachPtyFromChild(ptyId: string, signal: NodeJS.Signals, awaitDisposed = false): void {
     const childState = this.childrenByPty.get(ptyId);
     this.clearKillTimer(ptyId);
     if (!childState) return;
     childState.ptyIds.delete(ptyId);
     this.childrenByPty.delete(ptyId);
     if (childState.ptyIds.size > 0) return;
-    if (stopAfterMs <= 0) {
+    if (!awaitDisposed) {
       this.stopChild(childState, signal);
       return;
     }
-    childState.retiring = true;
-    const timer = setTimeout(() => this.stopChild(childState, signal), stopAfterMs);
+    const timer = setTimeout(() => this.stopChild(childState, signal), HOST_KILL_GRACE_MS);
     timer.unref?.();
+    childState.child.once("exit", () => clearTimeout(timer));
   }
 
   private scheduleForcedDetach(ptyId: string, signal?: string): void {
@@ -664,7 +671,7 @@ class SupervisedPtyHost {
       // Other terminals may share this host, so killing the host is not the
       // escalation it is for a host of one: the host kills this PTY instead.
       const disposing = this.disposeInHost(ptyId);
-      this.detachPtyFromChild(ptyId, "SIGKILL", disposing ? HOST_SIGKILL_GRACE_MS : 0);
+      this.detachPtyFromChild(ptyId, "SIGKILL", disposing);
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
     timer.unref?.();
