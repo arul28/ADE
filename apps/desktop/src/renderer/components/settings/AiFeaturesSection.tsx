@@ -6,8 +6,6 @@ import type {
 import { Clock } from "@phosphor-icons/react";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { useChatConfigToggle } from "./useChatConfigToggle";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -176,57 +174,6 @@ export function AiFeaturesSection() {
         ) : (
           <ModernRow title="Nothing scheduled" hint="Jobs agents schedule show up here." />
         )}
-      </ModernRows>
-    </ModernSection>
-  );
-}
-
-/**
- * "Smart decisions (OpenCode Jev)": ADE asks OpenCode Zen's free Jev model
- * small questions before its own rules. Shown only on a machine with an
- * OpenCode Zen sign-in (or one that has expired), since elsewhere the switch
- * would do nothing. On unless turned off.
- */
-export function SmartDecisionsSection() {
-  const { pin } = useSettingsMachineScope();
-  const pinKey = pin?.key ?? null;
-  const { onWeb, status, saving, enabled, save } = useChatConfigToggle("smartDecisionsEnabled", { defaultOn: true });
-  const [relevant, setRelevant] = useState(false);
-
-  useEffect(() => {
-    if (onWeb) return;
-    let cancelled = false;
-    void window.ade.ai.jevStatus(pin).then((jev) => {
-      if (!cancelled) setRelevant(jev != null && jev.reason !== "not_signed_in");
-    });
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on the machine, not the pin object: a rebuilt pin is the same machine.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onWeb, pinKey]);
-
-  if (onWeb || !relevant) return null;
-  return (
-    <ModernSection group="Smart decisions" title="Smart decisions" hint="Quick yes/no calls ADE makes about your chats.">
-      <ModernRows>
-        <ModernRow
-          anchor="smart-decisions"
-          title="Smart decisions (OpenCode Jev)"
-          hint={status === "loading"
-            ? "Loading…"
-            : status === "failed"
-              ? "Couldn't load the configuration."
-              : "Uses your OpenCode Zen sign-in to ask the free Jev model, for example whether a finished turn asked you something. When Jev is slow or unavailable, ADE's built-in rules decide."}
-          control={(
-            <SettingsToggle
-              label="Smart decisions (OpenCode Jev)"
-              checked={enabled}
-              disabled={status !== "loaded" || saving}
-              onChange={(value) => void save(value)}
-            />
-          )}
-        />
       </ModernRows>
     </ModernSection>
   );

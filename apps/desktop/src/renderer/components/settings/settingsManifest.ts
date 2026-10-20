@@ -611,6 +611,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Composer",
   },
   {
+    id: "chat.smart-decisions",
+    label: "Smart decisions (OpenCode Jev)",
+    keywords: ["jev", "opencode", "zen", "sign in", "turn end", "question", "classifier"],
+    tab: "chat",
+    anchor: "smart-decisions",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
+    id: "chat.model-hint",
+    label: "Suggest a model and effort while typing",
+    keywords: ["jev", "model hint", "effort", "suggest", "cheapest model", "opencode", "composer"],
+    tab: "chat",
+    anchor: "model-hint",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
     id: "chat.claude-mods",
     label: "Show what Claude mods draw",
     keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
@@ -920,28 +942,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "hidden",
     group: "Scheduled work",
-  },
-  {
-    id: "notifications.smart-decisions",
-    label: "Smart decisions (OpenCode Jev)",
-    keywords: ["jev", "opencode", "zen", "turn end", "question", "classifier"],
-    tab: "notifications",
-    anchor: "smart-decisions",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Smart decisions",
-  },
-  {
-    id: "notifications.model-hint",
-    label: "Suggest a model and effort while typing",
-    keywords: ["jev", "model hint", "effort", "suggest", "cheapest model", "opencode"],
-    tab: "notifications",
-    anchor: "model-hint",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
-    web: "hidden",
-    group: "Smart decisions",
   },
   {
     id: "agents.budget",

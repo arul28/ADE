@@ -4549,12 +4549,16 @@ config service):
   **false**. Per project and per machine, read on the machine that runs the
   chat. See [Next prompt suggestions](#next-prompt-suggestions).
 - `ai.chat.smartDecisionsEnabled` -- "Smart decisions (OpenCode Jev)" in
-  Settings › Notifications, shown only on a machine with an OpenCode Zen
-  sign-in. Defaults to **true**. Off makes every `ai.jevDecide` answer `null`
+  Settings › Chat (`SmartDecisionsSection.tsx`). On a machine with no
+  OpenCode Zen sign-in (or an expired one) the row says Jev is free with
+  one and offers **Sign in to OpenCode**, the same `OAuthConnectModal` the
+  Providers page uses for the `opencode` provider, on the settings page's
+  machine pin; after it connects the row shows as signed in and re-reads
+  `ai.jevStatus` once the brain's one-minute sign-in cache has expired. Defaults to **true**. Off makes every `ai.jevDecide` answer `null`
   with no network call, so every feature uses its built-in rules. See
   [Jev decisions](#jev-decisions).
-- `ai.chat.modelHintMode` -- "Model hint" in Settings › Notifications,
-  beside Smart decisions and shown under the same rule: `model_and_effort`
+- `ai.chat.modelHintMode` -- "Suggest a model and effort while typing" in
+  Settings › Chat, under Smart decisions and shown once Zen is signed in: `model_and_effort`
   (default), `effort_only` or `off`. See the composer's model hint in
   [Composer and UI](composer-and-ui.md#composer).
 
