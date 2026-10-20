@@ -3094,6 +3094,11 @@ owner row* as a quiet parent, which is what lets a dead agent shell whose chat
 was deleted archive after the same grace period instead of waiting forever; and
 lane deletion removes every session row in that lane, archived or not.
 
+Archiving a lane archives its sessions too (`sessionService.archiveSessionsForLane`,
+stamped with the lane's `archived_at`), and restoring the lane clears exactly
+that stamp (`unarchiveSessionsForLane`), so a session archived on its own stays
+archived. See [Lanes › Archive / reclaim / restore](../lanes/README.md).
+
 Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every
 archived item across lanes, chats, and shells. A chat's attached shells are

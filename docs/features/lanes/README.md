@@ -730,6 +730,26 @@ that machine's own numbers and is never marked stale by this one.
    the saved path points somewhere ADE does not manage). Restore rejects
    occupied, linked, or differently registered paths instead of overwriting
    them.
+   **A lane's chats are archived with it.** Right after the status write,
+   `archiveLaneCore` (so plain archive, archive-and-reclaim, `ade lanes
+   archive`, the PR/storage auto-archives and the CTO all get it) calls
+   `sessionService.archiveSessionsForLane`, which stamps every chat, CLI and
+   shell of the lane that is not archived yet with the lane's own
+   `archived_at`. Live work is already stopped by then (`stopLaneRuntimeWork`
+   disposes running and waiting chats and PTYs), so no process is left behind
+   an archived row. The equal timestamp is the mark that the lane archived the
+   session: `unarchive` calls `unarchiveSessionsForLane`, which clears only
+   rows carrying the lane's stamp, so a chat the user archived on its own
+   stays archived. No new column, because `terminal_sessions` syncs to iOS and
+   older peers through cr-sqlite. Lanes archived before this behavior are
+   caught up once at runtime start (`archiveSessionsOfArchivedLanes`, wired in
+   `main.ts` and `bootstrap.ts`, idempotent, logged as
+   `lane.archive.sessions_backfilled`). The rows and transcripts stay and are
+   listed in **Settings › This computer › Archive** (and `ade archive list`);
+   like any archived chat they leave the Work list and the search index until
+   restored. Its **Archived lane** header is now only for a chat
+   restored on its own from the Archive while its lane stays archived, or one a
+   peer on an older ADE left behind.
    **An active lane whose folder vanished** (deleted by hand, reaped by a
    cleanup tool) is rebuilt before the next chat turn instead of failing with
    "Restore or recreate the lane": `agentChatService.sendMessage` calls

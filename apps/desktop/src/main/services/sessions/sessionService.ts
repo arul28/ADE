@@ -1404,6 +1404,34 @@ export function createSessionService({
     return archived;
   };
 
+  /**
+   * Archive every chat, CLI and shell of a lane that is being archived. The
+   * caller has already stopped the lane's live work, so this only sets
+   * `archived_at`; rows and transcripts stay.
+   *
+   * The stamp is the lane's own `archived_at`, and that equality is the mark
+   * that the lane archived them: `unarchiveSessionsForLane` clears exactly
+   * the rows carrying it. A session the user archived on its own keeps its
+   * earlier stamp (`archived_at is null` skips it) and stays archived when
+   * the lane comes back. No new column, because `terminal_sessions` syncs to
+   * the phone and older peers through cr-sqlite.
+   */
+  const archiveSessionsForLane = (laneId: string, laneArchivedAt: string): string[] => {
+    const trimmed = laneId.trim();
+    if (!trimmed || !laneArchivedAt) return [];
+    const ids = db.all<{ id: string }>(
+      "select id from terminal_sessions where lane_id = ? and archived_at is null",
+      [trimmed],
+    ).map((row) => row.id);
+    if (ids.length === 0) return [];
+    db.run(
+      "update terminal_sessions set archived_at = ? where lane_id = ? and archived_at is null",
+      [laneArchivedAt, trimmed],
+    );
+    for (const sessionId of ids) emitChanged({ sessionId, reason: "meta-updated" });
+    return ids;
+  };
+
   const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
 
   const settledAtMs = (sessionId: string): number | null => {
@@ -2256,6 +2284,50 @@ export function createSessionService({
       db.run("update terminal_sessions set archived_at = null where id = ?", [trimmed]);
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
       return true;
+    },
+
+    archiveSessionsForLane,
+
+    /** Undo `archiveSessionsForLane`: only the rows stamped with the lane's archive time. */
+    unarchiveSessionsForLane(laneId: string, laneArchivedAt: string): string[] {
+      const trimmed = laneId.trim();
+      if (!trimmed || !laneArchivedAt) return [];
+      const ids = db.all<{ id: string }>(
+        "select id from terminal_sessions where lane_id = ? and archived_at = ?",
+        [trimmed, laneArchivedAt],
+      ).map((row) => row.id);
+      if (ids.length === 0) return [];
+      db.run(
+        "update terminal_sessions set archived_at = null where lane_id = ? and archived_at = ?",
+        [trimmed, laneArchivedAt],
+      );
+      for (const sessionId of ids) emitChanged({ sessionId, reason: "meta-updated" });
+      return ids;
+    },
+
+    /**
+     * One-time catch-up for lanes archived before lane archive took their
+     * sessions along (or by a peer on an older ADE). Idempotent: once a lane's
+     * sessions carry a stamp, the query no longer finds that lane.
+     */
+    archiveSessionsOfArchivedLanes(): number {
+      const lanes = db.all<{ laneId: string; archivedAt: string }>(
+        `
+          select l.id as laneId, l.archived_at as archivedAt
+            from lanes l
+           where l.status = 'archived'
+             and l.archived_at is not null
+             and exists (
+               select 1 from terminal_sessions s
+                where s.lane_id = l.id and s.archived_at is null
+             )
+        `,
+      );
+      let archived = 0;
+      for (const lane of lanes) {
+        archived += archiveSessionsForLane(lane.laneId, lane.archivedAt).length;
+      }
+      return archived;
     },
 
     async settleSession(

@@ -1649,6 +1649,15 @@ export type LaneDeleteTeardownDeps = {
   iosSimulatorService?: {
     stopForLane: (laneId: string) => Promise<void>;
   };
+  /**
+   * The lane's chat, CLI and shell rows. Archive stamps them with the lane's
+   * `archived_at` after the live work is stopped; restore clears exactly that
+   * stamp, so a session the user archived on its own stays archived.
+   */
+  sessionService?: {
+    archiveSessionsForLane: (laneId: string, laneArchivedAt: string) => string[];
+    unarchiveSessionsForLane: (laneId: string, laneArchivedAt: string) => string[];
+  };
 };
 
 export function createLaneService({
@@ -5033,6 +5042,19 @@ export function createLaneService({
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
 
+  /** Bring back the sessions `archiveLaneCore` archived with the lane. Best-effort. */
+  const restoreLaneSessions = (laneId: string, laneArchivedAt: string | null): void => {
+    if (!laneArchivedAt) return;
+    try {
+      teardownDeps?.sessionService?.unarchiveSessionsForLane(laneId, laneArchivedAt);
+    } catch (error) {
+      logger.warn("lane.unarchive.sessions_restore_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const commitLaneRestoreState = (laneId: string, worktreePath?: string): void => {
     db.run("begin immediate");
     try {
@@ -5322,6 +5344,16 @@ export function createLaneService({
 
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+    // The lane's chats go with it: a chat with no lane to work in has nothing
+    // to do in the Work list. Archived, not deleted — restore brings them back.
+    try {
+      teardownDeps?.sessionService?.archiveSessionsForLane(laneId, now);
+    } catch (error) {
+      logger.warn("lane.archive.sessions_archive_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     invalidateLanePathCaches();
     // An archived lane keeps nothing on the Apple side but its recordings: the
     // device (if ADE made it) and the build cache are deleted, and unarchiving
@@ -8616,6 +8648,7 @@ export function createLaneService({
       }
       if (row.lane_type === "primary") {
         commitLaneRestoreState(laneId);
+        restoreLaneSessions(laneId, row.archived_at);
         invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -8653,6 +8686,7 @@ export function createLaneService({
             throw new Error("The saved lane folder is occupied by a different or unregistered Git worktree.");
           }
           commitLaneRestoreState(laneId);
+          restoreLaneSessions(laneId, row.archived_at);
           invalidateLanePathCaches();
           const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
           if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -8695,6 +8729,7 @@ export function createLaneService({
           });
           throw error;
         }
+        restoreLaneSessions(laneId, row.archived_at);
         invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);

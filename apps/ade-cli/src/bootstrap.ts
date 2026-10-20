@@ -1661,6 +1661,19 @@ export async function createAdeRuntime(args: {
     laneTeardownDeps.rebaseSuggestionService = {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
+    laneTeardownDeps.sessionService = sessionService;
+    // Lanes archived before archive took their chats along keep those chats
+    // visible under an "Archived lane" header; archive them once. Idempotent.
+    try {
+      const archivedSessionCount = sessionService.archiveSessionsOfArchivedLanes();
+      if (archivedSessionCount > 0) {
+        logger.info("lane.archive.sessions_backfilled", { archivedSessionCount });
+      }
+    } catch (error) {
+      logger.warn("lane.archive.sessions_backfill_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // Set once the runtime below is assembled; the CTO's home-machine actions read it.
     let runtimeForCtoActions: AdeRuntime | null = null;
