@@ -40,6 +40,7 @@ type CtoMemoryServiceArgs = {
 const MEMORY_INJECT_MAX_CHARS = 4000;
 const THREAD_STATE_INJECT_MAX_CHARS = 3000;
 const DAILY_INJECT_MAX_CHARS = 3000;
+const GARDENING_JOURNAL_PREFIX = "Nightly memory gardening:";
 
 // Worker (non-CTO) chats receive a much thinner slice: only the facts tagged
 // with their own lane plus the rolling thread state. It rides along with the
@@ -442,8 +443,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const forgetFact = (
     ref: { id?: string | null; text?: string | null },
     reason?: string | null,
+    options: { onlyActive?: boolean } = {},
   ): { forgotten: boolean; fact: string | null } => {
-    const archived = context.archive(ref);
+    const archived = context.archive(ref, options);
     const text = archived?.text ?? ref.text?.trim() ?? "";
     if (!text.length) return { forgotten: false, fact: null };
     const identity = snippetIdentity(text);
@@ -503,41 +505,55 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
    * what changed overnight.
    */
   const applyGardeningPlan = (plan: GardeningPlan): { added: number; merged: number; retired: number } => {
-    const items = new Map(context.read().items.map((item) => [item.id, item]));
     let added = 0;
     let merged = 0;
     let retired = 0;
     for (const entry of plan.merge) {
+      const uniqueIds = new Set(entry.ids);
+      const currentItems = new Map(context.read().items.map((item) => [item.id, item]));
       const sources = entry.ids
-        .map((id) => items.get(id))
-        .filter((item): item is ProjectContextItem => item !== undefined && item.status !== "archived");
+        .map((id) => currentItems.get(id))
+        .filter((item): item is ProjectContextItem => item !== undefined && item.status === "active");
       // The sources were shown with their tag suffix; it is re-added from `tags`.
       const text = entry.text.replace(MEMORY_TAG_SUFFIX_PATTERN, "").trim();
-      if (sources.length < 2 || text.length < 12) continue;
+      if (uniqueIds.size < 2 || uniqueIds.size !== entry.ids.length || sources.length !== entry.ids.length || text.length < 12) continue;
       const tagSets = new Set(sources.map((item) => JSON.stringify(item.tags)));
-      for (const item of sources) forgetFact({ id: item.id }, "merged by nightly memory gardening");
+      for (const item of sources) {
+        forgetFact({ id: item.id }, "merged by nightly memory gardening", { onlyActive: true });
+      }
       // A refusal means the same sentence, or a near-duplicate of it, is already filed.
       appendMemoryFact(text, tagSets.size === 1 ? sources[0].tags : null, { kind: entry.kind, trust: "agent" });
       merged += 1;
     }
     for (const entry of plan.retire) {
-      if (forgetFact({ id: entry.id }, `nightly memory gardening: ${entry.reason}`).forgotten) retired += 1;
+      if (forgetFact(
+        { id: entry.id },
+        `nightly memory gardening: ${entry.reason}`,
+        { onlyActive: true },
+      ).forgotten) retired += 1;
     }
     for (const entry of plan.add) {
       if (appendMemoryFact(entry.text, null, { kind: entry.kind, trust: "agent" }).saved) added += 1;
     }
     if (added || merged || retired) {
-      appendDailyEntry(`Nightly memory gardening: added ${added}, merged ${merged}, retired ${retired}.`);
+      appendDailyEntry(`${GARDENING_JOURNAL_PREFIX} added ${added}, merged ${merged}, retired ${retired}.`);
     }
     return { added, merged, retired };
   };
 
   /** Whether anything was journaled within the last `days` days. */
   const hasRecentDailyEntries = (days: number, now = new Date()): boolean => {
-    const newest = listDailyStampsNewestFirst()[0];
-    if (!newest) return false;
     const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    return newest >= todayStamp(cutoff);
+    const oldestStamp = todayStamp(cutoff);
+    const newestStamp = todayStamp(now);
+    return listDailyStampsNewestFirst()
+      .filter((stamp) => stamp >= oldestStamp && stamp <= newestStamp)
+      .some((stamp) => readFileOrEmpty(dailyPathFor(stamp))
+        .split(/\r?\n/)
+        .some((line) => {
+          const entry = line.trim();
+          return entry.length > 0 && !entry.startsWith("#") && !entry.startsWith(GARDENING_JOURNAL_PREFIX);
+        }));
   };
 
   /** Live store facts for a summarizer to check against, newest last. */
@@ -665,13 +681,22 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   const readRecentDailyEntries = (days = 2, maxChars = DAILY_INJECT_MAX_CHARS): string => {
-    const stamps = listDailyStampsNewestFirst().slice(0, Math.max(1, days));
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const oldestStamp = todayStamp(cutoff);
+    const newestStamp = todayStamp(now);
+    const stamps = listDailyStampsNewestFirst()
+      .filter((stamp) => stamp >= oldestStamp && stamp <= newestStamp);
     if (!stamps.length) return "";
     // Oldest first so the newest content sits at the tail and survives truncation.
     const chronological = [...stamps].reverse();
     const blocks: string[] = [];
     for (const stamp of chronological) {
-      const content = readFileOrEmpty(dailyPathFor(stamp)).trim();
+      const content = readFileOrEmpty(dailyPathFor(stamp))
+        .split(/\r?\n/)
+        .filter((line) => !line.trim().startsWith(GARDENING_JOURNAL_PREFIX))
+        .join("\n")
+        .trim();
       if (content.length) blocks.push(content);
     }
     return truncateKeepTail(blocks.join("\n\n"), maxChars);

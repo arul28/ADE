@@ -903,13 +903,16 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
      * with a new `updatedAt`, so the account mirror carries the retirement to
      * every machine and the line stays searchable.
      */
-    archive(ref: { id?: string | null; text?: string | null }): ProjectContextItem | null {
+    archive(
+      ref: { id?: string | null; text?: string | null },
+      options: { onlyActive?: boolean } = {},
+    ): ProjectContextItem | null {
       const current = readFromDisk();
       const id = ref.id?.trim() ?? "";
       const text = ref.text ? clip(ref.text, MAX_ITEM_CHARS) : "";
       const target = current.items.find((item) => item.status !== "archived" && (
         (id && item.id === id) || (text && item.text === text)
-      ));
+      ) && (!options.onlyActive || item.status === "active"));
       if (!target) return null;
       const archived: ProjectContextItem = { ...target, status: "archived", updatedAt: now() };
       delete archived.accountSyncedAt;
