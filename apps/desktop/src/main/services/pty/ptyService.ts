@@ -55,6 +55,7 @@ import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
+import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   setPathEnvValue,
@@ -706,6 +707,8 @@ function isSessionManuallyNamed(
   return sessionService.get(sessionId)?.manuallyNamed === true;
 }
 
+type PtyOutputPauseReason = "transcript-rollover" | "client-backlog";
+
 type PtyEntry = {
   pty: IPty;
   laneId: string;
@@ -728,6 +731,11 @@ type PtyEntry = {
   transcriptRolloverPendingBytes: number;
   transcriptRolloverPendingTrimmed: boolean;
   transcriptPausedForRollover: boolean;
+  /** Why the PTY is not being read; it resumes when the last reason clears. */
+  outputPauseReasons: Set<PtyOutputPauseReason>;
+  /** Output in the current busy-detection window (see PTY_BUSY_OUTPUT_*). */
+  outputWindowStartedAt: number;
+  outputWindowChars: number;
   transcriptWriteDisabled: boolean;
   transcriptLastErrorAt: number;
   lastPreviewWriteAt: number;
@@ -1871,6 +1879,9 @@ const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
 const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+/** A terminal printing at least this much per window counts as busy for flow control. */
+const PTY_BUSY_OUTPUT_WINDOW_MS = 200;
+const PTY_BUSY_OUTPUT_CHARS = 16 * 1024;
 const RESUME_SCAN_BUFFER_CHARS = 12_000;
 const RESUME_SCAN_INTERVAL_MS = 250;
 /** Muse writes its session folder at TUI start; the tail covers a slow first launch. */
@@ -3275,6 +3286,52 @@ export function createPtyService({
     }).catch(() => {});
   };
 
+  const setOutputPaused = (entry: PtyEntry, reason: PtyOutputPauseReason, paused: boolean): void => {
+    const wasPaused = entry.outputPauseReasons.size > 0;
+    if (paused) entry.outputPauseReasons.add(reason);
+    else entry.outputPauseReasons.delete(reason);
+    const isPaused = entry.outputPauseReasons.size > 0;
+    if (wasPaused === isPaused) return;
+    try {
+      if (isPaused) entry.pty.pause();
+      else entry.pty.resume();
+    } catch (err) {
+      logger.warn("pty.output_pause_failed", {
+        sessionId: entry.sessionId,
+        reason,
+        paused,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  // Output per busy-detection window, so a held connection pauses only the
+  // terminals that are flooding it.
+  const noteOutputForFlowControl = (entry: PtyEntry, chars: number): boolean => {
+    const now = Date.now();
+    if (now - entry.outputWindowStartedAt > PTY_BUSY_OUTPUT_WINDOW_MS) {
+      entry.outputWindowStartedAt = now;
+      entry.outputWindowChars = 0;
+    }
+    entry.outputWindowChars += chars;
+    return entry.outputWindowChars >= PTY_BUSY_OUTPUT_CHARS;
+  };
+
+  const isOutputBusy = (entry: PtyEntry): boolean =>
+    Date.now() - entry.outputWindowStartedAt <= PTY_BUSY_OUTPUT_WINDOW_MS
+    && entry.outputWindowChars >= PTY_BUSY_OUTPUT_CHARS;
+
+  // A client connection that has fallen behind on terminal output stops the
+  // busy PTYs from being read until it catches up (see ptyOutputFlowControl).
+  // Quiet ones keep flowing, so typing in another terminal still echoes.
+  const unsubscribeOutputHold = onPtyOutputHoldChange((held) => {
+    for (const entry of ptys.values()) {
+      if (entry.disposed) continue;
+      if (!held) setOutputPaused(entry, "client-backlog", false);
+      else if (isOutputBusy(entry)) setOutputPaused(entry, "client-backlog", true);
+    }
+  });
+
   const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
     if (entry.transcriptWriteDisabled) return;
     entry.transcriptWriteDisabled = true;
@@ -3282,11 +3339,8 @@ export function createPtyService({
     entry.transcriptStream = null;
     if (entry.transcriptPausedForRollover) {
       entry.transcriptPausedForRollover = false;
-      try {
-        entry.pty.resume();
-      } catch {
-        // Live output remains authoritative even when transcript persistence fails.
-      }
+      // Live output remains authoritative even when transcript persistence fails.
+      setOutputPaused(entry, "transcript-rollover", false);
     }
     const now = Date.now();
     if (now - entry.transcriptLastErrorAt > 10_000) {
@@ -4864,14 +4918,7 @@ export function createPtyService({
         entry.transcriptRolloverInProgress = false;
         if (entry.transcriptPausedForRollover) {
           entry.transcriptPausedForRollover = false;
-          try {
-            entry.pty.resume();
-          } catch (err) {
-            logger.warn("pty.transcript_rollover_resume_failed", {
-              sessionId: entry.sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
+          setOutputPaused(entry, "transcript-rollover", false);
         }
         return;
       }
@@ -4880,6 +4927,11 @@ export function createPtyService({
     } finally {
       entry.transcriptRolloverInProgress = false;
       entry.transcriptRolloverPromise = null;
+      // pause() really stops reading now, so no exit path may leave it set.
+      if (entry.transcriptPausedForRollover) {
+        entry.transcriptPausedForRollover = false;
+        setOutputPaused(entry, "transcript-rollover", false);
+      }
     }
   };
 
@@ -4890,12 +4942,9 @@ export function createPtyService({
     // exit synchronously from pause, and close/dispose must still await the
     // queued transcript replacement before transcript-dependent work starts.
     entry.transcriptRolloverPromise = Promise.resolve().then(() => rollTranscript(entry));
-    try {
-      entry.pty.pause();
-      entry.transcriptPausedForRollover = true;
-    } catch {
-      // The bounded pending tail above is the fallback when pause is absent.
-    }
+    // The bounded pending tail above is the fallback when pause is absent.
+    entry.transcriptPausedForRollover = true;
+    setOutputPaused(entry, "transcript-rollover", true);
   };
 
   const writeTranscript = (entry: PtyEntry, data: string) => {
@@ -6991,6 +7040,9 @@ export function createPtyService({
         transcriptRolloverPendingBytes: 0,
         transcriptRolloverPendingTrimmed: false,
         transcriptPausedForRollover: false,
+        outputPauseReasons: new Set(),
+        outputWindowStartedAt: 0,
+        outputWindowChars: 0,
         transcriptWriteDisabled,
         transcriptLastErrorAt,
         lastPreviewWriteAt: 0,
@@ -7178,6 +7230,10 @@ export function createPtyService({
         // emit ptyData after ptyExit while transcript summarization is in
         // flight.
         if (entry.disposed) return;
+        // A terminal that starts flooding while a client is already behind.
+        if (noteOutputForFlowControl(entry, data.length) && isPtyOutputHeld()) {
+          setOutputPaused(entry, "client-backlog", true);
+        }
         void maybeUpgradePiSessionLease(entry);
         resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
@@ -8880,6 +8936,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
+      unsubscribeOutputHold();
       sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {

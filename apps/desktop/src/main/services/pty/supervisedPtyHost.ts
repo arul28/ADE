@@ -23,6 +23,9 @@ type ChildRequest =
   | { type: "write"; ptyId: string; data: string }
   | { type: "resize"; ptyId: string; cols: number; rows: number }
   | { type: "kill"; ptyId: string; signal?: string }
+  | { type: "pause"; ptyId: string }
+  | { type: "resume"; ptyId: string }
+  | { type: "ack"; ptyId: string; chars: number }
   | { type: "dispose"; ptyId: string };
 
 type HostErrorPayload = {
@@ -66,6 +69,8 @@ type HostChildState = {
 const HOST_KILL_GRACE_MS = 3_000;
 const HOST_SIGKILL_GRACE_MS = 500;
 const HOST_SPAWN_TIMEOUT_MS = 15_000;
+/** Output characters processed between acknowledgements to the PTY host. */
+const PTY_HOST_ACK_BATCH_CHARS = 32 * 1024;
 const INTERNAL_PTY_HOST_WORKER_ARG = "__ade-pty-host-worker";
 
 export type HostedPty = IPty & {
@@ -131,6 +136,7 @@ class RemotePty implements HostedPty {
   private readySettled = false;
   private spawned = false;
   private exited = false;
+  private unackedChars = 0;
 
   readonly __adePtyHostReady: Promise<void>;
   readonly __adePtyHostId: string;
@@ -172,7 +178,20 @@ class RemotePty implements HostedPty {
 
   emitData(data: string): void {
     if (this.exited) return;
-    this.emitter.emit("data", data);
+    try {
+      this.emitter.emit("data", data);
+    } finally {
+      // Acknowledged after the listeners ran, so the host reads no faster than
+      // this process works through the output (PTY_HOST_UNACKED_* in the
+      // worker). Even a throwing listener acknowledges, or the host would stay
+      // paused for good.
+      this.unackedChars += data.length;
+      if (this.unackedChars >= PTY_HOST_ACK_BATCH_CHARS) {
+        const chars = this.unackedChars;
+        this.unackedChars = 0;
+        this.sendOrQueue({ type: "ack", ptyId: this.__adePtyHostId, chars });
+      }
+    }
   }
 
   emitExit(exitCode: number | null, signal?: number | string | null): void {
@@ -219,11 +238,13 @@ class RemotePty implements HostedPty {
   }
 
   pause(): void {
-    // node-pty exposes flow-control hooks, but ADE does not use them.
+    if (this.exited) return;
+    this.sendOrQueue({ type: "pause", ptyId: this.__adePtyHostId });
   }
 
   resume(): void {
-    // node-pty exposes flow-control hooks, but ADE does not use them.
+    if (this.exited) return;
+    this.sendOrQueue({ type: "resume", ptyId: this.__adePtyHostId });
   }
 
   clear(): void {
