@@ -13,7 +13,9 @@
 import type { JevAnswers, JevDecideRequest } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
 
-export const MODEL_HINT_MIN_PROMPT_CHARS = 25;
+/** A prompt worth reading: this many words, or this many characters (one long word, a path). */
+const MIN_PROMPT_WORDS = 3;
+const MIN_PROMPT_CHARS = 12;
 const STATE_PROMPT_CHARS = 2_000;
 /** Below this, a score or choice answer reads as no answer. */
 const MIN_CONFIDENCE = 0.5;
@@ -66,6 +68,12 @@ export const MODEL_HINT_QUESTIONS = {
       "Is this a quick back-and-forth request where a fast reply matters more than depth, rather than a long autonomous job?",
   },
 } satisfies JevDecideRequest["questions"];
+
+/** Long enough to say what it asks: "say hi back" is, "fix it" is not. */
+export function isModelHintPrompt(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length >= MIN_PROMPT_CHARS || trimmed.split(/\s+/).filter(Boolean).length >= MIN_PROMPT_WORDS;
+}
 
 export type ModelHintAnswers = JevAnswers<typeof MODEL_HINT_QUESTIONS>;
 
@@ -187,14 +195,25 @@ function meetsNeeds(model: UserCatalogModel, read: ModelHintRead): boolean {
 /**
  * Free and plan-included first, then the harness the chat already uses (a
  * hint should not move a Claude chat to another harness when Claude has a
- * model that does the job), then cheapest; when a fast reply matters, quickest.
+ * model that does the job), then cheapest; when a fast reply matters,
+ * quickest, with times within `SPEED_TIE_RATIO` of each other left to cost.
  */
+/**
+ * Two task times this close are the same reply to a person waiting: 81 s
+ * against 90 s should not keep a pricier model over a cheaper one.
+ */
+const SPEED_TIE_RATIO = 1.25;
+function secondsTie(a: number, b: number): boolean {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return a === b;
+  return Math.max(a, b) <= Math.min(a, b) * SPEED_TIE_RATIO;
+}
+
 function compareOptions(a: Option, b: Option, speedMatters: boolean, harness: string): number {
   const tier = billingTier(a.model) - billingTier(b.model);
   if (tier) return tier;
   const home = Number(a.model.harness !== harness) - Number(b.model.harness !== harness);
   if (home) return home;
-  if (speedMatters && a.seconds !== b.seconds) return a.seconds - b.seconds;
+  if (speedMatters && !secondsTie(a.seconds, b.seconds)) return a.seconds - b.seconds;
   return a.cost - b.cost || effortRank(a.effort) - effortRank(b.effort) || b.quality - a.quality;
 }
 
@@ -314,7 +333,7 @@ export function pickModelHint(args: {
   const billing = BILLING_PHRASE[best.model.billing.kind];
   let why: string;
   if (!currentClears) why = `your pick is below the bar; the cheapest that clears it ${billing}`;
-  else if (read.speedMatters) why = `quickest model that clears the bar ${billing}`;
+  else if (read.speedMatters) why = `quick model that clears the bar ${billing}`;
   else if (effortOnly) why = `a ${direction === "down" ? "lower" : "higher"} effort clears the bar for less`;
   else why = `cheapest model that clears the bar ${billing}`;
   return {

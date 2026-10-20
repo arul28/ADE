@@ -8,8 +8,8 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { reasoningEffortTierLabel } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
-  MODEL_HINT_MIN_PROMPT_CHARS,
   buildModelHintRequest,
+  isModelHintPrompt,
   pickModelHint,
   readModelHintAnswers,
   type ModelHint,
@@ -25,7 +25,10 @@ const STATUS_TTL_MS = 60_000;
 // Per machine, shared by every composer: the catalogue is the machine's, not the chat's.
 const catalogCache = new Map<string, { at: number; value: Promise<UserModelCatalog | null> }>();
 const modeCache = new Map<string, { at: number; value: Promise<HintMode> }>();
-/** Model suggestions dismissed per chat; at `MODEL_DISMISSALS_TO_PIN` the chat gets effort hints only. */
+/**
+ * Model suggestions dismissed per chat; at `MODEL_DISMISSALS_TO_PIN` the chat
+ * gets effort hints only. A new-chat draft starts its own count.
+ */
 const modelDismissals = new Map<string, number>();
 const MODEL_DISMISSALS_TO_PIN = 2;
 
@@ -99,6 +102,11 @@ export type ComposerModelHintChipProps = {
   modelChosen: boolean;
   /** True whenever the picker itself could not change the model (a turn running, a locked or fixed model). */
   hidden: boolean;
+  /**
+   * Bumped each time the user picks an effort by hand: that choice stands for
+   * the prompt being typed, so the chip stays down until the text moves on.
+   */
+  effortPickedByHand: number;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (effort: string | null) => void;
 };
@@ -121,6 +129,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   sessionId,
   modelChosen,
   hidden,
+  effortPickedByHand,
   onModelChange,
   onReasoningEffortChange,
 }: ComposerModelHintChipProps) {
@@ -134,7 +143,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   const contextRef = useRef({ attachments, laneName, chatHasHistory });
   contextRef.current = { attachments, laneName, chatHasHistory };
   const text = draft.trim();
-  const active = !hidden && text.length >= MODEL_HINT_MIN_PROMPT_CHARS;
+  const active = !hidden && isModelHintPrompt(text);
 
   // A new machine reads another catalogue and Jev.
   useEffect(() => {
@@ -175,6 +184,21 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
 
   const dismissalKey = `${pin?.key ?? ""}|${sessionId ?? "draft"}`;
   const [dismissalTick, setDismissalTick] = useState(0);
+  // Every draft shares the "draft" key, so arriving at one is a new chat:
+  // dismissals in an earlier draft must not pin this one.
+  useEffect(() => {
+    if (sessionId == null) modelDismissals.delete(dismissalKey);
+  }, [dismissalKey, sessionId]);
+
+  // An effort picked by hand is the user's answer for this prompt.
+  const textRef = useRef(text);
+  textRef.current = text;
+  const effortPicksSeenRef = useRef(effortPickedByHand);
+  useEffect(() => {
+    if (effortPicksSeenRef.current === effortPickedByHand) return;
+    effortPicksSeenRef.current = effortPickedByHand;
+    if (textRef.current) setDismissedFor(textRef.current);
+  }, [effortPickedByHand]);
   const hint: ModelHint | null = useMemo(() => {
     if (!answered || !modelId) return null;
     return pickModelHint({
@@ -256,7 +280,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   return (
     <SmartTooltip
       forceEnabled
-      content={{ label: "Suggested model", description: hint.reason, effect: MODEL_REGISTRY_AA_ATTRIBUTION }}
+      content={{ label: hint.effortOnly ? "Suggested effort" : "Suggested model", description: hint.reason, effect: MODEL_REGISTRY_AA_ATTRIBUTION }}
     >
       <span
         data-chat-composer-model-hint=""

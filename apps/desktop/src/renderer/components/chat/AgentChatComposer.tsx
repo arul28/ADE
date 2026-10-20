@@ -3403,13 +3403,25 @@ function AgentChatComposerImpl({
   // keeps the unpinned route (transition guard + local fallback) there.
   const chatRuntimePin = useChatRuntimeScope().pin;
   // Which chat (or the draft) had its model picked by hand: Jev's hint then
-  // keeps that model and suggests only an effort.
+  // keeps that model and suggests only an effort. A model the draft opened
+  // with (a saved default) was not picked here, so it still gets model hints.
   const [modelPickedByHandFor, setModelPickedByHandFor] = useState<string | null>(null);
   const handPickKey = sessionId ?? "draft";
+  // Every new chat is "draft": arriving at one starts it unpicked.
+  useEffect(() => {
+    if (handPickKey === "draft") setModelPickedByHandFor((current) => (current === "draft" ? null : current));
+  }, [handPickKey]);
   const handleModelPickerChange = useCallback((nextModelId: string, options?: ModelPickerSelection) => {
-    setModelPickedByHandFor(handPickKey);
+    // The fast-mode switch reports the same model; that is not a model pick.
+    if (nextModelId !== modelId) setModelPickedByHandFor(handPickKey);
     onModelChange(nextModelId, options);
-  }, [handPickKey, onModelChange]);
+  }, [handPickKey, modelId, onModelChange]);
+  // Bumped per effort picked by hand; the hint chip stands down for that prompt.
+  const [effortPickedByHand, setEffortPickedByHand] = useState(0);
+  const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
+    setEffortPickedByHand((count) => count + 1);
+    onReasoningEffortChange(effort);
+  }, [onReasoningEffortChange]);
   const chatRuntimePinRef = useRef(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
@@ -8341,7 +8353,7 @@ function AgentChatComposerImpl({
                 <ReasoningEffortPicker
                   modelId={modelId}
                   reasoningEffort={reasoningEffort}
-                  onChange={onReasoningEffortChange}
+                  onChange={handleReasoningEffortPickerChange}
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
@@ -8364,6 +8376,7 @@ function AgentChatComposerImpl({
                   sessionId={sessionId ?? null}
                   modelChosen={modelPickedByHandFor === handPickKey || chatHasMessages}
                   hidden={turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset)}
+                  effortPickedByHand={effortPickedByHand}
                   onModelChange={onModelChange}
                   onReasoningEffortChange={onReasoningEffortChange}
                 />
