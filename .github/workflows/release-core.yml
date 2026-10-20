@@ -183,10 +183,16 @@ jobs:
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
       # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
       - name: Restore npm download cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
@@ -428,10 +434,16 @@ jobs:
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
       # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
       - name: Restore npm download cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
@@ -744,10 +756,16 @@ jobs:
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
       # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
       - name: Restore npm download cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
@@ -914,10 +932,16 @@ jobs:
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
       # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
       - name: Restore npm download cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 

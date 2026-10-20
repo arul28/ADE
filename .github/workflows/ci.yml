@@ -491,11 +491,17 @@ jobs:
       # setup-node's `cache: npm` saved a separate copy for every PR (a PR's
       # cache is visible to that PR alone), which pushed the repo past its
       # 10 GB cache limit and got main's own entries evicted.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
       - name: Restore npm download cache
         id: npm_cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
@@ -515,7 +521,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
 
       - name: Build ADE runtime binary
