@@ -13682,7 +13682,10 @@ export function AgentChatPane({
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
-      if (await sendToContinuedChat()) return;
+      if (await sendToContinuedChat()) {
+        clearPromptSuggestionForSession(selectedSessionId);
+        return;
+      }
     }
     clearPromptSuggestionForSession(selectedSessionId);
     if (draft.trim().length || attachments.length) recordStarPillMessageSent();
