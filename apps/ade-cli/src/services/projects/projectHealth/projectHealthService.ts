@@ -145,10 +145,15 @@ function hasPackageInstall(root: string): boolean {
   if (lockfileKind(root) === null) return false;
   const manifestPath = path.join(root, "package.json");
   if (!exists(manifestPath)) return false;
-  const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`The package manifest at ${manifestPath} must contain a JSON object.`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    // Mid-edit or broken: still an install unit, as before this check read it,
+    // so one bad lane manifest doesn't fail the whole dependency check.
+    return true;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
   const manifest = parsed as Record<string, unknown>;
   // Workspaces install their members' packages into the root.
   return ["dependencies", "devDependencies", "optionalDependencies", "workspaces"].some((field) => {
