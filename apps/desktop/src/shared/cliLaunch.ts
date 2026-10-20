@@ -81,14 +81,15 @@ export type CodexComputerUseCliConfig = {
  * them, resolved in the main process (`trackedCliUserMcp.ts`): the machine
  * login's servers an ADE account's config home lacks, and `npx` servers
  * re-pointed at the package npx already installed. Each entry replaces the
- * CLI's own server of that name. Only entries with no secret values: a
- * tracked CLI's command can be typed into the terminal as text.
+ * CLI's own server of that name. Nothing secret rides here: a tracked CLI's
+ * command can be typed into the terminal as text, so Claude's servers are a
+ * file path and Codex's are the entries with no secret in them.
  */
 export type TrackedCliUserMcp = {
   /** `mcp_servers.<name>` overlay keys for Codex (`-c mcp_servers.<name>.<key>=…`). */
   codex?: Record<string, Record<string, unknown>> | null;
-  /** Servers for Claude's `--mcp-config`. */
-  claude?: Record<string, Record<string, unknown>> | null;
+  /** A private ADE-owned file holding Claude's servers, for `--mcp-config <path>`. */
+  claudeConfigPath?: string | null;
 };
 
 const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -120,8 +121,8 @@ export function trackedCliUserMcpFlags(provider: string, userMcp: TrackedCliUser
     }
     return flags;
   }
-  if (provider === "claude" && userMcp?.claude && Object.keys(userMcp.claude).length) {
-    return ["--mcp-config", JSON.stringify({ mcpServers: userMcp.claude })];
+  if (provider === "claude" && userMcp?.claudeConfigPath) {
+    return ["--mcp-config", userMcp.claudeConfigPath];
   }
   return [];
 }

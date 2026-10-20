@@ -455,7 +455,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     cliArgs.push("--model", codexModel);
   }
   cliArgs.push(...codexReasoningEffortFlags(resolveTaskReasoningEffort(args)));
-  if (args.backgroundUtility) cliArgs.push(...codexStandardSpeedFlags(), ...codexDisableConfiguredMcpArgs({ ...process.env, ...args.accountEnv }));
+  if (args.backgroundUtility) cliArgs.push(...codexStandardSpeedFlags(), ...codexDisableConfiguredMcpArgs({ ...process.env, ...args.accountEnv }, args.cwd));
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");

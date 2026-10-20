@@ -54,7 +54,7 @@ export async function startCodexVoiceHost(args: {
 }): Promise<CodexVoiceHost> {
   const { logger, sessionId } = args;
   // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
-  const appServerArgs = [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env), "app-server"];
+  const appServerArgs = [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"];
   const invocation = resolveCliSpawnInvocation(args.executable, appServerArgs, args.env);
   const proc: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,

@@ -40,14 +40,15 @@ export type ProviderMcpScanArgs = {
   homeDir?: string;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 /** A config file may be a megabyte of chat history (`~/.claude.json`); cap what is read. */
 const MAX_CONFIG_BYTES = 32 * 1024 * 1024;
 
-function readText(filePath: string): string | null {
+/** A config file's text, BOM stripped and size capped; null when missing or unreadable. */
+export function readText(filePath: string): string | null {
   try {
     if (fs.statSync(filePath).size > MAX_CONFIG_BYTES) return null;
     // A BOM is common on files written by Windows tools and breaks JSON.parse.
@@ -57,7 +58,8 @@ function readText(filePath: string): string | null {
   }
 }
 
-function readJson(filePath: string): Record<string, unknown> | null {
+/** A JSON or JSONC config file as an object; null when missing, unreadable or not an object. */
+export function readJson(filePath: string): Record<string, unknown> | null {
   const text = readText(filePath);
   if (text == null) return null;
   try {

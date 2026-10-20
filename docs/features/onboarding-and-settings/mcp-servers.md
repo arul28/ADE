@@ -269,9 +269,12 @@ replace the user's, so nothing is lost there.
 Tracked Claude and Codex CLIs (Work terminals ADE launches, resumes, imports
 or forks, including from the phone) get the same servers and the same `npx`
 re-pointing (`trackedCliUserMcp.ts`), as `-c mcp_servers.<name>.<key>=…`
-flags for Codex and one `--mcp-config` for Claude. One difference: a server
-whose definition carries env or header values is left out, because a tracked
-CLI's command line can be typed into the terminal as text.
+flags for Codex and `--mcp-config <file>` for Claude. A tracked CLI's
+command line can be typed into the terminal as text and is kept for resume,
+so no secret rides on it: Claude's servers go in a private file ADE writes
+under `<ADE home>/mcp-launch/` (named by its contents), and a Codex server
+whose env, headers, arguments or URL look like they hold a secret
+(`mcpPlainTextSecretFindings`) is left to start as the user configured it.
 
 ## `npx` servers start without npm's launcher
 
@@ -289,13 +292,20 @@ when that copy is provably the one npx would run today:
   version, an exact version, or a dist-tag (not a range, git, path or URL);
 - npx's own cache folder for that spec (`<npm cache>/_npx/<sha512 16>`)
   records exactly that spec, and holds the package;
-- the package is not in the project tree or the global prefix (npx would run
-  that one), and no `.npmrc` or `npm_config_registry` names another registry;
+- neither the package nor a command of its name is in the project tree or
+  the global prefix (npx would run that one), and no `.npmrc` or
+  `npm_config_registry` names another registry;
 - an exact version matches the installed one; a tag or bare name matches the
   registry's answer for that tag, which the brain fetches (one small request,
-  kept six hours, never more than 1.5 s on the launch path; with no answer the
-  launch keeps `npx`);
+  never more than 1.5 s on the launch path; an answer older than 15 minutes is
+  used while a background check refreshes it, one older than six hours is not
+  used; with no answer the launch keeps `npx`). Only packages that pass the
+  checks above are ever asked about;
 - the package's bin is a plain `node` script.
+
+The direct launch puts the npx install's `node_modules/.bin` first on the
+server's `PATH`, as npm's launcher does, so a server that runs one of its
+dependencies' commands finds the same one.
 
 Anything else launches as written. The user's config files are only read. A
 CLI the user starts in a terminal is unchanged.

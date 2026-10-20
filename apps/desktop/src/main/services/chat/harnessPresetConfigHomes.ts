@@ -10,6 +10,7 @@ import {
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
 import { factoryConfigHome, grokConfigHome } from "../shared/providerConfigHomes";
+import { captureError } from "../../../shared/sentry/capture";
 import { credentialStoreProviderForHarness } from "../../../shared/harnessCredentialProviders";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
@@ -421,14 +422,22 @@ export function buildCodexProxyConfigToml(
  */
 export function mirrorUserDroidMcpConfig(configHome: string, security: PrivateFileSecurityOptions = {}): void {
   const target = path.join(configHome, ".factory", "mcp.json");
-  let text: string | null = null;
+  let text: string;
   try {
     text = fs.readFileSync(path.join(factoryConfigHome({ env: process.env }), "mcp.json"), "utf8");
-  } catch {
-    text = null;
-  }
-  if (text == null) {
-    try { fs.rmSync(target, { force: true }); } catch { /* nothing to remove */ }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      // Unreadable for another reason: keep the last good copy rather than
+      // dropping every server from this launch.
+      captureError(error, { fingerprint: ["mcp", "droid_mirror_read"], tags: { provider: "droid" } });
+      return;
+    }
+    // The user has no Droid MCP servers: a copy from earlier must not linger.
+    try {
+      fs.rmSync(target, { force: true });
+    } catch (removeError) {
+      captureError(removeError, { fingerprint: ["mcp", "droid_mirror_remove"], tags: { provider: "droid" } });
+    }
     return;
   }
   ensurePrivateDirectory(path.dirname(target), security);
@@ -444,7 +453,10 @@ export function userGrokMcpServersToml(): string {
   let text: string;
   try {
     text = fs.readFileSync(path.join(grokConfigHome({ env: process.env }), "config.toml"), "utf8");
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      captureError(error, { fingerprint: ["mcp", "grok_mirror_read"], tags: { provider: "grok" } });
+    }
     return "";
   }
   const kept: string[] = [];

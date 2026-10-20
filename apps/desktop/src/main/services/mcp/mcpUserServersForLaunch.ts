@@ -22,49 +22,22 @@
  * A CLI the user starts in a terminal is unaffected.
  */
 
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { parseCodexMcpServers } from "./mcpProviderConfigScan";
-import type { NpxDirectCommand, NpxDirectLauncher } from "./npxDirectLaunch";
+import { pathsEqual } from "../shared/pathCompare";
+import { isRecord, parseCodexMcpServers, readJson, readText } from "./mcpProviderConfigScan";
+import { withDirectLaunchEnv, type NpxDirectCommand, type NpxDirectLauncher } from "./npxDirectLaunch";
 
 type StdioCandidate = { command: string; args: string[] };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function readText(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-function readJsonRecord(filePath: string): Record<string, unknown> | null {
-  const text = readText(filePath);
-  if (text == null) return null;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 
 function stringArray(value: unknown): string[] | null {
   if (value === undefined) return [];
   return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : null;
 }
 
-function samePath(a: string, b: string): boolean {
-  const norm = (value: string) => {
-    const resolved = path.resolve(value);
-    return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
-  };
-  return norm(a) === norm(b);
+function stringRecord(value: unknown): Record<string, string> {
+  return isRecord(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
 }
 
 function direct(
@@ -107,7 +80,7 @@ export type CodexUserServersArgs = {
 
 type CodexPlan = {
   /** The account's own servers: only their process can change. */
-  own: Array<{ name: string; stdio: StdioCandidate }>;
+  own: Array<{ name: string; stdio: StdioCandidate; env: Record<string, string> }>;
   /** The machine login's servers the account does not have: whole entries. */
   inherited: Array<{ name: string; entry: Record<string, unknown> }>;
 };
@@ -125,9 +98,9 @@ function codexPlan(args: CodexUserServersArgs): CodexPlan {
   for (const [name, entry] of Object.entries(own)) {
     if (skip.has(name) || entry.enabled === false) continue;
     const stdio = codexStdio(entry);
-    if (stdio) plan.own.push({ name, stdio });
+    if (stdio) plan.own.push({ name, stdio, env: stringRecord(entry.env) });
   }
-  if (!samePath(accountHome, codexHomeDir(args.baseEnv ?? process.env))) {
+  if (!pathsEqual(accountHome, codexHomeDir(args.baseEnv ?? process.env))) {
     for (const [name, entry] of Object.entries(codexServers(codexHomeDir(args.baseEnv ?? process.env)))) {
       if (skip.has(name) || name in own || entry.enabled === false) continue;
       plan.inherited.push({ name, entry });
@@ -136,30 +109,34 @@ function codexPlan(args: CodexUserServersArgs): CodexPlan {
   return plan;
 }
 
-export async function prepareCodexUserServers(launcher: NpxDirectLauncher, args: CodexUserServersArgs): Promise<void> {
-  const plan = codexPlan(args);
-  const candidates = [
-    ...plan.own.map((server) => server.stdio),
-    ...plan.inherited.map((server) => codexStdio(server.entry)).filter((stdio): stdio is StdioCandidate => stdio != null),
-  ];
-  await launcher.prepare(candidates, args.env);
-}
-
-/** `mcp_servers` overlay entries for one Codex thread. */
-export function codexUserServerOverlay(
+/**
+ * `mcp_servers` overlay entries for one Codex thread or terminal, from one
+ * read of the configs: the registry answers are fetched first, then the
+ * same plan is rendered.
+ */
+export async function resolveCodexUserServers(
   launcher: NpxDirectLauncher,
   args: CodexUserServersArgs,
-): Record<string, Record<string, unknown>> {
+): Promise<Record<string, Record<string, unknown>>> {
   const plan = codexPlan(args);
+  await launcher.prepare([
+    ...plan.own.map((server) => server.stdio),
+    ...plan.inherited.map((server) => codexStdio(server.entry)).filter((stdio): stdio is StdioCandidate => stdio != null),
+  ], { cwd: args.cwd, env: args.env });
   const overlay: Record<string, Record<string, unknown>> = {};
-  for (const { name, stdio } of plan.own) {
-    const resolved = direct(launcher, stdio, args.cwd, args.env);
-    if (resolved) overlay[name] = { ...resolved };
+  // Only the process changes: Codex merges this into the server's own table,
+  // so its env, tool approvals and timeouts stay; `env` adds npx's PATH.
+  for (const { name, stdio, env } of plan.own) {
+    const resolved = direct(launcher, stdio, args.cwd, { ...args.env, ...env });
+    if (resolved) overlay[name] = { command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(env, resolved) };
   }
   for (const { name, entry } of plan.inherited) {
     const stdio = codexStdio(entry);
-    const resolved = stdio ? direct(launcher, stdio, args.cwd, args.env) : null;
-    overlay[name] = resolved ? { ...entry, ...resolved } : { ...entry };
+    const env = stringRecord(entry.env);
+    const resolved = stdio ? direct(launcher, stdio, args.cwd, { ...args.env, ...env }) : null;
+    overlay[name] = resolved
+      ? { ...entry, command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(env, resolved) }
+      : { ...entry };
   }
   return overlay;
 }
@@ -235,9 +212,13 @@ function claudeEffectiveServers(
   const off = new Set<string>();
   const ambiguous = new Set<string>();
   if (!config) return { servers, off, ambiguous };
-  const roots = [args.cwd, ...(args.projectRoots ?? []).filter((root) => root !== args.cwd)];
+  const roots = [args.cwd, ...(args.projectRoots ?? [])];
+  // Claude keys a project by its folder as it saw it; casing can differ from
+  // ADE's spelling on case-insensitive volumes.
   const projectEntries = isRecord(config.projects)
-    ? roots.map((root) => (config.projects as Record<string, unknown>)[root]).filter(isRecord)
+    ? Object.entries(config.projects)
+      .filter(([key, entry]) => isRecord(entry) && roots.some((root) => pathsEqual(key, root)))
+      .map(([, entry]) => entry as Record<string, unknown>)
     : [];
   for (const entry of projectEntries) {
     for (const name of stringArray(entry.disabledMcpServers) ?? []) off.add(name);
@@ -272,11 +253,11 @@ function claudePlan(args: ClaudeUserServersArgs): ClaudePlan {
   // The project's `.mcp.json` outranks the user scope; a launch entry would
   // replace the project's server.
   for (const root of [args.cwd, ...(args.projectRoots ?? [])]) {
-    const projectMcp = readJsonRecord(path.join(root, ".mcp.json"));
+    const projectMcp = readJson(path.join(root, ".mcp.json"));
     if (isRecord(projectMcp?.mcpServers)) for (const name of Object.keys(projectMcp.mcpServers)) skip.add(name);
   }
   const accountPath = claudeGlobalConfigPath(args.env);
-  const own = claudeEffectiveServers(readJsonRecord(accountPath), args);
+  const own = claudeEffectiveServers(readJson(accountPath), args);
   for (const name of [...own.off, ...own.ambiguous]) skip.add(name);
   for (const [name, server] of own.servers) {
     if (skip.has(name)) continue;
@@ -285,8 +266,8 @@ function claudePlan(args: ClaudeUserServersArgs): ClaudePlan {
   }
 
   const basePath = claudeGlobalConfigPath(args.baseEnv ?? process.env);
-  if (!samePath(accountPath, basePath)) {
-    const base = claudeEffectiveServers(readJsonRecord(basePath), args);
+  if (!pathsEqual(accountPath, basePath)) {
+    const base = claudeEffectiveServers(readJson(basePath), args);
     for (const name of [...base.off, ...base.ambiguous]) skip.add(name);
     for (const [name, raw] of base.servers) {
       if (skip.has(name) || own.servers.has(name)) continue;
@@ -297,13 +278,37 @@ function claudePlan(args: ClaudeUserServersArgs): ClaudePlan {
   return plan;
 }
 
-export async function prepareClaudeUserServers(launcher: NpxDirectLauncher, args: ClaudeUserServersArgs): Promise<void> {
-  const plan = claudePlan(args);
-  const candidates = [
+function claudePlanCandidates(plan: ClaudePlan): StdioCandidate[] {
+  return [
     ...plan.own.map((server) => server.stdio),
     ...plan.inherited.flatMap(({ server }) => server.type === "stdio" ? [{ command: server.command, args: server.args }] : []),
   ];
-  await launcher.prepare(candidates, args.env);
+}
+
+function renderClaudePlan(launcher: NpxDirectLauncher, plan: ClaudePlan, args: ClaudeUserServersArgs): Record<string, ClaudeLaunchServer> {
+  const servers: Record<string, ClaudeLaunchServer> = {};
+  for (const { name, stdio } of plan.own) {
+    const resolved = direct(launcher, stdio, args.cwd, args.env);
+    if (resolved) servers[name] = { type: "stdio", ...resolved };
+  }
+  for (const { name, server } of plan.inherited) {
+    const resolved = server.type === "stdio"
+      ? direct(launcher, server, args.cwd, { ...args.env, ...(server.env ?? {}) })
+      : null;
+    servers[name] = resolved && server.type === "stdio"
+      ? { ...server, command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(server.env, resolved) }
+      : server;
+  }
+  return servers;
+}
+
+/**
+ * The registry answers a Claude launch may need. A chat runs this before it
+ * builds the query's options (with the superset of setting sources) and
+ * `claudeUserServersForLaunch` after, so nothing is awaited in between.
+ */
+export async function prepareClaudeUserServers(launcher: NpxDirectLauncher, args: ClaudeUserServersArgs): Promise<void> {
+  await launcher.prepare(claudePlanCandidates(claudePlan(args)), { cwd: args.cwd, env: args.env });
 }
 
 /** Launch-level servers: the machine login's servers an account lacks, and npx servers re-pointed. */
@@ -311,17 +316,17 @@ export function claudeUserServersForLaunch(
   launcher: NpxDirectLauncher,
   args: ClaudeUserServersArgs,
 ): Record<string, ClaudeLaunchServer> {
+  return renderClaudePlan(launcher, claudePlan(args), args);
+}
+
+/** Both halves from one read of the configs, for a launch that can wait (a terminal). */
+export async function resolveClaudeUserServers(
+  launcher: NpxDirectLauncher,
+  args: ClaudeUserServersArgs,
+): Promise<Record<string, ClaudeLaunchServer>> {
   const plan = claudePlan(args);
-  const servers: Record<string, ClaudeLaunchServer> = {};
-  for (const { name, stdio } of plan.own) {
-    const resolved = direct(launcher, stdio, args.cwd, args.env);
-    if (resolved) servers[name] = { type: "stdio", ...resolved };
-  }
-  for (const { name, server } of plan.inherited) {
-    const resolved = server.type === "stdio" ? direct(launcher, server, args.cwd, args.env) : null;
-    servers[name] = resolved && server.type === "stdio" ? { ...server, ...resolved } : server;
-  }
-  return servers;
+  await launcher.prepare(claudePlanCandidates(plan), { cwd: args.cwd, env: args.env });
+  return renderClaudePlan(launcher, plan, args);
 }
 
 // ---------------------------------------------------------------------------
@@ -341,23 +346,8 @@ export const NPX_DIRECT_OWN_SERVER_PROVIDERS = ["copilot", "cursor", "opencode"]
 
 type JsonSource = { file: string; key: string | null };
 
-function readJsoncRecord(filePath: string): Record<string, unknown> | null {
-  const text = readText(filePath);
-  if (text == null) return null;
-  try {
-    // OpenCode allows comments and trailing commas.
-    const stripped = text
-      .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_match, str: string | undefined) => str ?? "")
-      .replace(/,(\s*[}\]])/g, "$1");
-    const parsed = JSON.parse(stripped) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 function sourceTable(source: JsonSource): Record<string, unknown> | null {
-  const json = readJsoncRecord(source.file);
+  const json = readJson(source.file);
   if (!json) return null;
   const table = source.key ? json[source.key] : (isRecord(json.mcpServers) ? json.mcpServers : json);
   return isRecord(table) ? table : null;
@@ -415,6 +405,9 @@ function providerStdio(provider: string, server: unknown): StdioCandidate | null
   }
   if (typeof server.command !== "string") return null;
   if (Object.keys(server).some((key) => !["type", "command", "args", "tools"].includes(key))) return null;
+  // The replacement carries no `tools`, which means "all": only an entry that
+  // already allows all can be replaced without widening it.
+  if (server.tools !== undefined && !(Array.isArray(server.tools) && server.tools.length === 1 && server.tools[0] === "*")) return null;
   const args = stringArray(server.args);
   if (!args || args.some((arg) => arg.includes("${")) || server.command.includes("${")) return null;
   return { command: server.command, args };
@@ -443,16 +436,16 @@ export async function prepareProviderUserNpxDirect(
   args: { provider: string; cwd: string; env?: NodeJS.ProcessEnv },
 ): Promise<void> {
   const env = args.env ?? process.env;
-  await launcher.prepare(providerCandidates(args.provider, args.cwd, env, new Set()).map((candidate) => candidate.stdio), env);
+  await launcher.prepare(providerCandidates(args.provider, args.cwd, env, new Set()).map((candidate) => candidate.stdio), { cwd: args.cwd, env });
 }
 
 /** The user's own `npx` servers for a Copilot, Cursor or OpenCode launch, re-pointed; empty for other providers. */
 export function providerUserNpxDirectServers(
   launcher: NpxDirectLauncher,
   args: { provider: string; cwd: string; env?: NodeJS.ProcessEnv; skipNames?: ReadonlySet<string> },
-): Record<string, { type: "stdio"; command: string; args: string[] }> {
+): Record<string, { type: "stdio"; command: string; args: string[]; env: Record<string, string> }> {
   const env = args.env ?? process.env;
-  const servers: Record<string, { type: "stdio"; command: string; args: string[] }> = {};
+  const servers: Record<string, { type: "stdio"; command: string; args: string[]; env: Record<string, string> }> = {};
   for (const { name, stdio } of providerCandidates(args.provider, args.cwd, env, args.skipNames ?? new Set())) {
     const resolved = direct(launcher, stdio, args.cwd, env);
     if (resolved) servers[name] = { type: "stdio", ...resolved };

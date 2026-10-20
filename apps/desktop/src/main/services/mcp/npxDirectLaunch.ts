@@ -14,11 +14,13 @@
  *
  * - npx flags other than `-y` / `--yes` / `-q` / `--quiet` / `--silent`,
  *   git/path/URL specs and version ranges;
- * - a copy of the package in the project tree or the global prefix (npx would
- *   run that one);
+ * - the package, or a command of its name, in the project tree or the global
+ *   prefix (npx would run that one);
  * - a custom registry, or a registry answer this computer does not have yet
- *   (a tag or bare name is checked against the registry like npx does, once
- *   per six hours, never on the launch path for longer than a moment);
+ *   (a tag or bare name is checked against the registry like npx does; an
+ *   answer older than 15 minutes is refreshed in the background, one older
+ *   than six hours is not used, and a launch never waits on it for longer than
+ *   a moment);
  * - a bin that is not a plain `node` script.
  *
  * Nothing here writes to any config file. The rewrite is a launch-time value.
@@ -29,10 +31,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { getPathEnvKey, getPathEnvValue, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { readJson } from "./mcpProviderConfigScan";
 
 const DEFAULT_REGISTRY = "https://registry.npmjs.org/";
-const LATEST_TTL_MS = 6 * 60 * 60 * 1000;
+/** A registry answer older than this is checked again in the background. */
+const LATEST_FRESH_MS = 15 * 60 * 1000;
+/** A registry answer older than this is not used at all. */
+const LATEST_USABLE_MS = 6 * 60 * 60 * 1000;
 const LATEST_FETCH_TIMEOUT_MS = 5_000;
 /** The longest a launch waits for a registry answer it does not have yet. */
 const LAUNCH_WAIT_MS = 1_500;
@@ -51,7 +57,12 @@ export type NpxInvocation = {
   rest: string[];
 };
 
-export type NpxDirectCommand = { command: string; args: string[] };
+/**
+ * The direct launch. `env.PATH` puts the npx install's `node_modules/.bin`
+ * first, as npm's launcher does, so a server that runs one of its
+ * dependencies' commands by name finds the same one.
+ */
+export type NpxDirectCommand = { command: string; args: string[]; env: Record<string, string> };
 
 function isNpxCommand(command: string): boolean {
   const base = path.basename(command.trim()).toLowerCase();
@@ -83,15 +94,6 @@ export function npxCacheInstallDir(npmCacheDir: string, spec: string): string {
   return path.join(npmCacheDir, "_npx", createHash("sha512").update(spec).digest("hex").slice(0, 16));
 }
 
-function readJson(filePath: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
 function fileExists(filePath: string): boolean {
   try {
     return fs.statSync(filePath).isFile();
@@ -118,7 +120,12 @@ function readNpmrc(filePath: string): Map<string, string> {
   return values;
 }
 
-type NpmSetup = { cacheDir: string; globalModulesDirs: string[]; customRegistryScopes: Set<string> | "all" };
+type NpmSetup = {
+  cacheDir: string;
+  globalModulesDirs: string[];
+  globalBinDirs: string[];
+  customRegistryScopes: Set<string> | "all";
+};
 
 function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath: string): NpmSetup {
   const userRc = readNpmrc(env.NPM_CONFIG_USERCONFIG?.trim() || env.npm_config_userconfig?.trim() || path.join(homeDir, ".npmrc"));
@@ -157,12 +164,17 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
   const npxDir = path.dirname(npxPath);
   prefixes.add(isWindows ? npxDir : path.dirname(npxDir));
   if (isWindows && env.APPDATA?.trim()) prefixes.add(path.join(env.APPDATA.trim(), "npm"));
-  const globalModulesDirs = [...prefixes].map((prefix) => isWindows ? path.join(prefix, "node_modules") : path.join(prefix, "lib", "node_modules"));
-  return { cacheDir, globalModulesDirs, customRegistryScopes };
+  return {
+    cacheDir,
+    globalModulesDirs: [...prefixes].map((prefix) => isWindows ? path.join(prefix, "node_modules") : path.join(prefix, "lib", "node_modules")),
+    // Global commands: `<prefix>/bin` on POSIX, the prefix itself on Windows.
+    globalBinDirs: [...prefixes].map((prefix) => isWindows ? prefix : path.join(prefix, "bin")),
+    customRegistryScopes,
+  };
 }
 
 /** npx's `getBinFromManifest`: the one bin, or the bin named like the package. */
-function binScriptPath(packageDir: string, manifest: Record<string, unknown>, name: string): string | null {
+function binEntry(packageDir: string, manifest: Record<string, unknown>, name: string): { name: string; script: string } | null {
   const unscoped = name.split("/").pop()!;
   const bin = manifest.bin;
   const bins: Record<string, string> = typeof bin === "string"
@@ -171,11 +183,11 @@ function binScriptPath(packageDir: string, manifest: Record<string, unknown>, na
       ? Object.fromEntries(Object.entries(bin).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
       : {};
   const targets = new Set(Object.values(bins));
-  const relative = targets.size === 1 ? [...targets][0]! : bins[unscoped];
-  if (!relative) return null;
-  const script = path.resolve(packageDir, relative);
+  const binName = targets.size === 1 ? Object.keys(bins)[0]! : bins[unscoped] ? unscoped : null;
+  if (!binName) return null;
+  const script = path.resolve(packageDir, bins[binName]!);
   if (!script.startsWith(packageDir + path.sep) || !fileExists(script)) return null;
-  return script;
+  return { name: binName, script };
 }
 
 /** A script npm would start with `node`: a `node` shebang without extra options. */
@@ -197,45 +209,90 @@ function isPlainNodeScript(script: string): boolean {
   return /^#!\s*(?:\/usr\/bin\/env\s+node|\S*\/node)\s*$/.test(first);
 }
 
-/** True when npx would find this package before its own cache: the project tree or the global prefix. */
-function installedOutsideNpxCache(name: string, cwd: string, globalModulesDirs: string[]): boolean {
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    if (fileExists(path.join(dir, "node_modules", name, "package.json"))) return true;
-    if (path.dirname(dir) === dir) break;
-  }
-  return globalModulesDirs.some((dir) => fileExists(path.join(dir, name, "package.json")));
+function commandFileExists(dir: string, command: string): boolean {
+  const names = process.platform === "win32" ? [command, `${command}.cmd`, `${command}.exe`, `${command}.ps1`] : [command];
+  return names.some((name) => fileExists(path.join(dir, name)));
 }
 
-type LatestEntry = { version: string | null; checkedAt: number };
+/**
+ * True when npx would run something other than its own cache: the package in
+ * the project tree or the global prefix, or a command of the same name there
+ * (npx tries `node_modules/.bin` and the global bin folder first).
+ */
+function installedOutsideNpxCache(name: string, commands: readonly string[], cwd: string, setup: NpmSetup): boolean {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (fileExists(path.join(dir, "node_modules", name, "package.json"))) return true;
+    if (commands.some((command) => commandFileExists(path.join(dir, "node_modules", ".bin"), command))) return true;
+    if (path.dirname(dir) === dir) break;
+  }
+  if (setup.globalModulesDirs.some((dir) => fileExists(path.join(dir, name, "package.json")))) return true;
+  return setup.globalBinDirs.some((dir) => commands.some((command) => commandFileExists(dir, command)));
+}
+
+/** `PATH` for the child, with `dir` first, under this env's own PATH key (`Path` on Windows). */
+function pathWithFirst(env: NodeJS.ProcessEnv, dir: string): Record<string, string> {
+  const current = getPathEnvValue(env);
+  return { [getPathEnvKey(env)]: current ? `${dir}${path.delimiter}${current}` : dir };
+}
+
+/**
+ * A server's env with a direct launch's `PATH` in place of its own. Resolve
+ * the launch with the server's env merged over the launch env, so that `PATH`
+ * already starts from the server's own. On Windows every case variant of the
+ * key is dropped first, because env keys are case-insensitive there.
+ */
+export function withDirectLaunchEnv(
+  serverEnv: Record<string, string> | undefined,
+  direct: NpxDirectCommand,
+): Record<string, string> {
+  const isPathKey = process.platform === "win32"
+    ? (key: string) => key.toUpperCase() === "PATH"
+    : (key: string) => key in direct.env;
+  const kept = Object.entries(serverEnv ?? {}).filter(([key]) => !isPathKey(key));
+  return { ...Object.fromEntries(kept), ...direct.env };
+}
+
+/**
+ * The registry's answer for one tag: the version and when it was fetched, and
+ * when the last attempt ran (a failed attempt keeps the previous answer).
+ */
+type LatestEntry = { version: string | null; checkedAt: number; attemptedAt: number };
+
+type NpxDirectLogger = {
+  info: (event: string, data: Record<string, unknown>) => void;
+  warn?: (event: string, data: Record<string, unknown>) => void;
+};
 
 export type NpxDirectLauncher = {
   /**
    * The direct command for one npx server, or null to launch it as written.
-   * Never touches the network; a tag it has no fresh answer for starts a
-   * background check and returns null.
+   * Never waits on the network: a tag with no usable answer starts a
+   * background check and returns null, and an answer older than 15 minutes is
+   * used while a background check refreshes it.
    */
   resolve(args: { command: string; args?: readonly string[]; cwd: string; env?: NodeJS.ProcessEnv }): NpxDirectCommand | null;
-  /** Fetch the registry answers these servers need, waiting at most a moment. */
-  prepare(servers: Array<{ command: string; args?: readonly string[] }>, env?: NodeJS.ProcessEnv): Promise<void>;
+  /**
+   * Fetch the registry answers these servers need, waiting at most a moment.
+   * Asks only about packages `resolve` could re-point: on the public
+   * registry, not installed elsewhere, and already in npx's cache.
+   */
+  prepare(servers: Array<{ command: string; args?: readonly string[] }>, args: { cwd: string; env?: NodeJS.ProcessEnv }): Promise<void>;
 };
 
 export function createNpxDirectLauncher(options: {
   fetchImpl?: typeof fetch;
   now?: () => number;
   homeDir?: string;
-  logger?: { info: (event: string, data: Record<string, unknown>) => void } | null;
+  logger?: NpxDirectLogger | null;
 } = {}): NpxDirectLauncher {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
   const homeDir = options.homeDir ?? os.homedir();
+  const logger = options.logger ?? null;
   const latest = new Map<string, LatestEntry>();
   const inflight = new Map<string, Promise<void>>();
 
   const latestKey = (name: string, tag: string) => `${name}@${tag}`;
-  const freshLatest = (name: string, tag: string): LatestEntry | null => {
-    const entry = latest.get(latestKey(name, tag));
-    return entry && now() - entry.checkedAt < LATEST_TTL_MS ? entry : null;
-  };
   const refreshLatest = (name: string, tag: string): Promise<void> => {
     const key = latestKey(name, tag);
     const running = inflight.get(key);
@@ -252,67 +309,87 @@ export function createNpxDirectLauncher(options: {
         if (response.ok) {
           const body = await response.json() as { version?: unknown };
           if (typeof body.version === "string") version = body.version;
+        } else {
+          logger?.warn?.("mcp.npx_direct_registry_check_failed", { package: name, tag, status: response.status });
         }
-      } catch {
+      } catch (error) {
         // Offline or refused: no answer, so launches keep using npx.
+        logger?.warn?.("mcp.npx_direct_registry_check_failed", {
+          package: name,
+          tag,
+          reason: error instanceof Error ? error.name : "unknown",
+        });
       }
-      latest.set(key, { version, checkedAt: now() });
+      const previous = latest.get(key);
+      latest.set(key, version != null || !previous
+        ? { version, checkedAt: now(), attemptedAt: now() }
+        // No answer this time: keep the last good one until it ages out.
+        : { ...previous, attemptedAt: now() });
     })().finally(() => inflight.delete(key));
     inflight.set(key, task);
     return task;
   };
+  /** The usable answer for a tag, kicking a background check when it is missing or getting old. */
+  const latestAnswer = (name: string, tag: string): LatestEntry | null => {
+    const entry = latest.get(latestKey(name, tag));
+    const age = entry ? now() - entry.checkedAt : Infinity;
+    const sinceAttempt = entry ? now() - entry.attemptedAt : Infinity;
+    if (age >= LATEST_FRESH_MS && sinceAttempt >= LATEST_FRESH_MS) void refreshLatest(name, tag);
+    return age < LATEST_USABLE_MS ? entry! : null;
+  };
 
-  const plan = (command: string, args: readonly string[], env: NodeJS.ProcessEnv) => {
+  /** Everything `resolve` checks before the version: null when the launch must stay on npx. */
+  const eligible = (command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => {
     const invocation = parseNpxInvocation(command, args);
     if (!invocation) return null;
     const npx = path.isAbsolute(command) ? { path: command } : resolveExecutableFromKnownLocations(command, env);
-    return npx ? { invocation, npxPath: npx.path } : null;
+    if (!npx) return null;
+    const setup = npmSetup(env, homeDir, cwd, npx.path);
+    const scope = invocation.name.startsWith("@") ? invocation.name.split("/")[0]!.toLowerCase() : null;
+    if (setup.customRegistryScopes === "all" || (scope && setup.customRegistryScopes.has(scope))) return null;
+    const installDir = npxCacheInstallDir(setup.cacheDir, invocation.spec);
+    const recorded = readJson(path.join(installDir, "package.json"))?._npx as { packages?: unknown } | undefined;
+    if (!Array.isArray(recorded?.packages) || recorded.packages.length !== 1 || recorded.packages[0] !== invocation.spec) return null;
+    const packageDir = path.join(installDir, "node_modules", ...invocation.name.split("/"));
+    const manifest = readJson(path.join(packageDir, "package.json"));
+    if (!manifest || manifest.name !== invocation.name || typeof manifest.version !== "string") return null;
+    const bin = binEntry(packageDir, manifest, invocation.name);
+    if (!bin || !isPlainNodeScript(bin.script)) return null;
+    const unscoped = invocation.name.split("/").pop()!;
+    if (installedOutsideNpxCache(invocation.name, [...new Set([unscoped, bin.name])], cwd, setup)) return null;
+    return { invocation, npxPath: npx.path, installDir, version: manifest.version, script: bin.script };
   };
 
   return {
     resolve({ command, args = [], cwd, env = process.env }) {
-      const planned = plan(command, args, env);
-      if (!planned) return null;
-      const { invocation, npxPath } = planned;
-      const setup = npmSetup(env, homeDir, cwd, npxPath);
-      const scope = invocation.name.startsWith("@") ? invocation.name.split("/")[0]!.toLowerCase() : null;
-      if (setup.customRegistryScopes === "all" || (scope && setup.customRegistryScopes.has(scope))) return null;
-      if (installedOutsideNpxCache(invocation.name, cwd, setup.globalModulesDirs)) return null;
-
-      const installDir = npxCacheInstallDir(setup.cacheDir, invocation.spec);
-      const recorded = readJson(path.join(installDir, "package.json"))?._npx as { packages?: unknown } | undefined;
-      if (!Array.isArray(recorded?.packages) || recorded.packages.length !== 1 || recorded.packages[0] !== invocation.spec) return null;
-      const packageDir = path.join(installDir, "node_modules", ...invocation.name.split("/"));
-      const manifest = readJson(path.join(packageDir, "package.json"));
-      if (!manifest || manifest.name !== invocation.name || typeof manifest.version !== "string") return null;
-
+      const found = eligible(command, args, cwd, env);
+      if (!found) return null;
+      const { invocation, npxPath, installDir, version, script } = found;
       if (invocation.want.kind === "version") {
-        if (manifest.version !== invocation.want.version) return null;
-      } else {
-        const answer = freshLatest(invocation.name, invocation.want.tag);
-        if (!answer) {
-          void refreshLatest(invocation.name, invocation.want.tag);
-          return null;
-        }
-        if (answer.version !== manifest.version) return null;
+        if (version !== invocation.want.version) return null;
+      } else if (latestAnswer(invocation.name, invocation.want.tag)?.version !== version) {
+        return null;
       }
-
-      const script = binScriptPath(packageDir, manifest, invocation.name);
-      if (!script || !isPlainNodeScript(script)) return null;
       const besideNpx = path.join(path.dirname(npxPath), process.platform === "win32" ? "node.exe" : "node");
       const node = fileExists(besideNpx) ? besideNpx : resolveExecutableFromKnownLocations("node", env)?.path;
       if (!node) return null;
-      options.logger?.info("mcp.npx_direct_launch", { spec: invocation.spec, version: manifest.version });
-      return { command: node, args: [script, ...invocation.rest] };
+      logger?.info("mcp.npx_direct_launch", { spec: invocation.spec, version });
+      return {
+        command: node,
+        args: [script, ...invocation.rest],
+        env: pathWithFirst(env, path.join(installDir, "node_modules", ".bin")),
+      };
     },
 
-    async prepare(servers, env = process.env) {
+    async prepare(servers, { cwd, env = process.env }) {
       const pending: Promise<void>[] = [];
       for (const server of servers) {
-        const planned = plan(server.command, server.args ?? [], env);
-        if (!planned || planned.invocation.want.kind !== "tag") continue;
-        const { name, want } = planned.invocation;
-        if (!freshLatest(name, want.tag)) pending.push(refreshLatest(name, want.tag));
+        const found = eligible(server.command, server.args ?? [], cwd, env);
+        if (!found || found.invocation.want.kind !== "tag") continue;
+        const { name, want } = found.invocation;
+        const entry = latest.get(latestKey(name, want.tag));
+        const stale = !entry || now() - entry.checkedAt >= LATEST_USABLE_MS;
+        if (stale && (!entry || now() - entry.attemptedAt >= LATEST_FRESH_MS)) pending.push(refreshLatest(name, want.tag));
       }
       if (!pending.length) return;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -323,4 +400,22 @@ export function createNpxDirectLauncher(options: {
       if (timer) clearTimeout(timer);
     },
   };
+}
+
+let shared: NpxDirectLauncher | null = null;
+let sharedLogger: NpxDirectLogger | null = null;
+
+/**
+ * The one launcher of this process, so chats and terminals share one set of
+ * registry answers. The first caller that has a logger gives it one.
+ */
+export function sharedNpxDirectLauncher(logger?: NpxDirectLogger | null): NpxDirectLauncher {
+  if (logger && !sharedLogger) sharedLogger = logger;
+  shared ??= createNpxDirectLauncher({
+    logger: {
+      info: (event, data) => sharedLogger?.info(event, data),
+      warn: (event, data) => sharedLogger?.warn?.(event, data),
+    },
+  });
+  return shared;
 }

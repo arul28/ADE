@@ -48,7 +48,7 @@ export async function forkCodexThreadInEphemeralAppServer(args: {
   sessionId: string;
 }): Promise<string> {
   // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
-  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env), "app-server"], args.env);
+  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"], args.env);
   const proc = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
     env: args.env,
