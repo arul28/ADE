@@ -323,3 +323,139 @@ export function claudeUserServersForLaunch(
   }
   return servers;
 }
+
+// ---------------------------------------------------------------------------
+// Copilot, Cursor, OpenCode
+// ---------------------------------------------------------------------------
+
+/**
+ * Providers whose launch-level server of a name replaces their own config's
+ * server of that name, beyond Claude and Codex: Copilot (probed: one process,
+ * the launch's command), Cursor (documented first-match precedence, inline
+ * first) and OpenCode (config merged by key into its one shared server).
+ * For these, the user's own `npx` servers are re-pointed at the package npx
+ * already installed. Only entries that are just a command: the launch entry
+ * replaces the whole definition.
+ */
+export const NPX_DIRECT_OWN_SERVER_PROVIDERS = ["copilot", "cursor", "opencode"] as const;
+
+type JsonSource = { file: string; key: string | null };
+
+function readJsoncRecord(filePath: string): Record<string, unknown> | null {
+  const text = readText(filePath);
+  if (text == null) return null;
+  try {
+    // OpenCode allows comments and trailing commas.
+    const stripped = text
+      .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_match, str: string | undefined) => str ?? "")
+      .replace(/,(\s*[}\]])/g, "$1");
+    const parsed = JSON.parse(stripped) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceTable(source: JsonSource): Record<string, unknown> | null {
+  const json = readJsoncRecord(source.file);
+  if (!json) return null;
+  const table = source.key ? json[source.key] : (isRecord(json.mcpServers) ? json.mcpServers : json);
+  return isRecord(table) ? table : null;
+}
+
+function ancestors(cwd: string): string[] {
+  const dirs: string[] = [];
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    dirs.push(dir);
+    if (path.dirname(dir) === dir) break;
+  }
+  return dirs;
+}
+
+function providerSources(provider: string, cwd: string, env: NodeJS.ProcessEnv): { own: JsonSource[]; outranking: JsonSource[] } | null {
+  const home = os.homedir();
+  switch (provider) {
+    case "copilot": {
+      const copilotHome = env.COPILOT_HOME?.trim() ? path.resolve(env.COPILOT_HOME.trim()) : path.join(home, ".copilot");
+      return {
+        own: [{ file: path.join(copilotHome, "mcp-config.json"), key: "mcpServers" }],
+        // Workspace files from the folder up to the filesystem root, either shape.
+        outranking: ancestors(cwd).flatMap((dir) => [
+          { file: path.join(dir, ".mcp.json"), key: null },
+          { file: path.join(dir, ".github", "mcp.json"), key: null },
+        ]),
+      };
+    }
+    case "cursor":
+      return {
+        own: [{ file: path.join(home, ".cursor", "mcp.json"), key: "mcpServers" }],
+        outranking: [{ file: path.join(cwd, ".cursor", "mcp.json"), key: "mcpServers" }],
+      };
+    case "opencode": {
+      const configDir = path.join(env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config"), "opencode");
+      return {
+        own: ["opencode.json", "opencode.jsonc"].map((file) => ({ file: path.join(configDir, file), key: "mcp" })),
+        outranking: ["opencode.json", "opencode.jsonc", path.join(".opencode", "opencode.json")]
+          .map((file) => ({ file: path.join(cwd, file), key: "mcp" })),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/** A plain command entry in this provider's shape, or null. */
+function providerStdio(provider: string, server: unknown): StdioCandidate | null {
+  if (!isRecord(server) || server.enabled === false) return null;
+  if (provider === "opencode") {
+    if (server.type !== "local" || !Array.isArray(server.command)) return null;
+    if (Object.keys(server).some((key) => !["type", "command", "enabled"].includes(key))) return null;
+    const [command, ...args] = server.command;
+    return typeof command === "string" && args.every((arg) => typeof arg === "string") ? { command, args: args as string[] } : null;
+  }
+  if (typeof server.command !== "string") return null;
+  if (Object.keys(server).some((key) => !["type", "command", "args", "tools"].includes(key))) return null;
+  const args = stringArray(server.args);
+  if (!args || args.some((arg) => arg.includes("${")) || server.command.includes("${")) return null;
+  return { command: server.command, args };
+}
+
+function providerCandidates(provider: string, cwd: string, env: NodeJS.ProcessEnv, skipNames: ReadonlySet<string>) {
+  const sources = providerSources(provider, cwd, env);
+  if (!sources) return [];
+  const skip = new Set(skipNames);
+  for (const source of sources.outranking) {
+    for (const name of Object.keys(sourceTable(source) ?? {})) skip.add(name);
+  }
+  const candidates: Array<{ name: string; stdio: StdioCandidate }> = [];
+  for (const source of sources.own) {
+    for (const [name, server] of Object.entries(sourceTable(source) ?? {})) {
+      if (skip.has(name) || candidates.some((candidate) => candidate.name === name)) continue;
+      const stdio = providerStdio(provider, server);
+      if (stdio) candidates.push({ name, stdio });
+    }
+  }
+  return candidates;
+}
+
+export async function prepareProviderUserNpxDirect(
+  launcher: NpxDirectLauncher,
+  args: { provider: string; cwd: string; env?: NodeJS.ProcessEnv },
+): Promise<void> {
+  const env = args.env ?? process.env;
+  await launcher.prepare(providerCandidates(args.provider, args.cwd, env, new Set()).map((candidate) => candidate.stdio), env);
+}
+
+/** The user's own `npx` servers for a Copilot, Cursor or OpenCode launch, re-pointed; empty for other providers. */
+export function providerUserNpxDirectServers(
+  launcher: NpxDirectLauncher,
+  args: { provider: string; cwd: string; env?: NodeJS.ProcessEnv; skipNames?: ReadonlySet<string> },
+): Record<string, { type: "stdio"; command: string; args: string[] }> {
+  const env = args.env ?? process.env;
+  const servers: Record<string, { type: "stdio"; command: string; args: string[] }> = {};
+  for (const { name, stdio } of providerCandidates(args.provider, args.cwd, env, args.skipNames ?? new Set())) {
+    const resolved = direct(launcher, stdio, args.cwd, env);
+    if (resolved) servers[name] = { type: "stdio", ...resolved };
+  }
+  return servers;
+}

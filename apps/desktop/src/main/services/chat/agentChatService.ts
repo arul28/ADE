@@ -409,8 +409,11 @@ import { providerOwnMcpServerNames } from "../mcp/mcpProviderConfigScan";
 import {
   claudeUserServersForLaunch,
   codexUserServerOverlay,
+  NPX_DIRECT_OWN_SERVER_PROVIDERS,
   prepareClaudeUserServers,
   prepareCodexUserServers,
+  prepareProviderUserNpxDirect,
+  providerUserNpxDirectServers,
 } from "../mcp/mcpUserServersForLaunch";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -11209,11 +11212,39 @@ export function createAgentChatService(args: {
     return Object.keys(servers).length ? servers : null;
   };
 
+  /**
+   * For Copilot, Cursor and OpenCode, whose launch server replaces their own
+   * config's server of that name: the user's own `npx` servers re-pointed at
+   * the package npx already installed (`mcpUserServersForLaunch.ts`). Claude
+   * and Codex do the same in their own launch builders. None when the chat
+   * ignores the user's MCP config.
+   */
+  const userNpxDirectServersFor = (managed: ManagedChatSession): CallerMcpServers | null => {
+    if (!(NPX_DIRECT_OWN_SERVER_PROVIDERS as readonly string[]).includes(managed.session.provider)) return null;
+    if (managed.session.strictMcpConfig === true || managed.session.sessionProfile === "light") return null;
+    const servers = providerUserNpxDirectServers(npxDirectLauncher, {
+      provider: managed.session.provider,
+      cwd: managed.laneWorktreePath,
+      env: buildAgentRuntimeEnv(managed),
+    });
+    return Object.keys(servers).length ? servers : null;
+  };
+  /** The registry answers `userNpxDirectServersFor` needs, fetched before a runtime starts. */
+  const prepareUserNpxDirectFor = async (managed: ManagedChatSession): Promise<void> => {
+    if (!(NPX_DIRECT_OWN_SERVER_PROVIDERS as readonly string[]).includes(managed.session.provider)) return;
+    await prepareProviderUserNpxDirect(npxDirectLauncher, {
+      provider: managed.session.provider,
+      cwd: managed.laneWorktreePath,
+      env: buildAgentRuntimeEnv(managed),
+    });
+  };
+
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
   const withRegistryMcpServers = (managed: ManagedChatSession, caller: CallerMcpServers | null): CallerMcpServers | null => {
     const registry = registryMcpServersForLaunch(managed);
-    if (!registry) return caller;
-    return { ...registry, ...(caller ?? {}) };
+    const userNpx = userNpxDirectServersFor(managed);
+    if (!registry && !userNpx) return caller;
+    return { ...(userNpx ?? {}), ...(registry ?? {}), ...(caller ?? {}) };
   };
 
   /**
@@ -17605,6 +17636,7 @@ export function createAgentChatService(args: {
     // Caller-injected servers (ADE SDK embedders) join the same map, ADE leases
     // last so a caller cannot displace one by reusing its name. OpenCode's
     // config calls an HTTP/SSE server "remote" and a stdio server "local".
+    await prepareUserNpxDirectFor(managed);
     const opencodeCallerMcpServers = callerMcpServersForLaunch(managed);
     const opencodeMcpConfig = opencodeMcpLeases.length || opencodeCallerMcpServers
       ? {
@@ -52648,6 +52680,7 @@ export function createAgentChatService(args: {
     // shadowed by a caller reusing its name. Strict mode rides a trimmed
     // `local.settingSources`; see CALLER_MCP_SUPPORT.cursor for the residual
     // (user-layer servers).
+    await prepareUserNpxDirectFor(managed);
     const cursorCallerMcpServers = callerMcpServersForLaunch(managed);
     const cursorMcpServerConfig = cursorMcpLeases.length || cursorCallerMcpServers
       ? {
@@ -55684,6 +55717,7 @@ export function createAgentChatService(args: {
     const modelId = resolveSessionModelDescriptor(managed.session)?.providerModelId ?? "auto";
     try {
       const persistedSessionId = persistedCopilotSessionId(managed.session.provider, persisted);
+      await prepareUserNpxDirectFor(managed);
       const sessionOptions = {
         cwd: managed.laneWorktreePath,
         model: modelId === "auto" ? undefined : modelId,

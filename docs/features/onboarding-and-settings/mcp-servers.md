@@ -255,6 +255,17 @@ strict MCP mode gets none. Claude receives them through the launch's MCP
 config (on its command line, as registry servers already are); Codex through
 the thread config. Nothing is written to either config home.
 
+The same gap exists wherever ADE points a CLI at a config folder of its own.
+Claude and Codex presets and routes are covered by the launch override above
+(their env names the folder). A routed Grok launch (`GROK_HOME`) gets the
+user's `[mcp_servers.*]` tables from `~/.grok/config.toml` appended to the
+`config.toml` ADE writes for it, and a Droid preset or route
+(`FACTORY_HOME_OVERRIDE`) gets a copy of the user's `.factory/mcp.json`
+(`userGrokMcpServersToml`, `mirrorUserDroidMcpConfig`). Both files are
+ADE-owned, private, and rewritten on each launch; the user's files are only
+read. OpenCode presets add a config file (`OPENCODE_CONFIG`) rather than
+replace the user's, so nothing is lost there.
+
 Tracked Claude and Codex CLIs (Work terminals ADE launches, resumes, imports
 or forks, including from the phone) get the same servers and the same `npx`
 re-pointing (`trackedCliUserMcp.ts`), as `-c mcp_servers.<name>.<key>=…`
@@ -295,7 +306,8 @@ Which servers it applies to, per provider:
 |---|---|---|
 | Codex | Re-pointed per thread: `mcp_servers.<name> = { command, args }` in the thread config, merged into config.toml's table, so env, tool approvals and timeouts stay. Skipped in strict mode, for a name a caller or ADE also sets, for a server with `cwd`, and for a name the project's `.codex/config.toml` redefines. | Re-pointed |
 | Claude | Re-pointed through the launch's MCP config: a server named there replaces the same name from the user and local scopes, and the user's other servers still load. Only for an entry that is just `command` and `args` (an `env` would have to be copied onto a command line), not for a name the project's `.mcp.json` declares or that the user switched off for the folder, and not in strict mode. | Re-pointed |
-| Cursor, Droid, Copilot, OpenCode, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
+| Copilot, Cursor, OpenCode | Re-pointed through the servers ADE hands the chat (Copilot session `mcpServers`, Cursor inline `mcpServers`, OpenCode's shared-server config): a server of that name replaces the user's (Copilot probed; Cursor documents inline first; OpenCode merges by key). Only an entry that is just a command (plus Copilot's `tools`), not a name a workspace or project file overrides, and not in strict mode. | Re-pointed |
+| Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
 | Pi | No MCP. | No MCP. |
 
 Cursor one-shots (titles and other background utilities) run in strict MCP
