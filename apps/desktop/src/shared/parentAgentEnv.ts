@@ -52,18 +52,30 @@ export function stripParentClaudeSessionEnv(env: NodeJS.ProcessEnv): string[] {
 export const INHERITED_PROVIDER_HOME_ENV_KEYS = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] as const;
 
 /** Whether `dir` sits inside an ADE home's `provider-homes` directory. */
-export function isAdeProviderHomePath(dir: string, adeHome?: string | null): boolean {
-  const resolved = path.resolve(dir);
+export function isAdeProviderHomePath(
+  dir: string,
+  adeHome?: string | null,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const caseInsensitive = platform === "win32" || platform === "darwin";
+  const comparisonPath = (value: string): string => caseInsensitive ? value.toLowerCase() : value;
+  const resolved = pathApi.resolve(dir);
   if (adeHome?.trim()) {
-    const root = path.resolve(adeHome.trim(), "provider-homes");
-    const relative = path.relative(root, resolved);
-    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) return true;
+    const root = pathApi.resolve(adeHome.trim(), "provider-homes");
+    const relative = pathApi.relative(comparisonPath(root), comparisonPath(resolved));
+    if (
+      relative
+      && relative !== ".."
+      && !relative.startsWith(`..${pathApi.sep}`)
+      && !pathApi.isAbsolute(relative)
+    ) return true;
   }
   // Any ADE home (`~/.ade`, `~/.ade-alpha`, …): an agent of one channel can
   // start a brain under another.
-  const parts = resolved.split(/[\\/]+/u);
+  const parts = resolved.split(/[\\/]+/u).map(comparisonPath);
   return parts.some((part, index) => (
-    part === "provider-homes" && index > 0 && /^\.ade/u.test(parts[index - 1] ?? "") && index < parts.length - 1
+    part === "provider-homes" && index > 0 && parts[index - 1]?.startsWith(".ade") && index < parts.length - 1
   ));
 }
 

@@ -16,9 +16,9 @@
  * strips these keys (`sanitizeParentEnvForDevRuntime` in scripts/dev-shared.mjs);
  * a brain started any other way did not.
  *
- * The role ceiling (`ADE_DEFAULT_ROLE`) is NOT stripped here. It is the brain's
- * own setting, and choosing it is the operator's call; `describeBrainRoleCeiling`
- * only says out loud what a ceiling below `cto` will refuse.
+ * `ADE_DEFAULT_ROLE` is not caller identity. When caller keys identify an
+ * agent shell, `runServe` removes its inherited role after resolving this
+ * brain's role.
  */
 
 import type { AdeRuntimeRole } from "../../runtimeRoles";
@@ -88,7 +88,13 @@ export function dropInheritedAgentLocation(
 
 export function describeDroppedCallerIdentity(dropped: readonly string[]): string | null {
   if (dropped.length === 0) return null;
-  return `This brain was started from an agent's shell. It ignores that agent's identity, location and provider account (${dropped.join(", ")}), so each client keeps its own role and no project or account is taken from the agent.`;
+  return `This brain was started from an agent's shell. It ignores that shell's caller identity (${dropped.join(", ")}), so each client keeps its own identity.`;
+}
+
+/** Describe inherited agent settings without claiming they identify the shell. */
+export function describeDroppedAgentEnv(dropped: readonly string[]): string | null {
+  if (dropped.length === 0) return null;
+  return `This brain ignores inherited agent environment (${dropped.join(", ")}).`;
 }
 
 /**

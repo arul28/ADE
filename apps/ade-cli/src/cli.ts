@@ -292,6 +292,7 @@ import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
 import {
   describeBrainRoleCeiling,
+  describeDroppedAgentEnv,
   describeDroppedCallerIdentity,
   dropInheritedAgentLocation,
   dropInheritedCallerIdentity,
@@ -24956,12 +24957,15 @@ async function runServe(
   }
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
-  const droppedIdentityKeys = dropInheritedCallerIdentity(process.env);
-  const droppedCallerIdentity = [
-    ...droppedIdentityKeys,
-    ...dropInheritedAgentLocation(process.env, droppedIdentityKeys),
-    ...stripInheritedProviderHomeEnv(process.env),
-  ];
+  const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);
+  const droppedAgentEnvKeys = dropInheritedAgentLocation(process.env, droppedCallerIdentityKeys);
+  // CLI options already captured the role for this brain. Do not pass the
+  // agent shell's default role on to child processes.
+  if (droppedCallerIdentityKeys.length > 0 && process.env.ADE_DEFAULT_ROLE !== undefined) {
+    if (process.env.ADE_DEFAULT_ROLE.trim()) droppedAgentEnvKeys.push("ADE_DEFAULT_ROLE");
+    delete process.env.ADE_DEFAULT_ROLE;
+  }
+  droppedAgentEnvKeys.push(...stripInheritedProviderHomeEnv(process.env));
   // `--profile embedded` marks this runtime as a guest inside an external
   // embedder's process (the ADE SDK). Read here, before the identity notes, so
   // an embedded runtime stays quiet about a role ceiling that is correct for
@@ -24975,7 +24979,8 @@ async function runServe(
   // result rather than re-testing the same predicate.
   const roleCeilingNote = describeBrainRoleCeiling(options.role, { embedded });
   const brainIdentityNotes = [
-    describeDroppedCallerIdentity(droppedCallerIdentity),
+    describeDroppedCallerIdentity(droppedCallerIdentityKeys),
+    describeDroppedAgentEnv(droppedAgentEnvKeys),
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
@@ -26870,8 +26875,11 @@ async function runServe(
     expectedRoot: defaultRuntimeCompileCacheDir(),
     onPruned: (removed) => headlessProjectLogger.info("brain.compile_cache_pruned", { removed }),
   });
-  if (droppedCallerIdentity.length > 0) {
-    headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });
+  if (droppedCallerIdentityKeys.length > 0 || droppedAgentEnvKeys.length > 0) {
+    headlessProjectLogger.warn("brain.inherited_agent_env_dropped", {
+      callerIdentityKeys: droppedCallerIdentityKeys,
+      agentEnvKeys: droppedAgentEnvKeys,
+    });
   }
   if (roleCeilingNote !== null) {
     headlessProjectLogger.warn("brain.role_ceiling_below_cto", { role: options.role });

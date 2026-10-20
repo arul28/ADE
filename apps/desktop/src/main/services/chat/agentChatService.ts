@@ -11417,18 +11417,19 @@ export function createAgentChatService(args: {
       return pinned;
     }
     if (resolved.fellBack) {
-      // The account may be missing only from THIS brain's home. While another
-      // live brain runs the chat, its pointers are that brain's to keep: a
-      // title or summary call here must not rewrite them.
+      // Keep the pointers when another home may still own the account, or a
+      // live brain is still using them. Same-home removals still clear them.
       const foreignOwner = liveForeignChatRuntimeOwner(managed.session.id);
+      const unknownFromOtherHome = accountUnknownFromOtherHome(readPersistedState(managed.session.id));
       logger.info("agent_chat.provider_instance_fell_back", {
         sessionId: managed.session.id,
         provider,
         requestedId,
         instanceId: resolved.instance.id,
         ...(foreignOwner ? { keptForOwnerPid: foreignOwner.pid } : {}),
+        ...(unknownFromOtherHome ? { keptForUnknownHomeAccount: true } : {}),
       });
-      if (!foreignOwner) {
+      if (!foreignOwner && !unknownFromOtherHome) {
         delete managed.session.instanceId;
         forgetProviderThreadPointer(managed);
       }
@@ -19698,11 +19699,12 @@ export function createAgentChatService(args: {
      * is a steady state, and one warn per chat per pass buries the log.
      */
     options?: { quiet?: boolean },
+    ownershipDecision?: ChatRuntimeOwnershipDecision,
   ): boolean => {
     const owner = persisted === undefined
       ? readPersistedState(sessionId)?.runtimeOwner ?? null
       : persisted?.runtimeOwner ?? null;
-    const decision = chatRuntimeOwnershipDecision(owner);
+    const decision = ownershipDecision ?? chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
         sessionId,
@@ -19725,7 +19727,8 @@ export function createAgentChatService(args: {
     options?: { quiet?: boolean },
   ): boolean => {
     const state = persisted === undefined ? readPersistedState(sessionId) : persisted;
-    if (!chatRuntimeAdoptable(sessionId, state, options)) return false;
+    const decision = chatRuntimeOwnershipDecision(state?.runtimeOwner ?? null);
+    if (!chatRuntimeAdoptable(sessionId, state, options, decision)) return false;
     if (accountUnknownFromOtherHome(state)) {
       if (options?.quiet !== true) {
         logger.warn("agent_chat.runtime_account_unknown_here", {
@@ -19736,7 +19739,7 @@ export function createAgentChatService(args: {
       }
       return false;
     }
-    return !yieldsToSiblingBrain(state);
+    return !yieldsToSiblingBrain(state, decision.verdict);
   };
 
   /**
@@ -19747,10 +19750,12 @@ export function createAgentChatService(args: {
    * Its own chats stay its own: its stamp, or its dead predecessor on the same
    * socket (a restart keeps the socket; a sibling brain has its own).
    */
-  const yieldsToSiblingBrain = (state: PersistedChatState | null | undefined): boolean => {
+  const yieldsToSiblingBrain = (
+    state: PersistedChatState | null | undefined,
+    verdict: ChatRuntimeOwnershipDecision["verdict"],
+  ): boolean => {
     if (!yieldsUnownedChatsToSiblingBrains || !processRegistry) return false;
     const owner = state?.runtimeOwner ?? null;
-    const verdict = chatRuntimeOwnershipDecision(owner).verdict;
     if (verdict === "self") return false;
     if (owner?.socketPath && runtimeSocketPath && pathsEqual(owner.socketPath, runtimeSocketPath)) return false;
     const selfPid = processRegistry.pid ?? process.pid;
@@ -19772,8 +19777,13 @@ export function createAgentChatService(args: {
     if (pathsEqual(ownerHome, brainAdeHome)) return false;
     try {
       return getMachineProviderInstanceStore().get(instanceId) === null;
-    } catch {
-      return false;
+    } catch (error) {
+      logger.warn("agent_chat.account_lookup_failed", {
+        instanceId,
+        ownerAdeHome: ownerHome,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
     }
   };
 
@@ -57613,6 +57623,9 @@ export function createAgentChatService(args: {
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
     let args = expandedArgs;
+    const throwForScheduledWakeRefusal = (reason: string): void => {
+      if (args.metadata?.scheduledWake) throw new Error(reason);
+    };
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -57631,12 +57644,14 @@ export function createAgentChatService(args: {
       const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
       if (diskDecision && !diskDecision.allowed) {
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        throwForScheduledWakeRefusal(diskDecision.message);
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
         const blocked = launchRouteBlockReason(managed);
         if (blocked) {
           emitLaunchRouteSteerFailure(managed, args, blocked);
+          throwForScheduledWakeRefusal(blocked);
           return;
         }
       }
@@ -57648,6 +57663,7 @@ export function createAgentChatService(args: {
         managed.launchRouteFellBack = false;
         if (blocked) {
           emitLaunchRouteSendFailure(managed, args, blocked);
+          throwForScheduledWakeRefusal(blocked);
           return;
         }
       }

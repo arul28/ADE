@@ -913,8 +913,52 @@ export function sanitizeParentEnvForDevRuntime(parentEnv = process.env) {
   ]) {
     delete inherited[key];
   }
+  for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
+    const value = inherited[key]?.trim();
+    if (value && isAdeProviderHomePath(value, inherited.ADE_HOME)) delete inherited[key];
+  }
+  for (const key of PARENT_CLAUDE_SESSION_ENV_KEYS) delete inherited[key];
   return inherited;
 }
+
+function isAdeProviderHomePath(dir, adeHome, platform = process.platform) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const caseInsensitive = platform === "win32" || platform === "darwin";
+  const comparePath = (value) => caseInsensitive ? value.toLowerCase() : value;
+  const resolved = pathApi.resolve(dir);
+  if (adeHome?.trim()) {
+    const root = pathApi.resolve(adeHome.trim(), "provider-homes");
+    const relative = pathApi.relative(comparePath(root), comparePath(resolved));
+    if (
+      relative
+      && relative !== ".."
+      && !relative.startsWith(`..${pathApi.sep}`)
+      && !pathApi.isAbsolute(relative)
+    ) return true;
+  }
+  const parts = resolved.split(/[\\/]+/u).map(comparePath);
+  return parts.some((part, index) => (
+    part === "provider-homes"
+    && index > 0
+    && parts[index - 1]?.startsWith(".ade")
+    && index < parts.length - 1
+  ));
+}
+
+// Twin: PARENT_CLAUDE_SESSION_ENV_KEYS in apps/desktop/src/shared/parentAgentEnv.ts.
+const PARENT_CLAUDE_SESSION_ENV_KEYS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_SSE_PORT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+  "CLAUDE_CODE_STARTUP_FAILURE_RESULTS",
+];
 
 /**
  * How long a detached dev brain may sit with no client before it exits.
