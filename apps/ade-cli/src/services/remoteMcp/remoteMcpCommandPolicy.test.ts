@@ -21,6 +21,10 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "forwarding to another machine", ["chat", "send", "x", "--machine", "desktop"]],
     ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
     ["write", "a command nobody has enabled for ADE MCP", ["not-a-real-command", "run"]],
+    ["write", "signing the machine in to GitHub", ["github", "app-auth", "login"]],
+    ["write", "a GitHub sign-in through actions", ["actions", "run", "github.startAppUserDeviceAuth"]],
+    ["write", "a Linear credential through actions, split spelling", ["actions", "run", "linear_credentials", "setToken"]],
+    ["write", "disconnecting Jira", ["jira", "disconnect"]],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
@@ -40,6 +44,7 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["ade", "git", "status", "--lane", "x"], ["git", "status", "--lane", "x"]],
     ["read", ["actions", "run", "lane", "list"], ["actions", "run", "lane", "list"]],
     ["read", ["search", "login bug", "--text"], ["search", "login bug", "--text"]],
+    ["read", ["github", "app-auth", "status"], ["github", "app-auth", "status"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {

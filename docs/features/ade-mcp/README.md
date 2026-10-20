@@ -125,8 +125,12 @@ that grants access, or cut the connection:
   `reset`, `brain`, `serve`, `runtime`, `rpc`, `code` and `desktop`, and every
   `machines` (or `machine`) subcommand except `list`/`show` (renaming,
   removing or re-pairing account machines);
+- signing this computer in or out of a connected service:
+  `github app-auth login|clear` (and their aliases) and `jira connect|disconnect`;
 - through `ade actions` (or its alias `action`): any `remote_mcp.*` action, any
-  `account.*` action except `status` (tokens, sign-out), in both the
+  `account.*` action except `status` (tokens, sign-out), the GitHub, Linear and
+  Jira credential actions (`github.setToken|clearToken|*AppUser*Auth`,
+  `linear_credentials.*`, `linear_oauth.*`, `jira.connect|disconnect`), in both the
   `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
   `actions call|direct|tool`;
 - a first word that is not a plain command word, so `--socket`, `--headless`,

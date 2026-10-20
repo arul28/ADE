@@ -177,6 +177,9 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
     };
   }
   const words = positionalWords(args);
+  if (isServiceSignInCommand(command, words)) {
+    return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
+  }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
@@ -199,6 +202,30 @@ const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "action
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+const SERVICE_SIGN_IN_REASON =
+  "Connecting or disconnecting GitHub, Linear or Jira outlives ADE MCP, so it is done on the computer itself.";
+/** `ade github` groups that manage the machine's GitHub App authorization. */
+const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
+/** Spellings of `ade github app-auth login` and `clear`. */
+const GITHUB_AUTH_CHANGES: ReadonlySet<string> = new Set(["login", "authorize", "start", "clear", "logout", "sign-out"]);
+/**
+ * Service credential actions, by domain; `true` means every action. The CLI
+ * runs full access as `cto`, which these actions otherwise allow.
+ */
+const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
+  ["github", new Set(["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
+  ["linear_credentials", true],
+  ["linear_oauth", true],
+  ["jira", new Set(["connect", "disconnect"])],
+]);
+
+/** Signing this machine in or out of GitHub, Linear or Jira. */
+function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
+  if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
+  if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
+  return false;
+}
+
 /** `ade actions` subcommands that call RPC tools by name, around the action table. */
 const RAW_ACTION_DOORS: ReadonlySet<string> = new Set(["call", "direct", "tool"]);
 
@@ -235,6 +262,10 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): R
   }
   if (target.domain === "account" && target.action !== "status") {
     return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("account")}` };
+  }
+  const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
+  if (signIn === true || signIn?.has(target.action)) {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
   if (scope === "read") {
     const access = Object.hasOwn(ADE_ACTION_ACCESS, target.domain) ? ADE_ACTION_ACCESS[target.domain] : undefined;
