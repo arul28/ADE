@@ -117,8 +117,9 @@ Desktop ⌘K command palette:
   universal-search seam: `useUniversalSearch` (debounced `window.ade.search`
   query), the `KindIcon` / highlight helpers, and the `SearchResultRow` entity
   rows grouped by kind (`ENTITY_KIND_ORDER` / `ENTITY_KIND_LABEL`).
-- `apps/desktop/src/renderer/components/app/CommandPalette.tsx` and
-  `commandPaletteThreads.tsx` — host the flat-index interleaving of command,
+- `apps/desktop/src/renderer/components/app/CommandPalette.tsx`,
+  `commandPaletteLanePr.ts`, and `commandPaletteThreads.tsx` — host the
+  flat-index interleaving of command,
   thread, and entity results, and `activateResult`'s `kind → navigate` switch
   (chat/terminal/pr/lane/commit/branch/file/linear/artifact → the matching tab,
   relying on the deep-link navigate listener to focus the target). Thread entries
@@ -131,7 +132,12 @@ Desktop ⌘K command palette:
   free-text terms. Opening a chat from a message hit leaves the words for that
   chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
   focus from snapping back when it closes into a find bar. The keyboard index
-  resolves commands in their rendered (grouped) order.
+  resolves commands in their rendered (grouped) order. When a lane is selected,
+  it adds an exact **Open PR #N: title** command from the same lane PR selector
+  and route builder as the Lanes badge; with no lane PR, it offers a creation
+  command prefilled for that lane. Both commands enter regular word matching
+  and Jev's candidates. PR reads remain on the active project binding and use
+  the existing event-driven lane PR source; the palette adds no poller.
 - Queries with at least three words (or two words with no direct command match)
   ask Jev to rank up to 40 likely commands after a 250 ms pause. The
   `Suggested` group appears above normal results when

@@ -129,6 +129,8 @@ import {
   useChatFindPaletteCommand,
 } from "../chat/chatFindPalette";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import { lanePrTagRoutePath } from "../lanes/lanePageModel";
+import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
@@ -333,6 +335,7 @@ export function CommandPalette({
   const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const selectedLanePr = useCommandPaletteLanePr({ active: open, lane: selectedLane, pin: projectBinding });
   const runtimePinRef = useRef(projectBinding);
   runtimePinRef.current = projectBinding;
   const runtimePinKey = projectBinding?.key ?? null;
@@ -960,6 +963,26 @@ export function CommandPalette({
           navigate(`/lanes?laneId=${encodeURIComponent(nextLane.id)}`);
         },
       },
+      ...(selectedLane && selectedLanePr?.status === "ready" ? [selectedLanePr.tag ? {
+        id: `lane-open-pr-${selectedLane.id}`,
+        title: `Open PR #${selectedLanePr.tag.githubPrNumber}: ${selectedLanePr.tag.title}`,
+        hint: `Open the pull request for ${selectedLane.name} in ADE's PRs tab`,
+        keywords: ["open pr", "open pull request", "this lane", "for this lane", selectedLane.name],
+        group: "Lanes",
+        run: () => {
+          const route = lanePrTagRoutePath(selectedLanePr.tag!);
+          if (route) navigate(route);
+        },
+      } : {
+        id: `lane-create-pr-${selectedLane.id}`,
+        title: `Create a PR for ${selectedLane.name}`,
+        hint: `Open the pull request creator for ${selectedLane.name}`,
+        keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", selectedLane.name],
+        group: "Lanes",
+        // The active project binding is the selected lane's runtime. PRsPage
+        // reads the source lane from that same bound project after navigation.
+        run: () => navigate(`/prs?${new URLSearchParams({ create: "1", sourceLaneId: selectedLane.id }).toString()}`),
+      }] : []),
       {
         id: "lane-filter",
         title: "Focus Lane Filter",
@@ -1035,6 +1058,7 @@ export function CommandPalette({
     selectLane,
     selectedLaneId,
     selectedLane,
+    selectedLanePr,
     setWorkViewState,
     startProjectBrowse,
     startProjectClone,
