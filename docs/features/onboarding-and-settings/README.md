@@ -1406,8 +1406,11 @@ Renderer — settings:
   was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
   best-effort lightweight request per enabled Claude/Codex account shortly
-  after a future five-hour reset, with provider-specific model selection and
-  no persisted timer state.
+  after a five-hour reset, or right after the provider ends the window early
+  (including a reset credit spent in ADE), through a per-provider opener table
+  and no persisted timer state. `AUTOSTART_WINDOW_TYPE` in
+  `shared/types/providerInstances.ts` names the eligible providers and gates
+  the settings toggle.
 - `apps/desktop/src/shared/usageResetCredit.ts` — the shared reset-credit
   outcome and copy contract used by desktop, CLI, and paired action callers.
 - `apps/desktop/src/main/services/usage/providerAccountIdentity.ts` — which
