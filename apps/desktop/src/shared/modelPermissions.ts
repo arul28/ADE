@@ -7,8 +7,10 @@
 // `AgentChatPermissionMode`. That is what lets the chip show "Bypass" for Claude
 // and "Full auto" for OpenCode, matching the composer footer exactly.
 //
-// Pure: values + labels only, no rendering. The desktop footer, the chip, the
-// TUI, and iOS all read one list, so a provider that adds a mode cannot drift.
+// Pure: values, labels and details only, no rendering. This is the one owner of
+// a provider's native permission modes: the composer footer, the launch
+// controls, the chip and the TUI all read these lists, so a provider that adds a
+// mode cannot drift. Tone and glyph live in `renderer/lib/modelPermissionOptions.ts`.
 //
 // The send-time token may carry either a native value or one of the legacy
 // generic values (`@model:…?perm=full-auto`) written before this module existed;
@@ -24,50 +26,99 @@ import {
   DEFAULT_MUSE_PERMISSION_MODE,
   droidPermissionModeFromLegacyPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
+  type AgentChatClaudePermissionMode,
+  type AgentChatCopilotPermissionMode,
   type AgentChatDroidPermissionMode,
   type AgentChatMusePermissionMode,
+  type AgentChatOpenCodePermissionMode,
   type AgentChatPermissionMode,
 } from "./types/chat";
 
-export type ModelPermissionOption = { value: string; label: string };
+/**
+ * One permission mode: the provider's own value, the name ADE shows for it, and
+ * the sentence that explains it. Presentation (tone, glyph, the short word the
+ * collapsed pill shows) lives in `renderer/lib/modelPermissionOptions.ts`.
+ */
+export type ModelPermissionOption<Value extends string = string> = { value: Value; label: string; detail: string };
 
-const CLAUDE_OPTIONS: ModelPermissionOption[] = [
-  { value: "default", label: "Manual" },
-  { value: "auto", label: "Auto" },
-  { value: "acceptEdits", label: "Accept edits" },
-  { value: "plan", label: "Plan mode" },
-  { value: "bypassPermissions", label: "Bypass" },
+export const CLAUDE_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatClaudePermissionMode>> = [
+  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools." },
+  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you." },
+  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt." },
+  { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning." },
+  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat." },
 ];
 
-const CODEX_OPTIONS: ModelPermissionOption[] = [
-  { value: "default", label: "Default" },
-  { value: "edit", label: "Edit" },
-  { value: "plan", label: "Plan" },
-  { value: "full-auto", label: "Full auto" },
-  { value: "config-toml", label: "Config" },
+/**
+ * Codex's presets, each a fixed (approval policy, sandbox) pair. The chat
+ * composer's footer names these from ADE's generic vocabulary
+ * (`getPermissionOptions`) instead, so its words differ: "Default permissions",
+ * "Full access", ... Which wording wins is an open product decision.
+ */
+export const CODEX_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<CodexPermissionPreset>> = [
+  { value: "default", label: "Default", detail: "Ask on request with workspace write sandbox." },
+  { value: "edit", label: "Edit", detail: "Untrusted approval with workspace write sandbox." },
+  { value: "plan", label: "Plan", detail: "Read-only sandbox for planning." },
+  { value: "full-auto", label: "Full auto", detail: "No approval prompts with full sandbox access." },
+  { value: "config-toml", label: "Config", detail: "No approval or sandbox flags are passed; Codex reads ~/.codex/config.toml." },
 ];
 
-const OPENCODE_OPTIONS: ModelPermissionOption[] = [
-  { value: "plan", label: "Plan" },
-  { value: "edit", label: "Edit" },
-  { value: "full-auto", label: "Full auto" },
-  { value: "config-toml", label: "Config" },
+export type CodexPermissionPreset = "default" | "edit" | "plan" | "full-auto" | "config-toml";
+
+export const OPENCODE_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatOpenCodePermissionMode>> = [
+  { value: "plan", label: "Plan", detail: "Read-only plan agent." },
+  { value: "edit", label: "Edit", detail: "Allow edits; ask for the rest." },
+  { value: "full-auto", label: "Full auto", detail: "Allow configured OpenCode tools." },
+  { value: "config-toml", label: "Config", detail: "Use OpenCode config files." },
 ];
 
-const CURSOR_OPTIONS: ModelPermissionOption[] = CURSOR_AVAILABLE_MODE_IDS.map((id) => ({
+/**
+ * What a Cursor mode does. Cursor's modes are ids the CLI reports once it
+ * connects, so this reads the id rather than looking it up in a fixed list.
+ */
+export function cursorModeDetail(modeId: string): string {
+  const normalized = modeId.trim().toLowerCase();
+  if (normalized === "plan") return "Read-only planning mode.";
+  if (normalized === "ask" || normalized === "edit") return "Read-only Q&A mode.";
+  if (normalized === "full-auto" || normalized === "force" || normalized === "yolo") return "Highest access mode for Cursor Agent.";
+  return "Cursor Agent's normal approval flow.";
+}
+
+/** Cursor's modes before the CLI connects and reports its own. */
+export const CURSOR_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption> = CURSOR_AVAILABLE_MODE_IDS.map((id) => ({
   value: id,
   label: formatCursorModeLabel(id),
+  detail: cursorModeDetail(id),
 }));
 
-const DROID_OPTIONS: ModelPermissionOption[] = AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS.map((option) => ({
-  value: option.value,
-  label: option.label,
-}));
+export const DROID_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatDroidPermissionMode>> =
+  AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS;
 
-const MUSE_OPTIONS: ModelPermissionOption[] = AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.map((value) => ({
-  value,
-  label: AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value].label,
-}));
+export const MUSE_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatMusePermissionMode>> =
+  AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES.map((value) => ({ value, ...AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value] }));
+
+/**
+ * ADE's plan mode on Muse. Not a Muse approval mode: it runs on `denyUnmatched`
+ * plus ADE's plan guidance, so only the chat composer offers it.
+ */
+export const MUSE_PLAN_MODE: ModelPermissionOption<"plan"> = {
+  value: "plan",
+  label: "Plan",
+  detail: "Read-only Muse turns for planning, with ADE's plan guidance.",
+};
+
+/**
+ * GitHub Copilot's modes as the chat composer offers them. Not reachable from
+ * `modelPermissionOptions("copilot")`, which still answers with OpenCode's
+ * modes for the model chip; that mismatch is an open product decision.
+ */
+export const COPILOT_PERMISSION_MODES: ReadonlyArray<ModelPermissionOption<AgentChatCopilotPermissionMode>> = [
+  { value: "plan", label: "Plan", detail: "Read-only planning mode." },
+  { value: "ask", label: "Ask", detail: "Ask before each action." },
+  { value: "assisted", label: "Assisted", detail: "Copilot reviews each tool call with a safety model and approves the safe ones; asks you for the rest." },
+  { value: "auto-edit", label: "Auto-edit", detail: "Automatically approve file changes in the workspace." },
+  { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session." },
+];
 
 /**
  * ADE's generic launch word as a Muse approval mode. Same convention as Droid:
@@ -106,14 +157,14 @@ function isDroidProvider(provider: string): boolean {
 }
 
 /** The native option list for a chat provider. Unknown providers speak OpenCode. */
-export function modelPermissionOptions(provider: string | null | undefined): ModelPermissionOption[] {
+export function modelPermissionOptions(provider: string | null | undefined): ReadonlyArray<ModelPermissionOption> {
   const p = String(provider ?? "").trim().toLowerCase();
-  if (p === "claude") return CLAUDE_OPTIONS;
-  if (p === "codex") return CODEX_OPTIONS;
-  if (p === "cursor") return CURSOR_OPTIONS;
-  if (isDroidProvider(p)) return DROID_OPTIONS;
-  if (p === "muse") return MUSE_OPTIONS;
-  return OPENCODE_OPTIONS;
+  if (p === "claude") return CLAUDE_PERMISSION_MODES;
+  if (p === "codex") return CODEX_PERMISSION_MODES;
+  if (p === "cursor") return CURSOR_PERMISSION_MODES;
+  if (isDroidProvider(p)) return DROID_PERMISSION_MODES;
+  if (p === "muse") return MUSE_PERMISSION_MODES;
+  return OPENCODE_PERMISSION_MODES;
 }
 
 /** The mode a fresh chip starts on, matching the footer's default for the provider. */

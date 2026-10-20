@@ -373,6 +373,69 @@ const noLegacyBannerImport = {
 };
 
 // ---------------------------------------------------------------------------
+// no-adhoc-permission-picker
+// ---------------------------------------------------------------------------
+
+/** Names that mark a value as a permission mode (`droidPermissionMode`, `cursorModeId`, `CLAUDE_PERMISSION_MODES`). */
+const PERMISSION_NAME = /permission|cursorMode/i;
+const PERMISSION_PICKER_FILE = /(?:^|\/)components\/shared\/PermissionModePicker\.tsx$/;
+const RENDERER_COMPONENTS = /(?:^|\/)src\/renderer\/components\//;
+
+function jsxName(node) {
+  if (node.type === "JSXIdentifier") return node.name;
+  return null;
+}
+
+/** True when any identifier, member property or string inside `node` names a permission. */
+function mentionsPermission(node, seen = new Set()) {
+  if (!node || typeof node !== "object" || seen.has(node)) return false;
+  seen.add(node);
+  if (node.type === "Identifier" || node.type === "JSXIdentifier") return PERMISSION_NAME.test(node.name);
+  if (node.type === "Literal" && typeof node.value === "string") return PERMISSION_NAME.test(node.value);
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "parent" || key === "loc" || key === "range") continue;
+    if (Array.isArray(value)) {
+      if (value.some((child) => mentionsPermission(child, seen))) return true;
+    } else if (value && typeof value === "object" && typeof value.type === "string") {
+      if (mentionsPermission(value, seen)) return true;
+    }
+  }
+  return false;
+}
+
+const noAdhocPermissionPicker = {
+  meta: {
+    type: "suggestion",
+    docs: { description: "Disallow a raw <select> or hand-rolled listbox for permission modes; use PermissionModePicker." },
+    schema: [],
+    messages: {
+      select: "A raw `<select>` for permission modes is a second permission control. Render `PermissionModePicker` (components/shared/PermissionModePicker.tsx) with rows from `modelPermissionPickerOptions` (lib/modelPermissionOptions.ts); the modes themselves live in shared/modelPermissions.ts.",
+      listbox: "A hand-rolled `role=\"listbox\"` for permission modes is a lookalike of the composer's menu, and a dialog's scroll container can clip it. Render `PermissionModePicker` (components/shared/PermissionModePicker.tsx) with rows from `modelPermissionPickerOptions` (lib/modelPermissionOptions.ts).",
+    },
+  },
+  create(context) {
+    const filename = (context.filename ?? context.getFilename()).split(path.sep).join("/");
+    if (!RENDERER_COMPONENTS.test(filename) || PERMISSION_PICKER_FILE.test(filename)) return {};
+    return {
+      JSXElement(node) {
+        const opening = node.openingElement;
+        const name = jsxName(opening.name);
+        if (name === "select") {
+          if (mentionsPermission(node)) context.report({ node: opening, messageId: "select" });
+          return;
+        }
+        const isListbox = opening.attributes.some((attribute) =>
+          attribute.type === "JSXAttribute"
+          && attribute.name.name === "role"
+          && valueLeaves(attribute.value?.type === "JSXExpressionContainer" ? attribute.value.expression : attribute.value)
+            .some((leaf) => leaf.value === "listbox"));
+        if (isListbox && mentionsPermission(node)) context.report({ node: opening, messageId: "listbox" });
+      },
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 
 const plugin = {
   meta: { name: "ade-ui" },
@@ -382,6 +445,7 @@ const plugin = {
     "no-fixed-overlay": noFixedOverlay,
     "no-raw-z-index": noRawZIndex,
     "no-legacy-banner-import": noLegacyBannerImport,
+    "no-adhoc-permission-picker": noAdhocPermissionPicker,
   },
 };
 

@@ -267,9 +267,16 @@ import {
   type StagedAttachment,
 } from "./chatAttachmentStaging";
 import {
-  DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
-  MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
-} from "../../lib/nativeLaunchControls";
+  CLAUDE_PERMISSION_MODES,
+  DROID_PERMISSION_MODES,
+  OPENCODE_PERMISSION_MODES,
+} from "../../../shared/modelPermissions";
+import {
+  COPILOT_PERMISSION_PICKER_OPTIONS,
+  cursorModePickerOptions,
+  modelPermissionPickerOptions,
+  MUSE_PERMISSION_PICKER_OPTIONS,
+} from "../../lib/modelPermissionOptions";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -1437,13 +1444,7 @@ function ComposerOverflowMenu({
 
 
 
-const CLAUDE_MODE_OPTIONS: Array<PermissionModePickerOption<AgentChatClaudePermissionMode>> = [
-  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green", icon: "manual" },
-  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you.", tone: "amber", icon: "auto" },
-  { value: "acceptEdits", label: "Accept edits", triggerLabel: "Edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "amber", icon: "edit" },
-  { value: "plan", label: "Plan mode", triggerLabel: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple", icon: "plan" },
-  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat.", tone: "red", icon: "full" },
-];
+const CLAUDE_MODE_OPTIONS = modelPermissionPickerOptions("claude", CLAUDE_PERMISSION_MODES);
 
 
 
@@ -1462,66 +1463,15 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
-function codexPermissionPickerOption(option: PermissionOption): PermissionModePickerOption<Exclude<CodexPermissionPreset, "custom">> {
-  switch (option.value) {
-    case "default":
-      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
-    case "edit":
-      return { value: "edit", label: option.label, triggerLabel: "Edit", detail: option.detail, tone: "amber", icon: "edit" };
-    case "plan":
-      return { value: "plan", label: option.label, triggerLabel: "Plan", detail: option.detail, tone: "purple", icon: "plan" };
-    case "full-auto":
-      return { value: "full-auto", label: option.label, triggerLabel: "Full", detail: option.detail, tone: "red", icon: "full" };
-    case "config-toml":
-      return { value: "config-toml", label: option.label, triggerLabel: "Config", detail: option.detail, tone: "slate", icon: "config" };
-    default:
-      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
-  }
+function isCodexPresetOption(option: PermissionOption): option is PermissionOption & { value: Exclude<CodexPermissionPreset, "custom"> } {
+  return option.value === "default" || option.value === "edit" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml";
 }
 
-function cursorPermissionPickerOption(value: string, label: string): PermissionModePickerOption<string> {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "plan") {
-    return { value, label, triggerLabel: label, detail: "Read-only planning mode.", tone: "purple", icon: "plan" };
-  }
-  if (normalized === "ask" || normalized === "edit") {
-    return { value, label, triggerLabel: label, detail: "Read-only Q&A mode.", tone: "green", icon: "manual" };
-  }
-  if (normalized === "full-auto" || normalized === "force" || normalized === "yolo") {
-    return { value, label, triggerLabel: label, detail: "Highest access mode for Cursor Agent.", tone: "red", icon: "full" };
-  }
-  return { value, label, triggerLabel: label, detail: "Cursor Agent's normal approval flow.", tone: "green", icon: "agent" };
-}
-
-const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpenCodePermissionMode>> = [
-  { value: "plan", label: "Plan", detail: "Read-only plan agent.", tone: "purple", icon: "plan" },
-  { value: "edit", label: "Edit", detail: "Allow edits; ask for the rest.", tone: "amber", icon: "edit" },
-  { value: "full-auto", label: "Full auto", detail: "Allow configured OpenCode tools.", tone: "red", icon: "full" },
-  { value: "config-toml", label: "Config", detail: "Use OpenCode config files.", tone: "slate", icon: "config" },
-];
-
-const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode, Pick<PermissionModePickerOption<AgentChatDroidPermissionMode>, "triggerLabel" | "tone" | "icon">> = {
-  "read-only": { tone: "green", icon: "manual" },
-  "auto-low": { tone: "green", icon: "edit" },
-  "auto-medium": { tone: "amber", icon: "auto" },
-  "auto-high": { tone: "red", icon: "full" },
-  agi: { triggerLabel: "AGI", tone: "purple", icon: "agi" },
-};
-const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
-  BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
+const OPENCODE_PERMISSION_OPTIONS = modelPermissionPickerOptions("opencode", OPENCODE_PERMISSION_MODES);
+const DROID_PERMISSION_OPTIONS = modelPermissionPickerOptions("droid", DROID_PERMISSION_MODES);
 
 /** Muse's approval modes plus ADE's plan mode, which runs on `denyUnmatched`. */
 type MusePermissionPickerValue = AgentChatMusePermissionMode | "plan";
-const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, Pick<PermissionModePickerOption<MusePermissionPickerValue>, "triggerLabel" | "tone" | "icon">> = {
-  denyUnmatched: { triggerLabel: "Read-only", tone: "green", icon: "manual" },
-  promptUnmatched: { tone: "green", icon: "edit" },
-  onRequest: { tone: "amber", icon: "auto" },
-  allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
-};
-const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
-  { value: "plan", label: "Plan", detail: "Read-only Muse turns for planning, with ADE's plan guidance.", tone: "purple", icon: "plan" },
-  ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
-];
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
@@ -5830,8 +5780,7 @@ function AgentChatComposerImpl({
     codexConfigSource: ccsUse,
   });
   const codexPresetOptions = useMemo(
-    () => getPermissionOptions({ family: "openai", isCliWrapped: true })
-      .filter((option) => option.value === "default" || option.value === "edit" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml"),
+    () => getPermissionOptions({ family: "openai", isCliWrapped: true }).filter(isCodexPresetOption),
     [],
   );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
@@ -5990,7 +5939,7 @@ function AgentChatComposerImpl({
     }
 
     if (sp === "codex") {
-      const codexModeOptions = codexPresetOptions.map(codexPermissionPickerOption);
+      const codexModeOptions = modelPermissionPickerOptions("codex", codexPresetOptions);
       const codexCustomOption: PermissionModePickerOption<CodexPermissionPreset> = {
         value: "custom",
         label: "Custom",
@@ -6032,14 +5981,7 @@ function AgentChatComposerImpl({
     }
 
     if (sp === "copilot") {
-      const options: PermissionModePickerOption<"plan" | "ask" | "assisted" | "auto-edit" | "full-auto">[] = [
-        { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
-        { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
-        { value: "assisted", label: "Assisted", detail: "Copilot reviews each tool call with a safety model and approves the safe ones; asks you for the rest.", tone: "purple", icon: "agent" },
-        { value: "auto-edit", label: "Auto-edit", detail: "Automatically approve file changes in the workspace.", tone: "amber", icon: "edit" },
-        { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
-      ];
-      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={options} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_PICKER_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
     }
 
     if (sp === "muse") {
@@ -6057,7 +5999,7 @@ function AgentChatComposerImpl({
         <PermissionModePicker
           ariaLabel="Muse approval mode"
           selectedValue={im === "plan" ? "plan" : mpmUse}
-          options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
+          options={withoutPlanning(MUSE_PERMISSION_PICKER_OPTIONS)}
           disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
           onSelect={applyMuseMode}
         />
@@ -6075,7 +6017,7 @@ function AgentChatComposerImpl({
             value: modeId,
             label: formatCursorModeLabel(modeId),
           }));
-      const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
+      const cursorModeOptions = cursorModePickerOptions(modeChoices);
       // Only the mode lives in the prompt box. Cursor's Fast is the model
       // picker's Fast chip, and its other model options keep Cursor's default.
       if (!modeChoices.length) return null;

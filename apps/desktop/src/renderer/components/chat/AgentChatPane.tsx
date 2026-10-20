@@ -96,10 +96,13 @@ import {
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
   queuedSteersCanReorder,
-  AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
 } from "../../../shared/types/chat";
-import { musePermissionModeFromLegacyPermissionMode } from "../../../shared/modelPermissions";
+import {
+  MUSE_PERMISSION_MODES as MUSE_NATIVE_PERMISSION_MODES,
+  musePermissionModeFromLegacyPermissionMode,
+  OPENCODE_PERMISSION_MODES as OPENCODE_NATIVE_PERMISSION_MODES,
+} from "../../../shared/modelPermissions";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
@@ -2307,16 +2310,6 @@ const HANDOFF_CLAUDE_MODES: Array<{ value: AgentChatClaudePermissionMode; label:
   { value: "plan", label: "Plan" },
   { value: "bypassPermissions", label: "Bypass" },
 ];
-
-const HANDOFF_OPENCODE_MODES: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
-  { value: "plan", label: "Plan" },
-  { value: "edit", label: "Edit" },
-  { value: "full-auto", label: "Full auto" },
-  { value: "config-toml", label: "Config" },
-];
-
-const HANDOFF_MUSE_MODES: Array<{ value: AgentChatMusePermissionMode; label: string }> = AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES
-  .map((value) => ({ value, label: AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value].label }));
 
 const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
   { value: "read-only", label: "Read-only" },
@@ -16068,7 +16061,7 @@ export function AgentChatPane({
           className={handoffSelectCls}
           aria-label="OpenCode permission mode for handoff"
         >
-          {HANDOFF_OPENCODE_MODES.map((m) => (
+          {OPENCODE_NATIVE_PERMISSION_MODES.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
@@ -16096,7 +16089,7 @@ export function AgentChatPane({
           className={handoffSelectCls}
           aria-label="Muse approval mode for handoff"
         >
-          {HANDOFF_MUSE_MODES.map((m) => (
+          {MUSE_NATIVE_PERMISSION_MODES.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
