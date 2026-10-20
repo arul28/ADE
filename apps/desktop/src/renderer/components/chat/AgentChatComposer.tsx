@@ -6514,6 +6514,8 @@ function AgentChatComposerImpl({
     }
 
     if (event.key !== "Enter" || event.shiftKey) return;
+    // Enter that confirms an IME candidate is part of typing, not a send.
+    if (event.nativeEvent.isComposing || imeComposingRef.current) return;
     const commandEnter = commandModified;
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;

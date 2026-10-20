@@ -14195,7 +14195,10 @@ export function AgentChatPane({
         submitInFlightRef.current = false;
         setBusy(false);
       }
-      if (liveDraftRef.current !== draft) {
+      // The user may have switched chats, edited the text, or changed the
+      // attachments while the declines were in flight: send nothing then.
+      if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
+      if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
         setError("The approval was declined, but your message changed while that was sending, so nothing was sent. Send it again.");
         return;
       }
