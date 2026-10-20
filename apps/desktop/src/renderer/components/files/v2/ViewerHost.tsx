@@ -12,6 +12,9 @@ import { HtmlViewer } from "./viewers/HtmlViewer";
 import { CsvViewer } from "./viewers/CsvViewer";
 import { SpreadsheetViewer } from "./viewers/SpreadsheetViewer";
 import { PresentationViewer } from "./viewers/PresentationViewer";
+import { WordViewer } from "./viewers/WordViewer";
+import { FontViewer } from "./viewers/FontViewer";
+import { MermaidViewer } from "./viewers/MermaidViewer";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { MediaViewer } from "./viewers/MediaViewer";
 import { DocumentViewer } from "./viewers/DocumentViewer";
@@ -83,6 +86,12 @@ export function ViewerHost(props: ViewerHostProps) {
       return <SpreadsheetViewer key={tab.id} {...viewerProps} />;
     case "presentation":
       return <PresentationViewer key={tab.id} {...viewerProps} />;
+    case "word":
+      return <WordViewer key={tab.id} {...viewerProps} />;
+    case "font":
+      return <FontViewer key={tab.id} {...viewerProps} />;
+    case "mermaid":
+      return <MermaidViewer key={tab.id} {...viewerProps} />;
     case "pdf":
       return <PdfViewer key={tab.id} {...viewerProps} />;
     case "audio":

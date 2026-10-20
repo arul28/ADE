@@ -227,9 +227,10 @@ Renderer:
   support, project-scoped tab-scope persistence, warm empty state,
   the search panel, the create prompt (`overlays.tsx`, which now holds
   `CreatePromptModal` and the shared modal chrome only), and
-  viewers for code, markdown, sandboxed HTML, image, audio/video playback, CSV/TSV,
-  PDF, spreadsheets (`.xlsx`), presentations (`.pptx`), the Office-document
-  fallback, large text, binary, and diffs.
+  viewers for code, markdown, sandboxed HTML, image (SVG source, converted
+  TIFF/HEIC), Mermaid diagram files, fonts, audio/video playback, CSV/TSV,
+  PDF, spreadsheets (`.xlsx`), presentations (`.pptx`), Word documents
+  (`.docx`), the legacy-Office fallback, large text, binary, and diffs.
   `v2/viewerRegistry.ts` decides both which viewer renders a file and
   whether a tab is editable (`tabIsTextEditable` = editable viewer kind
   AND a full, non-binary text payload). The markdown Preview↔Source and
@@ -242,14 +243,26 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/viewers/office/` — the
   OOXML readers behind those two viewers: `ooxmlZip.ts` (lazy fflate,
   entry-scoped reads, a streaming byte cap), `ooxmlXml.ts` (namespace-aware
-  lookups, entity decoding, event-loop yields), `xlsx.ts` and `pptx.ts`
-  (the display models), and `ooxmlError.ts` (a typed failure reason each
+  lookups, entity decoding, event-loop yields), `xlsx.ts`, `pptx.ts` and `docx.ts`
+  (the display models), `ooxmlMedia.ts` (the one media extension → MIME map), and `ooxmlError.ts` (a typed failure reason each
   viewer turns into copy). See [Office previews](#office-previews).
 - `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
   — the shell both office viewers share: size pre-check, capped byte stream,
   parse through a dynamic import, cancellation, and the one failure card (with
   a retry only where retrying can help). `load` is held in a ref, so a caller
   passing an inline arrow cannot restart the read on a re-render.
+- `apps/desktop/src/renderer/components/files/v2/viewers/WordViewer.tsx` and
+  `WordBlocks.tsx` — the `.docx` page, outline rail and zoom (the viewer) and
+  the block renderers (paragraphs, lists, tables, pictures, links). Element ids
+  are scoped per viewer, so two open documents never share an anchor.
+- `apps/desktop/src/renderer/components/files/v2/viewers/FontViewer.tsx` and
+  `fontInfo.ts` — the font specimen and its bounded sfnt/WOFF metadata reader.
+- `apps/desktop/src/renderer/components/files/v2/viewers/MermaidViewer.tsx` —
+  `.mmd`/`.mermaid` Diagram↔Source over the shared `MermaidDiagram`
+  (`keepLastGood`).
+- `apps/desktop/src/renderer/components/files/v2/viewers/usePanZoom.ts` and
+  `ZoomControls.tsx` — the pan/zoom state and toolbar the image, Mermaid and
+  Word viewers share.
 - `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
   — the one "no in-app preview" card (icon, name, mime · size, an honest
   notice, Copy full path, Open externally). `DocumentViewer` renders it for
@@ -827,7 +840,7 @@ UTF-8-safe first chunk with `isPartial`, `rangeStart`, `rangeEnd`, and
 `readFileRange` uses byte offsets, clamps each request, and trims
 non-final UTF-8 responses to a complete code-point boundary so chunks
 can be concatenated without corrupting text. Binary/image/PDF range
-responses, plus audio/video and Office-document ranges, are base64-encoded
+responses, plus audio/video, font, TIFF/HEIC and Office-document ranges, are base64-encoded
 per range; consumers must treat each range as independently decodable bytes
 and advance only by `nextOffset`.
 
@@ -838,7 +851,14 @@ attachment previews natively: a virtualized grid with the sheet's own column
 letters, row numbers, column widths, and date/number formats, with sheet tabs
 and a row × column count. A `.pptx` gets a slide rail and a canvas drawn from the
 deck's real geometry, pictures and tables, plus an Outline view and arrow-key
-navigation scoped to the viewer itself.
+navigation scoped to the viewer itself. A `.docx` renders as a page at the
+document's own size and margins (Letter with 1" margins when the package has no
+section properties): styled headings, run formatting, numbered and bulleted
+lists, tables with merged cells, embedded raster pictures, links and page
+breaks, with an Outline rail of its headings and Fit / 100% / zoom controls.
+External links open in ADE's browser (http, https and mailto only), internal
+bookmarks scroll the page, and a picture whose relationship is external is
+never fetched.
 
 The readers are ADE's own (`viewers/office/`) on top of a bounded zip reader,
 which is what keeps "native preview" from costing anything until someone asks
@@ -859,19 +879,23 @@ for one:
   2,000 rows × 64 columns and says "showing the first 2,000 of 5,000 rows"
   instead of growing; a deck parses at most 300 slides, 120 shapes per slide,
   50 table rows × 20 columns per table, and 200 outline lines per slide.
+  A document stops at 20,000 blocks or 2 million characters, 500 rows ×
+  100 columns per table and four levels of nested tables, and says it was
+  cut short.
   The grid virtualizes rows (`@tanstack/react-virtual`), so the DOM stays one
   screenful however long the sheet is.
 - **Parsing yields.** A worksheet body is scanned in row chunks that yield to
   the event loop, so a very long sheet cannot freeze a frame, and the
   decompression runs in fflate's worker wherever the runtime has one.
 
-Legacy binary formats are a different format, not a different extension: `.xls`
-and `.ppt` are OLE2 compound files, so they stay on the fallback card, which
+Legacy binary formats are a different format, not a different extension: `.doc`,
+`.xls` and `.ppt` are OLE2 compound files, so they stay on the fallback card, which
 says so plainly. The same OLE2 signature is also how an encrypted
 (password-protected) OOXML package is recognized. `.xlsm` and `.pptm` are not
 routed to the previews yet. What a preview deliberately does not draw is counted
 rather than dropped — a slide reads "Not shown in this preview: 2 charts, 1
-picture" — and a formula with no cached result shows the formula text instead of
+picture", and a document counts its charts, text boxes, shapes, footnotes,
+comments, headers and footers the same way — and a formula with no cached result shows the formula text instead of
 a blank cell.
 
 This is a desktop and hosted-web decision: the classification lives in the

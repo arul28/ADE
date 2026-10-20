@@ -9,58 +9,19 @@ import {
   resolveStagedAttachmentExtension,
   stagedAttachmentDestPath,
 } from "../../../desktop/src/shared/chatAttachmentStagingFs";
+import { sniffImageMimeType } from "../../../desktop/src/shared/imageSniff";
+import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../desktop/src/shared/types/chat";
+export { readImageFileAsDataUrl } from "../../../desktop/src/main/services/chat/imageAttachmentConverter";
 
 // The base64/in-memory ceiling, single-sourced so the constant and every
 // rejection message that renders it stay in step.
 const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
-export const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-  ".bmp": "image/bmp",
-  ".gif": "image/gif",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".webp": "image/webp",
-};
-
-function sniffImageMimeType(buffer: Buffer): string | null {
-  if (buffer.length >= 8
-    && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
-    && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) return "image/png";
-  if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return "image/jpeg";
-  if (buffer.length >= 6
-    && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
-    && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) return "image/gif";
-  if (buffer.length >= 12
-    && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
-    && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) return "image/webp";
-  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) return "image/bmp";
-  if (buffer.length >= 4
-    && buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0x01 && buffer[3] === 0x00) return "image/x-icon";
-  const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
-  const stripped = head.replace(/^﻿/, "").trimStart();
-  if ((/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) || /^<svg\b/i.test(stripped)) {
-    return "image/svg+xml";
-  }
-  return null;
-}
-
-export async function readImageFileAndSniffMime(filePath: string): Promise<{ data: Buffer; mimeType: string }> {
-  const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile()) throw new Error("Path is not a file.");
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Image"));
-  const data = await fs.promises.readFile(filePath);
-  const mimeType = sniffImageMimeType(data);
-  if (!mimeType) throw new Error("Path is not an image.");
-  return { data, mimeType };
-}
 
 function normalizeImageMime(mime: unknown, filename: string): string {
   const raw = typeof mime === "string" ? mime.trim().toLowerCase() : "";
-  const fromExtension = IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()];
+  const fromExtension = IMAGE_ATTACHMENT_MEDIA_TYPES[path.extname(filename).toLowerCase()];
   const normalized = raw || fromExtension || "";
-  if (!Object.values(IMAGE_MIME_BY_EXTENSION).includes(normalized)) {
+  if (!Object.values(IMAGE_ATTACHMENT_MEDIA_TYPES).includes(normalized)) {
     throw new Error("Temporary attachment mime must be a supported image type.");
   }
   return normalized;
@@ -118,9 +79,9 @@ export async function saveImageTempAttachment(
   // agrees it names this exact MIME, which is what keeps a `.jpg` from being
   // rewritten to the table's first `image/jpeg` entry.
   const namedExtension = resolveStagedAttachmentExtension(filename, null);
-  const ext = namedExtension && IMAGE_MIME_BY_EXTENSION[namedExtension] === mimeType
+  const ext = namedExtension && IMAGE_ATTACHMENT_MEDIA_TYPES[namedExtension] === mimeType
     ? namedExtension
-    : Object.entries(IMAGE_MIME_BY_EXTENSION)
+    : Object.entries(IMAGE_ATTACHMENT_MEDIA_TYPES)
       .find(([, entryMime]) => entryMime === mimeType)?.[0] || ".png";
   const destPath = stagedAttachmentDestPath(attachmentsDir, ext);
   await fs.promises.writeFile(destPath, content);

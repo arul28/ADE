@@ -55,6 +55,11 @@ export function imageNotInlinedText(displayPath: string, reason: string): string
   return `[Image not inlined: ${displayPath} (${reason}). Read it from that path if you need to see it.]`;
 }
 
+/** Shared reference used when an image format must stay as a readable file. */
+export function imageAttachmentReferenceText(displayPath: string, mediaType: string): string {
+  return `[Image attached (${mediaType}): ${displayPath}]`;
+}
+
 /** {@link imageNotInlinedText} as a content part, ready to push. */
 export function imageNotInlinedHintPart(
   displayPath: string,

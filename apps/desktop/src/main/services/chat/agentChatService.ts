@@ -448,11 +448,16 @@ import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
 import { createNextPromptSuggestion, sanitizePromptSuggestion } from "./nextPromptSuggestion";
 import {
   exceedsInlineFileLimit,
+  imageAttachmentReferenceText,
   imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
-import { fitImageForProviderInline } from "./providerInlineImage";
+import {
+  fitImageForProviderInline,
+  isProviderImageByteMediaType,
+  declaredImageMediaType,
+} from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
@@ -12503,6 +12508,21 @@ export function createAgentChatService(args: {
       if (attachmentIsReferenceOnly(attachment)) {
         items.push(codexReferenceOnlyAttachmentInput(attachment));
         continue;
+      }
+      if (attachment.type === "image") {
+        // A type that names a format no provider takes as image bytes (TIFF,
+        // HEIC, SVG…) goes as a path reference. An image with no type from the
+        // sender or its name still goes as `localImage`: Codex reads and
+        // decodes that file itself, as it always has.
+        const imageMimeType = declaredImageMediaType(attachment.path, attachment.mimeType);
+        if (imageMimeType && !isProviderImageByteMediaType(imageMimeType)) {
+          items.push({
+            type: "text",
+            text: imageAttachmentReferenceText(attachmentAgentPath(attachment), imageMimeType),
+            text_elements: [],
+          });
+          continue;
+        }
       }
       const stagedPath = await stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {

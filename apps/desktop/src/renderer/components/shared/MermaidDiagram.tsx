@@ -12,7 +12,8 @@
  * - Results are cached per source and theme (64 settled entries; a pending
  *   render is never evicted, so a remount reuses its promise).
  * - A failed import offers Retry; a parse error shows mermaid's message above
- *   the source.
+ *   the source. A surface with its own error UI (the Mermaid file viewer)
+ *   passes `keepLastGood` and `onRenderResult` instead.
  */
 import React from "react";
 import { Check, Code, Copy, FlowArrow } from "@phosphor-icons/react";
@@ -26,7 +27,7 @@ type MermaidApi = {
   render: (id: string, source: string) => Promise<{ svg: string }>;
 };
 
-type RenderResult = { ok: true; svg: string } | { ok: false; error: string; kind: "load" | "parse" };
+export type MermaidRenderResult = { ok: true; svg: string } | { ok: false; error: string; kind: "load" | "parse" };
 
 const MAX_SETTLED_RENDERS = 64;
 
@@ -34,7 +35,7 @@ let mermaidPromise: Promise<MermaidApi> | null = null;
 const MERMAID_DEFAULT_SECURE_KEYS = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges"];
 let renderSeq = 0;
 let renderQueue: Promise<unknown> = Promise.resolve();
-const renderCache = new Map<string, { promise: Promise<RenderResult>; settled: boolean }>();
+const renderCache = new Map<string, { promise: Promise<MermaidRenderResult>; settled: boolean }>();
 
 function loadMermaid(): Promise<MermaidApi> {
   if (!mermaidPromise) {
@@ -68,11 +69,11 @@ function appBackgroundColor(theme: "dark" | "light"): string {
  * Mermaid's config is global, so renders run one at a time: each sets its own
  * theme and renders before the next one can change it.
  */
-function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderResult> {
+function renderMermaid(source: string, theme: "dark" | "light"): Promise<MermaidRenderResult> {
   const key = `${theme}\u0000${source}`;
   const cached = renderCache.get(key);
   if (cached) return cached.promise;
-  const job = renderQueue.then(async (): Promise<RenderResult> => {
+  const job = renderQueue.then(async (): Promise<MermaidRenderResult> => {
     let mermaid: MermaidApi;
     try {
       mermaid = await loadMermaid();
@@ -160,15 +161,26 @@ export function MermaidDiagram({
   source,
   variant,
   renderCode,
+  keepLastGood = false,
+  onRenderResult,
 }: {
   source: string;
   variant: "chat" | "pr" | "file";
   /** How this surface draws a code block, for the code toggle and failures. */
   renderCode: (code: string) => React.ReactNode;
+  /**
+   * For a live editor: while a new source renders or after it fails, keep the
+   * last good diagram on screen, faded, and draw no error of its own (the
+   * caller shows it from `onRenderResult`).
+   */
+  keepLastGood?: boolean;
+  /** Every settled render, for callers with their own error or export UI. */
+  onRenderResult?: (result: MermaidRenderResult) => void;
 }) {
   const theme = useAppThemeMode();
   const trimmed = React.useMemo(() => source.replace(/\n+$/, ""), [source]);
-  const [result, setResult] = React.useState<RenderResult | null>(null);
+  const [result, setResult] = React.useState<MermaidRenderResult | null>(null);
+  const [lastGoodSvg, setLastGoodSvg] = React.useState<string | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [showCode, setShowCode] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
@@ -182,12 +194,18 @@ export function MermaidDiagram({
       return;
     }
     void renderMermaid(trimmed, theme).then((next) => {
-      if (!cancelled) setResult(next);
+      if (cancelled) return;
+      setResult(next);
+      if (next.ok) setLastGoodSvg(next.svg);
     });
     return () => {
       cancelled = true;
     };
   }, [attempt, theme, trimmed]);
+
+  React.useEffect(() => {
+    if (result) onRenderResult?.(result);
+  }, [result, onRenderResult]);
 
   // One blob URL at a time, released when the viewer closes.
   React.useEffect(() => () => {
@@ -209,6 +227,20 @@ export function MermaidDiagram({
   const frame = variant === "chat"
     ? "my-3"
     : "mb-3 rounded-md border border-[color:color-mix(in_srgb,var(--color-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] p-3 last:mb-0";
+
+  if (keepLastGood && !result?.ok) {
+    if (lastGoodSvg) {
+      return (
+        <div className={frame} data-mermaid-block="">
+          <div className="opacity-40" aria-hidden="true">
+            <MermaidSvg svg={lastGoodSvg} />
+          </div>
+        </div>
+      );
+    }
+    // A failure with nothing to fall back on: the caller draws the error.
+    if (result) return null;
+  }
 
   if (!result) {
     return (

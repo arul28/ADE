@@ -13,7 +13,7 @@ import {
   stagedAttachmentDestPath,
   unlinkStagedAttachmentQuietly,
 } from "../../../desktop/src/shared/chatAttachmentStagingFs";
-import { IMAGE_MIME_BY_EXTENSION } from "./imageAttachment";
+import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../desktop/src/shared/types/chat";
 
 /**
  * Chunked, transport-agnostic staging for *file-shaped* chat attachments
@@ -21,7 +21,7 @@ import { IMAGE_MIME_BY_EXTENSION } from "./imageAttachment";
  *
  * Why not the existing routes:
  * - `chat.saveTempAttachment` is base64 in one payload AND image-only: it
- *   sniffs the bytes and rejects anything outside `IMAGE_MIME_BY_EXTENSION`,
+ *   sniffs the bytes and rejects anything outside `IMAGE_ATTACHMENT_MEDIA_TYPES`,
  *   and it is capped at `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB) because the
  *   whole body is buffered as a string on both ends.
  * - `chat.createAttachmentUpload` streams over HTTP at the product ceiling
@@ -81,7 +81,7 @@ const MAX_PENDING_TOTAL_MULTIPLIER = 4;
 const FILE_MIME_BY_EXTENSION: Record<string, string> = {
   // The image half is the one `chat.saveTempAttachment` already owns; re-listing
   // it here is how the two routes start disagreeing about what a `.bmp` is.
-  ...IMAGE_MIME_BY_EXTENSION,
+  ...IMAGE_ATTACHMENT_MEDIA_TYPES,
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".md": "text/markdown",

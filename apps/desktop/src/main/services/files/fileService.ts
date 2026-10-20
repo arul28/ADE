@@ -111,6 +111,8 @@ const TEXT_EXTENSIONS = new Set([
   ".less",
   ".log",
   ".md",
+  ".mmd",
+  ".mermaid",
   ".mdx",
   ".mjs",
   ".mts",
@@ -148,10 +150,19 @@ const BASE64_RANGE_EXTENSIONS = new Set([
   ".xz",
   ".zip",
   ".pdf",
+  ".ttf",
+  ".otf",
+  ".woff",
+  ".woff2",
+  ".tif",
+  ".tiff",
+  ".heic",
+  ".heif",
   ".mp3",
   ".m4a",
   ".aac",
   ".wav",
+  ".weba",
   ".flac",
   ".ogg",
   ".oga",
@@ -190,6 +201,7 @@ const AUDIO_MIME_BY_EXTENSION = new Map<string, string>([
   [".ogg", "audio/ogg"],
   [".opus", "audio/ogg"],
   [".wav", "audio/wav"],
+  [".weba", "audio/webm"],
 ]);
 
 const VIDEO_MIME_BY_EXTENSION = new Map<string, string>([
@@ -200,6 +212,17 @@ const VIDEO_MIME_BY_EXTENSION = new Map<string, string>([
   [".mp4", "video/mp4"],
   [".ogv", "video/ogg"],
   [".webm", "video/webm"],
+]);
+
+const OTHER_BINARY_MIME_BY_EXTENSION = new Map<string, string>([
+  [".tif", "image/tiff"],
+  [".tiff", "image/tiff"],
+  [".heic", "image/heic"],
+  [".heif", "image/heif"],
+  [".ttf", "font/ttf"],
+  [".otf", "font/otf"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
 ]);
 
 function containsDotGit(absPath: string): boolean {
@@ -266,6 +289,7 @@ function inferBinaryMimeType(relPath: string): string {
     ?? AUDIO_MIME_BY_EXTENSION.get(ext)
     ?? VIDEO_MIME_BY_EXTENSION.get(ext)
     ?? DOCUMENT_MIME_BY_EXTENSION.get(ext)
+    ?? OTHER_BINARY_MIME_BY_EXTENSION.get(ext)
     ?? "application/octet-stream"
   );
 }

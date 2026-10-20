@@ -3,9 +3,10 @@ import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   attachmentTooLargeMessage,
 } from "../../../shared/chatAttachmentLimits";
-import type {
-  ChatAttachmentStagingMode,
-  HeicConversionErrorCode,
+import {
+  IMAGE_ATTACHMENT_MEDIA_TYPES,
+  type ChatAttachmentStagingMode,
+  type HeicConversionErrorCode,
 } from "../../../shared/types/chat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 
@@ -100,6 +101,23 @@ export type StagedAttachment = {
   previewDataUrl: string | null;
 };
 
+/** Align an image's staged extension with its MIME so stored type inference agrees. */
+export function normalizeImageAttachmentFilename(
+  filename: string,
+  mimeType: string | null | undefined,
+): string {
+  const normalizedMimeType = mimeType?.trim().toLowerCase() ?? "";
+  // Every extension the shared table maps to this MIME, canonical one first.
+  const matchingExtensions = Object.keys(IMAGE_ATTACHMENT_MEDIA_TYPES)
+    .filter((extension) => IMAGE_ATTACHMENT_MEDIA_TYPES[extension] === normalizedMimeType);
+  const extension = matchingExtensions[0];
+  if (!extension) return filename;
+  const currentExtension = filename.match(/\.[^./\\]+$/)?.[0]?.toLowerCase() ?? "";
+  if (matchingExtensions.includes(currentExtension)) return filename;
+  const stem = currentExtension ? filename.slice(0, -currentExtension.length) : filename;
+  return `${stem || "image"}${extension}`;
+}
+
 /**
  * A HEIC the renderer could not hand to the host as JPEG. Distinguished from
  * every other staging failure because the file will fail the same way on every
@@ -130,7 +148,7 @@ export async function stageAttachmentBytesFromFile(args: {
   api?: Pick<Window["ade"]["agentChat"], "saveTempAttachment">;
 }): Promise<StagedAttachment> {
   const buffer = await args.file.arrayBuffer();
-  let filename = args.filename;
+  let filename = normalizeImageAttachmentFilename(args.filename, args.file.type);
   let data = bytesToBase64(new Uint8Array(buffer));
   let mimeType: string | null = args.file.type || null;
   let previewDataUrl: string | null = null;
@@ -141,7 +159,7 @@ export async function stageAttachmentBytesFromFile(args: {
     }
     const converted = await convertImageToJpeg({
       data,
-      filename: args.filename,
+      filename,
       mimeType: args.file.type || null,
     });
     if (converted.ok !== true) {

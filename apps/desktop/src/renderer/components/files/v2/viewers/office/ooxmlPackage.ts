@@ -7,7 +7,8 @@
 
 import { elementsNS, parseXml } from "./ooxmlXml";
 
-export type Relationship = { target: string; type: string };
+/** `external` is only ever true when the caller asked to keep external targets. */
+export type Relationship = { target: string; type: string; external: boolean };
 
 /**
  * Resolve an OOXML relationship Target against the part's directory.
@@ -28,11 +29,17 @@ function resolvePartPath(baseDir: string, target: string): string {
 }
 
 /**
- * Read a `.rels` part into `Id → { target, type }` with the target already
- * resolved. External relationships (a video linked from a share) name no
- * package part and are dropped.
+ * Read a `.rels` part into `Id → { target, type, external }` with internal
+ * targets already resolved. External relationships (a video linked from a
+ * share, a hyperlink) name no package part and are dropped unless
+ * `keepExternal` is set; then their target is kept verbatim and marked
+ * `external`, so a caller can never mistake it for a package path.
  */
-export function parseRelationships(relsXml: string | null, baseDir: string): Map<string, Relationship> {
+export function parseRelationships(
+  relsXml: string | null,
+  baseDir: string,
+  options: { keepExternal?: boolean } = {},
+): Map<string, Relationship> {
   const rels = new Map<string, Relationship>();
   if (!relsXml) return rels;
   const doc = parseXml(relsXml);
@@ -41,8 +48,12 @@ export function parseRelationships(relsXml: string | null, baseDir: string): Map
     const id = rel.getAttribute("Id");
     const target = rel.getAttribute("Target");
     if (!id || !target) continue;
-    if ((rel.getAttribute("TargetMode") ?? "").toLowerCase() === "external") continue;
-    rels.set(id, { target: resolvePartPath(baseDir, target), type: rel.getAttribute("Type") ?? "" });
+    const type = rel.getAttribute("Type") ?? "";
+    if ((rel.getAttribute("TargetMode") ?? "").toLowerCase() === "external") {
+      if (options.keepExternal) rels.set(id, { target, type, external: true });
+      continue;
+    }
+    rels.set(id, { target: resolvePartPath(baseDir, target), type, external: false });
   }
   return rels;
 }

@@ -829,18 +829,23 @@ export type ConvertImageToJpegResult =
   | { ok: true; data: string; filename: string; mimeType: "image/jpeg" }
   | { ok: false; errorCode: HeicConversionErrorCode };
 
-const IMAGE_ATTACHMENT_MEDIA_TYPES: Readonly<Record<string, string>> = {
+/**
+ * Image attachment extensions and their MIME types: the one table every
+ * staging route reads. Where a MIME has two extensions, the first listed is
+ * the one a renamed file gets.
+ */
+export const IMAGE_ATTACHMENT_MEDIA_TYPES: Readonly<Record<string, string>> = {
   ".bmp": "image/bmp",
   ".gif": "image/gif",
   ".heic": "image/heic",
   ".heif": "image/heif",
   ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".png": "image/png",
   ".svg": "image/svg+xml",
-  ".tif": "image/tiff",
   ".tiff": "image/tiff",
+  ".tif": "image/tiff",
   ".webp": "image/webp",
 };
 

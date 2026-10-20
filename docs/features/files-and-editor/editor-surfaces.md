@@ -292,7 +292,23 @@ Supported viewers:
 - `MarkdownViewer` — Preview↔Source toggle; Source mounts the editable
   `CodeViewer`, and Preview renders the dirty buffer only when the tab has
   unsaved edits (otherwise the authoritative file payload)
-- `ImageViewer`
+- `ImageViewer` — fit/zoom/pan, a transparency grid for formats that can carry
+  alpha, and an Image↔Source toggle for `.svg` (Source is read-only; the
+  picture itself is only ever drawn through `<img>`, so script in an SVG never
+  runs). `.tif`/`.tiff`/`.heic`/`.heif` are converted to JPEG on this machine
+  (macOS `sips`, through `app.convertImageToJpeg`) from bytes read through the
+  pin; elsewhere the viewer shows the open-externally card with the reason
+- `MermaidViewer` for `.mmd`/`.mermaid` — Diagram↔Source toggle; Source is the
+  editable `CodeViewer`, Diagram renders the dirty buffer through the shared
+  strict-mode `MermaidDiagram`, keeps the last good render (dimmed) under a
+  render error, zooms only on pinch / Cmd+wheel, and copies SVG or source
+- `FontViewer` for `.ttf`/`.otf`/`.woff`/`.woff2` — loads the bytes as a
+  `FontFace` (removed on unmount; never a URL fetch), with an editable sample,
+  size and variable-axis sliders, a size waterfall, a capped character grid
+  (click copies) and the name-table details from `viewers/fontInfo.ts`. WOFF2 is
+  rendered by Chromium but its tables are not decoded, so it shows common
+  characters instead of measured coverage
+- `WordViewer` for `.docx` — see [Office previews](./README.md#office-previews)
 - `MediaViewer` for audio/video files Chromium can play, with a renderer-side
   size cap before it builds a Blob URL
 - `CsvViewer` — virtualized sortable/filterable table with a Table↔Source
@@ -300,8 +316,8 @@ Supported viewers:
   (`!readOnly`), so a partial streamed CSV stays a read-only table
 - `PdfViewer`
 - `LargeTextViewer` for streamed large text
-- `DocumentViewer` for Office-style documents; it shows type/path metadata
-  and opens the file in the OS default app for full editing/viewing
+- `DocumentViewer` for the legacy binary Office formats (`.doc`, `.xls`,
+  `.ppt`); it shows type/path metadata and opens the file in the OS default app
 - `BinaryViewer`
 - `DiffViewer`, backed by `window.ade.diff` and `AdeDiffViewer`
 

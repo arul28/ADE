@@ -1565,11 +1565,14 @@ describe("createAgentChatService", () => {
 
       const imagePath = path.join(tmpRoot, "codex-steer-image.png");
       fs.writeFileSync(imagePath, "fake-image-bytes");
+      // Codex rejects SVG as image input, so it goes as a path the agent reads.
+      const svgPath = path.join(tmpRoot, "codex-steer-diagram.svg");
+      fs.writeFileSync(svgPath, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
 
       const result = await service.steer({
         sessionId: session.id,
         text: "Use this screenshot while you keep going.",
-        attachments: [{ path: imagePath, type: "image" }],
+        attachments: [{ path: imagePath, type: "image" }, { path: svgPath, type: "image" }],
       });
 
       expect(result.queued).toBe(false);
@@ -1589,16 +1592,22 @@ describe("createAgentChatService", () => {
               type: "localImage",
               path: expect.stringContaining("codex-steer-image.png"),
             }),
+            expect.objectContaining({
+              type: "text",
+              text: expect.stringMatching(/^\[Image attached \(image\/svg\+xml\): .*codex-steer-diagram\.svg\]$/),
+            }),
           ]),
         }),
       }));
+      const steerInput = (steerRequest as { params: { input: Array<{ type: string; path?: string }> } }).params.input;
+      expect(steerInput.filter((item) => item.type === "localImage")).toHaveLength(1);
 
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           event: expect.objectContaining({
             type: "user_message",
             text: "Use this screenshot while you keep going.",
-            attachments: [{ path: imagePath, type: "image" }],
+            attachments: [{ path: imagePath, type: "image" }, { path: svgPath, type: "image" }],
             deliveryState: "accepted",
             processed: false,
             steerId: result.steerId,
