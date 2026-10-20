@@ -696,6 +696,13 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
   env?: NodeJS.ProcessEnv;
   includeInteractiveShell?: boolean;
   timeoutMs?: number;
+  /**
+   * Put the shell's entries (interactive, then login) ahead of `env`'s PATH,
+   * the order the user's own terminal ends up with. For a plain `/bin/sh` that
+   * never runs the rc files, so `/usr/local/bin/node` does not shadow the
+   * version manager's Node. Ignored on Windows.
+   */
+  preferShellOrder?: boolean;
 }): string {
   const env = args?.env ?? process.env;
 
@@ -724,7 +731,9 @@ export function augmentProcessPathWithShellAndKnownCliDirs(args?: {
     : null;
 
   return augmentPathWithKnownCliDirs(
-    mergePathEntries(getPathEnvValue(env), loginPath, interactivePath),
+    args?.preferShellOrder
+      ? mergePathEntries(interactivePath, loginPath, getPathEnvValue(env))
+      : mergePathEntries(getPathEnvValue(env), loginPath, interactivePath),
     env,
   );
 }

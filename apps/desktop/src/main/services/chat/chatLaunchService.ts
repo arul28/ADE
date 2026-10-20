@@ -1035,12 +1035,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     record.snapshot.phase = "running";
     record.snapshot.error = null;
+    // A retry is a new attempt: the card's clock counted from the first one,
+    // so the minutes the failed card sat waiting read as setup time (a 29 s
+    // retry showed as 7m 32s). Finished stages keep their own durations.
+    record.snapshot.startedAt = nowIso();
+    record.snapshot.endedAt = null;
     publish(record);
     void runPipeline(record);
     return cloneSnapshot(record.snapshot);
   };
 
-  const startNow = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
+  const startNow =async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
     const record = records.get(requireLaunchId(args?.launchId));
     if (!record) return null;
     const environment = stageOf(record, "environment");

@@ -17,6 +17,7 @@ import type {
 } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
+import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
 
 import type { Logger } from "../logging/logger";
 import {
@@ -132,6 +133,28 @@ function buildDockerProjectName(laneId: string, projectPrefix = "ade"): string {
 function resolveShellInvocation(commandLine: string, env: NodeJS.ProcessEnv): SpawnInvocation {
   if (process.platform === "win32") return resolveWindowsCmdLineInvocation(commandLine, env);
   return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
+}
+
+/**
+ * The env lane setup spawns into: the brain's own env with the user's login
+ * shell PATH (and the known CLI dirs) merged in, the same PATH ADE's terminals
+ * get (interactive and login shell first, so a version manager set up in
+ * `.zshrc` wins over an older Node elsewhere on PATH). A brain started by launchd inherits only `/usr/bin:/bin:…`, so without
+ * this a template's `npm ci` failed with "npm: command not found" on any
+ * machine whose Node comes from a version manager or a keg-only Homebrew
+ * formula, while the same line worked in the lane's terminal. The shell probe
+ * is cached and refreshed in the background, so this does not block the brain.
+ * The host-only keys go too: `ELECTRON_RUN_AS_NODE` left in an install made any
+ * Electron binary a package's install script starts run as plain Node.
+ */
+function laneSetupProcessEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
+  setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({
+    env,
+    includeInteractiveShell: true,
+    preferShellOrder: true,
+  }));
+  return stripHostRuntimeEnv(env);
 }
 
 /**
@@ -376,7 +399,8 @@ export function createLaneEnvironmentService({
     if (!cmd) {
       return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
     }
-    return runSpawn(resolveCliSpawnInvocation(cmd, args, process.env), cwd, process.env, timeoutMs);
+    const env = laneSetupProcessEnv();
+    return runSpawn(resolveCliSpawnInvocation(cmd, args, env), cwd, env, timeoutMs);
   }
 
   async function copyEnvFiles(
@@ -548,7 +572,7 @@ export function createLaneEnvironmentService({
     laneVars: Record<string, string>,
     laneId: string
   ): Promise<string | null> {
-    const env: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...process.env, ...laneVars });
+    const env = laneSetupProcessEnv(laneVars);
     if (resolved.injectPrimaryPath) {
       // The primary lane's root is the project checkout ADE manages lanes from.
       env.PRIMARY_WORKTREE_PATH = projectRoot;
