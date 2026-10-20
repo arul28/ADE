@@ -1,0 +1,37 @@
+---
+title: "v1.2.113"
+description: "Release notes for ADE v1.2.113 - October 20, 2026"
+---
+
+ADE 1.2.113 adds ADE MCP so AI apps can run ade through ADE Relay, gives the CTO a memory that carries across threads and machines, suggests the next prompt for every provider, previews many more file types, and cuts ADE's memory and process use across chats, terminals and the brain.
+
+## New
+
+- ADE MCP lets AI apps run ade on a computer through ADE Relay (#1815).
+- The CTO remembers the project across threads, models and machines (#1816), and its nightly memory gardening runs on the cheap model (#1821).
+- Chat suggests the next prompt for every provider, and Tab's caret lands where it should (#1840).
+- Files and chat preview Word docs, fonts, Mermaid files and more, and media an agent shares plays inline (#1841).
+- Lanes no longer force package links, and gain lane template prompts and an out-of-date banner (#1814).
+- Your MCP servers work on ADE accounts (#1836).
+- A new landing page (#1825).
+- The in-app feedback form, AI PR summaries and AI PR review summaries are gone; ask your agent to file a GitHub issue instead (#1810).
+
+## Fixes
+
+- A running chat no longer wears an old failed or ended status (#1833).
+- Dev brains no longer take over your chats, accounts or scheduled work (#1832).
+- A Custom-provider chat never runs on the harness's own sign-in (#1809), and the workflow pane shows each agent live in a cleaner layout (#1811).
+- Full-access MCP fails closed for unclassified ade commands (#1820).
+- A stalled update download no longer hangs forever (#1817).
+- Moved project copies are deleted reliably (#1822), and a built app.asar in a lane stays a plain file that is never locked (#1807).
+- Lane screen captures work with several projects open, a restart keeps the lane's apps (#1823), and lane screens can't trap you or your pointer (#1812).
+- The Mac stays awake with ADE quit (#1812), and the both-Command capture gesture works on macOS 27 (#1813).
+- On Windows, ADE says when an admin window blocks the lane screen (#1826).
+
+## Speed
+
+- Idle agents shut down after 3 minutes and restart cheaply (#1834), and Codex chats share one app-server process (#1838).
+- The brain gives back memory from quiet chats and stores its code at half size (#1830).
+- Terminal floods no longer freeze ADE, and each terminal uses less memory (#1837).
+- MCP servers start without npm's launcher, and helper runs start none (#1836).
+- Idle ticks stop spawning gh and ps (#1828), and stepped animations cost a frame only when they change (#1827).

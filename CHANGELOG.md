@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.113] - 2026-10-20
+
 ### Desktop and web
 
-- The in-app feedback form, AI PR summaries and AI PR review summaries are gone. To report a bug or idea, ask your agent to file a GitHub issue.
+- ADE MCP lets AI apps run ade on a computer through ADE Relay (#1815).
+- The CTO remembers the project across threads, models and machines (#1816, #1821).
+- Chat suggests the next prompt for every provider (#1840); files and chat preview Word docs, fonts, Mermaid files and more, and agent-shared media plays inline (#1841).
+- Lanes drop forced package links and gain template prompts and an out-of-date banner (#1814); your MCP servers work on ADE accounts (#1836); a new landing page (#1825).
+- The in-app feedback form, AI PR summaries and AI PR review summaries are gone. To report a bug or idea, ask your agent to file a GitHub issue (#1810).
+- Chat, brain, lane-screen and update fixes (#1807, #1809, #1811, #1812, #1813, #1817, #1820, #1822, #1823, #1826, #1832, #1833).
+- Lighter chats, terminals and brain (#1827, #1828, #1830, #1834, #1836, #1837, #1838).
+
+### iOS
+
+- Work live-roster and chat state fixes ship in a new TestFlight build.
 
 ## [1.2.112] - 2026-10-19
 
@@ -2612,7 +2624,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.112...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.113...HEAD
+[1.2.113]: https://github.com/arul28/ADE/compare/v1.2.112...v1.2.113
 [1.2.112]: https://github.com/arul28/ADE/compare/v1.2.111...v1.2.112
 [1.2.111]: https://github.com/arul28/ADE/compare/v1.2.110...v1.2.111
 [1.2.110]: https://github.com/arul28/ADE/compare/v1.2.109...v1.2.110
