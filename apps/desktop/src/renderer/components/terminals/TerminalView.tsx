@@ -174,6 +174,10 @@ type CachedRuntime = {
   /** Drives the DOM renderer's cursor blink; null while WebGL draws the cursor. */
   cursorBlinkClock: { dispose: () => void } | null;
   rendererInitStarted: boolean;
+  /** Gives a long-parked runtime's WebGL context back (PARKED_WEBGL_RELEASE_MS). */
+  webglReleaseTimer: ReturnType<typeof setTimeout> | null;
+  /** Its WebGL was released while parked; the next mount asks for it again. */
+  webglReleasedWhileParked: boolean;
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
@@ -1500,6 +1504,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   flushPendingPtyInput(runtime);
   runtime.disposed = true;
   clearDisposeTimer(runtime);
+  clearWebglReleaseTimer(runtime);
   if (runtime.fitRafId != null) cancelAnimationFrame(runtime.fitRafId);
   if (runtime.flushRafId != null) cancelAnimationFrame(runtime.flushRafId);
   if (runtime.flushTimer) clearTimeout(runtime.flushTimer);
@@ -2773,6 +2778,44 @@ type WebglAddonCtor = typeof WebglAddon;
 const MAX_WEBGL_TERMINALS = 8;
 const webglRuntimes = new Set<CachedRuntime>();
 
+/**
+ * How long a parked terminal keeps its WebGL context. Each holds roughly
+ * 8-19 MB of GPU memory and one of the MAX_WEBGL_TERMINALS slots, so a
+ * terminal left hidden would otherwise keep both for good and push newer
+ * terminals onto the slower DOM renderer. Getting WebGL back on reveal costs
+ * about 5 ms (measured), so only quick back-and-forth switching is worth
+ * keeping it for.
+ */
+const PARKED_WEBGL_RELEASE_MS = 30_000;
+
+function clearWebglReleaseTimer(runtime: CachedRuntime): void {
+  if (!runtime.webglReleaseTimer) return;
+  clearTimeout(runtime.webglReleaseTimer);
+  runtime.webglReleaseTimer = null;
+}
+
+function scheduleParkedWebglRelease(runtime: CachedRuntime): void {
+  clearWebglReleaseTimer(runtime);
+  if (runtime.renderer !== "webgl") return;
+  runtime.webglReleaseTimer = setTimeout(() => {
+    runtime.webglReleaseTimer = null;
+    if (runtime.disposed || runtime.refs > 0 || runtime.renderer !== "webgl") return;
+    runtime.webglReleasedWhileParked = true;
+    void setRenderer(runtime, "dom");
+  }, PARKED_WEBGL_RELEASE_MS);
+}
+
+/** On mount: keep the context if it is still held, or ask for it again. */
+function reclaimParkedWebgl(runtime: CachedRuntime): void {
+  clearWebglReleaseTimer(runtime);
+  if (!runtime.webglReleasedWhileParked) return;
+  runtime.webglReleasedWhileParked = false;
+  runtime.rendererInitStarted = false;
+  void initRendererChain(runtime).finally(() => {
+    scheduleFit(runtime, runtime.active);
+  });
+}
+
 /** The DOM renderer blinks its cursor with CSS; WebGL blinks its own. */
 function syncCursorBlinkClock(runtime: CachedRuntime): void {
   if (runtime.renderer === "dom") {
@@ -2985,6 +3028,8 @@ function createRuntime(args: {
     linkProviderSub,
     cursorBlinkClock: null,
     rendererInitStarted: false,
+    webglReleaseTimer: null,
+    webglReleasedWhileParked: false,
     inputEnabled: true,
     active: true,
     visible: true,
@@ -3370,6 +3415,7 @@ export function TerminalView({
     runtime.refs += 1;
     syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeRef);
     clearDisposeTimer(runtime);
+    reclaimParkedWebgl(runtime);
     setRuntimeInteractionState(runtime, mountConfig.isActive);
     setRuntimeVisibilityState(runtime, mountConfig.isVisible);
     setRuntimeHostHidden(runtime, !mountConfig.isVisible);
@@ -3635,6 +3681,8 @@ export function TerminalView({
       // running terminal does not discard in-memory TUI state.
       if (runtime.refs === 0 && runtime.exitCode != null) {
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
+      } else if (runtime.refs === 0) {
+        scheduleParkedWebglRelease(runtime);
       }
     };
   }, [imagePasteMode, runtimePinIdentity, runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
