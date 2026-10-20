@@ -199,8 +199,8 @@ describe("resolveAdeServeCommand", () => {
       process.env.ADE_CLI_JS = path.join(resources, "override", "cli.cjs");
       expect(resolveAdeServeCommand().args).toEqual([path.join(resources, "override", "cli.cjs"), "serve"]);
     } finally {
-      delete electronProcess.type;
-      delete electronProcess.resourcesPath;
+      Reflect.deleteProperty(electronProcess, "type");
+      Reflect.deleteProperty(electronProcess, "resourcesPath");
       if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalCliJs;
     }

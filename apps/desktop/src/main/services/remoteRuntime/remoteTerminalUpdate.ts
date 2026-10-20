@@ -141,6 +141,19 @@ export async function updateViaRemoteTerminal(args: {
   // From the start, so finding a lane and opening the terminal count too and the
   // whole run stays inside the IPC timeout set just above it.
   const deadline = now() + args.timeoutMs;
+  // Each call to the machine ends by the deadline too: a call that hangs there
+  // would otherwise keep this past the IPC timeout set just above `timeoutMs`.
+  const call = (projectId: string, request: RemoteRuntimeActionRequest) =>
+    new Promise<RemoteRuntimeActionResult>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("the machine did not answer in time")),
+        Math.max(0, deadline - now()),
+      );
+      callAction(targetId, projectId, request).then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error: unknown) => { clearTimeout(timer); reject(error); },
+      );
+    });
   const sleep = args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const manualHint = `On that PC, open a terminal and run: ade brain update${targetVersion ? ` --version ${targetVersion}` : ""}`;
 
@@ -152,7 +165,7 @@ export async function updateViaRemoteTerminal(args: {
   }
   let laneId: string | null;
   try {
-    laneId = pickLaneId((await callAction(targetId, project.projectId, {
+    laneId = pickLaneId((await call(project.projectId, {
       domain: "lane",
       action: "list",
       args: { includeArchived: false, includeStatus: false },
@@ -168,7 +181,7 @@ export async function updateViaRemoteTerminal(args: {
   let sessionId: string;
   let ptyId: string | null = null;
   try {
-    const created = (await callAction(targetId, project.projectId, {
+    const created = (await call(project.projectId, {
       domain: "pty",
       action: "create",
       args: {
@@ -197,7 +210,7 @@ export async function updateViaRemoteTerminal(args: {
     await sleep(POLL_INTERVAL_MS);
     let outcome: ReturnType<typeof terminalOutcome>;
     try {
-      outcome = terminalOutcome((await callAction(targetId, project.projectId, {
+      outcome = terminalOutcome((await call(project.projectId, {
         domain: "session",
         action: "get",
         arg: sessionId,
@@ -231,11 +244,12 @@ export async function updateViaRemoteTerminal(args: {
   }
   logger.warn("remote_update.terminal_timed_out", { targetId, sessionId });
   if (ptyId) {
-    try {
-      await callAction(targetId, project.projectId, { domain: "pty", action: "dispose", args: { ptyId, sessionId } });
-    } catch {
-      // Best effort: the terminal ends with the brain anyway.
-    }
+    // Not awaited: the answer is due now, and the terminal ends with the brain anyway.
+    void callAction(targetId, project.projectId, { domain: "pty", action: "dispose", args: { ptyId, sessionId } })
+      .catch((error: unknown) => logger.warn("remote_update.terminal_dispose_failed", {
+        targetId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
   }
   return failed(status, targetVersion, `The update on ${status.target.name} was still downloading after ${Math.round(args.timeoutMs / 60_000)} minutes, so ADE stopped waiting. ${manualHint}`);
 }

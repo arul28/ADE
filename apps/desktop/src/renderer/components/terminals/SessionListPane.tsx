@@ -1316,11 +1316,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   // when it has nothing retained to show: a blip on a machine whose chats are
   // still listed is not worth a notice.
   const machineReadFailures = useMemo(
-    () => Object.values(crossMachineEntries).flatMap((entry) =>
+    // Only while this pane shows other machines' chats at all: entries can
+    // outlive the sync that filled them.
+    () => (crossMachineSyncActive ? Object.values(crossMachineEntries) : []).flatMap((entry) =>
       entry.machineId !== activeMachineId && entry.online && entry.error && entry.sessions.length === 0
         ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
         : []),
-    [activeMachineId, crossMachineEntries],
+    [activeMachineId, crossMachineEntries, crossMachineSyncActive],
   );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
     && !workSessionFilters.machine.includes(activeMachineId);
