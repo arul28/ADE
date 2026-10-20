@@ -9,6 +9,7 @@
 //   node cdp.mjs anim
 // Env: CDP_PORT (default 9222), CDP_TARGET_URL substring (default: the dev renderer page "//localhost:", else the packaged index.html; see target.mjs), CDP_WS (direct ws url, e.g. node inspector)
 import { writeFileSync } from "node:fs";
+import { connect } from "./cdp-client.mjs";
 import { findPage } from "./target.mjs";
 
 const port = Number(process.env.CDP_PORT ?? 9222);
@@ -19,21 +20,6 @@ async function targetWs() {
   const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const t = findPage(list) ?? list.find((x) => x.type === "node") ?? list[0];
   return t.webSocketDebuggerUrl;
-}
-
-class Cdp {
-  constructor(url) { this.url = url; this.id = 1; this.p = new Map(); this.listeners = []; }
-  async open() {
-    this.ws = new WebSocket(this.url);
-    await new Promise((res, rej) => { this.ws.onopen = res; this.ws.onerror = rej; });
-    this.ws.onmessage = (e) => {
-      const m = JSON.parse(String(e.data));
-      if (m.id && this.p.has(m.id)) { const { res, rej } = this.p.get(m.id); this.p.delete(m.id); m.error ? rej(new Error(m.error.message)) : res(m.result ?? {}); }
-      else if (m.method) for (const l of this.listeners) l(m);
-    };
-  }
-  send(method, params = {}) { const id = this.id++; return new Promise((res, rej) => { this.p.set(id, { res, rej }); this.ws.send(JSON.stringify({ id, method, params })); }); }
-  close() { this.ws.close(); }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -67,8 +53,7 @@ function summarizeProfile(profile, top = 40) {
   for (const [k, v] of [...byFile].filter(([k]) => k).sort((a, b) => b[1] - a[1]).slice(0, 25)) console.log(`${v.toFixed(1).padStart(8)}ms  ${k}`);
 }
 
-const c = new Cdp(await targetWs());
-await c.open();
+const c = await connect(await targetWs());
 try {
   if (cmd === "eval") {
     const v = await evalExpr(c, rest.join(" "));

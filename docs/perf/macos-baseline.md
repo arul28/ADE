@@ -266,6 +266,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
 | `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
 | `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
+| `loop-cost.mjs <case>,... [secs] [socket]` | One looping animation (the app's own markup) at a time, as plain CSS and on the stepped loop clock: compositor ticks, frames drawn, style recalcs and timers per second, plus process CPU with a socket |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
@@ -428,6 +429,41 @@ mounting the tab, not by anything this pass changed. The heap rows need the
 snapshot file to show a difference; without it both columns read about 130 MB.
 A DevTools window draws 240 frames a second on this display by itself, so
 close it before any idle or GPU number (see the gotchas above).
+
+### Looping animations (stepped loop clock)
+
+Measured 2026-10-20 on this machine (240 Hz) with `loop-cost.mjs`, dev build
+on top of `45458b44e`, two runs of 10 s each, App Control detached, DevTools
+closed. Each case puts the app's own loop markup on the page with nothing else
+moving; "Before" is the same markup as plain CSS in the same page (a finite
+iteration count, which the clock never adopts), "Baseline" is with the clock.
+CPU is % of one core.
+
+| Loop on screen | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Top-bar activity pulse (4 steps in 3 s): compositor ticks / renderer / GPU | `loop-cost.mjs header-pulse` | 240/s; 4.7%; 3.1% | 1/s; 1.0-1.7%; 0.9-1.0% | 5/s; 3%; 2% |
+| Thinking dots (3, staggered): renderer / GPU | `loop-cost.mjs dots` | 9.4-9.8%; 6.5-7.7% | 3.9-6.3%; 3.9-4.7% | 8%; 6% |
+| `animate-pulse` dot: renderer / GPU | `loop-cost.mjs duty-pulse` | 5.8-6.1%; 2.7-4.1% | 2.8-3.7%; 1.4-2.5% | 5%; 3% |
+| Work list "Working" label x3: renderer / GPU | `loop-cost.mjs breathe` | 5.4-6.8%; 4.1-5.3% | 3.4-4.2%; 3.1-4.2% | 6%; 5% |
+| `animate-spin` on an SVG icon: style recalcs / renderer | `loop-cost.mjs svg-spinner` | 240/s; 14.3% | 73-75/s; 7.1-7.8% | 100/s; 10% |
+| "Thinking" shimmer text: style recalcs / renderer | `loop-cost.mjs shimmer` | 240-250/s; 14.6-16.6% | 61/s; 7.0% | 100/s; 10% |
+| Agent working (dots, pulse dot, Working label, top-bar pulse): compositor ticks / renderer / GPU | `loop-cost.mjs working-set` | 240/s; 7.2-8.5%; 6.4-7.4% | 41-47/s; 6.2% (one run 12.4%, machine noise); 6.6% | 60/s; 10%; 9% |
+| Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
+
+Any running infinite CSS animation makes Chromium service every display
+frame, whatever its `steps()` say: a compositor loop ticks the compositor and
+the GPU process's display scheduler 240 times a second, a main-thread loop (an
+animated SVG element, a `background-position` shimmer) restyles 240 times a
+second. `lib/steppedLoopClock.ts` freezes each stepped loop that changes at
+most 31 times a second (`playbackRate = 0`) and sets its time at its step
+instants from one timer, so a frame happens only when a loop shows a new value.
+Sampled every frame next to a plain-CSS twin, the clocked loops show the same
+value on 98.5-100% of frames, never differing for more than 2 frames (8 ms).
+A hidden window stops the clock (timers back to the app's own 5/s).
+Faster compositor loops stay CSS: driving the 60 steps/s Lanes mark from a
+timer cost the renderer more (4.3% → 8.3% in the prototype). At rest, with no
+agent live, ADE runs no loops at all (0 ticks, renderer 0.2%, GPU 0.0-0.1%),
+and a covered window draws nothing, so neither number moved.
 
 ### Apple Music (the macOS player host and the Music tab)
 
