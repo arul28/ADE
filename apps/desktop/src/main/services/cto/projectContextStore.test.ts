@@ -120,10 +120,22 @@ describe("projectContextStore", () => {
       saved: false,
       scopeText: null,
     },
-  ])("$name", ({ original, next, nextTags, saved, scopeText }) => {
+    {
+      name: "matches a tagged panel save and a suffix-only legacy duplicate",
+      original: "The relay signs every batch. [lane:lane-7]",
+      originalTags: { lane: "lane-7" },
+      next: "The relay signs every batch. [lane:lane-7]",
+      nextTags: undefined,
+      saved: false,
+      scopeText: null,
+      expectedCount: 1,
+      legacyNearText: "The relay signs every batch reliably.",
+      notesFileFacts: new Set(["The relay signs every batch. [lane:lane-7]"]),
+    },
+  ])("$name", ({ original, originalTags, next, nextTags, saved, scopeText, expectedCount, legacyNearText, notesFileFacts }) => {
     const store = createProjectContextStore({ adeDir: tempAdeDir() });
-    const first = store.remember({ text: original });
-    const second = store.remember({ text: next, tags: nextTags });
+    const first = store.remember({ text: original, tags: originalTags });
+    const second = store.remember({ text: next, tags: nextTags, notesFileFacts });
 
     expect(first.saved).toBe(true);
     expect(second.saved).toBe(saved);
@@ -142,8 +154,19 @@ describe("projectContextStore", () => {
       );
       expect(laneSevenNearMatch?.id).toBe(laneSeven.item?.id);
     }
-    expect(store.read().items).toHaveLength((saved ? 2 : 1) + (scopeText ? 3 : 0));
+    expect(store.read().items).toHaveLength(expectedCount ?? (saved ? 2 : 1) + (scopeText ? 3 : 0));
     expect(second.item?.text).toBe(saved ? next : original);
+    if (originalTags) expect(second.item?.tags).toEqual(originalTags);
+
+    if (legacyNearText) {
+      const legacyStore = createProjectContextStore({ adeDir: tempAdeDir() });
+      legacyStore.migrateFromMemory("- The relay signs every batch. [lane:lane-7]\n");
+      const legacyFact = legacyStore.read().items[0];
+      const legacyMatch = legacyStore.findNearDuplicate(legacyNearText, { lane: "lane-7" });
+      expect(legacyMatch?.id).toBe(legacyFact.id);
+      expect(legacyStore.remember({ text: legacyNearText, tags: { lane: "lane-7" } }).saved).toBe(false);
+      expect(legacyStore.read().items).toHaveLength(1);
+    }
   });
 
   it("stays local when the account mirror is unavailable", async () => {

@@ -197,6 +197,21 @@ function asTags(value: unknown): ProjectContextItem["tags"] {
   return tags;
 }
 
+function tagsFromFactText(text: string): ProjectContextItem["tags"] {
+  const match = FACT_TAG_SUFFIX_PATTERN.exec(text);
+  if (!match) return {};
+  const parsed: Record<string, string> = {};
+  for (const part of match[1].split(/\s+/)) {
+    const separator = part.indexOf(":");
+    if (separator > 0) parsed[part.slice(0, separator)] = part.slice(separator + 1);
+  }
+  return asTags(parsed);
+}
+
+function hasTags(tags: ProjectContextItem["tags"]): boolean {
+  return PROJECT_CONTEXT_TAG_KEYS.some((key) => Boolean(tags[key]));
+}
+
 function decodeItem(value: unknown): ProjectContextItem | null {
   if (!isRecord(value)) return null;
   const id = typeof value.id === "string" ? value.id.trim() : "";
@@ -472,6 +487,11 @@ function sameTags(left: ProjectContextItem["tags"], right: ProjectContextItem["t
   return PROJECT_CONTEXT_TAG_KEYS.every((key) => (left[key] ?? "").toLowerCase() === (right[key] ?? "").toLowerCase());
 }
 
+function effectiveFactTags(text: string, tags?: ProjectContextItem["tags"]): ProjectContextItem["tags"] {
+  const structured = asTags(tags);
+  return hasTags(structured) ? structured : tagsFromFactText(text);
+}
+
 /**
  * A live fact that says what `text` says, about the same thing. `tags`, when
  * given, must match too: a caller can pass them apart from the text, and the
@@ -485,7 +505,7 @@ function findNearDuplicate(
   let best: { item: ProjectContextItem; score: number } | null = null;
   for (const item of items) {
     if (item.status === "archived") continue;
-    if (!sameTags(item.tags, tags)) continue;
+    if (!sameTags(effectiveFactTags(item.text, item.tags), tags)) continue;
     const score = factSimilarity(item.text, text);
     if (score >= NEAR_DUPLICATE_SIMILARITY && (!best || score > best.score)) best = { item, score };
   }
@@ -836,11 +856,12 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       const text = clip(input.text, MAX_ITEM_CHARS);
       if (!text || isLegacyPlaceholderFact(text)) return { saved: false, item: null };
       const current = readFromDisk();
+      const tags = effectiveFactTags(text, input.tags);
       const exact = current.items.find((item) => (
-        item.text === text && item.status !== "archived" && sameTags(item.tags, input.tags ?? {})
+        item.text === text && item.status !== "archived" && sameTags(effectiveFactTags(item.text, item.tags), tags)
       ));
       if (exact) return { saved: false, item: exact };
-      const near = findNearDuplicate(current.items, text, input.tags);
+      const near = findNearDuplicate(current.items, text, tags);
       if (near && input.notesFileFacts && !input.notesFileFacts.has(near.text)) {
         // A line of the notes file was edited: the new wording replaces the
         // stored one rather than being refused as its duplicate.
@@ -857,7 +878,7 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
         kind: input.kind ?? "fact",
         status: input.status ?? "active",
         trust: input.trust ?? "cto",
-        tags: input.tags ?? {},
+        tags,
         createdAt: stamp,
         updatedAt: stamp,
       };
@@ -869,10 +890,10 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
     findNearDuplicate(text: string, tags?: ProjectContextItem["tags"]): ProjectContextItem | null {
       const clipped = clip(text, MAX_ITEM_CHARS);
       if (!clipped) return null;
-      const scope = tags ?? {};
+      const scope = effectiveFactTags(clipped, tags);
       const items = readFromDisk().items;
       return items.find((item) => (
-        item.text === clipped && item.status !== "archived" && sameTags(item.tags, scope)
+        item.text === clipped && item.status !== "archived" && sameTags(effectiveFactTags(item.text, item.tags), scope)
       )) ?? findNearDuplicate(items, clipped, scope);
     },
 
