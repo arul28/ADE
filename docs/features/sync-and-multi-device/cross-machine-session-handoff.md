@@ -54,6 +54,7 @@ session summary as `crossMachineHandoff`. Live clients also get a live-only
 | `pending` | Waiting for the current turn to end. Any newer user message cancels it, because new instructions win. |
 | `sending` | In flight. `checkpoint` names the last step passed: `prepared`, `destination_ready`, `accepted`, `marked`. |
 | `continued` | The destination chat started. The source locks turns and automatic work until the person chooses Work here instead (see below). |
+| `returned` | A chat that arrived here came back to its original chat. The original chat keeps its ID, accepts the returned history, and unlocks. |
 | `failed` | A step failed, or the destination refused the capsule. `reason` says which. A destination that fails after it already created the lane can leave that lane behind; ADE does not delete it, and a later move to that machine reports it as a blocker there rather than silently making a second chat. |
 | `unknown` | The destination may have accepted but ADE can't tell: the answer was lost, the answer came back without the new lane and chat, or a restart couldn't check the chat before resending. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
 | `cancelled` | The person kept it here, denied the agent, sent a new message, or dismissed an `unknown` move. |
@@ -140,13 +141,13 @@ because an agent's shell looks the same as a person's terminal.
 
 - **Agent scope follows persisted lineage.** A chat-bound agent may move its own
   chat or a descendant whose `orchestrationParentSessionId` chain reaches the
-  caller (at most 32 links; cycles stop the walk). Starts for unrelated chats
-  are allowed only as approval requests and always enter `awaiting_approval`,
-  even when the target chat is full-auto. Cancel, retry, acknowledge and
-  preview remain limited to the caller's own chat or descendants. The host
-  stamps the relationship and requester identity; caller-supplied stamps are
-  discarded. Unbound agent shells still count as `agent` and unrelated starts
-  require approval.
+  caller (at most 32 links; cycles stop the walk) without approval, regardless
+  of permission level. A single start against an unrelated chat waits for the
+  person's approval even when that chat is full-auto. Batch starts compute the
+  same relation for every selected chat. The host stamps the relationship and
+  requester identity; caller-supplied stamps are discarded. Unbound agent
+  shells still count as `agent`; a batch that needs approval requires a
+  chat-bound caller so the card has a chat to appear in.
 - **An agent's move runs at the chat's own permission level.** The
   orchestrator (the one place this happens) drops every permission field an
   agent's start passed, reads the source chat's unified level
@@ -165,13 +166,17 @@ because an agent's shell looks the same as a person's terminal.
   card says it.
   `adeRpcServer` and automation rules only force `requestedBy: "agent"`.
 - **Approval.** An agent may move its own chat and descendants it started
-  without approval, at each chat's existing permission level. Every unrelated
-  chat waits in `awaiting_approval`, even when it is full-auto. The card names
-  the requesting agent and the chat it asked to move.
-  `resolveCrossMachineHandoffApproval` is a user-only action, so an agent
-  cannot approve its own request.
-- **No nagging.** The approval request rate limit and two-minute deny cooldown
-  are scoped to the target chat, so one chat's requests do not spend another's
+  without approval, at each moved chat's existing permission level. A batch
+  containing any unrelated chat waits in `awaiting_approval` before any lane or
+  chat moves. One card on the requesting agent's chat lists every chat in the
+  batch; approve runs the whole batch and deny cancels it. A self/descendant-only
+  agent batch and a person's batch need no approval. The batch resolver and
+  `resolveCrossMachineHandoffApproval` are user-only actions, so an agent cannot
+  approve its own request.
+- **No nagging.** Single-chat approval limits and the two-minute deny cooldown
+  are scoped to the target chat. Denying a batch applies that cooldown to each
+  chat it listed. Batch starts use one rate-limit slot on the requesting chat,
+  so splitting one batch into separate moves cannot spend a different chat's
   approval budget.
 - **Push privacy.** The phone push for a move that failed says only "Open the
   chat for details."; the reason stays in the chat.
@@ -193,6 +198,27 @@ and **Work here instead**. That choice calls `acknowledgeCrossMachineHandoff`
 here. iOS cannot send to another machine's chat from that screen, so before a
 send it asks **Continue on <machine>** (opens the destination chat) or **Work
 here instead** (the same acknowledgement). A new move clears `resumedHere`.
+
+### Coming back
+
+When an arrived chat is moved to the machine in its saved origin, ADE continues
+the original chat with the same chat ID. A fork returns the provider session
+and only the ADE transcript events written after the first arrival; an older
+imported prefix is not appended again. A brief return appends the brief and the
+continuation instruction without replacing the provider session.
+
+The original lane is reused. ADE fast-forwards it only when it is clean and
+strictly behind, accepts it when it is already at the returned commit, and
+refuses dirty or diverged lanes. A returned Git bundle is applied with the
+same safeguards as an initial handoff. The original chat's scheduled work is
+restored, a durable **Back from <machine>** notice is added, and its move lock
+ends in `returned`. The moved copy stays locked on the machine it left.
+
+Batch returns keep parent-first chat order and map imported lanes back to their
+origin lane IDs. Each lane returns before its chats, so a refusal blocks its
+dependent chats while the failed lane item remains retryable. If ADE cannot
+prove the original chat, lane, provider or move record still matches, it
+refuses the return with a reason and the source can start a normal move instead.
 
 ## The source is the chat's machine, not the tab
 
@@ -242,6 +268,13 @@ Work chat owned by this project brain. Selected chats include their descendants
 by default; `--no-descendants` limits the batch to the named chats. The source
 brain adds each selected chat's lane and every ancestor lane, including lanes
 that carry code but have no selected chat.
+
+An agent batch checks every selected chat against the caller's persisted
+lineage. If any chat is unrelated, the batch waits before moving anything and
+shows one approval card on the caller's chat with the chats it would move.
+Approve starts all items; deny cancels the batch. A person can move any batch
+without approval, while an agent moving only its own chat and descendants it
+started proceeds without a card.
 
 The brain saves one batch record in project storage. Lanes are imported
 root-first and chats parent-first. Chat moves still use the single-chat

@@ -114,6 +114,8 @@ func workCrossMachineHandoffCardModel(
       actions: [.open, .workHere],
       checkpoints: []
     )
+  case .returned:
+    return nil
   case .failed:
     // A chat that already continues elsewhere still sends there, so the card
     // offers that chat and the way back here alongside the retry.
@@ -218,6 +220,10 @@ struct WorkCrossMachineHandoffActions {
   var acknowledge: @MainActor () async -> Bool
   var retry: @MainActor () async -> Void
   var open: @MainActor () -> Void
+}
+
+struct WorkCrossMachineBatchMoveApprovalActions {
+  var resolveApproval: @MainActor (String, Bool) async -> Void
 }
 
 // MARK: - In-chat card
@@ -349,6 +355,116 @@ struct WorkCrossMachineHandoffCard: View {
       case .dismiss: await actions.dismiss()
       case .open: break
       }
+      inFlight = false
+    }
+  }
+}
+
+/// Approval controls are projected from the caller chat's summary. The
+/// transcript card remains the durable record of what the agent requested.
+struct WorkCrossMachineBatchMoveApprovalBanner: View {
+  let approval: AgentChatCrossMachineBatchMoveApproval
+  var enabled: Bool = true
+  let actions: WorkCrossMachineBatchMoveApprovalActions?
+
+  @State private var inFlight = false
+
+  private var machineName: String {
+    let name = approval.machineName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? "another machine" : name
+  }
+
+  private var title: String {
+    let count = approval.chats.count
+    return "An agent wants to move \(count) chat\(count == 1 ? "" : "s") to \(machineName)"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 9) {
+        Image(systemName: "questionmark.circle")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(width: 24, height: 24)
+          .background(ADEColor.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        VStack(alignment: .leading, spacing: 3) {
+          Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text("Approve or deny the whole batch. Each chat keeps its own permission level.")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 5) {
+        ForEach(approval.chats) { chat in
+          let chatTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+          VStack(alignment: .leading, spacing: 1) {
+            Text(chatTitle.isEmpty ? "Work chat" : chatTitle)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Text(chat.sessionId)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+      }
+
+      if actions != nil {
+        HStack(spacing: 8) {
+          actionButton("Approve", primary: true, approve: true)
+          actionButton("Deny", primary: false, approve: false)
+          Spacer(minLength: 0)
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.8)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("work-cross-machine-batch-approval-banner")
+  }
+
+  private func actionButton(_ label: String, primary: Bool, approve: Bool) -> some View {
+    Button {
+      resolve(approve)
+    } label: {
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(primary ? Color.white : ADEColor.textPrimary)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 30)
+        .background(
+          Group {
+            if primary {
+              Capsule(style: .continuous).fill(ADEColor.accent)
+            } else {
+              Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.8)
+            }
+          }
+        )
+        .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled || actions == nil || inFlight)
+    .accessibilityLabel(label)
+  }
+
+  private func resolve(_ approve: Bool) {
+    guard let actions, !inFlight else { return }
+    inFlight = true
+    Task { @MainActor in
+      await actions.resolveApproval(approval.batchId, approve)
       inFlight = false
     }
   }

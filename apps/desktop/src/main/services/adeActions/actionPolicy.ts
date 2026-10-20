@@ -296,9 +296,14 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
-  // An agent asking to move a chat must not approve its own request. And only
-  // a person's client hosts an MCP App, so only it may pass an app's call on.
-  chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
+  // An agent asking to move a chat or batch must not approve its own request.
+  // Only a person's client hosts an MCP App, so only it may pass an app's call on.
+  chat: [
+    "resolveCrossMachineHandoffApproval",
+    "resolveCrossMachineBatchMoveApproval",
+    "mcpAppRequest",
+    "revokeMcpAppGrant",
+  ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
   remote_mcp: ["getStatus", "listActivity", "setEnabled", "createToken", "updateConnection", "removeConnection"],
@@ -761,20 +766,25 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "preflightCrossMachineDestination",
     "fastForwardCrossMachineHandoffLane",
     "acceptCrossMachineHandoff",
+    "importCrossMachineHandoffLane",
     "markCrossMachineHandoff",
     // The brain-owned move. `startCrossMachineHandoff` is open to agents on
     // purpose ("move this chat to my Mac mini"); the RPC server stamps
     // `requestedBy` and relation, and strips permission fields so the move
-    // keeps the chat's own settings. Full-auto self/descendant moves proceed;
-    // every other agent move waits for the person's approval
-    // (crossMachineHandoffOrchestrator). Approval itself is the person's: see
-    // ADE_ACTION_USER_ONLY. `previewCrossMachineHandoff` only reads.
+    // keeps the chat's own settings. Self and descendant moves proceed at any
+    // permission level; unrelated moves wait for approval. A batch containing
+    // any unrelated chat gets one approval card on its requesting chat.
+    // Approval itself is the person's: see ADE_ACTION_USER_ONLY.
     "getCrossMachineHandoffOptions",
     "previewCrossMachineHandoff",
     "startCrossMachineHandoff",
     "cancelCrossMachineHandoff",
     "retryCrossMachineHandoff",
     "resolveCrossMachineHandoffApproval",
+    "startCrossMachineBatchMove",
+    "getCrossMachineBatchMove",
+    "retryCrossMachineBatchMove",
+    "resolveCrossMachineBatchMoveApproval",
     "acknowledgeCrossMachineHandoff",
     "respondToInput",
     "dismissPendingInput",

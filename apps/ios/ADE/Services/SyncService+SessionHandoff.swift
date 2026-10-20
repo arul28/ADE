@@ -169,6 +169,28 @@ extension SyncService {
     )
   }
 
+  /// Approves or denies the entire batch waiting on this caller chat. The
+  /// session id selects the remote machine/project; the batch id selects the
+  /// approval record on that brain.
+  func resolveCrossMachineBatchMoveApproval(
+    sourceSessionId: String,
+    batchId: String,
+    approve: Bool
+  ) async throws {
+    let projectAction = "chat.resolveCrossMachineBatchMoveApproval"
+    let action = chatActionName(projectAction, sessionId: sourceSessionId)
+    try requireInvokableChatAction(projectAction, sessionId: sourceSessionId)
+    let scope = chatCommandScope(for: sourceSessionId)
+    _ = try await sendCommand(
+      action: action,
+      args: ["batchId": batchId, "approve": approve],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 30_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   /// Records "send here anyway" on a continued chat (`resumedHere`).
   @discardableResult
   func acknowledgeCrossMachineHandoff(

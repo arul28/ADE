@@ -34,6 +34,7 @@ import {
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -82,6 +83,9 @@ function installCrossMachineDestinationLaneGitFixture(options: {
     const command = args.join(" ");
     if (command === "status --porcelain=v1") {
       return { stdout: options.dirtyPorcelain ?? "", stderr: "", exitCode: 0 };
+    }
+    if (command === "remote get-url origin") {
+      return { stdout: "git@github.com:example/ade.git\n", stderr: "", exitCode: 0 };
     }
     if (command === "rev-parse HEAD") {
       return { stdout: `${merged ? HANDOFF_TEST_SHA : laneHead}\n`, stderr: "", exitCode: 0 };
@@ -167,6 +171,83 @@ function makeForkCapsule(overrides: Partial<AgentChatCrossMachineHandoffCapsule>
     },
     ...overrides,
   };
+}
+
+function makeReturnBriefCapsule(args: {
+  handoffId: string;
+  originalSessionId: string;
+  arrivalHandoffId: string;
+}): AgentChatCrossMachineHandoffCapsule {
+  return {
+    version: 1,
+    handoffId: args.handoffId,
+    createdAt: "2026-07-10T12:00:00.000Z",
+    source: {
+      machineName: "MacBook",
+      machineKey: "machine-b",
+      sessionId: "arrived-session",
+      provider: "droid",
+      model: "droid/custom:claude-sonnet-5-thinking-32000",
+      title: "Returned work",
+      laneName: "Primary",
+      branchRef: "feature/primary",
+      headSha: HANDOFF_TEST_SHA,
+      originUrl: "https://github.com/example/ade.git",
+    },
+    target: { targetModelId: "droid/custom:claude-sonnet-5-thinking-32000" },
+    brief: "Continue from the returned work.",
+    artifacts: { fileChanges: [], commands: [], errors: [] },
+    linearIssues: [],
+    continuationPrompt: "Continue from the returned work.",
+    mode: "brief",
+    origin: {
+      machineKey: "machine-a",
+      machineName: "Mac Studio",
+      sessionId: args.originalSessionId,
+      laneId: "lane-1",
+    },
+    returnTo: {
+      sessionId: args.originalSessionId,
+      laneId: "lane-1",
+      arrivalHandoffId: args.arrivalHandoffId,
+    },
+  };
+}
+
+function seedContinuedCrossMachineMove(
+  values: Map<string, unknown>,
+  originalSessionId: string,
+  targetSessionId = "arrived-session",
+  handoffId = "original-handoff",
+): void {
+  values.set(`agent-chat-cross-machine-move:v1:${originalSessionId}`, {
+    record: {
+      handoffId,
+      state: "continued",
+      checkpoint: "marked",
+      targetMachineKey: "machine-b",
+      targetMachineName: "MacBook",
+      mode: "fork",
+      targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      includeChanges: false,
+      requestedBy: "user",
+      requestedAt: "2026-07-10T12:00:00.000Z",
+      updatedAt: "2026-07-10T12:00:00.000Z",
+      reason: null,
+      targetLaneId: "lane-b",
+      targetSessionId,
+      continuedOn: {
+        handoffId,
+        targetMachineKey: "machine-b",
+        targetMachineName: "MacBook",
+        targetLaneId: "lane-b",
+        targetSessionId,
+        continuedAt: "2026-07-10T12:00:00.000Z",
+      },
+      resumedHere: false,
+    },
+    request: {},
+  });
 }
 
 
@@ -2979,6 +3060,85 @@ describe("createAgentChatService", () => {
         expect(prepared.capsule.brief).toBe("Fork handoff — full conversation history transported.");
       });
 
+      it("packages only the transcript suffix after the original arrival boundary", async () => {
+        installCleanCrossMachineGitFixture();
+        installRealTranscriptParser();
+        process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-return-suffix");
+        const { service } = createService({ getLocalMachineKey: () => "machine-b" });
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
+        });
+        const threadId = "0199aaaa-bbbb-cccc-dddd-eeeeffff0011";
+        source.threadId = threadId;
+        source.crossMachineOrigin = {
+          machineKey: "machine-a",
+          machineName: "MacBook",
+          sessionId: "original-chat",
+          laneId: "lane-1",
+        };
+        source.crossMachineArrival = {
+          handoffId: "first-arrival",
+          originSessionId: "original-chat",
+          importedThroughSeq: 7,
+          localSequenceAtArrival: 2,
+        };
+        const rolloutDir = path.join(process.env.CODEX_HOME, "sessions", "2026", "07", "12");
+        fs.mkdirSync(rolloutDir, { recursive: true });
+        const rolloutName = `rollout-2026-07-12T00-00-00-${threadId}.jsonl`;
+        fs.writeFileSync(path.join(rolloutDir, rolloutName), `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: threadId, originator: "ade_desktop", cwd: tmpRoot },
+        })}\n`, "utf8");
+        const envelope = (sequence: number, messageId: string, text: string, provenance?: AgentChatEventEnvelope["provenance"]): AgentChatEventEnvelope => ({
+          sessionId: source.id,
+          sequence,
+          timestamp: "2026-07-10T10:00:00.000Z",
+          event: { type: "user_message", messageId, text },
+          ...(provenance ? { provenance } : {}),
+        });
+        writeTestTranscriptEnvelopes(source.id, [
+          envelope(1, "origin-1", "Imported history one", {
+            providerOrigin: "handoff_fork",
+            sourceSessionId: "original-chat",
+            sourceSequence: 6,
+            crossMachineHandoffId: "first-arrival",
+          }),
+          envelope(2, "origin-2", "Imported history two", {
+            providerOrigin: "handoff_fork",
+            sourceSessionId: "original-chat",
+            sourceSequence: 7,
+            crossMachineHandoffId: "first-arrival",
+          }),
+          envelope(3, "arrival-prompt", "Continue from the brief"),
+          envelope(4, "after-arrival", "Work completed on the destination"),
+        ]);
+
+        const prepared = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "return-suffix-1",
+          destinationMachineKey: "machine-a",
+          targetModelId: "openai/gpt-5.5",
+          mode: "fork",
+        });
+
+        expect(prepared.capsule.returnTo).toEqual({
+          sessionId: "original-chat",
+          laneId: "lane-1",
+          arrivalHandoffId: "first-arrival",
+        });
+        const returned = zlib.gunzipSync(Buffer.from(
+          prepared.capsule.transcriptEnvelopes!.contentBase64Gzip,
+          "base64",
+        )).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+        expect(returned.map((item) => item.event.type === "user_message" ? item.event.messageId : null)).toEqual([
+          "arrival-prompt",
+          "after-arrival",
+        ]);
+      });
+
       it("packages an ADE-originated Codex rollout for fork (no external-import originator filter)", async () => {
         installCleanCrossMachineGitFixture();
         process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-fork-prepare");
@@ -3520,6 +3680,210 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(JSON.stringify(Array.from(values.values()))).not.toContain(destinationToken);
+    });
+
+    it("returns to the original chat once and unlocks it across receipt retries", async () => {
+      installCleanCrossMachineGitFixture();
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        { type: "cli-subscription", cli: "droid", path: "/usr/local/bin/droid", authenticated: true, verified: true },
+      ] as any);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const scheduler = {
+        start: vi.fn(async () => {}),
+        dispose: vi.fn(),
+        upsert: vi.fn(async () => ({ id: "schedule-original" })),
+        list: vi.fn(() => []),
+        isSessionPaused: vi.fn(() => false),
+        isGlobalPaused: vi.fn(() => false),
+        nextWakeAt: vi.fn(() => null),
+        refreshGlobalPause: vi.fn(async () => {}),
+        setSessionPaused: vi.fn(async () => {}),
+        cancel: vi.fn(async () => null),
+        markFired: vi.fn(async () => null),
+        setSchedulePaused: vi.fn(async () => null),
+        claimNativeFire: vi.fn(() => null),
+        recordTurnStarted: vi.fn(async () => {}),
+        recordTurnFinished: vi.fn(async () => {}),
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        db,
+        getLocalMachineKey: () => "machine-a",
+        createScheduledWorkScheduler: (() => scheduler as any) as any,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const original = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      seedContinuedCrossMachineMove(values, original.id);
+      const capsule = makeReturnBriefCapsule({
+        handoffId: "return-receipt-1",
+        originalSessionId: original.id,
+        arrivalHandoffId: "original-handoff",
+      });
+      capsule.scheduledWork = [{
+        id: "schedule-original",
+        kind: "wakeup",
+        prompt: "Resume this chat after return.",
+        runAt: "2026-07-10T13:00:00.000Z",
+      }];
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+      const second = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(first.session.id).toBe(original.id);
+      expect(second.session.id).toBe(original.id);
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
+      expect(mockState.droidPromptCalls).toHaveLength(1);
+      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
+      expect(events.filter((event) => event.event.type === "system_notice" && event.event.status === "cross_machine_handoff_returned")).toHaveLength(1);
+      expect(values.get(`agent-chat-cross-machine-return:v1:${capsule.handoffId}`)).toMatchObject({
+        handoffId: capsule.handoffId,
+        capsuleFingerprint: fingerprint,
+        sessionId: original.id,
+        laneId: "lane-1",
+        state: "complete",
+      });
+      const persistedMove = values.get(`agent-chat-cross-machine-move:v1:${original.id}`) as {
+        record: NonNullable<Parameters<typeof crossMachineMoveLock>[0]>;
+      };
+      expect(persistedMove.record).toMatchObject({ state: "returned", targetSessionId: null, continuedOn: null });
+      expect(crossMachineMoveLock(persistedMove.record)).toBeNull();
+    });
+
+    it("appends a returned transcript suffix once when a retry resumes after provider replacement", async () => {
+      installCleanCrossMachineGitFixture();
+      installRealTranscriptParser();
+      process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-return-append");
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const { service, sessionService } = createService({ db, getLocalMachineKey: () => "machine-a" });
+      const original = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      seedContinuedCrossMachineMove(values, original.id);
+      const continuedMove = structuredClone(values.get(`agent-chat-cross-machine-move:v1:${original.id}`));
+      const returnedSuffix = [
+        {
+          sessionId: "arrived-session",
+          sequence: 3,
+          timestamp: "2026-07-10T12:00:00.000Z",
+          event: { type: "user_message", messageId: "returned-one", text: "First returned message." },
+        },
+        {
+          sessionId: "arrived-session",
+          sequence: 4,
+          timestamp: "2026-07-10T12:01:00.000Z",
+          event: { type: "user_message", messageId: "returned-two", text: "Second returned message." },
+        },
+      ] satisfies AgentChatEventEnvelope[];
+      const capsule = makeForkCapsule({
+        handoffId: "return-append-1",
+        source: {
+          machineName: "MacBook",
+          machineKey: "machine-b",
+          sessionId: "arrived-session",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          title: "Returned work",
+          laneName: "Primary",
+          branchRef: "feature/primary",
+          headSha: HANDOFF_TEST_SHA,
+          originUrl: "https://github.com/example/ade.git",
+        },
+        target: { targetModelId: "anthropic/claude-sonnet-5" },
+        continuationPrompt: "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.",
+        origin: {
+          machineKey: "machine-a",
+          machineName: "Mac Studio",
+          sessionId: original.id,
+          laneId: "lane-1",
+        },
+        returnTo: {
+          sessionId: original.id,
+          laneId: "lane-1",
+          arrivalHandoffId: "original-handoff",
+        },
+        transcriptEnvelopes: {
+          ...gzipForkContent(returnedSuffix.map((envelope) => JSON.stringify(envelope)).join("\n") + "\n"),
+          truncated: false,
+        },
+      });
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+      const transcriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${original.id}.jsonl`);
+      const readMessageIds = () => parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+        .filter((envelope) => envelope.event.type === "user_message")
+        .map((envelope) => envelope.event.type === "user_message" ? envelope.event.messageId : "");
+
+      const first = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+      expect(first.session.id).toBe(original.id);
+      expect(readMessageIds()).toEqual(["returned-one", "returned-two"]);
+      const returnedClaudePointer = sessionService.getClaudeSessionPointerByChatSessionId(original.id);
+      expect(returnedClaudePointer).toMatchObject({ chatSessionId: original.id, laneId: "lane-1" });
+      expect(returnedClaudePointer?.sessionId).not.toBe(capsule.forkTransport?.nativeSessionId);
+
+      const receiptKey = `agent-chat-cross-machine-return:v1:${capsule.handoffId}`;
+      const receipt = values.get(receiptKey) as Record<string, unknown>;
+      values.set(receiptKey, { ...receipt, state: "provider_replaced" });
+      values.set(`agent-chat-cross-machine-move:v1:${original.id}`, continuedMove);
+      const retried = await service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint });
+
+      expect(retried.session.id).toBe(original.id);
+      expect(readMessageIds()).toEqual(["returned-one", "returned-two"]);
+      expect(sessionService.getClaudeSessionPointerByChatSessionId(original.id)?.sessionId)
+        .toBe(returnedClaudePointer?.sessionId);
+      expect(values.get(receiptKey)).toMatchObject({ state: "complete" });
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["dirty", { dirtyPorcelain: " M src/dirty.ts\n" }],
+      ["diverged", { laneHead: HANDOFF_DIVERGED_SHA, ancestorExitCode: 1 }],
+    ] as const)("refuses to return into a %s original lane without unlocking it", async (_kind, gitOptions) => {
+      installCrossMachineDestinationLaneGitFixture(gitOptions);
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const { service, sessionService } = createService({ db, getLocalMachineKey: () => "machine-a" });
+      const original = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      seedContinuedCrossMachineMove(values, original.id);
+      const capsule = makeReturnBriefCapsule({
+        handoffId: `return-lane-${_kind}`,
+        originalSessionId: original.id,
+        arrivalHandoffId: "original-handoff",
+      });
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
+        .rejects.toMatchObject({ code: "CROSS_MACHINE_RETURN_REFUSED", reason: "lane_blocked" });
+
+      const persistedMove = values.get(`agent-chat-cross-machine-move:v1:${original.id}`) as {
+        record: NonNullable<Parameters<typeof crossMachineMoveLock>[0]>;
+      };
+      expect(persistedMove.record.state).toBe("continued");
+      expect(crossMachineMoveLock(persistedMove.record)).not.toBeNull();
+      expect(sessionService.create).toHaveBeenCalledTimes(1);
     });
 
     it("restores both sides of chat lineage after destination acceptance", async () => {

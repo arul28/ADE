@@ -634,6 +634,7 @@ import type {
   AgentChatStartCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
@@ -8100,6 +8101,13 @@ const adeBridge = {
     ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineBatchMove", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRetryCrossMachineBatchMove, args),
+      ),
+    resolveCrossMachineBatchMoveApproval: async (
+      args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "resolveCrossMachineBatchMoveApproval", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatResolveCrossMachineBatchMoveApproval, args),
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     resolveCrossMachineHandoffApproval: async (

@@ -9,6 +9,29 @@ import type {
   RemoteRuntimeHandoffStoragePreflightResult,
 } from "./types";
 
+export type CrossMachineMoveRelation = "self" | "descendant" | "other";
+
+/** Resolve whether target is the caller's chat or one of its descendants. */
+export function crossMachineMoveRelation(
+  callerSessionId: string | null | undefined,
+  targetSessionId: string | null | undefined,
+  parentSessionIdFor: (sessionId: string) => string | null | undefined,
+): CrossMachineMoveRelation {
+  if (!callerSessionId || !targetSessionId) return "other";
+  if (callerSessionId === targetSessionId) return "self";
+  const visited = new Set<string>();
+  let currentSessionId: string | null = targetSessionId;
+  for (let depth = 0; depth < 32 && currentSessionId; depth += 1) {
+    if (visited.has(currentSessionId)) return "other";
+    visited.add(currentSessionId);
+    const parentSessionId: string | null = parentSessionIdFor(currentSessionId)?.trim() || null;
+    if (!parentSessionId) return "other";
+    if (parentSessionId === callerSessionId) return "descendant";
+    currentSessionId = parentSessionId;
+  }
+  return "other";
+}
+
 /**
  * Every move field that sets what the destination chat may do. An agent's move
  * never chooses them: the orchestrator drops what it passed and sets them from
@@ -88,6 +111,7 @@ export function crossMachineContinuation(
   record: AgentChatCrossMachineHandoffRecord | null | undefined,
 ): AgentChatCrossMachineContinuation | null {
   if (!record) return null;
+  if (record.state === "returned") return null;
   if (record.continuedOn) return record.continuedOn;
   if (record.state !== "continued" || !record.targetLaneId || !record.targetSessionId) return null;
   return {

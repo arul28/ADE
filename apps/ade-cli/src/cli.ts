@@ -2431,10 +2431,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     DESTINATION; the chat moves from here. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
-                                                    it; a newer user message cancels it). A full-auto self/descendant
-                                                    move may proceed without approval; other self/descendant moves
-                                                    and all unrelated chats need the person's approval. Moves keep
-                                                    the source chat's permissions.
+                                                    it; a newer user message cancels it). Moving your own chat or a
+                                                    descendant you started needs no approval at any permission level;
+                                                    another chat always needs the person's approval. The moved chat
+                                                    keeps its own permission level, never broader.
                                                     The source is locked after arrival until the person chooses
                                                     Work here instead.
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
@@ -2444,6 +2444,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Move selected chats, their lanes, and descendants in tree order
     $ ade chat move --machine "Mac Studio" --all    Move every active Work chat and its lanes on this brain
                                                     Defaults to fork; --brief sends a short context summary.
+                                                    An agent batch with any unrelated chat waits for one approval
+                                                    card on the caller's chat, listing the chats; deny cancels all.
+                                                    A person's batch needs no approval.
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items

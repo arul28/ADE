@@ -1275,6 +1275,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// This chat's move to another machine, owned by the source brain. Absent on
   /// older hosts and for a chat that never moved.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
+  /// Batch move awaiting the person's decision in this caller chat. Older brains omit it.
+  var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
     lhs.sessionId == rhs.sessionId
@@ -1361,6 +1363,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
+      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
   }
 }
 
@@ -5630,6 +5633,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var claudeTag: String? = nil
   /// This chat's move to another machine; see `AgentChatCrossMachineHandoffRecord`.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
+  /// Batch move awaiting approval in this caller chat. Older hosts omit it.
+  var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
   /// Client-only: the segmented setup rail of a chat launch that still owns
   /// this row (`workOverlayChatLaunches`). Never on the wire — not in
   /// `CodingKeys` — and nil for every ordinary session.
@@ -5698,6 +5703,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.activeGoal == rhs.activeGoal
       && lhs.claudeTag == rhs.claudeTag
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
+      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
       && lhs.launchRail == rhs.launchRail
   }
 }
@@ -5755,6 +5761,7 @@ extension TerminalSessionSummary {
     case activeGoal
     case claudeTag
     case crossMachineHandoff
+    case crossMachineBatchApproval
   }
 
   init(from decoder: Decoder) throws {
@@ -5812,6 +5819,7 @@ extension TerminalSessionSummary {
     activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)
     claudeTag = try? container.decodeIfPresent(String.self, forKey: .claudeTag)
     crossMachineHandoff = try? container.decodeIfPresent(AgentChatCrossMachineHandoffRecord.self, forKey: .crossMachineHandoff)
+    crossMachineBatchApproval = try? container.decodeIfPresent(AgentChatCrossMachineBatchMoveApproval.self, forKey: .crossMachineBatchApproval)
   }
 }
 
@@ -8338,6 +8346,7 @@ enum AgentChatCrossMachineHandoffState: Equatable, Hashable {
   case pending
   case sending
   case continued
+  case returned
   case failed
   case cancelled
   case unknown
@@ -8349,6 +8358,7 @@ enum AgentChatCrossMachineHandoffState: Equatable, Hashable {
     case "pending": self = .pending
     case "sending": self = .sending
     case "continued": self = .continued
+    case "returned": self = .returned
     case "failed": self = .failed
     case "cancelled": self = .cancelled
     case "unknown": self = .unknown
@@ -8362,6 +8372,7 @@ enum AgentChatCrossMachineHandoffState: Equatable, Hashable {
     case .pending: return "pending"
     case .sending: return "sending"
     case .continued: return "continued"
+    case .returned: return "returned"
     case .failed: return "failed"
     case .cancelled: return "cancelled"
     case .unknown: return "unknown"
@@ -8411,6 +8422,21 @@ struct AgentChatCrossMachineContinuation: Codable, Equatable, Hashable {
       continuedAt: string(.continuedAt)
     )
   }
+}
+
+/// One chat named in a caller chat's pending batch move approval.
+struct AgentChatCrossMachineBatchMoveApprovalChat: Codable, Equatable, Identifiable {
+  var id: String { sessionId }
+  var sessionId: String
+  var title: String?
+}
+
+/// A batch approval projected onto the caller chat's summary. The transcript
+/// card remains the durable record; this snapshot gives every client one action surface.
+struct AgentChatCrossMachineBatchMoveApproval: Codable, Equatable {
+  var batchId: String
+  var machineName: String
+  var chats: [AgentChatCrossMachineBatchMoveApprovalChat]
 }
 
 /// A move of this chat to another machine, owned by the SOURCE brain and
@@ -8543,6 +8569,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
   /// existed fall back to a `continued` record's own target (mirrors
   /// `crossMachineContinuation` in shared/crossMachineHandoff.ts).
   var continuation: AgentChatCrossMachineContinuation? {
+    guard state != .returned else { return nil }
     if let continuedOn { return continuedOn }
     guard state == .continued, let lane = targetLaneId, let session = targetSessionId,
           !lane.isEmpty, !session.isEmpty else { return nil }
@@ -8561,7 +8588,7 @@ struct AgentChatCrossMachineHandoffRecord: Codable, Equatable, Hashable {
   var isActive: Bool {
     switch state {
     case .awaitingApproval, .pending, .sending: return true
-    case .continued, .failed, .cancelled, .unknown, .other: return false
+    case .continued, .returned, .failed, .cancelled, .unknown, .other: return false
     }
   }
 

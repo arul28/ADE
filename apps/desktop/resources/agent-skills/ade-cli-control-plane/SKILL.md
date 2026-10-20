@@ -586,11 +586,11 @@ ade chat move --retry <batch-id>                     # resume remaining items in
 - `--machine` here is the DESTINATION; the command runs on this machine.
   Brief by default; `--fork` carries full history (same provider only).
   Don't add `--machine` to `--cancel`/`--retry`/`--options`; it is refused.
-- A self/descendant move can proceed without approval. Moving any unrelated
-  chat needs the person's approval. The moved chat runs there at its own
+- Moving your own chat or a descendant you started needs no approval, at any
+  permission level. Moving another chat always needs the person's approval,
+  including when that chat is full-auto. The moved chat runs there at its own
   permission level mapped to the target model's provider, never broader: any
-  `--permissions`/`--sandbox`
-  you pass is dropped.
+  `--permissions`/`--sandbox` you pass is dropped.
 - If the last move is `unknown` (its answer was lost), a new move is refused.
   Tell the user to check the other machine; `--retry` resends it, `--cancel`
   dismisses it. A retry is refused when the chat changed since it was sent.
@@ -598,9 +598,9 @@ ade chat move --retry <batch-id>                     # resume remaining items in
   your turn ends, and any new message from the user cancels it.
 - `--include-changes` brings uncommitted and unpushed work; otherwise push
   first (`ade git push --lane <lane>`). `--clone` sets a missing repo up there.
-- For an unrelated chat, the user approves your request from the chat's
-  banner. Say that you asked, and stop; do not retry while it waits. If they
-  deny it, don't ask again (a new request is refused for two minutes).
+- For an unrelated single chat, the user approves your request from that
+  chat's banner. Say that you asked, and stop; do not retry while it waits. If
+  they deny it, don't ask again (a new request is refused for two minutes).
 - Your `--prompt` is the first message the chat gets there, so write it as the
   next instruction to yourself.
 - `chat move` is a batch: selected chats expand to descendants by default, and
@@ -613,6 +613,10 @@ ade chat move --retry <batch-id>                     # resume remaining items in
   project on the current brain. Busy chats otherwise wait for their turn to
   end. A lost answer or failed item can leave its dependents blocked; check
   `--status`, then retry the batch after resolving the reported issue.
+  An agent batch that includes any chat outside its own subtree waits for one
+  approval on the caller's chat, with a card listing every chat in the batch.
+  Approve starts the whole batch; deny cancels it. Self/descendant-only agent
+  batches and a person's batch need no approval.
 - After the destination starts, the source chat cannot start turns or deliver
   automatic work until the person chooses **Work here instead**. Scheduled
   work stays pending while the source is locked.

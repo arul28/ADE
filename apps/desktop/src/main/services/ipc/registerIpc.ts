@@ -512,6 +512,7 @@ import type {
   AgentChatStartCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
@@ -9227,6 +9228,11 @@ export function registerIpc({
     IPC.agentChatRetryCrossMachineBatchMove,
     async (_event, arg: AgentChatRetryCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       await ensureAgentChatContext().agentChatService.retryCrossMachineBatchMove(arg),
+  );
+  ipcMain.handle(
+    IPC.agentChatResolveCrossMachineBatchMoveApproval,
+    async (_event, arg: AgentChatResolveCrossMachineBatchMoveApprovalArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      await ensureAgentChatContext().agentChatService.resolveCrossMachineBatchMoveApproval(arg),
   );
 
   ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {

@@ -98,6 +98,9 @@ export type AdeCardAction = {
   kind: "primary" | "default";
 };
 
+/** Transcript card identity prefix for a caller's batch move approval. */
+export const CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX = "cross-machine-batch-move-approval:";
+
 /**
  * The card body. Kept separate from the `AgentChatEvent` union member so this
  * module never has to import `./types/chat` (which would be circular — chat.ts
@@ -161,6 +164,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_stack_land",
   "pr_watch_wake",
   "claude_session_quota",
+  "cross_machine_batch_move_approval",
   "lane_setup",
 ];
 

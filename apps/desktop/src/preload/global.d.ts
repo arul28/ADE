@@ -309,6 +309,7 @@ import type {
   AgentChatStartCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
@@ -2484,6 +2485,10 @@ declare global {
         ) => Promise<AgentChatCrossMachineBatchMoveRecord | null>;
         retryCrossMachineBatchMove: (
           args: AgentChatRetryCrossMachineBatchMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
+        resolveCrossMachineBatchMoveApproval: (
+          args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
         resolveCrossMachineHandoffApproval: (

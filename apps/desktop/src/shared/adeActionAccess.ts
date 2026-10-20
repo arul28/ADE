@@ -200,6 +200,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
+      "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
       "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",

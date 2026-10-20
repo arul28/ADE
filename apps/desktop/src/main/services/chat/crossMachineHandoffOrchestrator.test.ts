@@ -191,6 +191,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     markSource: async () => {},
     outbox: store.outbox,
     showApprovalCard: (_sessionId, card) => cards.push({ handoffId: card.handoffId, live: card.live, subtitle: card.subtitle }),
+    showBatchApprovalCard: () => {},
     noticeEnded: (_sessionId, notice) => notices.push(notice.record),
     notifyPerson: (_sessionId, record) => notified.push(record),
     onMoveOutcome: (event) => outcomes.push({ handoffId: event.handoffId, outcome: event.outcome }),
@@ -484,6 +485,7 @@ function createBatchHarness() {
     markSource: async () => {},
     outbox,
     showApprovalCard: () => {},
+    showBatchApprovalCard: () => {},
     noticeEnded: () => {},
     logger: { info: () => {}, warn: () => {} },
   });
@@ -514,6 +516,7 @@ describe("cross-machine move orchestrator", () => {
       sessionIds: ["chat-parent", "chat-other"],
       mode: "fork",
       includeChanges: false,
+      requestedBy: "user",
     });
 
     const partial = await h.waitFor(started.batchId, (record) => record.state === "partial");

@@ -37,6 +37,7 @@ describe("crossMachineMoveLock", () => {
       targetSessionId: "chat-2",
     });
     expect(crossMachineMoveLock(continuedRecord({ resumedHere: true }))).toBeNull();
+    expect(crossMachineMoveLock(continuedRecord({ state: "returned" }))).toBeNull();
     expect(crossMachineMoveLock(continuedRecord({ state: "sending" }))).toBeNull();
     expect(crossMachineMoveLock(continuedRecord({ continuedOn: null, targetSessionId: null }))).toEqual({
       handoffId: "handoff-1",

@@ -187,6 +187,8 @@ export function CrossMachineHandoffBanner({
 
   let model: BannerModel | null = null;
   switch (record.state) {
+    case "returned":
+      return null;
     case "pending":
       model = {
         id: "cross-machine-move",

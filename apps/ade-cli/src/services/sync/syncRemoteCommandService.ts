@@ -5380,6 +5380,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineBatchMove({
       batchId: requireString(payload.batchId, "chat.retryCrossMachineBatchMove requires batchId."),
     }));
+  register("chat.resolveCrossMachineBatchMoveApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineBatchMoveApproval({
+      batchId: requireString(payload.batchId, "chat.resolveCrossMachineBatchMoveApproval requires batchId."),
+      approve: payload.approve === true,
+    }));
   register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),

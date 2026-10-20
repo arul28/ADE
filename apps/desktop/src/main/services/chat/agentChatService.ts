@@ -502,12 +502,15 @@ import type {
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineBatchMoveApproval,
+  AgentChatCrossMachineArrival,
   AgentChatCrossMachineHandoffOrigin,
   AgentChatCrossMachineLaneImportArgs,
   AgentChatCrossMachineLaneImportResult,
   AgentChatStartCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
@@ -858,6 +861,7 @@ import {
   type CrossMachineSourceInspection,
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
+import { CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX } from "../../../shared/adeCard";
 import { createCrossMachineHandoffSource, isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 import {
   buildChatContextAttachmentPrompt,
@@ -2307,6 +2311,7 @@ type PersistedChatState = {
   launchedBySessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
   crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
+  crossMachineArrival?: AgentChatCrossMachineArrival | null;
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
   /** See ManagedChatSession.claudeFreshThreadPending. */
@@ -5278,6 +5283,38 @@ type CrossMachineHandoffRecord = {
   forkMaterializedAt?: string | null;
 };
 
+type CrossMachineReturnReceipt = {
+  version: 1;
+  handoffId: string;
+  capsuleFingerprint: string;
+  sessionId: string;
+  laneId: string;
+  state: "lane_ready" | "provider_replaced" | "transcript_appended" | "unlocked" | "complete";
+  updatedAt: string;
+};
+
+type CrossMachineReturnRefusalReason =
+  | "return_address_invalid"
+  | "original_chat_missing"
+  | "original_lane_unavailable"
+  | "move_not_continued"
+  | "sender_mismatch"
+  | "provider_mismatch"
+  | "lane_mismatch"
+  | "lane_blocked"
+  | "receipt_mismatch";
+
+class CrossMachineHandoffReturnRefusedError extends Error {
+  readonly code = "CROSS_MACHINE_RETURN_REFUSED";
+  readonly reason: CrossMachineReturnRefusalReason;
+
+  constructor(reason: CrossMachineReturnRefusalReason, message: string) {
+    super(`Cannot return this chat to its original chat: ${message} Start a normal move instead.`);
+    this.name = "CrossMachineHandoffReturnRefusedError";
+    this.reason = reason;
+  }
+}
+
 type CrossMachineLaneImportRecord = {
   version: 1;
   importId: string;
@@ -5293,6 +5330,14 @@ type CrossMachineLaneImportRecord = {
   setupMessage?: string | null;
   updatedAt: string;
   lastError: string | null;
+};
+
+type CrossMachineLaneOriginRecord = {
+  version: 1;
+  destinationLaneId: string;
+  sourceMachineKey: string;
+  sourceLaneId: string;
+  sourceParentLaneId: string | null;
 };
 
 const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
@@ -9833,6 +9878,7 @@ const SPAWN_LINEAGE_FIELD_NAMES = [
   "launchedBySessionId",
   "spawnKind",
   "crossMachineOrigin",
+  "crossMachineArrival",
   "subagentTakeoverPromptShownAt",
 ] as const;
 
@@ -9867,6 +9913,27 @@ function hydrateSpawnLineageFields(
         machineName: candidate.machineName!.trim(),
         sessionId: candidate.sessionId!.trim(),
         laneId: candidate.laneId!.trim(),
+      };
+    }
+  }
+  const arrival = record.crossMachineArrival;
+  if (arrival && typeof arrival === "object" && !Array.isArray(arrival)) {
+    const candidate = arrival as Partial<AgentChatCrossMachineArrival>;
+    if (
+      typeof candidate.handoffId === "string" && candidate.handoffId.trim().length > 0
+      && typeof candidate.originSessionId === "string" && candidate.originSessionId.trim().length > 0
+      && typeof candidate.importedThroughSeq === "number"
+      && Number.isSafeInteger(candidate.importedThroughSeq) && candidate.importedThroughSeq >= 0
+    ) {
+      out.crossMachineArrival = {
+        handoffId: candidate.handoffId.trim(),
+        originSessionId: candidate.originSessionId.trim(),
+        importedThroughSeq: candidate.importedThroughSeq,
+        ...(typeof candidate.localSequenceAtArrival === "number"
+          && Number.isSafeInteger(candidate.localSequenceAtArrival)
+          && candidate.localSequenceAtArrival >= 0
+          ? { localSequenceAtArrival: candidate.localSequenceAtArrival }
+          : {}),
       };
     }
   }
@@ -19929,6 +19996,8 @@ export function createAgentChatService(args: {
     let config: ReturnType<typeof projectConfigService.get> | null = null;
     let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> | null = null;
     const ownerDecisions = new Map<string, ChatRuntimeOwnershipDecision>();
+    let batchApprovalsBySession: Map<string, AgentChatCrossMachineBatchMoveApproval> | null = null;
+    let batchApprovalsLoaded = false;
     return {
       projectConfig: () => {
         config ??= projectConfigService.get();
@@ -19948,6 +20017,31 @@ export function createAgentChatService(args: {
           ownerDecisions.set(key, decision);
         }
         return decision;
+      },
+      crossMachineBatchApproval: (sessionId: string): AgentChatCrossMachineBatchMoveApproval | null => {
+        if (!batchApprovalsLoaded) {
+          const approvals = new Map<string, AgentChatCrossMachineBatchMoveApproval>();
+          batchApprovalsBySession = approvals;
+          const pending = crossMachineSource.listBatches()
+            .filter((batch) => batch.state === "awaiting_approval" && batch.requestedBy === "agent" && batch.requestingSessionId)
+            .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
+          for (const batch of pending) {
+            const requestingSessionId = batch.requestingSessionId;
+            if (!requestingSessionId || approvals.has(requestingSessionId)) continue;
+            approvals.set(requestingSessionId, {
+              batchId: batch.batchId,
+              machineName: batch.machineName,
+              chats: batch.items
+                .filter((item) => item.kind === "chat" && item.sourceSessionId)
+                .map((item) => ({
+                  sessionId: item.sourceSessionId!,
+                  title: item.sourceChatTitle?.trim() || null,
+                })),
+            });
+          }
+          batchApprovalsLoaded = true;
+        }
+        return batchApprovalsBySession?.get(sessionId) ?? null;
       },
     };
   };
@@ -48240,8 +48334,24 @@ export function createAgentChatService(args: {
 
   const crossMachineHandoffRecordKey = (handoffId: string): string =>
     `agent-chat-cross-machine-handoff:v1:${handoffId}`;
+  const crossMachineReturnReceiptKey = (handoffId: string): string =>
+    `agent-chat-cross-machine-return:v1:${handoffId}`;
   const crossMachineLaneImportRecordKey = (importId: string): string =>
     `agent-chat-cross-machine-lane-import:v1:${importId}`;
+  const crossMachineLaneOriginRecordKey = (destinationLaneId: string): string =>
+    `agent-chat-cross-machine-lane-origin:v1:${destinationLaneId}`;
+  const readCrossMachineLaneOriginRecord = (destinationLaneId: string): CrossMachineLaneOriginRecord | null => {
+    const value = db?.getJson<unknown>(crossMachineLaneOriginRecordKey(destinationLaneId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<CrossMachineLaneOriginRecord>;
+    if (
+      record.version !== 1
+      || record.destinationLaneId !== destinationLaneId
+      || typeof record.sourceMachineKey !== "string"
+      || typeof record.sourceLaneId !== "string"
+    ) return null;
+    return record as CrossMachineLaneOriginRecord;
+  };
   const readCrossMachineLaneImportRecord = (importId: string): CrossMachineLaneImportRecord | null => {
     const value = db?.getJson<unknown>(crossMachineLaneImportRecordKey(importId));
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -48390,6 +48500,9 @@ export function createAgentChatService(args: {
     for (const [field, maxLength, label] of boundedSourceFields) {
       assertPortableText(field, maxLength, label);
     }
+    if (capsule.source.machineKey != null) {
+      assertPortableText(capsule.source.machineKey, 300, "source machine key");
+    }
     if (capsule.source.title != null) {
       assertPortableText(capsule.source.title, 300, "source title", { allowEmpty: true });
     }
@@ -48421,6 +48534,22 @@ export function createAgentChatService(args: {
         [capsule.origin.laneId, "origin lane id"],
       ] as const) assertPortableText(value, 300, label);
     }
+    if (capsule.returnTo !== undefined) {
+      if (!capsule.returnTo || typeof capsule.returnTo !== "object" || Array.isArray(capsule.returnTo)) {
+        throw new Error("The handoff capsule has an invalid return address.");
+      }
+      assertPortableText(capsule.returnTo.sessionId, 200, "return chat id");
+      assertPortableText(capsule.returnTo.laneId, 200, "return lane id");
+      requireCrossMachineHandoffId(capsule.returnTo.arrivalHandoffId);
+      if (
+        !capsule.origin
+        || !capsule.source.machineKey
+        || capsule.origin.sessionId !== capsule.returnTo.sessionId
+        || capsule.origin.laneId !== capsule.returnTo.laneId
+      ) {
+        throw new Error("The handoff capsule has an incomplete return address.");
+      }
+    }
     if (capsule.scheduledWork !== undefined) {
       if (!Array.isArray(capsule.scheduledWork) || capsule.scheduledWork.length > 50) {
         throw new Error("The handoff capsule has too many scheduled jobs.");
@@ -48429,6 +48558,7 @@ export function createAgentChatService(args: {
         if (!schedule || !["wakeup", "cron", "loop"].includes(schedule.kind)) {
           throw new Error("The handoff capsule has an invalid scheduled job.");
         }
+        if (schedule.id != null) assertPortableText(schedule.id, 300, "scheduled job id");
         assertPortableText(schedule.prompt, 8_192, "scheduled job prompt", { allowEmpty: true });
         if (Buffer.byteLength(schedule.prompt, "utf8") > 8_192) {
           throw new Error("The handoff capsule has a scheduled job prompt longer than 8 KB.");
@@ -48606,6 +48736,25 @@ export function createAgentChatService(args: {
       lastError: typeof record.lastError === "string" ? record.lastError : null,
       forkMaterializedAt: typeof record.forkMaterializedAt === "string" ? record.forkMaterializedAt : null,
     };
+  };
+
+  const persistCrossMachineReturnReceipt = (receipt: CrossMachineReturnReceipt): void => {
+    db?.setJson(crossMachineReturnReceiptKey(receipt.handoffId), receipt);
+  };
+
+  const readCrossMachineReturnReceipt = (handoffId: string): CrossMachineReturnReceipt | null => {
+    const value = db?.getJson<unknown>(crossMachineReturnReceiptKey(handoffId));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const receipt = value as Partial<CrossMachineReturnReceipt>;
+    if (
+      receipt.version !== 1
+      || receipt.handoffId !== handoffId
+      || typeof receipt.capsuleFingerprint !== "string"
+      || typeof receipt.sessionId !== "string"
+      || typeof receipt.laneId !== "string"
+      || !["lane_ready", "provider_replaced", "transcript_appended", "unlocked", "complete"].includes(String(receipt.state))
+    ) return null;
+    return receipt as CrossMachineReturnReceipt;
   };
 
   // Moving a chat to another machine: where the move is stored, what blocks
@@ -48816,8 +48965,13 @@ export function createAgentChatService(args: {
 
   const packageCrossMachineTranscriptEnvelopes = (
     managed: ManagedChatSession,
+    afterSequence?: number,
   ): AgentChatCrossMachineHandoffCapsule["transcriptEnvelopes"] => {
-    const lines = readTranscriptEnvelopes(managed).map((envelope) =>
+    const source = readTranscriptEnvelopes(managed);
+    const selected = afterSequence === undefined
+      ? source
+      : source.filter((envelope) => typeof envelope.sequence === "number" && envelope.sequence > afterSequence);
+    const lines = selected.map((envelope) =>
       Buffer.from(`${JSON.stringify(envelope)}\n`, "utf8"),
     );
     if (!lines.length) return undefined;
@@ -48845,6 +48999,27 @@ export function createAgentChatService(args: {
     if (!sourceSessionId) throw new Error("A source chat is required for this handoff.");
 
     const managed = ensureManagedSession(sourceSessionId);
+    const localMachineKey = getCrossMachineLocalMachineKey?.()?.trim() || "";
+    const storedOrigin = managed.session.crossMachineOrigin;
+    let returnTo: AgentChatCrossMachineHandoffCapsule["returnTo"];
+    if (storedOrigin && args.destinationMachineKey?.trim() === storedOrigin.machineKey) {
+      const arrival = managed.session.crossMachineArrival;
+      if (!arrival || arrival.originSessionId !== storedOrigin.sessionId) {
+        throw new Error("This arrived chat is missing its original transcript boundary, so it cannot safely return to its source chat.");
+      }
+      if (!Number.isSafeInteger(arrival.localSequenceAtArrival) || (arrival.localSequenceAtArrival ?? -1) < 0) {
+        throw new Error("This arrived chat is missing its local transcript boundary, so it cannot safely return to its source chat.");
+      }
+      if (!localMachineKey) {
+        throw new Error("This brain cannot identify its machine, so it cannot safely return this chat to its source.");
+      }
+      returnTo = {
+        sessionId: storedOrigin.sessionId,
+        laneId: storedOrigin.laneId,
+        arrivalHandoffId: arrival.handoffId,
+      };
+    }
+    const targetsStoredOrigin = Boolean(returnTo);
     const sourceSession = await getSessionSummary(sourceSessionId);
     if (!sourceSession) throw new Error("The source chat could not be loaded.");
     if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
@@ -48856,7 +49031,7 @@ export function createAgentChatService(args: {
       { includeChanges },
     );
     // Leave room in the ~20 MiB transport frame for the rest of the capsule.
-    const gitBundle = includeChanges && !args.batchMove
+    const gitBundle = includeChanges && (!args.batchMove || targetsStoredOrigin)
       ? await packHandoffGitBundle({
           worktreePath: lane.worktreePath,
           branchRef,
@@ -48865,7 +49040,7 @@ export function createAgentChatService(args: {
           maxEncodedBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - 1024 * 1024,
         })
       : null;
-    if (includeChanges && !gitBundle && remoteHeadSha !== headSha) {
+    if (includeChanges && !gitBundle && !args.batchMove && remoteHeadSha !== headSha) {
       // Nothing to carry, yet origin lacks the branch at this commit.
       throw new Error("Publish this branch so origin has the current commit, then hand off again.");
     }
@@ -48933,8 +49108,14 @@ export function createAgentChatService(args: {
           return undefined;
         })
       : undefined;
+    if (returnTo && mode === "fork" && !forkTransport) {
+      throw new Error("This chat's provider history could not be packaged for its return. Use a brief move back instead.");
+    }
     const transcriptEnvelopes = mode === "fork"
-      ? packageCrossMachineTranscriptEnvelopes(managed)
+      ? packageCrossMachineTranscriptEnvelopes(
+          managed,
+          returnTo ? managed.session.crossMachineArrival!.localSequenceAtArrival! : undefined,
+        )
       : undefined;
     const bundleEncodedBytes = gitBundle?.contentBase64.length ?? 0;
     let sideFilesDropped = false;
@@ -49002,6 +49183,7 @@ export function createAgentChatService(args: {
           throw new Error(`Scheduled work '${item.id}' has a prompt longer than 8 KB. Shorten it before moving the batch.`);
         }
         return {
+          id: item.id,
           kind: item.kind,
           prompt,
           ...(item.reason ? { reason: portableText(item.reason).slice(0, 500) } : {}),
@@ -49012,8 +49194,7 @@ export function createAgentChatService(args: {
         };
       });
     }
-    const localMachineKey = getCrossMachineLocalMachineKey?.()?.trim() || "";
-    const currentOrigin: AgentChatCrossMachineHandoffOrigin | undefined = managed.session.crossMachineOrigin
+    const currentOrigin: AgentChatCrossMachineHandoffOrigin | undefined = storedOrigin
       ?? (localMachineKey
         ? {
             machineKey: localMachineKey,
@@ -49058,6 +49239,7 @@ export function createAgentChatService(args: {
       createdAt: snapshotCreatedAt,
       source: {
         machineName: sourceMachineName || "source machine",
+        ...(localMachineKey ? { machineKey: localMachineKey } : {}),
         sessionId: sourceSessionId,
         provider: managed.session.provider,
         model: sourceModel,
@@ -49080,6 +49262,7 @@ export function createAgentChatService(args: {
       ...(args.parentLink ? { parentLink: args.parentLink } : {}),
       ...(scheduledWork ? { scheduledWork } : {}),
       ...(currentOrigin ? { origin: currentOrigin } : {}),
+      ...(returnTo ? { returnTo } : {}),
       ...(args.batchMove ? { batchMove: args.batchMove } : {}),
       target: {
         targetModelId: targetDescriptor.id,
@@ -49251,7 +49434,7 @@ export function createAgentChatService(args: {
     const batchLaneImport = args.batchLaneImportId
       ? readCrossMachineLaneImportRecord(args.batchLaneImportId)
       : null;
-    const ownedLaneId = internal.ownedLaneId ?? batchLaneImport?.laneId ?? null;
+    const ownedLaneId = internal.ownedLaneId ?? batchLaneImport?.laneId ?? args.returnToLaneId ?? null;
     const blockingErrors: string[] = [];
     const warnings: string[] = [];
     const targetId = args.targetModelId?.trim();
@@ -49506,6 +49689,23 @@ export function createAgentChatService(args: {
     if (!payload.sourceLane || typeof payload.sourceLane.name !== "string" || !payload.sourceLane.name.trim()) {
       throw new Error("The batch lane import is missing its source lane details.");
     }
+    if (payload.sourceMachineKey !== undefined && (typeof payload.sourceMachineKey !== "string" || !payload.sourceMachineKey.trim())) {
+      throw new Error("The batch lane import has an invalid source machine key.");
+    }
+    if (payload.returnToLaneId !== undefined && (typeof payload.returnToLaneId !== "string" || !payload.returnToLaneId.trim())) {
+      throw new Error("The batch lane return has an invalid origin lane id.");
+    }
+    const sourceMachineKey = payload.sourceMachineKey?.trim() || "";
+    const rememberLaneOrigin = (destinationLaneId: string): void => {
+      if (!sourceMachineKey || payload.returnToLaneId) return;
+      db?.setJson(crossMachineLaneOriginRecordKey(destinationLaneId), {
+        version: 1,
+        destinationLaneId,
+        sourceMachineKey,
+        sourceLaneId: payload.sourceLane.laneId,
+        sourceParentLaneId: payload.sourceLane.parentLaneId,
+      } satisfies CrossMachineLaneOriginRecord);
+    };
     const branchRef = await requireGitBranchForHandoff(payload.branchRef, projectRoot);
     const headSha = payload.headSha?.trim() ?? "";
     if (!/^[0-9a-f]{40,64}$/i.test(headSha)) throw new Error("The batch lane import has an invalid source commit.");
@@ -49541,6 +49741,7 @@ export function createAgentChatService(args: {
     if (prior?.state === "complete" && prior.laneId) {
       const completedLane = await laneService.getSummary(prior.laneId, { includeStatus: false });
       if (!completedLane || completedLane.archivedAt) throw new Error("The lane imported by this batch was removed or archived.");
+      rememberLaneOrigin(prior.laneId);
       return {
         importId,
         laneId: prior.laneId,
@@ -49571,6 +49772,54 @@ export function createAgentChatService(args: {
 
     const warnings: string[] = [...record.warnings];
     try {
+      if (payload.returnToLaneId) {
+        const lane = await laneService.getSummary(payload.returnToLaneId, { includeStatus: true });
+        if (!lane || lane.archivedAt) throw new Error("The original lane for this batch return is unavailable or archived.");
+        if (lane.branchRef.replace(/^refs\/heads\//, "") !== branchRef) {
+          throw new Error("The original lane for this batch return is on a different branch.");
+        }
+        if (payload.gitBundle) {
+          await applyHandoffGitBundle({
+            projectRoot,
+            handoffId: importId,
+            branchRef,
+            bundle: payload.gitBundle,
+            fetchEnv: await destinationGitEnv(),
+            target: { kind: "existing_worktree", worktreePath: lane.worktreePath },
+          });
+        } else {
+          const status = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          if (status.exitCode !== 0 || status.stdout.trim()) {
+            throw new Error(`Original lane '${lane.name}' has uncommitted changes and cannot be fast-forwarded.`);
+          }
+          const currentHead = await requireGitOutputForHandoff(
+            ["rev-parse", "HEAD"],
+            lane.worktreePath,
+            `Original lane '${lane.name}' does not have a readable commit.`,
+          );
+          if (currentHead !== headSha) await fastForwardCrossMachineHandoffLane({ laneId: lane.id, expectedHead: headSha });
+        }
+        record = {
+          ...record,
+          state: "complete",
+          laneId: lane.id,
+          reusedLane: true,
+          carriedChanges: Boolean(payload.gitBundle),
+          snapshotSha: payload.gitBundle?.snapshotSha ?? null,
+          updatedAt: nowIso(),
+          lastError: null,
+        };
+        persistCrossMachineLaneImportRecord(record);
+        return {
+          importId,
+          laneId: lane.id,
+          reusedLane: true,
+          carriedChanges: record.carriedChanges,
+          snapshotSha: record.snapshotSha,
+          warnings: record.warnings,
+          setupStatus: record.setupStatus ?? "running",
+        };
+      }
       const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
       let lane = record.laneId ? lanes.find((candidate) => candidate.id === record.laneId) ?? null : null;
       lane ??= lanes.find((candidate) => candidate.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
@@ -49648,6 +49897,7 @@ export function createAgentChatService(args: {
         lastError: null,
       };
       persistCrossMachineLaneImportRecord(record);
+      rememberLaneOrigin(lane.id);
       return {
         importId,
         laneId: lane.id,
@@ -49845,7 +50095,7 @@ export function createAgentChatService(args: {
     if (!scheduler) throw new Error("Scheduled work is not ready yet. Try the handoff again in a moment.");
     for (const [index, item] of (capsule.scheduledWork ?? []).entries()) {
       await scheduler.upsert({
-        id: deterministicChatSessionId(`cross-machine-schedule:${capsule.handoffId}:${index}`),
+        id: item.id?.trim() || deterministicChatSessionId(`cross-machine-schedule:${capsule.handoffId}:${index}`),
         sessionId: destinationSessionId,
         kind: item.kind,
         prompt: item.prompt,
@@ -49891,11 +50141,12 @@ export function createAgentChatService(args: {
       "transcript history",
     );
     try {
-      return content.toString("utf8").split(/\r?\n/).filter((line) => line.trim().length > 0).map((line) => {
+      return content.toString("utf8").split(/\r?\n/).filter((line) => line.trim().length > 0).map((line, index) => {
         const envelope = JSON.parse(line) as AgentChatEventEnvelope;
         if (!envelope || typeof envelope !== "object" || !envelope.event || typeof envelope.event !== "object") {
           throw new Error("invalid envelope");
         }
+        const sourceSequence = Number.isSafeInteger(envelope.sequence) ? envelope.sequence! : index + 1;
         return {
           ...envelope,
           sessionId: destinationSessionId,
@@ -49903,12 +50154,42 @@ export function createAgentChatService(args: {
             ...(envelope.provenance ?? {}),
             providerOrigin: "handoff_fork",
             sourceSessionId: capsule.source.sessionId,
+            sourceSequence,
+            crossMachineHandoffId: capsule.handoffId,
           },
         };
       });
     } catch {
       throw new Error("The handoff capsule transcript history is not valid JSONL.");
     }
+  };
+
+  const appendMissingCrossMachineHandoffEvents = async (
+    managed: ManagedChatSession,
+    handoffId: string,
+    sourceSessionId: string,
+    envelopes: AgentChatEventEnvelope[],
+  ): Promise<number> => {
+    const existing = readTranscriptEnvelopes(managed).filter((envelope) =>
+      envelope.provenance?.crossMachineHandoffId === handoffId
+      && envelope.provenance.sourceSessionId === sourceSessionId,
+    );
+    const importedSequences = new Set(existing.flatMap((envelope) =>
+      typeof envelope.provenance?.sourceSequence === "number" ? [envelope.provenance.sourceSequence] : [],
+    ));
+    const missing = envelopes.filter((envelope) =>
+      typeof envelope.provenance?.sourceSequence !== "number"
+      || !importedSequences.has(envelope.provenance.sourceSequence),
+    );
+    if (missing.length) await appendImportedChatEvents(managed, missing);
+    return readTranscriptEnvelopes(managed).reduce((highest, envelope) => {
+      if (
+        envelope.provenance?.crossMachineHandoffId === handoffId
+        && envelope.provenance.sourceSessionId === sourceSessionId
+        && typeof envelope.provenance.sourceSequence === "number"
+      ) return Math.max(highest, envelope.provenance.sourceSequence);
+      return highest;
+    }, 0);
   };
 
   const materializeCrossMachineFork = async (args: {
@@ -50026,6 +50307,343 @@ export function createAgentChatService(args: {
     throw new Error("The handoff capsule fork transport does not match its provider.");
   };
 
+  const acceptCrossMachineReturn = async (
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    handoffId: string,
+    fingerprint: string,
+    priorRecord: CrossMachineHandoffRecord | null,
+  ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
+    const address = capsule.returnTo;
+    const refuse = (reason: CrossMachineReturnRefusalReason, message: string): never => {
+      throw new CrossMachineHandoffReturnRefusedError(reason, message);
+    };
+    if (!address) return refuse("return_address_invalid", "The return address is missing.");
+
+    let receipt = readCrossMachineReturnReceipt(handoffId);
+    if (receipt && receipt.capsuleFingerprint !== fingerprint) {
+      return refuse("receipt_mismatch", "This return id is already bound to different handoff contents.");
+    }
+    if (receipt && (receipt.sessionId !== address.sessionId || receipt.laneId !== address.laneId)) {
+      return refuse("receipt_mismatch", "This return id is already bound to a different original chat or lane.");
+    }
+
+    let transaction: CrossMachineHandoffRecord = priorRecord ?? {
+      version: 1,
+      handoffId,
+      capsuleFingerprint: fingerprint,
+      state: "preparing",
+      laneId: null,
+      sessionId: null,
+      updatedAt: nowIso(),
+      lastError: null,
+    };
+    persistCrossMachineHandoffRecord(transaction);
+    const saveDestinationState = (
+      state: CrossMachineHandoffRecord["state"],
+      lastError: string | null = null,
+    ): void => {
+      transaction = {
+        ...transaction,
+        state,
+        laneId: address.laneId,
+        sessionId: address.sessionId,
+        updatedAt: nowIso(),
+        lastError,
+      };
+      persistCrossMachineHandoffRecord(transaction);
+    };
+    const receiptStep = (step: CrossMachineReturnReceipt["state"]): boolean => {
+      if (!receipt) return false;
+      const steps: CrossMachineReturnReceipt["state"][] = [
+        "lane_ready",
+        "provider_replaced",
+        "transcript_appended",
+        "unlocked",
+        "complete",
+      ];
+      return steps.indexOf(receipt.state) >= steps.indexOf(step);
+    };
+    const saveReceipt = (state: CrossMachineReturnReceipt["state"]): void => {
+      receipt = {
+        version: 1,
+        handoffId,
+        capsuleFingerprint: fingerprint,
+        sessionId: address.sessionId,
+        laneId: address.laneId,
+        state,
+        updatedAt: nowIso(),
+      };
+      persistCrossMachineReturnReceipt(receipt);
+    };
+
+    try {
+      const localMachineKey = getCrossMachineLocalMachineKey?.()?.trim() ?? "";
+      if (!localMachineKey || localMachineKey !== capsule.origin?.machineKey) {
+        return refuse("return_address_invalid", "This machine does not match the saved origin machine.");
+      }
+      const originalRow = sessionService.get(address.sessionId);
+      if (!originalRow || !isChatToolType(originalRow.toolType) || originalRow.archivedAt) {
+        return refuse("original_chat_missing", "The original chat is missing, archived, or is not owned by this project.");
+      }
+      const managed = tryManagedSession(address.sessionId);
+      if (!managed) return refuse("original_chat_missing", "The original chat could not be loaded by this brain.");
+      if (managed.session.laneId !== address.laneId || originalRow.laneId !== address.laneId) {
+        return refuse("lane_mismatch", "The original chat no longer belongs to its recorded source lane.");
+      }
+      try {
+        assertChatRuntimeOwnedHere(address.sessionId, "accept cross-machine return");
+      } catch (error) {
+        return refuse("original_chat_missing", error instanceof Error ? error.message : "Another brain owns the original chat.");
+      }
+      const lane = await laneService.getSummary(address.laneId, { includeStatus: true });
+      if (!lane || lane.archivedAt) {
+        return refuse("original_lane_unavailable", "The original lane is unavailable or archived.");
+      }
+      const sourceBranch = capsule.source.branchRef.replace(/^refs\/heads\//, "");
+      if (lane.branchRef.replace(/^refs\/heads\//, "") !== sourceBranch) {
+        return refuse("lane_mismatch", "The returned work does not match the original lane's branch.");
+      }
+
+      const sourceMachineKey = capsule.source.machineKey?.trim() ?? "";
+      const move = readCrossMachineMove(address.sessionId);
+      const moveRecord = move?.record;
+      const unlocked = receiptStep("unlocked");
+      const alreadyReturned = receiptStep("transcript_appended")
+        && moveRecord?.state === "returned"
+        && moveRecord.handoffId === address.arrivalHandoffId;
+      if (!unlocked && !alreadyReturned) {
+        if (!moveRecord || moveRecord.state !== "continued" || moveRecord.resumedHere || moveRecord.handoffId !== address.arrivalHandoffId) {
+          return refuse("move_not_continued", "The original chat is no longer continued on the machine that sent this return.");
+        }
+        if (
+          !sourceMachineKey
+          || moveRecord.targetMachineKey !== sourceMachineKey
+          || moveRecord.targetSessionId !== capsule.source.sessionId
+        ) return refuse("sender_mismatch", "The return came from a different machine or arrived chat than the original move.");
+      }
+
+      if (receiptStep("complete")) {
+        saveDestinationState("complete");
+        return {
+          handoffId,
+          laneId: address.laneId,
+          session: managed.session,
+          reusedLane: true,
+          reusedSession: true,
+        };
+      }
+
+      let destinationOrigin: string;
+      let branchRef: string;
+      try {
+        destinationOrigin = await requireGitOutputForHandoff(
+          ["remote", "get-url", "origin"],
+          projectRoot,
+          "The original project does not have a readable origin remote.",
+        );
+        branchRef = await requireGitBranchForHandoff(capsule.source.branchRef, lane.worktreePath);
+      } catch (error) {
+        return refuse("lane_blocked", error instanceof Error ? error.message : String(error));
+      }
+      if (normalizeGitRemoteIdentity(destinationOrigin) !== normalizeGitRemoteIdentity(capsule.source.originUrl)) {
+        return refuse("lane_mismatch", "The original project now points at a different Git repository.");
+      }
+
+      if (!receiptStep("lane_ready")) {
+        try {
+          if (capsule.batchMove) {
+            const laneImport = readCrossMachineLaneImportRecord(capsule.batchMove.laneImportId);
+            if (
+              laneImport?.state !== "complete"
+              || laneImport.laneId !== lane.id
+              || laneImport.carriedChanges !== capsule.batchMove.carriedChanges
+              || laneImport.snapshotSha !== capsule.batchMove.snapshotSha
+            ) {
+              return refuse("lane_blocked", "The original batch lane has not completed its return step.");
+            }
+            if (capsule.gitBundle) {
+              // The lane item landed this bundle first. Reapplying is safe and
+              // verifies nobody changed the lane between the lane and chat items.
+              await applyHandoffGitBundle({
+                projectRoot,
+                handoffId,
+                branchRef,
+                bundle: capsule.gitBundle,
+                fetchEnv: await destinationGitEnv(),
+                target: { kind: "existing_worktree", worktreePath: lane.worktreePath },
+              });
+            } else {
+              const status = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+              const head = await requireGitOutputForHandoff(["rev-parse", "HEAD"], lane.worktreePath, "The original batch lane commit could not be read.");
+              if (status.exitCode !== 0 || status.stdout.trim() || head !== capsule.source.headSha) {
+                return refuse("lane_blocked", "The original batch lane changed after its return step completed.");
+              }
+            }
+          } else if (capsule.gitBundle) {
+            await applyHandoffGitBundle({
+              projectRoot,
+              handoffId,
+              branchRef,
+              bundle: capsule.gitBundle,
+              fetchEnv: await destinationGitEnv(),
+              target: { kind: "existing_worktree", worktreePath: lane.worktreePath },
+            });
+          } else {
+            const status = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+            if (status.exitCode !== 0 || status.stdout.trim()) {
+              return refuse("lane_blocked", `Original lane '${lane.name}' has uncommitted changes and cannot be fast-forwarded.`);
+            }
+            const currentHead = await requireGitOutputForHandoff(
+              ["rev-parse", "HEAD"],
+              lane.worktreePath,
+              `Original lane '${lane.name}' does not have a readable commit.`,
+            );
+            if (currentHead !== capsule.source.headSha) {
+              await fastForwardCrossMachineHandoffLane({ laneId: lane.id, expectedHead: capsule.source.headSha });
+            }
+          }
+        } catch (error) {
+          if (error instanceof CrossMachineHandoffReturnRefusedError) throw error;
+          return refuse("lane_blocked", error instanceof Error ? error.message : String(error));
+        }
+        saveDestinationState("lane_ready");
+        saveReceipt("lane_ready");
+      }
+
+      if (!receiptStep("provider_replaced")) {
+        if (capsule.mode === "fork") {
+          const targetDescriptor = getModelById(capsule.target.targetModelId)
+            ?? resolveModelAlias(capsule.target.targetModelId);
+          if (
+            !capsule.forkTransport
+            || !targetDescriptor
+            || resolveProviderGroupForModel(targetDescriptor) !== managed.session.provider
+            || capsule.source.provider !== managed.session.provider
+            || capsule.forkTransport.provider !== managed.session.provider
+          ) {
+            return refuse("provider_mismatch", "The returned provider history cannot resume the original chat's provider.");
+          }
+          await materializeCrossMachineFork({
+            capsule,
+            handoffId,
+            destinationLanePath: lane.worktreePath,
+            managed,
+          });
+          persistChatState(managed);
+        }
+        saveDestinationState("chat_ready");
+        saveReceipt("provider_replaced");
+      }
+
+      if (!receiptStep("transcript_appended")) {
+        if (capsule.mode === "fork") {
+          const returnedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, address.sessionId);
+          await appendMissingCrossMachineHandoffEvents(
+            managed,
+            handoffId,
+            capsule.source.sessionId,
+            returnedEnvelopes,
+          );
+          persistChatState(managed);
+        }
+        saveDestinationState("dispatched");
+        saveReceipt("transcript_appended");
+      }
+
+      if (!receiptStep("unlocked")) {
+        const latestMove = readCrossMachineMove(address.sessionId);
+        if (
+          latestMove?.record.handoffId === address.arrivalHandoffId
+          && latestMove.record.state === "continued"
+          && !latestMove.record.resumedHere
+        ) {
+          writeCrossMachineMove(address.sessionId, {
+            ...latestMove,
+            record: {
+              ...latestMove.record,
+              state: "returned",
+              checkpoint: "marked",
+              targetLaneId: null,
+              targetSessionId: null,
+              continuedOn: null,
+              reason: null,
+              updatedAt: nowIso(),
+            },
+          });
+        }
+        if (capsule.scheduledWork?.length) await recreateCrossMachineScheduledWork(capsule, address.sessionId);
+
+        const returnPrompt = capsule.mode === "brief"
+          ? [
+              `This chat is back from ${capsule.source.machineName}. Continue the original work from this brief.`,
+              "## Return brief",
+              capsule.brief,
+              "## User continuation instruction",
+              capsule.continuationPrompt,
+            ].join("\n\n")
+          : capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT
+            ? capsule.continuationPrompt.trim()
+            : "";
+        if (returnPrompt) {
+          const alreadyPrompted = readTranscriptEnvelopes(managed).some((envelope) =>
+            envelope.event.type === "user_message"
+            && envelope.event.metadata?.crossMachineReturnHandoffId === handoffId,
+          );
+          if (!alreadyPrompted) {
+            await sendMessage({
+              sessionId: address.sessionId,
+              text: returnPrompt,
+              displayText: returnPrompt,
+              metadata: {
+                kind: "cross_machine_handoff_return",
+                crossMachineReturnHandoffId: handoffId,
+                crossMachineHandoffId: handoffId,
+              },
+              reasoningEffort: managed.session.reasoningEffort,
+              executionMode: managed.session.executionMode ?? null,
+              interactionMode: managed.session.interactionMode ?? null,
+            }, { awaitBackendDispatch: true });
+          }
+        }
+
+        const hasReturnNotice = readTranscriptEnvelopes(managed).some((envelope) => {
+          if (envelope.event.type !== "system_notice" || envelope.event.status !== "cross_machine_handoff_returned") return false;
+          const detail = envelope.event.detail as Record<string, unknown> | null | undefined;
+          const returned = detail?.crossMachineHandoffReturn as Record<string, unknown> | null | undefined;
+          return returned?.handoffId === handoffId;
+        });
+        if (!hasReturnNotice) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            status: "cross_machine_handoff_returned",
+            message: `Back from ${capsule.source.machineName}`,
+            detail: { crossMachineHandoffReturn: { handoffId, sourceMachineName: capsule.source.machineName } },
+          });
+          persistChatState(managed);
+        }
+        saveDestinationState("dispatched");
+        saveReceipt("unlocked");
+      }
+
+      saveDestinationState("complete");
+      saveReceipt("complete");
+      return {
+        handoffId,
+        laneId: address.laneId,
+        session: managed.session,
+        reusedLane: true,
+        reusedSession: true,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (transaction.state !== "complete" && transaction.state !== "dispatched") {
+        saveDestinationState("failed", reason);
+      }
+      throw error;
+    }
+  };
+
   /**
    * A moved chat keeps its place in the chat tree. The chat itself gets its
    * parent back when that parent is reachable here (often it lives here: a
@@ -50076,16 +50694,41 @@ export function createAgentChatService(args: {
     args: AgentChatAcceptCrossMachineHandoffArgs,
   ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
     const capsule = args.capsule;
-    validateCrossMachineHandoffCapsule(capsule);
+    const returnIntent = capsule != null
+      && typeof capsule === "object"
+      && Object.prototype.hasOwnProperty.call(capsule, "returnTo");
+    try {
+      validateCrossMachineHandoffCapsule(capsule);
+    } catch (error) {
+      if (returnIntent) {
+        throw new CrossMachineHandoffReturnRefusedError(
+          "return_address_invalid",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      throw error;
+    }
     const handoffId = requireCrossMachineHandoffId(capsule.handoffId);
     const suppliedFingerprint = typeof args.capsuleFingerprint === "string" ? args.capsuleFingerprint.trim() : "";
     const expectedFingerprint = capsuleFingerprint(capsule);
     if (!/^[0-9a-f]{64}$/i.test(suppliedFingerprint) || suppliedFingerprint !== expectedFingerprint) {
+      if (returnIntent) {
+        throw new CrossMachineHandoffReturnRefusedError("receipt_mismatch", "The return capsule changed in transit.");
+      }
       throw new Error("The handoff capsule changed in transit. Start a new handoff from the source machine.");
     }
     const priorRecord = readCrossMachineHandoffRecord(handoffId);
     if (priorRecord && priorRecord.capsuleFingerprint !== expectedFingerprint) {
+      if (returnIntent) {
+        throw new CrossMachineHandoffReturnRefusedError(
+          "receipt_mismatch",
+          "This return replay identifier is already bound to different content.",
+        );
+      }
       throw new Error("This handoff replay identifier is already bound to different content.");
+    }
+    if (capsule.returnTo) {
+      return await acceptCrossMachineReturn(capsule, handoffId, expectedFingerprint, priorRecord);
     }
     const batchLaneRecord = capsule.batchMove
       ? readCrossMachineLaneImportRecord(capsule.batchMove.laneImportId)
@@ -50303,7 +50946,18 @@ export function createAgentChatService(args: {
       persistCrossMachineHandoffRecord(record);
 
       const destinationManaged = ensureManagedSession(session.id);
-      if (capsule.origin) destinationManaged.session.crossMachineOrigin = capsule.origin;
+      if (capsule.origin) {
+        destinationManaged.session.crossMachineOrigin = capsule.origin;
+        const arrival = destinationManaged.session.crossMachineArrival;
+        if (!arrival || arrival.handoffId !== handoffId || arrival.originSessionId !== capsule.source.sessionId) {
+          destinationManaged.session.crossMachineArrival = {
+            handoffId,
+            originSessionId: capsule.source.sessionId,
+            importedThroughSeq: 0,
+            localSequenceAtArrival: 0,
+          };
+        }
+      }
       persistChatState(destinationManaged);
       await recreateCrossMachineScheduledWork(capsule, session.id);
       const laneImportOutcome = capsule.batchMove
@@ -50335,9 +50989,32 @@ export function createAgentChatService(args: {
               destinationLanePath: destinationLane.worktreePath,
               managed: destinationManaged,
             });
-            const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
-            if (importedEnvelopes.length) await appendImportedChatEvents(destinationManaged, importedEnvelopes);
-            persistChatState(destinationManaged);
+          }
+          const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
+          const importedThroughSeq = await appendMissingCrossMachineHandoffEvents(
+            destinationManaged,
+            handoffId,
+            capsule.source.sessionId,
+            importedEnvelopes,
+          );
+          if (capsule.origin) {
+            const localSequenceAtArrival = readTranscriptEnvelopes(destinationManaged).reduce((highest, envelope) => {
+              if (
+                envelope.provenance?.crossMachineHandoffId === handoffId
+                && envelope.provenance.sourceSessionId === capsule.source.sessionId
+                && typeof envelope.sequence === "number"
+              ) return Math.max(highest, envelope.sequence);
+              return highest;
+            }, 0);
+            destinationManaged.session.crossMachineArrival = {
+              handoffId,
+              originSessionId: capsule.source.sessionId,
+              importedThroughSeq,
+              localSequenceAtArrival,
+            };
+          }
+          persistChatState(destinationManaged);
+          if (!record.forkMaterializedAt || !reusedSession) {
             record = { ...record, forkMaterializedAt: nowIso(), updatedAt: nowIso() };
             persistCrossMachineHandoffRecord(record);
           }
@@ -50711,23 +51388,29 @@ export function createAgentChatService(args: {
           model: lineage?.model ?? row.model ?? "",
           modelId: lineage?.modelId ?? null,
           title: row.title ?? null,
+          crossMachineOrigin: lineage?.crossMachineOrigin ?? null,
+          crossMachineArrival: lineage?.crossMachineArrival ?? null,
         };
       }),
     listBatchLanes: async (): Promise<CrossMachineBatchLane[]> => (await laneService
       .list({ includeArchived: false, includeStatus: false }))
-      .map((lane) => ({
-        laneId: lane.id,
-        parentLaneId: lane.parentLaneId ?? null,
-        name: lane.name,
-        branchRef: lane.branchRef ?? "",
-      })),
+      .map((lane) => {
+        const origin = readCrossMachineLaneOriginRecord(lane.id);
+        return {
+          laneId: lane.id,
+          parentLaneId: lane.parentLaneId ?? null,
+          name: lane.name,
+          branchRef: lane.branchRef ?? "",
+          ...(origin ? { originMachineKey: origin.sourceMachineKey, originLaneId: origin.sourceLaneId } : {}),
+        };
+      }),
     inspectBatchLane: async (laneId): Promise<CrossMachineSourceInspection> => {
       const lane = await laneService.getSummary(laneId, { includeStatus: true });
       if (!lane) throw new Error(`The source lane '${laneId}' could not be loaded.`);
       return crossMachineSource.inspectLane(lane);
     },
     getSourceMachineName: () => os.hostname().trim() || "source machine",
-    prepareBatchLane: async ({ batchId, importId, lane, destinationParentLaneId, includeChanges, sourceMachineName }) => {
+    prepareBatchLane: async ({ batchId, importId, lane, returnToLaneId, destinationParentLaneId, includeChanges, sourceMachineName }) => {
       const summary = await laneService.getSummary(lane.laneId, { includeStatus: true });
       if (!summary) throw new Error(`The source lane '${lane.name}' could not be loaded.`);
       const inspection = await crossMachineSource.inspectLane(summary);
@@ -50742,6 +51425,7 @@ export function createAgentChatService(args: {
       });
       if (remote.exitCode !== 0) throw new Error(`ADE could not read '${inspection.branchRef}' on origin. ${remote.stderr.trim()}`.trim());
       const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
+      const sourceMachineKey = getCrossMachineLocalMachineKey?.()?.trim() || "";
       const gitBundle = includeChanges
         ? await packHandoffGitBundle({
             worktreePath: summary.worktreePath,
@@ -50757,7 +51441,9 @@ export function createAgentChatService(args: {
       return {
         importId,
         sourceMachineName,
+        ...(sourceMachineKey ? { sourceMachineKey } : {}),
         sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
+        ...(returnToLaneId ? { returnToLaneId } : {}),
         ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
         branchRef: inspection.branchRef,
         headSha: inspection.headSha,
@@ -50824,6 +51510,29 @@ export function createAgentChatService(args: {
         },
       }).catch((error) => {
         logger.warn("agent_chat.cross_machine_handoff_card_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
+    showBatchApprovalCard: (sessionId, card) => {
+      void emitAdeCard({
+        sessionId,
+        card: {
+          cardId: `${CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX}${card.batchId}`,
+          variant: "cross_machine_batch_move_approval",
+          state: card.live ? "live" : "terminal",
+          title: card.title,
+          subtitle: card.subtitle,
+          rows: card.rows.map((row) => ({ text: row.text, detail: row.detail })),
+          ...(card.live ? { actions: [
+            { id: "approve", label: "Approve batch", kind: "primary" as const },
+            { id: "deny", label: "Deny", kind: "default" as const },
+          ] } : {}),
+          fallbackText: card.fallbackText,
+        },
+      }).catch((error) => {
+        logger.warn("agent_chat.cross_machine_batch_approval_card_failed", {
           sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -63361,6 +64070,7 @@ export function createAgentChatService(args: {
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     const crossMachineMove = readCrossMachineMove(row.id)?.record ?? null;
+    const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -63379,6 +64089,7 @@ export function createAgentChatService(args: {
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
       ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       ...(crossMachineMove ? { crossMachineHandoff: crossMachineMove } : {}),
+      ...(crossMachineBatchApproval ? { crossMachineBatchApproval } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
       goal: row.goal ?? null,
@@ -72240,6 +72951,8 @@ export function createAgentChatService(args: {
       requireCrossMachineHandoff().getBatch(getArgs.batchId),
     retryCrossMachineBatchMove: (retryArgs: AgentChatRetryCrossMachineBatchMoveArgs) =>
       requireCrossMachineHandoff().retryBatch(retryArgs.batchId),
+    resolveCrossMachineBatchMoveApproval: (approvalArgs: AgentChatResolveCrossMachineBatchMoveApprovalArgs) =>
+      requireCrossMachineHandoff().resolveBatchApproval(approvalArgs.batchId, approvalArgs.approve === true),
     cancelCrossMachineHandoff: async (cancelArgs: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().cancel(cancelArgs.sourceSessionId),
     retryCrossMachineHandoff: async (retryArgs: AgentChatRetryCrossMachineHandoffArgs) =>

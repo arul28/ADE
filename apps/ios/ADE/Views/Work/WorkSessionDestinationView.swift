@@ -1717,7 +1717,8 @@ struct WorkSessionDestinationView: View {
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
       onDeleteThreadComment: deleteThreadCommentAction,
-      crossMachineHandoffActions: crossMachineHandoffActions
+      crossMachineHandoffActions: crossMachineHandoffActions,
+      crossMachineBatchMoveApprovalActions: crossMachineBatchMoveApprovalActions
     )
   }
 
@@ -2638,7 +2639,29 @@ extension WorkSessionDestinationView {
     }
     if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
       refreshChatInfoSnapshots()
+      if let tail = transcript.last,
+         case .adeCard(let card) = tail.event,
+         card.variant == "cross_machine_batch_move_approval",
+         !card.isTerminal {
+        Task { await refreshCrossMachineBatchApprovalSummary() }
+      }
     }
+  }
+
+  /// The transcript card is durable; its projected summary is the action
+  /// surface. Refresh once when a live batch approval card arrives so an idle
+  /// caller chat can show the banner without relying on turn polling.
+  @MainActor
+  private func refreshCrossMachineBatchApprovalSummary() async {
+    guard syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
+          let summary = try? await syncService.fetchChatSummary(sessionId: sessionId)
+    else { return }
+    let refreshed = syncService.withCrossMachineHandoffClearApplied(summary)
+    if chatSummary != refreshed {
+      chatSummary = refreshed
+    }
+    lastKnownChatSummary = refreshed
+    syncService.cacheChatSummary(refreshed)
   }
 }
 
