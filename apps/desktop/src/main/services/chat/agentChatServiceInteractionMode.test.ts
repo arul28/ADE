@@ -2196,7 +2196,9 @@ describe("Claude plan intent at query launch", () => {
     const guidance = claudePrompts().at(-1)?.sessionActivityGuidance;
     if (expectGuidance) {
       expect(guidance).toContain(process.platform === "win32"
-        ? "chat activity debugging --session $env:ADE_CHAT_SESSION_ID"
+        // Claude may use Git Bash or PowerShell on Windows, so keep its
+        // session reference literal until the provider shell is known.
+        ? `chat activity debugging --session '${session.id}'`
         : `chat activity debugging --session "$ADE_CHAT_SESSION_ID"`);
     } else {
       expect(guidance).toBeNull();
