@@ -220,7 +220,10 @@ Visual polish must not cost CPU or GPU while ADE is idle.
 
 - An always-visible animation runs in steps or on the compositor. The top-bar
   activity pulse uses a 4-step, 3s, `step-end` animation; a smooth infinite
-  pulse there cost about a fifth of a core of GPU.
+  pulse there cost about a fifth of a core of GPU. A stepped loop that changes
+  at most 31 times a second is then driven by the renderer's step clock
+  (`lib/steppedLoopClock.ts`) and costs a frame only when it changes; a smooth
+  loop never qualifies.
 - `backdrop-filter` only on a few large planes (cards over a picture), never on
   list rows or anything that scrolls.
 - Live data reloads on events with a debounce (for example `prs.onEvent`

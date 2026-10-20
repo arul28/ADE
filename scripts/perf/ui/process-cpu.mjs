@@ -47,7 +47,7 @@ function snapshot() {
 
 function pick(snap) {
   const procs = [];
-  const main = [...snap].find(([, p]) => p.cmd.includes(`--remote-debugging-port=${port}`) && !p.cmd.includes("--type="));
+  const main = [...snap].find(([, p]) => p.cmd.includes(`--remote-debugging-port=${port}`) && /electron/i.test(p.cmd) && !p.cmd.includes("--type="));
   if (!main) throw new Error(`no Electron main with --remote-debugging-port=${port}`);
   procs.push(["main", main[0]]);
   for (const [pid, p] of snap) {
