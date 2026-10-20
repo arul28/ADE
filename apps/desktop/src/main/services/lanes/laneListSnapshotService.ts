@@ -130,7 +130,11 @@ function sessionStatusBucket(args: {
     ? false
     : args.settleOverride === "settled" || Boolean(args.settledAt);
   if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
-  if (args.lastTurnFailedAt) return "ended";
+  // A live turn outranks a persisted failure marker: chats keep their row
+  // "running" between turns, so `runtimeState` is the live signal that says a
+  // turn is actually in flight. Without this, a chat that resumed after a
+  // failure counted as ended in every lane rollup while it was working.
+  if (args.lastTurnFailedAt && args.runtimeState !== "running") return "ended";
   if (args.status === "running") return "running";
   return "ended";
 }

@@ -440,6 +440,37 @@ describe("buildRosterSnapshot", () => {
     expect(projects[0]!.runningCount).toBe(1);
   });
 
+  it("lets newer output and a live turn supersede a persisted failure marker", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    const insertChat = db.prepare(
+      `insert into terminal_sessions (id, lane_id, chat_session_id, tool_type, title, status, last_output_preview, last_output_at, pinned, exit_code, started_at, archived_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // Both rows carry a failure at 10:00. `chat-recovered` produced output
+    // after it, so the chat ran again; `chat-failed` has not, so the marker is
+    // still the newest fact.
+    insertChat.run("chat-recovered", "lane-work", null, "claude-chat", "Recovered", "running", "still working", "2026-01-06T10:05:00Z", 0, null, "2026-01-06T09:00:00Z", null);
+    insertChat.run("chat-failed", "lane-work", null, "claude-chat", "Failed", "running", "boom", "2026-01-06T09:59:00Z", 0, null, "2026-01-06T09:00:00Z", null);
+    const markFailed = db.prepare("update terminal_sessions set last_turn_failed_at = ? where id = ?");
+    markFailed.run("2026-01-06T10:00:00Z", "chat-recovered");
+    markFailed.run("2026-01-06T10:00:00Z", "chat-failed");
+    db.close();
+
+    // Disk-only (project not booted): newer output supersedes the marker.
+    const fromDisk = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const diskById = new Map(fromDisk[0]!.chats.map((chat) => [chat.id, chat]));
+    expect(diskById.get("chat-recovered")!.status).toBe("idle");
+    expect(diskById.get("chat-failed")!.status).toBe("failed");
+
+    // Live: a running turn outranks the marker even before new output lands.
+    const scopeRegistry = bootedScopes([
+      { sessionId: "chat-failed", status: "active", provider: "claude" },
+    ]);
+    const fromLive = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const liveById = new Map(fromLive[0]!.chats.map((chat) => [chat.id, chat]));
+    expect(liveById.get("chat-failed")!.status).toBe("running");
+  });
+
   it("leaves a live chat at rest when it has no background tasks", async () => {
     const scopeRegistry = bootedScopes([
       { sessionId: "chat-run", status: "idle", activeBackgroundTaskCount: 0 },

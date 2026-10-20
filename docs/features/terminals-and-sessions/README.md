@@ -366,7 +366,20 @@ Shared types and IPC:
   SDK renames a type. Liveness is in-memory and deliberately empty after a
   restart — orphaned background work is not live work — and it sits BELOW
   failure, stopped, settled and stale in the precedence order, so a lingering
-  "Working" can never mask a failed session. The summary also carries
+  "Working" can never mask a failed session **at rest**. A live foreground turn
+  is the one thing above the persisted markers: chats keep their row `running`
+  between turns, so `runtimeState` (the host's live projection of an active
+  turn) decides whether the row is Working, and a `last_turn_failed_at` marker
+  — which describes the turn that ENDED — can never paint a working chat red.
+  That marker used to outrank everything, so a chat that resumed after one
+  failure (restart recovery, an auto-resume, a peer message, a runtime that
+  kept going) wore "Failed" for as long as it worked, and the account roster
+  pushed "N chats failed" about chats that were demonstrably running. The same
+  rule covers the opposite complaint: a persisted `detached` status no longer
+  reads "Ended" while the runtime reports a live turn. `last_turn_failed_at` is
+  also cleared at every turn start now, not only on a user send or a completed
+  turn, and any non-failed `done` (interrupted included) supersedes an older
+  failure. The summary also carries
   `backgroundWorkSince`, the instant the live set last went from empty to
   non-empty, so the promoted row's elapsed counts from when the work started
   rather than from a `lastActivityAt` that every provider frame refreshes. See

@@ -4,6 +4,7 @@ import {
   backgroundWorkFromSummary,
   canonicalSessionState,
   classifyBackgroundWorkKind,
+  isPersistedTurnFailureCurrent,
   isSessionFiledAsSnoozed,
   isSessionSnoozed,
   isSessionSnoozeExpired,
@@ -55,12 +56,18 @@ describe("canonicalSessionState precedence", () => {
     ["heuristic does NOT fire on idle sessions", { runtimeState: "idle", lastOutputPreview: "continue? (y/n)" }, "idle", null],
     ["clean exit stays ended until explicitly settled", { status: "detached", exitCode: 0 }, "ended", null],
     ["unknown exit stays ended (no badge)", { status: "detached", exitCode: null, runtimeState: "exited" }, "ended", null],
-    ["detached chat is ended, not perpetually ready", { status: "detached", toolType: "claude-chat", exitCode: null }, "ended", null],
+    ["detached chat is ended, not perpetually ready", { status: "detached", runtimeState: "idle", toolType: "claude-chat", exitCode: null }, "ended", null],
     ["declared settle wins over failure", { status: "detached", exitCode: 2, settledAt: "2026-07-06T11:00:00.000Z" }, "settled", null],
     ["settled chat re-settles at idle rest", { toolType: "claude-chat", runtimeState: "idle", settledAt: "2026-07-06T11:00:00.000Z" }, "settled", null],
     ["settle is ignored while a turn actively streams", { toolType: "claude-chat", runtimeState: "running", settledAt: "2026-07-06T11:00:00.000Z" }, "running", null],
     ["ask escalation wins over settle", { settledAt: "2026-07-06T11:00:00.000Z", attentionRequestedAt: "2026-07-06T11:30:00.000Z", toolType: "claude-chat" }, "needs_you", "Needs you"],
-    ["chat turn death is failed while status still running", { toolType: "claude-chat", lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "failed", "Failed"],
+    ["chat turn death is failed at rest while status still running", { toolType: "claude-chat", runtimeState: "idle", lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "failed", "Failed"],
+    // A persisted failure marker describes the turn that ENDED. A live turn is
+    // working again, and must not wear the old verdict:
+    // a chat resumed after one failure (restart recovery, auto-resume, a peer
+    // message) used to read Failed for as long as it worked.
+    ["a live chat turn outranks an older turn failure", { toolType: "claude-chat", lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "running", null],
+    ["a live chat turn outranks a stale detached status", { status: "detached", toolType: "claude-chat", lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "running", null],
   ];
 
   it.each(cases)("%s", (_name, overrides, phase, label) => {
@@ -418,6 +425,24 @@ describe("classifyBackgroundWorkKind", () => {
       workingCount: 3,
       monitoringCount: 1,
     });
+  });
+});
+
+describe("isPersistedTurnFailureCurrent", () => {
+  const failedAt = "2026-07-06T10:00:00.000Z";
+
+  it.each([
+    ["no failure marker is not a failure", null, failedAt, false],
+    ["a marker with no output is the newest fact", failedAt, null, true],
+    ["output before the failure leaves it current", failedAt, "2026-07-06T09:59:59.000Z", true],
+    ["output at the same instant leaves it current", failedAt, failedAt, true],
+    // The recovery a running-then-failed chat gets from nothing else: it kept
+    // producing output, so the failure is history.
+    ["output after the failure supersedes it", failedAt, "2026-07-06T10:00:01.000Z", false],
+    ["an unparseable failure marker is not a failure", "not-a-date", failedAt, false],
+    ["an unparseable activity stamp fails closed", failedAt, "not-a-date", true],
+  ])("%s", (_name, lastTurnFailedAt, lastActivityAt, expected) => {
+    expect(isPersistedTurnFailureCurrent({ lastTurnFailedAt, lastActivityAt })).toBe(expected);
   });
 });
 

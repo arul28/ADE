@@ -168,8 +168,10 @@ enum SessionSettleOverride: String, Equatable {
 ///      attention request (never outvoted by anything below),
 ///   2. settled — explicitly declared, or forced by a "settled" override; an
 ///      "active" override suppresses this tier entirely,
-///   3. ended branch — stopped, failed, chat ready/ended,
-///   4. running-chat turn failure,
+///   3. ended branch — stopped, failed, chat ready/ended (a live chat turn is
+///      never "ended"),
+///   4. running-chat turn failure at rest — a live chat turn is running, not
+///      failed, because the marker describes the turn that ended,
 ///   5. idle — ready(chat)/idle; a resting session is stale only when it
 ///      claims live background work and is silent ≥ `sessionStaleAfterSeconds`,
 ///   6. stale — a live run silent ≥ `sessionStaleAfterSeconds`,
@@ -202,6 +204,16 @@ func workCanonicalSessionState(
   let settled = settledAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   let lastTurnFailed = lastTurnFailedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   let override = SessionSettleOverride(persisted: settleOverride)
+  // A chat whose runtime reports a live turn is WORKING, whatever verdict a
+  // previous turn left on the row. Chats persist `status: "running"` between
+  // turns, which is why the failure marker exists; but the marker outlives the
+  // failure whenever the chat keeps going (restart recovery, an auto-resume, a
+  // peer message, a resumed runtime continuing the interrupted turn), and the
+  // row then wore a red "Failed" capsule for as long as the work lasted.
+  // `runtimeState` is the live projection, so it outranks both the marker and a
+  // stale `detached` status (mirrors desktop `canonicalSessionState`'s
+  // `chatTurnLive`).
+  let chatTurnLive = chat && runtimeLower == "running"
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
@@ -222,7 +234,9 @@ func workCanonicalSessionState(
     return CanonicalSessionState(phase: .settled)
   }
 
-  let ended = statusLower != "running"
+  // A live chat turn is not "ended", even when the row still carries a status
+  // a restart wrote (`detached`) while the runtime kept working.
+  let ended = statusLower != "running" && !chatTurnLive
   if ended {
     // 3. Stopped: an explicitly disposed PTY is resumable/closed, not a task
     // failure. Check before exit/runtime failures because disposed sessions are
@@ -246,7 +260,7 @@ func workCanonicalSessionState(
     // Chats rest between turns unless their last turn failed or their backing
     // runtime detached, which is genuinely ended.
     if chat {
-      if !lastTurnFailed.isEmpty {
+      if !lastTurnFailed.isEmpty && !chatTurnLive {
         return CanonicalSessionState(phase: .failed)
       }
       if statusLower == "detached" {
@@ -260,8 +274,9 @@ func workCanonicalSessionState(
   }
 
   // Running chats keep status "running" when a turn dies, so carry the
-  // persisted failure marker ahead of calm running/ready states.
-  if chat && !lastTurnFailed.isEmpty {
+  // persisted failure marker ahead of calm running/ready states. A live turn is
+  // exempt: the marker describes the turn that ENDED, and this one has not.
+  if chat && !lastTurnFailed.isEmpty && !chatTurnLive {
     return CanonicalSessionState(phase: .failed)
   }
 

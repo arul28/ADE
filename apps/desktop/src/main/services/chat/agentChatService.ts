@@ -4897,6 +4897,14 @@ type ManagedChatSession = {
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
   lastTurnFailure: AgentChatLastTurnFailure | null;
+  /**
+   * True while the persisted `last_turn_failed_at` marker still describes the
+   * newest turn. Seeded from the row, set when a failed `done` lands, and
+   * cleared the first time the provider does real work afterwards — see
+   * `provesWorkAfterTurnFailure`. In memory only; the column is the durable
+   * copy and every read path handles a stale marker itself.
+   */
+  turnFailureMarked: boolean;
   /** See PersistedChatState.contextHealth. */
   contextHealth: AgentChatSessionContextHealth | null;
   /**
@@ -10674,6 +10682,38 @@ export type RequestChatInputArgs = {
     impact?: string | null;
   }>;
 };
+
+/**
+ * Did this event prove the chat is doing new work after a turn failure?
+ *
+ * `last_turn_failed_at` describes the turn that ended in `done: failed`. ADE
+ * clears it on the next turn start, but a provider can keep the IDENTICAL turn
+ * alive after a fatal event — Claude streams more tool calls and text under the
+ * same turn id — so the marker also has to fall to the first real work that
+ * follows it. Bookkeeping events (`context_usage`, scheduled-work heartbeats)
+ * and the failed turn's own teardown (a synthetic tool result closing a detached
+ * call) are not work and must leave the failure standing.
+ */
+function provesWorkAfterTurnFailure(event: AgentChatEvent): boolean {
+  switch (event.type) {
+    case "text":
+    case "reasoning":
+    case "activity":
+    case "tool_call":
+    case "command":
+    case "file_change":
+    case "web_search":
+      return true;
+    case "tool_result":
+      return (event.result as { synthetic?: unknown } | null | undefined)?.synthetic !== true;
+    case "user_message":
+      return !isDroppedSteerDeliveryState(event.deliveryState);
+    default:
+      // `status: started` is handled at the turn-start site, which owns the
+      // started contract; don't clear twice in one event.
+      return false;
+  }
+}
 
 export function createAgentChatService(args: {
   projectRoot: string;
@@ -22287,6 +22327,17 @@ export function createAgentChatService(args: {
           return event;
       }
     })();
+    // A failed `done` is the end of that turn, not of the chat. A provider can
+    // keep the same turn running afterwards (Claude streams more tool calls and
+    // text under the same turn id after a fatal event), and nothing else clears
+    // the marker on that route. Real work after the failure supersedes it, so
+    // the row stops claiming "Failed" the moment the chat is demonstrably
+    // working again. Bookkeeping and the failed turn's own teardown do not count
+    // — see `provesWorkAfterTurnFailure`.
+    if (managed.turnFailureMarked && provesWorkAfterTurnFailure(normalizedEvent)) {
+      managed.turnFailureMarked = false;
+      sessionService.clearLastTurnFailed(managed.session.id, { wakeSnoozed: false });
+    }
     const currentTurnStartedAt = managed.session.status === "active"
       && managed.session.currentTurnStartedAt
       && lastTurnStartedAtBySession.get(managed.session.id) === managed.session.currentTurnStartedAt
@@ -22299,6 +22350,18 @@ export function createAgentChatService(args: {
     );
     if (normalizedEvent.type === "tool_call" || normalizedEvent.type === "tool_result") {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
+    }
+    if (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started") {
+      // "Cleared when the next turn starts" is the contract of
+      // `last_turn_failed_at`, and a turn can start without the user typing:
+      // an auto-resume, a scheduled wake, a peer/coordinator message, restart
+      // recovery. Only user sends used to clear it, so any other route left a
+      // previous failure red on a chat that was demonstrably running again.
+      // No snooze wake: starting work is not the completion a snoozed row waits for.
+      if (managed.turnFailureMarked) {
+        managed.turnFailureMarked = false;
+        sessionService.clearLastTurnFailed(managed.session.id, { wakeSnoozed: false });
+      }
     }
     if (
       (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started")
@@ -22366,12 +22429,25 @@ export function createAgentChatService(args: {
       // transcript metadata, so process restarts do not sever the channel.
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status, "done", normalizedEvent.turnId);
       if (normalizedEvent.status === "failed") {
+        managed.turnFailureMarked = true;
         sessionService.markLastTurnFailed(managed.session.id);
-      } else if (normalizedEvent.status === "completed") {
-        // A later successful turn supersedes an earlier failure — without
-        // this, background/scheduled chats that hit one transient error would
-        // show red forever (only user sends clear turn-start markers).
-        sessionService.clearLastTurnFailed(managed.session.id);
+      } else {
+        // ANY non-failed end supersedes an earlier failure — not just
+        // `completed`. A turn the user interrupted (or a restart cut short) is
+        // the newest verdict on the row, and leaving an older `failed` behind
+        // made a chat that was stopped on purpose read "Failed" forever.
+        // Without this, background/scheduled chats that hit one transient error
+        // also stayed red (only user sends cleared turn-start markers).
+        // Only a completed turn counts as the "work is done" wake for a snoozed
+        // row; an interrupt is not something to pull the user back for. An
+        // interrupt with no failure to clear is a no-op — skip the write and
+        // the session-changed broadcast it would emit.
+        if (normalizedEvent.status === "completed" || managed.turnFailureMarked) {
+          managed.turnFailureMarked = false;
+          sessionService.clearLastTurnFailed(managed.session.id, {
+            wakeSnoozed: normalizedEvent.status === "completed",
+          });
+        }
       }
     }
 
@@ -26557,6 +26633,7 @@ export function createAgentChatService(args: {
       pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
+      turnFailureMarked: Boolean(row.lastTurnFailedAt),
       contextHealth: null,
       liveTurnErrorText: null,
       autoTitleSeed: null,
@@ -44679,6 +44756,7 @@ export function createAgentChatService(args: {
       pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
+      turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
       autoTitleSeed: null,
@@ -46633,6 +46711,7 @@ export function createAgentChatService(args: {
       pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
+      turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
       autoTitleSeed: null,
@@ -57530,6 +57609,7 @@ export function createAgentChatService(args: {
     // actually deliver the message.
     const clearUserTurnMarkers = (): void => {
       if (messageClearsAttentionMarkers(args.metadata)) {
+        managed.turnFailureMarked = false;
         sessionService.clearTurnStartMarkers(args.sessionId);
         resetSessionActivity(args.sessionId);
       }
@@ -58775,6 +58855,7 @@ export function createAgentChatService(args: {
         return;
       }
       markersCleared = true;
+      managed.turnFailureMarked = false;
       sessionService.clearTurnStartMarkers(args.sessionId);
       resetSessionActivity(args.sessionId);
     };
@@ -64244,6 +64325,8 @@ export function createAgentChatService(args: {
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     assertChatRuntimeOwnedHere(args.sessionId, "answer input for");
     await deliverInputResponse(args);
+    const answeredSession = managedSessions.get(args.sessionId);
+    if (answeredSession) answeredSession.turnFailureMarked = false;
     sessionService.clearTurnStartMarkers(args.sessionId);
     resetSessionActivity(args.sessionId);
   };

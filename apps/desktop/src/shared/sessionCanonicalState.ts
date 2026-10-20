@@ -235,6 +235,37 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
 }
 
 /**
+ * Does a PERSISTED turn-failure marker still describe the row?
+ *
+ * This is the disk-side half of the live-turn rule in `canonicalSessionState`.
+ * A row read from a project that is not booted has no runtime to ask, so it
+ * falls back to what it can see: the failure marker and the row's own output
+ * timestamp.
+ *
+ * `last_output_at` is written by preview-producing activity (assistant text,
+ * tool results), never by the `done` event that carries the failure. So a
+ * failure timestamp at or after the last output is the newest fact, while
+ * output strictly after it proves the chat ran again and the marker is stale.
+ * The live writers also clear the marker (a turn start, any non-failed `done`,
+ * and the first real work after the failed turn — see `agentChatService`), so
+ * this check is the disk-only backstop for a row whose brain was not there to
+ * witness the recovery.
+ *
+ * Fail closed on unparseable or missing timestamps: an unknown age is not
+ * evidence of recovery.
+ */
+export function isPersistedTurnFailureCurrent(args: {
+  lastTurnFailedAt?: string | null;
+  lastActivityAt?: string | null;
+}): boolean {
+  const failedAt = parseIsoMs(args.lastTurnFailedAt);
+  if (failedAt == null) return false;
+  const activityAt = parseIsoMs(args.lastActivityAt);
+  if (activityAt == null) return true;
+  return failedAt >= activityAt;
+}
+
+/**
  * Canonical precedence (highest first):
  *   1. explicit/structured needs-input — pendingInputItemId or an
  *      `ade chat ask` escalation (never outvoted by anything below),
@@ -243,7 +274,9 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  *      quiet is a human judgment call. An "active" override suppresses this
  *      tier entirely. Cleared at the write site on any new activity,
  *   3. stopped — user/system-disposed PTY,
- *   4. failed — non-zero exit / killed / chat turn death,
+ *   4. failed — non-zero exit / killed / chat turn death AT REST. A chat whose
+ *      live runtime reports a turn in progress is `running` instead: the marker
+ *      describes the turn that ended, not this one (see `chatTurnLive`),
  *   5. stale — a live run (or a resting session's background-work claim)
  *      silent ≥ SESSION_STALE_AFTER_MS; otherwise a resting session is not stale,
  *   6. running,
@@ -261,6 +294,29 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
   const chat = args.isChatTool?.(args.toolType) ?? false;
+  /**
+   * A chat whose runtime reports a live turn is WORKING, whatever verdict a
+   * previous turn left on the row.
+   *
+   * Chats persist `status: "running"` between turns, which is why the failure
+   * marker exists at all: it is the only column that says "the turn that just
+   * ended died". But that also makes the marker sticky, and it used to outrank
+   * everything below it. A chat that kept going after the failure — restart
+   * reconciliation, an auto-resume, a peer/coordinator message, background
+   * work, a resumed runtime continuing the interrupted turn — then wore a red
+   * "Failed" badge for as long as the work lasted, and the Activity roster
+   * pushed "N chats failed" notifications about chats that were demonstrably
+   * running.
+   *
+   * `runtimeState` is the host's LIVE projection: `chatSessionProjection` maps
+   * the provider's active status onto `"running"` and every resting state onto
+   * `"idle"`. So it — not the persisted `status` — is the honest turn-liveness
+   * signal, and a live turn outranks both the failure marker and a stale
+   * `detached` status (which produced the same bug on the other end: "Ended"
+   * on a chat that was still streaming). At rest the marker is still honored,
+   * which is the case it was written for.
+   */
+  const chatTurnLive = chat && args.runtimeState === "running";
 
   /**
    * A resting session that still owns live background work is not resting.
@@ -327,7 +383,9 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     };
   }
 
-  const ended = args.status !== "running";
+  // A live chat turn is not "ended", even when the row still carries a status
+  // a restart wrote (`detached`) while the runtime kept working.
+  const ended = args.status !== "running" && !chatTurnLive;
   if (ended) {
     // 3. Stopped: an explicitly disposed PTY is resumable/closed, not a task
     // failure. Keep it badge-free and let the session row's red dot carry the
@@ -354,7 +412,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // Exception: a DETACHED chat (backing runtime gone, e.g. closed/imported)
     // is genuinely over — ended, not perpetually "your move".
     if (chat) {
-      if (args.lastTurnFailedAt) {
+      if (args.lastTurnFailedAt && !chatTurnLive) {
         return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
       }
       if (args.status === "detached") {
@@ -370,8 +428,10 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   }
 
   // Chat rows keep status "running" even when a turn dies — surface the
-  // persisted failure marker ahead of the calm running/ready states.
-  if (chat && args.lastTurnFailedAt) {
+  // persisted failure marker ahead of the calm running/ready states. A live
+  // turn is exempt: the marker describes the turn that ENDED, and this one has
+  // not.
+  if (chat && args.lastTurnFailedAt && !chatTurnLive) {
     return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
   }
 
