@@ -262,6 +262,17 @@ subagent wakes it when its turn ends: `subagentKeepsParentBusy` and
 not count, and attached shells are never subagents, so a dev server left running
 cannot keep a lane busy.
 
+A resting chat with provider-reported **background work** still running (Claude's
+background agents, which are not ADE rows) needs no extra rule: the canonical
+state already promotes it to running (`liveness: "background"`), so it counts as
+busy for the fold. A finished chat whose last reply said it waits on its own work
+(`awaitingOwnWorkAt`, see [Chat › turn-end check](../chat/README.md)) is Waiting
+in the fold only while a chat it launched (nested or `--no-parent`) is still busy
+in the same lane (`laneFocusRows`); the verdict alone never folds a lane, and it
+lives only in the brain's memory, so a restart falls back to the rules above. The
+desktop fold reads it on every machine's rows (`session.list` carries it); iOS's
+`WorkLaneFocus.swift` does not read it yet.
+
 Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
 `subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the
 board (reason chips "Wake scheduled" and "Subagent working"), the host's

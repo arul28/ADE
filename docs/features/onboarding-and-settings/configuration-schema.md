@@ -420,6 +420,12 @@ always does). It **defaults to false**: each completed turn costs one short
 call on the chat's helper model. See
 [Chat › Next prompt suggestions](../chat/README.md#next-prompt-suggestions).
 
+`AiChatConfig.smartDecisionsEnabled?: boolean` lets ADE ask OpenCode Zen's free
+Jev model before its built-in rules ("Smart decisions (OpenCode Jev)"). It
+**defaults to true** and only matters on a machine with an OpenCode Zen
+sign-in; `false` makes every Jev call answer `null` with no network call. See
+[Chat › Jev decisions](../chat/README.md#jev-decisions).
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

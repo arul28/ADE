@@ -65,6 +65,8 @@ Operational logs use ADE's local logging services and may include bounded diagno
 
 The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics.
 
+`brain.jsonl` carries the brain process's own machine events. Everything a **project runtime** inside the brain logs goes to that project's `<project>/.ade/transcripts/logs/ade-cli.jsonl` (the `logger` `createAdeRuntime` builds in `apps/ade-cli/src/bootstrap.ts`, rotating to `ade-cli.1.jsonl`), not to the desktop's `main.jsonl`. That includes every chat-service event (`agent_chat.*`, among them the `agent_chat.turn_end_question_*` lines) and the Jev helper's `jev.*` events, because chats run in the brain. Look there first when a chat-side event seems missing.
+
 The desktop main process has a structured logger **from process start**: `apps/desktop/src/main/services/logging/machineLogger.ts` writes `~/.ade/runtime/desktop-main.jsonl` (same format, same `createFileLogger`, same 10 MiB rotation to `desktop-main.1.jsonl`), and `main.ts` opens it in its first executable statement, before the `ade://` claim and the single-instance lock. Its location is chosen for who can *read* it: `resolveMachineAdeLayout` is the resolver `ade report-issue` uses, so a headless report on a machine where the desktop will not start finds the file by construction, and each channel's `ADE_HOME` keeps its own. Electron's `userData` — where `local-runtime.jsonl` and `ade-update.jsonl` still live — is a per-platform, per-productName directory the CLI would have to guess, which is why those two remain desktop-only sources in a report.
 
 Not everything reaches a structured logger. Lines the runtime prints on its way up go to the background service's **stdout**, which on macOS is `~/.ade/runtime/launchd.out.log` and not the `launchd.err.log` that carries stderr. Both streams are bounded by `runtimeLogMaintenance.ts` and **both** are collected into a diagnostic report; see [Diagnostic reports](features/storage-and-recovery/README.md#diagnostic-reports-report-issue). Early main-process events additionally mirror to `console` through `logMachineEvent`, so a terminal-launched app still shows them and the pathological case — an old plist that boots the whole desktop app as the background service — still leaves them in `launchd.out.log`. That mirror is a second copy, not the record: a bare `console.log` for something the machine log could carry is no longer acceptable, because it is invisible to a Finder-launched app.
@@ -656,6 +658,18 @@ scripts enumerate event names, not `action` or `outcome` values), and the
 dashboard spec is untouched until a product question needs it. The
 orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
 which carry session and handoff ids, are not PostHog events.
+
+### Jev decisions
+
+The shared Jev helper (`apps/desktop/src/main/services/jev/jevService.ts`) writes only local operational lines to the project runtime's `ade-cli.jsonl`; nothing goes to PostHog, and the OpenCode Zen token, the asked state and the answers are never logged.
+
+- `jev.summary` (info) — at most once per 10 minutes, and only after a window with traffic (plus once on runtime teardown): `windowMinutes` and `features`, a map from feature (`turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`) to the count of each outcome in the window (`ok`, `cached`, or a fallback reason: `disabled`, `not_signed_in`, `token_expired`, `breaker_open`, `busy`, `invalid_request`, `timeout`, `network`, `rate_limited`, `auth_rejected`, `http_error`, `bad_response`) and `p50Ms`/`p95Ms` of network calls that answered. This is the line that shows whether Jev ever ran.
+- `jev.breaker_opened` (warn) — `feature` of the call that tripped it, `reason` (`rate_limited`, `auth_rejected`, `transient`), `trigger` (the failure), and `until` (ISO).
+- `jev.decide_failed` (warn) — an unexpected throw inside the helper, with `error`; the caller still got `null`.
+
+`ade actions run ai.jevStatus` returns the same counts since the runtime started, with availability and breaker state.
+
+The turn-end check (`chat/turnEndQuestionCheck.ts`) logs `agent_chat.turn_end_question_tiebreak` (info) for every Jev/cheap-model decision with `sessionId`, `turnId`, `provider` (the cheap-model provider or null), `jev` (`ask`, `not_ask`, `unsure`, `no_answer`), `decidedBy` (`jev` or `model`), `asksUser`, `awaitingOwnWork`, `stillOpen` and `durationMs`; `agent_chat.turn_end_question_raised` (info) with `decidedBy` `rules`, `jev` or `model`; `agent_chat.turn_end_question_tiebreak_failed` (warn) when the cheap model throws; and `agent_chat.turn_end_awaiting_own_work` (info, `sessionId`) when a chat is marked as waiting on its own work.
 
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 

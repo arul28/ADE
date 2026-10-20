@@ -444,6 +444,7 @@ import {
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
+import type { JevService } from "../jev/jevService";
 import { createNextPromptSuggestion, sanitizePromptSuggestion } from "./nextPromptSuggestion";
 import {
   exceedsInlineFileLimit,
@@ -11035,6 +11036,11 @@ export function createAgentChatService(args: {
    */
   turnUsageLedger?: TurnUsageLedger | null;
   /**
+   * The shared Jev helper (`ai.jevDecide`). The turn-end question check asks
+   * it first; absent (tests, the in-process desktop) keeps today's path.
+   */
+  jevDecide?: JevService["decide"] | null;
+  /**
    * The model router in shadow mode. It watches subagent starts and results
    * and logs the route it would have picked; it never changes a turn. Absent
    * in tests and in hosts that do not keep one.
@@ -11198,6 +11204,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     requestSessionAttention = (request) =>
       sessionService.requestAttention(request.sessionId, request.message, request.source),
+    jevDecide,
     turnUsageLedger,
     modelRouter,
     onClaudeHooksIgnored,
@@ -12602,6 +12609,25 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  /**
+   * Chats whose last reply Jev read as waiting on their own work, and when.
+   * Live only: a restart stops that work too. Read by the session summary.
+   */
+  const awaitingOwnWorkAtBySession = new Map<string, string>();
+  /** Chats this one started, nested or `--no-parent`, that are still busy. */
+  const countLiveChildChats = (sessionId: string): number => {
+    let count = 0;
+    for (const child of managedSessions.values()) {
+      if (child.deleted || child.session.id === sessionId) continue;
+      if (child.session.orchestrationParentSessionId !== sessionId && child.session.launchedBySessionId !== sessionId) continue;
+      if (
+        child.session.status === "active"
+        || runtimeMidTurn(child)
+        || totalBackgroundWork(runtimeBackgroundWork(child.runtime ?? null)) > 0
+      ) count += 1;
+    }
+    return count;
+  };
   // Declared before `notifyChatSessionEnded` for the same reason as `autoResume`.
   const turnEndQuestion = createTurnEndQuestionCheck({
     logger,
@@ -12620,6 +12646,15 @@ export function createAgentChatService(args: {
     requestAttention: requestSessionAttention,
     clearInferredAttention: (sessionId, startedAt) =>
       sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
+    decide: jevDecide ?? null,
+    setAwaitingOwnWork: (sessionId, at) => {
+      if (at ? awaitingOwnWorkAtBySession.get(sessionId) === at : !awaitingOwnWorkAtBySession.has(sessionId)) return;
+      if (at) awaitingOwnWorkAtBySession.set(sessionId, at);
+      else awaitingOwnWorkAtBySession.delete(sessionId);
+      if (at) logger.info("agent_chat.turn_end_awaiting_own_work", { sessionId });
+      // The marker lives on the summary, so the Work list must read it again.
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated" });
+    },
   });
   // ADE's next-prompt suggestion for providers without a native one. Runs on
   // the same single model that names the chat: the vendor's cheap helper
@@ -22004,6 +22039,7 @@ export function createAgentChatService(args: {
         isSubagentWithParent: managed.session.spawnKind === "subagent"
           && Boolean(managed.session.orchestrationParentSessionId?.trim()),
         backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
+        liveChildCount: countLiveChildChats(managed.session.id),
         provider: managed.session.provider,
         lastUserMessage: lastUser ? lastUser.displayText ?? lastUser.text : null,
         isStillCurrent: () => !managed.deleted && managedSessions.get(managed.session.id) === managed,
@@ -62800,6 +62836,7 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
+      ...(awaitingOwnWorkAtBySession.has(row.id) ? { awaitingOwnWorkAt: awaitingOwnWorkAtBySession.get(row.id) } : {}),
       ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),

@@ -2495,9 +2495,10 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    background work reads as running, so ADE raises the same hand for a
    question left in that reply, with source `turn_end_question`
    (`chat/turnEndQuestionCheck.ts`): rules on the reply's ending raise it for
-   a clear ask and skip a progress note, and an unsure ending goes to the
-   provider's cheap model (Claude, Codex, Cursor) with a staleness guard on
-   the turn id. Subagents are skipped, and nothing runs on replay. Provider
+   a clear ask and skip a progress note, and an unsure ending goes to Jev
+   (any provider), then, when Jev gives no clear answer, to the provider's
+   cheap model (Claude, Codex, Cursor), with a staleness guard on the turn
+   id. Subagents are skipped, and nothing runs on replay. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
    only the status line. Status notes are trimmed to at
