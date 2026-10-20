@@ -5019,6 +5019,8 @@ export function createUsageTrackingService({
   const getModelRoutes = (args: RouterRoutesArgs = {}) => requireModelRouter().routes(args);
   /** Every model this machine can run, with its full registry profile and billing. */
   const getModelCatalog = (args: ModelCatalogArgs = {}) => requireModelRouter().catalog(args);
+  /** The same models organized by task kind, with scores, tiers and plain-English notes. */
+  const getModelSheet = (args: ModelCatalogArgs = {}) => requireModelRouter().sheet(args);
   /** The route the router would pick for one task, without running anything. */
   const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
   /** What the shadow router would have changed over the last days. */
@@ -6243,6 +6245,7 @@ export function createUsageTrackingService({
       setModelPriceOverride,
       getModelRoutes,
       getModelCatalog,
+      getModelSheet,
       previewModelRoute,
       getRouterShadowSummary,
       getRouterEfficiency,
@@ -6288,6 +6291,7 @@ export function createUsageTrackingService({
     setModelPriceOverride,
     getModelRoutes,
     getModelCatalog,
+    getModelSheet,
     previewModelRoute,
     getRouterShadowSummary,
     getRouterEfficiency,

@@ -1082,6 +1082,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getModelDetail",
     "getModelPriceOverrides",
     "getModelRoutes",
+    "getModelSheet",
     "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",

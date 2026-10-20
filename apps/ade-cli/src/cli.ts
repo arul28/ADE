@@ -710,6 +710,7 @@ export type FormatterId =
   | "router-efficiency"
   | "router-shadow"
   | "models-catalog"
+  | "models-sheet"
   | "update-status"
   | "notify"
   | "remote-mcp";
@@ -1235,7 +1236,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
         | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
-    $ ade models catalog                            Every model you can run, with its full registry profile and billing
+    $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | rename | default
@@ -3613,6 +3614,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade models catalog --text                     One line per model, best Intelligence Index first
     $ ade models catalog --provider opencode --text One harness
     $ ade models catalog                            Full profiles as JSON
+
+  The model sheet organizes the same models by the kind of task they suit:
+  a 0-1 score per task kind (question, research, review, small edit, feature,
+  debugging, refactor, writing, vision, audio) from weighted benchmarks, the
+  best effort per kind, speed and cost tiers, and plain-English notes: what
+  each model family is good for and what to avoid it for.
+
+    $ ade models sheet --text                       Task-kind table, then each family in words
+    $ ade models sheet --provider claude --text     One harness
+    $ ade models sheet                              The sheet as JSON
 
   Env: ADE_MODEL_REGISTRY_FILE=<path> reads a local registry snapshot instead
   of the account directory.
@@ -17380,8 +17391,16 @@ function buildRouterPlan(args: string[]): CliPlan {
 
 function buildModelsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "catalog";
-  if (sub !== "catalog" && sub !== "list") throw new CliUsageError(`Unknown models command '${sub}'. Use catalog.`);
   const provider = readValue(args, ["--provider"]);
+  if (sub === "sheet") {
+    return {
+      kind: "execute",
+      label: "models sheet",
+      formatter: "models-sheet",
+      steps: [actionStep("result", "usage", "getModelSheet", provider ? { provider } : {})],
+    };
+  }
+  if (sub !== "catalog" && sub !== "list") throw new CliUsageError(`Unknown models command '${sub}'. Use catalog or sheet.`);
   return {
     kind: "execute",
     label: "models catalog",
@@ -28476,6 +28495,92 @@ function formatModelsCatalog(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * The model sheet: one row per model family with its task-kind scores and
+ * tiers, then each family in words (summary, best for, avoid for, notes) with
+ * the routes that reach it.
+ */
+function formatModelsSheet(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const sheet = isRecord(result.sheet) ? result.sheet : {};
+  const registry = isRecord(result.registry) ? result.registry : {};
+  const families = Array.isArray(sheet.families) ? sheet.families.filter(isRecord) : [];
+  const kinds = Array.isArray(sheet.kinds) ? sheet.kinds.map(String) : [];
+  const short: Record<string, string> = {
+    question: "ask", research: "rsrch", review: "review", small_edit: "edit", feature: "feat",
+    debugging: "debug", refactor: "refac", writing: "write", vision: "vision", audio: "audio",
+  };
+  const score = (input: unknown): string => (typeof input === "number" ? input.toFixed(2) : "—");
+  const billing = (input: unknown): string => {
+    if (!isRecord(input)) return "";
+    if (input.kind === "plan") return `plan ${String(input.plan ?? "")}`;
+    if (input.kind === "metered") return `metered ${String(input.channel ?? "")}`;
+    return String(input.kind ?? "");
+  };
+  const modelsOf = (family: JsonObject): JsonObject[] => (Array.isArray(family.models) ? family.models.filter(isRecord) : []);
+  const rows = families.map((family) => {
+    const scores = isRecord(family.kinds) ? family.kinds : {};
+    const harnesses = [...new Set(modelsOf(family).map((model) => `${String(model.harness ?? "")} ${billing(model.billing).split(" ")[0]}`))];
+    return [
+      String(family.name ?? family.family ?? ""),
+      ...kinds.map((kind) => score(scores[kind])),
+      String(family.speed ?? "—"),
+      String(family.cost ?? "—"),
+      harnesses.join(", "),
+    ];
+  });
+  const blocks = families.map((family) => {
+    const notes = isRecord(family.notes) ? family.notes : {};
+    const list = (input: unknown): string[] => (Array.isArray(input) ? input.map(String) : []);
+    const kindList = (input: unknown): string => (Array.isArray(input) ? input.filter(isRecord) : [])
+      .map((entry) => `${short[String(entry.kind)] ?? String(entry.kind)} (${String(entry.why ?? "")})`)
+      .join("; ");
+    const models = modelsOf(family).map((model) => {
+      const best = isRecord(model.bestEffort) ? model.bestEffort : {};
+      const bestText = Object.entries(best).map(([kind, effort]) => `${short[kind] ?? kind} ${String(effort)}`).join(", ");
+      const match = isRecord(model.match) ? model.match : null;
+      return [
+        `    ${String(model.harness ?? "")} ${String(model.modelId ?? "")}`,
+        billing(model.billing),
+        model.defaultEffort ? `default ${String(model.defaultEffort)}` : "",
+        model.scoredEffort !== model.defaultEffort && model.scoredSlug ? `scored at ${String(model.scoredEffort ?? "-")}` : "",
+        bestText ? `best: ${bestText}` : "",
+        match ? `match: ${String(match.relation ?? "")} (${String(match.confidence ?? "")})` : "",
+        match?.availabilityDoubt ? "may not be usable on your plan" : "",
+      ].filter(Boolean).join(" · ");
+    });
+    const lines = [
+      `${String(family.name ?? "")}${family.family ? ` [${String(family.family)}]` : ""} — ${String(notes.summary ?? "")}`,
+      kindList(notes.bestFor) ? `  best for    ${kindList(notes.bestFor)}` : "",
+      kindList(notes.avoidFor) ? `  avoid for   ${kindList(notes.avoidFor)}` : "",
+      list(notes.strengths).length ? `  strengths   ${list(notes.strengths).join("; ")}` : "",
+      list(notes.weaknesses).length ? `  weaknesses  ${list(notes.weaknesses).join("; ")}` : "",
+      ...list(notes.notes).map((note) => `  note        ${note}`),
+      ...models,
+    ];
+    return lines.filter(Boolean).join("\n");
+  });
+  const unmatched = families.filter((family) => !family.family).length;
+  return [
+    renderKeyValues("Your model sheet", [
+      ["families", `${families.length} (${unmatched} without registry data)`],
+      ["registry", `${String(sheet.generatedAt ?? "none")} (${String(registry.source ?? "")})`],
+      ["scores", "0-1 per task kind vs current models, at high effort where measured; — = not enough data"],
+    ]),
+    "",
+    renderTable(
+      ["family", ...kinds.map((kind) => short[kind] ?? kind), "speed", "cost", "you run it via"],
+      rows,
+      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      { fullColumns: ["family"] },
+    ),
+    "",
+    blocks.join("\n\n"),
+    "",
+    String(sheet.attribution ?? ""),
+  ].join("\n");
+}
+
 function formatRouterShadow(value: unknown): string {
   const summary = isRecord(value) ? value : {};
   const num = (input: unknown): number => (typeof input === "number" && Number.isFinite(input) ? input : 0);
@@ -32764,6 +32869,8 @@ function formatTextOutput(
       return formatRouterShadow(value);
     case "models-catalog":
       return formatModelsCatalog(value);
+    case "models-sheet":
+      return formatModelsSheet(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":
