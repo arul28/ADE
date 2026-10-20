@@ -17247,6 +17247,7 @@ export function AgentChatPane({
               }
             }}
             promptSuggestion={promptSuggestion}
+            onDismissPromptSuggestion={() => clearPromptSuggestionForSession(selectedSessionId)}
             chatHasMessages={chatHasMessages}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {

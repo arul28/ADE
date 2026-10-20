@@ -2281,6 +2281,22 @@ function JiraIssueSelectModal({
   );
 }
 
+/**
+ * The next-prompt suggestion in the empty composer: one line, cut with an
+ * ellipsis, so a long suggestion never makes the prompt box taller.
+ */
+function PromptSuggestionHint({ text }: { text: string }) {
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-4 top-2.5 flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/40"
+      data-chat-prompt-suggestion=""
+    >
+      <span className="min-w-0 truncate">{text}</span>
+      <kbd className="shrink-0 rounded-[4px] border border-border/60 px-1 font-sans text-[10px] leading-[1.5] text-muted-fg/45">Tab</kbd>
+    </div>
+  );
+}
+
 function AgentChatComposerImpl({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -2405,6 +2421,7 @@ function AgentChatComposerImpl({
   onRemoveBuiltInBrowserContext,
   onClearEvents,
   promptSuggestion,
+  onDismissPromptSuggestion,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
@@ -2672,6 +2689,8 @@ function AgentChatComposerImpl({
   onRemoveBuiltInBrowserContext?: (id: string) => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
+  /** Esc in the empty composer hides the suggestion until the next one. */
+  onDismissPromptSuggestion?: () => void;
   chatHasMessages?: boolean;
   pendingSteers?: Array<{
     steerId: string;
@@ -6276,6 +6295,37 @@ function AgentChatComposerImpl({
   }, [applyPromptHistoryEntry, cancelPromptHistorySequence, getRichCursorTextOffset, promptHistory, restorePromptHistoryDraft, serializeRichEditor, stashDraftBeforeHistory]);
 
   /* ── Keyboard handler for composer input ── */
+  /** The next-prompt suggestion, while the empty composer would show it. */
+  const offeredPromptSuggestion = !turnActive && !composerInputLockMessage && !draft.length
+    ? promptSuggestion?.trim() || null
+    : null;
+
+  /**
+   * Tab fills the suggestion in with the caret after it, so typing continues
+   * the text. Replacing the editor's text alone leaves the caret at the start.
+   */
+  const acceptPromptSuggestion = (text: string) => {
+    if (!useRichComposer) {
+      onDraftChange(text);
+      restoreTextareaCaret(text.length);
+      return;
+    }
+    setRichEditorText(text);
+    onDraftChange(text);
+    requestAnimationFrame(() => {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      editor.focus({ preventScroll: true });
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+    });
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
@@ -6428,16 +6478,17 @@ function AgentChatComposerImpl({
       event.preventDefault();
       if (attachmentPickerOpen) { setAttachmentPickerOpen(false); return; }
       if (pendingInput) { onApproval("cancel"); return; }
-      if (draft.length) { onDraftChange(""); }
+      if (draft.length) { onDraftChange(""); return; }
+      if (offeredPromptSuggestion) onDismissPromptSuggestion?.();
       return;
     }
 
     if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(effectiveStopMode); return; }
 
     /* Tab to accept prompt suggestion */
-    if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
+    if (event.key === "Tab" && !event.shiftKey && !event.altKey && !commandModified && offeredPromptSuggestion) {
       event.preventDefault();
-      onDraftChange(promptSuggestion);
+      acceptPromptSuggestion(offeredPromptSuggestion);
       return;
     }
 
@@ -8736,14 +8787,18 @@ function AgentChatComposerImpl({
             {useRichComposer ? (
               <div className="relative">
                 {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
-                  <div className={cn(
-                    "pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30",
-                    answer ? "left-0 top-1" : null,
-                  )}>
-                    {answer
-                      ? answer.placeholder
-                      : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
-                  </div>
+                  !answer && offeredPromptSuggestion ? (
+                    <PromptSuggestionHint text={offeredPromptSuggestion} />
+                  ) : (
+                    <div className={cn(
+                      "pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30",
+                      answer ? "left-0 top-1" : null,
+                    )}>
+                      {answer
+                        ? answer.placeholder
+                        : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
+                    </div>
+                  )
                 ) : null}
                 <div
                   ref={richEditorRef}
@@ -8891,6 +8946,9 @@ function AgentChatComposerImpl({
               </div>
             ) : (
               <div className="relative">
+                {offeredPromptSuggestion && !plainOverlayContent ? (
+                  <PromptSuggestionHint text={offeredPromptSuggestion} />
+                ) : null}
                 {plainOverlayContent ? (
                   <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
                     <div
@@ -8963,7 +9021,9 @@ function AgentChatComposerImpl({
                   style={{ maxHeight: textareaMaxHeightPx, ...(plainOverlayContent ? { caretColor: "var(--color-fg)" } : {}) }}
                   data-chat-layout-variant={layoutVariant}
                   data-chat-composer-text=""
-                  placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
+                  // A suggestion draws as its own one-line hint: a long placeholder
+                  // would wrap, and the field sizes itself to fit it.
+                  placeholder={offeredPromptSuggestion ? "" : composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder || "Type to vibecode..."))}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
                   onCopy={handleCopy}

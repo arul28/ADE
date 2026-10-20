@@ -31,6 +31,7 @@ import { DictationSection } from "./DictationSection";
 import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
+import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
 
@@ -164,6 +165,8 @@ export function ChatSection() {
             </ModernSection>
 
             <LaunchPromptSection />
+
+            <PromptSuggestionsSection />
 
             <ClaudeModsSection />
 
