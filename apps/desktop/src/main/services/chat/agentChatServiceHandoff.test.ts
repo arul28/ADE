@@ -494,11 +494,10 @@ describe("createAgentChatService", () => {
       const forkProcClosedAt = forkProc!.stdin.end.mock.invocationCallOrder[0]!;
       // The forked chat may share an app-server with the source chat, so
       // only its requests that name the forked thread need the lock.
-      const firstForkedChatRequestAt = Math.min(
-        ...writesTo(forkedChatProc!)
-          .filter(({ payload }) => JSON.stringify(payload).includes("forked-thread-lock"))
-          .map(({ order }) => order),
-      );
+      const forkedThreadRequests = writesTo(forkedChatProc!)
+        .filter(({ payload }) => JSON.stringify(payload).includes("forked-thread-lock"));
+      expect(forkedThreadRequests.length, "the forked chat used its thread").toBeGreaterThan(0);
+      const firstForkedChatRequestAt = Math.min(...forkedThreadRequests.map(({ order }) => order));
       expect(forkProcClosedAt).toBeLessThan(firstForkedChatRequestAt);
     });
 

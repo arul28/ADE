@@ -23,6 +23,7 @@ function fakeAppServer(): FakeAppServer {
     exitCode: null,
     stdin: {
       writable: true,
+      on: () => {},
       write: (chunk: string) => {
         for (const line of chunk.split("\n").filter(Boolean)) proc.written.push(JSON.parse(line));
         return true;

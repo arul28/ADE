@@ -242,6 +242,16 @@ export function createCodexAppServerPool(args: {
       for (const client of [...clients]) client.deliver(line);
     });
 
+    // A write racing the process's exit fails with EPIPE; without a listener
+    // that error would be thrown in the brain. The exit handler settles the chats.
+    proc.stdin.on("error", (error) => {
+      args.logger?.warn("agent_chat.codex_shared_stdin_error", {
+        pid: proc.pid ?? null,
+        chats: clients.length,
+        error: error.message,
+      });
+    });
+
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
       if (text.length) args.onStderr(text, clients);

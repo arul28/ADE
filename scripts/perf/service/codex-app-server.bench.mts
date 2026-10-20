@@ -107,24 +107,32 @@ function treeMemory(rootPids: number[]): { processes: number; footprintMb: numbe
   return { processes: all.length, footprintMb: Math.round(footprint), rssMb: Math.round(rss) };
 }
 
+const TURN_TIMEOUT_MS = 180_000;
+
 function runTurn(client: Client, threadId: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let output = "";
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      client.listeners.delete(listener);
+      if (error) reject(error);
+      else resolve(output.trim());
+    };
+    const timer = setTimeout(() => finish(new Error(`turn on ${threadId} did not finish in ${TURN_TIMEOUT_MS} ms`)), TURN_TIMEOUT_MS);
     const listener = (message: any) => {
       const params = message.params ?? {};
       if (params.threadId !== threadId) return;
       if (message.method === "item/completed" && params.item?.type === "commandExecution") output += params.item.aggregatedOutput ?? "";
-      if (message.method === "turn/completed") {
-        client.listeners.delete(listener);
-        resolve(output.trim());
-      }
+      if (message.method === "turn/completed") finish();
     };
     client.listeners.add(listener);
-    void client.request("turn/start", {
+    // A refused turn (bad model, expired login, quota) rejects here, so the
+    // scenario's cleanup still stops the processes and removes the temp home.
+    client.request("turn/start", {
       threadId,
       model,
       input: [{ type: "text", text: "Run the shell command `printenv ADE_PROBE` and reply with only its output." }],
-    });
+    }).catch((error: Error) => finish(error));
   });
 }
 
