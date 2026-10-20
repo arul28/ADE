@@ -1499,7 +1499,10 @@ chat pane mount, which happens either way.
   (`/context`, `/output-style`, Codex memory reset) and right before
   dispatch, so only a message that is really going out declines anything.
   A failed decline sends nothing and keeps the draft; a draft edited while
-  the declines were in flight is not sent. Escape clears a typed redirect
+  the declines were in flight is not sent (the banner says so). A send
+  that would go anywhere but this chat's next turn (a subagent, a queued
+  launch message, a continued chat on another machine, a cloud launch)
+  refuses while a card waits instead of slipping past it. Escape clears a typed redirect
   first and cancels the card only from an empty composer. The card's own
   buttons are unchanged. Still hard-locked: ACP runtimes (no mid-turn steer,
   so the message would be dropped), Codex and Cursor plan approvals (their

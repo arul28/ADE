@@ -13653,9 +13653,20 @@ export function AgentChatPane({
     // In a subagent's transcript view, a runtime that can message its
     // subagents (Muse) sends the draft to that subagent, on the chat's own
     // machine (the chat's runtime pin), not as a new turn of the parent.
+    // Approvals a send would decline. Only a message dispatched as this
+    // chat's next turn declines them; a send routed anywhere else (a subagent,
+    // a queued launch, a continued chat) refuses while they wait.
+    const pendingToDecline = selectedSessionId
+      ? (resolvedPendingInputsBySession[selectedSessionId] ?? []).filter((entry) =>
+        entry.request.blocking && isRedirectablePendingRequest(entry.request))
+      : [];
     if (subagentView && selectedSessionId && selectedSubagentCapability.canMessage) {
       const text = draft.trim();
       if (!text) return;
+      if (pendingToDecline.length > 0) {
+        setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+        return;
+      }
       submitInFlightRef.current = true;
       setBusy(true);
       setError(null);
@@ -13685,10 +13696,11 @@ export function AgentChatPane({
       // Approvals do not block a send: it declines them first (below). A
       // question, or a wait with no card to decline, still does.
       const sendRedirectsPending = blockingPending.length > 0
-        && blockingPending.every((entry) => isRedirectablePendingRequest(entry.request));
+        && pendingToDecline.length === blockingPending.length;
       if (
         (blockingPending.length > 0 && !sendRedirectsPending)
         || (blockingPending.length === 0 && selectedSession?.awaitingInput === true)
+        || (sendRedirectsPending && crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff))
       ) {
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
@@ -13710,6 +13722,10 @@ export function AgentChatPane({
       const text = draft.trim();
       const visualContext = composeVisualContext(iosElementContextItems, appControlContextItems, builtInBrowserContextItems);
       if (!text.length && !visualContext.prefix.length && !attachments.length) return;
+      if (pendingToDecline.length > 0) {
+        setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+        return;
+      }
       const composed = applyVisualContext(
         text,
         isProviderSlashCommandInput(text)
@@ -14167,23 +14183,22 @@ export function AgentChatPane({
     // message that is really going out declines anything. A failed decline
     // sends nothing and keeps the draft; a draft edited while the declines
     // were in flight is not sent either.
-    const redirectedPending = selectedSessionId
-      ? (resolvedPendingInputsBySession[selectedSessionId] ?? []).filter((entry) =>
-        entry.request.blocking && isRedirectablePendingRequest(entry.request))
-      : [];
-    if (redirectedPending.length > 0) {
+    if (pendingToDecline.length > 0) {
       submitInFlightRef.current = true;
       setBusy(true);
       setError(null);
       try {
-        for (const entry of redirectedPending) {
+        for (const entry of pendingToDecline) {
           if (!(await handleApproval(entry.itemId, "decline"))) return;
         }
       } finally {
         submitInFlightRef.current = false;
         setBusy(false);
       }
-      if (liveDraftRef.current !== draft) return;
+      if (liveDraftRef.current !== draft) {
+        setError("The approval was declined, but your message changed while that was sending, so nothing was sent. Send it again.");
+        return;
+      }
     }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;

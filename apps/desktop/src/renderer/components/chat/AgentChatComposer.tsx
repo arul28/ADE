@@ -7244,7 +7244,7 @@ function AgentChatComposerImpl({
       && cloudModeActive
       && onSubmitToCloud
     ) {
-      if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
+      if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked || pendingRedirectActive) return;
       const trimmed = draft.trim();
       const block = resolveCloudSendBlock({
         hasEligibleModels: cloudHasEligibleModels,
