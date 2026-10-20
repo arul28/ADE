@@ -79,6 +79,32 @@ streaming in the background, perf runs off.
 | Renderer | 17.4% | 131 MB | 25%, 300 MB |
 | Brain (`cli.cjs serve`) | 4.5% | 55 MB | 10%, 250 MB |
 
+### Idle, no chats, 5 min (background work)
+
+The dev app on Work with no chat running, one window, DevTools closed, 150 s
+after launch, then a 5-minute window. Child processes are counted with
+`spawn-trace.cjs` loaded into the app and its brain, and summarized with
+`spawn-report.mjs`; a process sampler (`process-cpu.sh`) misses them because
+each lives for tens of milliseconds. Their CPU is the count times the measured
+cost of one run (`gh auth token` 54 ms, `ps -axo` 17 ms, `git status` 66 ms,
+most other git 9–12 ms). Measured 2026-10-20 on `2f8c10383` against its parent,
+back to back, on a Mac15,6-class machine with five other dev apps and agents
+running, the ADE repository open, and its lanes changing under other agents.
+
+| Metric | Before (`45458b44e`) | Baseline | Ceiling |
+|---|---|---|---|
+| Child processes started (app + brain) | 762 per 5 min (152/min) | 293 per 5 min (59/min) | 400 per 5 min |
+| `gh auth token` runs (brain, one per GitHub credential read before) | 207 | 5 | 12 (one per 30 s TTL) |
+| Machine-wide `ps` runs (Electron main, top bar load indicator) | 152 (every 2 s) | 30 (every 10 s while calm) | 40 |
+| CPU in those child processes | ~6.4% of a core | ~1.2% of a core | 2% |
+| Electron main / brain process CPU (`process-cpu.sh`) | 1.7% / 4.3% | 1.3% / 4.4% | 15% / 10% (the Processes table) |
+
+What is left is mostly git run by the brain as lanes change (`git remote
+get-url`, `worktree list`, `rev-parse` from the lane list and the search
+index's lane re-index) and a `launchctl print` service probe every 15 s
+(5 ms each). On a repository nobody else is changing, the git share should
+be far smaller; it was not measured that way.
+
 ### Chat and typing
 
 | Metric | How | Before #1560 | Baseline | Ceiling |
@@ -254,6 +280,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 |---|---|
 | `route-sweep.mjs <runId> <route>,... [idleSecs]` | Per tab: long tasks after switching, IPC calls and time (perf run only), then idle task time, style recalcs, heap, page elements and running animations |
 | `process-cpu.sh <secs> <runtime-socket>` | CPU % and RSS for the main, GPU, renderer and brain processes |
+| `spawn-trace.cjs` (load with `NODE_OPTIONS="--require <abs path>"`) and `spawn-report.mjs <dir> <fromMs> <toMs>` | Every child process the app and its brain start, with the call site that started it, grouped over a time window. For the Idle background-work rows |
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
@@ -266,13 +293,15 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
 | `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
 | `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
+| `loop-cost.mjs <case>,... [secs] [socket]` | One looping animation (the app's own markup) at a time, as plain CSS and on the stepped loop clock: compositor ticks, frames drawn, style recalcs and timers per second, plus process CPU with a socket |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
 `search-fanout`, `chat-transcript`, `chat-backfill`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
-comparison and not a timing). They read temp copies of state and never write
-to `~/.ade`.
+comparison and not a timing), `codex-app-server` (macOS: Codex app-server
+memory and thread start, one process per chat vs one shared). They read temp
+copies of state and never write to `~/.ade`.
 `chat-transcript` is the chat renderer's own pipeline (live merge, display
 filter, row builder) run on real transcripts: one full pass as a chat opens,
 then 500 events one at a time as a turn streams.
@@ -428,6 +457,41 @@ mounting the tab, not by anything this pass changed. The heap rows need the
 snapshot file to show a difference; without it both columns read about 130 MB.
 A DevTools window draws 240 frames a second on this display by itself, so
 close it before any idle or GPU number (see the gotchas above).
+
+### Looping animations (stepped loop clock)
+
+Measured 2026-10-20 on this machine (240 Hz) with `loop-cost.mjs`, dev build
+on top of `45458b44e`, two runs of 10 s each, App Control detached, DevTools
+closed. Each case puts the app's own loop markup on the page with nothing else
+moving; "Before" is the same markup as plain CSS in the same page (a finite
+iteration count, which the clock never adopts), "Baseline" is with the clock.
+CPU is % of one core.
+
+| Loop on screen | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Top-bar activity pulse (4 steps in 3 s): compositor ticks / renderer / GPU | `loop-cost.mjs header-pulse` | 240/s; 4.7%; 3.1% | 1/s; 1.0-1.7%; 0.9-1.0% | 5/s; 3%; 2% |
+| Thinking dots (3, staggered): renderer / GPU | `loop-cost.mjs dots` | 9.4-9.8%; 6.5-7.7% | 3.9-6.3%; 3.9-4.7% | 8%; 6% |
+| `animate-pulse` dot: renderer / GPU | `loop-cost.mjs duty-pulse` | 5.8-6.1%; 2.7-4.1% | 2.8-3.7%; 1.4-2.5% | 5%; 3% |
+| Work list "Working" label x3: renderer / GPU | `loop-cost.mjs breathe` | 5.4-6.8%; 4.1-5.3% | 3.4-4.2%; 3.1-4.2% | 6%; 5% |
+| `animate-spin` on an SVG icon: style recalcs / renderer | `loop-cost.mjs svg-spinner` | 240/s; 14.3% | 73-75/s; 7.1-7.8% | 100/s; 10% |
+| "Thinking" shimmer text: style recalcs / renderer | `loop-cost.mjs shimmer` | 240-250/s; 14.6-16.6% | 61/s; 7.0% | 100/s; 10% |
+| Agent working (dots, pulse dot, Working label, top-bar pulse): compositor ticks / renderer / GPU | `loop-cost.mjs working-set` | 240/s; 7.2-8.5%; 6.4-7.4% | 41-47/s; 6.2% (one run 12.4%, machine noise); 6.6% | 60/s; 10%; 9% |
+| Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
+
+Any running infinite CSS animation makes Chromium service every display
+frame, whatever its `steps()` say: a compositor loop ticks the compositor and
+the GPU process's display scheduler 240 times a second, a main-thread loop (an
+animated SVG element, a `background-position` shimmer) restyles 240 times a
+second. `lib/steppedLoopClock.ts` freezes each stepped loop that changes at
+most 31 times a second (`playbackRate = 0`) and sets its time at its step
+instants from one timer, so a frame happens only when a loop shows a new value.
+Sampled every frame next to a plain-CSS twin, the clocked loops show the same
+value on 98.5-100% of frames, never differing for more than 2 frames (8 ms).
+A hidden window stops the clock (timers back to the app's own 5/s).
+Faster compositor loops stay CSS: driving the 60 steps/s Lanes mark from a
+timer cost the renderer more (4.3% → 8.3% in the prototype). At rest, with no
+agent live, ADE runs no loops at all (0 ticks, renderer 0.2%, GPU 0.0-0.1%),
+and a covered window draws nothing, so neither number moved.
 
 ### Apple Music (the macOS player host and the Music tab)
 
@@ -640,6 +704,44 @@ is now watched with one recursive native watch (`watchTree`,
 | Longest event-loop block on open and close | same | 30 ms | 2 ms | 20 ms |
 | The same block with chokidar's own native mode (why polling was chosen) | same, `WITH_NATIVE_CHOKIDAR=1` | 13,207 ms | not used | - |
 
+### Brain: memory a loaded brain keeps
+
+Measured 2026-10-20 on this Mac (Node 26.3), lane `ademark-brain-memory`.
+The installed brain logs its memory every five minutes as
+`brain.memory_sample` (`rssBytes`, `heapUsedBytes`, `externalBytes`) in
+`<ADE_HOME>/runtime/brain.jsonl`, `~/.ade/runtime/brain.jsonl` for the
+installed app. That log is how the installed numbers below were read; nothing
+attached to the installed brain.
+
+The installed brain, for scale (41 registered projects, about 150 child
+processes): 706 MB footprint after 9.5 h, peak 2,426 MB; `heapUsedBytes`
+126 MB at start, climbing to about 480 MB by hour 9. About 580 MB of the
+footprint is the V8 heap; native malloc is about 30 MB.
+
+The dev brain rows run on a throwaway `ADE_HOME`, six throwaway projects, a
+clean provider environment, an inspector on the dev brain only, and a forced
+GC before each read. Load: 12 Claude Haiku chats (two turns each, large shell
+output), a history read of each, 6 archived, then 11 idle minutes.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Dev brain after the load and 11 idle minutes: heap used / footprint | `bench2.sh` style run: `cdp.mjs mem` and `footprint`, same load both sides | 115.1 MB / 245 MB | 101.9 MB / 209 MB | proposed, needs approval: 120 MB / 260 MB |
+| Brain bundle source text held for the life of the process | heap snapshot, largest string | 44.0 MB (two bytes per character) | 22.0 MB (ASCII) | 23 MB |
+| Chat event rings, one project: the 51 chats the installed brain served in its last 9.5 h, rebuilt from their real transcripts with the ring's caps (4,000 events, 4 M characters) | `ring-sim.mjs` (one-off, no bench file yet) | 98.5 MB, held until restart | 0 after 10 quiet minutes; 29 MB for the 23 chats active in the busiest 10 minutes measured | proposed, needs approval: 0 when every chat is quiet |
+| Parsed transcript windows, one project (32 chats × 2 MB tail) | `tcache-sim.mjs` (one-off) | 47.4 MB, refilled every 10 min by the stale-run sweep | 0 when no history read in 10 min | proposed, needs approval: 0 when no reads |
+| Slash-command discovery, retained per cached folder (this repository) | `disc-measure.ts` (one-off) | 1.36 MB | 0.12 MB | 0.25 MB |
+
+Electron main's bundle had the same two-byte source: 18.7 M characters, 37 MB
+held, about 19 MB as ASCII (`scripts/build/asciiBundleSource.ts` covers both
+bundles). Not measured in a running app: the dev app was not launched for this
+lane.
+
+The event ring and the transcript windows were bounded by count per project
+(64 and 32 chats), never by time, so a long-lived brain kept every recent
+chat's history until it restarted, once per open project. A chat quiet for
+10 minutes now gives both back; its transcript already holds every event, and
+the idle release skips a chat whose transcript had a failed append (the count caps still apply).
+
 The events are the same as the poller's: `tree-watcher-parity.mts` runs both
 on one temp tree through 18 kinds of file operation (create, change, delete,
 directory trees, renames, moves in and out, atomic saves, slow writes, bursts,
@@ -759,6 +861,42 @@ then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
 | Metric | Before | After | Budget |
 |---|---|---|---|
 | Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |
+
+## Mac Studio (M4 Max), Codex chats on one app-server
+
+Same Mac Studio as above (Mac16,9, M4 Max, 36 GB, macOS 27.0), measured
+2026-10-20 on the `ade/ademark-shared-codex` branch over main at `0d9211fd1`.
+The dev brain ran on a throwaway `ADE_HOME` and a scratch project with sync
+off; Codex 0.162.1, model `gpt-6-luna`. "Before" is the same build with
+`ADE_CODEX_SHARED_APP_SERVER=0` (one app-server per chat, as on main). Main
+itself, with 5 chats idle after one turn, ran 5 app-servers at 422 MB plus
+43 MB of hosts.
+
+### Codex chats: app-server processes
+
+N Codex chats created with `ade chat create` and all mid-turn at the sample
+(each runs `sleep 90` before printing its `ADE_CHAT_SESSION_ID`); physical
+footprint (`footprint`) of the `codex app-server` processes under the brain
+plus their `codex-code-mode-host` children. Every chat printed its own id.
+Per-thread MCP servers (Lane H) and the `codex exec` side jobs (session titles)
+are not in these numbers. Standalone: `scripts/perf/service/codex-app-server.bench.mts`
+(no app, temp `CODEX_HOME`; `--turns` runs one short model turn per thread).
+
+| Metric | Before | Baseline | Ceiling |
+|---|---|---|---|
+| 1 Codex chat | 125 MB, 1 process | 112 MB, 1 process | — |
+| 5 Codex chats at once | 736 MB, 5 app-servers + 5 hosts | 240 MB, 1 app-server (168 MB on a rerun) | proposed, needs approval: 350 MB |
+| 10 Codex chats at once | 1,745 MB, 10 app-servers + 4 hosts | 394 MB, 1 app-server + 2 hosts | proposed, needs approval: 600 MB |
+| A later chat's thread ready (`thread/start` incl. process start), bench | 41 ms (new process); the first chat 375–484 ms | 7–8 ms | — |
+| Input tokens, a new chat's first turn (`hi`), from Codex's own usage | 24,211 | 24,312 (no change: a new thread lists its skills either way) | — |
+| Input tokens, a resumed chat's turn (`ok`) after Restart | 26,520 | 26,637 (+~110, unexplained) | — |
+
+Crash check: `kill -9` of the shared app-server with 3 chats mid-turn; all
+three reported `Codex app-server exited`, and each resumed its own thread on
+one new process with its next message. A model and permission switch in one
+chat, an approval, and an interrupt left the other chats on the process alone.
+Some resumed turns waited 30–50 s for the model's first output in both
+columns; that wait is not the app-server's.
 
 ## iOS app: Lanes and PRs (simulator)
 

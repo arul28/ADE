@@ -2055,6 +2055,10 @@ export async function createAdeRuntime(args: {
         },
         readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
         writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+        // This brain's exits are restarts (an update, a service restart): the
+        // lanes' apps wait on the main screen and the next brain takes them
+        // back, instead of quitting with their unsaved work.
+        handOffAppsOnExit: true,
         captureAnalytics: (properties) => captureMacDesktopAnalytics({
           analytics: productAnalyticsService,
           properties,

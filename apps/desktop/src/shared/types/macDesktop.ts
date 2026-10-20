@@ -74,6 +74,8 @@ export const WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE = "WINDOWS_DESKTOP_NOT_CON
 export const WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE = "WINDOWS_DESKTOP_SIGN_IN_FAILED" as const;
 export const WINDOWS_DESKTOP_WRONG_PASSWORD_CODE = "WINDOWS_DESKTOP_WRONG_PASSWORD" as const;
 export const WINDOWS_DESKTOP_CANCELLED_CODE = "WINDOWS_DESKTOP_CANCELLED" as const;
+export const WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE = "WINDOWS_DESKTOP_ELEVATED_WINDOW" as const;
+export const WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE = "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED" as const;
 /**
  * Service-enforced, not driver-produced: a `shared` seat was asked for without
  * the user's consent. The driver also refuses it, but the service is the
@@ -106,6 +108,8 @@ export type MacDesktopErrorCode =
   | typeof WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE
   | typeof WINDOWS_DESKTOP_WRONG_PASSWORD_CODE
   | typeof WINDOWS_DESKTOP_CANCELLED_CODE
+  | typeof WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE
+  | typeof WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE
   | typeof WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE;
 
 /** The one sentence every non-macOS rejection carries. */
@@ -264,6 +268,8 @@ export type MacDesktopWindow = {
   /** Null while the window is not parked on a lane display. */
   laneId: string | null;
   origin: MacDesktopWindowOrigin;
+  /** Windows only: the window belongs to an elevated process. */
+  elevated?: boolean;
   onDisplayId: number | null;
   minimized: boolean;
   /** Set when this app refuses to run twice, so one lane holds it at a time. */
@@ -1098,6 +1104,16 @@ export type MacDesktopRequestPermissionArgs = {
   which: MacDesktopPermissionKind;
 };
 
+/** One window an exiting helper took off a lane, and where it sat on it. */
+export type MacDesktopHandedOffWindow = {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  minimized: boolean;
+};
+
 export type MacDesktopStartArgs = {
   laneId: string;
   /** Falls back to the configured default. */
@@ -1508,7 +1524,10 @@ export type WindowsDesktopTakeoverArgs = {
  * fallbacks the service would immediately override, these replies stay raw and
  * the one normalization lives where the state does.
  */
-export type DesktopSeatReply = Record<string, unknown>;
+export type DesktopSeatReply = Record<string, unknown> & {
+  /** Windows-only result of `window.minimize`; absent from older drivers. */
+  minimized?: boolean;
+};
 
 
 /**
@@ -1574,6 +1593,20 @@ export type DesktopSeatProvider = {
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
   /** `app.quit`: apps the lane opened, released ones included. */
   quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;
+  /**
+   * `app.adopt`: takes back, as the lane's own instance, an app a previous
+   * helper handed to the main screen when it exited. Mac only.
+   */
+  adoptApp?(args: {
+    laneId: string;
+    pid: number;
+    bundleId: string | null;
+    launchedAt: number | null;
+    /** False: only `windows` are borrowed again, as a claim. */
+    launched: boolean;
+    /** Each window's frame relative to the lane display's top-left corner. */
+    windows: MacDesktopHandedOffWindow[];
+  }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {
     laneId: string;

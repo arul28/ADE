@@ -783,6 +783,17 @@ over-counts by 10x), plus per-component prop-diff and hook-diff logging.
 - **Loops share one clock** (`lib/animationPhaseAlignment.ts`). Four stepped
   spinners started at different moments drew 120 frames/s; aligned to the
   document timeline they draw 30 (GPU swap 118 → 61 ms/s on the PR page).
+- **Slow stepped loops run on a timer** (`lib/steppedLoopClock.ts`, adopted
+  from the same `animationstart` listener). `steps()` does not stop Chromium
+  servicing a running loop every display frame: the 4-step top-bar pulse
+  ticked the compositor 240 times a second (renderer 4.7%, GPU 3.1%; now 1.0%
+  and 0.9%), an `animate-spin` SVG icon restyled 240 times a second (renderer
+  14% → 7–8%). A stepped loop that changes at most 31 times a second is frozen
+  with `playbackRate = 0` (not `pause()`, so CSS `animation-play-state` still
+  works) and seeked at its step instants; faster compositor loops stay CSS.
+  Keep new loops stepped so they qualify, and measure with
+  `scripts/perf/ui/loop-cost.mjs`. A clocked loop reads `playbackRate 0` in
+  `document.getAnimations()`; it is still `running`.
 - **Chat markdown parses once per text** (`remarkCachedParse`): warm chat
   switch settle 247 → 56 ms. Clone on hit; later plugins mutate the tree.
 - **The plain composer sizes with `field-sizing: content`.** Measuring with

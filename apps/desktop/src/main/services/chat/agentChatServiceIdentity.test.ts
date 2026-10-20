@@ -221,7 +221,7 @@ describe("createAgentChatService", () => {
       // spawn arg would apply to every thread on this app-server.
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.arrayContaining(["app-server"]),
         expect.any(Object),
       );
       const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
@@ -350,7 +350,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.arrayContaining(["app-server"]),
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -365,6 +365,20 @@ describe("createAgentChatService", () => {
       );
       const spawnArgs = spawnCall?.[1] as string[] | undefined;
       expect(spawnArgs).toBeDefined();
+      // One app-server serves many chats, so the process env names none of
+      // them; this chat's identity rides on its thread, where its shell
+      // commands (and `ade`) read it.
+      const spawnEnv = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env ?? {};
+      expect(spawnEnv.ADE_CHAT_SESSION_ID).toBeUndefined();
+      expect(spawnEnv.ADE_LANE_ID).toBeUndefined();
+      const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const threadShellEnv = (threadStart?.params as { config?: { shell_environment_policy?: { set?: Record<string, string> } } } | undefined)
+        ?.config?.shell_environment_policy?.set;
+      expect(threadShellEnv).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: session.id,
+        ADE_LANE_ID: "lane-2",
+        ADE_WORKSPACE_ROOT: fs.realpathSync(laneRootPath),
+      }));
       expect(spawnArgs).not.toContain("--disable");
       expect(spawnArgs).not.toContain("browser_use");
       expect(spawnArgs).not.toContain("computer_use");

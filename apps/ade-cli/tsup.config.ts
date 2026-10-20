@@ -2,6 +2,7 @@ import { defineConfig } from "tsup";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
 
 const external = [
   "@anthropic-ai/claude-agent-sdk",
@@ -80,6 +81,7 @@ export default defineConfig([
       js: ".cjs"
     }),
     external,
+    plugins: [asciiBundleSource()],
     esbuildOptions(options) {
       options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));
       options.define = {
@@ -121,6 +123,7 @@ export default defineConfig([
       js: ".mjs"
     }),
     external,
+    plugins: [asciiBundleSource()],
     esbuildOptions(options) {
       options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));
       options.define = {

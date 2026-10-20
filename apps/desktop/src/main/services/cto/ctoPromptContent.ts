@@ -90,17 +90,14 @@ export const CTO_MEMORY_GARDENER_TITLE = "Nightly memory gardening";
  */
 export const CTO_MEMORY_GARDENER_CRON = "30 3 * * *";
 
+/** Id prefix of the gardener's scheduled row; the suffix is the CTO session id. */
+export const CTO_MEMORY_GARDENER_ID_PREFIX = "cto-memory-gardener:";
+
 /**
- * The gardener's fixed prompt. It lives here rather than at the creation site
- * so the job's behavior is reviewable in one place and a running job's prompt
- * can be diffed against the current definition.
+ * What Chat Info shows for the gardener's row. It is a description, not a
+ * prompt: when the row fires, ADE runs the gardening itself on the cheap
+ * helper model and sends the CTO nothing. Rows created before that change
+ * still carry the old prompt text, and are run the same way.
  */
-export const CTO_MEMORY_GARDENER_PROMPT = [
-  "Nightly memory gardening. Work quietly: no questions, no lane work, no spawned chats.",
-  "",
-  "1. Read the recent daily logs (searchMemory and readMemory) and the worker discovery log (readDiscoveries), and distill anything durable into facts with saveMemory. Give each a kind and tag it (lane, pr, path, topic) so it can be found later. ADE already files facts it notices on its own, so check before adding.",
-  "2. Merge facts that say the same thing: save one clear sentence with saveMemory and pass the old facts' ids in `replaces`. They are archived, not deleted.",
-  "3. Retire a fact that is clearly no longer true (a reversed decision, a merged PR's open loop) with forgetMemory, giving the reason. Leave a fact in place when you are unsure it is stale: losing a fact is worse than keeping a redundant one.",
-  "",
-  "Finish with one short line naming how many facts you added, replaced, and retired.",
-].join("\n");
+export const CTO_MEMORY_GARDENER_DESCRIPTION =
+  "Nightly memory gardening, run by ADE on the cheap helper model, not as a CTO turn: merge facts that say the same thing, retire facts the log shows are no longer true, and file anything durable from the last two days' log. Skipped when nothing was logged.";

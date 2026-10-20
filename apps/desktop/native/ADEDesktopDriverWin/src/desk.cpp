@@ -74,6 +74,97 @@ std::wstring processImagePath(DWORD pid) {
   return out;
 }
 
+namespace {
+
+std::wstring processImageName(DWORD pid) {
+  const std::wstring path = processImagePath(pid);
+  if (!path.empty()) return baseName(path);
+
+  // An elevated process can deny even PROCESS_QUERY_LIMITED_INFORMATION. The
+  // process snapshot still exposes its executable name without opening it.
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return L"";
+  PROCESSENTRY32W entry = {sizeof(entry)};
+  std::wstring name;
+  for (BOOL ok = Process32FirstW(snap, &entry); ok; ok = Process32NextW(snap, &entry)) {
+    if (entry.th32ProcessID == pid) {
+      name = entry.szExeFile;
+      break;
+    }
+  }
+  CloseHandle(snap);
+  return name;
+}
+
+bool tokenIsElevated(HANDLE token) {
+  TOKEN_ELEVATION elevation = {};
+  DWORD bytes = 0;
+  return GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &bytes) &&
+      elevation.TokenIsElevated != 0;
+}
+
+bool isSameSession(DWORD pid) {
+  DWORD targetSession = 0;
+  DWORD driverSession = 0;
+  return ProcessIdToSessionId(pid, &targetSession) &&
+      ProcessIdToSessionId(GetCurrentProcessId(), &driverSession) &&
+      targetSession == driverSession;
+}
+
+std::string elevatedWindowMessage(HWND hwnd) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  wchar_t title[512] = {};
+  const int titleLength = GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+  const std::wstring titleText = titleLength > 0 ? std::wstring(title, titleLength) : std::wstring(L"Untitled");
+  const std::wstring exe = processImageName(pid);
+  const std::wstring exeText = exe.empty() ? std::wstring(L"unknown executable") : exe;
+  const HWND root = GetAncestor(hwnd, GA_ROOT);
+  const bool holdsFocus = hwnd == GetForegroundWindow() || (root && root == GetForegroundWindow());
+  return "An administrator window (\"" + narrow(titleText) + "\", " + narrow(exeText) +
+      (holdsFocus ? ") holds focus on the lane's screen. Windows blocks ADE from controlling admin windows. "
+                  : ") is the requested window on the lane's screen. Windows blocks ADE from controlling admin windows. ") +
+      "Close or minimize it on that screen, or stop the program that opens it at sign-in.";
+}
+
+}  // namespace
+
+bool isWindowElevated(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return false;
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (!pid) return false;
+  const bool sameSession = isSameSession(pid);
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!process) return sameSession && GetLastError() == ERROR_ACCESS_DENIED;
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+    const DWORD error = GetLastError();
+    CloseHandle(process);
+    return sameSession && error == ERROR_ACCESS_DENIED;
+  }
+  const bool elevated = tokenIsElevated(token);
+  CloseHandle(token);
+  CloseHandle(process);
+  return elevated;
+}
+
+bool selfElevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  const bool elevated = tokenIsElevated(token);
+  CloseHandle(token);
+  return elevated;
+}
+
+void failIfElevatedWindow(HWND target, bool checkForeground) {
+  if (selfElevated()) return;
+  const HWND foreground = GetForegroundWindow();
+  HWND elevated = target && isWindowElevated(target) ? target : nullptr;
+  if (!elevated && checkForeground && foreground && foreground != target && isWindowElevated(foreground)) elevated = foreground;
+  if (elevated) fail(code::kElevatedWindow, elevatedWindowMessage(elevated));
+}
+
 std::wstring appNameForExe(const std::wstring& exePath) {
   if (exePath.empty()) return L"";
   {

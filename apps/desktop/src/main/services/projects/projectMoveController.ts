@@ -106,6 +106,28 @@ export type ProjectMoveControllerDeps = {
  */
 export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
   let running: string | null = null;
+  // Deletes in flight, by move: a second press joins the first instead of
+  // racing it (the first removes the marker the second checks for).
+  const deleting = new Map<string, Promise<ProjectMoveRecord>>();
+
+  async function applyCleanup(args: ProjectMoveCleanupArgs): Promise<ProjectMoveRecord> {
+    const record = readMoveRecord(args.moveId);
+    if (!record || record.state !== "done") throw new Error("ADE has no finished move with that id.");
+    if (args.choice === "delete") {
+      if (record.cleanup.choice === "deleted") return record;
+      await deleteParkedOriginal(record);
+      record.cleanup = { choice: "deleted", deletedAt: Date.now() };
+      record.originalParkedAt = null;
+      deps.logger.info("project_move.original_deleted", { moveId: record.moveId, bytes: record.originalBytes });
+    } else if (args.choice === "remind") {
+      const remindInMs = Math.max(60_000, Math.min(args.remindInMs, 90 * 24 * 60 * 60_000));
+      record.cleanup = { choice: "remind", remindAt: Date.now() + remindInMs };
+    } else {
+      record.cleanup = { choice: "keep" };
+    }
+    writeMoveRecord(record);
+    return record;
+  }
 
   return {
     listVolumes(): Promise<ProjectMoveVolume[]> {
@@ -207,21 +229,15 @@ export function createProjectMoveController(deps: ProjectMoveControllerDeps) {
     },
 
     async cleanup(args: ProjectMoveCleanupArgs): Promise<ProjectMoveRecord> {
-      const record = readMoveRecord(args.moveId);
-      if (!record || record.state !== "done") throw new Error("ADE has no finished move with that id.");
-      if (args.choice === "delete") {
-        await deleteParkedOriginal(record);
-        record.cleanup = { choice: "deleted", deletedAt: Date.now() };
-        record.originalParkedAt = null;
-        deps.logger.info("project_move.original_deleted", { moveId: record.moveId, bytes: record.originalBytes });
-      } else if (args.choice === "remind") {
-        const remindInMs = Math.max(60_000, Math.min(args.remindInMs, 90 * 24 * 60 * 60_000));
-        record.cleanup = { choice: "remind", remindAt: Date.now() + remindInMs };
-      } else {
-        record.cleanup = { choice: "keep" };
+      const inFlight = deleting.get(args.moveId);
+      if (inFlight) {
+        if (args.choice !== "delete") throw new Error("ADE is deleting the original right now.");
+        return inFlight;
       }
-      writeMoveRecord(record);
-      return record;
+      if (args.choice !== "delete") return applyCleanup(args);
+      const work = applyCleanup(args).finally(() => deleting.delete(args.moveId));
+      deleting.set(args.moveId, work);
+      return work;
     },
 
     /** Settles moves a crash or quit interrupted. Called once at startup, before the last project reopens. */

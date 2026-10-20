@@ -15,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import {
@@ -111,6 +112,7 @@ import { createMacDesktopObservations, MacDesktopObservationError } from "./macD
 import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopDriverLifecycle, type MacDesktopDriverLifecycle } from "./macDesktopDriverLifecycle";
 import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
+import { createMacDesktopHandoff, MAC_DESKTOP_HANDOFF_FILE } from "./macDesktopHandoff";
 import {
   asAppsLeftOpen,
   asNullableString,
@@ -244,6 +246,14 @@ export type MacDesktopServiceDeps = {
   readSigningState?: (() => MacDesktopSigningState) | null;
   /** Test seam: supply a fake driver client instead of spawning the helper. */
   createDriverClient?: MacDesktopDriverClientFactory | null;
+  /**
+   * The brain service sets this. Its exits are restarts (an update, a service
+   * restart), so the helper hands the lanes' apps to the main screen instead
+   * of quitting them, and the next start of this service takes them back
+   * onto their lanes. An in-app runtime leaves it off: quitting ADE there is a
+   * deliberate stop of every lane. Mac only.
+   */
+  handOffAppsOnExit?: boolean | null;
 };
 
 type DriverDisplayReply = MacDesktopDisplay & { displayId?: number | null };
@@ -336,6 +346,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     displayName: macDesktopDisplayName,
   };
   const seatSupported = platform === seatAdapter.platform;
+  const handoffPath = deps.handOffAppsOnExit && seatSupported && seatAdapter.id === "mac-virtual-display"
+    ? path.join(deps.projectRoot, MAC_DESKTOP_HANDOFF_FILE)
+    : null;
   // A Linux host has no seat at all; say that rather than "needs macOS".
   const linuxHost = platform === "linux";
   const unsupportedMessage = linuxHost ? LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE : seatAdapter.unsupportedMessage;
@@ -380,6 +393,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   });
 
   let disposed = false;
+  let handoffLifecycle: ReturnType<typeof createMacDesktopHandoff> | null = null;
   let driverLifecycle: MacDesktopDriverLifecycle;
   /**
    * laneId → the last display start or stop queued for the lane.
@@ -895,6 +909,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     ownership.clear();
     recording.clear();
     streaming.clear();
+    // A helper that exited on a signal handed its lanes' apps off on the way
+    // out; the replacement takes them back.
+    handoffLifecycle?.schedule(1_000);
   };
 
   driverLifecycle = createMacDesktopDriverLifecycle({
@@ -910,6 +927,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     // The Windows adapter builds its client with the host-mode launch args;
     // for the Mac adapter this stays the test seam (or null → Mac default).
     createDriverClient: seatAdapter.createDriverClient ?? deps.createDriverClient,
+    driverEnv: handoffPath ? { ADE_DESKTOP_DRIVER_HANDOFF_PATH: handoffPath } : null,
     assertSupported,
     serviceError: (code, message) => new MacDesktopError(code, message),
     permissionError: (which) => new MacDesktopError(
@@ -1012,7 +1030,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     return MAC_DESKTOP_DEFAULT_RESOLUTION;
   };
 
-  const startInternal = async (args: MacDesktopStartArgs): Promise<MacDesktopStatus> => {
+  /**
+   * `restoreSize`: the size a lane's display had before a brain restart, when
+   * the restore re-creates it. It is not written as the preference the way an
+   * explicit `resolution` is: the user's choice for new screens stays theirs.
+   */
+  const startInternal = async (
+    args: MacDesktopStartArgs,
+    restoreSize: { width: number; height: number } | null = null,
+  ): Promise<MacDesktopStatus> => {
     const laneId = args.laneId.trim();
     if (!laneId) throw new MacDesktopError("MAC_DESKTOP_NO_DISPLAY", "start needs a laneId.");
     // An explicit resolution is a preference first: it is what the next start
@@ -1104,8 +1130,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const laneName = args.laneName?.trim()
       || (await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))
       || null;
-    const preset = readResolution(args.resolution);
-    const size = MAC_DESKTOP_RESOLUTION_PRESETS[preset];
+    const size = restoreSize ?? MAC_DESKTOP_RESOLUTION_PRESETS[readResolution(args.resolution)];
     const createArgs = {
       laneId,
       name: seatAdapter.displayName(laneName),
@@ -1173,6 +1198,22 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     done.then(clear, clear);
     return done;
   };
+
+  handoffLifecycle = createMacDesktopHandoff({
+    logger: deps.logger,
+    now,
+    handoffPath,
+    isDisposed: () => disposed,
+    ...(deps.resolveLaneWorktreePath ? { resolveLaneWorktreePath: deps.resolveLaneWorktreePath } : {}),
+    hasDisplay: (laneId) => ownership.hasDisplay(laneId),
+    startLane: (laneId, size) => runLifecycle(
+      laneId,
+      "start",
+      () => startInternal({ laneId }, size),
+    ),
+    adopt: (app) => windowLifecycle.adopt(app),
+  });
+  handoffLifecycle.schedule(2_000);
 
   const destroyDisplay = async (
     laneId: string,
@@ -1421,6 +1462,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult> {
       assertSupported();
       const laneId = args.laneId.trim();
+      handoffLifecycle?.cancelLane(laneId);
       const result = await runLifecycle(laneId, "stop", () => destroyDisplay(laneId, "stopped"));
       return {
         stopped: result.destroyed,
@@ -1696,6 +1738,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async destroyForLane(laneId: string): Promise<{ destroyed: boolean }> {
       const trimmed = laneId?.trim();
       if (!trimmed) return { destroyed: false };
+      handoffLifecycle?.cancelLane(trimmed);
       if (!seatSupported) return { destroyed: false };
       const result = await runLifecycle(trimmed, "stop", () => destroyDisplay(trimmed, "lane_removed")).catch((error: unknown) => {
         deps.logger.debug("mac_desktop.destroy_for_lane_failed", {
@@ -1733,6 +1776,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      handoffLifecycle?.dispose();
       if (sweepTimer) {
         clearInterval(sweepTimer);
         sweepTimer = null;
@@ -1744,6 +1788,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       recording.clear();
     },
   };
+
 
   return Object.assign(api, {
     /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */

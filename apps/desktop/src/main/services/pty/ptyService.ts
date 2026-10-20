@@ -100,7 +100,6 @@ import {
 import {
   adeBackgroundUtilityProviderFromToolType,
   backgroundUtilityModelId,
-  backgroundUtilityReasoningEffort,
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
@@ -2888,14 +2887,12 @@ export function createPtyService({
     ].join("\n");
     const capturedAi = aiIntegrationService;
     const title = await tryCliAiModels(titleModelIds, async (modelId) => {
-      const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
       const result = await capturedAi.summarizeTerminal({
         cwd: entry.boundCwd || entry.laneWorktreePath,
         prompt,
         taskType: "session_title",
         timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
         model: modelId,
-        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
       if (entry.disposed) return null;
       return sanitizeGeneratedCliTitle(result.text);
@@ -3160,14 +3157,12 @@ export function createPtyService({
 
                 const titleModelIds = resolveCliTitleModelIds(session);
                 const finalTitle = await tryCliAiModels(titleModelIds, async (modelId) => {
-                  const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
                   const titleResult = await aiIntegrationService!.summarizeTerminal({
                     cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                     prompt: titlePrompt,
                     taskType: "session_title",
                     timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
                     model: modelId,
-                    ...(reasoningEffort ? { reasoningEffort } : {}),
                   });
                   return sanitizeGeneratedCliTitle(titleResult.text);
                 }, (modelId, err) => {
@@ -7624,14 +7619,12 @@ export function createPtyService({
           const titleModelIds = resolveCliTitleModelIds(session);
           if (!titleModelIds.length) return;
           void tryCliAiModels(titleModelIds, async (modelId) => {
-            const reasoningEffort = backgroundUtilityReasoningEffort(modelId);
             const result = await capturedAi.summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
               taskType: "session_title",
               timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
               model: modelId,
-              ...(reasoningEffort ? { reasoningEffort } : {}),
             });
             return sanitizeGeneratedCliTitle(result.text);
           }, (modelId, err) => {

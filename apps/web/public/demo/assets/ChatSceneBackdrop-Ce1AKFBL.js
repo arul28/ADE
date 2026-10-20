@@ -1,0 +1,1 @@
+import{E as e}from"./vendor-graph-B_soRnLq.js";import{n as t}from"./useScene-C2beQrcB.js";import{t as n}from"./SceneImageLayer-nKlrbMha.js";var r=e();function i(){let e=t();return e.kind!==`image`||!e.showImage?null:(0,r.jsx)(n,{scene:e})}export{i as t};

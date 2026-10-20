@@ -48,6 +48,7 @@ import {
   type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { backgroundUtilityReasoningEffort } from "../../../shared/backgroundUtilityModel";
 import { disabledProviderSet, isProviderDisabled } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
 import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
@@ -1844,7 +1845,11 @@ export function createAiIntegrationService(args: {
       sessionId: args.sessionId,
       projectConfig: projectConfigService.get().effective,
       imagePaths: args.imagePaths,
-      reasoningEffort: args.reasoningEffort ?? null,
+      // A background utility call (names, summaries, the CTO's memory) always
+      // thinks as little as its model allows, whatever the caller passed.
+      reasoningEffort: args.backgroundUtility
+        ? backgroundUtilityReasoningEffort(descriptor)
+        : args.reasoningEffort ?? null,
       ...(args.backgroundUtility ? { backgroundUtility: true } : {}),
       ...(accountEnv ? { accountEnv } : {}),
     });
@@ -2560,7 +2565,6 @@ export function createAiIntegrationService(args: {
       prompt: string;
       timeoutMs?: number;
       model?: string;
-      reasoningEffort?: string | null;
       imagePaths?: string[];
       jsonSchema?: unknown;
       systemPrompt?: string;
@@ -2569,7 +2573,8 @@ export function createAiIntegrationService(args: {
     }): Promise<ExecuteAiTaskResult> {
       // Every caller hands over the text to read in the prompt, so these run
       // as background utility calls: no tools or plan-mode setup on Claude,
-      // standard speed on Codex and Cursor (see `ProviderTaskRunnerArgs.backgroundUtility`).
+      // standard speed on Codex and Cursor (see `ProviderTaskRunnerArgs.backgroundUtility`),
+      // and the model's lowest effort tier.
       return await executeReadOnlyOneShotTask({
         feature: "terminal_summaries",
         taskType: args.taskType ?? "terminal_summary",
@@ -2577,7 +2582,6 @@ export function createAiIntegrationService(args: {
         prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
-        reasoningEffort: args.reasoningEffort,
         imagePaths: args.imagePaths,
         jsonSchema: args.jsonSchema,
         systemPrompt: args.systemPrompt,

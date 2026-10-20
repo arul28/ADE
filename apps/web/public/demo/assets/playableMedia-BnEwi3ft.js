@@ -1,0 +1,1 @@
+var e=`video/quicktime`,t=`video/mp4`;function n(n){return n.trim().toLowerCase()===e?t:n}function r(n){if(!n)return n;let r=`data:${e}`;return n.slice(0,r.length).toLowerCase()===r?`data:${t}${n.slice(r.length)}`:n}export{n,r as t};

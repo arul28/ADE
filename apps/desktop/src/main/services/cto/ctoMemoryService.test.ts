@@ -104,6 +104,60 @@ describe("ctoMemoryService", () => {
     void stamp;
   });
 
+  it("applies gardening only to current active facts and keeps pins intact", () => {
+    const { adeDir, service } = createFixture();
+    const first = service.appendMemoryFact("The first current gardening fact.");
+    const archived = service.appendMemoryFact("The second current gardening fact.");
+    const pinned = service.appendMemoryFact("The third current gardening fact.");
+    const context = createProjectContextStore({ adeDir });
+    context.archive({ id: archived.id });
+    context.setPinned(pinned.id!, true);
+
+    const result = service.applyGardeningPlan({
+      add: [],
+      merge: [
+        { ids: [first.id!, archived.id!], text: "Merged from a stale archived source.", kind: "fact" },
+        { ids: [first.id!, pinned.id!], text: "Merged from a newly pinned source.", kind: "fact" },
+      ],
+      retire: [{ id: pinned.id!, reason: "model marked it stale" }],
+    });
+
+    expect(result).toEqual({ added: 0, merged: 0, retired: 0 });
+    expect(service.listGardeningFacts()).toEqual(expect.arrayContaining([
+      { id: first.id, text: first.fact, kind: "fact", pinned: false },
+      { id: pinned.id, text: pinned.fact, kind: "fact", pinned: true },
+    ]));
+    expect(service.readMemory()).not.toContain("Merged from a stale archived source.");
+    expect(service.readMemory()).not.toContain("Merged from a newly pinned source.");
+  });
+
+  it("uses recent user entries to trigger gardening and excludes gardener summaries from context", () => {
+    const { ctoDir, service } = createFixture();
+    const now = new Date();
+    const stamp = (date: Date): string => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+    const dailyDir = path.join(ctoDir, "daily");
+    fs.mkdirSync(dailyDir, { recursive: true });
+    const old = new Date(now);
+    old.setDate(old.getDate() - 4);
+    const recent = new Date(now);
+    recent.setDate(recent.getDate() - 1);
+    fs.writeFileSync(path.join(dailyDir, `${stamp(old)}.md`), `# ${stamp(old)}\n\nOld user activity.\n`);
+    fs.writeFileSync(
+      path.join(dailyDir, `${stamp(recent)}.md`),
+      `# ${stamp(recent)}\n\nNightly memory gardening: added 1, merged 0, retired 0.\n\n09:00 — user request → completed\n`,
+    );
+
+    expect(service.hasRecentDailyEntries(2, now)).toBe(true);
+    expect(service.readRecentDailyEntries(2)).toContain("user request");
+    expect(service.readRecentDailyEntries(2)).not.toContain("Nightly memory gardening:");
+
+    fs.writeFileSync(
+      path.join(dailyDir, `${stamp(recent)}.md`),
+      `# ${stamp(recent)}\n\nNightly memory gardening: added 1, merged 0, retired 0.\n`,
+    );
+    expect(service.hasRecentDailyEntries(2, now)).toBe(false);
+  });
+
   it("scrubs secret-shaped content on every write path", () => {
     const { service, ctoDir } = createFixture();
     service.appendMemoryFact("Linear key is sk-abcdefghijklmnop1234 for the relay.");

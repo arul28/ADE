@@ -95,7 +95,6 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
     if (overrides.portRange) merged.portRange = { ...overrides.portRange };
     const hostnameTrimmed = typeof overrides.proxyHostname === "string" ? overrides.proxyHostname.trim() : "";
     if (hostnameTrimmed) merged.proxyHostname = hostnameTrimmed;
-    if (overrides.computeBackend) merged.computeBackend = overrides.computeBackend;
     if (overrides.envInit) {
       merged.envInit = mergeEnvInit(merged.envInit, overrides.envInit);
     }

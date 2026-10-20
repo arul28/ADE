@@ -12,6 +12,7 @@ type UnparkReply = { releasedWindowIds: number[]; handedOverPid: number | null }
 
 function harness(options: {
   unpark?: (windowId: number) => Promise<UnparkReply | void>;
+  windowAction?: (action: string) => Promise<{ minimized?: boolean }>;
   owned?: number[];
 } = {}) {
   const owned = options.owned ?? [11, 12];
@@ -21,6 +22,8 @@ function harness(options: {
     const reply = options.unpark ? await options.unpark(windowId) : undefined;
     return reply ?? { releasedWindowIds: [windowId], handedOverPid: null };
   });
+  const windowAction = vi.fn(async ({ action }: { laneId: string; windowId: number; action: string }) =>
+    options.windowAction ? options.windowAction(action) : {});
   const windows = createMacDesktopWindows({
     logger: silentLogger,
     isDarwin: true,
@@ -28,11 +31,13 @@ function harness(options: {
     ensureProvider: async () => ({
       unpark,
       listWindows: async () => [],
+      windowAction,
     }) as unknown as Awaited<ReturnType<MacDesktopWindowsDeps["ensureProvider"]>>,
     activeProvider: () => null,
     requireDisplay: vi.fn(),
     assertPermission: vi.fn(),
     ownership: {
+      laneForWindow: (windowId: number) => owned.includes(windowId) ? "lane-a" : null,
       listWindowRecords: () => owned.map((windowId) => ({ windowId, laneId: "lane-a" })),
       releaseWindow: (windowId: number) => {
         if (!owned.includes(windowId)) return null;
@@ -89,5 +94,21 @@ describe("releaseWindow", () => {
     expect(unpark.mock.calls.map(([args]) => args.laneId)).toEqual(["lane-a", "lane-a"]);
     expect(released).toEqual([11, 12, 13]);
     expect(unwatched).toEqual([73002]);
+  });
+});
+
+describe("windowAction", () => {
+  it("does not report a minimize as successful when the driver says it stayed open", async () => {
+    const { windows } = harness({ windowAction: async () => ({ minimized: false }) });
+
+    await expect(windows.windowAction({ laneId: "lane-a", windowId: 11 }, "minimize"))
+      .rejects.toMatchObject({ code: "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED" });
+  });
+
+  it("accepts minimize replies from drivers that do not report the result yet", async () => {
+    const { windows } = harness({ windowAction: async () => ({}) });
+
+    await expect(windows.windowAction({ laneId: "lane-a", windowId: 11 }, "minimize"))
+      .resolves.toMatchObject({ laneId: "lane-a", windowId: 11, action: "minimize" });
   });
 });

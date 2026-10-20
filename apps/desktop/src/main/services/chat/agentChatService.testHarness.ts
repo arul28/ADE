@@ -569,28 +569,30 @@ vi.mock("@opencode/client", () => ({
   },
 }));
 
-vi.mock("node:readline", () => ({
-  default: {
-    createInterface: vi.fn(() => ({
+// Every fake Codex process shares one stdout channel, so the newest reader
+// hears it. Closing a reader hands the channel back to the one before it: a
+// short-lived process (a fork) closes its reader, and a chat whose runtime
+// joined a shared app-server opens none of its own.
+vi.mock("node:readline", () => {
+  const createInterface = vi.fn(() => {
+    let mine: ((line: string) => void) | null = null;
+    let previous: ((line: string) => void) | null = null;
+    return {
       on: vi.fn((event: string, handler: (line: string) => void) => {
         if (event === "line") {
+          previous = mockState.codexLineHandler;
+          mine = handler;
           mockState.codexLineHandler = handler;
         }
       }),
-      close: vi.fn(),
+      close: vi.fn(() => {
+        if (mine && mockState.codexLineHandler === mine) mockState.codexLineHandler = previous;
+      }),
       [Symbol.asyncIterator]: vi.fn(),
-    })),
-  },
-  createInterface: vi.fn(() => ({
-    on: vi.fn((event: string, handler: (line: string) => void) => {
-      if (event === "line") {
-        mockState.codexLineHandler = handler;
-      }
-    }),
-    close: vi.fn(),
-    [Symbol.asyncIterator]: vi.fn(),
-  })),
-}));
+    };
+  });
+  return { default: { createInterface }, createInterface };
+});
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   // Mirrors the real export. Structured usage-limit detection reads it, so the

@@ -24,7 +24,8 @@ Research, the full map of stored paths and the experiments behind each rule:
 | `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts` | Resolves prior roots by following this project's move records in time order, preserving each recorded path spelling without including unrelated projects that reused a destination. |
 | `apps/ade-cli/src/services/projects/projectMove/moveVolumes.ts` | Drives via `df` + `diskutil info -plist`. |
 | `apps/ade-cli/src/services/projects/projectRegistry.ts` | `relocate()` re-keys the registry and writes `project-aliases.json` (old id → new id); `assertProjectNotMovedAway` and `assertProjectNotBeingMoved` refuse opening the kept original or a project mid-move, on every open path. |
-| `apps/desktop/src/main/services/projects/projectMoveController.ts` | One move at a time; activity, release, reopen and progress wiring come from `main.ts`. |
+| `apps/desktop/src/main/services/projects/projectMoveController.ts` | One move at a time and one delete per move; activity, release, reopen and progress wiring come from `main.ts`. |
+| `apps/desktop/src/main/services/projects/projectMoveController.test.ts` | Delete concurrency and repeat-delete behavior through the controller API. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Forwards the `copyDependencies` choice from the desktop IPC request to the move controller. |
 | `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (one setup screen with the drive, folder and checks → Moving → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, Codex trust carry-over, interrupted-move recovery, and the journal's process check. |

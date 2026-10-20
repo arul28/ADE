@@ -41,6 +41,27 @@ type AgentFrontmatter = CommandFrontmatter & {
   name?: unknown;
 };
 
+/**
+ * A copy of `value` that owns its characters.
+ *
+ * Frontmatter values and first paragraphs are slices of the whole file, and V8
+ * keeps a slice's parent string alive. The brain caches these records, so a
+ * one-line description held the full SKILL.md: about 2 MB of file text pinned
+ * per cached folder to keep 88 KB of names and descriptions.
+ */
+function ownString<T extends string | undefined>(value: T): T {
+  return (value === undefined ? value : Buffer.from(value, "utf8").toString("utf8")) as T;
+}
+
+function ownedCommand(command: DiscoveredMarkdownSlashCommand): DiscoveredMarkdownSlashCommand {
+  return {
+    ...command,
+    name: ownString(command.name),
+    description: ownString(command.description),
+    argumentHint: ownString(command.argumentHint),
+  };
+}
+
 export const DEFAULT_MARKDOWN_COMMAND_DEPTH = 10;
 export const SLASH_COMMAND_INPUT_PATTERN =
   /^(\/[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)*)(?:\s+([\s\S]*))?$/;
@@ -361,13 +382,13 @@ function markdownCommandFromContent(
   const description = useFrontmatterDescription
     ? maybeString(frontmatter.description) ?? firstMarkdownParagraph(content)
     : firstMarkdownParagraph(content);
-  return {
+  return ownedCommand({
     name,
     description,
     argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
     filePath: entryPath,
     modelInvocable: true,
-  };
+  });
 }
 
 function markdownAgentFromContent(
@@ -382,13 +403,13 @@ function markdownAgentFromContent(
     { lowercase: lowercaseNames },
   );
   if (!name) return null;
-  return {
+  return ownedCommand({
     name,
     description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
     argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
     filePath: entryPath,
     modelInvocable: true,
-  };
+  });
 }
 
 export function discoverMarkdownCommandFiles(
@@ -545,13 +566,13 @@ function skillCommandFromContent(
   if (!name) return null;
   const disableModelInvocation = frontmatterFlag(frontmatter["disable-model-invocation"]) === true
     || frontmatterFlag(frontmatter.disableModelInvocation) === true;
-  return {
+  return ownedCommand({
     name,
     description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
     argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
     filePath: skillPath,
     modelInvocable: !disableModelInvocation,
-  };
+  });
 }
 
 export function discoverSkillCommands(

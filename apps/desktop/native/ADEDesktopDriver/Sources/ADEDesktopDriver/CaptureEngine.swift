@@ -546,6 +546,22 @@ final class CaptureEngine {
     // Screenshots
     // -----------------------------------------------------------------------
 
+    /// When the screenshot now waiting on ScreenCaptureKit started, if one is.
+    /// Main thread only: `screenshot` is reached from request handlers.
+    private var screenshotWaitingSince: Date?
+
+    /// How long a screenshot may have been waiting before a request that
+    /// arrives inside its wait is refused rather than stacked on top of it.
+    ///
+    /// A request that arrives while another waits runs *inside* that wait (the
+    /// run-loop pump), and the outer one cannot return until the inner one
+    /// has. A healthy frame takes a few hundred milliseconds, so a nested
+    /// capture behind one is fine. Past this the capture is stalled, and
+    /// every nested capture would add its own full budget to the wait of every
+    /// request below it: the observe and screenshot retries that piled up on
+    /// 2026-10-13 held each other for minutes.
+    static let nestedScreenshotPatience: TimeInterval = 1
+
     /// One PNG on disk. Returns its pixel size.
     ///
     /// Bounded by `budget`, retries and all: see `observeScreenshotBudget` and
@@ -560,6 +576,18 @@ final class CaptureEngine {
         guard #available(macOS 12.3, *) else {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
         }
+        if let since = screenshotWaitingSince {
+            let waited = Date().timeIntervalSince(since)
+            if waited > Self.nestedScreenshotPatience {
+                throw CaptureError.failed(
+                    "Another screenshot has waited \(Int(waited.rounded()))s for ScreenCaptureKit; "
+                        + "this one was not queued behind it. Try again in a few seconds."
+                )
+            }
+        }
+        let outer = screenshotWaitingSince
+        if outer == nil { screenshotWaitingSince = Date() }
+        defer { if outer == nil { screenshotWaitingSince = nil } }
         let image = try captureImage(
             displayId: displayId,
             windowId: windowId,
@@ -607,7 +635,8 @@ final class CaptureEngine {
                         box.set(.failure(error ?? CaptureError.failed("ScreenCaptureKit returned no image.")))
                     }
                 }
-                RunLoopPump.wait(until: { box.value != nil }, timeout: Self.waitWithin(10, deadline))
+                let attemptWait = Self.waitWithin(10, deadline)
+                RunLoopPump.wait(until: { box.value != nil }, timeout: attemptWait)
                 switch box.value {
                 case .success(let image):
                     if attempt > 0 { log("screenshot succeeded on attempt \(attempt + 1)") }
@@ -615,14 +644,20 @@ final class CaptureEngine {
                 case .failure(let error):
                     lastError = error
                 case nil:
-                    lastError = CaptureError.failed("The screenshot did not arrive in time.")
+                    // Matched by the client's stall pattern, which samples
+                    // this process once: a completion that never comes is
+                    // ScreenCaptureKit's side, not the display's.
+                    lastError = CaptureError.failed(
+                        "ScreenCaptureKit did not answer the screenshot within \(Int(attemptWait.rounded()))s."
+                    )
                 }
                 guard attempt < Self.startBackoffs.count,
                       !Self.budgetSpent(deadline),
                       Self.isRetryableStartFailure(lastError)
                 else {
+                    let tries = attempt == 0 ? "1 attempt" : "\(attempt + 1) attempts"
                     throw CaptureError.failed(
-                        "The screenshot failed after \(attempt + 1) attempts: \(Self.describe(lastError))"
+                        "The screenshot failed after \(tries): \(Self.describe(lastError))"
                     )
                 }
                 log("screenshot failed (\(Self.describe(lastError))); retrying in \(Int(Self.startBackoffs[attempt] * 1000))ms")
