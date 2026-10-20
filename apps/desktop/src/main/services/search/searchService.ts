@@ -55,14 +55,11 @@ import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking
 const DELEGATED_FILE_LIMIT = 30;
 const DELEGATED_ARTIFACT_LIMIT = 200;
 const MAX_DOC_BODY_CHARS = 32_000;
-// A chat pass needs room for its largest JSONL line: a window with no newline
-// is skipped as one oversized record.
-const MAX_CHAT_READ_BYTES_PER_PASS = 4 * 1024 * 1024;
-// One terminal pass indexes this much transcript in a single synchronous
-// transaction. 4 MB passes held the brain for 1.5-2 s at a time while a
-// terminal flooded output; the queue re-enqueues the remainder and yields
-// between passes. Terminal chunks are cut at 8 KB, so no record outgrows it.
-const MAX_TERMINAL_READ_BYTES_PER_PASS = 512 * 1024;
+// One pass indexes this much transcript in a single synchronous transaction.
+// 4 MB passes held the brain for 1.5-2 s at a time while a terminal flooded
+// output; the queue re-enqueues the remainder and yields between passes. A
+// chat record longer than this is read on to its newline in the same pass.
+const MAX_READ_BYTES_PER_PASS = 512 * 1024;
 const COMMITS_PER_LANE = 100;
 const DEFAULT_QUERY_LIMIT = 50;
 const BACKFILL_RETRY_MS = 60_000;
@@ -698,26 +695,28 @@ export function createSearchService(deps: SearchServiceDeps) {
       return;
     }
 
-    const readEnd = Math.min(fileSize, source.cursor + MAX_CHAT_READ_BYTES_PER_PASS);
-    let buf: Buffer;
-    if (compressed) {
-      buf = compressed.subarray(source.cursor, readEnd);
-    } else {
-      buf = Buffer.alloc(readEnd - source.cursor);
+    const readRange = async (start: number, end: number): Promise<Buffer> => {
+      if (compressed) return compressed.subarray(start, end);
+      const range = Buffer.alloc(end - start);
       const handle = await fs.promises.open(filePath, "r");
       try {
-        await handle.read(buf, 0, buf.length, source.cursor);
+        await handle.read(range, 0, range.length, start);
       } finally {
         await handle.close();
       }
+      return range;
+    };
+    let readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    let buf = await readRange(source.cursor, readEnd);
+    // One record longer than the pass: read on to its newline, so it is indexed
+    // whole instead of being split across passes and lost.
+    while (buf.lastIndexOf(0x0a) < 0 && readEnd < fileSize) {
+      const nextEnd = Math.min(fileSize, readEnd + MAX_READ_BYTES_PER_PASS);
+      const more = await readRange(readEnd, nextEnd);
+      buf = Buffer.concat([buf, more]);
+      readEnd = nextEnd;
     }
     const lastNewline = buf.lastIndexOf(0x0a);
-    if (lastNewline < 0 && readEnd < fileSize) {
-      // A single line larger than the read window; skip past it defensively.
-      putSource(sourceId, "chat-session", readEnd, source.docSeq, JSON.stringify({ path: filePath }));
-      enqueue("chat-session", sessionId, 0);
-      return;
-    }
     // Never consume an unterminated tail: the writer appends whole
     // `JSON.stringify(envelope) + "\n"` lines, so a missing trailing newline
     // means a torn in-progress write — consuming it would advance the cursor
@@ -823,7 +822,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
     if (fileSize === source.cursor) return;
 
-    const readEnd = Math.min(fileSize, source.cursor + MAX_TERMINAL_READ_BYTES_PER_PASS);
+    const readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
     let buf: Buffer;
     if (compressed) {
       buf = compressed.subarray(source.cursor, readEnd);

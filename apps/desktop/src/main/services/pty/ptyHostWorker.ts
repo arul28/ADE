@@ -68,7 +68,7 @@ type FlowState = {
 const ptys = new Map<string, IPty>();
 const flow = new Map<string, FlowState>();
 
-/** node-pty on Windows throws for any signal; ConPTY ends the process itself. */
+/** node-pty on Windows rejects any signal; its no-argument kill() ends the process. */
 function killPty(pty: IPty, signal?: string): void {
   if (process.platform === "win32") pty.kill();
   else pty.kill(signal);

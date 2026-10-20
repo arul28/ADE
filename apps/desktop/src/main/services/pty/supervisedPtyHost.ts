@@ -661,17 +661,26 @@ class SupervisedPtyHost {
     this.killTimers.set(ptyId, timer);
   }
 
-  /** Ask the PTY's host to kill and forget it, through the host's live handle. */
+  /**
+   * Ask the PTY's host to kill and forget it, through the host's live handle.
+   * Only for a host other PTYs keep alive: a host left with no PTYs is killed
+   * by detachPtyFromChild, which ends this one with it.
+   */
   private disposeInHost(ptyId: string): void {
     const childState = this.childrenByPty.get(ptyId);
-    if (!childState || !childState.child.connected) return;
-    try {
-      childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" });
-    } catch (error) {
+    if (!childState || childState.ptyIds.size <= 1 || !childState.child.connected) return;
+    const report = (error: unknown) => {
       this.logger.warn("pty.host_dispose_send_failed", {
         ptyId,
         error: error instanceof Error ? error.message : String(error),
       });
+    };
+    try {
+      childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" }, (error) => {
+        if (error) report(error);
+      });
+    } catch (error) {
+      report(error);
     }
   }
 

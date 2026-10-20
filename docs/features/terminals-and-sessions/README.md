@@ -2841,8 +2841,8 @@ so explicitly rather than asserting a tier ADE never set.
   A host crash ends every terminal it serves (they show as failed); new
   terminals start a new host. A terminal that ignores kill, or whose spawn
   timed out, is killed on its own through its host's live handle
-  (`disposeInHost`), never by killing a host others still use. On Windows
-  the worker calls node-pty `kill()` with no signal, which it rejects. Every spawn must pass its own `env` and `cwd`: a shared host's own
+  (`disposeInHost`), never by killing a host others still use. node-pty on
+  Windows rejects a signal, so the worker calls `kill()` without one there. Every spawn must pass its own `env` and `cwd`: a shared host's own
   environment is from whenever it started.
 - **Parked terminals give their WebGL context back after 30 s**
   (`PARKED_WEBGL_RELEASE_MS`) and take one again on the next mount

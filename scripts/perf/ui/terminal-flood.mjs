@@ -64,50 +64,60 @@ const created = await evaluate(`window.ade.pty.create({
   tracked: true, toolType: "shell", startupCommand: ${JSON.stringify(`sleep 2; ${flood}; exit`)},
 }).then((r) => ({ ptyId: r.ptyId, sessionId: r.sessionId }))`);
 const { ptyId, sessionId: session } = created;
-await evaluate(`window.dispatchEvent(new CustomEvent("ade:work:select-session", { detail: { sessionId: ${JSON.stringify(session)}, laneId: ${JSON.stringify(laneId)} } })); 1`);
-const cpuBefore = cpuSeconds();
-const result = await evaluate(`new Promise((resolve) => {
-  const frames = [], longTasks = [], calls = [];
-  let failedCalls = 0;
-  let done = false, finished = false, last = performance.now();
-  const t0 = performance.now();
-  const observer = new PerformanceObserver((l) => { for (const e of l.getEntries()) longTasks.push(e.duration); });
-  observer.observe({ type: "longtask" });
-  const frame = () => { const n = performance.now(); frames.push(n - last); last = n; if (!done) requestAnimationFrame(frame); };
-  requestAnimationFrame(frame);
-  (async () => {
-    while (!done) {
-      const a = performance.now();
-      let status = null;
-      try {
-        status = (await window.ade.sessions.get(${JSON.stringify(session)}))?.status ?? null;
-        calls.push(performance.now() - a);
-      } catch {
-        failedCalls += 1;
+let result = { finished: false };
+try {
+  await evaluate(`window.dispatchEvent(new CustomEvent("ade:work:select-session", { detail: { sessionId: ${JSON.stringify(session)}, laneId: ${JSON.stringify(laneId)} } })); 1`);
+  const cpuBefore = cpuSeconds();
+  result = await evaluate(`new Promise((resolve) => {
+    const frames = [], longTasks = [], calls = [];
+    let failedCalls = 0;
+    let done = false, finished = false, last = performance.now();
+    const t0 = performance.now();
+    const observer = new PerformanceObserver((l) => { for (const e of l.getEntries()) longTasks.push(e.duration); });
+    observer.observe({ type: "longtask" });
+    const frame = () => { const n = performance.now(); frames.push(n - last); last = n; if (!done) requestAnimationFrame(frame); };
+    requestAnimationFrame(frame);
+    (async () => {
+      while (!done) {
+        const a = performance.now();
+        let status = null;
+        try {
+          // A reply that never comes must not hold the run past its timeout.
+          const left = Math.max(1, ${timeoutMs} - (performance.now() - t0));
+          const reply = await Promise.race([
+            window.ade.sessions.get(${JSON.stringify(session)}),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), left)),
+          ]);
+          status = reply?.status ?? null;
+          calls.push(performance.now() - a);
+        } catch {
+          failedCalls += 1;
+        }
+        if (status && status !== "running") { finished = true; break; }
+        if (performance.now() - t0 > ${timeoutMs}) break;
+        await new Promise((r) => setTimeout(r, 100));
       }
-      if (status && status !== "running") { finished = true; break; }
-      if (performance.now() - t0 > ${timeoutMs}) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    done = true;
-    observer.disconnect();
-    const q = (xs, p) => { const s = [...xs].sort((x, y) => x - y); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0); };
-    resolve({
-      finished, wallMs: Math.round(performance.now() - t0),
-      ipcP50: q(calls, 0.5), ipcP95: q(calls, 0.95), ipcMax: q(calls, 1), ipcCalls: calls.length, ipcFailed: failedCalls,
-      frameP95: q(frames, 0.95), frameMax: q(frames, 1),
-      longTaskMs: Math.round(longTasks.reduce((a, b) => a + b, 0)),
-    });
-  })();
-})`);
-const cpuAfter = cpuSeconds();
-if (!result.finished) {
-  // Do not leave the flood running into the next measurement.
-  await evaluate(`window.ade.pty.dispose({ ptyId: ${JSON.stringify(ptyId)}, sessionId: ${JSON.stringify(session)} }).then(() => 1)`).catch(() => {});
+      done = true;
+      observer.disconnect();
+      const q = (xs, p) => { const s = [...xs].sort((x, y) => x - y); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0); };
+      resolve({
+        finished, wallMs: Math.round(performance.now() - t0),
+        ipcP50: q(calls, 0.5), ipcP95: q(calls, 0.95), ipcMax: q(calls, 1), ipcCalls: calls.length, ipcFailed: failedCalls,
+        frameP95: q(frames, 0.95), frameMax: q(frames, 1),
+        longTaskMs: Math.round(longTasks.reduce((a, b) => a + b, 0)),
+      });
+    })();
+  })`);
+  const cpuAfter = cpuSeconds();
+  console.log(JSON.stringify({
+    mode,
+    ...result,
+    brainCpuSec: cpuBefore == null ? null : +(cpuAfter - cpuBefore).toFixed(1),
+  }));
+} finally {
+  if (!result.finished) {
+    // Do not leave the flood running into the next measurement.
+    await evaluate(`window.ade.pty.dispose({ ptyId: ${JSON.stringify(ptyId)}, sessionId: ${JSON.stringify(session)} }).then(() => 1)`).catch(() => {});
+  }
+  ws.close();
 }
-console.log(JSON.stringify({
-  mode,
-  ...result,
-  brainCpuSec: cpuBefore == null ? null : +(cpuAfter - cpuBefore).toFixed(1),
-}));
-ws.close();
