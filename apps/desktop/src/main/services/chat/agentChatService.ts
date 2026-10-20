@@ -184,7 +184,6 @@ import {
 } from "../../../shared/codexComposerCommands";
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { redactCommandLine } from "../../../shared/secretRedaction";
-import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
@@ -3299,6 +3298,8 @@ type OpenCodeActiveTurn = {
   /** The model ADE asked for, to name a served-model fallback in `done`. */
   requestedModel: { providerID: string; modelID: string };
   laneDirectiveKey: string | null;
+  /** Lets async completion reject a delivery mark from before compaction. */
+  directiveEpochGeneration: number;
   /** Set once OpenCode reports the execution started; a prompt that never starts is failed. */
   executionStarted: boolean;
   /**
@@ -4834,7 +4835,15 @@ type EpochDirective =
   /** The computer-use block, keyed by lane and available backends. */
   | "computerUse"
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
-  | "appleDevice";
+  | "appleDevice"
+  /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
+  | "laneScreen"
+  /**
+   * ADE's lane guidance for a provider with no instruction channel, keyed by
+   * the provider's own thread id and the text, so a new thread or changed
+   * text is told again and a resumed thread is not.
+   */
+  | "laneGuidance";
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 type ManagedChatSession = {
@@ -5069,6 +5078,14 @@ type ManagedChatSession = {
    * they arrive makes Codex re-send its whole skills block twice.
    */
   codexSkillCount?: number;
+  /** Active send/steer dispatches, so a compaction reset cannot be undone by stale post-dispatch marks. */
+  directiveDispatchDepth?: number;
+  /** Monotonic directive epoch; callbacks from a prior epoch cannot restore stale keys. */
+  directiveEpochGeneration?: number;
+  /** Epoch captured by the active send or queued-steer dispatch. */
+  directiveDispatchGeneration?: number;
+  /** A directive reset arrived during a dispatch and is applied when the outer send settles. */
+  directiveEpochResetPending?: boolean;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -8873,25 +8890,18 @@ export function buildLinearSessionDirective(
 }
 
 /**
- * How the agent shows proof inside its answer. The user reads the answer, not
- * the drawer, so the proof goes next to the claim it proves.
- */
-const PROOF_IN_ANSWER_GUIDANCE = [
-  "Show proof in your answer, directly under the claim it proves. Every proof command prints a `cite:` line such as `![caption](ade-proof://<id>)`; paste it on its own line in your message. Pictures show inline and videos play inline.",
-  `For a before/after, write a fenced \`\`\`${PROOF_COMPARE_FENCE_LANGUAGE} block with the lines \`before: <id> <label>\`, \`after: <id> <label>\` and an optional \`caption: <one sentence>\`. You may also compose an image yourself (a crop, a side-by-side), file it with \`ade proof attach\`, and cite it.`,
-  "Give each item a caption that says what it shows, and an honest caveat when it does not show everything (mock data, a partial state, a step you could not check). Cite as many items as the claims need, and choose the ones that show the claim instead of every capture. Prefer proof that ADE captured or recorded over a file you made yourself.",
-  "To put proof on a pull request, run `ade proof publish --pr <number or URL> <id> <id>` with the items that show the change; it posts one comment with each picture and video under its caption.",
-].join("\n");
-
-/**
  * Identity of one rendering of the computer-use directive.
  *
  * The directive's text is derived entirely from which backends are available,
  * so hashing the text is the same as hashing the capability set — and it stays
  * correct if the prose changes, without a second list to keep in sync.
  */
+function directiveTextFingerprint(text: string): string {
+  return createHash("sha1").update(text).digest("hex").slice(0, 16);
+}
+
 export function computerUseDirectiveFingerprint(directive: string): string {
-  return createHash("sha1").update(directive).digest("hex").slice(0, 16);
+  return directiveTextFingerprint(directive);
 }
 
 export function buildComputerUseDirective(
@@ -8928,72 +8938,23 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
-  // Either seat means "this lane has its own screen". Exactly one is set per
-  // host: the seat follows the runtime host's platform.
+  // The full manuals live in the ade-computer-use and ade-proof-artifacts
+  // skills; this block is only what must hold before the agent opens them. It
+  // rides the first turn of every chat on every provider, so every line here
+  // is paid by chats that never touch a screen (it was ~9.4k chars).
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
-  const recordingSurfaces = [
-    ...(options.macDesktopAvailable ? ["Apple", "Mac Desktop"] : []),
-    ...(options.windowsDesktopAvailable ? ["Windows Desktop"] : []),
-    "App Control",
-    "browser",
-  ].join(", ");
-
   // --- Header (always when we have any capability) ---
   sections.push(
     [
       "## Computer Use",
-      "You have computer-use capabilities available. The proof drawer is for reviewer-visible evidence: screenshots/images, screen recordings, and browser captures or traces.",
-      "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
-      "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
-      "",
-      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
-      options.macDesktopAvailable || options.windowsDesktopAvailable
-        ? "`mcp__computer_use` — like every tool outside `ade` that clicks, types or captures: any other computer-use MCP server or plugin, `osascript`/System Events, `cliclick`, `screencapture`, a browser-automation CLI, a Chrome you open yourself — drives the user's real screen, pointer and focus. This lane has its own screen, so do not use them for task work; use them only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute. If an ADE surface cannot do a step, say which step and ask instead of switching tools."
-        : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
-      "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
-      "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
-      "Web pages and localhost go in ADE's browser (`ade browser`, the **ade-browser** skill), which shares the user's sign-ins. To sign in as a test account or a second role, open an isolated tab with `ade browser open <url> --profile <name>` so the user stays signed in; never use a headless or external browser for that.",
-      "Use the user's own browser only when the user asks for it (\"look at the tab I have open\", \"use my Chrome\"): run `ade browser attach`, tell the user which machine and tab it attached to, and run `ade browser detach` when done. Never attach on your own initiative.",
-      "App Control (`ade app-control`, the **ade-app-control** skill) drives an Electron app through its DOM — your dev build, or an installed app started with a debug port — one session per lane: `launch` or `connect`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
-      "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
-      "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
-      `Every recording (${recordingSurfaces}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
+      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: an iOS app → `ade apple`, a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
+      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
+      ownScreen
+        ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
+        : "When the `mcp__computer_use` tools are present, they drive the user's real screen: start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+      "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching.",
     ].join("\n"),
   );
-
-  // --- Windows Desktop (this Windows host can give the lane its own screen) ---
-  if (options.windowsDesktopAvailable) {
-    sections.push(
-      [
-        "### Windows Desktop — this lane's own screen (use it for desktop apps)",
-        "For anything that needs a Windows app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's Windows Desktop with `ade screen` (aliases `ade windows-desktop`, `ade mac-desktop`; they are the same Windows screen here, not a Mac). Read the **ade-computer-use** skill before your first action.",
-        "Seats: the default is **private** — a separate Windows session of the user's own account. It shows their wallpaper and taskbar, but it has its own pointer and keyboard and it is NOT the user's screen, so real input (point clicks, drags) needs no lease there. The **shared** seat is the user's main desktop, used only after the user says yes; it takes over the window they are using. `ade screen status --text` names the seat, the holder and the exact next step.",
-        "Pick the surface: any Windows app → `ade screen`; a dev Electron app you launch or attach to → `ade app-control`; a web page or localhost → `ade browser` (the default for web tasks; open a real browser on the Windows screen only when the user asks for it — `open chrome`/`msedge` there gets a lane-private profile, not the user's).",
-        "The user's steps — setup, saving the Windows password, taking the private screen from another lane — are theirs: ask them. When the private screen is held or unavailable, run `ade screen start --shared --reason \"<what for>\"`: it puts the question to the user in this chat and starts the shared seat if they allow it. Never pass `--allow-prompt` or `--consent` yourself.",
-        "The loop: `ade screen start`, `ade screen open <app or file>` (it prints the windows that appeared, or why none did), `ade screen observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press s --ctrl`, `scroll`). Windows modifier keys are `--ctrl`, `--alt`, `--shift`, `--win`; `--cmd` is sent as Ctrl. Raise, minimize or close your own lane windows with `ade screen focus|minimize|close --window <id>`.",
-        "Notepad and other editors restore the user's open tabs, which can hold private files: open a new blank file you created for the task (`ade screen open notepad -- <path>`), and observe the screen before you record or file proof.",
-        "For proof, wrap the work in `ade screen record start --caption \"<what it shows>\"` … `ade screen record stop` (mark steps with `ade proof step \"<text>\"`), or file a still with `ade screen proof --caption \"<what>\"`; cite the `cite` line it prints. To show the screen to the user, run `ade screen show`.",
-        "Errors name the fix and print the next step: `WINDOWS_DESKTOP_SETUP_REQUIRED` (ask the user to set up), `WINDOWS_DESKTOP_HELD` (another lane, or a Windows session ADE did not start, holds the private screen: ask the user, or `start --shared`), `WINDOWS_DESKTOP_LOCKED` (ask the user to unlock), `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` (`start --shared`), `WINDOWS_DESKTOP_CONSENT_REQUIRED` (the user did not allow the main desktop).",
-        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade screen observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
-      ].join("\n"),
-    );
-  } else if (options.macDesktopAvailable) {
-    // --- Mac Desktop (this host can give the lane its own screen) ---
-    sections.push(
-      [
-        "### Mac Desktop — this lane's own screen (use it for desktop apps)",
-        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-computer-use** skill before your first action.",
-        "Pick the surface: an iOS/SwiftUI app → `ade apple`; any macOS app, including Electron and custom-drawn apps (DAWs, games, canvases) → `ade mac-desktop`; an Electron app whose DOM you need (labels, selectors, hover) → `ade app-control`; a web page or localhost → `ade browser`.",
-        "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
-        "Every acting command reports `hit:` (the element it hit) and `effect:` (observed / unconfirmed / not_checked); when the effect is `unconfirmed`, observe again before you act or report.",
-        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole. Do not stop on your own when you finish. When the user asks you to close what you opened, run `ade mac-desktop quit` (it also quits apps you released) and then `ade mac-desktop stop`.",
-        "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). When an app lists few elements (an Electron window, a DAW, a game), click a point read off the screenshot: `click --x <x> --y <y>` (`--right`, `--double`). None of this moves the user's pointer or needs approval. `--real` does move it, so use it only for a hover-only control or a drop onto another app, after `ade mac-desktop lease`. For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
-        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
-        "If recording fails, say so. Never attach an older recording or a file you did not just record.",
-        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; do not quit apps yourself. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
-      ].join("\n"),
-    );
-  }
 
   // --- Ghost OS section (only if a Ghost OS backend is detected) ---
   const ghostOsBackend = backendStatus?.backends.find(
@@ -9032,12 +8993,13 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      options.windowsDesktopAvailable
-        ? "Proof is intentional. For work on the lane's Windows Desktop, file a still with `ade screen proof` or `ade proof capture`, and a video with `ade screen record` or `ade proof record`; they capture the lane's screen (private or shared seat), and `ade proof capture/record` are refused until the lane screen is started. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
-        : options.macDesktopAvailable
-        ? "Proof is intentional. For work on the lane's Mac Desktop, file a still with `ade mac-desktop proof` or `ade proof capture`, and a video with `ade mac-desktop record` or `ade proof record`; all of them capture the lane's screen, never the user's, and `ade proof capture/record` are refused until the lane screen is started. `--real-screen` captures the user's whole real screen — use it only when the user asks. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
-        : "Proof is intentional. File proof from the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`), or use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. `ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — use it only when the user asks. Add logs only as secondary context unless the user explicitly asks for them.",
-      PROOF_IN_ANSWER_GUIDANCE,
+      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
+        + (options.windowsDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
+        + (ownScreen
+          ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
+          : "`ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — only when the user asks."),
+      "Every proof command prints a `cite:` line; paste it on its own line in your answer, directly under the claim it proves. Read the **ade-proof-artifacts** skill for before/after blocks, recordings, PR publishing and keeping the drawer clean.",
     ].join("\n"),
   );
 
@@ -9937,9 +9899,16 @@ function buildSpawnSelfReportGuidance(
 function buildAdeSessionLineageGuidance(
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
   opts?: SpawnSelfReportGuidanceOpts,
+  options: {
+    /** Keep the session id out of this session-specific provider prompt cache. */
+    sessionIdFromEnvironment?: boolean;
+  } = {},
 ): string | null {
   if (!session) return null;
-  const sessionBinding = `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
+  const sessionEnvironmentReference = process.platform === "win32" ? "$env:ADE_CHAT_SESSION_ID" : "$ADE_CHAT_SESSION_ID";
+  const sessionBinding = options.sessionIdFromEnvironment === true
+    ? `This ADE chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
+    : `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
   const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
@@ -12048,10 +12017,12 @@ export function createAgentChatService(args: {
     session: Pick<AgentChatSession, "id">,
     runtime: { cliPath: string; runtimeSocketPath: string | null; personal: boolean } | null,
     target: AdeSessionActivityTarget = { type: "environment" },
+    sessionIdFromEnvironment = false,
   ): string | null => {
     if (!runtime) return null;
     return buildAdeSessionActivityGuidance({
       sessionId: session.id,
+      sessionIdFromEnvironment,
       cliPath: runtime.cliPath,
       shell: process.platform === "win32" ? "powershell" : "posix",
       // A personal chat names its scope on the command itself, so it reaches
@@ -12064,9 +12035,12 @@ export function createAgentChatService(args: {
   const buildSessionActivityGuidance = (
     session: Pick<AgentChatSession, "id" | "surface" | "personalProfile">,
     enabled: boolean,
+    options: { sessionIdFromEnvironment?: boolean } = {},
   ): string | null => sessionActivityGuidanceForRuntime(
     session,
     resolveSessionActivityRuntime(session, enabled),
+    { type: "environment" },
+    options.sessionIdFromEnvironment === true,
   );
 
   const buildOpenCodeSessionActivityGuidance = (
@@ -17546,17 +17520,22 @@ export function createAgentChatService(args: {
       });
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
+    // The system prompt is Pi's persistent instruction channel, so the
+    // session lineage rides here too and no turn repeats ADE's guidance.
     const systemPrompt = isPersonalSession(managed.session)
       ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, piActivityGuidance)
-      : buildCodingAgentSystemPrompt({
-          cwd: managed.laneWorktreePath,
-          mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
-          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-          interactive: true,
-          runtime: "pi-sdk",
-          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-          sessionActivityGuidance: piActivityGuidance,
-        });
+      : [
+          buildCodingAgentSystemPrompt({
+            cwd: managed.laneWorktreePath,
+            mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
+            permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+            interactive: true,
+            runtime: "pi-sdk",
+            adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+            sessionActivityGuidance: piActivityGuidance,
+          }),
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
+        ].filter(Boolean).join("\n\n");
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
     //
@@ -22595,6 +22574,19 @@ export function createAgentChatService(args: {
       // event with no state is not evidence that the compaction finished.
       if (event.state === "completed" || event.state === "failed") settleCompactionWaiters(managed.session.id);
       if (managed.session.identityKey) observeIdentityCompaction(managed, event);
+      // What ADE said once in the thread's user turns (the lane directive,
+      // computer-use and lane-screen blocks, lane guidance where it rides
+      // in-band) survives a compaction only if the provider's summary kept
+      // it. Forget it was delivered, so the next turn says it once more. A
+      // `context_compact` with no state comes from a completion-only source.
+      if (
+        event.state === "completed"
+        || (event.type === "context_compact" && event.state === undefined)
+      ) {
+        clearDeliveredDirectiveEpoch(managed);
+        // Muse tracks its first-turn framing on the runtime instead.
+        if (managed.runtime?.kind === "muse") managed.runtime.instructionsDelivered = false;
+      }
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -27232,23 +27224,118 @@ export function createAgentChatService(args: {
   const persistDeliveredLaneDirectiveKey = (
     managed: ManagedChatSession,
     laneDirectiveKey?: string | null,
+    dispatchGeneration?: number,
   ): void => {
+    const expectedGeneration = dispatchGeneration ?? managed.directiveDispatchGeneration;
+    if (
+      expectedGeneration !== undefined
+      && expectedGeneration !== (managed.directiveEpochGeneration ?? 0)
+    ) return;
     if (!laneDirectiveKey || managed.lastLaneDirectiveKey === laneDirectiveKey) return;
     managed.lastLaneDirectiveKey = laneDirectiveKey;
     persistChatState(managed);
   };
 
   /**
-   * Forget what this session's provider threads have been told, so a
-   * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. The lane, computer-use and Apple-device directives are epoch-scoped
-   * and would otherwise be suppressed for the new thread by a key the old one
-   * set.
+   * ADE's lane guidance (the `## ADE` block, a provider's own framing) for a
+   * provider whose only instruction channel is the user turn: Cursor, Droid
+   * and the ACP agents. It used to ride every turn — about 1k tokens per turn,
+   * and Droid's whole harness prompt — although each of these keeps its own
+   * conversation. It is now sent on the first turn of each provider thread
+   * and again only when the thread or the text changes.
    */
-  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
+  const laneGuidanceKey = (threadId: string | null | undefined, text: string): string =>
+    `${threadId?.trim() || "pending"}::${directiveTextFingerprint(text.trim())}`;
+
+  const undeliveredLaneGuidance = (
+    managed: ManagedChatSession,
+    threadId: string | null | undefined,
+    text: string | null | undefined,
+  ): string | null => {
+    const trimmed = text?.trim() ?? "";
+    if (!trimmed) return null;
+    return managed.deliveredDirectiveKeys.laneGuidance === laneGuidanceKey(threadId, trimmed) ? null : trimmed;
+  };
+
+  /** Call after the turn was handed to the provider, with the thread id it now has. */
+  const markLaneGuidanceDelivered = (
+    managed: ManagedChatSession,
+    threadId: string | null | undefined,
+    text: string,
+  ): void => {
+    if (
+      managed.directiveDispatchGeneration !== undefined
+      && managed.directiveDispatchGeneration !== (managed.directiveEpochGeneration ?? 0)
+    ) return;
+    const key = laneGuidanceKey(threadId, text);
+    if (managed.deliveredDirectiveKeys.laneGuidance === key) return;
+    managed.deliveredDirectiveKeys.laneGuidance = key;
+    persistChatState(managed);
+  };
+
+  /**
+   * Forget what this session's provider threads have been told, so a
+   * replacement runtime (model switch, thread recycle, resume) or a compacted
+   * conversation is re-announced to. The lane, computer-use and Apple-device
+   * directives are epoch-scoped and would otherwise be suppressed by a key
+   * from the previous thread or context.
+   */
+  const resetDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
     managed.deliveredDirectiveKeys = {};
     persistChatState(managed);
+  };
+
+  const flushPendingDirectiveEpochReset = (managed: ManagedChatSession): void => {
+    if (!managed.directiveEpochResetPending) return;
+    managed.directiveEpochResetPending = false;
+    resetDeliveredDirectiveEpoch(managed);
+  };
+
+  const withDirectiveDispatch = async <T>(
+    managed: ManagedChatSession,
+    dispatch: () => Promise<T>,
+  ): Promise<T> => {
+    const previousDispatchGeneration = managed.directiveDispatchGeneration;
+    managed.directiveDispatchDepth = (managed.directiveDispatchDepth ?? 0) + 1;
+    managed.directiveDispatchGeneration = managed.directiveEpochGeneration ?? 0;
+    try {
+      return await dispatch();
+    } finally {
+      managed.directiveDispatchDepth = Math.max(0, (managed.directiveDispatchDepth ?? 1) - 1);
+      managed.directiveDispatchGeneration = previousDispatchGeneration;
+      if (managed.directiveDispatchDepth === 0 && managed.directiveEpochResetPending) {
+        flushPendingDirectiveEpochReset(managed);
+      }
+    }
+  };
+
+  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
+    managed.directiveEpochGeneration = (managed.directiveEpochGeneration ?? 0) + 1;
+    // Provider completion can report compaction before the dispatch promise
+    // resolves. Advancing the generation makes that dispatch's later marks
+    // stale; defer clearing until its bookkeeping settles, with queued steers
+    // flushing the reset before they compose their next prompt.
+    if ((managed.directiveDispatchDepth ?? 0) > 0) {
+      managed.directiveEpochResetPending = true;
+      return;
+    }
+    resetDeliveredDirectiveEpoch(managed);
+  };
+
+  /**
+   * A provider thread can be replaced during a send whose prompt was already
+   * prepared against the old thread. Reset its directive keys for the next
+   * send, and move the active dispatch onto the new generation so a successful
+   * recovery attempt can record what it actually delivered to the new thread.
+   */
+  const rearmDeliveredDirectiveEpochForNewThread = (managed: ManagedChatSession): void => {
+    managed.directiveEpochGeneration = (managed.directiveEpochGeneration ?? 0) + 1;
+    managed.directiveEpochResetPending = false;
+    resetDeliveredDirectiveEpoch(managed);
+    if ((managed.directiveDispatchDepth ?? 0) > 0) {
+      managed.directiveDispatchGeneration = managed.directiveEpochGeneration;
+    }
   };
 
   const sendCodexMessage = async (
@@ -27309,7 +27396,6 @@ export function createAgentChatService(args: {
     };
     const completeCodexGoalControl = (message?: string, noticeKind: "info" | "error" = "info") => {
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       if (message) {
         emitCodexGoalNotice(message, noticeKind);
       }
@@ -27592,7 +27678,6 @@ export function createAgentChatService(args: {
     ) => {
       const slashTurnId = randomUUID();
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       markSessionIdleWithFreshCache(managed);
       emitBeforeComplete?.(slashTurnId);
       if (message) {
@@ -27691,7 +27776,6 @@ export function createAgentChatService(args: {
         throw error;
       }
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.awaitingTurnStart = false;
@@ -27713,7 +27797,6 @@ export function createAgentChatService(args: {
       if (!codexServerSupportsUserShell(runtime.serverVersion)) {
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
@@ -27735,7 +27818,6 @@ export function createAgentChatService(args: {
         });
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "user_message",
             text: displayText || userText,
@@ -27762,7 +27844,6 @@ export function createAgentChatService(args: {
         runtime.awaitingTurnStart = false;
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
@@ -27776,7 +27857,6 @@ export function createAgentChatService(args: {
         return;
       }
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       persistChatState(managed);
       return;
     }
@@ -27786,7 +27866,6 @@ export function createAgentChatService(args: {
       const finishMemory = (message?: string) => {
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           if (message) {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -33785,6 +33864,7 @@ export function createAgentChatService(args: {
     captureTurnBeforeSha(managed);
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
 
+    let acpLaneGuidance: string | null = null;
     try {
       const slashRoute = await resolveAcpSlashRoute(managed, runtime, args);
       let prompt = slashRoute.body;
@@ -33799,17 +33879,19 @@ export function createAgentChatService(args: {
           firstTurn: devinCloudFirstTurn,
         });
         if (pin) prompt = `${pin}\n\n${prompt}`;
-      } else if (
-        !slashRoute.agentCommand
-        && !isPersonalSession(managed.session)
-        && managed.lastLaneDirectiveKey !== args.laneDirectiveKey
-      ) {
-        const guidance = buildAdeGuidanceForLane(
-          managed.laneWorktreePath,
-          managed.session,
-          spawnSelfReportOpts(managed.session),
+      } else if (!slashRoute.agentCommand && !isPersonalSession(managed.session)) {
+        // The one place an ACP agent hears ADE's guidance, normal sends and
+        // queued steers alike: once per ACP session (see laneGuidanceKey).
+        acpLaneGuidance = undeliveredLaneGuidance(
+          managed,
+          runtime.session.sessionId,
+          buildAdeGuidanceForLane(
+            managed.laneWorktreePath,
+            managed.session,
+            spawnSelfReportOpts(managed.session),
+          ),
         );
-        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
+        if (acpLaneGuidance) prompt = `${acpLaneGuidance}\n\n${prompt}`;
       }
 
       const imagePrompt = runtime.dialect.imagePrompts.declared
@@ -33838,6 +33920,7 @@ export function createAgentChatService(args: {
       for (const event of outcome.events) emitChatEvent(managed, event);
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (acpLaneGuidance) markLaneGuidanceDelivered(managed, runtime.session.sessionId, acpLaneGuidance);
       markSessionIdleWithFreshCache(managed);
       // Client-side cancel accounting, taken when the agent answered. Copilot
       // reports a stopped turn as `end_turn`, so the agent's stopReason is
@@ -35407,14 +35490,8 @@ export function createAgentChatService(args: {
       if (pendingContext) {
         prompt = `${pendingContext}\n\n${prompt}`;
       }
-      if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
-        const guidance = buildAdeGuidanceForLane(
-          managed.laneWorktreePath,
-          managed.session,
-          spawnSelfReportOpts(managed.session),
-        );
-        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
-      }
+      // No lane guidance here: Pi's system prompt carries the harness, the
+      // `## ADE` block and the session lineage (see the Pi runtime launch).
       const { promptText, images } = await buildPiWorkerPrompt(
         prompt,
         args.resolvedAttachments ?? [],
@@ -35566,6 +35643,7 @@ export function createAgentChatService(args: {
       startedAt: Date.now(),
       requestedModel: args.requestedModel ?? { providerID: model.providerID, modelID: model.id },
       laneDirectiveKey: args.laneDirectiveKey ?? null,
+      directiveEpochGeneration: managed.directiveDispatchGeneration ?? managed.directiveEpochGeneration ?? 0,
       executionStarted: args.origin === "opencode",
       admittedAt: args.origin === "opencode" ? Date.now() : null,
       settled,
@@ -35632,7 +35710,7 @@ export function createAgentChatService(args: {
     const doneCost = turnCostUsd !== undefined ? { costUsd: turnCostUsd, costSource: "provider" as const } : {};
 
     if (outcome.status === "completed") {
-      persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey);
+      persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey, turn.directiveEpochGeneration);
       emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
       const served = turn.mapper.servedModel();
       const servedModel = resolveOpenCodeServedModel(turn.requestedModel, served);
@@ -43803,9 +43881,19 @@ export function createAgentChatService(args: {
         ]
         : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
+      // A lane chat's query process is this session's alone and carries
+      // ADE_CHAT_SESSION_ID, so its system prompt names the session through
+      // that variable. With no per-chat value left in it, a second chat in the
+      // lane reads the whole system prompt from the prompt cache instead of
+      // writing it again (2026-10-20: 26.5k cache-write tokens per new chat).
+      // Claude's Windows shell can be Git Bash or PowerShell. Until the
+      // provider shell is known, keep the session id literal instead of
+      // emitting the PowerShell-only `$env:` reference.
+      const claudeSessionIdFromEnvironment = !assistantSession && process.platform !== "win32";
       const claudeActivityGuidance = buildSessionActivityGuidance(
         managed.session,
         !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
+        { sessionIdFromEnvironment: claudeSessionIdFromEnvironment },
       );
       const claudeHarnessPrompt = assistantSession
         ? null
@@ -43834,17 +43922,17 @@ export function createAgentChatService(args: {
         : {
         type: "preset",
         preset: "claude_code",
+        // The harness prompt opens with the lane worktree and its write rule,
+        // so no second "ADE Workspace" copy of them follows.
         append: [
           claudeHarnessPrompt,
-          "",
-          "## ADE Workspace",
-          `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-          "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless ADE explicitly relaunches you elsewhere.",
           "",
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session), {
+            sessionIdFromEnvironment: claudeSessionIdFromEnvironment,
+          }) ?? "",
         ].join("\n"),
       };
       // An assistant chat loads the user's own layer (their CLAUDE.md, MCP
@@ -43867,29 +43955,33 @@ export function createAgentChatService(args: {
       }
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
-      // Enable provider tool search for every session, CTO included. When
-      // enabled, the SDK defers tool definitions and loads them on demand via
-      // its ToolSearch capability, keeping the context window lean.
+      // Tool search is left to the pinned CLI's default, for every session,
+      // CTO included: on against Anthropic's API (tool schemas are deferred and
+      // loaded on demand through ToolSearch), off against a third-party base
+      // URL (a harness route) that may not support deferred tools. ADE used to
+      // force "auto", which only defers once tools pass a share of the context
+      // window, so with a normal catalog every schema was sent inline: a bare
+      // `claude -p hi` measured 30.6k input tokens on its first turn by
+      // default and 48.5k with "auto" (2026-10-20, Haiku 5.5, CLI 0.3.300).
       //
-      // The CTO was pinned to "0" while its operator tools were a single flat
-      // catalog: deferring them risked a CTO that could not find spawnChat.
-      // Packs removed that risk on the ADE side — `createCtoOperatorTools`
-      // derives `alwaysLoad` from the pack rather than a hand-set flag, the tool
-      // map is registered identically whether or not optional services are
-      // wired, and `applyCtoToolPackVisibility` never adds or drops a key. Those
-      // three are asserted in `ctoToolPacks.test.ts`, which is the parity gate
-      // this flip is conditioned on.
+      // The CTO's operator tools are safe to defer: `createCtoOperatorTools`
+      // derives `alwaysLoad` from the pack rather than a hand-set flag, the
+      // tool map is registered identically whether or not optional services
+      // are wired, and `applyCtoToolPackVisibility` never adds or drops a key
+      // (`ctoToolPacks.test.ts`). If a CTO is ever seen failing to find a core
+      // tool, set ENABLE_TOOL_SEARCH here for the CTO only.
       //
-      // Note the remaining unknown, so a future reader does not have to
-      // rediscover it: "auto" hands the eager/deferred decision to the SDK, so
-      // this asserts ADE's map is self-consistent, NOT that the SDK keeps every
-      // core tool eagerly loaded. If a CTO is ever seen failing to find a core
-      // tool, put this ternary back — it is a one-line revert.
-      opts.env = stripHostRuntimeEnv({
+      // The brain's own environment is not a source for it: every Claude
+      // process an older ADE started carried the forced "auto", so a brain
+      // launched from one of their shells inherits it (and the session env
+      // copies the brain's). A user's choice belongs in their Claude settings
+      // `env`, which the CLI reads itself.
+      const claudeQueryEnv: Record<string, string> = {
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
-        ENABLE_TOOL_SEARCH: "auto",
-      });
+      };
+      delete claudeQueryEnv.ENABLE_TOOL_SEARCH;
+      opts.env = stripHostRuntimeEnv(claudeQueryEnv);
     }
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
@@ -44523,7 +44615,19 @@ export function createAgentChatService(args: {
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
+  ): Promise<boolean> => withDirectiveDispatch(
+    managed,
+    () => deliverNextQueuedSteerInner(managed, runtime),
+  );
+
+  const deliverNextQueuedSteerInner = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
   ): Promise<boolean> => {
+    // A compaction can land before the current send has finished its delivery
+    // bookkeeping. Flush after that bookkeeping, but before composing the next
+    // queued turn, so it carries directives from the new epoch.
+    flushPendingDirectiveEpochReset(managed);
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
     // message is being built. Do not auto-deliver another row at the parent
@@ -51315,23 +51419,25 @@ export function createAgentChatService(args: {
     const personalSession = isPersonalSession(managed.session);
     const laneDirectiveKey = personalSession ? null : executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
-    // Guidance injection is capability-based, not session-state-based:
-    // Claude sessions receive lane-scoped ADE guidance in their persistent system
-    // prompt, and native Codex app-server sessions receive ADE guidance through
-    // developerInstructions/collaborationMode settings. Providers without a
-    // trusted instruction channel still need the guidance in the user prompt,
-    // including on resumed sessions where `shouldInjectLaneDirective` is false.
-    // Muse keeps the whole conversation in its own session, so the Muse runner
-    // delivers the guidance once per session (`runMuseTurn`), not per turn.
-    const providerHasPersistentGuidance = managed.session.provider === "claude"
-      || managed.session.provider === "codex"
-      || managed.session.provider === "opencode"
-      || managed.session.provider === "muse";
-    const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
-    // Droid's SDK takes no system prompt, so ADE prepends the whole harness
-    // prompt to every `sendPrompt`. That harness already carries the shared
-    // `## ADE` block, which is why the lane guidance must not repeat it here.
-    const providerRepeatsHarnessEveryTurn = managed.session.provider === "droid";
+    // Every provider ADE runs delivers its own guidance, and none of them on
+    // every turn. Claude, Codex, OpenCode, Pi and Copilot carry it in a system
+    // prompt or developer instructions. Muse, Cursor, Droid and the ACP agents
+    // have only the user turn, so their runners send it once per provider
+    // thread (`runMuseTurn`, `undeliveredLaneGuidance`). This send-path copy
+    // used to ride every turn on those providers — ~1k tokens a turn, and a
+    // second copy where the runner added its own. It remains only as a
+    // fallback for a provider no runner covers.
+    const provider = managed.session.provider;
+    const providerDeliversOwnGuidance = provider === "claude"
+      || provider === "codex"
+      || provider === "opencode"
+      || provider === "muse"
+      || provider === "pi"
+      || provider === "copilot"
+      || provider === "cursor"
+      || provider === "droid"
+      || isAcpChatProvider(provider);
+    const shouldInjectGuidance = !personalSession && !providerDeliversOwnGuidance;
     // The computer-use directive is ~2KB of static prose that used to ride
     // EVERY turn on EVERY provider, gated only on "not a personal chat" — never
     // on whether the capability set had changed since the agent was last told.
@@ -51341,13 +51447,14 @@ export function createAgentChatService(args: {
     // directive at all (there is nothing to say), so a capability that is lost
     // entirely is not revoked mid-session — the agent simply stops being told
     // it is available on the next turn that re-announces.
+    const laneScreenHostPlatform = macDesktopRuntime?.seatHostPlatform?.();
+    const laneScreenCapabilityAvailable = macDesktopRuntime?.supportsLaneDisplaySync?.() === true;
+    const laneScreenActive = macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true;
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
-          && macDesktopRuntime?.seatHostPlatform?.() !== "win32",
-        windowsDesktopAvailable: macDesktopRuntime?.supportsLaneDisplaySync?.() === true
-          && macDesktopRuntime?.seatHostPlatform?.() === "win32",
+        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform !== "win32",
+        windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -51375,6 +51482,22 @@ export function createAgentChatService(args: {
         });
     const shouldInjectAppleDeviceDirective = appleDevice != null
       && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
+    // This is the single lane-screen delivery path. It announces the private
+    // screen when the host can provide one, then changes when that screen is
+    // active so the epoch key re-announces the current state. Windows uses
+    // `ade screen`, not a Mac command.
+    const laneScreenDirective = personalSession
+      ? null
+      : buildMacDesktopDirective(
+          laneScreenCapabilityAvailable,
+          laneScreenHostPlatform,
+          laneScreenActive,
+        );
+    const laneScreenDirectiveKey = laneScreenDirective
+      ? `${laneDirectiveKey ?? "no-lane"}::${directiveTextFingerprint(laneScreenDirective)}`
+      : null;
+    const shouldInjectLaneScreenDirective = laneScreenDirectiveKey != null
+      && managed.deliveredDirectiveKeys.laneScreen !== laneScreenDirectiveKey;
     const expandedSlashCommandPrompt = providerSlashCommand && !personalSession
       ? expandAdeSlashCommand(managed, trimmed)
       : null;
@@ -51407,29 +51530,18 @@ export function createAgentChatService(args: {
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance
-            ? (providerRepeatsHarnessEveryTurn
-              // Droid's harness prompt already ends with the shared `## ADE`
-              // block and is re-sent whole on every turn, so the lane guidance
-              // delivered a second copy of it per turn. Only the session
-              // lineage lines are absent from the harness.
-              ? buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) || null
-              : buildAdeGuidanceForLane(
-                managed.laneWorktreePath,
-                managed.session,
-                spawnSelfReportOpts(managed.session),
-              ))
+            ? buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            )
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
           // Exactly one line, and only for a lane that has a screen. A lane
           // with the tool off contributes `null` here, which
           // `composeLaunchDirectives` drops — so its prompt is byte-identical
           // to the pre-Mac-Desktop one.
-          personalSession
-            ? null
-            : buildMacDesktopDirective(
-                macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true,
-                macDesktopRuntime?.seatHostPlatform?.() ?? null,
-              ),
+          shouldInjectLaneScreenDirective ? laneScreenDirective : null,
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
@@ -51480,6 +51592,7 @@ export function createAgentChatService(args: {
         : {
             ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
             ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+            ...(shouldInjectLaneScreenDirective ? { laneScreen: laneScreenDirectiveKey } : {}),
           },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
@@ -53362,9 +53475,11 @@ export function createAgentChatService(args: {
     }
     const pooled = acquired.pooled;
     const nextCursorSdkAgentId = pooled.agentId?.trim() || null;
+    let cursorThreadWasReplaced = false;
     if (forcedAgentRotation && nextCursorSdkAgentId) {
       const previousAgentId = forcedAgentRotation.previousAgentId ?? persistedCursorSdkAgentId;
       stageCursorSdkAgentRotationRecovery(managed, previousAgentId ?? "(unknown)", nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_recreated_after_forced_rotation", {
         sessionId: managed.session.id,
         previousAgentId: previousAgentId ?? null,
@@ -53372,6 +53487,7 @@ export function createAgentChatService(args: {
       });
     } else if (recoveredMissingCursorSdkAgentId && nextCursorSdkAgentId) {
       stageCursorSdkAgentRotationRecovery(managed, recoveredMissingCursorSdkAgentId, nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_recreated_after_missing_resume", {
         sessionId: managed.session.id,
         previousAgentId: recoveredMissingCursorSdkAgentId,
@@ -53383,11 +53499,15 @@ export function createAgentChatService(args: {
       && nextCursorSdkAgentId !== persistedCursorSdkAgentId
     ) {
       stageCursorSdkAgentRotationRecovery(managed, persistedCursorSdkAgentId, nextCursorSdkAgentId);
+      cursorThreadWasReplaced = true;
       logger.warn("agent_chat.cursor_sdk_agent_rotated_after_resume", {
         sessionId: managed.session.id,
         previousAgentId: persistedCursorSdkAgentId,
         nextAgentId: nextCursorSdkAgentId,
       });
+    }
+    if (cursorThreadWasReplaced) {
+      rearmDeliveredDirectiveEpochForNewThread(managed);
     }
     const rt: CursorRuntime = {
       kind: "cursor",
@@ -54098,6 +54218,7 @@ export function createAgentChatService(args: {
     // Kept so a thread recycle can restage each consumed bucket on the rotated
     // agent instead of flattening replay + continuity into one string.
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
+    let cursorLaneGuidance: string | null = null;
     try {
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
@@ -54114,20 +54235,37 @@ export function createAgentChatService(args: {
         composed = `${modeDirective}\n\n${composed}`;
       }
       const personalSession = isPersonalSession(managed.session);
-      const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
-      if (personalSession || isFirstSendForLane) {
-        const injected = personalSession
-          ? resolvePersonalPromptFor(
-            managed.session,
-            managed.laneWorktreePath,
-            buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
-          )
-          : await buildCursorSdkInjectedSystemPrompt({
-              runtime: "local",
-              laneWorktreePath: managed.laneWorktreePath,
-            });
+      if (personalSession) {
+        const injected = resolvePersonalPromptFor(
+          managed.session,
+          managed.laneWorktreePath,
+          buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
+        );
         if (injected.length) {
           composed = `${injected}\n\n${composed}`;
+        }
+      } else {
+        // Cursor's framing and ADE's `## ADE` block, once per Cursor agent
+        // (see laneGuidanceKey). The old "first send for this lane" check
+        // compared against the send's lane key, which is null on every later
+        // turn, so both rode every turn.
+        cursorLaneGuidance = undeliveredLaneGuidance(
+          managed,
+          runtime.sdkAgentId,
+          [
+            await buildCursorSdkInjectedSystemPrompt({
+              runtime: "local",
+              laneWorktreePath: managed.laneWorktreePath,
+            }),
+            buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            ),
+          ].filter((part) => part.trim().length > 0).join("\n\n"),
+        );
+        if (cursorLaneGuidance) {
+          composed = `${cursorLaneGuidance}\n\n${composed}`;
         }
       }
 
@@ -54279,6 +54417,9 @@ export function createAgentChatService(args: {
       }
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      // Here, not when the send resolves: a stale-token or transport recovery
+      // above re-sends this same prompt, framing included.
+      if (cursorLaneGuidance) markLaneGuidanceDelivered(managed, runtime.sdkAgentId, cursorLaneGuidance);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       const resultRecord = asRecord(result);
@@ -56270,16 +56411,21 @@ export function createAgentChatService(args: {
         permissionMode: managed.session.copilotPermissionMode ?? "ask",
         mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
         skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        // The system message is Copilot's persistent instruction channel, so
+        // the session lineage rides here too and no turn repeats the guidance.
         systemMessage: isPersonalSession(managed.session)
           ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
-          : buildCodingAgentSystemPrompt({
-              cwd: managed.laneWorktreePath,
-              mode: "coding",
-              permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-              interactive: true,
-              runtime: "copilot-sdk",
-              adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-            }),
+          : [
+              buildCodingAgentSystemPrompt({
+                cwd: managed.laneWorktreePath,
+                mode: "coding",
+                permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+                interactive: true,
+                runtime: "copilot-sdk",
+                adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+              }),
+              buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
+            ].filter(Boolean).join("\n\n"),
       };
       const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
       const opened = persistedSessionId
@@ -56814,6 +56960,48 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * ADE's framing for a Droid session: the harness prompt, the skills Droid
+   * cannot see itself, and the session lineage. It goes in as the session's
+   * system prompt when ADE creates the session (Droid keeps it through
+   * resume, fork and compaction), so no turn needs to carry it.
+   */
+  const buildDroidFraming = (managed: ManagedChatSession): string => {
+    const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+    const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
+    const droidActivityGuidance = buildSessionActivityGuidance(
+      managed.session,
+      droidPermissionMode !== null
+        && droidPermissionMode !== "read-only"
+        && droidPermissionMode !== "agi"
+        && droidInteractionMode !== "spec",
+    );
+    const droidHarnessPrompt = isPersonalSession(managed.session)
+      ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
+      : buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: droidInteractionMode === "spec" ? "planning" : "coding",
+          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+          interactive: true,
+          runtime: "droid-sdk",
+          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+          sessionActivityGuidance: droidActivityGuidance,
+        });
+    // Droid reads only `.factory/skills`, so the project's and the user's own
+    // skills (`.claude/skills`, `.agents/skills`) are listed for it, as they
+    // are for Claude. A personal chat has no project to list.
+    const droidSkillListing = isPersonalSession(managed.session)
+      ? []
+      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
+    return [
+      droidHarnessPrompt,
+      ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
+      ...(isPersonalSession(managed.session)
+        ? []
+        : ["", buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? ""]),
+    ].join("\n").trim();
+  };
+
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
     const launchModelId = resolveDroidRuntimeModelId(managed.session);
     const poolKey = droidPoolKeyFor(managed);
@@ -56880,6 +57068,7 @@ export function createAgentChatService(args: {
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
+        systemPromptAppend: buildDroidFraming(managed),
         droidPath: droidExecutable.path,
         workspacePath: managed.laneWorktreePath,
         sessionId: managed.session.id,
@@ -56934,6 +57123,9 @@ export function createAgentChatService(args: {
         throw new Error("Droid session closed during setup.");
       }
       managed.runtime = rt;
+      // A session this worker created carries ADE's framing as its system
+      // prompt: record it delivered for that session, so no turn repeats it.
+      if (pooled.systemPromptAppend) markLaneGuidanceDelivered(managed, pooled.sdkSessionId, pooled.systemPromptAppend);
       wireDroidSdkBridgeHandlers(managed, rt);
       await ensureDroidSessionState(managed, rt);
       persistChatState(managed);
@@ -57078,39 +57270,17 @@ export function createAgentChatService(args: {
       }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
-      const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
-      const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
-      const droidActivityGuidance = buildSessionActivityGuidance(
-        managed.session,
-        droidPermissionMode !== null
-          && droidPermissionMode !== "read-only"
-          && droidPermissionMode !== "agi"
-          && droidInteractionMode !== "spec",
-      );
-      const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
-        : buildCodingAgentSystemPrompt({
-            cwd: managed.laneWorktreePath,
-            mode: droidInteractionMode === "spec" ? "planning" : "coding",
-            permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-            interactive: true,
-            runtime: "droid-sdk",
-            adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-            sessionActivityGuidance: droidActivityGuidance,
-          });
-      // Droid reads only `.factory/skills`, so the project's and the user's
-      // own skills (`.claude/skills`, `.agents/skills`) are listed for it, as
-      // they are for Claude. A personal chat has no project to list.
-      const droidSkillListing = isPersonalSession(managed.session)
-        ? []
-        : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
-      const sdkInput = [
-        droidHarnessPrompt,
-        ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
-        "",
-        "## User Request",
-        composed,
-      ].join("\n");
+      // ADE's framing is the session's system prompt (set when ADE created
+      // it, see ensureDroidRuntime). It rides the user turn only when the
+      // session does not carry this exact text: one created by an older ADE,
+      // or one whose mode has changed since. Then it goes once per session.
+      const droidFraming = buildDroidFraming(managed);
+      const droidLaneGuidance = runtime.sdk.systemPromptAppend === droidFraming
+        ? null
+        : undeliveredLaneGuidance(managed, runtime.sdkSessionId, droidFraming);
+      const sdkInput = droidLaneGuidance
+        ? [droidLaneGuidance, "", "## User Request", composed].join("\n")
+        : composed;
       const { promptText: sdkPromptText, images } = await buildDroidWorkerPrompt(
         sdkInput,
         args.resolvedAttachments,
@@ -57127,6 +57297,7 @@ export function createAgentChatService(args: {
         pendingDispatchAck.resolve();
       }
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (droidLaneGuidance) markLaneGuidanceDelivered(managed, runtime.sdkSessionId, droidLaneGuidance);
 
       const descriptor = resolveSessionModelDescriptor(managed.session);
       const doneEvent = mapDroidSdkRunResultToDoneEvent(result, {
@@ -57235,7 +57406,12 @@ export function createAgentChatService(args: {
     }
   };
 
-  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
+  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => withDirectiveDispatch(
+    prepared.managed,
+    () => executePreparedSendMessageInner(prepared),
+  );
+
+  const executePreparedSendMessageInner = async (prepared: PreparedSendMessage): Promise<void> => {
     const {
       sessionId,
       managed,
@@ -57300,6 +57476,10 @@ export function createAgentChatService(args: {
     //
     // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
     const markEpochDirectivesDelivered = (): void => {
+      if (
+        managed.directiveDispatchGeneration !== undefined
+        && managed.directiveDispatchGeneration !== (managed.directiveEpochGeneration ?? 0)
+      ) return;
       Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
@@ -57435,7 +57615,6 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
       if (await runMuseControlCommand(managed, submittedText, { onDispatched, onBackendDispatched })) {
-        markEpochDirectivesDelivered();
         return;
       }
       await runMuseTurn(managed, {
@@ -58714,7 +58893,6 @@ export function createAgentChatService(args: {
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
         emitSteerUserRow(managed, piSteer, "inline", runtime.activeTurnId ?? undefined);
-        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
         persistChatState(managed);
         return { steerId, queued: false };
       }
@@ -58946,7 +59124,6 @@ export function createAgentChatService(args: {
           preparedSteer.onDispatched?.();
           options?.onAcceptedDispatch?.();
           emitSteerUserRow(managed, steerRow, "inline", rt.activeTurnId ?? undefined);
-          persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
           persistChatState(managed);
           return { steerId, queued: false };
         }
@@ -59052,7 +59229,6 @@ export function createAgentChatService(args: {
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
         if (deliveryMode === "inline") emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
-        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
         persistChatState(managed);
         return { steerId, queued: deliveryMode === "queue" };
       } catch (error) {

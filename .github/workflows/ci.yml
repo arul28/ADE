@@ -642,6 +642,15 @@ jobs:
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
 
+      # These suites include host-platform and PowerShell-specific prompt
+      # behavior; run them on Windows so the runtime's native platform branch
+      # is part of PR validation, not only a Linux simulation.
+      - name: Test Windows agent prompt platform contracts
+        run: cd apps/desktop && npx vitest run src/main/services/ai/tools/macDesktopPrompt.test.ts
+
+      - name: Test Windows PowerShell session-reference prompt
+        run: cd apps/desktop && npx vitest run src/main/services/chat/agentChatServiceInteractionMode.test.ts -t "activity guidance"
+
       # These path-equivalence assertions skip on Linux because case-only path
       # changes are meaningful there. Run them on Windows so the worker pools'
       # case-insensitive path reuse is exercised by a native filesystem target.

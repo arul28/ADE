@@ -510,6 +510,36 @@ Composer drafts and their scheduled sends are a separate surface: `ade drafts
 list | create | schedule | update | delete | now | show` (actions `chat.*Draft`)
 saves unsent text, arms a send for a fire time, or manages an armed one.
 
+Pick deliberately between the two. A draft send is *the user's message arriving
+later*: it lands as a real user turn in the target chat, shows in the user's
+Drafts list where they can read, edit, retime or cancel it, and only the
+machine it names delivers it. `ade drafts schedule <id> --in 2h --target
+<chatId>` (or `--new-chat --lane <laneId> --provider <p> --model <m>`); the
+target is always explicit, and `--in` avoids timezone arithmetic. A scheduled
+wake (`ade chat scheduled-work create`, or Claude's `ScheduleWakeup` /
+`CronCreate` / `/loop`) is *you doing work later*: it is not a message from the
+user and does not appear in their drafts. Never paste secrets into an unsent
+draft, and remember that a send you arm is indistinguishable from one the user
+armed.
+
+In a Claude chat, the native `ScheduleWakeup`, `CronCreate` and `/loop` are
+mirrored into ADE's durable scheduler. `durable: true` also persists Claude's
+own copy, but ADE's delivery does not depend on it. Due jobs start a new turn at
+the next turn boundary even if the chat was busy. The SDK's `CronList` is
+advisory; ADE state wins. `CronCreate` always creates a new job, so replace one
+with `CronList` + `CronDelete` first. Users pause schedules in Chat Info or
+project-wide in Settings.
+
+### MCP servers
+
+A chat keeps the MCP servers it started with; servers the user adds in
+Settings › MCP servers reach chats started or restarted after the change. An
+agent cannot add an MCP server or sign in to one. When the user asks for one
+you do not have, or one reports it needs authentication, tell them: press
+**Sign in** on its row in Settings › MCP servers if it asks for one, then
+right-click this chat in Work and choose **Restart agent session** (the
+conversation is kept), and send a message to try again.
+
 ## Other machines on the account
 
 Chats, lanes and devices on the user's other machines are reachable with

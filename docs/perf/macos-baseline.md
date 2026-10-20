@@ -175,6 +175,58 @@ benchmark. The default remains `never`, so the brain adds no poll in the normal
 idle baseline above; the enabled path moves the existing poll to the brain and
 keeps its 5-second cadence.
 
+### Agent prompt (Hello Tax)
+
+Input tokens on the first turn of a chat whose only message is `hi`, ADE versus
+the bare CLI in the same folder (this repo's lane worktree), same model, same
+provider home. ADE side: a Work chat on a dev brain with its own socket
+(`ade new chat --provider … --prompt hi`); bare side: the pinned CLI run by hand
+with stdin closed. Claude: Haiku 5.5, CLI 0.3.300, `CLAUDE_CONFIG_DIR` set to
+ADE's account home, `claude -p hi --model haiku --output-format json`, usage of
+the first assistant message in the transcript (input + cache write + cache
+read). Codex: `gpt-6-luna`, CLI 0.162.1, `codex exec --json -m gpt-6-luna hi`,
+the first `token_count` in the rollout. Mac Studio, 2026-10-20, on top of
+`0d9211fd1` (not the baseline machine). Per-section sizes came from the request
+bodies, captured through a local pass-through proxy (`ANTHROPIC_BASE_URL`).
+
+| Metric | Bare CLI | Before | Baseline | Ceiling |
+|---|---|---|---|---|
+| Claude chat, first turn (`hi`) | 30,624 | 63,575 (+32,951) | 39,369 (+8,745) | +11,000 over bare |
+| Codex chat, first turn (`hi`) | 27,716 | 32,324 (+4,608) | 30,258 (+2,542) | +3,200 over bare |
+| Computer-use block in the first message (Mac host, lane screen available) | — | 9,775 chars with the lane directive | 2,629 chars with the lane directive | — |
+
+Per-turn cost on the providers that have no instruction channel but the user
+turn, or that got ADE's guidance in both places: growth in input tokens from
+turn 1 (`hi`) to turn 2 (`ok`), read from ADE's own `done` usage. Before:
+this repo's lane on the shared home (2026-10-20). After: a throwaway
+`ADE_HOME` and scratch project (the isolation rule forbids the real one); the
+growth does not depend on the repo, and Grok's own history shows turn 2 is the
+bare `ok`. Droid (no API key here), Cursor (rate-limited), Kimi, Qwen and Muse
+(not signed in) could not be measured.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---|---|---|
+| Antigravity, turn 2 growth | +5,254 | +670 | +1,000 |
+| Grok, turn 2 growth (Grok's own per-turn reminders are ~900 of it) | +2,733 | +1,020 | +1,300 |
+| Pi, turn 2 growth | +1,593 | +56 | +200 |
+| Copilot, turn 2 growth | +818 | +44 | +200 |
+| Claude, a second new chat in the same lane: tokens written to cache | 26,384 | 0 (40,916 read) | — |
+
+Ceilings in the two tables above approved by the owner on 2026-10-20.
+
+Most of the Claude gap was `ENABLE_TOOL_SEARCH=auto`, which ADE forced on
+every query: "auto" only defers tool schemas once they pass a share of the
+context window, so every schema went inline. The bare CLI measured 30,624 with
+the variable unset or `true`, 45,010 with `false` and 48,454 with `auto`. A
+brain started from an older ADE's shell inherits the variable, so ADE now drops
+it from the query environment.
+
+Not ADE's: the `## Skills` listing Codex builds itself (~23k chars here), the
+claude.ai connector tools and `AskUserQuestion`/plan-mode tools the SDK adds in
+streaming mode, and project or user skills ADE lists for Claude (this
+machine's `~/.codex` skills were 4.9k chars). A small repo pays the same
+ADE addition on a smaller base: bare Claude in a one-file repo was 22,525.
+
 ### Desktop start-up (main process)
 
 Unpackaged build (`apps/desktop/electron.cjs` → `dist/main/main.cjs`), Electron

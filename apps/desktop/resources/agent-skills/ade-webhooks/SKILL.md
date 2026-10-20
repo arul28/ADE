@@ -1,6 +1,6 @@
 ---
 name: ade-webhooks
-description: Use this skill when someone wants an agent to run whenever something happens in another service — a GitHub issue or PR, a Stripe payment, a Linear issue, a Sentry error, a failed deploy, any app that can call a URL — or asks for a webhook, a webhook URL, a callback URL, or "run this when X happens". Covers making the URL and the automation in one `ade automations webhook create`, the signing secret (never pasted into chat), conditions, per-service paste steps, testing, reading why a delivery ran or was skipped, and keeping every run in one chat.
+description: Use this skill when an agent should run whenever something happens in another service (a GitHub issue or PR, a Stripe payment, a Sentry error, a failed deploy, any app that can call a URL), or someone asks for a webhook or callback URL. Covers `ade automations webhook create`, the signing secret, conditions, testing and delivery logs.
 ---
 
 # ADE webhooks

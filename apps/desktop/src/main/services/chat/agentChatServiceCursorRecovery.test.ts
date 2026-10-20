@@ -2327,6 +2327,17 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Inspect the mobile files tab parity work.",
       });
+      const firstPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      const laneGuidanceCount = (prompt: string): number => (prompt.match(/^## ADE$/gm) ?? []).length;
+      expect(laneGuidanceCount(firstPrompt)).toBe(1);
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep working on the same Cursor thread.",
+      });
+      const sameThreadPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(laneGuidanceCount(sameThreadPrompt)).toBe(0);
+
       const firstPooled = mockState.cursorSdkPooled;
       firstPooled.process.exitCode = 1;
       mockState.cursorSdkAgentIdForNextAcquire = "cursor-sdk-agent-2";
@@ -2355,16 +2366,27 @@ describe("createAgentChatService", () => {
       // lane execution directive must be re-emitted on the following turn
       // instead of staying suppressed by lastLaneDirectiveKey.
       expect(promptText).not.toContain("[ADE launch directive]");
+      // The replay to the rotated thread already contains the original lane
+      // guidance once; the next ordinary turn must not add another copy.
+      expect(laneGuidanceCount(promptText)).toBe(1);
       await service.runSessionTurn({
         sessionId: session.id,
         text: "Continue with the next step.",
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(laneGuidanceCount(postRotationPrompt)).toBe(0);
       expect(postRotationPrompt).toContain("[ADE launch directive]");
       // One staged replay, consumed exactly once: the rotation stage is durable,
       // so a turn that did not trigger a rotation must not replay it again.
       expect(postRotationPrompt).not.toContain("verbatim replay");
       expect(postRotationPrompt).not.toContain("Cursor SDK continuity recovery");
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue on the rotated Cursor thread.",
+      });
+      const nextRotatedPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(laneGuidanceCount(nextRotatedPrompt)).toBe(0);
     });
 
     it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {

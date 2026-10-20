@@ -1,6 +1,6 @@
 ---
 name: ade-scene
-description: Use this skill when showing something would beat describing it — status across many items, a number that changed, a comparison, a timeline, a pipeline, a distribution, ADE's own lanes, chats or PRs — or when you want the user to pick an option or fill a small form. Emit a fenced `scene` block of ordinary HTML, CSS and JS and ADE renders it as a live, interactive view inside the transcript; its buttons and forms can put a ready reply in the user's prompt box. Check it first with `ade scene preview`.
+description: Use this skill when showing beats describing (status across many items, a changed number, a comparison, a timeline, ADE's lanes, chats or PRs) or when the user should pick an option or fill a small form: emit a fenced `scene` block of HTML, CSS and JS that ADE renders live in the transcript. Check it with `ade scene preview`.
 ---
 
 # ADE scenes

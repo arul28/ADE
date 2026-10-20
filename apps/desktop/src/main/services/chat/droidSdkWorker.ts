@@ -34,6 +34,7 @@ import { settleWithin } from "../shared/utils";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
 import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
+import { cliSignInTransport } from "./droidSdkCliTransport";
 
 // Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
 ensureDroidSpawnsAreWindowless();
@@ -59,6 +60,8 @@ let session: DroidSession | null = null;
  * on every resume) would exit a mode ADE does not own.
  */
 let enteredSpecMode = false;
+/** ADE's framing this worker's session was created with, when it created it. */
+let sessionSystemPromptAppend: string | null = null;
 /**
  * The most recent settings ADE pushed. Re-applied when the source branch is
  * re-opened after a `fork()` retired its handle, so the source is not reset to
@@ -201,7 +204,7 @@ async function ensureSession(): Promise<void> {
   if (!pendingResumePromise) {
     pendingResumePromise = (async () => {
       const sdk = await getSdk();
-      const resumed = await sdk.resumeSession(resumeId, resumeSessionOptions(state));
+      const resumed = await sdk.resumeSession(resumeId, { ...resumeSessionOptions(state), ...(await cliSignInTransport(sdk, state)) });
       if (disposed || session) {
         // The worker was disposed (or another recovery already adopted a handle)
         // while this resume was in flight; discard it instead of leaking.
@@ -235,7 +238,7 @@ function loadDroidModels(): Promise<ReadonlyArray<unknown>> {
     const read = (async () => {
       if (!initState) throw new Error("Droid SDK worker is not initialized.");
       const sdk = await getSdk();
-      return await sdk.listModels({ execPath: initState.droidPath, cwd: initState.laneRoot });
+      return await sdk.listModels({ execPath: initState.droidPath, cwd: initState.laneRoot, ...(await cliSignInTransport(sdk, initState)) });
     })();
     droidModelsPromise = read;
     // A failed read is retried by the next reset instead of being cached.
@@ -300,6 +303,9 @@ function sessionOptions(
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
     ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkNodeTypes.CreateSessionOptions["mcpServers"] } : {}),
+    ...(init.systemPromptAppend?.trim()
+      ? { systemPrompt: { type: "preset" as const, preset: "droid" as const, append: init.systemPromptAppend } }
+      : {}),
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
   };
@@ -484,6 +490,7 @@ function buildReady(): DroidSdkReady {
     currentModelId: modelId.length ? modelId : null,
     availableModels: [],
     statedReasoningEffort: statedReasoningEffort(),
+    systemPromptAppend: sessionSystemPromptAppend,
   };
 }
 
@@ -597,6 +604,9 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   disposed = false;
   latestSettings = init.settings;
   pendingResumeSessionId = null;
+  // A resumed session keeps the system prompt it was created with, which this
+  // worker cannot see; only a session it creates is known to carry ADE's.
+  sessionSystemPromptAppend = null;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
   // A resumed session still carries whatever an earlier worker stated.
@@ -607,7 +617,7 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
       // 0.9.x `resumeSession` no longer accepts `cwd`: the session's persisted
       // working directory is authoritative, and the spawned CLI runs in this
       // worker's cwd (the lane root) regardless.
-      session = await sdk.resumeSession(resumeId, resumeSessionOptions(init));
+      session = await sdk.resumeSession(resumeId, { ...resumeSessionOptions(init), ...(await cliSignInTransport(sdk, init)) });
       // Deliberately NOT seeded from the mode Droid reports here. That reading
       // cannot tell a Spec this ADE entered from one the user configured in
       // ~/.factory/settings.json, and exiting the latter would be exactly the
@@ -621,12 +631,14 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         message: "Droid SDK resume failed; creating a new session.",
         detail: { resumeSessionId: resumeId, error: errorMessage(error) },
       });
-      session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+      session = await sdk.createSession({ ...sessionOptions(sdk, init, init.settings), ...(await cliSignInTransport(sdk, init)) });
+      sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
       enteredSpecMode = init.settings.interactionMode === "spec";
       recordCreatedSessionEfforts(init.settings);
     }
   } else {
-    session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+    session = await sdk.createSession({ ...sessionOptions(sdk, init, init.settings), ...(await cliSignInTransport(sdk, init)) });
+    sessionSystemPromptAppend = init.systemPromptAppend?.trim() ? init.systemPromptAppend : null;
     enteredSpecMode = init.settings.interactionMode === "spec";
     recordCreatedSessionEfforts(init.settings);
   }
@@ -749,13 +761,18 @@ async function forkSessionLocked(): Promise<{ newSessionId: string }> {
   // new chat resumes the fork id in its own worker.
   const forked = await session.fork();
   const newSessionId = typeof forked?.id === "string" ? forked.id.trim() : "";
+  await forked.close().catch(() => undefined);
   if (!newSessionId) {
+    // The SDK may already have retired the source handle even if it gave us an
+    // unusable fork result. Let the next request reopen the source rather than
+    // leaving this worker stuck on a replaced session.
+    session = null;
+    pendingResumeSessionId = sourceSessionId;
     throw new Error("Droid fork returned no session id.");
   }
-  await forked.close().catch(() => undefined);
   let resumed: DroidSession | null = null;
   try {
-    resumed = await sdk.resumeSession(sourceSessionId, resumeSessionOptions(initState));
+    resumed = await sdk.resumeSession(sourceSessionId, { ...resumeSessionOptions(initState), ...(await cliSignInTransport(sdk, initState)) });
     session = resumed;
     // Re-apply the LATEST settings, not the worker's init snapshot: the source
     // may have changed model, left Spec, or stopped stating a mode since then.

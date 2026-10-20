@@ -1,6 +1,7 @@
 ---
 name: ade-desktop
 description: Deprecated alias for ade-computer-use. Use this skill for macOS desktop app work in a lane — launching, clicking, typing, screenshotting, recording or proving an app — on the lane's private screen via `ade mac-desktop`.
+disable-model-invocation: true
 ---
 
 # Moved to ade-computer-use

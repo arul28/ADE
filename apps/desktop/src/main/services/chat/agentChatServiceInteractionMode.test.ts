@@ -106,15 +106,16 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
       const first = JSON.stringify(mockState.droidPromptCalls[0]);
 
-      // Droid's SDK takes no system prompt, so ADE prepends the whole harness
-      // prompt to every turn. That harness carries the shared ADE guidance —
-      // the note/ask mechanics included — which is why this asserts the harness
-      // was built for this turn rather than reading the block out of the
-      // payload: `buildCodingAgentSystemPrompt` is mocked to a sentinel here.
+      // Droid keeps ADE's framing on the session system prompt. The test pool
+      // reports that channel to the runtime, so the user request contains no
+      // copy of the framing in-band. Other launch directives may still apply.
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ runtime: "droid-sdk" }),
       );
-      expect(first).toContain("system prompt");
+      const sessionFraming = String(mockState.droidPooled?.systemPromptAppend ?? "");
+      expect(sessionFraming.length).toBeGreaterThan(0);
+      expect(first).not.toContain(sessionFraming);
+      expect(mockState.droidPromptCalls[0]?.promptText).toContain("first");
 
       // And the per-turn prefix must NOT carry a second copy. It used to, so
       // every Droid turn paid for the ADE block twice.
@@ -2194,7 +2195,11 @@ describe("Claude plan intent at query launch", () => {
     await vi.waitFor(() => expect(claudePrompts().length).toBeGreaterThan(0));
     const guidance = claudePrompts().at(-1)?.sessionActivityGuidance;
     if (expectGuidance) {
-      expect(guidance).toContain(`chat activity debugging --session '${session.id}'`);
+      expect(guidance).toContain(process.platform === "win32"
+        // Claude may use Git Bash or PowerShell on Windows, so keep its
+        // session reference literal until the provider shell is known.
+        ? `chat activity debugging --session '${session.id}'`
+        : `chat activity debugging --session "$ADE_CHAT_SESSION_ID"`);
     } else {
       expect(guidance).toBeNull();
     }

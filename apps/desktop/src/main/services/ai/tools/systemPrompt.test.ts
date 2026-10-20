@@ -119,12 +119,12 @@ describe("buildCodingAgentSystemPrompt", () => {
       "cursor-sdk",
       "droid-sdk",
       "opencode",
-    ] as const)("gives %s timezone-safe scheduled-work guidance", (runtime) => {
+    ] as const)("tells %s how to wake itself later and where the scheduling rules live", (runtime) => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime });
-      expect(result).toContain("scheduled-work create --in 12m");
-      expect(result).toContain("avoid timezone arithmetic");
-      expect(result).toContain("brain machine's local timezone");
-      expect(result).toContain("verify it before ending the turn");
+      expect(result).toContain("ade chat scheduled-work create");
+      expect(result).toContain("**ade-cli-control-plane**");
+      // A wake is the agent's own work; a message arriving later is a draft.
+      expect(result).toContain("ade drafts");
       expect(result).toContain('ade chat note "testing desktop auth fallback"');
       expect(result).toContain('ade chat ask "<the exact question>"');
       // Agents cannot settle; the prompt says so instead of teaching a command.
@@ -136,8 +136,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex CLI");
-      expect(result).toContain("chat.createScheduledWork");
-      expect(result).toContain("targets your own tracked agent session automatically");
+      expect(result).toContain("scheduled-work create --in 12m");
+      expect(result).toContain("targets your own session");
     });
 
     it("describes the Codex app-server runtime", () => {
@@ -145,7 +145,7 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex app-server protocol");
       expect(result).toContain("JSON-RPC");
-      expect(result).toContain("chat.createScheduledWork");
+      expect(result).toContain("scheduled-work create --in 12m");
       expect(result).toContain("next turn boundary");
     });
 
@@ -154,15 +154,10 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Claude Agent SDK stable `query()`");
       expect(result).toContain("ScheduleWakeup");
-      expect(result).toContain("CronCreate");
-      expect(result).toContain("automatically mirrored into ADE's durable scheduler");
-      expect(result).toContain("`durable: true` also persists Claude's provider copy");
-      expect(result).toContain("next turn boundary even if the chat was busy");
-      expect(result).toContain("`CronList` view is advisory; ADE state wins");
-      expect(result).toContain("CronCreate` always creates a new job");
-      expect(result).toContain("`CronList` + `CronDelete`");
-      expect(result).toContain("expire seven days after creation");
-      expect(result).toContain("project-wide in Settings");
+      expect(result).toContain("mirrored into ADE's durable scheduler");
+      expect(result).toContain("next turn boundary");
+      expect(result).toContain("`CronList` is advisory (ADE state wins)");
+      expect(result).toContain("`CronCreate` always adds a job");
       expect(result).not.toContain("unavailable in this ADE chat");
       expect(result).not.toContain("will not start a later turn by itself");
     });
@@ -305,7 +300,8 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("read the matching `ade-*` skill");
     expect(result).toContain("ADE capabilities ship as Agent Skills");
     expect(result).toContain("ade-apple");
-    expect(result).toContain("ade-ios-simulator");
+    // The deprecated alias resolves by name but is not advertised.
+    expect(result).not.toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).not.toContain("ade-orchestrator");
     expect(result).toContain("## Tool Use Rules");
