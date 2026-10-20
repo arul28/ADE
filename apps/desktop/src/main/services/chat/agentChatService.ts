@@ -11259,7 +11259,7 @@ export function createAgentChatService(args: {
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
-  ): Promise<{ config?: Record<string, unknown> }> => {
+  ): Promise<{ config: Record<string, unknown> }> => {
     const callerServers = callerMcpServersForLaunch(managed);
     const callerStrict = managed.session.strictMcpConfig === true;
     // A host policy that refuses the whole Computer Use server gets no such
@@ -41868,22 +41868,31 @@ export function createAgentChatService(args: {
     const ownThreadId = managed?.session.threadId ?? null;
     const turnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
     const threadIds = [ownThreadId, ...runtime.codexSubagentThreads.keys()].filter((id): id is string => Boolean(id));
-    if (host.detach(client, threadIds) === 0 || !threadIds.length) return true;
+    // A process that already exited holds nothing to release.
+    if (host.detach(client, threadIds) === 0 || !threadIds.length || host.isGone()) return true;
     const release = (async () => {
       if (ownThreadId && turnId) {
         await host.request("turn/interrupt", { threadId: ownThreadId, turnId }, CODEX_SHARED_RELEASE_TIMEOUT_MS)
-          .catch(() => { /* the turn already ended */ });
+          .catch((error: unknown) => {
+            // Usually the turn already ended; a timeout means the process is
+            // not answering, which the unsubscribe below then settles.
+            const detail = {
+              sessionId: managed?.session.id ?? null,
+              turnId,
+              error: error instanceof Error ? error.message : String(error),
+            };
+            if (isCodexRequestTimeoutError(error)) logger.warn("agent_chat.codex_shared_release_interrupt_failed", detail);
+            else logger.debug("agent_chat.codex_shared_release_interrupt_failed", detail);
+          });
       }
       for (const threadId of threadIds) {
         const closed = host.waitForThreadClosed(threadId, CODEX_SHARED_RELEASE_TIMEOUT_MS);
         const result = await host.request<{ status?: unknown }>("thread/unsubscribe", { threadId }, CODEX_SHARED_RELEASE_TIMEOUT_MS);
         // Only a thread this connection had loaded is unloaded (and announced).
+        // One still loaded keeps its writer lock, so the chat could not
+        // resume it on any other process: treat the process as stuck.
         if (result?.status === "unsubscribed" && !(await closed)) {
-          logger.warn("agent_chat.codex_shared_thread_unload_slow", {
-            sessionId: managed?.session.id ?? null,
-            threadId,
-            timeoutMs: CODEX_SHARED_RELEASE_TIMEOUT_MS,
-          });
+          throw new Error(`Codex did not unload thread ${threadId} within ${CODEX_SHARED_RELEASE_TIMEOUT_MS}ms.`);
         }
       }
     })().catch((error: unknown) => {
@@ -41946,9 +41955,14 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * `shared` asks for a chat's runtime on a pooled app-server (unless
+   * `ADE_CODEX_SHARED_APP_SERVER=0`); one-off callers (model list, cleanup)
+   * ask for a private process. Required, so no caller gets either by default.
+   */
   const startCodexRuntime = async (
     managed: ManagedChatSession,
-    options: { shared?: boolean } = {},
+    options: { shared: boolean },
   ): Promise<CodexRuntime> => {
     const codexDownload = chatPinnedToolDownload(managed, "codex", "Codex");
     if (codexDownload) await codexDownload;
@@ -42001,7 +42015,7 @@ export function createAgentChatService(args: {
           "item/commandExecution/outputDelta",
         ]
       : [];
-    const sharedProcess = options.shared === true && codexSharedAppServerEnabled();
+    const sharedProcess = options.shared && codexSharedAppServerEnabled();
     const processEnv = sharedProcess ? codexSharedProcessEnv(spawnEnv) : spawnEnv;
     // Personal chats run in their own scratch directory; project chats share
     // the project root (a thread's own cwd, sent with thread/start, decides
@@ -44908,7 +44922,7 @@ export function createAgentChatService(args: {
     let runtime: CodexRuntime | null = null;
 
     try {
-      runtime = await startCodexRuntime(tempSession);
+      runtime = await startCodexRuntime(tempSession, { shared: false });
       const response = await runtime.request<{ data?: Array<Record<string, unknown>> }>("model/list", {});
       const rows = Array.isArray(response?.data) ? response.data : [];
       const appServerModels = rows
@@ -50145,7 +50159,7 @@ export function createAgentChatService(args: {
         if (forkedProviderRuntime && managed.runtime === forkedProviderRuntime) {
           teardownRuntime(managed, "ended_session");
         }
-        freshRuntime = await startCodexRuntime(managed);
+        freshRuntime = await startCodexRuntime(managed, { shared: false });
         managed.runtime = freshRuntime;
         managed.runtimeInvalidated = false;
         await freshRuntime.request("thread/archive", {

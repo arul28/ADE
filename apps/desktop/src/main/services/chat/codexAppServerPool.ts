@@ -72,6 +72,8 @@ export type CodexAppServerHost = {
    */
   detach(client: CodexAppServerClient, releasedThreadIds?: readonly string[]): number;
   clientCount(): number;
+  /** True once the process has exited or failed to start. */
+  isGone(): boolean;
   /** Stops the process now; every attached chat hears the exit. */
   kill(): void;
 };
@@ -89,6 +91,7 @@ const REPLAYED_STARTUP_MAX = 16;
 /** How long a line for a thread nobody owns yet waits for its chat's thread/start to return. */
 const UNCLAIMED_THREAD_LINE_TTL_MS = 10_000;
 const UNCLAIMED_THREAD_LINE_MAX = 500;
+const ORPHANED_THREAD_UNSUBSCRIBE_TIMEOUT_MS = 10_000;
 
 export function createCodexAppServerPool(args: {
   /** Stops the process tree (SIGTERM, then SIGKILL); returns the escalation timer. */
@@ -103,7 +106,8 @@ export function createCodexAppServerPool(args: {
   const createHost = (key: string | null, proc: ChildProcessWithoutNullStreams): CodexAppServerHost => {
     const reader = readline.createInterface({ input: proc.stdout });
     const clients: CodexAppServerClient[] = [];
-    const responseRoutes = new Map<string, { owner: CodexAppServerClient | null; onResponse: (line: CodexAppServerLine) => void }>();
+    type ResponseRoute = { owner: CodexAppServerClient | null; onResponse: (line: CodexAppServerLine) => void };
+    const responseRoutes = new Map<string, ResponseRoute>();
     const replayed: CodexAppServerLine[] = [];
     const releasedThreadIds = new Set<string>();
     const closeWaiters = new Map<string, Set<(closed: boolean) => void>>();
@@ -351,16 +355,40 @@ export function createCodexAppServerPool(args: {
         const index = clients.indexOf(client);
         if (index >= 0) clients.splice(index, 1);
         for (const threadId of released) releasedThreadIds.add(threadId);
-        for (const [id, route] of [...responseRoutes]) {
-          if (route.owner === client) responseRoutes.delete(id);
+        if (clients.length === 0) {
+          for (const [id, route] of [...responseRoutes]) {
+            if (route.owner === client) responseRoutes.delete(id);
+          }
+          host.kill();
+          return 0;
         }
-        if (clients.length === 0) host.kill();
+        // A request the chat left in flight still runs here. One that loaded
+        // a thread (thread/start, resume, fork) subscribed this connection to
+        // it, and nobody else will unsubscribe it.
+        for (const route of responseRoutes.values()) {
+          if (route.owner !== client) continue;
+          route.owner = null;
+          route.onResponse = (line) => {
+            const thread = line.result && typeof line.result === "object"
+              ? (line.result as { thread?: { id?: unknown } }).thread
+              : undefined;
+            if (typeof thread?.id !== "string" || !thread.id) return;
+            releasedThreadIds.add(thread.id);
+            request("thread/unsubscribe", { threadId: thread.id }, ORPHANED_THREAD_UNSUBSCRIBE_TIMEOUT_MS).catch((error: unknown) => {
+              args.logger?.warn("agent_chat.codex_shared_orphan_unsubscribe_failed", {
+                threadId: thread.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          };
+        }
         return clients.length;
       },
       clientCount: () => clients.length,
+      isGone: () => gone,
       kill: () => {
         forgetShared();
-        if (gone && killTimer == null && proc.exitCode != null) return;
+        if (gone) return;
         try { reader.close(); } catch { /* ignore */ }
         killTimer = args.terminate(proc, killTimer);
       },
