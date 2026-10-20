@@ -326,13 +326,32 @@ async function cliSignInTransport(
   init: Pick<DroidSdkWorkerInit, "droidPath" | "laneRoot">,
 ): Promise<{ transport?: DroidSdkNodeTypes.CreateSessionOptions["transport"] }> {
   if (process.env.FACTORY_API_KEY?.trim()) return {};
+  const sdkDeps = sdk.resolveExecCoreDeps(undefined);
+  const sdkSanitizeSpawnEnv = sdkDeps.environmentResolver.sanitizeSpawnEnv.bind(sdkDeps.environmentResolver);
+  const transportDeps: DroidSdkNodeTypes.ExecCoreDeps = {
+    ...sdkDeps,
+    environmentResolver: {
+      ...sdkDeps.environmentResolver,
+      sanitizeSpawnEnv: (env) => sanitizeDroidChildEnv(sdkSanitizeSpawnEnv(env)),
+    },
+  };
   const transport = new sdk.ProcessTransport({
     droidExecPath: init.droidPath,
     cwd: init.laneRoot,
-    env: { ...process.env, FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" } as Record<string, string>,
-  });
+    // ProcessTransport merges this with its host process environment before
+    // sanitizing it. Keep only the SDK marker here; credentials are removed
+    // from the merged environment by transportDeps below.
+    env: { FACTORY_UPSTREAM_CLIENT_TYPE: "sdk" },
+  }, transportDeps);
   await transport.connect();
   return { transport };
+}
+
+/** Keep host/provider credentials out of Droid and the shell tools it launches. */
+const DROID_CHILD_CREDENTIAL_ENV_NAME = /(?:^|[_-])(?:API[_-]?KEY|ADMIN[_-]?KEY|KEY|(?:ACCESS[_-]?)?TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)(?:[_-]|$)/i;
+
+function sanitizeDroidChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !DROID_CHILD_CREDENTIAL_ENV_NAME.test(name)));
 }
 
 function resumeSessionOptions(init: DroidSdkWorkerInit): DroidSdkNodeTypes.ResumeSessionOptions {
@@ -785,10 +804,15 @@ async function forkSessionLocked(): Promise<{ newSessionId: string }> {
   // new chat resumes the fork id in its own worker.
   const forked = await session.fork();
   const newSessionId = typeof forked?.id === "string" ? forked.id.trim() : "";
+  await forked.close().catch(() => undefined);
   if (!newSessionId) {
+    // The SDK may already have retired the source handle even if it gave us an
+    // unusable fork result. Let the next request reopen the source rather than
+    // leaving this worker stuck on a replaced session.
+    session = null;
+    pendingResumeSessionId = sourceSessionId;
     throw new Error("Droid fork returned no session id.");
   }
-  await forked.close().catch(() => undefined);
   let resumed: DroidSession | null = null;
   try {
     resumed = await sdk.resumeSession(sourceSessionId, { ...resumeSessionOptions(initState), ...(await cliSignInTransport(sdk, initState)) });

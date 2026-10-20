@@ -3298,6 +3298,8 @@ type OpenCodeActiveTurn = {
   /** The model ADE asked for, to name a served-model fallback in `done`. */
   requestedModel: { providerID: string; modelID: string };
   laneDirectiveKey: string | null;
+  /** Lets async completion reject a delivery mark from before compaction. */
+  directiveEpochGeneration: number;
   /** Set once OpenCode reports the execution started; a prompt that never starts is failed. */
   executionStarted: boolean;
   /**
@@ -5076,6 +5078,14 @@ type ManagedChatSession = {
    * they arrive makes Codex re-send its whole skills block twice.
    */
   codexSkillCount?: number;
+  /** Active send/steer dispatches, so a compaction reset cannot be undone by stale post-dispatch marks. */
+  directiveDispatchDepth?: number;
+  /** Monotonic directive epoch; callbacks from a prior epoch cannot restore stale keys. */
+  directiveEpochGeneration?: number;
+  /** Epoch captured by the active send or queued-steer dispatch. */
+  directiveDispatchGeneration?: number;
+  /** A directive reset arrived during a dispatch and is applied when the outer send settles. */
+  directiveEpochResetPending?: boolean;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -8886,8 +8896,12 @@ export function buildLinearSessionDirective(
  * so hashing the text is the same as hashing the capability set — and it stays
  * correct if the prose changes, without a second list to keep in sync.
  */
+function directiveTextFingerprint(text: string): string {
+  return createHash("sha1").update(text).digest("hex").slice(0, 16);
+}
+
 export function computerUseDirectiveFingerprint(directive: string): string {
-  return createHash("sha1").update(directive).digest("hex").slice(0, 16);
+  return directiveTextFingerprint(directive);
 }
 
 export function buildComputerUseDirective(
@@ -8931,11 +8945,12 @@ export function buildComputerUseDirective(
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
   // Exactly one seat is set per host: the seat follows the platform of the
   // machine that runs this chat, not the machine the user is looking at.
-  const laneScreenLine = options.windowsDesktopAvailable
-    ? "This lane has its own Windows screen: use `ade screen` (also `ade windows-desktop`; it is not a Mac) for any Windows app — start, open, observe, then act on the handles it returns. The default seat is private; the user's main desktop needs their yes (`ade screen start --shared --reason \"…\"`), never `--allow-prompt` or `--consent` yourself."
-    : options.macDesktopAvailable
-    ? "This lane has its own macOS screen: use `ade mac-desktop` for any macOS app — `start` (viewing does not start it), `open`, `observe`, then act on the handles it returns. It never touches the user's screen or pointer. If it refuses, report it; do not fall back to the user's real screen."
-    : null;
+  let laneScreenLine: string | null = null;
+  if (options.windowsDesktopAvailable) {
+    laneScreenLine = "This lane has its own Windows screen: use `ade screen` (also `ade windows-desktop`; it is not a Mac) for any Windows app — start, open, observe, then act on the handles it returns. The default seat is private; the user's main desktop needs their yes (`ade screen start --shared --reason \"…\"`), never `--allow-prompt` or `--consent` yourself.";
+  } else if (options.macDesktopAvailable) {
+    laneScreenLine = "This lane has its own macOS screen: use `ade mac-desktop` for any macOS app — `start` (viewing does not start it), `open`, `observe`, then act on the handles it returns. It never touches the user's screen or pointer. If it refuses, report it; do not fall back to the user's real screen.";
+  }
 
   // --- Header (always when we have any capability) ---
   sections.push(
@@ -9894,16 +9909,15 @@ function buildSpawnSelfReportGuidance(
 function buildAdeSessionLineageGuidance(
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
   opts?: SpawnSelfReportGuidanceOpts,
-  /**
-   * Point at `ADE_CHAT_SESSION_ID` instead of spelling the id. Only for a
-   * provider process that belongs to this one session (the Claude SDK query):
-   * a prompt with no per-chat value lets a new chat reuse the prompt cache.
-   */
-  sessionIdFromEnvironment = false,
+  options: {
+    /** Keep the session id out of this session-specific provider prompt cache. */
+    sessionIdFromEnvironment?: boolean;
+  } = {},
 ): string | null {
   if (!session) return null;
-  const sessionBinding = sessionIdFromEnvironment
-    ? "This ADE chat session's id is in `$ADE_CHAT_SESSION_ID`; pass it as `--session` to its status commands."
+  const sessionEnvironmentReference = process.platform === "win32" ? "$env:ADE_CHAT_SESSION_ID" : "$ADE_CHAT_SESSION_ID";
+  const sessionBinding = options.sessionIdFromEnvironment === true
+    ? `This ADE chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
     : `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
   const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
@@ -27220,7 +27234,13 @@ export function createAgentChatService(args: {
   const persistDeliveredLaneDirectiveKey = (
     managed: ManagedChatSession,
     laneDirectiveKey?: string | null,
+    dispatchGeneration?: number,
   ): void => {
+    const expectedGeneration = dispatchGeneration ?? managed.directiveDispatchGeneration;
+    if (
+      expectedGeneration !== undefined
+      && expectedGeneration !== (managed.directiveEpochGeneration ?? 0)
+    ) return;
     if (!laneDirectiveKey || managed.lastLaneDirectiveKey === laneDirectiveKey) return;
     managed.lastLaneDirectiveKey = laneDirectiveKey;
     persistChatState(managed);
@@ -27235,7 +27255,7 @@ export function createAgentChatService(args: {
    * and again only when the thread or the text changes.
    */
   const laneGuidanceKey = (threadId: string | null | undefined, text: string): string =>
-    `${threadId?.trim() || "pending"}::${computerUseDirectiveFingerprint(text.trim())}`;
+    `${threadId?.trim() || "pending"}::${directiveTextFingerprint(text.trim())}`;
 
   const undeliveredLaneGuidance = (
     managed: ManagedChatSession,
@@ -27253,6 +27273,10 @@ export function createAgentChatService(args: {
     threadId: string | null | undefined,
     text: string,
   ): void => {
+    if (
+      managed.directiveDispatchGeneration !== undefined
+      && managed.directiveDispatchGeneration !== (managed.directiveEpochGeneration ?? 0)
+    ) return;
     const key = laneGuidanceKey(threadId, text);
     if (managed.deliveredDirectiveKeys.laneGuidance === key) return;
     managed.deliveredDirectiveKeys.laneGuidance = key;
@@ -27261,15 +27285,52 @@ export function createAgentChatService(args: {
 
   /**
    * Forget what this session's provider threads have been told, so a
-   * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. The lane, computer-use and Apple-device directives are epoch-scoped
-   * and would otherwise be suppressed for the new thread by a key the old one
-   * set.
+   * replacement runtime (model switch, thread recycle, resume) or a compacted
+   * conversation is re-announced to. The lane, computer-use and Apple-device
+   * directives are epoch-scoped and would otherwise be suppressed by a key
+   * from the previous thread or context.
    */
-  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
+  const resetDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
     managed.deliveredDirectiveKeys = {};
     persistChatState(managed);
+  };
+
+  const flushPendingDirectiveEpochReset = (managed: ManagedChatSession): void => {
+    if (!managed.directiveEpochResetPending) return;
+    managed.directiveEpochResetPending = false;
+    resetDeliveredDirectiveEpoch(managed);
+  };
+
+  const withDirectiveDispatch = async <T>(
+    managed: ManagedChatSession,
+    dispatch: () => Promise<T>,
+  ): Promise<T> => {
+    const previousDispatchGeneration = managed.directiveDispatchGeneration;
+    managed.directiveDispatchDepth = (managed.directiveDispatchDepth ?? 0) + 1;
+    managed.directiveDispatchGeneration = managed.directiveEpochGeneration ?? 0;
+    try {
+      return await dispatch();
+    } finally {
+      managed.directiveDispatchDepth = Math.max(0, (managed.directiveDispatchDepth ?? 1) - 1);
+      managed.directiveDispatchGeneration = previousDispatchGeneration;
+      if (managed.directiveDispatchDepth === 0 && managed.directiveEpochResetPending) {
+        flushPendingDirectiveEpochReset(managed);
+      }
+    }
+  };
+
+  const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
+    managed.directiveEpochGeneration = (managed.directiveEpochGeneration ?? 0) + 1;
+    // Provider completion can report compaction before the dispatch promise
+    // resolves. Advancing the generation makes that dispatch's later marks
+    // stale; defer clearing until its bookkeeping settles, with queued steers
+    // flushing the reset before they compose their next prompt.
+    if ((managed.directiveDispatchDepth ?? 0) > 0) {
+      managed.directiveEpochResetPending = true;
+      return;
+    }
+    resetDeliveredDirectiveEpoch(managed);
   };
 
   const sendCodexMessage = async (
@@ -27330,7 +27391,6 @@ export function createAgentChatService(args: {
     };
     const completeCodexGoalControl = (message?: string, noticeKind: "info" | "error" = "info") => {
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       if (message) {
         emitCodexGoalNotice(message, noticeKind);
       }
@@ -27613,7 +27673,6 @@ export function createAgentChatService(args: {
     ) => {
       const slashTurnId = randomUUID();
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       markSessionIdleWithFreshCache(managed);
       emitBeforeComplete?.(slashTurnId);
       if (message) {
@@ -27712,7 +27771,6 @@ export function createAgentChatService(args: {
         throw error;
       }
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.awaitingTurnStart = false;
@@ -27734,7 +27792,6 @@ export function createAgentChatService(args: {
       if (!codexServerSupportsUserShell(runtime.serverVersion)) {
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
@@ -27756,7 +27813,6 @@ export function createAgentChatService(args: {
         });
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "user_message",
             text: displayText || userText,
@@ -27783,7 +27839,6 @@ export function createAgentChatService(args: {
         runtime.awaitingTurnStart = false;
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
@@ -27797,7 +27852,6 @@ export function createAgentChatService(args: {
         return;
       }
       markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       persistChatState(managed);
       return;
     }
@@ -27807,7 +27861,6 @@ export function createAgentChatService(args: {
       const finishMemory = (message?: string) => {
         if (skipTurnStartForActiveComposerCommand) {
           markDispatched();
-          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
           if (message) {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -35585,6 +35638,7 @@ export function createAgentChatService(args: {
       startedAt: Date.now(),
       requestedModel: args.requestedModel ?? { providerID: model.providerID, modelID: model.id },
       laneDirectiveKey: args.laneDirectiveKey ?? null,
+      directiveEpochGeneration: managed.directiveDispatchGeneration ?? managed.directiveEpochGeneration ?? 0,
       executionStarted: args.origin === "opencode",
       admittedAt: args.origin === "opencode" ? Date.now() : null,
       settled,
@@ -35651,7 +35705,7 @@ export function createAgentChatService(args: {
     const doneCost = turnCostUsd !== undefined ? { costUsd: turnCostUsd, costSource: "provider" as const } : {};
 
     if (outcome.status === "completed") {
-      persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey);
+      persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey, turn.directiveEpochGeneration);
       emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
       const served = turn.mapper.servedModel();
       const servedModel = resolveOpenCodeServedModel(turn.requestedModel, served);
@@ -43868,7 +43922,9 @@ export function createAgentChatService(args: {
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
-          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session), claudeSessionIdFromEnvironment) ?? "",
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session), {
+            sessionIdFromEnvironment: claudeSessionIdFromEnvironment,
+          }) ?? "",
         ].join("\n"),
       };
       // An assistant chat loads the user's own layer (their CLAUDE.md, MCP
@@ -44551,7 +44607,19 @@ export function createAgentChatService(args: {
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
+  ): Promise<boolean> => withDirectiveDispatch(
+    managed,
+    () => deliverNextQueuedSteerInner(managed, runtime),
+  );
+
+  const deliverNextQueuedSteerInner = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
   ): Promise<boolean> => {
+    // A compaction can land before the current send has finished its delivery
+    // bookkeeping. Flush after that bookkeeping, but before composing the next
+    // queued turn, so it carries directives from the new epoch.
+    flushPendingDirectiveEpochReset(managed);
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
     // message is being built. Do not auto-deliver another row at the parent
@@ -51417,7 +51485,7 @@ export function createAgentChatService(args: {
           macDesktopRuntime?.seatHostPlatform?.(),
         );
     const laneScreenDirectiveKey = laneScreenDirective
-      ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(laneScreenDirective)}`
+      ? `${laneDirectiveKey ?? "no-lane"}::${directiveTextFingerprint(laneScreenDirective)}`
       : null;
     const shouldInjectLaneScreenDirective = laneScreenDirectiveKey != null
       && managed.deliveredDirectiveKeys.laneScreen !== laneScreenDirectiveKey;
@@ -57322,7 +57390,12 @@ export function createAgentChatService(args: {
     }
   };
 
-  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
+  const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => withDirectiveDispatch(
+    prepared.managed,
+    () => executePreparedSendMessageInner(prepared),
+  );
+
+  const executePreparedSendMessageInner = async (prepared: PreparedSendMessage): Promise<void> => {
     const {
       sessionId,
       managed,
@@ -57387,6 +57460,10 @@ export function createAgentChatService(args: {
     //
     // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
     const markEpochDirectivesDelivered = (): void => {
+      if (
+        managed.directiveDispatchGeneration !== undefined
+        && managed.directiveDispatchGeneration !== (managed.directiveEpochGeneration ?? 0)
+      ) return;
       Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
@@ -57522,7 +57599,6 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
       if (await runMuseControlCommand(managed, submittedText, { onDispatched, onBackendDispatched })) {
-        markEpochDirectivesDelivered();
         return;
       }
       await runMuseTurn(managed, {
@@ -58801,7 +58877,6 @@ export function createAgentChatService(args: {
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
         emitSteerUserRow(managed, piSteer, "inline", runtime.activeTurnId ?? undefined);
-        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
         persistChatState(managed);
         return { steerId, queued: false };
       }
@@ -59033,7 +59108,6 @@ export function createAgentChatService(args: {
           preparedSteer.onDispatched?.();
           options?.onAcceptedDispatch?.();
           emitSteerUserRow(managed, steerRow, "inline", rt.activeTurnId ?? undefined);
-          persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
           persistChatState(managed);
           return { steerId, queued: false };
         }
@@ -59139,7 +59213,6 @@ export function createAgentChatService(args: {
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
         if (deliveryMode === "inline") emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
-        persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
         persistChatState(managed);
         return { steerId, queued: deliveryMode === "queue" };
       } catch (error) {

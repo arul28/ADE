@@ -556,7 +556,7 @@ async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
     return "key";
   }
 
-  const settingsPath = path.join(homedir(), ".factory", "settings.json");
+  const settingsPath = path.join(factoryConfigHome(), "settings.json");
   try {
     const raw = await readFile(settingsPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
