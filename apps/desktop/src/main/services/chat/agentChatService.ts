@@ -70211,20 +70211,37 @@ export function createAgentChatService(args: {
         }
         return;
       }
-      await messageSession({
-        sessionId: schedule.sessionId,
-        text: schedule.prompt,
-        kind: "wake",
-        metadata: {
-          scheduledWake: {
-            scheduleId: schedule.id,
-            kind: schedule.kind,
-            firedAt,
-            reason: schedule.reason ?? schedule.prompt,
-            ...(context.late ? { late: true } : {}),
+      // The send runs with `awaitDispatch: false`, so a throw here is a refusal
+      // before any turn started (provider signed out, pending input, a full
+      // queue): nothing was delivered, and no turn exists to settle the row
+      // later. It used to stay "fired" forever. Close it with the reason; a
+      // retry would only hit the same refusal.
+      try {
+        await messageSession({
+          sessionId: schedule.sessionId,
+          text: schedule.prompt,
+          kind: "wake",
+          metadata: {
+            scheduledWake: {
+              scheduleId: schedule.id,
+              kind: schedule.kind,
+              firedAt,
+              reason: schedule.reason ?? schedule.prompt,
+              ...(context.late ? { late: true } : {}),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        // The owner brain fires it at its own boundary: give the claim back.
+        if (error instanceof ChatRuntimeOwnedElsewhereError) return { retry: true };
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn("agent_chat.scheduled_wake_refused", {
+          sessionId: schedule.sessionId,
+          scheduleId: schedule.id,
+          error: reason,
+        });
+        return { complete: true, outcomeSummary: `Not delivered: ${reason}` };
+      }
     },
     onTransition: async (schedule, status) => {
       if (schedule.id.startsWith("cron-tool:")) {
