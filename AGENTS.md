@@ -41,6 +41,10 @@ sync is ON), and never hand-start `ade serve`. The dev app does not connect to
 the user's other machines unless someone presses Connect in it; never press
 Connect or Disconnect for a paired machine in a dev app unless the task is
 remote machines, because that takes the machine from the user's installed ADE.
+Close the app before you edit its main-process, preload or shared code, and
+reopen it when you need to look again: each such save rebuilds main and
+relaunches the window, which jumps to the front over whatever the user is
+doing. Renderer-only edits hot-reload in place.
 When you finish, stop the app's process group and confirm its brain exited.
 Use Node 22 (`node -v`; an older `node` first on PATH fails the CLI build on
 `node:sqlite`). The full rules, and why each one exists:

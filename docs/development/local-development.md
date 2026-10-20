@@ -111,6 +111,18 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
   afterwards. Do not press Disconnect in a dev app either; it saves
   "don't auto-connect" to the shared machine list, which the installed app
   reads too. `ADE_DEV_REMOTE_AUTOCONNECT=1` restores auto-connect on purpose.
+- **Close the app before you edit its main-process code, and reopen it when
+  you need it.** `apps/desktop/scripts/dev.cjs` watches the main build (`tsup
+  --watch` over `src/main`, the preload and the `src/shared` code they import)
+  and relaunches Electron after every successful rebuild, and each relaunch
+  brings the window to the front, over whatever the human is doing.
+  Renderer-only edits go through Vite and hot-reload in place, with no
+  relaunch. So once you have looked at what you needed, stop the dev app's
+  process group before your next batch of such edits, and start it again only
+  when you are ready to look at the result. If you did not change brain code
+  and your dev brain is still running,
+  `npm run dev:desktop:attach -- --socket <your socket>` reopens just the
+  window. Never leave the app open while you edit main-process code.
 - **Stop what you started, brain included.** Stop the dev app's process group
   (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
   `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;
