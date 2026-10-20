@@ -709,6 +709,7 @@ export type FormatterId =
   | "usage-prices"
   | "router-efficiency"
   | "router-shadow"
+  | "models-catalog"
   | "update-status"
   | "notify"
   | "remote-mcp";
@@ -1234,6 +1235,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
         | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
+    $ ade models catalog                            Every model you can run, with its full registry profile and billing
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | rename | default
@@ -3595,6 +3597,24 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
   reads a local registry snapshot instead of the account directory.
+`,
+  models: `${ADE_BANNER}
+  Your model catalogue
+
+  Every model this machine can run (the models each harness lists), joined
+  with its model registry profile: Intelligence Index and every per-eval
+  score, domain and personality indices, modalities, license, speed, list
+  prices, Coding Agent Index rows and linked speech leaderboard rows. Each
+  model says how you reach it: the harness, and who bills it (a plan, a
+  metered channel, or free). Read-only: it starts nothing. Registry data is
+  based on Artificial Analysis (artificialanalysis.ai).
+
+    $ ade models catalog --text                     One line per model, best Intelligence Index first
+    $ ade models catalog --provider opencode --text One harness
+    $ ade models catalog                            Full profiles as JSON
+
+  Env: ADE_MODEL_REGISTRY_FILE=<path> reads a local registry snapshot instead
+  of the account directory.
 `,
   archive: `${ADE_BANNER}
   Archived lanes, chats, and shells
@@ -17356,6 +17376,18 @@ function buildRouterPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown router command '${sub}'. Use routes, pick, shadow, efficiency, or refresh.`);
 }
 
+function buildModelsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "catalog";
+  if (sub !== "catalog" && sub !== "list") throw new CliUsageError(`Unknown models command '${sub}'. Use catalog.`);
+  const provider = readValue(args, ["--provider"]);
+  return {
+    kind: "execute",
+    label: "models catalog",
+    formatter: "models-catalog",
+    steps: [actionStep("result", "usage", "getModelCatalog", provider ? { provider } : {})],
+  };
+}
+
 function buildUsagePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "snapshot";
   if (sub === "actions")
@@ -20579,6 +20611,7 @@ function buildCliPlan(
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "router") return buildRouterPlan(args);
+  if (primary === "models") return buildModelsPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
   if (primary === "health") return buildHealthPlan(args);
@@ -28376,6 +28409,70 @@ function formatRouterEfficiency(value: unknown): string {
  * would have picked. The source counts say how each fact was known, so a
  * guessed effort or kind shows up instead of hiding in the picks.
  */
+function formatModelsCatalog(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const catalog = isRecord(result.catalog) ? result.catalog : {};
+  const registry = isRecord(result.registry) ? result.registry : {};
+  const models = Array.isArray(catalog.models) ? catalog.models.filter(isRecord) : [];
+  const fixed = (input: unknown, digits: number): string =>
+    typeof input === "number" && Number.isFinite(input) ? input.toFixed(digits) : "";
+  const billing = (input: unknown): string => {
+    if (!isRecord(input)) return "";
+    if (input.kind === "plan") return `plan ${String(input.plan ?? "")}`;
+    if (input.kind === "metered") return `metered ${String(input.channel ?? "")}`;
+    return String(input.kind ?? "");
+  };
+  const rows = models.map((entry) => {
+    const profile = isRecord(entry.profile) ? entry.profile : {};
+    const price = isRecord(profile.price) ? profile.price : {};
+    const modalities = isRecord(profile.modalities) ? profile.modalities : null;
+    const io = modalities
+      ? `${(Array.isArray(modalities.input) ? modalities.input : []).join("+")} → ${(Array.isArray(modalities.output) ? modalities.output : []).join("+")}`
+      : "";
+    const evals = isRecord(profile.evals) ? Object.keys(profile.evals).length : 0;
+    const efforts = Array.isArray(entry.efforts)
+      ? entry.efforts.filter(isRecord).map((effort) => `${String(effort.effort ?? "-")}${effort.isDefault ? "*" : ""}`).join(" ")
+      : "";
+    return [
+      String(entry.harness ?? ""),
+      String(entry.modelId ?? ""),
+      billing(entry.billing),
+      String(profile.slug ?? "—"),
+      fixed(profile.intelligenceIndex, 1),
+      String(evals || ""),
+      io,
+      fixed(profile.outputTokensPerSecond, 0),
+      price.input != null || price.output != null ? `${fixed(price.input, 2)}/${fixed(price.output, 2)}` : "",
+      efforts,
+      String(profile.profile ?? ""),
+    ];
+  });
+  const sources = isRecord(catalog.sources) ? catalog.sources : {};
+  const sourceLine = Object.entries(sources)
+    .filter(([, status]) => isRecord(status))
+    .map(([name, status]) => {
+      const entry = status as Record<string, unknown>;
+      return `${name} ${entry.ok ? "ok" : `failed (${String(entry.error ?? "")})`}`;
+    })
+    .join(", ");
+  return [
+    renderKeyValues("Your model catalogue", [
+      ["models", `${models.length} (${Number(catalog.unmatched ?? 0)} without a registry profile)`],
+      ["registry", `${String(catalog.generatedAt ?? "none")} (${String(registry.source ?? "")})`],
+      ["sources", sourceLine],
+    ]),
+    "",
+    renderTable(
+      ["harness", "model", "billing", "registry variant", "index", "evals", "modalities", "tok/s", "$/M in/out", "efforts (*default)", "data"],
+      rows,
+      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      { fullColumns: ["model", "registry variant"] },
+    ),
+    "",
+    String(catalog.attribution ?? ""),
+  ].join("\n");
+}
+
 function formatRouterShadow(value: unknown): string {
   const summary = isRecord(value) ? value : {};
   const num = (input: unknown): number => (typeof input === "number" && Number.isFinite(input) ? input : 0);
@@ -32662,6 +32759,8 @@ function formatTextOutput(
       return formatRouterEfficiency(value);
     case "router-shadow":
       return formatRouterShadow(value);
+    case "models-catalog":
+      return formatModelsCatalog(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":

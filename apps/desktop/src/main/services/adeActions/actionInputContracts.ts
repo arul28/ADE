@@ -282,6 +282,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\", limit?: number }",
       example: "ade router routes --provider claude --text",
     },
+    getModelCatalog: {
+      description:
+        "List every model this machine can run with its full model registry profile: Intelligence Index and every per-eval score, domain and personality indices, modalities, license, speed, list prices, Coding Agent Index rows and linked speech leaderboard rows, plus the harness and who bills it (plan, metered, free). Registry data is based on Artificial Analysis (artificialanalysis.ai).",
+      input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\" }",
+      example: "ade models catalog --text",
+    },
     previewModelRoute: {
       description:
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",

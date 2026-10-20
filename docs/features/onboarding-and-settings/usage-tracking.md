@@ -857,6 +857,23 @@ throws into the chat. Read it with `ade router shadow --days 7` (action
 task with `ade router pick`, and force a fetch with `ade router refresh`.
 `ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
 
+**Your model catalogue.** `ade models catalog` (action `usage.getModelCatalog`,
+read-only, like the other usage reads it runs on the machine the CLI targets)
+lists every model this machine can run, one entry per harness × model, from the
+same model lists and the same registry mapping as the routes (`modelCatalog.ts`
+groups `buildModelRoutes`). Each entry says how the user reaches the model (the
+harness, and `plan`, `metered` with its channel, or `free`), its channel price,
+each effort level with the variant it rates from, and the full registry profile
+of the level it runs at by default (its default effort, else `high`): the
+Intelligence Index and every per-eval score, domain and personality indices,
+modalities, license, speed, list prices. Facts every level of a release shares
+(modalities, license, parameters, knowledge cutoff) come from another variant of
+the family when the default one's data lacks them. It also lists the Coding
+Agent Index rows and the speech leaderboard rows linked to the model's variants.
+A model the registry has no family for is listed with a null profile. `--text`
+prints one line per model with `MODEL_REGISTRY_AA_ATTRIBUTION`; without it the
+full profiles come back as JSON. It starts nothing and changes no routing.
+
 `ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
 the router would have saved. It reads the turn ledger, so the history starts on day
 one, not the day the router shipped. Each chat thread is one series of turns. The

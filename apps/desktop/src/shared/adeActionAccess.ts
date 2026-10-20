@@ -401,7 +401,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   usage: {
     read: [
-      "getAdeUsageStats", "getCostBreakdown", "getModelDetail", "getModelPriceOverrides",
+      "getAdeUsageStats", "getCostBreakdown", "getModelCatalog", "getModelDetail", "getModelPriceOverrides",
       "getModelRoutes", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
       "getUsageSnapshot",
     ],

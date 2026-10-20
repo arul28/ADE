@@ -52,7 +52,7 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "built-in-browser", "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "coord",
   "coordinator", "create", "cursor", "desk", "diff", "diffs", "disk", "doctor", "drafts", "electron", "file",
   "files", "gh", "git", "github", "harness", "harnesses", "health", "help", "history", "init", "ios", "ios-sim",
-  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "new",
+  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "models", "new",
   "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider", "providers",
   "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen", "search",
   "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill", "skills",
@@ -111,6 +111,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["providers", new Set(["actions"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
+  ["models", new Set(["catalog"])],
   ["proxy", new Set(["status"])],
   ["actions", new Set(["list"])],
 ]);

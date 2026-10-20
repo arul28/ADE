@@ -1074,6 +1074,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "forceRefresh",
     "getAdeUsageStats",
     "getCostBreakdown",
+    "getModelCatalog",
     "getModelDetail",
     "getModelPriceOverrides",
     "getModelRoutes",
