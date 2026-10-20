@@ -226,7 +226,8 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     const { facts, turnId, provider } = args;
     const { sessionId } = facts;
     const startedAt = Date.now();
-    const jev = await askJev(facts, args.replyText);
+    // Without a Jev helper the cheap model starts at once, exactly as before.
+    const jev = deps.decide ? await askJev(facts, args.replyText) : null;
     let asksUser: boolean | null = args.unsure ? jev?.asksUser ?? null : false;
     let decidedBy: "jev" | "model" = "jev";
     if (asksUser === null && provider) {

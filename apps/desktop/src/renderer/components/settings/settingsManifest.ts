@@ -922,7 +922,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Scheduled work",
   },
   {
-    id: "agents.smart-decisions",
+    id: "notifications.smart-decisions",
     label: "Smart decisions (OpenCode Jev)",
     keywords: ["jev", "opencode", "zen", "turn end", "question", "classifier"],
     tab: "notifications",
