@@ -61324,8 +61324,8 @@ export function createAgentChatService(args: {
       restoreDirectives();
       return { ok: false as const, mode: args.mode, reason: "recovery_failed" as const };
     };
-    clearDeliveredDirectiveEpoch(managed);
     const capsule = buildContinuityCapsule(managed);
+    clearDeliveredDirectiveEpoch(managed);
     let preparedCapsule: PreparedSendMessage | null;
     try {
       preparedCapsule = prepareSendMessage({
@@ -61352,7 +61352,10 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
+      const runtime = await ensureCodexSessionRuntime(managed).catch((error: unknown) => {
+        restoreDirectives();
+        throw error;
+      });
       if (runtime.activeTurnId || managed.session.status === "active") {
         return failKeepingDirectives();
       }
@@ -61412,7 +61415,13 @@ export function createAgentChatService(args: {
       return { ok: true, mode: args.mode, threadId: reconstructedThreadId, capsulePreview: capsule };
     }
     if (managed.session.provider === "claude") {
-      const runtime = ensureClaudeSessionRuntime(managed);
+      let runtime: ClaudeRuntime;
+      try {
+        runtime = ensureClaudeSessionRuntime(managed);
+      } catch (error) {
+        restoreDirectives();
+        throw error;
+      }
       let dispatched = false;
       // Once the reset drops the old session id, that thread is gone and the
       // reset has already forgotten its directives; nothing to put back.
