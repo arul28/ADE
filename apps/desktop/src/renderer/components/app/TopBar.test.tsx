@@ -1253,6 +1253,64 @@ describe("TopBar", () => {
     expect(indicator.getAttribute("title")).toContain("selected chats and terminals stay full speed");
   });
 
+  it("samples calmly less often, speeds up under load, and resumes after a failed sample", async () => {
+    vi.useFakeTimers();
+    try {
+      const calmUsage = {
+        sampledAt: "2026-04-22T00:00:00.000Z",
+        processCount: 2,
+        cpuPercent: 1,
+        mainCpuPercent: 0.5,
+        rendererCpuPercent: 0.5,
+        memoryMB: 240,
+        mainMemoryMB: 80,
+        rendererMemoryMB: 160,
+        activePtyCount: 0,
+        ptyProcessCount: 0,
+        ptyCpuPercent: 0,
+        ptyMemoryMB: 0,
+        freeMemoryMB: 12_000,
+        totalMemoryMB: 16_000,
+      };
+      const loadedUsage = { ...calmUsage, cpuPercent: 94 };
+      resourceUsageMock
+        .mockRejectedValueOnce(new Error("temporary sample failure"))
+        .mockResolvedValueOnce(calmUsage)
+        .mockResolvedValue(loadedUsage);
+
+      render(<TopBar />);
+      await act(async () => {
+        await flushMicrotasks(3);
+      });
+      expect(resourceUsageMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+        await flushMicrotasks(3);
+      });
+      expect(resourceUsageMock).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+        await flushMicrotasks(3);
+      });
+      expect(resourceUsageMock).toHaveBeenCalledTimes(3);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_999);
+        await flushMicrotasks(3);
+      });
+      expect(resourceUsageMock).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await flushMicrotasks(3);
+      });
+      expect(resourceUsageMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces role attribution and staleness on the pressure indicator without mislabeling", async () => {
     useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
     resourceUsageMock.mockResolvedValue({
