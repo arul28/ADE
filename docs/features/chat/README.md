@@ -3926,7 +3926,8 @@ declares no kinds.
   15 s cleanup tick).** The count caps bound these caches per project, not
   over time. A chat quiet for 10 minutes drops its ring once every event in it
   is on disk; after any failed transcript append the ring is the only copy of
-  those events and stays for the life of the process. Parsed transcript
+  those events, so the idle release skips it (the count and size caps still
+  apply). Parsed transcript
   windows are dropped when no history read (`readTranscriptEnvelopesForSessionIdAsync`)
   used them for 10 minutes. Picking a transcript path also parses a window,
   and the stale-run sweep does that for every chat every 10 minutes, so path

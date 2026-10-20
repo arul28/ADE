@@ -907,7 +907,11 @@ describe("createAgentChatService", () => {
         })).resolves.toBeUndefined();
         expect(service.residentChatEventHistorySessionCount()).toBe(2);
 
-        installRealTranscriptParser();
+        // History after the release comes from disk, so read it with the real parser.
+        const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>(
+          "../../../shared/chatTranscript",
+        );
+        vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
         await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
 
         expect(service.residentChatEventHistorySessionCount()).toBe(1);
