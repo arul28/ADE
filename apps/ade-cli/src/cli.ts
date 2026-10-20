@@ -31893,7 +31893,9 @@ function formatProjectsList(value: unknown): string {
       project.projectId,
       project.displayName,
       project.rootPath,
-      project.catalogVisibility === "system" ? "system" : "recent",
+      // A folder that is gone is listed, not dropped: it may be on a drive that
+      // isn't plugged in. Saying so lets the person remove a stale copy.
+      `${project.catalogVisibility === "system" ? "system" : "recent"}${project.exists === false ? ", folder missing" : ""}`,
       project.gitOriginUrl,
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()

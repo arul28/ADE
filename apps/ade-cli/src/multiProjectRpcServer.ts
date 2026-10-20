@@ -904,6 +904,42 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
   }));
 }
 
+/** Stats past this are left unknown, so a hung network mount can't stall the list. */
+const LIST_FOLDER_CHECK_BUDGET_MS = 250;
+
+/**
+ * Whether each project's folder is on this machine, by index: `false` when it
+ * is gone, `undefined` when the check failed for another reason (no permission)
+ * or ran out of time. Another machine choosing between several checkouts of a
+ * repository uses it to skip a deleted copy. Async stats on the thread pool,
+ * all at once, under one deadline: nothing blocks the event loop.
+ */
+async function readProjectFolderPresence(
+  records: readonly { rootPath: string }[],
+  budgetMs = LIST_FOLDER_CHECK_BUDGET_MS,
+): Promise<Array<boolean | undefined>> {
+  const presence = new Array<boolean | undefined>(records.length).fill(undefined);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const checks = Promise.all(records.map((record, index) =>
+    fs.promises.stat(record.rootPath).then(
+      (stat) => { presence[index] = stat.isDirectory(); },
+      (error: NodeJS.ErrnoException) => {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") presence[index] = false;
+      },
+    )));
+  await Promise.race([
+    checks,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, budgetMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  // A copy, so a stat that lands after the deadline can't change an answer
+  // that was already sent.
+  return [...presence];
+}
+
 function defaultParentDir(projectRegistry: ProjectRegistry): string {
   const first = projectRegistry.list()[0]?.rootPath;
   if (first) return path.dirname(first);
@@ -2813,7 +2849,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      return await decorateProjectListWithIcons(projectRegistry.list());
+      const records = projectRegistry.list();
+      const [decorated, presence] = await Promise.all([
+        decorateProjectListWithIcons(records),
+        readProjectFolderPresence(records),
+      ]);
+      // Additive: older callers ignore `exists`, and an unknown answer is left out.
+      return decorated.map((record, index) =>
+        presence[index] === undefined ? record : { ...record, exists: presence[index] });
     }
 
     if (method === "projects.add") {

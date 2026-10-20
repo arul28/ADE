@@ -1219,6 +1219,7 @@ import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
 import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shared/harnessPresets";
 import { isRoutePresetId } from "../shared/harnessRoutes";
+import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -14014,6 +14015,11 @@ const adeBridge = {
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
   },
+  // This computer's ADE.app only; no pin (see registerAppBundleOwnershipIpc).
+  appBundleOwnership: {
+    getStatus: (args?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.appBundleOwnershipGetStatus, args ?? {}),
+    fix: () => ipcRenderer.invoke(IPC.appBundleOwnershipFix),
+  } satisfies AppBundleOwnershipBridge,
   home: {
     clipboard: {
       getState: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardGetState),

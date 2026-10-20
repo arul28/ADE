@@ -17,7 +17,7 @@
  */
 import os from "node:os";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
-import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
@@ -114,7 +114,16 @@ export type AgentMachineRosterEntry = {
   platform: string | null;
   lastSeenAt: string | null;
   /** Present when projects were requested and the machine answered. */
-  projects?: Array<{ projectId: string; name: string | null; rootPath: string; origin: string | null }>;
+  projects?: Array<{
+    projectId: string;
+    name: string | null;
+    rootPath: string;
+    origin: string | null;
+    /** What `pickLiveCheckout` ranks on, so a caller picks as the bridge does. */
+    lastOpenedAt: number;
+    catalogVisibility?: "recent" | "system";
+    exists?: boolean;
+  }>;
   /** Why `projects` is missing, when it was requested. */
   note?: string | null;
 };
@@ -184,10 +193,10 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           "This project has no git origin remote, so ADE can't find it on another machine. Pass --project <name|path|id>.",
         );
       }
-      // Two checkouts of one repository: the one opened most recently is in use.
-      const match = records
-        .filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin)
-        .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt)[0];
+      // Several checkouts of one repository: the same pick as the desktop's.
+      const match = pickLiveCheckout(
+        records.filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin),
+      );
       if (match) return match;
       throw new Error(
         `${machineName(machine)} doesn't have this repository (${origin}). Open it in ADE there once, or pass --project <name|path|id>.`,
@@ -345,6 +354,9 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           projects: records.map((record) => ({
             ...projectSummary(record),
             origin: normalizeGitRemoteIdentity(record.gitOriginUrl),
+            lastOpenedAt: record.lastOpenedAt,
+            ...(record.catalogVisibility ? { catalogVisibility: record.catalogVisibility } : {}),
+            ...(record.exists !== undefined ? { exists: record.exists } : {}),
           })),
         };
       } catch (error) {

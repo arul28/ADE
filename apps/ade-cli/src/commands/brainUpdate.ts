@@ -17,6 +17,7 @@ import {
   sha256File,
 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import { planWindowsDesktopRescue, runWindowsDesktopRescue } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 type BrainUpdateExecFile = (
@@ -617,31 +618,92 @@ async function applyStagedBrainUpdate(
     return rollbackRestart.stderr || rollbackRestart.stdout || "ADE brain service rollback restart failed.";
   };
 
+  // The staged binary is this release's code, already checked against the
+  // release checksums and run once for `--version`. Service changes made before
+  // the swap go through it rather than the runtime on disk, which may be a
+  // build whose service checks are broken.
+  const stagedServiceCommand = {
+    command: manifest.stagedBinaryPath,
+    commandArgs: ["serve"],
+    env: { ...runtimeSidecarEnv(baseEnv, manifest.stagedRuntimeRoot), ADE_HOME: manifest.adeHome },
+  };
+
+  // Why the desktop app was left alone on Windows, carried into every status
+  // this update writes so a runtime-only update says so.
+  let desktopAppSkipped: string | null = null;
   try {
-    await writeStatus("applying", "Applying staged ADE brain runtime update.");
+    if (platform === "win32") {
+      const decision = planWindowsDesktopRescue({ env: baseEnv, targetVersion: manifest.version });
+      if ("skipped" in decision && decision.reason !== "no_app") {
+        // The app owns this machine's brain. Pointing its service at the
+        // standalone runtime would be undone the next time the app starts, and
+        // a failed swap left the service naming a deleted file. So with an app
+        // here, only the app's own installer changes anything.
+        const ok = decision.reason === "app_current";
+        const message = ok
+          ? `Nothing to install: ${decision.skipped}.`
+          : `The ADE app was not updated because ${decision.skipped}. Nothing was changed.`;
+        await writeStatus(ok ? "succeeded" : "failed", message, ok ? undefined : message);
+        if (ok) await cleanupStagingDir().catch(() => undefined);
+        return {
+          ok,
+          action: "update",
+          applied: false,
+          restarted: false,
+          version: manifest.version,
+          target: manifest.target,
+          binaryPath: manifest.binaryPath,
+          runtimePath: manifest.runtimeTargetDir,
+          message,
+        };
+      }
+      if ("skipped" in decision) {
+        desktopAppSkipped = decision.skipped;
+      } else {
+        const rescue = decision.plan;
+        await writeStatus("applying", `Updating the ADE app from ${rescue.installedVersion} to ${rescue.targetVersion}.`);
+        const outcome = await runWindowsDesktopRescue(rescue, {
+          repo: manifest.repo,
+          stagingDir,
+          env: baseEnv,
+          downloadFile: deps.downloadFile ?? defaultDownloadFile,
+          stopService: () => {
+            const stop = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
+            return { ok: stop.status === 0, message: stop.stderr || stop.stdout || `exit ${stop.status}` };
+          },
+          onStep: (message) => writeStatus("applying", message),
+        });
+        await writeStatus(outcome.ok ? "succeeded" : "failed", outcome.message, outcome.ok ? undefined : outcome.message);
+        const message = outcome.ok ? await cleanupStagingAfterSuccess(outcome.message) : outcome.message;
+        return {
+          ok: outcome.ok,
+          action: "update",
+          applied: outcome.ok,
+          restarted: outcome.ok,
+          desktopAppUpdated: outcome.ok,
+          version: manifest.version,
+          target: manifest.target,
+          binaryPath: manifest.binaryPath,
+          runtimePath: manifest.runtimeTargetDir,
+          message,
+        };
+      }
+    }
+    await writeStatus(
+      "applying",
+      desktopAppSkipped
+        ? `Applying staged ADE brain runtime update; the ADE app was left alone because ${desktopAppSkipped}.`
+        : "Applying staged ADE brain runtime update.",
+    );
     if (platform === "win32" && await pathExists(manifest.binaryPath)) {
-      const statusResult = requestBrainServiceStatus(
-        {
-          command: manifest.binaryPath,
-          commandArgs: ["serve"],
-          env: serviceEnv(),
-        },
-        deps.runCommand ?? runCommand,
-      );
+      const statusResult = requestBrainServiceStatus(stagedServiceCommand, deps.runCommand ?? runCommand);
       if (statusResult.status !== 0 || statusResult.installed === null) {
         throw new Error(
           statusResult.stderr || statusResult.stdout || "ADE brain service state could not be read before replacing the Windows runtime.",
         );
       }
       windowsServiceWasInstalled = statusResult.installed;
-      const stopResult = requestBrainServiceStop(
-        {
-          command: manifest.binaryPath,
-          commandArgs: ["serve"],
-          env: serviceEnv(),
-        },
-        deps.runCommand ?? runCommand,
-      );
+      const stopResult = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
       if (stopResult.status !== 0) {
         throw new Error(
           stopResult.stderr || stopResult.stdout || "ADE brain service could not be stopped before replacing the Windows runtime.",
@@ -764,7 +826,7 @@ async function applyStagedBrainUpdate(
       const rollbackRestartError = restartRolledBackWindowsService();
       const failureMessage = `${message} ${rollbackMessage}${
         rollbackRestartError ? ` Previous Windows service restart also failed: ${rollbackRestartError}` : ""
-      }`;
+      }${desktopAppSkipped ? ` The ADE app was left alone because ${desktopAppSkipped}.` : ""}`;
       await writeStatus("failed", failureMessage, failureMessage);
       return {
         ok: false,
@@ -797,9 +859,9 @@ async function applyStagedBrainUpdate(
   } catch (error) {
     const baseMessage = error instanceof Error ? error.message : String(error);
     const rollbackRestartError = restartRolledBackWindowsService();
-    const message = rollbackRestartError
+    const message = `${rollbackRestartError
       ? `${baseMessage} Previous Windows service restart also failed: ${rollbackRestartError}`
-      : baseMessage;
+      : baseMessage}${desktopAppSkipped ? ` The ADE app was left alone because ${desktopAppSkipped}.` : ""}`;
     await writeStatus("failed", message, message).catch(() => undefined);
     return {
       ok: false,

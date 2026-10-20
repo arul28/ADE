@@ -66,6 +66,9 @@ export type RemoteProjectRecord = {
   displayName: string | null;
   gitOriginUrl: string | null;
   lastOpenedAt: number;
+  catalogVisibility?: "recent" | "system";
+  /** False when the folder is gone on that machine; absent from older brains. */
+  exists?: boolean;
 };
 
 export type PooledConnection = {
@@ -165,6 +168,10 @@ export function coerceProjects(value: unknown): RemoteProjectRecord[] {
         : null,
       gitOriginUrl: typeof entry.gitOriginUrl === "string" ? entry.gitOriginUrl : null,
       lastOpenedAt: typeof entry.lastOpenedAt === "number" ? entry.lastOpenedAt : 0,
+      ...(entry.catalogVisibility === "recent" || entry.catalogVisibility === "system"
+        ? { catalogVisibility: entry.catalogVisibility }
+        : {}),
+      ...(typeof entry.exists === "boolean" ? { exists: entry.exists } : {}),
     }];
   });
 }

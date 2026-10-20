@@ -99,6 +99,7 @@ import {
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
+import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../lanes/laneIconGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1309,6 +1310,20 @@ export const SessionListPane = React.memo(function SessionListPane({
       ...others,
     ];
   }, [activeMachineId, crossMachineEntries, projectBinding]);
+  // A machine that answers the connection but refuses the chat read would
+  // otherwise just contribute nothing, which reads as "no chats there". Only
+  // when it has nothing retained to show: a blip on a machine whose chats are
+  // still listed is not worth a notice.
+  const machineReadFailures = useMemo(
+    () => Object.values(crossMachineEntries)
+      .filter((entry) =>
+        entry.machineId !== activeMachineId
+        && entry.online
+        && Boolean(entry.error)
+        && entry.sessions.length === 0)
+      .map((entry) => ({ machineId: entry.machineId, machineName: entry.machineName, error: entry.error as string })),
+    [activeMachineId, crossMachineEntries],
+  );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
     && !workSessionFilters.machine.includes(activeMachineId);
 
@@ -4165,6 +4180,21 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* No rule under the strip: the toolbar's own bottom padding separates it
           from the list, and one fewer boundary before the first chat. */}
+
+      {machineReadFailures.map((failure) => (
+        <div key={failure.machineId} className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
+          <Banner
+            layout="inline"
+            model={{
+              id: `work-machine-read-failure:${failure.machineId}`,
+              tone: "warning",
+              icon: <Desktop size={13} weight="bold" />,
+              title: `Couldn't load chats from ${failure.machineName}`,
+              detail: failure.error,
+            }}
+          />
+        </div>
+      ))}
 
       {/* Session list */}
       <div

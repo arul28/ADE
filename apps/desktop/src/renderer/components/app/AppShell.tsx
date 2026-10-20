@@ -56,6 +56,7 @@ import { ToastViewport } from "./toast/ToastViewport";
 import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
+import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
@@ -1097,6 +1098,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <ProjectTransitionErrorAlert />
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
+      <AppBundleOwnershipBanner />
       <BrainRecoveryNotice />
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
