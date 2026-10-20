@@ -462,7 +462,7 @@ function runCommandAsync(
   options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (offThreadSpawnEnabled()) {
-    // `gh auth token` runs here every ~15 s; on Windows a spawn on the event
+    // `gh auth token` runs here (at most every 30 s); on Windows a spawn on the event
     // loop blocked it ~120 ms each time. See offThreadSpawn.ts.
     return execFileOffThread(executable, args, {
       cwd: options.cwd,
@@ -534,13 +534,65 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
   }
 }
 
-async function ghAuthTokenAsync(): Promise<Pick<
-  HeadlessGitHubTokenLookup,
-  "token" | "ghCliPath" | "ghAuthError"
->> {
+type GhAuthTokenResult = Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | "ghAuthError">;
+
+/**
+ * One `gh` lookup per {@link GITHUB_CREDENTIAL_CACHE_TTL_MS} for the whole
+ * brain, shared by every project's GitHub service.
+ *
+ * Every GitHub request, status read and background-pause check builds a
+ * credential inventory, and each build asked `gh auth token` again. With the
+ * token in the macOS keychain that is a `gh` process plus a `security` process
+ * (about 55 ms of CPU) roughly every 1.5 s on an idle brain. The cache is keyed
+ * on `hosts.yml` as well, which `gh auth login` and `gh auth logout` rewrite,
+ * so signing in or out of `gh` takes effect on the next read, not after the TTL.
+ */
+let ghAuthTokenCache: { result: GhAuthTokenResult; hostsSignature: string; expiresAt: number } | null = null;
+let ghAuthTokenInFlight: { hostsSignature: string; promise: Promise<GhAuthTokenResult> } | null = null;
+
+async function readGhHostsFileSignatureAsync(): Promise<string> {
+  try {
+    const stat = await fs.promises.stat(path.join(ghConfigDir(), "hosts.yml"));
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "missing";
+  }
+}
+
+/** Drops the shared `gh` lookup, for a forced GitHub status refresh. */
+function clearGhAuthTokenCache(): void {
+  ghAuthTokenCache = null;
+  ghAuthTokenInFlight = null;
+}
+
+async function ghAuthTokenAsync(): Promise<GhAuthTokenResult> {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
   }
+  const hostsSignature = await readGhHostsFileSignatureAsync();
+  if (
+    ghAuthTokenCache
+    && ghAuthTokenCache.hostsSignature === hostsSignature
+    && ghAuthTokenCache.expiresAt > Date.now()
+  ) {
+    return ghAuthTokenCache.result;
+  }
+  if (ghAuthTokenInFlight?.hostsSignature === hostsSignature) return await ghAuthTokenInFlight.promise;
+  const promise = readGhAuthTokenUncachedAsync();
+  const inFlight = { hostsSignature, promise };
+  ghAuthTokenInFlight = inFlight;
+  try {
+    const result = await promise;
+    if (ghAuthTokenInFlight === inFlight) {
+      ghAuthTokenCache = { result, hostsSignature, expiresAt: Date.now() + GITHUB_CREDENTIAL_CACHE_TTL_MS };
+    }
+    return result;
+  } finally {
+    if (ghAuthTokenInFlight === inFlight) ghAuthTokenInFlight = null;
+  }
+}
+
+async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
   const hostsToken = await readGhHostsFileTokenAsync();
   if (hostsToken) {
     return { token: hostsToken, ghCliPath: null, ghAuthError: null };
@@ -852,8 +904,9 @@ export function createHeadlessGitHubService(
    * one asks for a GitHub App token — which on a stale access token is a refresh
    * POST. The headless twin had no such window, which is why the brain, not the
    * desktop app, drove most of the refresh traffic. Only the App lookup is
-   * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
-   * `gh` still demotes the write credential immediately.
+   * cached here: the PAT read stays live, and the `gh` lookup has its own
+   * process-wide cache keyed on `hosts.yml` (see `ghAuthTokenAsync`), so
+   * signing out of `gh` still demotes the write credential on the next read.
    */
   const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
     ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
@@ -868,6 +921,7 @@ export function createHeadlessGitHubService(
     // A re-authorization or a sign-out just replaced the App credential this
     // cache holds, so it cannot outlive the status it fed.
     appCredentialCache.clear();
+    clearGhAuthTokenCache();
   };
 
   const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
