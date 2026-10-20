@@ -98,8 +98,25 @@ standard speed, then
 refreshes quota data. The timer is replaced when a newer reset arrives and is
 reconstructed from the next snapshot; no timer state is persisted. Accounts
 without a five-hour window, including API-key-only accounts, never run the
-request. ADE records only the provider, instance, model, success, and duration,
-never the response text.
+request. ADE records only the provider, instance, model, success, whether the
+start was early, and duration, never the response text.
+
+Providers also end windows early: Codex hands out resets at random, and both
+providers let a banked reset be spent. While a timer waits, a fresh snapshot in
+which the five-hour window is gone, has no reset time, or (for a window seen
+above 0%) comes back at 0% with a different end starts the next window about
+five seconds later instead of dropping the timer. A moved window that is
+already in use is followed, not pinged. A poll with no reading for the account,
+or one landing between the reset and the timer, keeps the armed timer. Spending
+a reset through ADE (`consumeResetCredit` returning `reset`) starts the next
+window directly. Early starts are limited to one per account per 15 minutes.
+
+Which providers qualify lives in `AUTOSTART_WINDOW_TYPE`
+(`shared/types/providerInstances.ts`), which also gates the settings toggle; the
+launch command for each lives in the scheduler's opener table. Only Claude and
+Codex five-hour windows start on the first request. OpenCode and Kimi report
+rolling windows, Copilot, Cursor and Grok calendar or billing periods, and
+Muse's short window has no confirmed start, so none of them is offered.
 
 ## ADE versus CodexBar
 

@@ -33,7 +33,7 @@ import {
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../../../shared/types/providerInstances";
-import { accountLimitRow, accountSignedOut, providerHasFiveHourWindow } from "./accountPresentation";
+import { accountLimitRow, accountSignedOut, providerOffersAutoStart } from "./accountPresentation";
 import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMenuAction } from "./AccountCard";
 import { useAccountSignInSheet } from "./AddProviderAccountSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
@@ -203,7 +203,7 @@ export function ProviderAccountsPanel({
   const columns = balancedColumns(instances.length, gridWidth);
 
   const showSmartBalance = instances.length >= 2;
-  const showAutoStart = providerHasFiveHourWindow(snapshot, provider);
+  const showAutoStart = providerOffersAutoStart(snapshot, provider);
   const labelById = useMemo(() => new Map(instances.map((instance) => [instance.id, instance.label])), [instances]);
   const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
 
