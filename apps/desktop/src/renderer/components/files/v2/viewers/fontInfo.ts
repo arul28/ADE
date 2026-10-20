@@ -1,5 +1,5 @@
 /** Font container formats ADE can inspect without an external font service. */
-export type FontFormat = "TrueType" | "OpenType" | "WOFF" | "WOFF2" | "TrueType collection" | "Unknown";
+export type FontFormat = "TrueType" | "OpenType" | "WOFF" | "WOFF2" | "TrueType collection";
 
 /** One variable font axis and its supported value range. */
 export type FontAxis = {
@@ -44,6 +44,12 @@ const MAX_TABLES = 256;
 const MAX_FEATURES = 128;
 /** Keep both parser work and the rendered glyph grid bounded. */
 export const FONT_CODEPOINT_CAP = 512;
+/**
+ * Codepoints the cmap walk may examine in total, across every segment and
+ * group. Unmapped codepoints never reach the coverage cap, so without this a
+ * crafted table of empty segments could spin the renderer for seconds.
+ */
+const CMAP_SCAN_BUDGET = 65_536;
 
 const EMPTY_NAMES: FontNameInfo = {
   family: null,
@@ -56,8 +62,7 @@ const EMPTY_NAMES: FontNameInfo = {
   license: null,
   licenseUrl: null,
 };
-const EMPTY_INFO: FontInfo = {
-  format: "Unknown",
+const EMPTY_INFO: Omit<FontInfo, "format"> = {
   collectionCount: null,
   names: EMPTY_NAMES,
   weight: null,
@@ -217,6 +222,7 @@ function parseCmap(reader: Reader): number[] {
     }
     if (fmt === 4 && best4 === null) best4 = off;
   }
+  let budget = CMAP_SCAN_BUDGET;
   const add = (codepoint: number) => {
     if (
       codepoint > 0
@@ -230,12 +236,12 @@ function parseCmap(reader: Reader): number[] {
     const groupCount = reader.u32(best12 + 12);
     const n = Math.min(groupCount, 4096, Math.floor((tableLength - 16) / 12));
     if (tableLength >= 16 && reader.ok(best12, tableLength) && reader.ok(best12 + 16, n * 12)) {
-      for (let i = 0; i < n && result.size < FONT_CODEPOINT_CAP; i++) {
+      for (let i = 0; i < n && result.size < FONT_CODEPOINT_CAP && budget > 0; i++) {
         const p = best12 + 16 + i * 12;
         const start = reader.u32(p);
         const end = Math.min(reader.u32(p + 4), start + FONT_CODEPOINT_CAP);
         const firstGlyph = reader.u32(p + 8);
-        for (let codepoint = start; codepoint <= end && result.size < FONT_CODEPOINT_CAP; codepoint++) {
+        for (let codepoint = start; codepoint <= end && result.size < FONT_CODEPOINT_CAP && budget-- > 0; codepoint++) {
           if (firstGlyph + codepoint - start !== 0) add(codepoint);
         }
       }
@@ -249,12 +255,12 @@ function parseCmap(reader: Reader): number[] {
     if (len >= 16 + segCount * 8 && reader.ok(best4, len) && reader.ok(startBase, segCount * 2)) {
       const deltaBase = startBase + segCount * 2;
       const rangeBase = deltaBase + segCount * 2;
-      for (let i = 0; i < segCount && result.size < FONT_CODEPOINT_CAP; i++) {
+      for (let i = 0; i < segCount && result.size < FONT_CODEPOINT_CAP && budget > 0; i++) {
         const end = reader.u16(endBase + i * 2), start = reader.u16(startBase + i * 2);
         if (end < start || end > 0xfffe) continue;
         const delta = reader.i16(deltaBase + i * 2);
         const rangeOffset = reader.u16(rangeBase + i * 2);
-        for (let codepoint = start; codepoint <= end && result.size < FONT_CODEPOINT_CAP; codepoint++) {
+        for (let codepoint = start; codepoint <= end && result.size < FONT_CODEPOINT_CAP && budget-- > 0; codepoint++) {
           const glyphOffset = rangeBase + i * 2 + rangeOffset + (codepoint - start) * 2;
           const glyphOffsetInTable = glyphOffset >= best4 && glyphOffset + 2 <= best4 + len;
           const glyph = rangeOffset === 0
@@ -368,14 +374,13 @@ export async function readFontInfo(bytes: Uint8Array): Promise<FontInfo> {
     if (r.length < 48 || r.u32(8) !== r.length) {
       throw new Error("The WOFF2 container header is incomplete or has an invalid length.");
     }
-    const info: FontInfo = {
+    return {
       ...EMPTY_INFO,
       format: "WOFF2",
       containerOnly: true,
       containerTableCount: Math.min(r.u16(12), MAX_TABLES),
       containerSize: r.u32(16),
     };
-    return info;
   }
   if (signature === "wOFF") {
     const tables = parseWoff(bytes);
@@ -398,22 +403,17 @@ export async function readFontInfo(bytes: Uint8Array): Promise<FontInfo> {
         joined.set(table.bytes!, offset);
         offset += table.length;
       }
-      return enrich(new Reader(joined), tables, {
-        ...EMPTY_INFO,
-        format: "WOFF",
-        collectionCount: null,
-        containerOnly: false,
-      });
+      return enrich(new Reader(joined), tables, { ...EMPTY_INFO, format: "WOFF" });
     }
-    return { ...EMPTY_INFO, format: "WOFF", containerOnly: false };
+    return { ...EMPTY_INFO, format: "WOFF" };
   }
   let base = 0;
   let collectionCount: number | null = null;
-  let format: FontFormat = signature === "OTTO"
+  let format: FontFormat | null = signature === "OTTO"
     ? "OpenType"
     : signature === "true" || r.u32(0) === 0x00010000
       ? "TrueType"
-      : "Unknown";
+      : null;
   if (signature === "ttcf") {
     format = "TrueType collection";
     if (!r.ok(8, 4)) throw new Error("The font collection header is incomplete.");
@@ -423,13 +423,8 @@ export async function readFontInfo(bytes: Uint8Array): Promise<FontInfo> {
     }
     base = r.u32(12);
   }
-  if (format === "Unknown") throw new Error("This file does not have a supported font signature.");
+  if (!format) throw new Error("This file does not have a supported font signature.");
   const tables = readSfnt(r, base);
   if (!tables.size) throw new Error("The font table directory is incomplete or malformed.");
-  return enrich(r, tables, {
-    ...EMPTY_INFO,
-    format,
-    collectionCount,
-    containerOnly: false,
-  });
+  return enrich(r, tables, { ...EMPTY_INFO, format, collectionCount });
 }

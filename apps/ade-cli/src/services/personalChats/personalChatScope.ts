@@ -25,7 +25,8 @@ import {
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
-import { IMAGE_MIME_BY_EXTENSION, readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
+import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../../desktop/src/shared/types/chat";
 import {
   projectAttachmentsDir,
   stageAttachmentBytes,
@@ -134,7 +135,7 @@ function declaresImage(args: ObjectArgs): boolean {
   const dataUrl = typeof args.dataUrl === "string" ? args.dataUrl.trim() : "";
   if (dataUrl.toLowerCase().startsWith("data:image/")) return true;
   const filename = typeof args.filename === "string" ? args.filename : "";
-  return Boolean(IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()]);
+  return Boolean(IMAGE_ATTACHMENT_MEDIA_TYPES[path.extname(filename).toLowerCase()]);
 }
 
 /**
@@ -705,11 +706,7 @@ export class PersonalChatScope {
         if (requestedPath !== attachmentsRoot && !requestedPath.startsWith(`${attachmentsRoot}${path.sep}`)) {
           throw new Error("Personal chat attachment path is outside the attachment store.");
         }
-        const image = await readImageFileAndSniffMime(requestedPath);
-        result = {
-          dataUrl: `data:${image.mimeType};base64,${image.data.toString("base64")}`,
-          mimeType: image.mimeType,
-        };
+        result = await readImageFileAsDataUrl(requestedPath, runtime.logger);
         break;
       }
       // The agent's own row reports. A personal chat's `ade chat activity`

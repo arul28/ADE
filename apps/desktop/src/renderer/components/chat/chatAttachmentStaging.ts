@@ -3,9 +3,10 @@ import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   attachmentTooLargeMessage,
 } from "../../../shared/chatAttachmentLimits";
-import type {
-  ChatAttachmentStagingMode,
-  HeicConversionErrorCode,
+import {
+  IMAGE_ATTACHMENT_MEDIA_TYPES,
+  type ChatAttachmentStagingMode,
+  type HeicConversionErrorCode,
 } from "../../../shared/types/chat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 
@@ -100,36 +101,18 @@ export type StagedAttachment = {
   previewDataUrl: string | null;
 };
 
-const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
-  "image/avif": ".avif",
-  "image/bmp": ".bmp",
-  "image/gif": ".gif",
-  "image/heic": ".heic",
-  "image/heif": ".heif",
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/svg+xml": ".svg",
-  "image/tiff": ".tiff",
-  "image/webp": ".webp",
-  "image/x-icon": ".ico",
-};
-
 /** Align an image's staged extension with its MIME so stored type inference agrees. */
 export function normalizeImageAttachmentFilename(
   filename: string,
   mimeType: string | null | undefined,
 ): string {
-  const extension = IMAGE_EXTENSION_BY_MIME_TYPE[mimeType?.trim().toLowerCase() ?? ""];
+  const normalizedMimeType = mimeType?.trim().toLowerCase() ?? "";
+  // Every extension the shared table maps to this MIME, canonical one first.
+  const matchingExtensions = Object.keys(IMAGE_ATTACHMENT_MEDIA_TYPES)
+    .filter((extension) => IMAGE_ATTACHMENT_MEDIA_TYPES[extension] === normalizedMimeType);
+  const extension = matchingExtensions[0];
   if (!extension) return filename;
   const currentExtension = filename.match(/\.[^./\\]+$/)?.[0]?.toLowerCase() ?? "";
-  let matchingExtensions: string[];
-  if (extension === ".jpg") {
-    matchingExtensions = [".jpg", ".jpeg"];
-  } else if (extension === ".tiff") {
-    matchingExtensions = [".tif", ".tiff"];
-  } else {
-    matchingExtensions = [extension];
-  }
   if (matchingExtensions.includes(currentExtension)) return filename;
   const stem = currentExtension ? filename.slice(0, -currentExtension.length) : filename;
   return `${stem || "image"}${extension}`;

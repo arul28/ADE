@@ -1,26 +1,14 @@
-import React, {
-  Suspense,
-  lazy,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  ArrowsOut,
-  Code,
-  Copy,
-  Eye,
-  MagnifyingGlassMinus,
-  MagnifyingGlassPlus,
-} from "@phosphor-icons/react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Code, Copy, Eye } from "@phosphor-icons/react";
 import { showToast } from "../../../app/toast/toastStore";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { MermaidRenderResult } from "../../../shared/MermaidDiagram";
+import { Banner } from "../../../ui/notice";
 import { CodeViewer } from "./CodeViewer";
 import type { ViewerProps } from "./types";
+import { usePanZoom } from "./usePanZoom";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
+import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 
 // Mermaid is heavy, so load it only after a diagram viewer is opened.
@@ -31,6 +19,15 @@ const MermaidDiagram = lazy(() =>
 );
 
 type Mode = "diagram" | "source";
+type MermaidFailure = Extract<MermaidRenderResult, { ok: false }>;
+
+/** Mermaid's parse errors name the line in a few shapes ("line 3", "(line 3"). */
+function errorLine(message: string): number | null {
+  const match = message.match(/(?:line\s*[:=]?\s*|\(line\s+)(\d+)/i);
+  if (!match) return null;
+  const line = Number(match[1]);
+  return Number.isInteger(line) && line > 0 ? line : null;
+}
 
 /** Toolbar for diagram navigation, source access, and copy actions. */
 function MermaidToolbar({
@@ -38,7 +35,9 @@ function MermaidToolbar({
   setMode,
   zoom,
   onFit,
-  onZoom,
+  onZoomIn,
+  onZoomOut,
+  onActualSize,
   onCopySvg,
   onCopySource,
 }: {
@@ -46,7 +45,9 @@ function MermaidToolbar({
   setMode: (mode: Mode) => void;
   zoom: number;
   onFit: () => void;
-  onZoom: (factor: number) => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onActualSize: () => void;
   onCopySvg: () => void;
   onCopySource: () => void;
 }) {
@@ -69,41 +70,20 @@ function MermaidToolbar({
       />
       {mode === "diagram" ? (
         <div className="ml-auto flex items-center gap-1">
+          <ZoomControls
+            percent={zoom * 100}
+            onZoomOut={onZoomOut}
+            onZoomIn={onZoomIn}
+            onFit={onFit}
+          />
           <button
             type="button"
-            title="Fit diagram to view"
-            aria-label="Fit diagram to view"
-            onClick={onFit}
+            title="Actual size (100%)"
+            aria-label="Actual size (100%)"
+            onClick={onActualSize}
             className="rounded p-1 hover:bg-fg/5"
           >
-            <ArrowsOut size={15} />
-          </button>
-          <button
-            type="button"
-            title="100%"
-            aria-label="100%"
-            onClick={() => onZoom(1 / zoom)}
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <span className="text-xs">100%</span>
-          </button>
-          <button
-            type="button"
-            title="Zoom out"
-            aria-label="Zoom out"
-            onClick={() => onZoom(1 / 1.2)}
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <MagnifyingGlassMinus size={15} />
-          </button>
-          <button
-            type="button"
-            title="Zoom in"
-            aria-label="Zoom in"
-            onClick={() => onZoom(1.2)}
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <MagnifyingGlassPlus size={15} />
+            <span className="text-xs">1:1</span>
           </button>
           <button
             type="button"
@@ -112,7 +92,7 @@ function MermaidToolbar({
             onClick={onCopySvg}
             className="rounded p-1 hover:bg-fg/5"
           >
-            <Copy size={15} />
+            <Copy size={14} />
           </button>
           <button
             type="button"
@@ -121,7 +101,7 @@ function MermaidToolbar({
             onClick={onCopySource}
             className="rounded p-1 hover:bg-fg/5"
           >
-            <Code size={15} />
+            <Code size={14} />
           </button>
         </div>
       ) : null}
@@ -129,40 +109,35 @@ function MermaidToolbar({
   );
 }
 
-/** Shows a structured Mermaid failure and offers a direct switch to editable source. */
-function MermaidErrorCard({
+/** Shows a Mermaid failure over the diagram, with a direct switch to editable source. */
+function MermaidErrorBanner({
   error,
   onEditSource,
+  onRetry,
 }: {
-  error: Extract<MermaidRenderResult, { ok: false }> | null;
+  error: MermaidFailure;
   onEditSource: () => void;
+  onRetry: () => void;
 }) {
-  if (!error) return null;
+  const line = errorLine(error.error);
   return (
-    <div
-      className="absolute inset-x-3 top-3 rounded-md border p-3 shadow-sm"
-      style={{
-        borderColor: COLORS.border,
-        background: "var(--color-bg)",
-        color: COLORS.textPrimary,
-      }}
-      role="alert"
-    >
-      <div className="text-sm font-medium">Diagram couldn’t be rendered</div>
-      <div
-        className="mt-1 break-words text-xs"
-        style={{ color: COLORS.textMuted }}
-      >
-        {error.message}
-        {error.line ? ` (line ${error.line})` : ""}
-      </div>
-      <button
-        type="button"
-        onClick={onEditSource}
-        className="mt-2 rounded px-2 py-1 text-xs hover:bg-fg/5"
-      >
-        Edit source
-      </button>
+    <div className="absolute inset-x-3 top-3">
+      <Banner
+        layout="inline"
+        model={{
+          id: "mermaid-render-error",
+          tone: "error",
+          title:
+            error.kind === "load"
+              ? "Couldn't load the diagram renderer"
+              : "Diagram couldn’t be rendered",
+          detail: `${error.error}${line ? ` (line ${line})` : ""}`,
+          actions:
+            error.kind === "load"
+              ? [{ label: "Retry", onClick: onRetry }]
+              : [{ label: "Edit source", onClick: onEditSource }],
+        }}
+      />
     </div>
   );
 }
@@ -173,21 +148,13 @@ export function MermaidViewer(props: ViewerProps) {
   const [mode, setModeState] = useState<Mode>(() =>
     readViewerMode<Mode>(tab.id, "diagram"),
   );
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const view = usePanZoom({ initialFit: false });
   const [liveText, setLiveText] = useState<string | null>(null);
   const [renderedSvg, setRenderedSvg] = useState<string | null>(null);
-  const [error, setError] = useState<Extract<
-    MermaidRenderResult,
-    { ok: false }
-  > | null>(null);
+  const [error, setError] = useState<MermaidFailure | null>(null);
+  // Bumped by Retry: remounting the diagram re-runs a failed renderer import.
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    x: number;
-    y: number;
-    ox: number;
-    oy: number;
-  } | null>(null);
   const dirty = mode === "diagram" && registry.isDirty(tab.id);
 
   const setMode = (next: Mode) => {
@@ -212,10 +179,6 @@ export function MermaidViewer(props: ViewerProps) {
   }, [dirty, registry, tab.id]);
 
   const source = liveText ?? content.content;
-  const transform = useMemo(
-    () => `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
-    [offset.x, offset.y, zoom],
-  );
   const handleRenderResult = useCallback((result: MermaidRenderResult) => {
     if (result.ok) {
       setRenderedSvg(result.svg);
@@ -245,57 +208,20 @@ export function MermaidViewer(props: ViewerProps) {
     if (renderedSvg) void copyText(renderedSvg, "Could not copy SVG");
   };
 
-  const panStart = (event: React.PointerEvent) => {
-    if (event.button !== 0) return;
-    dragRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      ox: offset.x,
-      oy: offset.y,
-    };
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-  };
-
-  const panMove = (event: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    setOffset({
-      x: drag.ox + event.clientX - drag.x,
-      y: drag.oy + event.clientY - drag.y,
-    });
-  };
-
-  const zoomBy = (factor: number) => {
-    setZoom((value) => Math.min(8, Math.max(0.1, value * factor)));
-  };
-
   const fitDiagram = () => {
     const viewport = viewportRef.current;
     const svg = viewport?.querySelector("svg");
     if (!viewport || !svg) {
-      setZoom(1);
-      setOffset({ x: 0, y: 0 });
+      view.setView(1);
       return;
     }
     const box = svg.getBoundingClientRect();
-    const width = box.width / zoom;
-    const height = box.height / zoom;
+    const width = box.width / view.scale;
+    const height = box.height / view.scale;
     if (width <= 0 || height <= 0) return;
     const availableWidth = Math.max(1, viewport.clientWidth - 32);
     const availableHeight = Math.max(1, viewport.clientHeight - 32);
-    const fitScale = Math.min(
-      availableWidth / width,
-      availableHeight / height,
-      8,
-    );
-    setZoom(Math.max(0.1, fitScale));
-    setOffset({ x: 0, y: 0 });
-  };
-
-  const onWheel = (event: React.WheelEvent) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    zoomBy(event.deltaY < 0 ? 1.1 : 1 / 1.1);
+    view.setView(Math.min(availableWidth / width, availableHeight / height));
   };
 
   return (
@@ -303,29 +229,21 @@ export function MermaidViewer(props: ViewerProps) {
       <MermaidToolbar
         mode={mode}
         setMode={setMode}
-        zoom={zoom}
+        zoom={view.scale}
         onFit={fitDiagram}
-        onZoom={zoomBy}
+        onZoomIn={view.zoomIn}
+        onZoomOut={view.zoomOut}
+        onActualSize={() => view.setView(1)}
         onCopySvg={copySvg}
         onCopySource={() => void copyText(source, "Could not copy source")}
       />
       {mode === "source" ? (
-        <CodeViewer
-          {...props}
-          onDirtyChange={(tabId, isDirty) =>
-            props.onDirtyChange?.(tabId, isDirty)
-          }
-        />
+        <CodeViewer {...props} />
       ) : (
         <div
           ref={viewportRef}
           className="relative min-h-0 min-w-0 flex-1 overflow-auto"
-          onWheel={onWheel}
-          onPointerDown={panStart}
-          onPointerMove={panMove}
-          onPointerUp={() => {
-            dragRef.current = null;
-          }}
+          {...view.panHandlers}
         >
           {!source.trim() ? (
             <div
@@ -336,7 +254,12 @@ export function MermaidViewer(props: ViewerProps) {
             </div>
           ) : (
             <div className="min-h-full min-w-full" style={{ cursor: "grab" }}>
-              <div style={{ transform, transformOrigin: "center center" }}>
+              <div
+                style={{
+                  transform: view.transform,
+                  transformOrigin: "center center",
+                }}
+              >
                 <Suspense
                   fallback={
                     <div
@@ -348,19 +271,27 @@ export function MermaidViewer(props: ViewerProps) {
                   }
                 >
                   <MermaidDiagram
+                    key={renderAttempt}
                     source={source}
                     variant="file"
                     renderCode={() => null}
+                    keepLastGood
                     onRenderResult={handleRenderResult}
                   />
                 </Suspense>
               </div>
             </div>
           )}
-          <MermaidErrorCard
-            error={error}
-            onEditSource={() => setMode("source")}
-          />
+          {error ? (
+            <MermaidErrorBanner
+              error={error}
+              onEditSource={() => setMode("source")}
+              onRetry={() => {
+                setError(null);
+                setRenderAttempt((value) => value + 1);
+              }}
+            />
+          ) : null}
         </div>
       )}
     </div>

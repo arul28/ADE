@@ -1,9 +1,14 @@
 import path from "node:path";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
+import { sniffImageMimeType } from "../../../shared/imageSniff";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { readFileWithinRootSecure } from "../shared/utils";
 import { imageAttachmentReferenceText, imageNotInlinedText } from "./attachmentInlineGuard";
-import { fitImageForProviderInline, isProviderImageByteMediaType } from "./providerInlineImage";
+import {
+  fitImageForProviderInline,
+  isProviderImageByteMediaType,
+  normalizeImageMediaType,
+} from "./providerInlineImage";
 
 export type WorkerPathImageSource = {
   path: string;
@@ -37,7 +42,8 @@ export function workerPathImagesFromAttachments(
     images.push({
       path: filePath,
       rootPath,
-      mimeType: getImageAttachmentMediaType(filePath) ?? "image/jpeg",
+      // Empty when the name gives no type: the worker sniffs the bytes.
+      mimeType: getImageAttachmentMediaType(filePath) ?? "",
     });
   }
   return images;
@@ -99,12 +105,13 @@ async function materializeOneWorkerImage(
   }
   if ("data" in image) {
     const inline = image.data.trim();
-    const mimeType = image.mimeType.trim();
-    if (!inline || !mimeType) {
+    const declaredMimeType = image.mimeType.trim();
+    if (!inline || !declaredMimeType) {
       throw new Error(`${label} image is missing mimeType.`);
     }
-    if (!isProviderImageByteMediaType(mimeType)) {
-      return { omitted: imageAttachmentReferenceText("(image data)", mimeType) };
+    const mimeType = normalizeImageMediaType(declaredMimeType);
+    if (!mimeType || !isProviderImageByteMediaType(mimeType)) {
+      return { omitted: imageAttachmentReferenceText("(image data)", declaredMimeType) };
     }
     return { data: inline, mimeType };
   }
@@ -114,11 +121,10 @@ async function materializeOneWorkerImage(
     if (!filePath || !rootPath) {
       throw new Error(`${label} image is missing data, path, or url.`);
     }
-    const mimeType = image.mimeType.trim()
-      || getImageAttachmentMediaType(filePath)
-      || "image/jpeg";
-    if (!isProviderImageByteMediaType(mimeType)) {
-      return { omitted: imageAttachmentReferenceText(filePath, mimeType) };
+    const declaredMimeType = normalizeImageMediaType(image.mimeType)
+      ?? getImageAttachmentMediaType(filePath);
+    if (declaredMimeType && !isProviderImageByteMediaType(declaredMimeType)) {
+      return { omitted: imageAttachmentReferenceText(filePath, declaredMimeType) };
     }
     const fileLabel = path.basename(filePath);
     let buf: Buffer;
@@ -130,6 +136,12 @@ async function materializeOneWorkerImage(
         return { omitted: imageNotInlinedText(filePath, "too large to read") };
       }
       throw new Error(`${label} image could not be read: ${fileLabel}`);
+    }
+    // With no type from the sender or the name, the bytes decide; bytes that
+    // are no provider image type stay a path reference.
+    const mimeType = declaredMimeType ?? sniffImageMimeType(buf);
+    if (!mimeType || !isProviderImageByteMediaType(mimeType)) {
+      return { omitted: imageAttachmentReferenceText(filePath, mimeType ?? "unknown type") };
     }
     const fitted = await fitImageForProviderInline(buf, mimeType);
     if (fitted.kind === "omit") {

@@ -3,6 +3,7 @@ import { ArrowSquareOut, CaretDown, CaretRight, Check, TextAa } from "@phosphor-
 import { showToast } from "../../../app/toast/toastStore";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
 import { formatBytes } from "../../../../../shared/formatting";
+import { Banner } from "../../../ui/notice";
 import { streamFileBytes } from "../streamBytes";
 import { DocumentSurface } from "./DocumentSurface";
 import {
@@ -30,10 +31,6 @@ const BLOCKS = [
 ];
 
 type GlyphGroup = { name: string; points: number[] };
-type FontCardProps = Pick<ViewerProps, "rootPath" | "tab" | "content"> & {
-  title: string;
-  notice: string;
-};
 
 function fileStem(path: string): string {
   const fileName = path.split(/[\\/]/).pop() || path;
@@ -53,19 +50,6 @@ function styleLabel(info: FontInfo): string {
 function codepointLabel(codepoint: number): string {
   const digits = codepoint <= 0xffff ? 4 : 6;
   return `U+${codepoint.toString(16).toUpperCase().padStart(digits, "0")}`;
-}
-
-function FontCard({ rootPath, tab, content, title, notice }: FontCardProps) {
-  return (
-    <DocumentSurface
-      rootPath={rootPath}
-      relativePath={tab.path}
-      title={title}
-      mimeType={content.mimeType ?? null}
-      size={content.size}
-      notice={notice}
-    />
-  );
 }
 
 function InfoField({ label, value }: { label: string; value: string | null }) {
@@ -127,7 +111,9 @@ function FontHeader({
   relativePath: string;
 }) {
   const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath, target: "default" }).catch(() => {});
+    void window.ade.app.openPathInEditor?.({ rootPath, relativePath, target: "default" }).catch((error: unknown) => {
+      console.warn("[FontViewer] open externally failed", error);
+    });
   };
   const title = familyLabel(info, fallbackName);
   const fontStyle: React.CSSProperties = { fontFamily: `"${family}", sans-serif` };
@@ -174,13 +160,16 @@ function FontHeader({
         </span>
       </div>
       {info.containerOnly ? (
-        <p
-          className="mt-3 rounded-md px-3 py-2 text-xs"
-          style={{ background: COLORS.cardBg, color: COLORS.textMuted }}
-        >
-          WOFF2 container · {info.containerTableCount ?? "?"} tables · {containerSummary}.
-          Detailed metadata is unavailable; ADE uses the browser font engine for the preview.
-        </p>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 12 }}
+          model={{
+            id: "woff2-container",
+            tone: "info",
+            title: `WOFF2 container · ${info.containerTableCount ?? "?"} tables · ${containerSummary}`,
+            detail: "Detailed metadata is unavailable; ADE uses the browser font engine for the preview.",
+          }}
+        />
       ) : null}
     </section>
   );
@@ -355,10 +344,7 @@ function CharacterSet({
   shown,
   onShowMore,
   family,
-  heading,
-  showCount,
-  note,
-  showAll = false,
+  containerOnly,
 }: {
   groups: GlyphGroup[];
   codepointCount: number;
@@ -366,13 +352,14 @@ function CharacterSet({
   shown: number;
   onShowMore: () => void;
   family: string;
-  heading: string;
-  showCount: boolean;
-  note?: string;
-  showAll?: boolean;
+  /**
+   * WOFF2 coverage isn't parsed: show a fixed set of common characters, all
+   * at once, with no count.
+   */
+  containerOnly: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const visibleLimit = showAll ? codepointCount : shown;
+  const visibleLimit = containerOnly ? codepointCount : shown;
   let precedingPoints = 0;
   const visibleGroups = groups.map((group) => {
     const remaining = Math.max(0, visibleLimit - precedingPoints);
@@ -393,8 +380,8 @@ function CharacterSet({
         style={{ color: COLORS.textMuted }}
       >
         {expanded ? <CaretDown size={13} /> : <CaretRight size={13} />}
-        {heading}
-        {showCount ? (
+        {containerOnly ? "Common characters" : "Character set"}
+        {!containerOnly ? (
           <span className="font-normal" style={{ color: COLORS.textDim }}>
             ({countLabel})
           </span>
@@ -402,9 +389,9 @@ function CharacterSet({
       </button>
       {expanded ? (
         <>
-          {note ? (
+          {containerOnly ? (
             <p className="mb-2 text-[11px]" style={{ color: COLORS.textDim }}>
-              {note}
+              WOFF2 coverage isn't read in ADE; these render with the browser's fallback if missing.
             </p>
           ) : null}
           {groups.length ? (
@@ -421,7 +408,7 @@ function CharacterSet({
                   </div>
                 </div>
               ))}
-              {!showAll && shown < codepointCount ? (
+              {!containerOnly && shown < codepointCount ? (
                 <button
                   type="button"
                   onClick={onShowMore}
@@ -550,7 +537,7 @@ export function FontViewer({ files, workspaceId, rootPath, tab, content }: Viewe
         if (cancelled) return;
         setInfo(parsed);
 
-        const face = new FontFace(family, bytes.buffer as ArrayBuffer);
+        const face = new FontFace(family, bytes);
         loadedFace = face;
         await face.load();
         if (cancelled) {
@@ -606,25 +593,15 @@ export function FontViewer({ files, workspaceId, rootPath, tab, content }: Viewe
       </div>
     );
   }
-  if (error) {
+  if (error || !info) {
     return (
-      <FontCard
+      <DocumentSurface
         rootPath={rootPath}
-        tab={tab}
-        content={content}
+        relativePath={tab.path}
         title="ADE couldn't load this font"
-        notice={error}
-      />
-    );
-  }
-  if (!info) {
-    return (
-      <FontCard
-        rootPath={rootPath}
-        tab={tab}
-        content={content}
-        title="ADE couldn't load this font"
-        notice="Font metadata is unavailable."
+        mimeType={content.mimeType ?? null}
+        size={content.size}
+        notice={error ?? "Font metadata is unavailable."}
       />
     );
   }
@@ -660,12 +637,7 @@ export function FontViewer({ files, workspaceId, rootPath, tab, content }: Viewe
             shown={shown}
             onShowMore={() => setShown((count) => Math.min(info.codepoints.length, count + GLYPHS_PER_PAGE))}
             family={family}
-            heading={info.containerOnly ? "Common characters" : "Character set"}
-            showCount={!info.containerOnly}
-            note={info.containerOnly
-              ? "WOFF2 coverage isn't read in ADE; these render with the browser's fallback if missing."
-              : undefined}
-            showAll={info.containerOnly}
+            containerOnly={info.containerOnly}
           />
           <FontInfoSection info={info} />
         </div>

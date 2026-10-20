@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -31,7 +31,13 @@ type MediaTarget = {
 };
 type Resolution = MediaTarget | null;
 
+/** Players that may be sounding; starting one pauses the rest. */
 const activeAudioPlayers = new Set<HTMLAudioElement>();
+const PLAYBACK_RATES = [1, 1.5, 2] as const;
+const MEDIA_CHIP_CLASS = cn(
+  "inline-flex max-w-full items-center gap-2 rounded-lg border border-(color:--chat-ink)/[0.1]",
+  "bg-(color:--chat-ink)/[0.04] px-2.5 text-xs",
+);
 
 /** Render one local markdown media reference after it approaches the viewport. */
 export function ChatInlineMedia({
@@ -72,11 +78,11 @@ export function ChatInlineMedia({
         setTarget(next);
         setResolved(true);
       })
-      .catch(() => {
-        if (!cancelled) {
-          setTarget(null);
-          setResolved(true);
-        }
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.warn(`[chat-media] couldn't resolve ${src}`, error);
+        setTarget(null);
+        setResolved(true);
       });
     return () => {
       cancelled = true;
@@ -157,8 +163,10 @@ export function ChatInlineAudio({
         setResolvedTarget(next);
         setResolved(true);
       })
-      .catch(() => {
-        if (!cancelled) setResolved(true);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.warn(`[chat-media] couldn't resolve ${attachmentPath}`, error);
+        setResolved(true);
       });
     return () => {
       cancelled = true;
@@ -227,8 +235,9 @@ function InlineImage({
       if (cancelled) return;
       objectUrl = URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name) }));
       setUrl(objectUrl);
-    }).catch(() => {
+    }).catch((error: unknown) => {
       if (cancelled) return;
+      console.warn(`[chat-media] couldn't load image ${target.relativePath}`, error);
       setFailed(true);
     });
     return () => {
@@ -270,59 +279,54 @@ function InlineVideo({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const autoplayRef = useRef(false);
+  const mountedRef = useMountedRef();
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
   }, [url]);
+  useEffect(() => {
+    if (!url || !autoplayRef.current) return;
+    autoplayRef.current = false;
+    // Streaming crosses an async IPC boundary, which can outlive the browser's
+    // transient user activation. Keep native controls available when Chromium
+    // declines this autoplay attempt.
+    void videoRef.current?.play().catch(() => {});
+  }, [url]);
 
-  const play = async (retry = false) => {
+  const play = async () => {
     setFailed(false);
     setLoading(true);
+    // Dropping the previous attempt's URL revokes it through the effect above.
+    setUrl(null);
     try {
-      let source = retry ? null : url;
-      if (retry && url) {
-        URL.revokeObjectURL(url);
-        setUrl(null);
-      }
-      if (!source) {
-        const bytes = await streamFileBytes(
-          createPinnedFilesApi(pin),
-          target.workspaceId,
-          target.relativePath,
-          { maxBytes: INLINE_VIDEO_MAX_BYTES },
-        );
-        source = URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name) }));
-        setUrl(source);
-      }
-      const video = videoRef.current;
-      if (video) {
-        video.src = source;
-        setUrl(source);
-        // Streaming crosses an async IPC boundary, which can outlive the
-        // browser's transient user activation. Keep native controls available
-        // when Chromium declines this autoplay attempt.
-        await video.play().catch(() => {});
-      }
-    } catch {
+      const bytes = await streamFileBytes(
+        createPinnedFilesApi(pin),
+        target.workspaceId,
+        target.relativePath,
+        { maxBytes: INLINE_VIDEO_MAX_BYTES },
+      );
+      // An unmounted row has no effect left to revoke the URL; never create it.
+      if (!mountedRef.current) return;
+      autoplayRef.current = true;
+      setUrl(URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name) })));
+    } catch (error) {
+      if (!mountedRef.current) return;
+      console.warn(`[chat-media] couldn't load video ${target.relativePath}`, error);
       setFailed(true);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
   return (
     <span className="block">
       {failed ? (
-        <span
-          className={cn(
-            "inline-flex max-w-full items-center gap-2 rounded-lg border border-(color:--chat-ink)/[0.1]",
-            "bg-(color:--chat-ink)/[0.04] px-2.5 py-2 text-xs text-(color:--chat-ink)/75",
-          )}
-        >
+        <MediaChip className="py-2 text-(color:--chat-ink)/75">
           <span className="min-w-0 truncate">Couldn’t load {name}</span>
           <button
             type="button"
-            onClick={() => void play(true)}
+            onClick={() => void play()}
             className="shrink-0 underline underline-offset-2"
           >
             Retry
@@ -334,15 +338,10 @@ function InlineVideo({
           >
             Open in Files
           </button>
-        </span>
+        </MediaChip>
       ) : null}
       {!url && !failed ? (
-        <span
-          className={cn(
-            "inline-flex max-w-full items-center gap-3 rounded-xl border border-(color:--chat-ink)/[0.1]",
-            "bg-(color:--chat-ink)/[0.04] p-2.5 text-(color:--chat-ink)/80",
-          )}
-        >
+        <MediaChip className="gap-3 rounded-xl p-2.5 text-(color:--chat-ink)/80">
           <FilmStrip size={22} className="shrink-0 opacity-65" aria-hidden />
           <span className="min-w-0 flex-1 truncate text-xs font-medium" title={name}>{name}</span>
           <button
@@ -364,7 +363,7 @@ function InlineVideo({
           >
             Open in Files
           </button>
-        </span>
+        </MediaChip>
       ) : null}
       <video
         ref={videoRef}
@@ -382,6 +381,29 @@ function InlineVideo({
   );
 }
 
+/** The bordered pill every inline media fallback and prompt shares. */
+function MediaChip({
+  className,
+  title,
+  onClick,
+  children,
+}: {
+  className?: string;
+  title?: string;
+  /** Renders the chip itself as a button. */
+  onClick?: () => void;
+  children: ReactNode;
+}) {
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} title={title} className={cn(MEDIA_CHIP_CLASS, className)}>
+        {children}
+      </button>
+    );
+  }
+  return <span title={title} className={cn(MEDIA_CHIP_CLASS, className)}>{children}</span>;
+}
+
 function MediaFileChip({
   name,
   kind,
@@ -395,15 +417,10 @@ function MediaFileChip({
 }) {
   const Icon = kind === "image" ? ImageIcon : kind === "video" ? FilmStrip : File;
   return (
-    <button
-      type="button"
+    <MediaChip
       onClick={onOpen}
       title={unavailable ? `${name} — Not available on this machine` : `Open ${name} in Files`}
-      className={cn(
-        "inline-flex max-w-full items-center gap-2 rounded-lg border border-(color:--chat-ink)/[0.1]",
-        "bg-(color:--chat-ink)/[0.04] px-2.5 py-2 text-left text-xs text-(color:--chat-ink)/78",
-        "transition-colors hover:bg-(color:--chat-ink)/[0.08]",
-      )}
+      className="py-2 text-left text-(color:--chat-ink)/78 transition-colors hover:bg-(color:--chat-ink)/[0.08]"
     >
       <Icon size={15} className="shrink-0 opacity-65" aria-hidden />
       <span className="min-w-0 truncate font-medium">{name}</span>
@@ -415,8 +432,17 @@ function MediaFileChip({
       >
         {unavailable ? "Not available on this machine" : "Open in Files"}
       </span>
-    </button>
+    </MediaChip>
   );
+}
+
+/** Pause every other inline player and forget players no longer in the page. */
+function claimAudioFocus(audio: HTMLAudioElement) {
+  for (const player of activeAudioPlayers) {
+    if (!player.isConnected) activeAudioPlayers.delete(player);
+    else if (player !== audio) player.pause();
+  }
+  activeAudioPlayers.add(audio);
 }
 
 function AudioPlayer({
@@ -434,6 +460,7 @@ function AudioPlayer({
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const pendingLoadRef = useRef<Promise<HTMLAudioElement | null> | null>(null);
+  const mountedRef = useMountedRef();
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [tooLarge, setTooLarge] = useState(false);
@@ -444,7 +471,6 @@ function AudioPlayer({
   const [buffered, setBuffered] = useState(0);
   const [muted, setMuted] = useState(false);
   const [rateIndex, setRateIndex] = useState(0);
-  const rates = [1, 1.5, 2];
 
   const load = useCallback((retry = false): Promise<HTMLAudioElement | null> => {
     const audio = audioRef.current;
@@ -453,7 +479,7 @@ function AudioPlayer({
     if (pendingLoadRef.current) return pendingLoadRef.current;
 
     if (retry && url) {
-      URL.revokeObjectURL(url);
+      // Dropping the URL revokes it through the effect below.
       audio.removeAttribute("src");
       audio.load();
       setUrl(null);
@@ -467,17 +493,24 @@ function AudioPlayer({
       target.relativePath,
       { maxBytes: INLINE_AUDIO_MAX_BYTES },
     ).then((bytes) => {
+      // An unmounted row has no effect left to revoke the URL; never create it.
+      if (!mountedRef.current) return null;
       const nextUrl = URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name, mimeType) }));
       audio.src = nextUrl;
       setUrl(nextUrl);
       return audio;
     }).catch((error: unknown) => {
-      if (error instanceof Error && /too large/i.test(error.message)) setTooLarge(true);
-      else setFailed(true);
+      if (!mountedRef.current) return null;
+      if (error instanceof Error && /too large/i.test(error.message)) {
+        setTooLarge(true);
+      } else {
+        console.warn(`[chat-media] couldn't load audio ${target.relativePath}`, error);
+        setFailed(true);
+      }
       return null;
     }).finally(() => {
       pendingLoadRef.current = null;
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     });
     pendingLoadRef.current = request;
     return request;
@@ -488,18 +521,20 @@ function AudioPlayer({
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
   }, [url]);
-  useEffect(() => () => {
-    if (audioRef.current) activeAudioPlayers.delete(audioRef.current);
+  useEffect(() => {
+    // The element stays mounted for the player's whole life, so capture it now:
+    // React clears the ref before this cleanup runs.
+    const audio = audioRef.current;
+    return () => {
+      if (audio) activeAudioPlayers.delete(audio);
+    };
   }, []);
 
   const play = async (retry = false) => {
     const audio = await load(retry);
     if (!audio) return;
-    for (const player of activeAudioPlayers) {
-      if (player !== audio) player.pause();
-    }
-    activeAudioPlayers.add(audio);
-    audio.playbackRate = rates[rateIndex]!;
+    claimAudioFocus(audio);
+    audio.playbackRate = PLAYBACK_RATES[rateIndex]!;
     await audio.play().catch(() => setFailed(true));
   };
 
@@ -510,12 +545,6 @@ function AudioPlayer({
       return;
     }
     void play();
-  };
-
-  const retry = async () => {
-    setFailed(false);
-    setTooLarge(false);
-    await play(true);
   };
 
   const formatTime = (seconds: number) => (
@@ -533,155 +562,171 @@ function AudioPlayer({
       + "color-mix(in srgb, var(--chat-ink) 12%, transparent) 100%)",
   };
 
+  // The <audio> element stays mounted in every branch: Retry reloads into it,
+  // and the active-player registry holds on to it.
+  const audioElement = (
+    <audio
+      ref={audioRef}
+      hidden
+      preload="none"
+      onPlay={() => {
+        const audio = audioRef.current;
+        if (!audio) return;
+        claimAudioFocus(audio);
+        setPlaying(true);
+      }}
+      onPause={() => setPlaying(false)}
+      onEnded={() => setPlaying(false)}
+      onError={() => {
+        if (audioRef.current?.src) setFailed(true);
+      }}
+      onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+      onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+      onProgress={(event) => {
+        const media = event.currentTarget;
+        if (media.buffered.length) setBuffered(media.buffered.end(media.buffered.length - 1));
+      }}
+    />
+  );
+
   if (tooLarge || failed) {
     return (
-      <span
-        className={cn(
-          "inline-flex min-h-11 max-w-full items-center gap-2 rounded-lg border border-(color:--chat-ink)/[0.1]",
-          "bg-(color:--chat-ink)/[0.04] px-2.5 text-xs text-(color:--chat-ink)/72",
-        )}
-      >
-        <span className="min-w-0 truncate">
-          {tooLarge ? "Too large to play inline" : "Couldn’t play audio"}
-        </span>
-        {failed ? (
-          <button
-            type="button"
-            className="rounded p-1 hover:bg-(color:--chat-ink)/[0.08]"
-            onClick={() => void retry()}
-            aria-label="Retry audio"
-          >
-            <ArrowClockwise size={14} />
-          </button>
-        ) : null}
-        <button type="button" onClick={onOpen} className="shrink-0 underline underline-offset-2">Open in Files</button>
-      </span>
+      <>
+        {audioElement}
+        <MediaChip className="min-h-11 text-(color:--chat-ink)/72">
+          <span className="min-w-0 truncate">
+            {tooLarge ? "Too large to play inline" : "Couldn’t play audio"}
+          </span>
+          {failed ? (
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-(color:--chat-ink)/[0.08]"
+              onClick={() => void play(true)}
+              aria-label="Retry audio"
+            >
+              <ArrowClockwise size={14} />
+            </button>
+          ) : null}
+          <button type="button" onClick={onOpen} className="shrink-0 underline underline-offset-2">Open in Files</button>
+        </MediaChip>
+      </>
     );
   }
 
   return (
-    <span
-      className={cn(
-        "flex h-11 w-full max-w-[520px] min-w-0 items-center gap-2 rounded-lg border",
-        "border-(color:--chat-ink)/[0.1] bg-(color:--chat-ink)/[0.04] px-2 text-(color:--chat-ink)/82",
-      )}
-    >
-      <audio
-        ref={audioRef}
-        preload="none"
-        onPlay={() => {
-          const audio = audioRef.current;
-          if (!audio) return;
-          for (const player of activeAudioPlayers) {
-            if (player !== audio) player.pause();
-          }
-          activeAudioPlayers.add(audio);
-          setPlaying(true);
-        }}
-        onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
-        onError={() => {
-          if (audioRef.current?.src) setFailed(true);
-        }}
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
-        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
-        onProgress={(event) => {
-          const media = event.currentTarget;
-          if (media.buffered.length) setBuffered(media.buffered.end(media.buffered.length - 1));
-        }}
-      />
-      <button
-        type="button"
-        onClick={toggle}
-        disabled={loading}
-        className={cn(
-          "grid h-7 w-7 shrink-0 place-items-center rounded-full",
-          "hover:bg-(color:--chat-ink)/[0.09] disabled:opacity-45",
-        )}
-        aria-label={playing ? "Pause audio" : "Play audio"}
-      >
-        {loading ? (
-          <CircleNotch size={14} className="animate-spin" />
-        ) : playing ? (
-          <Pause size={14} weight="fill" />
-        ) : (
-          <Play size={14} weight="fill" />
-        )}
-      </button>
-      <input
-        aria-label="Seek audio"
-        type="range"
-        min={0}
-        max={Math.max(duration, 0)}
-        step="0.1"
-        value={Math.min(current, duration || current)}
-        onChange={(event) => {
-          const audio = audioRef.current;
-          if (audio) {
-            audio.currentTime = Number(event.target.value);
-            setCurrent(audio.currentTime);
-          }
-        }}
-        style={seekStyle}
-        className={cn(
-          "h-1.5 min-w-8 flex-1 appearance-none rounded-full bg-transparent",
-          "[&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full",
-          "[&::-webkit-slider-thumb]:-mt-0.5 [&::-webkit-slider-thumb]:h-2.5",
-          "[&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none",
-          "[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-(color:--chat-accent)",
-          "[&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full",
-          "[&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5",
-          "[&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0",
-          "[&::-moz-range-thumb]:bg-(color:--chat-accent)",
-        )}
-      />
-      <span className="shrink-0 text-[10px] tabular-nums text-(color:--chat-ink)/56">
-        {formatTime(current)} / {duration > 0 ? formatTime(duration) : "–:––"}
-      </span>
+    <>
+      {audioElement}
       <span
-        className="hidden min-w-0 max-w-[100px] truncate text-[10px] text-(color:--chat-ink)/65 sm:block"
-        title={name}
-      >
-        {name}
-      </span>
-      <button
-        type="button"
-        onClick={() => {
-          const nextMuted = !muted;
-          setMuted(nextMuted);
-          if (audioRef.current) audioRef.current.muted = nextMuted;
-        }}
-        aria-label={muted ? "Unmute audio" : "Mute audio"}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded hover:bg-(color:--chat-ink)/[0.09]"
-      >
-        {muted ? <SpeakerSlash size={14} /> : <SpeakerHigh size={14} />}
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          const nextIndex = (rateIndex + 1) % rates.length;
-          setRateIndex(nextIndex);
-          if (audioRef.current) audioRef.current.playbackRate = rates[nextIndex]!;
-        }}
-        aria-label={`Playback speed ${rates[rateIndex]} times`}
-        className="shrink-0 rounded px-1 text-[10px] tabular-nums hover:bg-(color:--chat-ink)/[0.08]"
-      >
-        {rates[rateIndex]}×
-      </button>
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Open ${name} in Files`}
-        title="Open in Files"
         className={cn(
-          "shrink-0 rounded px-1.5 py-1 text-[10px] text-(color:--chat-ink)/60",
-          "hover:bg-(color:--chat-ink)/[0.08]",
+          "flex h-11 w-full max-w-[520px] min-w-0 items-center gap-2 rounded-lg border",
+          "border-(color:--chat-ink)/[0.1] bg-(color:--chat-ink)/[0.04] px-2 text-(color:--chat-ink)/82",
         )}
       >
-        Open
-      </button>
-    </span>
+        <button
+          type="button"
+          onClick={toggle}
+          disabled={loading}
+          className={cn(
+            "grid h-7 w-7 shrink-0 place-items-center rounded-full",
+            "hover:bg-(color:--chat-ink)/[0.09] disabled:opacity-45",
+          )}
+          aria-label={playing ? "Pause audio" : "Play audio"}
+        >
+          {loading ? (
+            <CircleNotch size={14} className="animate-spin" />
+          ) : playing ? (
+            <Pause size={14} weight="fill" />
+          ) : (
+            <Play size={14} weight="fill" />
+          )}
+        </button>
+        <input
+          aria-label="Seek audio"
+          type="range"
+          min={0}
+          max={Math.max(duration, 0)}
+          step="0.1"
+          value={Math.min(current, duration || current)}
+          onChange={(event) => {
+            const audio = audioRef.current;
+            if (audio) {
+              audio.currentTime = Number(event.target.value);
+              setCurrent(audio.currentTime);
+            }
+          }}
+          style={seekStyle}
+          className={cn(
+            "h-1.5 min-w-8 flex-1 appearance-none rounded-full bg-transparent",
+            "[&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full",
+            "[&::-webkit-slider-thumb]:-mt-0.5 [&::-webkit-slider-thumb]:h-2.5",
+            "[&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none",
+            "[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-(color:--chat-accent)",
+            "[&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full",
+            "[&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5",
+            "[&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0",
+            "[&::-moz-range-thumb]:bg-(color:--chat-accent)",
+          )}
+        />
+        <span className="shrink-0 text-[10px] tabular-nums text-(color:--chat-ink)/56">
+          {formatTime(current)} / {duration > 0 ? formatTime(duration) : "–:––"}
+        </span>
+        <span
+          className="hidden min-w-0 max-w-[100px] truncate text-[10px] text-(color:--chat-ink)/65 sm:block"
+          title={name}
+        >
+          {name}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            const nextMuted = !muted;
+            setMuted(nextMuted);
+            if (audioRef.current) audioRef.current.muted = nextMuted;
+          }}
+          aria-label={muted ? "Unmute audio" : "Mute audio"}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded hover:bg-(color:--chat-ink)/[0.09]"
+        >
+          {muted ? <SpeakerSlash size={14} /> : <SpeakerHigh size={14} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const nextIndex = (rateIndex + 1) % PLAYBACK_RATES.length;
+            setRateIndex(nextIndex);
+            if (audioRef.current) audioRef.current.playbackRate = PLAYBACK_RATES[nextIndex]!;
+          }}
+          aria-label={`Playback speed ${PLAYBACK_RATES[rateIndex]} times`}
+          className="shrink-0 rounded px-1 text-[10px] tabular-nums hover:bg-(color:--chat-ink)/[0.08]"
+        >
+          {PLAYBACK_RATES[rateIndex]}×
+        </button>
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Open ${name} in Files`}
+          title="Open in Files"
+          className={cn(
+            "shrink-0 rounded px-1.5 py-1 text-[10px] text-(color:--chat-ink)/60",
+            "hover:bg-(color:--chat-ink)/[0.08]",
+          )}
+        >
+          Open
+        </button>
+      </span>
+    </>
   );
+}
+
+/** Tracks whether the component is still mounted, for work that outlives it. */
+function useMountedRef() {
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return mountedRef;
 }
 
 function useNearViewport<T extends HTMLElement>() {

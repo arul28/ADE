@@ -1,67 +1,148 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  ArrowsOut,
   Check,
   Code,
   Copy,
   DownloadSimple,
   Eye,
   GridFour,
-  MagnifyingGlassMinus,
-  MagnifyingGlassPlus,
 } from "@phosphor-icons/react";
 import { showToast } from "../../../app/toast/toastStore";
 import { copyPictureToClipboard, saveMediaAs } from "../../../ui/MediaLightbox";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
+import { formatBytes } from "../../../../../shared/formatting";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../../../shared/chatAttachmentLimits";
+import { base64ToBytes, bytesToBase64 } from "../../../../lib/base64";
+import type { PinnedFilesApi } from "../pinnedFilesApi";
 import { streamFileBytes } from "../streamBytes";
+import { CONVERTED_IMAGE_EXTS, extensionOf } from "../viewerRegistry";
 import type { FileContent } from "../../../../../shared/types";
 import type { ViewerProps } from "./types";
 import { CodeViewer } from "./CodeViewer";
 import { DocumentSurface } from "./DocumentSurface";
+import { usePanZoom } from "./usePanZoom";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
+import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
-import { cssZoomOf } from "../../../../lib/webZoom";
 
-const MIN_SCALE = 0.1;
-const MAX_SCALE = 12;
-const MAX_IMAGE_STREAM_BYTES = 25 * 1024 * 1024;
+/** SVG is held whole (as an image and as Source text). */
+const MAX_SVG_BYTES = 25 * 1024 * 1024;
+/** Raster images without inline bytes stream into a blob URL up to this size. */
+const MAX_RASTER_PREVIEW_BYTES = 100 * 1024 * 1024;
+/**
+ * TIFF/HEIC bytes cross IPC as base64 to the main-process converter, which
+ * refuses anything over the legacy attachment cap.
+ */
+const MAX_CONVERTED_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 const ALPHA_IMAGE_EXTS = /\.(?:svg|png|webp|gif)$/i;
 type Mode = "image" | "source";
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+type ImageLoadContext = {
+  files: PinnedFilesApi;
+  workspaceId: string;
+  path: string;
+  title: string;
+  mimeType: string;
+  size: number;
+  /** The inline payload, or null when the bytes must be streamed. */
+  inline: { content: string; encoding: FileContent["encoding"] } | null;
+  isCancelled: () => boolean;
+};
+
+/** A ready image source; `objectUrl` sources must be revoked by the caller. */
+type LoadedImage = {
+  src: string;
+  objectUrl: boolean;
+  svgText?: string;
+  converted?: boolean;
+};
+
+/** SVG keeps its original bytes for the <img> and decodes them once for Source mode. */
+async function loadSvg(ctx: ImageLoadContext): Promise<LoadedImage | null> {
+  const bytes = ctx.inline
+    ? ctx.inline.encoding === "base64"
+      ? base64ToBytes(ctx.inline.content)
+      : new TextEncoder().encode(ctx.inline.content)
+    : await streamFileBytes(ctx.files, ctx.workspaceId, ctx.path, {
+        isCancelled: ctx.isCancelled,
+        maxBytes: MAX_SVG_BYTES,
+      });
+  if (ctx.isCancelled()) return null;
+  return {
+    src: URL.createObjectURL(new Blob([bytes], { type: "image/svg+xml" })),
+    objectUrl: true,
+    svgText: new TextDecoder("utf-8").decode(bytes),
+  };
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    const chunk = bytes.subarray(
-      offset,
-      Math.min(offset + 0x8000, bytes.length),
+/** TIFF/HEIC: stream the bytes and have the host convert them to JPEG. */
+async function loadConverted(
+  ctx: ImageLoadContext,
+): Promise<LoadedImage | null> {
+  const format = /^tiff?$/.test(extensionOf(ctx.path)) ? "TIFF" : "HEIC";
+  // Reject by declared size before streaming bytes the converter would refuse.
+  if (ctx.size > MAX_CONVERTED_IMAGE_BYTES) {
+    throw new Error(
+      `This ${format} image is ${formatBytes(ctx.size)}. ADE converts images up to ${formatBytes(MAX_CONVERTED_IMAGE_BYTES)} for preview.`,
     );
-    binary += String.fromCharCode(...chunk);
   }
-  return btoa(binary);
+  const bytes = await streamFileBytes(ctx.files, ctx.workspaceId, ctx.path, {
+    isCancelled: ctx.isCancelled,
+    maxBytes: MAX_CONVERTED_IMAGE_BYTES,
+  });
+  if (ctx.isCancelled()) return null;
+  const convert = window.ade.app.convertImageToJpeg;
+  if (!convert)
+    throw new Error("Image conversion is unavailable on this system.");
+  const result = await convert({
+    data: bytesToBase64(bytes),
+    filename: ctx.path.split(/[\\/]/).pop() ?? ctx.title,
+    mimeType: ctx.mimeType,
+  });
+  if (!result.ok) {
+    throw new Error(
+      result.errorCode === "unavailable"
+        ? `This system can't decode ${format} images in ADE.`
+        : "ADE could not convert this image for preview.",
+    );
+  }
+  if (ctx.isCancelled()) return null;
+  return {
+    src: URL.createObjectURL(
+      new Blob([base64ToBytes(result.data)], {
+        type: result.mimeType || "image/jpeg",
+      }),
+    ),
+    objectUrl: true,
+    converted: true,
+  };
 }
 
-function decodeBase64Utf8(value: string): string {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+/**
+ * Raster images use inline base64 as a data URL when the payload has it;
+ * otherwise they stream bounded bytes into a temporary blob URL.
+ */
+async function loadRaster(ctx: ImageLoadContext): Promise<LoadedImage | null> {
+  if (ctx.inline?.encoding === "base64") {
+    return {
+      src: `data:${ctx.mimeType};base64,${ctx.inline.content}`,
+      objectUrl: false,
+    };
   }
-  return new TextDecoder("utf-8").decode(bytes);
-}
-
-function decodeBase64Bytes(value: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(value);
-  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (ctx.size > MAX_RASTER_PREVIEW_BYTES) {
+    throw new Error(
+      `Image is too large for inline preview (${formatBytes(ctx.size)}).`,
+    );
   }
-  return bytes;
+  const bytes = await streamFileBytes(ctx.files, ctx.workspaceId, ctx.path, {
+    isCancelled: ctx.isCancelled,
+    maxBytes: MAX_RASTER_PREVIEW_BYTES,
+  });
+  if (ctx.isCancelled()) return null;
+  return {
+    src: URL.createObjectURL(new Blob([bytes], { type: ctx.mimeType })),
+    objectUrl: true,
+  };
 }
 
 /** Toolbar for image controls shared by raster and SVG previews. */
@@ -70,7 +151,9 @@ function ImageToolbar({
   mode,
   setMode,
   scale,
-  onZoom,
+  fit,
+  onZoomIn,
+  onZoomOut,
   onFit,
   checkerboard,
   onToggleCheckerboard,
@@ -85,7 +168,9 @@ function ImageToolbar({
   mode: Mode;
   setMode: (mode: Mode) => void;
   scale: number;
-  onZoom: (factor: number) => void;
+  fit: boolean;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
   onFit: () => void;
   checkerboard: boolean;
   onToggleCheckerboard: () => void;
@@ -119,36 +204,13 @@ function ImageToolbar({
       ) : null}
       {mode === "image" ? (
         <>
-          <button
-            type="button"
-            onClick={() => onZoom(1 / 1.2)}
-            title="Zoom out"
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <MagnifyingGlassMinus size={15} />
-          </button>
-          <span
-            className="w-12 text-center text-xs tabular-nums"
-            style={{ color: COLORS.textMuted }}
-          >
-            {Math.round(scale * 100)}%
-          </span>
-          <button
-            type="button"
-            onClick={() => onZoom(1.2)}
-            title="Zoom in"
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <MagnifyingGlassPlus size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={onFit}
-            title="Fit to window"
-            className="rounded p-1 hover:bg-fg/5"
-          >
-            <ArrowsOut size={15} />
-          </button>
+          <ZoomControls
+            percent={scale * 100}
+            onZoomOut={onZoomOut}
+            onZoomIn={onZoomIn}
+            onFit={onFit}
+            fitActive={fit}
+          />
           <button
             type="button"
             onClick={onToggleCheckerboard}
@@ -210,10 +272,7 @@ function ImageCanvas({
   transform,
   checkerboard,
   onError,
-  onWheel,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
+  panHandlers,
 }: {
   src: string | null;
   error: string | null;
@@ -224,10 +283,7 @@ function ImageCanvas({
   transform: string | undefined;
   checkerboard: boolean;
   onError: () => void;
-  onWheel: (event: React.WheelEvent) => void;
-  onPointerDown: (event: React.PointerEvent) => void;
-  onPointerMove: (event: React.PointerEvent) => void;
-  onPointerUp: () => void;
+  panHandlers: ReturnType<typeof usePanZoom>["panHandlers"];
 }) {
   return (
     <div
@@ -238,10 +294,7 @@ function ImageCanvas({
           ? "conic-gradient(#8882 25%, transparent 0 50%, #8882 0 75%, transparent 0) 0 0 / 18px 18px"
           : undefined,
       }}
-      onWheel={onWheel}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
+      {...panHandlers}
     >
       {error ? (
         <div className="text-sm" style={{ color: COLORS.danger }}>
@@ -277,14 +330,13 @@ function ImageCanvas({
 /** Image viewer with fit/zoom/pan and trackpad pinch (ctrl+wheel) + drag-pan. */
 export function ImageViewer(props: ViewerProps) {
   const { files, workspaceId, rootPath, content, tab } = props;
-  const isSvg = /\.svg$/i.test(tab.path);
-  const isConverted = /\.(?:tif|tiff|heic|heif)$/i.test(tab.path);
+  const extension = extensionOf(tab.path);
+  const isSvg = extension === "svg";
+  const isConverted = CONVERTED_IMAGE_EXTS.has(extension);
   const [mode, setModeState] = useState<Mode>(() =>
     readViewerMode<Mode>(tab.id, "image"),
   );
-  const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [fit, setFit] = useState(true);
+  const view = usePanZoom();
   const [src, setSrc] = useState<string | null>(null);
   const [svgText, setSvgText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -293,12 +345,6 @@ export function ImageViewer(props: ViewerProps) {
   const [checkerboard, setCheckerboard] = useState(() =>
     ALPHA_IMAGE_EXTS.test(tab.path),
   );
-  const dragRef = useRef<{
-    x: number;
-    y: number;
-    ox: number;
-    oy: number;
-  } | null>(null);
   const mimeType = content.mimeType ?? "application/octet-stream";
 
   const setMode = (next: Mode) => {
@@ -311,123 +357,50 @@ export function ImageViewer(props: ViewerProps) {
     setCheckerboard(ALPHA_IMAGE_EXTS.test(tab.path));
   }, [tab.path]);
 
-  // Build an image URL from inline bytes or the pinned file stream. SVG is decoded
-  // independently for Source mode, while its original bytes remain in an <img>.
+  // Build an image URL from inline bytes or the pinned file stream.
   useEffect(() => {
-    let revoked: string | null = null;
+    let objectUrl: string | null = null;
     let cancelled = false;
     setSrc(null);
     setSvgText(null);
     setError(null);
     setConverted(false);
 
-    const load = async () => {
-      try {
-        if (isSvg) {
-          let bytes: Uint8Array<ArrayBuffer>;
-          if (
-            content.content &&
-            content.encoding === "base64" &&
-            !content.contentOmitted
-          ) {
-            bytes = decodeBase64Bytes(content.content);
-          } else if (
-            content.content &&
-            content.encoding !== "base64" &&
-            !content.contentOmitted
-          ) {
-            bytes = new TextEncoder().encode(content.content);
-          } else {
-            bytes = await streamFileBytes(files, workspaceId, tab.path, {
-              isCancelled: () => cancelled,
-              maxBytes: MAX_IMAGE_STREAM_BYTES,
-            });
-          }
-          if (cancelled) return;
-          const text =
-            content.encoding === "base64" &&
-            content.content &&
-            !content.contentOmitted
-              ? decodeBase64Utf8(content.content)
-              : new TextDecoder("utf-8").decode(bytes);
-          revoked = URL.createObjectURL(
-            new Blob([bytes], { type: "image/svg+xml" }),
-          );
-          setSvgText(text);
-          setSrc(revoked);
+    const ctx: ImageLoadContext = {
+      files,
+      workspaceId,
+      path: tab.path,
+      title: tab.title,
+      mimeType,
+      size: content.size,
+      inline:
+        content.content && !content.contentOmitted
+          ? { content: content.content, encoding: content.encoding }
+          : null,
+      isCancelled: () => cancelled,
+    };
+    const load = isSvg ? loadSvg : isConverted ? loadConverted : loadRaster;
+    load(ctx).then(
+      (loaded) => {
+        if (!loaded) return;
+        if (cancelled) {
+          if (loaded.objectUrl) URL.revokeObjectURL(loaded.src);
           return;
         }
-
-        if (isConverted) {
-          if (content.size > MAX_IMAGE_STREAM_BYTES) {
-            throw new Error(
-              `Image is larger than the ${formatBytes(MAX_IMAGE_STREAM_BYTES)} preview limit.`,
-            );
-          }
-          const bytes = await streamFileBytes(files, workspaceId, tab.path, {
-            isCancelled: () => cancelled,
-            maxBytes: MAX_IMAGE_STREAM_BYTES,
-          });
-          if (cancelled) return;
-          const convert = window.ade.app.convertImageToJpeg;
-          if (!convert)
-            throw new Error("Image conversion is unavailable on this system.");
-          const result = await convert({
-            data: bytesToBase64(bytes),
-            filename: tab.path.split(/[\\/]/).pop() ?? tab.title,
-            mimeType,
-          });
-          if (!result.ok) {
-            const format = /\.(?:tif|tiff)$/i.test(tab.path) ? "TIFF" : "HEIC";
-            const reason =
-              result.errorCode === "unavailable"
-                ? `This system can't decode ${format} images in ADE.`
-                : "ADE could not convert this image for preview.";
-            throw new Error(reason);
-          }
-          if (cancelled) return;
-          const jpegBytes = decodeBase64Bytes(result.data);
-          revoked = URL.createObjectURL(
-            new Blob([jpegBytes], { type: result.mimeType || "image/jpeg" }),
-          );
-          setSrc(revoked);
-          setConverted(true);
-          return;
-        }
-
-        // Build the image source from inline base64 when available; otherwise
-        // stream bounded bytes and use a temporary blob URL for the preview.
-        if (
-          content.content &&
-          content.encoding === "base64" &&
-          !content.contentOmitted
-        ) {
-          setSrc(`data:${mimeType};base64,${content.content}`);
-          return;
-        }
-        const maxBytes = 100 * 1024 * 1024;
-        if (content.size > maxBytes) {
-          throw new Error(
-            `Image is too large for inline preview (${formatBytes(content.size)}).`,
-          );
-        }
-        const bytes = await streamFileBytes(files, workspaceId, tab.path, {
-          isCancelled: () => cancelled,
-          maxBytes,
-        });
-        if (cancelled) return;
-        revoked = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
-        setSrc(revoked);
-      } catch (err) {
+        if (loaded.objectUrl) objectUrl = loaded.src;
+        setSrc(loaded.src);
+        setSvgText(loaded.svgText ?? null);
+        setConverted(loaded.converted === true);
+      },
+      (err: unknown) => {
         if (!cancelled)
           setError(err instanceof Error ? err.message : String(err));
-      }
-    };
+      },
+    );
 
-    void load();
     return () => {
       cancelled = true;
-      if (revoked) URL.revokeObjectURL(revoked);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [
     files,
@@ -442,46 +415,6 @@ export function ImageViewer(props: ViewerProps) {
     isSvg,
     isConverted,
   ]);
-
-  const setZoom = (factor: number) => {
-    setFit(false);
-    setScale((previous) =>
-      Math.min(MAX_SCALE, Math.max(MIN_SCALE, previous * factor)),
-    );
-  };
-
-  const onWheel = (event: React.WheelEvent) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    setZoom(event.deltaY < 0 ? 1.12 : 1 / 1.12);
-  };
-
-  const onPointerDown = (event: React.PointerEvent) => {
-    if (fit) return;
-    dragRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      ox: offset.x,
-      oy: offset.y,
-    };
-    (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
-  };
-
-  const onPointerMove = (event: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    const zoom = cssZoomOf();
-    setOffset({
-      x: drag.ox + (event.clientX - drag.x) / zoom,
-      y: drag.oy + (event.clientY - drag.y) / zoom,
-    });
-  };
-
-  const resetFit = () => {
-    setFit(true);
-    setScale(1);
-    setOffset({ x: 0, y: 0 });
-  };
 
   const fileName = tab.path.split(/[\\/]/).pop() || tab.title;
   const copy = async () => {
@@ -499,13 +432,6 @@ export function ImageViewer(props: ViewerProps) {
     }
   };
 
-  const transform = useMemo(
-    () =>
-      fit
-        ? undefined
-        : `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-    [fit, offset.x, offset.y, scale],
-  );
   const svgContent: FileContent | null =
     svgText == null
       ? null
@@ -536,9 +462,11 @@ export function ImageViewer(props: ViewerProps) {
         isSvg={isSvg}
         mode={mode}
         setMode={setMode}
-        scale={scale}
-        onZoom={setZoom}
-        onFit={resetFit}
+        scale={view.scale}
+        fit={view.fit}
+        onZoomIn={view.zoomIn}
+        onZoomOut={view.zoomOut}
+        onFit={view.reset}
         checkerboard={checkerboard}
         onToggleCheckerboard={() => setCheckerboard((value) => !value)}
         size={content.size}
@@ -557,20 +485,15 @@ export function ImageViewer(props: ViewerProps) {
           src={src}
           error={error}
           title={tab.title}
-          fit={fit}
-          scale={scale}
-          offset={offset}
-          transform={transform}
+          fit={view.fit}
+          scale={view.scale}
+          offset={view.offset}
+          transform={view.transform}
           checkerboard={checkerboard}
           onError={() =>
             setError("This image format could not be decoded by the viewer.")
           }
-          onWheel={onWheel}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={() => {
-            dragRef.current = null;
-          }}
+          panHandlers={view.panHandlers}
         />
       )}
     </div>

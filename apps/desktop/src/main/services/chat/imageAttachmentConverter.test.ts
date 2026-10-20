@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { HeicAttachmentConversionError } from "./heicAttachmentConverter";
-import { convertHeicBufferToJpeg } from "./heicAttachmentConverter";
+import type { ImageAttachmentConversionError } from "./imageAttachmentConverter";
+import { convertImageBufferToJpeg } from "./imageAttachmentConverter";
 
-describe("convertHeicBufferToJpeg", () => {
+describe("convertImageBufferToJpeg", () => {
   let tempRoot: string;
 
   beforeEach(async () => {
@@ -25,7 +25,7 @@ describe("convertHeicBufferToJpeg", () => {
       await fs.promises.writeFile(outputPath, jpeg);
     });
 
-    await expect(convertHeicBufferToJpeg(
+    await expect(convertImageBufferToJpeg(
       source,
       "../IMG_0001.HEIF",
       "image/heif",
@@ -43,15 +43,15 @@ describe("convertHeicBufferToJpeg", () => {
   it.each(["win32", "linux"] as const)("fails honestly on %s without the bundled HEIF decoder", async (platform) => {
     const runSips = vi.fn();
 
-    await expect(convertHeicBufferToJpeg(
+    await expect(convertImageBufferToJpeg(
       Buffer.from("synthetic-heic"),
       "photo.heic",
       "image/heic",
       { platform, tempRoot, runSips },
     )).rejects.toMatchObject({
       code: "unavailable",
-      name: "HeicAttachmentConversionError",
-    } satisfies Partial<HeicAttachmentConversionError>);
+      name: "ImageAttachmentConversionError",
+    } satisfies Partial<ImageAttachmentConversionError>);
 
     expect(runSips).not.toHaveBeenCalled();
     await expect(fs.promises.readdir(tempRoot)).resolves.toEqual([]);
@@ -62,15 +62,15 @@ describe("convertHeicBufferToJpeg", () => {
       await fs.promises.writeFile(outputPath, "not-an-image");
     });
 
-    await expect(convertHeicBufferToJpeg(
+    await expect(convertImageBufferToJpeg(
       Buffer.from("synthetic-heic"),
       "photo.heic",
       undefined,
       { platform: "darwin", tempRoot, runSips },
     )).rejects.toMatchObject({
       code: "failed",
-      name: "HeicAttachmentConversionError",
-    } satisfies Partial<HeicAttachmentConversionError>);
+      name: "ImageAttachmentConversionError",
+    } satisfies Partial<ImageAttachmentConversionError>);
 
     expect(runSips).toHaveBeenCalledOnce();
     await expect(fs.promises.readdir(tempRoot)).resolves.toEqual([]);

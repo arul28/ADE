@@ -31,9 +31,6 @@ function sendsImageBytes(attachment: AgentChatFileRef): boolean {
   return attachment.type === "image" && !attachmentIsReferenceOnly(attachment);
 }
 
-/** MIME types the Anthropic API accepts for inline image content blocks. */
-export const ANTHROPIC_IMAGE_MEDIA_TYPES = PROVIDER_IMAGE_BYTE_MEDIA_TYPES;
-
 /** Non-image extension-to-MIME lookup used by inferAttachmentMediaType. */
 const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
   ".c": "text/x-c",
@@ -133,7 +130,7 @@ export async function buildClaudeV2MessageAsync(
 
     try {
       const mediaType = inferAttachmentMediaType(attachment);
-      if (!ANTHROPIC_IMAGE_MEDIA_TYPES.has(mediaType)) {
+      if (!PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(mediaType)) {
         content.push({
           type: "text",
           text: `\n${labelPrefix(token)}${imageAttachmentReferenceText(attachment.path, mediaType)}`,

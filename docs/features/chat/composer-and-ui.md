@@ -1939,8 +1939,9 @@ spelling out the model id and the flags.
 
 ### Local files an agent embeds
 
-When a reply embeds a file on disk (`![tone](/abs/out.wav)`,
-`![](preview-fixtures/chart.png)`, a `file:` URL), `chatMarkdownBlock.tsx`'s
+When a reply uses markdown image syntax for a file on disk (an absolute path
+such as `/abs/out.wav`, a workspace-relative path, or a `file:` URL),
+`chatMarkdownBlock.tsx`'s
 `img` override hands it to `ChatInlineMedia.tsx` instead of drawing an `<img>`
 the CSP would block. Remote `http(s)`/`data:` images and `ade-proof://`
 citations keep their own paths.

@@ -6,6 +6,7 @@ import {
   PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX,
   formatAttachmentSize,
 } from "../../../shared/chatAttachmentLimits";
+import { sniffImageMimeType } from "../../../shared/imageSniff";
 import { imageDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
 
@@ -57,9 +58,21 @@ export const PROVIDER_IMAGE_BYTE_MEDIA_TYPES = new Set([
   "image/webp",
 ]);
 
+/**
+ * Canonical form of a declared image MIME type: lower case, parameters
+ * dropped, and the common non-standard `image/jpg` spelled `image/jpeg` (the
+ * only spelling providers accept). Null for anything that is not `image/*`.
+ */
+export function normalizeImageMediaType(mediaType: string | null | undefined): string | null {
+  const normalized = mediaType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (!normalized.startsWith("image/")) return null;
+  return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
 /** Return whether a provider accepts this MIME type as image bytes. */
 export function isProviderImageByteMediaType(mediaType: string): boolean {
-  return PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(mediaType.trim().toLowerCase());
+  const normalized = normalizeImageMediaType(mediaType);
+  return normalized !== null && PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(normalized);
 }
 
 export type FitImageOptions = {
@@ -90,9 +103,10 @@ export async function fitImageForProviderInline(
   return fit;
 }
 
-async function fitImage(bytes: Buffer, mediaType: string): Promise<ProviderInlineImageFit> {
-  if (!isProviderImageByteMediaType(mediaType)) {
-    return { kind: "omit", reason: `unsupported image MIME type ${mediaType}` };
+async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<ProviderInlineImageFit> {
+  const mediaType = normalizeImageMediaType(declaredMediaType);
+  if (!mediaType || !PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(mediaType)) {
+    return { kind: "omit", reason: `unsupported image MIME type ${declaredMediaType}` };
   }
   const dims = imageDimensions(bytes) ?? gifOrWebpDimensions(bytes);
   const longEdge = dims ? Math.max(dims.width, dims.height) : 0;
@@ -106,7 +120,7 @@ async function fitImage(bytes: Buffer, mediaType: string): Promise<ProviderInlin
   };
   // The bytes pick the codec, not the declared type: a PNG labelled image/jpeg
   // must not reach the JPEG decoder. The declared type is only a fallback.
-  const actualMediaType = sniffImageMediaType(bytes) ?? mediaType;
+  const actualMediaType = sniffImageMimeType(bytes) ?? mediaType;
   const isPng = actualMediaType === "image/png";
   const isJpeg = actualMediaType === "image/jpeg";
   if (!dims || (!isPng && !isJpeg)) {
@@ -163,15 +177,6 @@ async function fitImage(bytes: Buffer, mediaType: string): Promise<ProviderInlin
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
-}
-
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** The codec the bytes actually are, from their magic number; null for anything else. */
-function sniffImageMediaType(bytes: Buffer): string | null {
-  if (bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return "image/png";
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-  return null;
 }
 
 /**

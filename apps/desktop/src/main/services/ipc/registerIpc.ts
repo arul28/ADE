@@ -92,8 +92,10 @@ import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
   convertImageBufferToJpeg,
+  imageBytesToDataUrl,
   ImageAttachmentConversionError,
-} from "../chat/heicAttachmentConverter";
+} from "../chat/imageAttachmentConverter";
+import { sniffImageMimeType } from "../../../shared/imageSniff";
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
@@ -3865,67 +3867,6 @@ export function registerIpc({
     return resolveWithinAllowedDirs(getAllowedDirs(getCtx), normalized);
   };
 
-  /**
-   * Sniff the first bytes of a buffer for known image magic numbers and
-   * return the corresponding MIME type. Returns null if the buffer doesn't
-   * match any supported image format.
-   *
-   * We deliberately do NOT trust the file extension here — extension-only
-   * inference would let a renderer hand us any allow-listed file (text,
-   * binary, etc.) and get it back as a base64 `image/png` data URL.
-   */
-  const sniffImageMimeType = (buffer: Buffer): string | null => {
-    if (buffer.length >= 8
-      && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
-      && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
-      return "image/png";
-    }
-    if (buffer.length >= 3
-      && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-      return "image/jpeg";
-    }
-    if (buffer.length >= 6
-      && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
-      && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
-      return "image/gif";
-    }
-    if (buffer.length >= 12
-      && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
-      && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-      return "image/webp";
-    }
-    if (buffer.length >= 4
-      && ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00)
-        || (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A))) {
-      return "image/tiff";
-    }
-    if (buffer.length >= 12 && buffer.toString("ascii", 4, 8) === "ftyp") {
-      const brand = buffer.toString("ascii", 8, 12);
-      if (["heic", "heix", "mif1", "msf1"].includes(brand)) {
-        return brand === "mif1" || brand === "msf1" ? "image/heif" : "image/heic";
-      }
-    }
-    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
-      return "image/bmp";
-    }
-    if (buffer.length >= 4
-      && buffer[0] === 0x00 && buffer[1] === 0x00
-      && buffer[2] === 0x01 && buffer[3] === 0x00) {
-      return "image/x-icon";
-    }
-    // SVG/XML: scan a small prefix as text so leading whitespace, BOM, or an
-    // <?xml ... ?> declaration before <svg ...> are tolerated.
-    const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
-    const stripped = head.replace(/^﻿/, "").trimStart();
-    if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
-      return "image/svg+xml";
-    }
-    if (/^<svg\b/i.test(stripped)) {
-      return "image/svg+xml";
-    }
-    return null;
-  };
-
   // Both of these are the base64/in-memory ceiling, single-sourced from
   // `chatAttachmentLimits` so the constant and the message can never drift.
   const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
@@ -4103,7 +4044,7 @@ export function registerIpc({
           content,
           filename,
           arg.mimeType,
-          { tempRoot: app.getPath("temp") },
+          { logger: getCtx().logger },
         );
         return {
           ok: true,
@@ -4142,27 +4083,10 @@ export function registerIpc({
     // file's *bytes*, not its extension, so a renderer can't smuggle
     // arbitrary text/binary back as a base64 `image/png` data URL.
     const { data, mimeType } = await readImageFileAndSniffMime(filePath);
-    if (mimeType === "image/tiff" || mimeType === "image/heic" || mimeType === "image/heif") {
-      try {
-        const converted = await convertImageBufferToJpeg(
-          data,
-          path.basename(filePath),
-          mimeType,
-          { tempRoot: app.getPath("temp") },
-        );
-        return {
-          dataUrl: `data:${converted.mimeType};base64,${converted.data.toString("base64")}`,
-        };
-      } catch (error) {
-        if (error instanceof ImageAttachmentConversionError && error.code === "unavailable") {
-          throw new Error("TIFF and HEIC image previews are available on macOS only.");
-        }
-        throw error;
-      }
-    }
-    return {
-      dataUrl: `data:${mimeType};base64,${data.toString("base64")}`,
-    };
+    const { dataUrl } = await imageBytesToDataUrl(data, path.basename(filePath), mimeType, {
+      logger: getCtx().logger,
+    });
+    return { dataUrl };
   });
 
   ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {

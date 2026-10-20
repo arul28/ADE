@@ -314,7 +314,7 @@ import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRem
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
-import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
 import {
   createChunkedAttachmentStagingRegistry,
   readAttachmentChunk,
@@ -5404,8 +5404,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .generateAutoLaneIdentity(parseSuggestLaneNameArgs(payload)));
   register("chat.getImageDataUrl", { viewerAllowed: true }, async (payload) => {
     const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getImageDataUrl");
-    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
-    return { dataUrl: `data:${mimeType};base64,${data.toString("base64")}` };
+    const { dataUrl } = await readImageFileAsDataUrl(filePath, args.logger);
+    return { dataUrl };
   });
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

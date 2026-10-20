@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Lock } from "@phosphor-icons/react";
+import { base64ToBytes } from "../../../../lib/base64";
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
 
@@ -11,12 +12,7 @@ const MAX_STREAM_BYTES = 25 * 1024 * 1024;
 
 export function decodeFileRangeContent(content: string, encoding: "utf-8" | "base64"): string {
   if (encoding === "utf-8") return content;
-  const binary = atob(content);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new TextDecoder().decode(bytes);
+  return new TextDecoder().decode(base64ToBytes(content));
 }
 
 function formatBytes(n: number): string {

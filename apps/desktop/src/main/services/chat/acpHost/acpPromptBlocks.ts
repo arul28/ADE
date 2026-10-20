@@ -9,20 +9,26 @@
  * request.
  */
 
-import path from "node:path";
 import {
   attachmentAgentPath,
   attachmentIsReferenceOnly,
   attachmentPathHint,
+  getImageAttachmentMediaType,
   type AgentChatFileRef,
 } from "../../../../shared/types/chat";
 import { labelAttachments } from "../../../../shared/attachmentLabels";
 import { hasNullByte } from "../../shared/utils";
 import {
+  imageAttachmentReferenceText,
   imageNotInlinedHintPart,
   inlineAttachmentHintPart,
 } from "../attachmentInlineGuard";
-import { fitImageForProviderInline } from "../providerInlineImage";
+import {
+  fitImageForProviderInline,
+  isProviderImageByteMediaType,
+  normalizeImageMediaType,
+} from "../providerInlineImage";
+import { sniffImageMimeType } from "../../../../shared/imageSniff";
 import type { AcpImagePromptBehavior } from "./acpHostTypes";
 import type { AcpContentBlock } from "./acpProtocolTypes";
 
@@ -35,20 +41,13 @@ type AcpTextBlock = Extract<AcpContentBlock, { type: "text" }>;
 
 const MAX_INLINE_TEXT_BYTES = 512 * 1024;
 
-function imageMimeType(filePath: string): string {
-  const extension = path.extname(filePath.split(/[?#]/u, 1)[0] ?? "").toLowerCase();
-  switch (extension) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".png":
-    default:
-      return "image/png";
-  }
+/**
+ * The image type an attachment is sent as: the sender's MIME when it gave one,
+ * else the extension's. Null when neither names an image type.
+ */
+function imageMimeType(filePath: string, declared?: string | null): string | null {
+  return normalizeImageMediaType(declared)
+    || getImageAttachmentMediaType(filePath.split(/[?#]/u, 1)[0] ?? "");
 }
 
 function textBlock(text: string): AcpTextBlock {
@@ -83,12 +82,18 @@ export async function buildAcpPromptBlocks(
       if (!url) {
         blocks.push(attachmentUnavailableText(attachment));
       } else if (args.agentSupportsImages && args.imagePrompt) {
+        const mimeType = imageMimeType(url);
+        if (mimeType && !isProviderImageByteMediaType(mimeType)) {
+          blocks.push(textBlock(`\n${imageAttachmentReferenceText(url, mimeType)}`));
+          continue;
+        }
         // ACP peers can resolve a URI without ADE downloading arbitrary user
         // URLs in the main process. The empty data field is required by the
-        // protocol schema; the URI is the actual image source.
+        // protocol schema; the URI is the actual image source. A URL with no
+        // image suffix keeps the PNG hint; the peer reads the real type.
         blocks.push(args.imagePrompt({
           base64Data: "",
-          mimeType: imageMimeType(url),
+          mimeType: mimeType ?? "image/png",
           uri: url,
         }));
       } else {
@@ -103,15 +108,30 @@ export async function buildAcpPromptBlocks(
       continue;
     }
 
+    // TIFF, HEIC, BMP, ICO and SVG are not image bytes any provider accepts:
+    // the agent gets the path and opens the file with its own tools.
+    const declaredImageMimeType = attachment.type === "image"
+      ? imageMimeType(attachmentAgentPath(attachment), attachment.mimeType)
+      : null;
+    if (declaredImageMimeType && !isProviderImageByteMediaType(declaredImageMimeType)) {
+      blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachment.path, declaredImageMimeType)}`));
+      continue;
+    }
+
     try {
       const bytes = await args.readAttachmentBytes(attachment);
       if (attachment.type === "image") {
-        if (!args.agentSupportsImages || !args.imagePrompt) {
+        // No type from the sender or the name: the bytes decide, and bytes
+        // that are no provider image type stay a path reference.
+        const mimeType = declaredImageMimeType ?? sniffImageMimeType(bytes);
+        if (!mimeType || !isProviderImageByteMediaType(mimeType)) {
+          blocks.push(textBlock(`\n${imageAttachmentReferenceText(attachment.path, mimeType ?? "unknown type")}`));
+        } else if (!args.agentSupportsImages || !args.imagePrompt) {
           blocks.push(textBlock(`\nImage attachment omitted: ${attachment.path} (this provider does not support image prompts).`));
         } else {
           // ACP agents may route to an Anthropic model, which rejects an image
           // over 5 MB of base64, so images are fitted before they are inlined.
-          const fitted = await fitImageForProviderInline(bytes, imageMimeType(attachmentAgentPath(attachment)), { provider: "acp" });
+          const fitted = await fitImageForProviderInline(bytes, mimeType, { provider: "acp" });
           blocks.push(fitted.kind === "omit"
             ? imageNotInlinedHintPart(attachment.path, fitted.reason)
             : args.imagePrompt({

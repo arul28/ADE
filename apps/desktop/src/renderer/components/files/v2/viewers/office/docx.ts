@@ -1,6 +1,8 @@
 // Bounded, dependency-free reader for the WordprocessingML subset ADE previews.
 // File parts are untrusted: limits here bound model size and work per preview.
 import { OoxmlError } from "./ooxmlError";
+import { ooxmlMediaMimeType } from "./ooxmlMedia";
+import { parseRelationships } from "./ooxmlPackage";
 import {
   parseXml,
   elementsNS,
@@ -10,7 +12,7 @@ import {
 } from "./ooxmlXml";
 import { openOoxmlZip, ZIP_MAX_MEDIA_BYTES } from "./ooxmlZip";
 
-export const WORD_PREVIEW_MAX_BLOCKS = 20_000;
+const WORD_PREVIEW_MAX_BLOCKS = 20_000;
 /** Keep a document with millions of short runs from dominating renderer memory. */
 const MAX_TEXT_CHARS = 2_000_000;
 /** Bound one pathological table and the total number of cells materialized. */
@@ -22,8 +24,6 @@ const MAX_NESTING = 4;
 /** Yield while scanning long bodies and tables so rendering can continue. */
 const BLOCKS_PER_YIELD = 250;
 const DOC_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const REL_NS =
-  "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const EMU_PER_INCH = 914_400;
 const TWIPS_PER_INCH = 1_440;
 
@@ -42,7 +42,13 @@ export type WordRun = {
 };
 export type WordParagraph = {
   kind: "paragraph";
+  /**
+   * `heading-N`, unique within the document, on body headings only (the
+   * outline's targets). Headings inside table cells get none.
+   */
   id: string | null;
+  /** Every bookmark that starts in this paragraph (internal link targets). */
+  bookmarks: string[];
   headingLevel: number | null;
   style: "normal" | "title" | "subtitle" | "heading";
   align: "left" | "center" | "right" | "justify";
@@ -106,7 +112,6 @@ export type WordDocument = {
   pageWidthPx: number;
   pageHeightPx: number;
   marginsPx: { top: number; right: number; bottom: number; left: number };
-  blockCount: number;
   truncated: boolean;
   wordCount: number;
   notices: WordNotices;
@@ -188,8 +193,33 @@ function fontFamily(rPr: Element | null): WordRun["family"] {
 function isHeadingStyle(id: string, name: string): number | null {
   const text = `${id} ${name}`.toLowerCase().replace(/[^a-z0-9]/g, "");
   const match = /(?:heading|title)([1-6])/.exec(text);
-  if (match) return Number(match[1]);
-  if (/^heading[1-6]$/.test(id.toLowerCase())) return Number(id.slice(-1));
+  return match ? Number(match[1]) : null;
+}
+/** The cell's width in grid columns (`w:gridSpan`), bounded. */
+function gridSpan(tc: Element): number {
+  const span = Number(val(child(child(tc, "tcPr"), "gridSpan"), "val") ?? 1);
+  return Number.isFinite(span) ? Math.max(1, Math.min(20, span)) : 1;
+}
+/** Grid columns a row leaves empty before its first cell (`w:gridBefore`). */
+function gridBefore(tr: Element): number {
+  const before = Number(
+    val(child(child(tr, "trPr"), "gridBefore"), "val") ?? 0,
+  );
+  return Number.isFinite(before) ? Math.max(0, Math.min(1000, before)) : 0;
+}
+/** The row's cell that starts at this grid column, or null. */
+function cellAtGridColumn(tr: Element, column: number): Element | null {
+  let start = gridBefore(tr);
+  for (const tc of children(tr, "tc")) {
+    if (start === column) return tc;
+    if (start > column) return null;
+    start += gridSpan(tc);
+  }
+  return null;
+}
+function nearestAncestor(el: Element, name: string): Element | null {
+  for (let node = el.parentElement; node; node = node.parentElement)
+    if (node.localName === name) return node;
   return null;
 }
 
@@ -325,42 +355,6 @@ function listMarker(level: NumLevel, value: number): string {
     ? level.text.replace(/%\d+/g, "•")
     : level.text.replace(/%\d+/g, number);
 }
-function parseDocumentRels(
-  xml: string | null,
-  base: string,
-): Map<string, { target: string; external: boolean; type: string }> {
-  const map = new Map<
-    string,
-    { target: string; external: boolean; type: string }
-  >();
-  const doc = xml ? parseXml(xml) : null;
-  if (!doc) return map;
-  for (const rel of elementsNS(doc, "Relationship")) {
-    const id = rel.getAttribute("Id");
-    const target = rel.getAttribute("Target");
-    if (!id || !target) continue;
-    const external =
-      (rel.getAttribute("TargetMode") ?? "").toLowerCase() === "external";
-    // Keep external targets for hyperlinks; media loading separately requires
-    // an internal relationship, so linked images are never fetched.
-    if (external) {
-      map.set(id, { target, external, type: rel.getAttribute("Type") ?? "" });
-      continue;
-    }
-    const parts = base.split("/").filter(Boolean);
-    for (const seg of target.split("/")) {
-      if (!seg || seg === ".") continue;
-      if (seg === "..") parts.pop();
-      else parts.push(seg);
-    }
-    map.set(id, {
-      target: target.startsWith("/") ? target.slice(1) : parts.join("/"),
-      external,
-      type: rel.getAttribute("Type") ?? "",
-    });
-  }
-  return map;
-}
 function safeHref(value: string | undefined): string | null {
   if (!value) return null;
   try {
@@ -419,9 +413,12 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   const numbering = parseNumbering(
     numberingXml ? parseXml(numberingXml) : null,
   );
-  const rels = parseDocumentRels(
+  // External targets are kept for hyperlinks; media loading separately
+  // requires an internal relationship, so linked images are never fetched.
+  const rels = parseRelationships(
     await zip.readText("word/_rels/document.xml.rels"),
     "word",
+    { keepExternal: true },
   );
   const body = firstElementNS(doc, "body");
   if (!body)
@@ -461,30 +458,22 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   notices.charts = elementsNS(doc, "chart").length;
   notices.textBoxes = elementsNS(doc, "txbxContent").length;
   notices.shapes = elementsNS(doc, "sp").length;
-  notices.footnotes = zip.entries.has("word/footnotes.xml")
-    ? Math.max(
-        0,
-        elementsNS(
-          parseXml((await zip.readText("word/footnotes.xml")) ?? "") ?? doc,
-          "footnote",
-        ).length - 1,
-      )
-    : 0;
-  notices.endnotes = zip.entries.has("word/endnotes.xml")
-    ? Math.max(
-        0,
-        elementsNS(
-          parseXml((await zip.readText("word/endnotes.xml")) ?? "") ?? doc,
-          "endnote",
-        ).length - 1,
-      )
-    : 0;
-  notices.comments = zip.entries.has("word/comments.xml")
-    ? elementsNS(
-        parseXml((await zip.readText("word/comments.xml")) ?? "") ?? doc,
-        "comment",
-      ).length
-    : 0;
+  // A part that is missing or not valid XML counts as nothing to show.
+  const countInPart = async (path: string, name: string) => {
+    if (!zip.entries.has(path)) return 0;
+    const part = parseXml((await zip.readText(path)) ?? "");
+    return part ? elementsNS(part, name).length : 0;
+  };
+  // The first two footnotes/endnotes are Word's separator entries.
+  notices.footnotes = Math.max(
+    0,
+    (await countInPart("word/footnotes.xml", "footnote")) - 1,
+  );
+  notices.endnotes = Math.max(
+    0,
+    (await countInPart("word/endnotes.xml", "endnote")) - 1,
+  );
+  notices.comments = await countInPart("word/comments.xml", "comment");
   notices.headers = Array.from(zip.entries.keys()).filter((name) =>
     /^word\/header\d+\.xml$/.test(name),
   ).length;
@@ -492,14 +481,8 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     /^word\/footer\d+\.xml$/.test(name),
   ).length;
   // Raster-only: ADE renders media through <img>, never file-derived SVG.
-  const imageMime: Record<string, string> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    bmp: "image/bmp",
-    webp: "image/webp",
-  };
+  const imageMimeType = (path: string) =>
+    ooxmlMediaMimeType(path, { browserRasterOnly: true });
   const blocks: WordBlock[] = [];
   const headings: WordHeading[] = [];
   const counters = new Map<string, number>();
@@ -507,6 +490,7 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   let truncated = false;
   let sinceYield = 0;
   let tableCells = 0;
+  let headingSeq = 0;
 
   const push = (block: WordBlock) => {
     if (blocks.length >= WORD_PREVIEW_MAX_BLOCKS) {
@@ -537,7 +521,7 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
         if (hex && /^[0-9a-f]{1,4}$/i.test(hex))
           text = String.fromCharCode(parseInt(hex, 16));
       }
-      if (text == null || !text) continue;
+      if (!text) continue;
       if (text === "\u000c") {
         output.push({
           text,
@@ -555,15 +539,13 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
         continue;
       }
       const vert = val(child(rPr, "vertAlign"), "val");
+      const underline = val(child(rPr, "u"), "val");
       const sizePt = runSizePt(rPr);
       output.push({
         text,
         bold: on(child(rPr, "b"), "val"),
         italic: on(child(rPr, "i"), "val"),
-        underline:
-          val(child(rPr, "u"), "val") != null &&
-          val(child(rPr, "u"), "val") !== "none" &&
-          val(child(rPr, "u"), "val") !== "0",
+        underline: underline != null && underline !== "none" && underline !== "0",
         strike:
           on(child(rPr, "strike"), "val") || on(child(rPr, "dstrike"), "val"),
         vertical:
@@ -573,27 +555,7 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
               ? "subscript"
               : null,
         color: safeColor(val(child(rPr, "color"), "val")),
-        highlight:
-          safeColor(val(child(rPr, "highlight"), "val")) ??
-          (val(child(rPr, "highlight"), "val")
-            ? ((
-                {
-                  yellow: "#ffff00",
-                  green: "#00ff00",
-                  cyan: "#00ffff",
-                  magenta: "#ff00ff",
-                  blue: "#0000ff",
-                  red: "#ff0000",
-                  darkBlue: "#000080",
-                  darkRed: "#800000",
-                  darkGreen: "#008000",
-                  darkGray: "#808080",
-                  lightGray: "#c0c0c0",
-                  black: "#000000",
-                  white: "#ffffff",
-                } as Record<string, string>
-              )[val(child(rPr, "highlight"), "val")!] ?? null)
-            : null),
+        highlight: safeColor(val(child(rPr, "highlight"), "val")),
         sizePt,
         family: fontFamily(rPr),
         href,
@@ -638,18 +600,20 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
           : rawAlign === "both" || rawAlign === "distribute"
             ? "justify"
             : "left";
-    const bookmarkName = val(child(p, "bookmarkStart"), "name");
-    const id = bookmarkName
-      ? `bookmark-${encodeURIComponent(bookmarkName)}`
-      : headingLevel
-        ? `heading-${headings.length}`
-        : null;
+    const bookmarks = Array.from(
+      new Set(
+        elementsNS(p, "bookmarkStart").flatMap((bookmark) => {
+          const name = val(bookmark, "name");
+          return name ? [name] : [];
+        }),
+      ),
+    );
+    const id = !cell && headingLevel ? `heading-${headingSeq++}` : null;
     const runs: WordRun[] = [];
     const collect = (parent: Element, href: string | null = null) => {
       for (const item of Array.from(parent.children)) {
         if (item.localName === "hyperlink") {
-          const relId =
-            item.getAttributeNS(REL_NS, "id") ?? relationshipId(item, "id");
+          const relId = relationshipId(item, "id");
           const rel = relId ? rels.get(relId) : null;
           const target = rel?.external ? safeHref(rel.target) : null;
           const anchor = val(item, "anchor");
@@ -733,6 +697,7 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     return {
       kind: "paragraph",
       id,
+      bookmarks,
       headingLevel,
       style,
       align,
@@ -756,30 +721,31 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     const rows: WordTableRow[] = [];
     const trPrs = children(table, "tr");
     let headerRows = 0;
-    for (const [rowIndex, tr] of trPrs.slice(0, MAX_TABLE_ROWS).entries()) {
+    const shownRows = Math.min(trPrs.length, MAX_TABLE_ROWS);
+    for (const [rowIndex, tr] of trPrs.slice(0, shownRows).entries()) {
       if (rowIndex > 0 && rowIndex % 50 === 0) await yieldToEventLoop();
       const trPr = child(tr, "trPr");
       const isHeader = children(trPr, "tblHeader").some((el) => on(el, "val"));
       if (rows.length === headerRows && isHeader) headerRows += 1;
       const cells: WordTableCell[] = [];
+      // Grid column where the next cell starts, counting skipped continuation
+      // cells too, so a vertical merge follows its own column.
+      let column = gridBefore(tr);
       for (const tc of children(tr, "tc").slice(0, MAX_TABLE_COLS)) {
         if (tableCells >= MAX_TABLE_CELLS) break;
         const tcPr = child(tc, "tcPr");
-        const span = Math.max(
-          1,
-          Math.min(20, Number(val(child(tcPr, "gridSpan"), "val") ?? 1)),
-        );
+        const span = gridSpan(tc);
+        const startColumn = column;
+        column += span;
         const vMerge = child(tcPr, "vMerge");
         let rowSpan = 1;
         if (vMerge && val(vMerge, "val") !== "restart") continue;
-        if (val(vMerge, "val") === "restart") {
-          let following = tr.nextElementSibling;
-          while (following?.localName === "tr") {
-            const same = children(following, "tc")[cells.length];
-            const merge = child(child(same ?? null, "tcPr"), "vMerge");
+        if (vMerge) {
+          for (let next = rowIndex + 1; next < shownRows; next += 1) {
+            const same = cellAtGridColumn(trPrs[next]!, startColumn);
+            const merge = child(child(same, "tcPr"), "vMerge");
             if (!merge || val(merge, "val") === "restart") break;
             rowSpan += 1;
-            following = following.nextElementSibling;
           }
         }
         const blocks: WordBlock[] = [];
@@ -788,8 +754,10 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
           else if (block.localName === "tbl" && depth < MAX_NESTING)
             blocks.push(await parseTable(block, depth + 1));
         }
+        // A nested table's drawings belong to its own cells.
         for (const drawing of elementsNS(tc, "drawing"))
-          blocks.push(parseImage(drawing));
+          if (nearestAncestor(drawing, "tc") === tc)
+            blocks.push(parseImage(drawing));
         cells.push({
           blocks,
           colSpan: span,
@@ -813,12 +781,10 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   };
   const parseImage = (drawing: Element): WordImage => {
     const blip = firstElementNS(drawing, "blip");
-    const relId =
-      blip?.getAttributeNS(REL_NS, "embed") ?? relationshipId(blip, "embed");
+    const relId = relationshipId(blip, "embed");
     const rel = relId ? rels.get(relId) : null;
     const path =
       rel && !rel.external && rel.type.includes("/image") ? rel.target : null;
-    const ext = path?.split(".").at(-1)?.toLowerCase() ?? "";
     const extent = firstElementNS(drawing, "extent");
     const cx = Number(extent?.getAttribute("cx"));
     const cy = Number(extent?.getAttribute("cy"));
@@ -826,10 +792,11 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
       firstElementNS(drawing, "docPr")?.getAttribute("descr") ??
       firstElementNS(drawing, "docPr")?.getAttribute("name") ??
       "Document image";
-    if (!path || !imageMime[ext]) notices.unsupportedImages += 1;
+    const shownPath = path && imageMimeType(path) ? path : null;
+    if (!shownPath) notices.unsupportedImages += 1;
     return {
       kind: "image",
-      path: path && imageMime[ext] ? path : null,
+      path: shownPath,
       widthPx: Number.isFinite(cx)
         ? Math.max(0, Math.min(1600, (cx / EMU_PER_INCH) * 96))
         : 0,
@@ -846,18 +813,13 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     }
     if (item.localName === "p") {
       const pPr = child(item, "pPr");
-      if (
-        val(child(pPr, "pageBreakBefore"), "val") === "1" ||
-        (on(child(pPr, "pageBreakBefore"), "val") &&
-          child(pPr, "pageBreakBefore"))
-      )
-        push({ kind: "pageBreak" });
+      if (on(child(pPr, "pageBreakBefore"), "val")) push({ kind: "pageBreak" });
       const p = parseParagraph(item, false);
       push(p);
       const headingText = paragraphText(p).trim();
-      if (p.headingLevel && headingText && headings.length < 500)
+      if (p.id && p.headingLevel && headingText && headings.length < 500)
         headings.push({
-          id: p.id ?? `heading-${headings.length}`,
+          id: p.id,
           text: headingText.slice(0, 200),
           level: p.headingLevel,
           blockIndex: blocks.length - 1,
@@ -879,11 +841,6 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
       await yieldToEventLoop();
     }
   }
-  if (
-    blocks.length >= WORD_PREVIEW_MAX_BLOCKS &&
-    Array.from(body.children).length > WORD_PREVIEW_MAX_BLOCKS
-  )
-    truncated = true;
   const plain = blocks.map(blockText).join(" ");
   const wordCount = (plain.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [])
     .length;
@@ -893,13 +850,11 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     pageWidthPx,
     pageHeightPx,
     marginsPx,
-    blockCount: Array.from(body.children).length,
     truncated,
     wordCount,
     notices,
     async loadMedia(path: string) {
-      const ext = path.split(".").at(-1)?.toLowerCase() ?? "";
-      const mimeType = imageMime[ext];
+      const mimeType = imageMimeType(path);
       if (!mimeType) return null;
       const data = await zip.readBytes(path, ZIP_MAX_MEDIA_BYTES);
       return data ? { bytes: data, mimeType } : null;

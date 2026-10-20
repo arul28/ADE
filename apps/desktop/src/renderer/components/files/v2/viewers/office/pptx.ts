@@ -24,6 +24,7 @@
 // the open-externally card.
 
 import { OoxmlError } from "./ooxmlError";
+import { ooxmlMediaMimeType } from "./ooxmlMedia";
 import { parseRelationships, type Relationship } from "./ooxmlPackage";
 import { attributeAnyNS, elementsNS, firstElementNS, parseXml, relationshipId, yieldToEventLoop } from "./ooxmlXml";
 import { openOoxmlZip, ZIP_MAX_MEDIA_BYTES } from "./ooxmlZip";
@@ -135,18 +136,6 @@ const DEFAULT_THEME_COLORS: Record<string, string> = {
   accent1: "4472c4", accent2: "ed7d31", accent3: "a5a5a5",
   accent4: "ffc000", accent5: "5b9bd5", accent6: "70ad47",
   hlink: "0563c1", folHlink: "954f72",
-};
-
-const MEDIA_MIME_BY_EXTENSION: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  bmp: "image/bmp",
-  webp: "image/webp",
-  svg: "image/svg+xml",
-  tif: "image/tiff",
-  tiff: "image/tiff",
 };
 
 /* ── Geometry ──────────────────────────────────────────────────────────── */
@@ -380,7 +369,7 @@ function parsePictureShape(shape: Element, ctx: SlideParseContext): PptxImageSha
   const rel = relId ? ctx.slideRels.get(relId) ?? null : null;
   // Only formats a browser can draw reach the image element; an EMF or WMF
   // picture keeps its box empty and is counted as not shown.
-  const mediaPath = rel && rel.type.includes("/image") && mediaMimeType(rel.target) ? rel.target : null;
+  const mediaPath = rel && rel.type.includes("/image") && ooxmlMediaMimeType(rel.target) ? rel.target : null;
   return {
     kind: "image",
     box: boxFromXfrm(firstElementNS(shape, "xfrm"), ctx.slideWidthEmu, ctx.slideHeightEmu),
@@ -448,11 +437,6 @@ function parseSlideShapes(root: Document | Element, ctx: SlideParseContext, noti
   const spTree = firstElementNS(root, "spTree");
   if (!spTree) return [];
   return parseShapeChildren(spTree, ctx, notices);
-}
-
-function mediaMimeType(path: string): string | null {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  return MEDIA_MIME_BY_EXTENSION[ext] ?? null;
 }
 
 /* ── Deck ──────────────────────────────────────────────────────────────── */
@@ -586,7 +570,7 @@ export async function openPptx(bytes: Uint8Array): Promise<PptxDeck> {
     slides,
     truncated,
     async loadMedia(path: string): Promise<PptxMedia | null> {
-      const mimeType = mediaMimeType(path);
+      const mimeType = ooxmlMediaMimeType(path);
       if (!mimeType) return null;
       const data = await zip.readBytes(path, ZIP_MAX_MEDIA_BYTES);
       if (!data) return null;

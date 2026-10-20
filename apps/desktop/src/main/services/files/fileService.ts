@@ -225,11 +225,6 @@ const OTHER_BINARY_MIME_BY_EXTENSION = new Map<string, string>([
   [".woff2", "font/woff2"],
 ]);
 
-const TEXT_MIME_BY_EXTENSION = new Map<string, string>([
-  [".mmd", "text/plain"],
-  [".mermaid", "text/plain"],
-]);
-
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
   return parts.includes(".git");
@@ -1186,7 +1181,7 @@ export function createFileService({
           languageId: languageIdFromPath(normalizedRel),
           isBinary: false,
           previewKind: "text",
-          mimeType: TEXT_MIME_BY_EXTENSION.get(path.extname(normalizedRel).toLowerCase()) ?? null,
+          mimeType: null,
           totalSize: stat.size,
           isPartial: true,
           rangeStart: 0,
@@ -1202,7 +1197,7 @@ export function createFileService({
         languageId: languageIdFromPath(normalizedRel),
         isBinary: false,
         previewKind: "text",
-        mimeType: TEXT_MIME_BY_EXTENSION.get(path.extname(normalizedRel).toLowerCase()) ?? null,
+        mimeType: null,
         totalSize: stat.size,
         isPartial: false,
       };

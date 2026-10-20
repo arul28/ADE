@@ -20,6 +20,14 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(parts.join(""));
 }
 
+/** Decode base64 into a fresh byte array (no shared or offset buffer). */
+export function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(value);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 /** UTF-8 safe: `btoa` alone throws on any character above U+00FF. */
 export function encodeUtf8Base64(value: string): string {
   return bytesToBase64(new TextEncoder().encode(value));

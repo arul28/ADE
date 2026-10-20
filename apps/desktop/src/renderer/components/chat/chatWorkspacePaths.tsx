@@ -170,12 +170,19 @@ export function resolveWorkspacePathFromHref(href: string | undefined): Workspac
  * case-insensitive volumes behave. Relative paths are taken as already
  * workspace-relative and attributed to the chat's lane.
  */
-export function resolveFilesNavigationTarget(args: {
+export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "rootPath" | "laneId">>(args: {
   path: string | WorkspacePathLocation;
   /** Only the root and its lane are read — keeps test fixtures honest. */
-  workspaces: readonly Pick<FilesWorkspace, "rootPath" | "laneId">[];
+  workspaces: readonly W[];
   fallbackLaneId: string | null;
-}): { openFilePath: string; laneId: string | null; startLine?: number; startColumn?: number } | null {
+}): {
+  openFilePath: string;
+  laneId: string | null;
+  /** The workspace whose root matched an absolute path; null for a relative path. */
+  workspace: W | null;
+  startLine?: number;
+  startColumn?: number;
+} | null {
   const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
@@ -201,6 +208,7 @@ export function resolveFilesNavigationTarget(args: {
     return {
       openFilePath,
       laneId: match.workspace.laneId ?? args.fallbackLaneId ?? null,
+      workspace: match.workspace,
       startLine: candidate.startLine,
       startColumn: candidate.startColumn,
     };
@@ -211,6 +219,7 @@ export function resolveFilesNavigationTarget(args: {
   return {
     openFilePath,
     laneId: args.fallbackLaneId ?? null,
+    workspace: null,
     startLine: candidate.startLine,
     startColumn: candidate.startColumn,
   };
@@ -270,6 +279,8 @@ function machineCacheKey(pin: OpenProjectBinding | null | undefined): string {
 
 const cachedFilesWorkspaces = new Map<string, FilesWorkspace[]>();
 const inflightFilesWorkspaces = new Map<string, Promise<FilesWorkspace[]>>();
+/** Bounded so a long transcript full of media references cannot grow it forever. */
+const RESOLVED_MEDIA_TARGETS_MAX = 500;
 const resolvedMediaTargets = new Map<string, {
   expiresAt: number;
   target: { workspaceId: string; relativePath: string };
@@ -299,7 +310,10 @@ export async function resolveWorkspaceMediaTarget(args: {
   if (!path) return null;
   const key = `${machineCacheKey(args.pin)}\0${args.laneId ?? ""}\0${normalizePath(path.path)}`;
   const cached = resolvedMediaTargets.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.target;
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return cached.target;
+    resolvedMediaTargets.delete(key);
+  }
 
   // Force a fresh root list after the short media-target cache expires, so a newly
   // created workspace becomes available without waiting for a Files tab visit.
@@ -310,22 +324,18 @@ export async function resolveWorkspaceMediaTarget(args: {
     fallbackLaneId: args.laneId,
   });
   if (!target) return null;
-  const absolutePath = path.path.startsWith("/") || isWindowsAbsolutePath(path.path);
-  const absoluteMatches = absolutePath
-    ? workspaces
-      .filter((candidate) => isPathEqualOrDescendant(path.path, candidate.rootPath))
-      .sort((left, right) => {
-        const leftMatchesLane = left.laneId === args.laneId ? 1 : 0;
-        const rightMatchesLane = right.laneId === args.laneId ? 1 : 0;
-        if (leftMatchesLane !== rightMatchesLane) return rightMatchesLane - leftMatchesLane;
-        return right.rootPath.length - left.rootPath.length;
-      })
-    : [];
-  const workspace = workspaces.find((candidate) => candidate.laneId === target.laneId)
-    ?? absoluteMatches[0]
+  // An absolute path uses the root it matched, which may be an external
+  // workspace with no lane; a relative one belongs to the chat's lane.
+  const workspace = target.workspace
+    ?? workspaces.find((candidate) => candidate.laneId === target.laneId)
     ?? workspaces.find((candidate) => candidate.kind === "primary");
   if (!workspace) return null;
   const resolved = { workspaceId: workspace.id, relativePath: target.openFilePath };
+  if (resolvedMediaTargets.size >= RESOLVED_MEDIA_TARGETS_MAX) {
+    // Maps iterate in insertion order, so the first key is the oldest entry.
+    const oldest = resolvedMediaTargets.keys().next().value;
+    if (oldest !== undefined) resolvedMediaTargets.delete(oldest);
+  }
   resolvedMediaTargets.set(key, { target: resolved, expiresAt: Date.now() + 30_000 });
   return resolved;
 }

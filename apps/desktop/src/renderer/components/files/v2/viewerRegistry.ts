@@ -15,18 +15,18 @@ export type ViewerResolveContext = {
   isPartial?: boolean;
 };
 
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
+export const IMAGE_EXTS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
 /**
  * Images Chromium cannot decode itself. They still open in the image viewer,
  * which converts them to JPEG on hosts that ship a decoder and otherwise shows
  * the open-externally card.
  */
 export const CONVERTED_IMAGE_EXTS: ReadonlySet<string> = new Set(["tif", "tiff", "heic", "heif"]);
-const AUDIO_EXTS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "weba"]);
+export const AUDIO_EXTS: ReadonlySet<string> = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "weba"]);
 const FONT_EXTS = new Set(["ttf", "otf", "woff", "woff2"]);
 const MERMAID_EXTS = new Set(["mmd", "mermaid"]);
 const MARKDOWN_EXTS = new Set(["md", "mdx", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
-const VIDEO_EXTS = new Set(["avi", "m4v", "mkv", "mov", "mp4", "ogv", "webm"]);
+export const VIDEO_EXTS: ReadonlySet<string> = new Set(["avi", "m4v", "mkv", "mov", "mp4", "ogv", "webm"]);
 /**
  * Office formats fall into two families, and only one of them is a zip of
  * XML: `.xlsx`/`.pptx`/`.docx` get real previews, while the legacy OLE2

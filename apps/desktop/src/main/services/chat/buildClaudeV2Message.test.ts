@@ -8,10 +8,10 @@ import type { AgentChatFileRef } from "../../../shared/types/chat";
 import { MAX_PROVIDER_INLINE_IMAGE_BYTES } from "../../../shared/chatAttachmentLimits";
 import {
   buildClaudeV2MessageAsync,
-  ANTHROPIC_IMAGE_MEDIA_TYPES,
   inferAttachmentMediaType,
   type SDKUserMessagePartial,
 } from "./buildClaudeV2Message";
+import { PROVIDER_IMAGE_BYTE_MEDIA_TYPES } from "./providerInlineImage";
 
 describe("buildClaudeV2MessageAsync", () => {
   let tmpDir: string;
@@ -204,7 +204,7 @@ describe("buildClaudeV2MessageAsync", () => {
     const image = blocks.find((block) => block.type === "image");
     expect(image).toBeDefined();
     const source = image!.source as Record<string, unknown>;
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has(source.media_type as string)).toBe(true);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(source.media_type as string)).toBe(true);
     expect(String(source.data).length).toBeLessThanOrEqual(5_000_000);
   });
 
@@ -252,7 +252,7 @@ describe("buildClaudeV2MessageAsync", () => {
   // 5. Unsupported MIME type -> text fallback with media type
   // ─────────────────────────────────────────────────────────────────────────
   it("handles unsupported MIME types gracefully", async () => {
-    // .svg resolves to "image/svg+xml" which is NOT in ANTHROPIC_IMAGE_MEDIA_TYPES
+    // .svg resolves to "image/svg+xml" which is NOT in PROVIDER_IMAGE_BYTE_MEDIA_TYPES
     const svgPath = writeFakeImage("diagram.svg");
     const attachments: AgentChatFileRef[] = [
       { path: svgPath, type: "image" },
@@ -363,20 +363,20 @@ describe("inferAttachmentMediaType", () => {
   });
 });
 
-describe("ANTHROPIC_IMAGE_MEDIA_TYPES", () => {
+describe("PROVIDER_IMAGE_BYTE_MEDIA_TYPES", () => {
   it("contains exactly the four supported image types", () => {
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/jpeg")).toBe(true);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/png")).toBe(true);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/gif")).toBe(true);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/webp")).toBe(true);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.size).toBe(4);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/jpeg")).toBe(true);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/png")).toBe(true);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/gif")).toBe(true);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/webp")).toBe(true);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.size).toBe(4);
   });
 
   it("does not contain SVG or other image types", () => {
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/svg+xml")).toBe(false);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/bmp")).toBe(false);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/tiff")).toBe(false);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/heic")).toBe(false);
-    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/heif")).toBe(false);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/svg+xml")).toBe(false);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/bmp")).toBe(false);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/tiff")).toBe(false);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/heic")).toBe(false);
+    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/heif")).toBe(false);
   });
 });

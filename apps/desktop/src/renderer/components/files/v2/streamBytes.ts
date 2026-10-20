@@ -1,3 +1,4 @@
+import { base64ToBytes } from "../../../lib/base64";
 import type { PinnedFilesApi } from "./pinnedFilesApi";
 
 /**
@@ -22,14 +23,7 @@ export async function streamFileBytes(
     const page = await files.readFileRange({ workspaceId, path, offset: next, length: chunkLength });
     if (opts.isCancelled?.()) return new Uint8Array();
     if (page.content) {
-      let bytes: Uint8Array;
-      if (page.encoding === "base64") {
-        const binary = atob(page.content);
-        bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      } else {
-        bytes = new TextEncoder().encode(page.content);
-      }
+      const bytes = page.encoding === "base64" ? base64ToBytes(page.content) : new TextEncoder().encode(page.content);
       if (opts.maxBytes != null && total + bytes.length > opts.maxBytes) {
         throw new Error(`File is too large to stream into memory (${opts.maxBytes} byte limit).`);
       }

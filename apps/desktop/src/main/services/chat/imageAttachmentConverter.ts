@@ -3,17 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { HeicConversionErrorCode } from "../../../shared/types/chat";
+import { isHeicAttachment, type HeicConversionErrorCode } from "../../../shared/types/chat";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
 } from "../../../shared/chatAttachmentLimits";
+import type { Logger } from "../logging/logger";
 
 const execFileAsync = promisify(execFile);
 // Converted image bytes arrive in a command payload and are decoded in memory,
 // so they carry the legacy ceiling rather than the 50 MB file one.
 const MAX_CONVERSION_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 const SIPS_TIMEOUT_MS = 30_000;
+const TIFF_MIME_RE = /^image\/tiff(?:;|$)/i;
+const TIFF_EXTENSION_RE = /\.tiff?$/i;
 
 type RunSips = (inputPath: string, outputPath: string) => Promise<void>;
 
@@ -29,13 +32,15 @@ export type ImageAttachmentConverterOptions = {
   platform?: NodeJS.Platform;
   tempRoot?: string;
   runSips?: RunSips;
+  /** Receives the decoder's own error when a conversion fails. */
+  logger?: Pick<Logger, "warn">;
 };
 
 /** A user-presentable conversion failure code. */
 export class ImageAttachmentConversionError extends Error {
   constructor(readonly code: HeicConversionErrorCode) {
     super(code);
-    this.name = "HeicAttachmentConversionError";
+    this.name = "ImageAttachmentConversionError";
   }
 }
 
@@ -92,14 +97,9 @@ export async function convertImageBufferToJpeg(
   mimeType?: string | null,
   options: ImageAttachmentConverterOptions = {},
 ): Promise<ImageAttachmentConversionResult> {
-  const extension = path.extname(filename).toLowerCase();
-  const normalizedMime = mimeType?.trim().toLowerCase();
-  const isHeic = [".heic", ".heif"].includes(extension)
-    || normalizedMime === "image/heic"
-    || normalizedMime === "image/heif";
-  const isTiff = [".tif", ".tiff"].includes(extension) || normalizedMime === "image/tiff";
-  if (!isHeic && !isTiff) {
-    throw new Error("Image conversion requires a HEIC, HEIF, or TIFF image.");
+  const isTiff = TIFF_EXTENSION_RE.test(filename) || TIFF_MIME_RE.test(mimeType ?? "");
+  if (!isTiff && !isHeicAttachment(filename, mimeType)) {
+    throw new ImageAttachmentConversionError("failed");
   }
   if ((options.platform ?? process.platform) !== "darwin") {
     throw new ImageAttachmentConversionError("unavailable");
@@ -130,17 +130,50 @@ export async function convertImageBufferToJpeg(
       filename: jpegFilenameFor(filename),
       mimeType: "image/jpeg",
     };
-  } catch {
+  } catch (error) {
+    options.logger?.warn("chat.image_conversion_failed", {
+      format: isTiff ? "tiff" : "heic",
+      bytes: content.byteLength,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw new ImageAttachmentConversionError("failed");
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
   }
 }
 
-/** Backward-compatible name for existing HEIC attachment callers. */
-export const convertHeicBufferToJpeg = convertImageBufferToJpeg;
-export {
-  ImageAttachmentConversionError as HeicAttachmentConversionError,
-};
-export type HeicAttachmentConversionResult = ImageAttachmentConversionResult;
-export type HeicAttachmentConverterOptions = ImageAttachmentConverterOptions;
+/** Whether a sniffed image type has to become JPEG before a browser can draw it. */
+function imageNeedsJpegPreview(mimeType: string): boolean {
+  return mimeType === "image/tiff" || mimeType === "image/heic" || mimeType === "image/heif";
+}
+
+/**
+ * The data URL a chat or file preview shows for image bytes whose type was
+ * sniffed. TIFF and HEIC/HEIF become JPEG first, since no Chromium renderer can
+ * draw them; every other type passes through. Conversion failures become a
+ * message a person can read.
+ */
+export async function imageBytesToDataUrl(
+  data: Buffer,
+  filename: string,
+  mimeType: string,
+  options: ImageAttachmentConverterOptions = {},
+): Promise<{ dataUrl: string; mimeType: string }> {
+  if (!imageNeedsJpegPreview(mimeType)) {
+    return { dataUrl: `data:${mimeType};base64,${data.toString("base64")}`, mimeType };
+  }
+  try {
+    const converted = await convertImageBufferToJpeg(data, filename, mimeType, options);
+    return {
+      dataUrl: `data:${converted.mimeType};base64,${converted.data.toString("base64")}`,
+      mimeType: converted.mimeType,
+    };
+  } catch (error) {
+    if (error instanceof ImageAttachmentConversionError) {
+      throw new Error(error.code === "unavailable"
+        ? "TIFF and HEIC image previews are available on macOS only."
+        : "Couldn't convert this image for preview.");
+    }
+    throw error;
+  }
+}

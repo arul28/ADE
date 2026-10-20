@@ -451,7 +451,11 @@ import {
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
-import { fitImageForProviderInline, isProviderImageByteMediaType } from "./providerInlineImage";
+import {
+  fitImageForProviderInline,
+  isProviderImageByteMediaType,
+  normalizeImageMediaType,
+} from "./providerInlineImage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { isRemoteOrDataUri } from "../../../shared/chatImageUrls";
 import {
@@ -12435,18 +12439,20 @@ export function createAgentChatService(args: {
         items.push(codexReferenceOnlyAttachmentInput(attachment));
         continue;
       }
-      const imageMimeType = attachment.type === "image"
-        ? attachment.mimeType?.trim().toLowerCase()
-          || getImageAttachmentMediaType(attachment.path)
-          || "image/png"
-        : null;
-      if (imageMimeType && !isProviderImageByteMediaType(imageMimeType)) {
-        items.push({
-          type: "text",
-          text: imageAttachmentReferenceText(attachment.path, imageMimeType),
-          text_elements: [],
-        });
-        continue;
+      if (attachment.type === "image") {
+        // Every local image here has a path, and Codex reads that file
+        // itself, so there is no byte-only case to default a type for: an
+        // image with no type from the sender or its name stays a reference.
+        const imageMimeType = normalizeImageMediaType(attachment.mimeType)
+          ?? getImageAttachmentMediaType(attachment.path);
+        if (!imageMimeType || !isProviderImageByteMediaType(imageMimeType)) {
+          items.push({
+            type: "text",
+            text: imageAttachmentReferenceText(attachment.path, imageMimeType ?? "unknown type"),
+            text_elements: [],
+          });
+          continue;
+        }
       }
       const stagedPath = await stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
