@@ -2824,6 +2824,21 @@ so explicitly rather than asserting a tier ADE never set.
   per chunk once pinned the brain at 100% CPU and timed out every other
   request while one terminal printed (`docs/perf/macos-baseline.md`,
   "Terminals").
+- **PTY output is flow-controlled; keep pauses counted and bounded.** The
+  pty host pauses a PTY past 256K unacknowledged chars (`RemotePty.emitData`
+  acknowledges after the listeners ran, even if one throws), and a brain
+  connection more than 1 MB behind pauses the PTYs printing over 16K per
+  200 ms until it drains (`ptyOutputFlowControl.ts`). Pause reasons are
+  counted per entry (`setOutputPaused`), so transcript rollover and flow
+  control cannot release each other; a connection that does not drain within
+  1.5 s is ignored until it catches up, and a paused PTY is resumed before
+  kill/dispose so its exit is read. Never let output overtake replies or the
+  reverse: a snapshot reply that overtakes older output gets that output
+  painted over it.
+- **Parked terminals give their WebGL context back after 30 s**
+  (`PARKED_WEBGL_RELEASE_MS`) and take one again on the next mount
+  (`reclaimParkedWebgl`). Only `MAX_WEBGL_TERMINALS` exist, so a terminal
+  that keeps its context while hidden pushes newer ones onto the DOM renderer.
 - **A resumed terminal erases its old output before rehydrating.** A parked
   runtime pauses its stream; on reveal the hydration payload carries the
   history again, so `finalizeHydration` clears screen and scrollback with

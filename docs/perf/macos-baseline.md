@@ -699,10 +699,28 @@ ademark-terminals branch. One terminal floods while the renderer calls
 
 Before, the brain re-copied a 2M-character live tail and re-ran the resume
 scan on every PTY chunk, so one flooding terminal pinned it and every other
-request (opening a terminal, a chat action) timed out. What is left is
-transport: replies share the brain-to-desktop socket with terminal output and
-wait behind it, which is the multi-second max above (the brain's event loop
-lag stayed under 110 ms).
+request (opening a terminal, a chat action) timed out.
+
+Replies also share the brain-to-desktop socket with terminal output, and a
+macOS unix socket moves 8 KB per round trip, so the brain queued the flood
+(19-20 MB on `seq`, 66-67 MB on 200 MB `yes`, past the 64 MB point where it
+drops a client) and replies waited behind it. Flow control (a later commit
+on the same branch) pauses the flooding PTYs while the desktop is over 1 MB
+behind. These rows were measured with an isolated dev brain (own `ADE_HOME`,
+scratch project, sync off), before and after that commit:
+
+| Metric | Script | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| `seq` 16 MB: time to finish | `terminal-flood.mjs <lane> seq` | 6.7-7.2 s | 6.6-9.4 s | 15 s |
+| Same: brain reply p95 / max | same | 1.3-1.7 s / 2.1 s | 0.16-0.49 s / 0.6-2.1 s | 1 s / 3 s |
+| Same: socket backlog peak (brain inspector, `writableLength`) | same | 19-20 MB | 1.2-1.3 MB | 4 MB |
+| 200 MB `yes`: time to finish | `terminal-flood.mjs <lane> yes` | 16.0-17.6 s | 17.6 s | 25 s |
+| Same: brain reply p95 / max | same | 3.1-3.6 s / 4.0 s | 61 ms / 321 ms | 1 s / 2 s |
+| Same: socket backlog peak | same | 66-67 MB | 1.4 MB | 4 MB |
+| Echo in a second terminal during the `seq` flood, median / max | a probe that types a marker and polls the live tail | - | 27-32 ms / 0.7-1.1 s | 100 ms / 2 s |
+
+The window sizes were picked by measurement: 512K/128K left the socket idle
+between pauses and slowed the flood 2-4x; 2M/512K doubled reply waits.
 
 Terminal switching, 16 shells each holding 12,000 colored lines, every one
 shown, then every one shown again, Work to Files to Work between
@@ -715,6 +733,19 @@ measurements (a dev-only probe read xterm's buffers):
 | Renderer JS heap after the second pass | 133.9 MB | 126.5 MB |
 | First reveal: text on screen, median / max | 172 / 243 ms | 175 / 267 ms |
 | Revisit: text on screen, median / max | 23 / 43 ms | 26 / 59 ms |
+
+WebGL contexts of parked terminals, measured directly with ADE's xterm and
+WebGL addon in the dev renderer (8 terminals, 3,000 colored lines each). The
+Work tab could not be driven: an isolated dev home stops at the sign-in gate.
+
+| Metric | Value |
+|---|---:|
+| GPU process memory per WebGL context | 8-19 MB |
+| Reveal with the context kept, median / max | 8 / 85-233 ms |
+| Reveal with the context re-acquired, median / max | 12-14 / 28-67 ms, no long tasks |
+
+So a terminal parked for 30 s gives its context back, and takes one again
+when it is shown (about 5 ms more per reveal).
 
 ### Brain: file watchers
 
