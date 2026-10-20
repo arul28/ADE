@@ -508,7 +508,7 @@ struct SettingsUsagePage: View {
         breakdownLane = nil
         breakdownView = .lane
       } label: {
-        Label("Lanes › \(lane.emoji.map { "\($0) " } ?? "")\(lane.name)", systemImage: "chevron.left")
+        Label("Lanes › \(lane.name)", systemImage: "chevron.left")
           .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.accent)
       }
