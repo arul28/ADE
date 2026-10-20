@@ -2919,7 +2919,14 @@ session primitives:
 Inactivity eviction runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A
 runtime is torn down when its session is idle, has no live pending
 input, and has exceeded the inactivity window
-(`SESSION_INACTIVITY_TIMEOUT_MS = 5 min`, the same for every provider).
+(`SESSION_INACTIVITY_TIMEOUT_MS = 3 min`, the same for every provider).
+Archiving an idle chat tears its runtime down at once with the same guards.
+A restart is cheap in tokens: a resumed Claude thread reads its prefix from
+the prompt cache, and a Codex idle teardown keeps the delivered-directive
+keys (the resumed thread already holds them). A fresh Codex process's first
+turn waits up to 1.5 s for its skill list to reach the chat's last count,
+because Codex adds remote plugin skills ~0.5 s after start and re-sends its
+whole skills block whenever the list changes.
 Teardown routes through `teardownRuntime(managed, "idle_ttl")`. OpenCode used
 to have a 60 s window; it released the chat's hold on the shared server while
 an OpenCode background shell was still due to wake the agent, so the wake-up

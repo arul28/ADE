@@ -2580,6 +2580,8 @@ type PendingClaudeApproval = {
 type CodexRuntime = {
   kind: "codex";
   agentSkillRoots: string[];
+  /** Set once this process's first turn has waited for its skill list. */
+  skillCatalogSettled?: boolean;
   serverVersion: CodexServerVersion | null;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
@@ -5035,6 +5037,12 @@ type ManagedChatSession = {
    * than persisting it.
    */
   deliveredDirectiveKeys: EpochDirectiveKeys;
+  /**
+   * Most skills a Codex process has listed for this chat. In memory only. A
+   * new process loads plugin skills in the background, and a turn sent before
+   * they arrive makes Codex re-send its whole skills block twice.
+   */
+  codexSkillCount?: number;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -5521,9 +5529,16 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // can always interrupt manually if something is genuinely stuck.
 // One idle window for every harness. OpenCode once had a 1-minute one; it
 // released the chat's hold on the shared server while OpenCode background
-// work was still due to wake the agent, so that wake-up reached nobody.
-const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// work was still due to wake the agent, so that wake-up reached nobody (that
+// work is now exempt, see `hasRuntimeActiveWorkload`). Three minutes, not
+// five: a resumed Claude thread reads its whole prefix back from the prompt
+// cache and a resumed Codex thread adds ~200 tokens, while each idle chat
+// holds 200-500 MB of provider and MCP processes.
+const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
+/** Longest a fresh Codex process's first turn waits for its skill list. */
+const CODEX_SKILL_CATALOG_SETTLE_MS = 1_500;
+const CODEX_SKILL_CATALOG_POLL_MS = 100;
 
 /**
  * How long Compact first holds a message for a provider whose `/compact` is an
@@ -26100,6 +26115,12 @@ export function createAgentChatService(args: {
         // OpenCode session that had to rediscover the whole thread.
         || managed.runtime.kind === "opencode")
       && reasonAllowsPreservation;
+    // Codex keeps its thread id on the session, not in runtime state, and the
+    // next send resumes that thread (a failed resume throws rather than opening
+    // a new one). The resumed thread already holds the lane and computer-use
+    // directives; forgetting them re-sent ~10k chars on every idle restart.
+    const preserveDeliveredDirectives = preserveProviderResumeState
+      || (managed.runtime.kind === "codex" && reasonAllowsPreservation && Boolean(managed.session.threadId));
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       failOpenCodexCompactions(managed, runtime, "teardown");
@@ -26336,7 +26357,7 @@ export function createAgentChatService(args: {
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
     managed.acpReasoningEffortInvalidated = false;
-    if (!preserveProviderResumeState) {
+    if (!preserveDeliveredDirectives) {
       clearDeliveredDirectiveEpoch(managed);
     }
   };
@@ -26956,6 +26977,7 @@ export function createAgentChatService(args: {
       throw new Error(`Codex runtime is not available for session '${managed.session.id}'.`);
     }
     const runtime = managed.runtime;
+    await settleCodexSkillCatalog(managed, runtime);
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
@@ -42500,13 +42522,49 @@ export function createAgentChatService(args: {
       "skills/list",
       codexSkillsListParams(managed.laneWorktreePath, extraUserRoots),
     ).then((response) => {
-      const commands = agentSkillSlashCommands(
-        codexSkillsForCwd(response, managed.laneWorktreePath),
-      );
+      const skills = codexSkillsForCwd(response, managed.laneWorktreePath);
+      managed.codexSkillCount = Math.max(managed.codexSkillCount ?? 0, skills.length);
+      const commands = agentSkillSlashCommands(skills);
       runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
         : commands;
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
+  };
+
+  /**
+   * Hold a fresh Codex process's first turn until it lists as many skills as
+   * the chat's last process did. Codex rebuilds its skills block every turn
+   * and re-sends all of it (~6k tokens here) when the list changed. A new
+   * `codex app-server` adds remote plugin skills ~0.5-0.7 s after it starts,
+   * so a turn sent sooner sees a short list and the next turn a long one:
+   * two re-sends per restart. Bounded, and a timeout adopts what it saw, so
+   * removed plugins cost one wait, not one per restart.
+   */
+  const settleCodexSkillCatalog = async (managed: ManagedChatSession, runtime: CodexRuntime): Promise<void> => {
+    if (runtime.skillCatalogSettled) return;
+    runtime.skillCatalogSettled = true;
+    const expected = managed.codexSkillCount ?? 0;
+    if (expected <= 0) return;
+    const cwd = managed.laneWorktreePath;
+    const { forceReload: _forceReload, ...params } = codexSkillsListParams(cwd, runtime.agentSkillRoots);
+    const deadline = Date.now() + CODEX_SKILL_CATALOG_SETTLE_MS;
+    let seen = 0;
+    while (true) {
+      const count = await runtime.request<CodexSkillsListResponse>("skills/list", params)
+        .then((response) => codexSkillsForCwd(response, cwd).length)
+        .catch(() => null);
+      if (count == null) return;
+      seen = count;
+      if (count >= expected) return;
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, CODEX_SKILL_CATALOG_POLL_MS));
+    }
+    logger.info("agent_chat.codex_skill_catalog_settle_timeout", {
+      sessionId: managed.session.id,
+      expected,
+      seen,
+    });
+    managed.codexSkillCount = seen;
   };
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
@@ -65923,6 +65981,18 @@ export function createAgentChatService(args: {
     // An archived chat stops waiting on a provider start, so its bound goes with it.
     const archivedManaged = managedSessions.get(trimmedSessionId);
     if (archivedManaged) clearTurnAccepted(archivedManaged);
+    // Nobody returns to an archived chat soon, so its resting runtime goes now
+    // rather than at the idle sweep. Same guards as the sweep, and the same
+    // resumable teardown, so unarchiving and sending picks the thread back up.
+    if (
+      archivedManaged?.runtime
+      && !archivedManaged.closed
+      && archivedManaged.session.status === "idle"
+      && !hasLivePendingInput(archivedManaged)
+      && !hasRuntimeActiveWorkload(archivedManaged.runtime)
+    ) {
+      teardownRuntime(archivedManaged, "idle_ttl");
+    }
     sessionService.archiveSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
   };

@@ -216,7 +216,7 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
 - **GitHub calls:** `pr.getChecks` and `pr.getStatus` take 1–1.5 s each
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
-  after 5 minutes.
+  after 3 minutes idle.
 - **Typing:** each keystroke still re-renders the whole chat pane (about 150
   component renders and 3 ms of script per key in the dev build). The pane's
   header, composer and closed dialogs render with it; the same chrome renders
