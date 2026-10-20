@@ -10,7 +10,7 @@
  * never heard of instead of dropping it.
  */
 import {
-  AUTOSTART_WINDOW_TYPE,
+  autoStartWindowType,
   providerInstanceHasAccount,
   type ProviderInstance,
   type ProviderInstanceProvider,
@@ -161,7 +161,7 @@ export function providerOffersAutoStart(
   snapshot: UsageSnapshot | null,
   provider: ProviderInstanceProvider,
 ): boolean {
-  const windowType = AUTOSTART_WINDOW_TYPE[provider];
+  const windowType = autoStartWindowType(provider);
   if (!windowType) return false;
   return (snapshot?.windows ?? []).some(
     (window) => window.provider === provider && window.windowType === windowType,

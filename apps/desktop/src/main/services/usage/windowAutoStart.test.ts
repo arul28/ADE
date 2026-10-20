@@ -305,6 +305,22 @@ describe("window auto-start", () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
+  it("never launches for an idle account whose reported end keeps moving at 0%", async () => {
+    const { scheduler, spawn } = earlyResetScheduler();
+    const idle = (offsetMs: number) => {
+      const base = snapshot(new Date(NOW + offsetMs).toISOString());
+      return { ...base, windows: [{ ...base.windows[0]!, percentUsed: 0 }] };
+    };
+    scheduler.onSnapshot(idle(5 * 3_600_000));
+    for (let poll = 1; poll <= 6; poll += 1) {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      scheduler.onSnapshot(idle(5 * 3_600_000 + poll * 5 * 60_000));
+    }
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("keeps the armed reset while a poll returns no reading for the account", async () => {
     const { scheduler, spawn } = earlyResetScheduler();
     const resetAt = new Date(NOW + 60_000).toISOString();

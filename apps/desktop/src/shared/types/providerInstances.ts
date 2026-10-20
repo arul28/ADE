@@ -142,10 +142,19 @@ export type ProviderInstanceSettings = {
  * are left out: a request there opens nothing. The opener that sends the
  * request lives with the scheduler in `windowAutoStart.ts`.
  */
-export const AUTOSTART_WINDOW_TYPE: Partial<Record<ProviderInstanceProvider, UsageWindowType>> = {
+export const AUTOSTART_WINDOW_TYPE = {
   claude: "five_hour",
   codex: "five_hour",
-};
+} as const satisfies Partial<Record<ProviderInstanceProvider, UsageWindowType>>;
+
+export type AutoStartProvider = keyof typeof AUTOSTART_WINDOW_TYPE;
+
+export const AUTOSTART_PROVIDERS = Object.keys(AUTOSTART_WINDOW_TYPE) as AutoStartProvider[];
+
+/** The window ADE auto-starts for this provider, or undefined when it offers none. */
+export function autoStartWindowType(provider: ProviderInstanceProvider): UsageWindowType | undefined {
+  return (AUTOSTART_WINDOW_TYPE as Partial<Record<ProviderInstanceProvider, UsageWindowType>>)[provider];
+}
 
 export const DEFAULT_PROVIDER_INSTANCE_SETTINGS: ProviderInstanceSettings = {
   smartBalance: false,

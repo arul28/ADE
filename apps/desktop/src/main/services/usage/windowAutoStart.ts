@@ -7,9 +7,10 @@ import type {
   ProviderInstanceSettings,
 } from "../../../shared/types/providerInstances";
 import {
+  AUTOSTART_PROVIDERS,
   AUTOSTART_WINDOW_TYPE,
   isBaseProviderInstance,
-  PROVIDER_INSTANCE_PROVIDERS,
+  type AutoStartProvider,
 } from "../../../shared/types/providerInstances";
 import type { UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
@@ -64,11 +65,14 @@ export type WindowAutoStartDependencies = {
 };
 
 type AutoStartTimer = AutoStartTimerState & {
+  provider: AutoStartProvider;
   configHome: string;
   isBase: boolean;
   resetAtMs: number;
   /** Fires because the window ended before `resetAtMs`, not at it. */
   early: boolean;
+  /** The armed window has been seen above 0%, so it really was open. */
+  seenInUse: boolean;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -86,7 +90,7 @@ type WindowOpener = {
 /** Every window of this account in the snapshot. */
 function accountWindows(
   snapshot: UsageSnapshot,
-  provider: ProviderInstanceProvider,
+  provider: AutoStartProvider,
   instanceId: string,
 ): UsageWindow[] {
   const accountId = usageAccountId({ provider, instanceId });
@@ -102,27 +106,35 @@ function accountWindows(
 /** The account's window that auto-start watches (`AUTOSTART_WINDOW_TYPE`). */
 function findAutoStartWindow(
   snapshot: UsageSnapshot,
-  provider: ProviderInstanceProvider,
+  provider: AutoStartProvider,
   instanceId: string,
 ): UsageWindow | undefined {
   const windowType = AUTOSTART_WINDOW_TYPE[provider];
-  if (!windowType) return undefined;
   return accountWindows(snapshot, provider, instanceId).find((window) => window.windowType === windowType);
 }
 
+/** Two reported resets are the same window's end (both must be known). */
+function isSameReset(aMs: number, bMs: number): boolean {
+  return Number.isFinite(aMs) && Number.isFinite(bMs) && Math.abs(aMs - bMs) <= RESET_DRIFT_SLACK_MS;
+}
+
 /**
- * Whether the window armed to end at `armedResetAtMs` has already ended, read
- * from a fresh snapshot of the same account. Providers hand out resets early
- * (Codex does it at random, and both Claude and Codex let a banked reset be
- * spent): the five-hour window then disappears, loses its reset time, or comes
- * back unused with a different end.
+ * Whether the armed window has already ended, read from a fresh snapshot of
+ * the same account. Providers hand out resets early (Codex does it at random,
+ * and both Claude and Codex let a banked reset be spent): the five-hour window
+ * then disappears, loses its reset time, or comes back unused with a different
+ * end. That last shape counts only for a window seen in use: an idle account
+ * whose reported end keeps moving at 0% never had a window to end.
  */
-function windowEndedEarly(window: UsageWindow | undefined, armedResetAtMs: number): boolean {
+function windowEndedEarly(
+  window: UsageWindow | undefined,
+  armed: Pick<AutoStartTimer, "resetAtMs" | "seenInUse">,
+): boolean {
   if (!window) return true;
   const resetAtMs = Date.parse(window.resetsAt);
   if (!Number.isFinite(resetAtMs)) return true;
-  if (Math.abs(resetAtMs - armedResetAtMs) <= RESET_DRIFT_SLACK_MS) return false;
-  return window.percentUsed === 0;
+  if (isSameReset(resetAtMs, armed.resetAtMs)) return false;
+  return armed.seenInUse && window.percentUsed === 0;
 }
 
 function clearTimer(timers: Map<string, AutoStartTimer>, key: string): void {
@@ -142,7 +154,7 @@ export function createWindowAutoStartScheduler({
   resolveCodexExecutable: resolveCodexExecutableFn = resolveCodexExecutable,
   requestQuotaRefresh,
 }: WindowAutoStartDependencies) {
-  const openers: Partial<Record<ProviderInstanceProvider, WindowOpener>> = {
+  const openers: Record<AutoStartProvider, WindowOpener> = {
     claude: {
       model: BACKGROUND_UTILITY_CLAUDE_CLI_MODEL,
       resolveExecutable: (env) => resolveClaudeExecutable({ env }),
@@ -156,26 +168,27 @@ export function createWindowAutoStartScheduler({
         ...codexStandardSpeedFlags(), "--ephemeral", "--skip-git-repo-check", "Reply with OK."],
     },
   };
-  // A provider takes part only with both a window to watch and a way to open it.
-  const autoStartProviders = PROVIDER_INSTANCE_PROVIDERS
-    .filter((provider) => AUTOSTART_WINDOW_TYPE[provider] && openers[provider]);
   const timers = new Map<string, AutoStartTimer>();
   const lastEarlyStartAtMs = new Map<string, number>();
   let latestSnapshot: UsageSnapshot | null = null;
   let disposed = false;
 
-  const arm = (provider: ProviderInstanceProvider, instance: ProviderInstance, window: UsageWindow): void => {
+  const arm = (provider: AutoStartProvider, instance: ProviderInstance, window: UsageWindow): void => {
     const resetAtMs = Date.parse(window.resetsAt);
     if (!Number.isFinite(resetAtMs) || resetAtMs <= nowMs()) return;
     const key = usageAccountId({ provider, instanceId: instance.id });
     const dueAtMs = resetAtMs + AUTOSTART_DELAY_MS;
     const isBase = isBaseProviderInstance(instance);
     const existing = timers.get(key);
+    const inUse = window.percentUsed > 0;
     if (existing
       && !existing.early
       && existing.resetAtMs === resetAtMs
       && existing.configHome === instance.configHome
-      && existing.isBase === isBase) return;
+      && existing.isBase === isBase) {
+      existing.seenInUse ||= inUse;
+      return;
+    }
     clearTimer(timers, key);
     const delayMs = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, dueAtMs - nowMs()));
     const timer = setTimeout(() => {
@@ -191,6 +204,7 @@ export function createWindowAutoStartScheduler({
       isBase,
       resetAtMs,
       early: false,
+      seenInUse: inUse,
       timer,
     });
   };
@@ -200,7 +214,7 @@ export function createWindowAutoStartScheduler({
    * ended early. `armedResetAtMs` is the end the ended window had, so the fire
    * can tell that window apart from a new one somebody already opened.
    */
-  const armEarly = (provider: ProviderInstanceProvider, instance: ProviderInstance, armedResetAtMs: number): void => {
+  const armEarly = (provider: AutoStartProvider, instance: ProviderInstance, armedResetAtMs: number): void => {
     const key = usageAccountId({ provider, instanceId: instance.id });
     const existing = timers.get(key);
     if (existing?.early) return;
@@ -221,6 +235,7 @@ export function createWindowAutoStartScheduler({
       isBase: isBaseProviderInstance(instance),
       resetAtMs: armedResetAtMs,
       early: true,
+      seenInUse: true,
       timer,
     });
   };
@@ -276,8 +291,7 @@ export function createWindowAutoStartScheduler({
     // moved the reset): follow it instead of sending a request. An early start
     // only stands down for a window other than the one that ended.
     const windowIsOpen = Number.isFinite(currentResetAtMs) && currentResetAtMs > now;
-    const isEndedWindow = Number.isFinite(state.resetAtMs)
-      && Math.abs(currentResetAtMs - state.resetAtMs) <= RESET_DRIFT_SLACK_MS;
+    const isEndedWindow = isSameReset(currentResetAtMs, state.resetAtMs);
     const newWindowInUse = windowIsOpen && !isEndedWindow && (currentWindow?.percentUsed ?? 0) > 0;
     if (state.early ? newWindowInUse : windowIsOpen) {
       arm(state.provider, instance, currentWindow!);
@@ -286,7 +300,6 @@ export function createWindowAutoStartScheduler({
     if (state.early) lastEarlyStartAtMs.set(key, now);
 
     const opener = openers[state.provider];
-    if (!opener) return;
     const startedAt = nowMs();
     const runState = instance.configHome === state.configHome
       ? state
@@ -316,7 +329,7 @@ export function createWindowAutoStartScheduler({
     if (disposed) return;
     latestSnapshot = snapshot;
     const expected = new Set<string>();
-    for (const provider of autoStartProviders) {
+    for (const provider of AUTOSTART_PROVIDERS) {
       let settings: ProviderInstanceSettings;
       let instances: readonly ProviderInstance[];
       try {
@@ -345,7 +358,7 @@ export function createWindowAutoStartScheduler({
         }
         if (existing
           && existing.resetAtMs > nowMs()
-          && windowEndedEarly(window, existing.resetAtMs)) {
+          && windowEndedEarly(window, existing)) {
           armEarly(provider, instance, existing.resetAtMs);
           if (timers.get(key)?.early) {
             expected.add(key);
@@ -371,7 +384,7 @@ export function createWindowAutoStartScheduler({
    */
   function onWindowReset(accountId: string): void {
     if (disposed) return;
-    for (const provider of autoStartProviders) {
+    for (const provider of AUTOSTART_PROVIDERS) {
       try {
         if (!getProviderSettings(provider).autoStartWindows) continue;
         const instance = listInstances(provider)
@@ -380,10 +393,15 @@ export function createWindowAutoStartScheduler({
         const window = latestSnapshot ? findAutoStartWindow(latestSnapshot, provider, instance.id) : undefined;
         lastEarlyStartAtMs.delete(accountId);
         armEarly(provider, instance, window ? Date.parse(window.resetsAt) : Number.NaN);
-      } catch {
-        // Settings or the account list could not be read; the next poll retries.
+        return;
+      } catch (error) {
+        // This provider's settings or accounts could not be read; the account
+        // may be another provider's, and the next poll still sees the reset.
+        logger.warn("usage.window_autostart_reset_lookup_failed", {
+          provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-      return;
     }
   }
 
