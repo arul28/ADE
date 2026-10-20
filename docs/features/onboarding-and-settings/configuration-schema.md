@@ -426,6 +426,13 @@ Jev model before its built-in rules ("Smart decisions (OpenCode Jev)"). It
 sign-in; `false` makes every Jev call answer `null` with no network call. See
 [Chat › Jev decisions](../chat/README.md#jev-decisions).
 
+`AiChatConfig.modelHintMode?: "model_and_effort" | "effort_only" | "off"`
+controls Jev's model and effort hint in the composer (Settings ›
+Notifications › Model hint, beside Smart decisions). It **defaults to
+`model_and_effort`**; `effort_only` never suggests another model; `off` hides
+the hint. It needs `smartDecisionsEnabled`. See
+[Composer › Model hint](../chat/composer-and-ui.md#composer).
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

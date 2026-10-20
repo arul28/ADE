@@ -4553,6 +4553,10 @@ config service):
   sign-in. Defaults to **true**. Off makes every `ai.jevDecide` answer `null`
   with no network call, so every feature uses its built-in rules. See
   [Jev decisions](#jev-decisions).
+- `ai.chat.modelHintMode` -- "Model hint" in Settings › Notifications,
+  beside Smart decisions and shown under the same rule: `model_and_effort`
+  (default), `effort_only` or `off`. See the composer's model hint in
+  [Composer and UI](composer-and-ui.md#composer).
 
 ### Jev decisions
 

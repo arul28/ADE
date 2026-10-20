@@ -663,13 +663,15 @@ which carry session and handoff ids, are not PostHog events.
 
 The shared Jev helper (`apps/desktop/src/main/services/jev/jevService.ts`) writes only local operational lines to the project runtime's `ade-cli.jsonl`; nothing goes to PostHog, and the OpenCode Zen token, the asked state and the answers are never logged.
 
-- `jev.summary` (info) — at most once per 10 minutes, and only after a window with traffic (plus once on runtime teardown): `windowMinutes` and `features`, a map from feature (`turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`) to the count of each outcome in the window (`ok`, `cached`, or a fallback reason: `disabled`, `not_signed_in`, `token_expired`, `breaker_open`, `busy`, `invalid_request`, `timeout`, `network`, `rate_limited`, `auth_rejected`, `http_error`, `bad_response`) and `p50Ms`/`p95Ms` of network calls that answered. This is the line that shows whether Jev ever ran.
+- `jev.summary` (info) — at most once per 10 minutes, and only after a window with traffic (plus once on runtime teardown): `windowMinutes` and `features`, a map from feature (`turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`, `model_hint`) to the count of each outcome in the window (`ok`, `cached`, or a fallback reason: `disabled`, `not_signed_in`, `token_expired`, `breaker_open`, `busy`, `invalid_request`, `timeout`, `network`, `rate_limited`, `auth_rejected`, `http_error`, `bad_response`) and `p50Ms`/`p95Ms` of network calls that answered. This is the line that shows whether Jev ever ran.
 - `jev.breaker_opened` (warn) — `feature` of the call that tripped it, `reason` (`rate_limited`, `auth_rejected`, `transient`), `trigger` (the failure), and `until` (ISO).
 - `jev.decide_failed` (warn) — an unexpected throw inside the helper, with `error`; the caller still got `null`.
 
 `ade actions run ai.jevStatus` returns the same counts since the runtime started, with availability and breaker state.
 
 The turn-end check (`chat/turnEndQuestionCheck.ts`) logs `agent_chat.turn_end_question_tiebreak` (info) for every Jev/cheap-model decision with `sessionId`, `turnId`, `provider` (the cheap-model provider or null), `jev` (`ask`, `not_ask`, `unsure`, `no_answer`), `decidedBy` (`jev` or `model`), `asksUser`, `awaitingOwnWork`, `stillOpen` and `durationMs`; `agent_chat.turn_end_question_raised` (info) with `decidedBy` `rules`, `jev` or `model`; `agent_chat.turn_end_question_tiebreak_failed` (warn) when the cheap model throws; and `agent_chat.turn_end_awaiting_own_work` (info, `sessionId`) when a chat is marked as waiting on its own work.
+
+The composer's model hint (`chat/ComposerModelHintChip.tsx`) logs `renderer.model_hint.outcome` (info) through the renderer's debug-event bridge, so it lands in the desktop's project `main.jsonl` on the machine whose window showed it. One line per hint the user saw: `outcome` (`accept` = clicked, `dismiss` = the ×, `ignore` = the prompt was sent or cleared with the hint still up), Jev's `difficulty` and `kind`, `fromModel`/`fromEffort` (the pick at the time), `toModel`/`toEffort` (the suggestion) and `effortOnly`. No prompt text. Hints replaced while typing log nothing. It is the record for learning from overrides; no other storage keeps it.
 
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 
