@@ -30,6 +30,16 @@ describe("model permission vocabulary", () => {
     expect(defaultModelPermission("opencode")).toBe("edit");
     expect(defaultModelPermission("cursor")).toBe("agent");
     expect(defaultModelPermission("droid")).toBe("auto-low");
+    // Copilot has a vocabulary of its own; before this it answered with
+    // OpenCode's modes, so its chip offered modes Copilot does not have.
+    expect(modelPermissionOptions("copilot").map((option) => option.value)).toEqual([
+      "plan",
+      "ask",
+      "assisted",
+      "auto-edit",
+      "full-auto",
+    ]);
+    expect(defaultModelPermission("copilot")).toBe("ask");
   });
 
   it("resolves a legacy mode onto the provider's own mode, and rejects a foreign native one", () => {
@@ -49,5 +59,11 @@ describe("model permission vocabulary", () => {
     expect(nativePermissionToCliMode("cursor", "agent")).toBe("default");
     expect(nativePermissionToCliMode("droid", "auto-high")).toBe("full-auto");
     expect(nativePermissionToCliMode("droid", "agi")).toBe("full-auto");
+    // Copilot's `assisted` has no generic word, so it lands on the cautious
+    // editing tier — which is why the chip sends `--copilot-permission-mode`
+    // rather than `--permissions`.
+    expect(resolveModelPermissionValue("copilot", "assisted")).toBe("assisted");
+    expect(nativePermissionToCliMode("copilot", "assisted")).toBe("edit");
+    expect(nativePermissionToCliMode("copilot", "auto-edit")).toBe("edit");
   });
 });

@@ -113,6 +113,18 @@ describe("model mention send-time detail", () => {
     expect(detail.hint).toContain("--effort high");
   });
 
+  it("sends a Copilot chip's own mode, which the generic flag cannot carry", () => {
+    const detail = buildModelMentionDetail(
+      { modelId: "github-copilot/auto", effort: null, permission: "assisted" },
+      { displayName: "Copilot", provider: "copilot", reasoningTiers: [] },
+    );
+    expect(detail.attributes).toContainEqual(["permissions", "assisted"]);
+    expect(detail.hint).toContain("--copilot-permission-mode assisted");
+    // Assisted has no generic word, so `--permissions` would arrive as
+    // Auto-edit instead. The handoff has no Copilot flag and keeps it.
+    expect(detail.hint).toContain("--permissions edit");
+  });
+
   it("shell-quotes a model id that is not shell-safe", () => {
     const detail = buildModelMentionDetail(
       { modelId: "opencode/openrouter/anthropic%2Fclaude-opus-4.7", effort: null, permission: null },

@@ -1073,21 +1073,23 @@ struct WorkRuntimeModeOption: Identifiable, Hashable {
 
 func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
   switch provider.lowercased() {
+  // The names shared/modelPermissions.ts owns, so a mode reads the same on
+  // every surface of both apps.
   case "claude":
     return [
-      WorkRuntimeModeOption(id: "default", title: "Default"),
+      WorkRuntimeModeOption(id: "default", title: "Manual"),
       WorkRuntimeModeOption(id: "auto", title: "Auto"),
-      WorkRuntimeModeOption(id: "edit", title: "Accept Edits"),
-      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "edit", title: "Accept edits"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan mode"),
       WorkRuntimeModeOption(id: "full-auto", title: "Bypass"),
     ]
   case "codex":
     return [
-      WorkRuntimeModeOption(id: "default", title: "Default permissions"),
-      WorkRuntimeModeOption(id: "edit", title: "Edit mode"),
-      WorkRuntimeModeOption(id: "plan", title: "Plan mode"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
-      WorkRuntimeModeOption(id: "config-toml", title: "Custom (config.toml)"),
+      WorkRuntimeModeOption(id: "default", title: "Default"),
+      WorkRuntimeModeOption(id: "edit", title: "Edit"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+      WorkRuntimeModeOption(id: "config-toml", title: "Config"),
     ]
   case "opencode":
     return [

@@ -36,4 +36,19 @@ describe("fixedMenuAboveAnchorStyle", () => {
     const style = fixedMenuAboveAnchorStyle(rect, { width: 240, gap: 4 });
     expect(style.transform).toBe("translateY(calc(-100% - 4px))");
   });
+
+  it("opens below the anchor when asked, and only when it has the anchor's bottom", () => {
+    const below = fixedMenuAboveAnchorStyle(
+      { left: 120, top: 400, right: 200, bottom: 428 },
+      { width: 240, below: true },
+    );
+    expect(below.top).toBe(428 + 8);
+    // Nothing to hang off, so it stays above rather than landing at NaN.
+    expect(below.transform).toBe("none");
+    expect(below.left).toBe(120);
+
+    const noBottom = fixedMenuAboveAnchorStyle(rect, { width: 240, below: true });
+    expect(noBottom.top).toBe(400);
+    expect(noBottom.transform).toBe("translateY(calc(-100% - 8px))");
+  });
 });

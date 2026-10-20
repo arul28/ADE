@@ -166,3 +166,30 @@ tester.run("no-legacy-banner-import", rule("no-legacy-banner-import"), {
     { code: "export { toast } from 'sonner';", errors: [{ messageId: "toast" }] },
   ],
 });
+
+// The guard that keeps a seventh permission control from appearing. It is
+// path-gated, so every case carries a filename.
+tester.run("no-adhoc-permission-picker", rule("no-adhoc-permission-picker"), {
+  valid: [
+    // A select that says nothing about permissions is not a permission control.
+    { code: "const el = <select value={sortOrder} onChange={onSort} />;", filename: FILE },
+    // Outside the renderer's component tree the rule does not apply.
+    { code: "const el = <select value={permissionMode} onChange={onPick} />;", filename: "/repo/apps/desktop/src/main/thing.tsx" },
+    // The picker itself is the control every other surface renders.
+    { code: "const el = <select value={permissionMode} onChange={onPick} />;", filename: "/repo/apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx" },
+    // A listbox that is not about permissions is somebody else's control.
+    { code: "const el = <div role=\"listbox\" aria-label={lane} />;", filename: FILE },
+  ],
+  invalid: [
+    {
+      code: "const el = <select value={claudePermissionMode} onChange={onPick} />;",
+      filename: FILE,
+      errors: [{ messageId: "select" }],
+    },
+    {
+      code: "const el = <div role=\"listbox\" aria-label={cursorModeId} />;",
+      filename: FILE,
+      errors: [{ messageId: "listbox" }],
+    },
+  ],
+});
