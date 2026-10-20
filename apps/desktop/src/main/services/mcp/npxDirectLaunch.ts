@@ -145,14 +145,20 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
     if (path.dirname(dir) === dir) break;
   }
   const userRc = readNpmrc(env.NPM_CONFIG_USERCONFIG?.trim() || env.npm_config_userconfig?.trim() || path.join(homeDir, ".npmrc"));
-  const globalRc = readNpmrc(env.NPM_CONFIG_GLOBALCONFIG?.trim() || env.npm_config_globalconfig?.trim() || path.join(builtinPrefix, "etc", "npmrc"));
+  const fromEnv = (key: string): string | undefined =>
+    env[`npm_config_${key}`]?.trim() || env[`NPM_CONFIG_${key.toUpperCase()}`]?.trim() || undefined;
+  if ([...projectRcs, userRc].some((rc) => rc == null)) return null;
+  // The global config lives under npm's effective prefix, which the env,
+  // project or user config can move; the built-in prefix is the fallback.
+  const prefixBeforeGlobal = fromEnv("prefix")
+    || (projectRcs as Array<Map<string, string>>).find((rc) => rc.has("prefix"))?.get("prefix")
+    || userRc!.get("prefix")
+    || builtinPrefix;
+  const globalRc = readNpmrc(fromEnv("globalconfig") || path.join(prefixBeforeGlobal, "etc", "npmrc"));
+  if (globalRc == null) return null;
   // npm's precedence: env, project, user, global.
-  const rcs = [...projectRcs, userRc, globalRc];
-  if (rcs.some((rc) => rc == null)) return null;
-  const files = rcs as Array<Map<string, string>>;
-  const lookup = (key: string): string | undefined =>
-    env[`npm_config_${key}`]?.trim() || env[`NPM_CONFIG_${key.toUpperCase()}`]?.trim()
-    || files.find((rc) => rc.has(key))?.get(key);
+  const files = [...projectRcs, userRc, globalRc] as Array<Map<string, string>>;
+  const lookup = (key: string): string | undefined => fromEnv(key) || files.find((rc) => rc.has(key))?.get(key);
 
   let customRegistryScopes: NpmSetup["customRegistryScopes"] = new Set();
   const registry = lookup("registry");
@@ -351,10 +357,11 @@ export function createNpxDirectLauncher(options: {
         });
       }
       const previous = latest.get(key);
+      const at = now();
       latest.set(key, version != null || !previous
-        ? { version, checkedAt: now(), attemptedAt: now() }
+        ? { version, checkedAt: at, attemptedAt: at }
         // No answer this time: keep the last good one until it ages out.
-        : { ...previous, attemptedAt: now() });
+        : { ...previous, attemptedAt: at });
     })().finally(() => inflight.delete(key));
     inflight.set(key, task);
     return task;

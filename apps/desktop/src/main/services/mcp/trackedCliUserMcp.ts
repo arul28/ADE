@@ -44,6 +44,9 @@ function mainCheckoutOf(cwd: string): string | null {
   return path.dirname(path.dirname(worktrees));
 }
 
+/** npx's own switches, which take no value. */
+const NPX_SWITCHES = new Set(["-y", "--yes", "-q", "--quiet", "--silent", "--"]);
+
 /** A flag whose value is a credential by its name (`--token`, `--api-key`, `--cookie`, …). */
 const CREDENTIAL_FLAG = /^--?[\w-]*(token|key|secret|pass|cookie|session|auth|bearer|cred|sig)[\w-]*(=|$)/i;
 
@@ -60,6 +63,15 @@ function codexEntryCarriesSecret(entry: Record<string, unknown>): boolean {
   if (isRecord(entry.http_headers) && Object.keys(entry.http_headers).length) return true;
   const args = Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === "string") : [];
   if (args.some((arg) => CREDENTIAL_FLAG.test(arg))) return true;
+  // A flag's value can be anything (`-p hunter2`), so only standalone flags
+  // (`--headless`) and bare words that follow no flag (`mcp`) may ride.
+  // npx's own switches take no value.
+  const takesNoValue = (flag: string) => NPX_SWITCHES.has(flag);
+  if (args.some((arg, index) => {
+    if (arg.startsWith("-")) return arg.includes("=");
+    const previous = index > 0 ? args[index - 1]! : "";
+    return previous.startsWith("-") && !takesNoValue(previous);
+  })) return true;
   const url = typeof entry.url === "string" ? entry.url : undefined;
   if (url) {
     try {
