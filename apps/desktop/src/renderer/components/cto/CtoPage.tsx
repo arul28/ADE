@@ -10,6 +10,7 @@ import type {
   CtoStartFreshSessionResult,
   CtoThreadHealth,
 } from "../../../shared/types";
+import { CTO_THREAD_ROLLED_OVER_STATUS } from "../../../shared/types/chat";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
 import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
@@ -239,6 +240,39 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     setSession(next);
     return next;
   }, [ctoPin, homeReady, primaryLaneId, sessionCacheKey]);
+
+  // ADE opens a fresh CTO thread by itself once the current one no longer fits
+  // its context window. Its notice is the first row of the NEW thread, so
+  // seeing it on any other session means this page is showing a retired one.
+  const followRolloverRef = useRef<() => void>(() => {});
+  followRolloverRef.current = () => {
+    const key = sessionCacheKey;
+    const ensure = window.ade?.cto?.ensureSession;
+    if (!ensure || !primaryLaneId || !homeReady) return;
+    void ensure({}, ctoPin)
+      .then((next) => {
+        // The person may have moved to another home while this was in flight.
+        if (!isCurrentCto(key)) return;
+        ctoPrimarySessions.set(key, next);
+        setSession(next);
+      })
+      .catch(() => {});
+    void loadThreadHealth();
+  };
+  const ctoPinRef = useRef(ctoPin);
+  ctoPinRef.current = ctoPin;
+  const currentSessionId = session?.id ?? null;
+  useEffect(() => {
+    const onEvent = window.ade?.agentChat?.onEvent;
+    if (!active || !homeReady || !onEvent) return;
+    return onEvent((envelope) => {
+      const event = envelope.event;
+      if (event.type !== "system_notice" || event.status !== CTO_THREAD_ROLLED_OVER_STATUS) return;
+      if (envelope.sessionId === currentSessionId) return;
+      followRolloverRef.current();
+    }, ctoPinRef.current);
+    // Keyed on the pin's key (inside sessionCacheKey), not the pin object.
+  }, [active, homeReady, sessionCacheKey, currentSessionId]);
 
   /**
    * Settings owns model selection for the CTO.
@@ -651,7 +685,7 @@ function ModelPickCard({
           <div className="mt-3 text-[11px] text-muted-fg/40">Checking configured models…</div>
         ) : availableModelIds.length === 0 ? (
           <div className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] leading-4 text-amber-200/90">
-            No model I can run on is configured yet. Sign in to Claude, Codex, or Cursor under
+            No model I can run on is configured yet. Sign in to Claude, Codex, Cursor, or OpenCode under
             Settings → AI → Providers.
           </div>
         ) : switchingModel ? (

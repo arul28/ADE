@@ -791,8 +791,9 @@ func workBoardColumnLabel(_ column: String) -> String {
 /// Deliberately separate from `WorkActiveSendCapability` above, exactly as it is
 /// on the desktop. That table governs the composer's staged-message menu; this
 /// is the CTO's own eligibility contract, and Cursor qualifies here through
-/// interrupt-and-resend despite having no inline channel at all.
-let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor"]
+/// interrupt-and-resend despite having no inline channel at all, and OpenCode
+/// through its inbox, which delivers an inline message at the next step.
+let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor", "opencode"]
 
 /// True when `provider` can redirect a turn already in flight, so it is allowed
 /// to be the CTO.

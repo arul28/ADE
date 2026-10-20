@@ -39,6 +39,7 @@ describe("ctoMemoryService", () => {
     expect(service.appendMemoryFact("Prefer sentence case in UI copy.")).toEqual({
       saved: true,
       fact: "Prefer sentence case in UI copy.",
+      id: expect.any(String),
     });
     expect(service.appendMemoryFact("Ship one push per review cycle.").saved).toBe(true);
     // Exact duplicate (after whitespace normalization) is a no-op.
@@ -231,17 +232,30 @@ describe("ctoMemoryService", () => {
     expect(cleared.goal).toBe("Ship the coordinator");
   });
 
-  it("copies notes-file bullets into the store and ignores the rest of the file", () => {
+  it("tracks notes-file bullets and archives removed or cleared facts", () => {
     const { adeDir, service } = createFixture();
     service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n\nA paragraph that is not a bullet.");
-    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n- Two bullet\n");
-    const texts = createProjectContextStore({ adeDir }).read().items.map((item) => item.text);
-    expect(texts).toEqual(["One bullet", "Two bullet"]);
+    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- Two bullet\n");
+    const store = createProjectContextStore({ adeDir });
+    const items = store.read().items;
+    expect(items).toHaveLength(2);
+    expect(items.find((item) => item.text === "One bullet")?.status).toBe("archived");
+    expect(items.find((item) => item.text === "Two bullet")?.status).toBe("active");
+
+    service.writeMemory("");
+    const cleared = store.read().items;
+    expect(cleared.find((item) => item.text === "Two bullet")?.status).toBe("archived");
   });
 
   it("includes a lane-tagged store fact that is not in MEMORY.md", () => {
     const { adeDir, service } = createFixture();
     service.appendMemoryFact("Installer signing needs a GUI Always-Allow.", { lane: "lane-7" });
+    const duplicate = service.appendMemoryFact(
+      "Installer signing needs a GUI Always-Allow for local installs.",
+      { lane: "lane-7" },
+    );
+    expect(duplicate.saved).toBe(false);
+    expect(duplicate.duplicateOf).toContain("Installer signing needs a GUI Always-Allow.");
     createProjectContextStore({ adeDir }).remember({
       text: "The account mirror already knew the signing prompt.",
       tags: { lane: "lane-7" },

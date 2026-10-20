@@ -103,11 +103,11 @@ describe("ctoStateService", () => {
       adeDir: fixture.adeDir,
     });
 
-    // OpenCode stages every mid-turn message, so a CTO seated there would hold
+    // Droid can only stage a mid-turn message, so a CTO seated there would hold
     // every child report until the current turn ended. The write normalizes
     // away rather than sticking, which is what puts the surface on its picker.
     service.updateIdentity({
-      modelPreferences: { provider: "opencode", model: "gpt-5.2", modelId: "opencode/openai/gpt-5.2" },
+      modelPreferences: { provider: "droid", model: "gpt-6-luna", modelId: "droid/gpt-6-luna" },
     });
     expect(service.getIdentity().modelPreferences).toBeNull();
 

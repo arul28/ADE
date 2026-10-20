@@ -42,7 +42,7 @@ import type { createPrService } from "../../prs/prService";
 import type { createSessionService } from "../../sessions/sessionService";
 import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
 import type { createCtoStateService } from "../../cto/ctoStateService";
-import type { CtoMemoryService } from "../../cto/ctoMemoryService";
+import { CTO_MEMORY_FACT_KINDS, type CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import { settleAbortMessage } from "../../sessions/settleTerminalSession";
@@ -134,7 +134,8 @@ export interface CtoOperatorToolDeps {
   ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs"> | null;
   ctoMemoryService?: Pick<
     CtoMemoryService,
-    "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries" | "setProjectBrief" | "recordThread"
+    | "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries" | "setProjectBrief" | "recordThread"
+    | "forgetFact"
   > | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
@@ -229,7 +230,7 @@ export interface CtoOperatorToolDeps {
     ingestAsync: (args: any) => Promise<any>;
   } | null;
   searchService?: {
-    query: (args: { query: string; laneId?: string; limit?: number }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor?: unknown }>;
+    query: (args: { query: string; laneId?: string; limit?: number; kinds?: Array<"chat"> }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor?: unknown }>;
     indexStatus?: () => Promise<any> | any;
   } | null;
   usageService?: {
@@ -291,6 +292,31 @@ const machineArgSchema = z
  * discoveries share it so a worker's `recordDiscovery` and the CTO's
  * `saveMemory` land in the same index.
  */
+/** Store ids are UUIDs; any other reference is the fact's exact text. */
+function looksLikeFactId(ref: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim());
+}
+
+/** Past chat messages matching `query`, from the project's search index. Never throws. */
+async function searchChatHistory(
+  searchService: NonNullable<CtoOperatorToolDeps["searchService"]>,
+  query: string,
+  limit: number,
+): Promise<Array<{ sessionId: string | null; chat: string; laneId: string | null; at: string; snippet: string }>> {
+  try {
+    const result = await searchService.query({ query, kinds: ["chat"], limit });
+    return (result.results as Array<Record<string, unknown>>).map((row) => ({
+      sessionId: typeof row.sessionId === "string" ? row.sessionId : null,
+      chat: typeof row.title === "string" ? row.title : "",
+      laneId: typeof row.laneId === "string" ? row.laneId : null,
+      at: typeof row.updatedAt === "string" ? row.updatedAt : "",
+      snippet: typeof row.snippet === "string" ? row.snippet.slice(0, 300) : "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
 const memoryTagsSchema = z.object({
   lane: z.string().trim().min(1).optional().describe("Lane id the fact is about."),
   pr: z.union([z.string().trim().min(1), z.number().int().positive()]).optional().describe("GitHub PR number."),
@@ -2691,24 +2717,48 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   tools.saveMemory = core({
     description:
       "Save a durable fact to the project context store (and MEMORY.md, which remains the local notes file). "
-      + "Use for decisions, conventions, traps, and standing project context. The store survives a restart, a crash, "
-      + "and a cleared CTO session, and it follows the ADE account when this repo has a git remote. "
-      + "Keep each fact to one crisp sentence. Exact duplicates are ignored.",
+      + "Use for decisions, conventions, traps, user preferences, and standing project context. The store survives a restart, "
+      + "a crash, a cleared CTO session and a model switch, and it follows the ADE account when this repo has a git remote. "
+      + "Keep each fact to one crisp sentence. A fact that says the same thing as a saved one is not saved again: the result "
+      + "names the existing one. When a fact changes (a decision reversed, a convention updated), save the new one with "
+      + "`replaces` so the old one stops being injected.",
     inputSchema: z.object({
       fact: z.string().trim().min(1).describe("A single durable fact to remember."),
+      kind: z.enum(CTO_MEMORY_FACT_KINDS).optional().describe(
+        "decision, convention, trap (a gotcha that bit someone), environment, preference (how the user wants to work), or fact.",
+      ),
+      pin: z.boolean().optional().describe("Pin a fact that must be in front of you every turn. Use sparingly."),
+      replaces: z.array(z.string().trim().min(1)).max(10).optional().describe(
+        "Ids (from searchMemory) or exact texts of facts this one supersedes. They are archived, not deleted.",
+      ),
       tags: memoryTagsSchema.optional().describe(
         "What the fact is about. Tag whenever you can: a tagged fact is the one a worker chat on that lane, "
         + "and the nightly gardener, can actually find later.",
       ),
     }),
-    execute: async ({ fact, tags }) => {
-      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+    execute: async ({ fact, kind, pin, replaces, tags }) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory service is not available." };
       try {
-        const result = deps.ctoMemoryService.appendMemoryFact(fact, tags ?? null);
+        // Retire first: a replacement that rewords the old fact would
+        // otherwise be refused as its near-duplicate.
+        const replaced = (replaces ?? [])
+          .map((ref) => memory.forgetFact(looksLikeFactId(ref) ? { id: ref } : { text: ref }, "replaced by a newer fact"))
+          .filter((row) => row.forgotten)
+          .map((row) => row.fact);
+        const result = memory.appendMemoryFact(fact, tags ?? null, { kind: kind ?? null, pin: pin === true });
         return {
           success: true,
           saved: result.saved,
           fact: result.fact,
+          ...(result.id ? { id: result.id } : {}),
+          ...(result.duplicateOf
+            ? {
+                duplicateOf: result.duplicateOf,
+                notice: "Not saved: this says the same thing as an existing fact. Pass that fact's id in `replaces` if your wording should win.",
+              }
+            : {}),
+          ...(replaced.length ? { replaced } : {}),
           file: "MEMORY.md",
           ...(result.evictedCount
             ? {
@@ -2716,6 +2766,30 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               }
             : {}),
         };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.forgetMemory = core({
+    description:
+      "Retire a durable fact that is wrong, stale, or no longer true, so it stops being injected. "
+      + "Pass the id searchMemory returned, or the fact's exact text. The fact is archived (still searchable), "
+      + "and the retirement follows the ADE account to other machines. To correct a fact, prefer saveMemory with `replaces`.",
+    inputSchema: z.object({
+      id: z.string().trim().min(1).optional(),
+      text: z.string().trim().min(1).optional(),
+      reason: z.string().trim().max(200).optional(),
+    }),
+    execute: async ({ id, text, reason }) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory service is not available." };
+      if (!id && !text) return { success: false, error: "Pass the fact's id or its exact text." };
+      try {
+        const result = memory.forgetFact({ id: id ?? null, text: text ?? null }, reason ?? null);
+        if (!result.forgotten) return { success: false, error: "No live fact matched. Search with searchMemory and pass its id." };
+        return { success: true, forgotten: result.fact };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -2748,18 +2822,26 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   tools.searchMemory = core({
     description:
-      "Search your persistent memory (MEMORY.md, the project context store, thread state, and recent daily logs) for prior context. " +
-      "Use this before asking the user to restate something you may already know.",
+      "Search your persistent memory (MEMORY.md, the project context store, thread state, and the daily logs) and every past "
+      + "chat in this project, including your own retired threads. Rows that are live facts carry an `id` for saveMemory "
+      + "`replaces` and forgetMemory. `history` rows are past chat messages; open one with getChatTranscript. "
+      + "Use this before asking the user to restate something you may already know.",
     inputSchema: z.object({
       query: z.string().trim().min(1),
       limit: z.number().int().positive().max(100).optional().default(20),
       tags: memoryTagsSchema.optional().describe("Restrict the search to facts carrying these tags."),
+      includeHistory: z.boolean().optional().default(true).describe("Also search past chat transcripts."),
     }),
-    execute: async ({ query, limit, tags }) => {
+    execute: async ({ query, limit, tags, includeHistory }) => {
       if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
       try {
         const rows = deps.ctoMemoryService.searchMemory(query, { limit, ...(tags ? { tags } : {}) });
-        return { success: true, query, count: rows.length, rows };
+        // Nothing a retired thread said is lost: its transcript stays in the
+        // project's full-text index. Lexical and local, no embeddings.
+        const history = includeHistory && !tags && deps.searchService
+          ? await searchChatHistory(deps.searchService, query, Math.min(10, limit))
+          : [];
+        return { success: true, query, count: rows.length, rows, ...(history.length ? { history } : {}) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

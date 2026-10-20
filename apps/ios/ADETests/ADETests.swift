@@ -14574,14 +14574,15 @@ final class ADETests: XCTestCase {
 
   /// Guards the hand mirror of the desktop's `CTO_LIVE_REDIRECT_PROVIDERS`. It
   /// is a separate list from the dispatch table above on purpose: no single
-  /// dispatch mode keys it. Codex is eligible without an interrupt channel, so
-  /// a list derived from either atomic mode would get a provider wrong.
+  /// dispatch mode keys it. Codex is eligible without an interrupt channel,
+  /// and OpenCode is eligible through its inbox, so a list derived from either
+  /// atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
-    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor"])
-    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent"] {
+    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode"])
+    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode"] {
       XCTAssertTrue(providerSupportsLiveRedirect(provider), "expected \(provider) to be CTO-eligible")
     }
-    for provider in ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
+    for provider in ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
     XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))

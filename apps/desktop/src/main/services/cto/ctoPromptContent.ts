@@ -98,9 +98,9 @@ export const CTO_MEMORY_GARDENER_CRON = "30 3 * * *";
 export const CTO_MEMORY_GARDENER_PROMPT = [
   "Nightly memory gardening. Work quietly: no questions, no lane work, no spawned chats.",
   "",
-  "1. Read the recent daily logs and the worker discovery log, and distill anything durable into facts with saveMemory. Tag every fact you write (lane, pr, path, topic) so it can be found later.",
-  "2. Merge duplicates by saving one clear replacement with saveMemory. Exact duplicate text is ignored, so the replacement has to be the sentence worth keeping.",
-  "3. Leave a fact in place when you are unsure it is stale. This job cannot delete memory, and losing a fact is worse than keeping a redundant one.",
+  "1. Read the recent daily logs (searchMemory and readMemory) and the worker discovery log (readDiscoveries), and distill anything durable into facts with saveMemory. Give each a kind and tag it (lane, pr, path, topic) so it can be found later. ADE already files facts it notices on its own, so check before adding.",
+  "2. Merge facts that say the same thing: save one clear sentence with saveMemory and pass the old facts' ids in `replaces`. They are archived, not deleted.",
+  "3. Retire a fact that is clearly no longer true (a reversed decision, a merged PR's open loop) with forgetMemory, giving the reason. Leave a fact in place when you are unsure it is stale: losing a fact is worse than keeping a redundant one.",
   "",
-  "Finish with one short line naming how many facts you added and how many you replaced.",
+  "Finish with one short line naming how many facts you added, replaced, and retired.",
 ].join("\n");
