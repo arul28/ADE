@@ -22,7 +22,7 @@ import {
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
@@ -35,6 +35,10 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
+import type {
+  JevChoiceQuestion,
+  JevDecideRequest,
+} from "../../../shared/types/jev";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -112,9 +116,11 @@ import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
   selectActiveProjectStateKey,
+  projectStateKeyForBinding,
   useAppStore,
   useRootAppStore,
 } from "../../state/appStore";
+import { openStartChatDraft } from "../../lib/workDraft";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
@@ -171,6 +177,105 @@ type Command = {
   run: () => void | Promise<void>;
 };
 
+const PALETTE_SUGGESTION_DEBOUNCE_MS = 250;
+const PALETTE_SUGGESTION_MAX_CANDIDATES = 40;
+const PALETTE_SUGGESTION_PROBABILITY_FLOOR = 0.15;
+const PALETTE_SUGGESTION_TOP_PROBABILITY_FLOOR = 0.35;
+const PALETTE_SUGGESTION_CACHE_LIMIT = 24;
+
+const PALETTE_SUGGESTION_STOP_WORDS = new Set([
+  "a", "an", "and", "for", "in", "me", "my", "of", "on", "please",
+  "the", "this", "to", "with",
+]);
+
+const PALETTE_SUGGESTION_SYNONYMS: Record<string, string[]> = {
+  archive: ["archived", "cleanup", "clean up"],
+  bigger: ["larger", "increase", "font size", "text size"],
+  chat: ["conversation", "session"],
+  lane: ["lanes", "worktree", "selected lane"],
+  lanes: ["lane", "worktree", "selected lane"],
+  new: ["start", "create"],
+  open: ["show", "view", "go to", "navigate"],
+  old: ["archived", "stale", "merged", "idle"],
+  pr: ["pull request", "pull requests", "prs"],
+  pull: ["pr", "prs"],
+  request: ["pr", "prs"],
+  start: ["new", "create"],
+  text: ["font", "chat", "message"],
+};
+
+type PaletteSuggestionCacheEntry = {
+  requestKey: string;
+  commandIds: string[];
+};
+
+type PaletteSuggestionResult = {
+  query: string;
+  context: string;
+  commandIds: string[];
+};
+
+function containsPaletteWord(text: string, word: string): boolean {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, "i").test(text);
+}
+
+function paletteSuggestionCandidates(
+  commands: Command[],
+  matchedCommands: Command[],
+  queryTerms: readonly string[],
+): Command[] {
+  const terms = queryTerms
+    .map((term) => term.toLowerCase())
+    .filter((term) => term.length > 1 && !PALETTE_SUGGESTION_STOP_WORDS.has(term));
+  if (terms.length === 0) return [];
+
+  const existingMatches = new Set(matchedCommands);
+  return commands
+    .map((command, order) => {
+      const title = command.title.toLowerCase();
+      const searchable = [title, command.hint ?? "", ...(command.keywords ?? [])]
+        .join(" ")
+        .toLowerCase();
+      let score = existingMatches.has(command) ? 16 : 0;
+      let matchedTerms = 0;
+      for (const term of terms) {
+        if (containsPaletteWord(title, term)) {
+          score += 5;
+          matchedTerms += 1;
+          continue;
+        }
+        if (containsPaletteWord(searchable, term)) {
+          score += 3;
+          matchedTerms += 1;
+          continue;
+        }
+        if ((PALETTE_SUGGESTION_SYNONYMS[term] ?? []).some((synonym) => searchable.includes(synonym))) {
+          score += 1;
+          matchedTerms += 1;
+        }
+      }
+      if (matchedTerms === terms.length) score += 8;
+      return { command, order, score };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.order - right.order)
+    .slice(0, PALETTE_SUGGESTION_MAX_CANDIDATES)
+    .map((candidate) => candidate.command);
+}
+
+function paletteSuggestionDescription(command: Command): string {
+  const fallback = `Open the ${command.group ?? "ADE"} action for this task.`;
+  const terms = command.keywords?.slice(0, 7).join(", ");
+  return [
+    `${command.title}: ${command.hint?.trim() || fallback}`,
+    terms ? `Related terms: ${terms}` : "",
+  ]
+    .filter(Boolean)
+    .join(". ")
+    .slice(0, 280);
+}
+
 type BrowseRow = {
   id: string;
   title: string;
@@ -221,11 +326,16 @@ export function CommandPalette({
   onOpenChange: (v: boolean) => void;
   intent?: CommandPaletteIntent;
 }) {
+  const location = useLocation();
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const runtimePinRef = useRef(projectBinding);
+  runtimePinRef.current = projectBinding;
+  const runtimePinKey = projectBinding?.key ?? null;
   const selectLane = useAppStore((s) => s.selectLane);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
@@ -313,6 +423,9 @@ export function CommandPalette({
   const [actionOutcome, setActionOutcome] =
     useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
+  const [suggestionResult, setSuggestionResult] =
+    useState<PaletteSuggestionResult | null>(null);
+  const suggestionCacheRef = useRef(new Map<string, PaletteSuggestionCacheEntry>());
   const [filterMenuKey, setFilterMenuKey] = useState<WorkFilterMenuKey | null>(
     null,
   );
@@ -360,6 +473,7 @@ export function CommandPalette({
     };
   }, [boundRuntimeName, boundTargetId, projectBinding, remoteSnapshot]);
   const listRef = useRef<HTMLUListElement>(null);
+  const normalFlatCountRef = useRef(0);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   // Tracks the location whose path is currently loaded into `browseInput`, so
@@ -691,6 +805,7 @@ export function CommandPalette({
         title: "Go to PRs",
         hint: "Review pull requests",
         shortcut: "G R",
+        keywords: ["open pull request", "lane pull request", "current lane", "review"],
         group: "Navigation",
         run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs"),
       },
@@ -742,7 +857,14 @@ export function CommandPalette({
       ...availableSettingsEntries().map((entry) => ({
         id: `setting-${entry.id}`,
         title: entry.label,
-        hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
+        hint:
+          entry.id === "appearance.chat-font-size"
+            ? "Change how large chat messages appear"
+            : entry.id === "archive.items"
+              ? "Browse or restore older lanes, chats, and shells"
+              : entry.id === "lanes-git.lanes"
+                ? "Manage active, stale, merged, and archived lanes"
+                : `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
         // Keywords never render; they widen what the palette's own filter
         // matches on, so "crash" reaches "Send a report to ADE".
@@ -769,6 +891,31 @@ export function CommandPalette({
         hint: "Switch to work / terminals view",
         group: "Actions",
         run: () => navigate("/work"),
+      },
+      {
+        id: "action-new-chat",
+        title: selectedLane
+          ? `Start a new chat in ${selectedLane.name}`
+          : "Start a new chat",
+        hint: selectedLane
+          ? "Create a chat in the selected lane"
+          : "Open a blank chat in Work",
+        keywords: ["new conversation", "start chat", "this lane", "selected lane"],
+        group: "Actions",
+        run: () => {
+          const projectKey = projectStateKeyForBinding(
+            projectBinding,
+            project?.rootPath,
+          );
+          if (!projectKey) return;
+          openStartChatDraft(
+            setWorkViewState,
+            projectKey,
+            selectedLane?.id ?? "",
+            null,
+          );
+          navigate("/work");
+        },
       },
       {
         id: "action-refresh-packs",
@@ -883,9 +1030,12 @@ export function CommandPalette({
     hasActiveProject,
     lanes,
     navigate,
+    projectBinding,
     project?.rootPath,
     selectLane,
     selectedLaneId,
+    selectedLane,
+    setWorkViewState,
     startProjectBrowse,
     startProjectClone,
     startProjectCreate,
@@ -908,6 +1058,193 @@ export function CommandPalette({
       return parsedWorkQuery.terms.every((term) => searchable.includes(term));
     });
   }, [commands, parsedWorkQuery.terms]);
+
+  const isFocusedChat = Boolean(
+    activeSessionTarget && isChatToolType(activeSessionTarget.toolType),
+  );
+  const suggestionContext = [
+    location.pathname,
+    selectedLane?.id ?? "no-lane",
+    isFocusedChat ? `chat:${activeSessionTarget?.id ?? "focused"}` : "no-chat",
+    runtimePinKey ?? "unbound",
+  ].join("\u001f");
+  const suggestionResultRef = useRef(suggestionResult);
+  suggestionResultRef.current = suggestionResult;
+  const suggestedCommands = useMemo(() => {
+    if (
+      !open ||
+      mode !== "default" ||
+      !suggestionResult ||
+      suggestionResult.query !== q.trim() ||
+      suggestionResult.context !== suggestionContext
+    ) {
+      return [];
+    }
+    const byId = new Map(commands.map((command) => [command.id, command]));
+    return suggestionResult.commandIds
+      .map((id) => byId.get(id))
+      .filter((command): command is Command => command != null);
+  }, [commands, mode, open, q, suggestionContext, suggestionResult]);
+
+  useEffect(() => {
+    const query = q.trim();
+    const wordCount = query.split(/\s+/).filter(Boolean).length;
+    const plainEnglishQuery =
+      wordCount >= 3 || (wordCount >= 2 && filtered.length === 0);
+    if (
+      !open ||
+      mode !== "default" ||
+      !query ||
+      !plainEnglishQuery ||
+      parsedWorkQuery.filterTokens.length > 0 ||
+      parsedWorkQuery.tracked !== null
+    ) {
+      setSuggestionResult(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const candidates = paletteSuggestionCandidates(
+        commands,
+        filtered,
+        parsedWorkQuery.terms,
+      );
+      if (candidates.length < 2) {
+        setSuggestionResult(null);
+        return;
+      }
+
+      const criteria = Object.fromEntries(
+        candidates.map((command) => [
+          command.id,
+          paletteSuggestionDescription(command),
+        ]),
+      );
+      const state = [
+        `User query: ${query}`,
+        `Current tab: ${location.pathname}`,
+        `Focused lane: ${selectedLane?.name ?? "none"}`,
+        `Chat focused: ${isFocusedChat ? "yes" : "no"}`,
+      ].join("\n");
+      const requestKey = JSON.stringify({ state, criteria });
+      const applySuggestions = (commandIds: string[]) => {
+        if (cancelled) return;
+        const availableIds = commandIds
+          .filter((id) => candidates.some((command) => command.id === id))
+          .slice(0, 3);
+        if (availableIds.length === 0) {
+          setSuggestionResult(null);
+          return;
+        }
+
+        const previous = suggestionResultRef.current;
+        const alreadyVisible =
+          previous?.query === query &&
+          previous.context === suggestionContext &&
+          previous.commandIds.join("\u001f") === availableIds.join("\u001f");
+        if (!alreadyVisible) {
+          setSelectedIdx((current) => {
+            const previousCount = previous?.commandIds.length ?? 0;
+            const baseIndex =
+              previous &&
+              (previous.query !== query || previous.context !== suggestionContext) &&
+              current >= previousCount
+                ? current - previousCount
+                : current;
+            return baseIndex < normalFlatCountRef.current
+              ? baseIndex + availableIds.length
+              : baseIndex;
+          });
+        }
+        setSuggestionResult({
+          query,
+          context: suggestionContext,
+          commandIds: availableIds,
+        });
+      };
+      const cacheResult = (commandIds: string[]) => {
+        suggestionCacheRef.current.delete(query);
+        suggestionCacheRef.current.set(query, { requestKey, commandIds });
+        while (suggestionCacheRef.current.size > PALETTE_SUGGESTION_CACHE_LIMIT) {
+          const oldest = suggestionCacheRef.current.keys().next().value;
+          if (oldest == null) break;
+          suggestionCacheRef.current.delete(oldest);
+        }
+      };
+
+      const cached = suggestionCacheRef.current.get(query);
+      if (cached?.requestKey === requestKey) {
+        applySuggestions(cached.commandIds);
+        return;
+      }
+
+      const request: JevDecideRequest<{ command: JevChoiceQuestion }> = {
+        feature: "palette",
+        state,
+        priority: "interactive",
+        questions: {
+          command: {
+            type: "choice",
+            instructions:
+              "Choose the ADE command that best matches the user's request. Use the current tab and focused lane or chat as context.",
+            criteria,
+          },
+        },
+      };
+      void window.ade.ai
+        .jevDecide(request, runtimePinRef.current)
+        .then((answers) => {
+          if (cancelled) return;
+          const answer = answers?.command;
+          const ranked =
+            answer?.type === "choice"
+              ? Object.entries(answer.probabilities)
+                  .filter(([id, probability]) =>
+                    candidates.some((command) => command.id === id) &&
+                    Number.isFinite(probability),
+                  )
+                  .sort((left, right) => right[1] - left[1])
+              : [];
+          const commandIds =
+            ranked[0]?.[1] != null &&
+            ranked[0][1] >= PALETTE_SUGGESTION_TOP_PROBABILITY_FLOOR
+              ? ranked
+                  .filter(([, probability]) =>
+                    probability > PALETTE_SUGGESTION_PROBABILITY_FLOOR,
+                  )
+                  .slice(0, 3)
+                  .map(([id]) => id)
+              : [];
+          cacheResult(commandIds);
+          applySuggestions(commandIds);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          cacheResult([]);
+          setSuggestionResult(null);
+        });
+    }, PALETTE_SUGGESTION_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    commands,
+    filtered,
+    isFocusedChat,
+    location.pathname,
+    mode,
+    open,
+    parsedWorkQuery.filterTokens.length,
+    parsedWorkQuery.terms,
+    parsedWorkQuery.tracked,
+    q,
+    runtimePinKey,
+    selectedLane?.name,
+    suggestionContext,
+  ]);
 
   const grouped = useMemo(() => {
     const groups: { label: string; items: Command[] }[] = [];
@@ -1065,6 +1402,7 @@ export function CommandPalette({
   const paletteSections = useMemo(
     () =>
       buildPaletteSections({
+        suggestedCount: suggestedCommands.length,
         commandsLead,
         threadCount: visibleWorkResults.length,
         commandCount: filtered.length,
@@ -1076,10 +1414,12 @@ export function CommandPalette({
       commandsLead,
       filtered.length,
       flatEntities.length,
+      suggestedCommands.length,
       visibleWorkResults.length,
     ],
   );
   const totalFlat = paletteSectionsTotal(paletteSections);
+  normalFlatCountRef.current = totalFlat - suggestedCommands.length;
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1611,6 +1951,11 @@ export function CommandPalette({
       // that produced the row on screen.
       const hit = paletteSectionAt(paletteSections, index);
       if (!hit) return;
+      if (hit.section.key === "suggested") {
+        const command = suggestedCommands[hit.offset];
+        if (command) runCommand(command);
+        return;
+      }
       if (hit.section.key === "chatFind") {
         if (chatFindCommand) runCommand(chatFindCommand);
         return;
@@ -1640,6 +1985,7 @@ export function CommandPalette({
       paletteSections,
       renderedCommands,
       runCommand,
+      suggestedCommands,
       toggleExpandKind,
       visibleWorkResults,
     ],
@@ -2666,9 +3012,8 @@ export function CommandPalette({
                               groups: { label: string; items: Command[] }[],
                               startIndex: number,
                             ) => {
-                              // The groups are consecutive slices of
-                              // `renderedCommands`, so a group's first flat index
-                              // is the running sum of the groups before it.
+                              // A group's first flat index is the running sum
+                              // of the command rows before it in this section.
                               let cursor = startIndex;
                               const groupStarts = groups.map((group) => {
                                 const start = cursor;
@@ -2809,6 +3154,12 @@ export function CommandPalette({
                             return walkPaletteSections(
                               paletteSections,
                               (section, startIndex) => {
+                                if (section.key === "suggested") {
+                                  return renderCommandGroups(
+                                    [{ label: "Suggested", items: suggestedCommands }],
+                                    startIndex,
+                                  );
+                                }
                                 if (section.key === "chatFind") {
                                   return chatFindCommand
                                     ? renderCommandGroups(
