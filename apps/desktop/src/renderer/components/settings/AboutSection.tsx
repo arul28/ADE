@@ -2,11 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { OtherMachinesUpdateSection } from "./OtherMachinesUpdateSection";
-import { ModernRow, ModernRows, ModernSection } from "./primitives";
+import { ModernSection } from "./primitives";
 
 type RuntimeServiceInstallState = NonNullable<AppInfo["localRuntime"]>["serviceInstall"]["state"];
 type RuntimeServiceHealthState = NonNullable<AppInfo["localRuntime"]>["serviceHealth"]["state"];
@@ -165,12 +164,19 @@ export function AboutSection() {
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.app
+    const readInfo = () => window.ade.app
       .getInfo()
       .then((value) => {
         if (!cancelled) setInfo(value);
       })
       .catch(() => {});
+    void readInfo();
+    // The background service's installed/running answer is cached between
+    // reads, so ask for a fresh one as this page opens and read again once it
+    // lands; the "checked" time then belongs to that probe.
+    void (window.ade.app.refreshServiceHealth?.() ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => readInfo());
     void refreshLatest();
     return () => {
       cancelled = true;
@@ -378,23 +384,6 @@ export function AboutSection() {
               ) : null}
             </div>
           </div>
-        ) : null}
-
-        {/* ADE is GA on macOS and Linux; only the Windows port is in beta. This is
-            the re-open surface for the start-up notice — the header build chip only
-            exists on alpha/beta packages, so a Windows Stable install needs it. */}
-        {isWindowsPlatform() ? (
-          <ModernRows>
-            <ModernRow
-              title="ADE on Windows is in beta"
-              hint="What to expect, known gaps, and how to report a bug."
-              control={(
-                <button type="button" className="ade-modern-btn" onClick={requestWindowsBetaNotice}>
-                  Open notice
-                </button>
-              )}
-            />
-          </ModernRows>
         ) : null}
 
         {runtime && (runtimeMeta || runtimePath || runtime.serviceInstall.exitCode != null || runtime.serviceHealth.checkedAt) ? (

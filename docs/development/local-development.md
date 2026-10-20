@@ -224,6 +224,32 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 > `npm run dev:desktop:attach -- --socket <path>` to connect to an already-running
 > runtime — attach mode refuses on a build-hash mismatch instead of restarting.
 
+### Agent CLIs in a dev run
+
+A dev app or a source-checkout brain runs ADE's own pinned agent CLIs, never the
+ones on your PATH, just like a packaged build. Codex, Claude Code, OpenCode and
+the Copilot runtime come from the checkout's `node_modules` (the lockfile is the
+pin) and are never downloaded. The other pins (Droid, Grok, Qwen, Kimi, Devin,
+Antigravity, Pi, the Copilot and Cursor terminal CLIs, Node, Muse) download into
+the shared tools root the first time a chat, probe or terminal needs them. The
+dev run does no startup download pass.
+
+| Variable | Use |
+| --- | --- |
+| `ADE_TOOLS_ROOT=/tmp/<dir>` | Download into a throwaway tools root. Use one for any validation that downloads, so `~/.ade/tools` stays untouched. |
+| `ADE_DISABLE_TOOLS_FETCH=1` | No downloads at all. Tools not already on disk read "ADE has not downloaded <Tool> for this machine yet". |
+| `ADE_FORCE_TOOLS_FETCH=1` | A source-checkout `ade serve` behaves like a packaged one (startup pass included). |
+
+Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH`,
+`CODEX_EXECUTABLE`, `DROID_EXECUTABLE`, `ADE_PI_PACKAGE_ROOT`,
+`ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
+[agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
+
+Use Node 22.23.3 for repository development. `npm run build:static` in
+`apps/ade-cli` requires Node 22.19.0 or newer because the headless runtime runs
+Pi's SDK worker on its own Node. Set `ADE_STATIC_NODE_BINARY` to use another
+Node binary for that build.
+
 ### On Windows
 
 Everything above applies; these are the differences that have actually cost
@@ -354,9 +380,10 @@ The per-lane `--socket` gives the lane build an isolated runtime (and sidesteps
 the warning above — nothing else is listening there); the per-lane bridge endpoint
 avoids colliding with the installed app's `~/.ade/sock/desktop-bridge.sock`. Set
 `ADE_PROJECT_ROOT=/path/to/other-project` only if you want a different project's
-data. A fresh worktree has no `node_modules` — symlink the root and `apps/desktop`
-`node_modules` from the primary checkout, or run `npm run setup` inside the
-worktree first.
+data. A fresh worktree has no `node_modules`: ADE no longer links the primary
+checkout's packages into new lanes. Run `npm run setup` inside the worktree
+first, or give the project a default lane template that installs or copies
+them (Settings › Lane templates › Set up with an agent).
 
 When launching that same flow through ADE App Control from a running Alpha/Beta
 ADE window, also clear the packaged-channel environment variables inherited from

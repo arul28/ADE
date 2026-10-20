@@ -53,7 +53,23 @@ import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "../sessions/sessionService";
 import { createPrChatLinkStore } from "../prs/prChatLinkStore";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
-import { describe, expect, it, test, vi } from "vitest";
+import {
+  TOOL_INSTALL_SENTINEL,
+  findToolTargetPin,
+  loadToolsManifest,
+} from "../../../../../ade-cli/src/services/tools";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
+
+let previousCursorToolsRoot: string | undefined;
+let temporaryCursorToolsRoot: string | undefined;
+afterEach(() => {
+  if (!temporaryCursorToolsRoot) return;
+  fs.rmSync(temporaryCursorToolsRoot, { recursive: true, force: true });
+  temporaryCursorToolsRoot = undefined;
+  if (previousCursorToolsRoot === undefined) delete process.env.ADE_TOOLS_ROOT;
+  else process.env.ADE_TOOLS_ROOT = previousCursorToolsRoot;
+  previousCursorToolsRoot = undefined;
+});
 
 async function settleDirectiveBookkeeping(): Promise<void> {
   // `runSessionTurn`'s collector resolves on the turn's `done` event, which is
@@ -1187,7 +1203,7 @@ describe("createAgentChatService", () => {
         expect(persisted.importedFrom).toMatchObject({ provider: "pi", mode: "continue" });
       });
 
-      it("continues a Copilot session in place by seeding its ACP session id", async () => {
+      it("continues a Copilot session in place: the next message resumes that session", async () => {
         vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
           importEvents("import-preview", { user: "Count the lines.", assistant: "35" }),
         );
@@ -1203,8 +1219,13 @@ describe("createAgentChatService", () => {
 
         const persisted = readPersistedChatState(result.chatSessionId);
         expect(result.chatSummary).toMatchObject({ provider: "copilot" });
-        expect(persisted.acpSessionId).toBe("42f148ac-e59c-442f-ab18-520fc7b6081b");
         expect(persisted.importedFrom).toMatchObject({ provider: "copilot", mode: "continue" });
+
+        await service.sendMessage({ sessionId: result.chatSessionId, text: "keep going" });
+        await waitFor(() => Boolean(mockState.copilotPooled?.openSession.mock.calls.length));
+        expect(mockState.copilotPooled.openSession.mock.calls[0][0]).toMatchObject({
+          sessionId: "42f148ac-e59c-442f-ab18-520fc7b6081b",
+        });
       });
 
       it("refuses to continue a provider whose own session an ADE chat cannot reopen", async () => {
@@ -1292,6 +1313,40 @@ describe("createAgentChatService", () => {
       } as any);
       expect(withProvider.model).toBe("deepseek-v4.1-flash");
       expect(withProvider.modelId ?? null).not.toMatch(/claude/);
+      service.forceDisposeAll();
+    });
+
+    it("refuses a turn when its saved-key preset can no longer be resolved", async () => {
+      const { savedPreset } = saveClaudePresets();
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        send,
+      } as any);
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: savedPreset.model,
+        presetId: savedPreset.id,
+      } as any);
+
+      await service.sendMessage({ sessionId: session.id, text: "Use the saved provider." }, { awaitDispatch: true });
+
+      expect(send).not.toHaveBeenCalled();
+      expect(events.map((entry) => entry.event.type)).toEqual(expect.arrayContaining([
+        "user_message",
+        "error",
+        "status",
+        "done",
+      ]));
+      expect(events.find((entry) => entry.event.type === "error")?.event).toMatchObject({
+        message: expect.stringContaining("custom provider could not be used"),
+      });
+      expect(events.some((entry) => entry.event.type === "status" && entry.event.turnStatus === "failed")).toBe(true);
       service.forceDisposeAll();
     });
 
@@ -3731,6 +3786,27 @@ describe("createAgentChatService", () => {
     });
 
     it("returns Cursor CLI models without requiring a Cursor SDK API key", async () => {
+      previousCursorToolsRoot = process.env.ADE_TOOLS_ROOT;
+      const toolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-model-tools-"));
+      temporaryCursorToolsRoot = toolsRoot;
+      process.env.ADE_TOOLS_ROOT = toolsRoot;
+      const manifest = loadToolsManifest();
+      const tool = manifest.tools.find((candidate) => candidate.name === "cursor-cli");
+      if (!tool) throw new Error("The pinned Cursor CLI is missing from the tools manifest.");
+      const target = `${process.platform}-${process.arch}` as Parameters<typeof findToolTargetPin>[2];
+      const pin = findToolTargetPin(manifest, "cursor-cli", target);
+      const versionDir = path.join(toolsRoot, ...pin.package.split("/"), pin.version);
+      const cursorEntry = process.platform === "win32"
+        ? tool.entry.windowsPath ?? tool.entry.path
+        : tool.entry.path;
+      const cursorNode = path.join(versionDir, cursorEntry);
+      const cursorScript = path.join(versionDir, tool.entry.files?.script?.path ?? "index.js");
+      fs.mkdirSync(path.dirname(cursorNode), { recursive: true });
+      fs.writeFileSync(cursorNode, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cursorNode, 0o755);
+      fs.writeFileSync(cursorScript, "// fake pinned Cursor CLI entry\n");
+      fs.writeFileSync(path.join(versionDir, TOOL_INSTALL_SENTINEL), "{}\n");
+
       delete process.env.CURSOR_API_KEY;
       vi.mocked(detectAllAuth).mockResolvedValue([
         {

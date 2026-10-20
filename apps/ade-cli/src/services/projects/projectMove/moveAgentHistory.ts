@@ -8,6 +8,7 @@ import { cursorProjectSlug } from "../../../../../desktop/src/shared/cursorProje
 import {
   claudeConfigHome,
   codexConfigHome,
+  copilotConfigHome,
   factoryConfigHome,
   grokSessionsDir,
   qwenConfigHome,
@@ -272,7 +273,7 @@ export function summarizeAgentHistory(plans: HistoryRename[], oldSpellings: stri
     label: "Codex, OpenCode, GitHub Copilot and Muse",
     count: 0,
     handling: "nothing",
-    detail: "Their chats keep resuming. ADE carries Codex's trust over to the new folder; Copilot may ask you to trust it once.",
+    detail: "Their chats keep resuming. ADE carries folder trust over to the new location for Claude, Codex and Copilot.",
   });
   if (kimiHasProject(oldSpellings, os.homedir())) {
     summary.push({
@@ -419,7 +420,7 @@ function projectsHeaderKey(line: string): string | null {
  * entry stays (the old copy still exists), and an existing entry for the new
  * path is never touched. Returns whether it wrote anything.
  */
-export function carryCodexTrust(args: { oldSpellings: string[]; newRoot: string }): boolean {
+export function carryCodexTrust(args: { oldSpellings: string[]; newRoot: string; dryRun?: boolean }): boolean {
   const file = path.join(codexConfigHome(), "config.toml");
   if (!fs.existsSync(file)) return false;
   const content = fs.readFileSync(file, "utf8");
@@ -440,10 +441,106 @@ export function carryCodexTrust(args: { oldSpellings: string[]; newRoot: string 
     if (trustLevel) break;
   }
   if (!trustLevel) return false;
+  if (args.dryRun) return true;
   const separator = content.endsWith("\n") ? "\n" : "\n\n";
   const next = `${content}${separator}[projects.${tomlQuoted(args.newRoot)}]\ntrust_level = "${trustLevel}"\n`;
   const temp = `${file}.ade-move-${process.pid}`;
   fs.writeFileSync(temp, next, { mode: fs.statSync(file).mode & 0o777 });
   fs.renameSync(temp, file);
   return true;
+}
+
+/** Writes a config file by rename, keeping its permissions, so a reader never sees half of it. */
+function replaceFileAtomically(file: string, content: string): void {
+  const temp = `${file}.ade-move-${process.pid}`;
+  fs.writeFileSync(temp, content, { mode: fs.statSync(file).mode & 0o777 });
+  fs.renameSync(temp, file);
+}
+
+/**
+ * Claude's global config files: the person's `~/.claude.json`, the one in
+ * `$CLAUDE_CONFIG_DIR` when set, and one per ADE Claude home. The person's file
+ * is always included: ADE's own processes often run with `CLAUDE_CONFIG_DIR`
+ * pointing at an ADE home, and the person's Claude Code still uses theirs.
+ */
+function claudeGlobalConfigFiles(): string[] {
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  const files = [
+    path.join(os.homedir(), ".claude.json"),
+    ...(configured ? [path.join(path.resolve(configured), ".claude.json")] : []),
+    ...adeClaudeHomes().map((home) => path.join(home, ".claude.json")),
+  ];
+  return [...new Set(files)];
+}
+
+/**
+ * Claude Code keeps per-folder settings in `.claude.json` under
+ * `projects["<path>"]`: whether the folder is trusted, the tools you allowed,
+ * the project MCP servers you approved. After a move the new path has none, so
+ * Claude asks to trust the folder again and forgets the approvals. Each entry
+ * for the project or one of its lanes is copied to the matching new path.
+ * Only added: old entries stay, and an existing entry for a new path is never
+ * changed. Covers the person's own config and ADE's Claude homes. Returns how
+ * many entries were added.
+ */
+export function carryClaudeProjectSettings(args: { oldSpellings: string[]; newRoot: string; files?: string[]; dryRun?: boolean }): number {
+  let added = 0;
+  for (const file of args.files ?? claudeGlobalConfigFiles()) {
+    let parsed: { projects?: Record<string, unknown> } & Record<string, unknown>;
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, "utf8")) as typeof parsed;
+    } catch {
+      continue;
+    }
+    const projects = parsed.projects;
+    if (!projects || typeof projects !== "object" || Array.isArray(projects)) continue;
+    let changed = 0;
+    for (const [key, value] of Object.entries(projects)) {
+      const next = remapUnderRoot(key, args.oldSpellings, args.newRoot);
+      if (next === null || next in projects) continue;
+      projects[next] = structuredClone(value);
+      changed += 1;
+    }
+    if (!changed) continue;
+    added += changed;
+    if (args.dryRun) continue;
+    replaceFileAtomically(file, `${JSON.stringify(parsed, null, 2)}\n`);
+  }
+  return added;
+}
+
+/**
+ * Copilot CLI lists trusted folders in `config.json` (`trustedFolders`). The
+ * file starts with `//` comment lines, so it is edited as text: the new paths
+ * are inserted at the top of the array and every other byte is kept. Returns
+ * how many folders were added.
+ */
+export function carryCopilotTrust(args: { oldSpellings: string[]; newRoot: string; file?: string; dryRun?: boolean }): number {
+  const file = args.file ?? path.join(copilotConfigHome(), "config.json");
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch {
+    return 0;
+  }
+  const match = content.match(/"trustedFolders"\s*:\s*\[([^\]]*)\]/u);
+  if (!match || match.index === undefined) return 0;
+  let folders: unknown;
+  try {
+    folders = JSON.parse(`[${match[1]}]`);
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(folders)) return 0;
+  const existing = new Set(folders.filter((entry): entry is string => typeof entry === "string"));
+  const additions: string[] = [];
+  for (const folder of existing) {
+    const next = remapUnderRoot(folder, args.oldSpellings, args.newRoot);
+    if (next !== null && !existing.has(next) && !additions.includes(next)) additions.push(next);
+  }
+  if (!additions.length || args.dryRun) return additions.length;
+  const open = match.index + match[0].indexOf("[") + 1;
+  const inserted = additions.map((folder) => JSON.stringify(folder)).join(", ") + (existing.size ? ", " : "");
+  replaceFileAtomically(file, `${content.slice(0, open)}${inserted}${content.slice(open)}`);
+  return additions.length;
 }

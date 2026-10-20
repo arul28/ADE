@@ -8,7 +8,7 @@ import {
   selectActiveProjectStateKey,
 } from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
-import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { chatDraftMachineId, openStartChatDraft } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { historyCommitsPath } from "../history/historyUrlHydration";
@@ -204,13 +204,12 @@ export function useWorkLaneContextMenu(options?: {
   const startForeignChat = useCallback(() => {
     if (!foreignMenuState || !projectStateKey || !foreignMachineOnline) return;
     const laneId = foreignMenuState.lane.id;
-    setWorkViewState(projectStateKey, (previous) => ({
-      ...previous,
-      ...startChatDraftPatch(
-        laneId,
-        chatDraftMachineId(foreignMenuState.machineId, boundMachineId),
-      ),
-    }));
+    openStartChatDraft(
+      setWorkViewState,
+      projectStateKey,
+      laneId,
+      chatDraftMachineId(foreignMenuState.machineId, boundMachineId),
+    );
     close();
     void navigate("/work");
   }, [
@@ -262,32 +261,25 @@ export function useWorkLaneContextMenu(options?: {
             />
           ) : null}
           {foreignMenuState ? (
-            <>
-              <div
-                className="fixed inset-0 z-40"
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  close();
-                }}
+            // Closed by the document pointerdown listener above, like the
+            // local lane menu; no backdrop of its own.
+            <ForeignLaneContextMenu
+              lane={foreignMenuState.lane}
+              binding={foreignMenuState.binding}
+              machineName={foreignMenuState.machineName}
+              online={foreignMachineOnline}
+              x={foreignMenuState.x}
+              y={foreignMenuState.y}
+              onClose={close}
+              onStartChat={startForeignChat}
+              onManage={manageForeignLane}
+              onOpenInLanes={openForeignLane}
+              onOpenHistory={() => {
+                const { lane, machineId } = foreignMenuState;
+                close();
+                void navigate(historyCommitsPath(lane.id, machineId));
+              }}
               />
-              <ForeignLaneContextMenu
-                lane={foreignMenuState.lane}
-                binding={foreignMenuState.binding}
-                machineName={foreignMenuState.machineName}
-                online={foreignMachineOnline}
-                x={foreignMenuState.x}
-                y={foreignMenuState.y}
-                onClose={close}
-                onStartChat={startForeignChat}
-                onManage={manageForeignLane}
-                onOpenInLanes={openForeignLane}
-                onOpenHistory={() => {
-                  const { lane, machineId } = foreignMenuState;
-                  close();
-                  void navigate(historyCommitsPath(lane.id, machineId));
-                }}
-              />
-            </>
           ) : null}
           <WorkManageLaneDialogHost
             laneId={managedLane?.laneId ?? null}

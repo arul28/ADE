@@ -240,7 +240,15 @@
       "!node_modules/@opencode/cli-linux-x64-musl/**",
       "!node_modules/@opencode/cli-windows-arm64/**",
       "!node_modules/@opencode/cli-windows-x64/**",
-      "!node_modules/@opencode/cli-windows-x64-baseline/**"
+      "!node_modules/@opencode/cli-windows-x64-baseline/**",
+      "!node_modules/@github/copilot-sdk-darwin-arm64/**",
+      "!node_modules/@github/copilot-sdk-darwin-x64/**",
+      "!node_modules/@github/copilot-sdk-linux-arm64/**",
+      "!node_modules/@github/copilot-sdk-linux-x64/**",
+      "!node_modules/@github/copilot-sdk-linuxmusl-arm64/**",
+      "!node_modules/@github/copilot-sdk-linuxmusl-x64/**",
+      "!node_modules/@github/copilot-sdk-win32-arm64/**",
+      "!node_modules/@github/copilot-sdk-win32-x64/**"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
@@ -268,8 +276,7 @@
       "node_modules/chokidar/**",
       "node_modules/readdirp/**",
       "node_modules/node-cron/**",
-      "node_modules/uuid/**",
-      "!**/node_modules/@github/copilot-sdk-*/**"
+      "node_modules/uuid/**"
     ],
     "extraResources": [
       {
@@ -295,6 +302,10 @@
       {
         "from": "../ade-cli/dist/copilotSdkWorker.cjs",
         "to": "ade-cli/copilotSdkWorker.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/piSdkWorker.cjs",
+        "to": "ade-cli/piSdkWorker.cjs"
       },
       {
         "from": "../ade-cli/dist/usageLedgerWorker.cjs",

@@ -3,6 +3,20 @@ import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
+ * True inside the standalone `ade` runtime: one Node SEA executable, where
+ * `process.execPath` is ADE itself, no script sits beside it, and `fork()` of a
+ * file re-enters the CLI. Older runtimes without `node:sea` are never SEA builds.
+ */
+export function isEmbeddedAdeRuntime(): boolean {
+  try {
+    const sea = process.getBuiltinModule?.("node:sea") as { isSea?: () => boolean } | undefined;
+    return sea?.isSea?.() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve `taskkill` through the kernel's SystemRoot alias rather than `PATH`.
  *
  * A bare `"taskkill.exe"` is PATH-relative, so any writable directory earlier on

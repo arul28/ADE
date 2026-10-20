@@ -9,9 +9,11 @@ verified against the installed `electron-updater` 6.8.3 source and the official
 1. `checkForUpdates()` reads `latest-mac.yml` and emits `update-available`.
 2. ADE keeps `autoDownload` disabled so it can inspect the artifact size and
    preflight the updater-cache volume before calling `downloadUpdate()`.
-3. `electron-updater` writes the archive under the updater cache's `pending/`
-   directory. On macOS it also retains `update.zip` for future differential
-   downloads.
+3. `electron-updater` writes the full archive under the updater cache's
+   `pending/` directory. ADE disables differential downloads, so new updates
+   do not create or retain the root `update.zip` differential cache copy. An
+   `update.zip` left by an older ADE version may still be present; it is never
+   the staged installer.
 4. After the archive is ready, `MacUpdater` starts a loopback HTTP server and
    emits `update-downloaded`. Native Squirrel.Mac later fetches the cached ZIP
    through that server.
@@ -26,9 +28,9 @@ A `ready` snapshot is not proof the ZIP still exists. ADE stores the archive
 under `~/Library/Caches/ade-desktop-updater` (Windows: `%LOCALAPPDATA%\ade-desktop-updater`),
 which the OS may purge while ADE stays running. `MacUpdater` also starts the
 loopback HTTP server at download time, not at install time, so a days-old
-`ready` state can hand Squirrel a dead pipe. Root `update.zip` is only the
-differential cache copy — Squirrel pipes the pending ZIP recorded as
-`downloadedFile`. ADE therefore:
+`ready` state can hand Squirrel a dead pipe. Squirrel pipes the pending ZIP
+recorded as `downloadedFile`; a root `update.zip`, if one remains from an older
+ADE version, is only a differential cache copy. ADE therefore:
 
 - Re-downloads the staged archive **before** uninstalling the background
   service or calling native `quitAndInstall`, whenever the recorded
@@ -187,10 +189,11 @@ size. ADE uses a conservative peak-space estimate:
 - Install/staging: `5 × compressed archive + 512 MiB`.
 - If metadata omits size, assume a 512 MiB archive.
 
-The download estimate accounts for the pending archive and macOS differential
-cache copy. The install estimate accounts for another staged archive, up to 4×
-expansion/replacement space, and fixed filesystem/rollback headroom. The UI
-labels this value as an estimate rather than an exact installer requirement.
+The download estimate remains a conservative upper bound for the pending
+archive and temporary updater writes. The install estimate accounts for
+another staged archive, up to 4× expansion/replacement space, and fixed
+filesystem/rollback headroom. The UI labels this value as an estimate rather
+than an exact installer requirement.
 
 ## Failure timing and cache policy
 
@@ -201,6 +204,7 @@ labels this value as an estimate rather than an exact installer requirement.
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
 | Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
+| Stalled download | No progress events or growth of the partial file under `pending/` for 2 minutes | `network` at phase `download` | Cancel with electron-updater's cancellation token; clear the incomplete download and retry from the latest release on the next check or Check again. A stalled staged-archive restore returns to its saved `ready` snapshot |
 | Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
@@ -242,6 +246,30 @@ session or Node transport recovered the check. Only if the final Node request
 also fails does the check report a normal `network` error; a feed reachable by
 Node no longer requires restarting ADE just because Chromium's updater session
 is stuck.
+
+## Stalled downloads
+
+electron-updater's request timeout does not catch a quiet download in Electron:
+it waits for a `socket` event that Electron's network requests do not emit. If
+no bytes arrive, the download can remain pending and later checks wait behind
+it until ADE restarts. ADE watches download progress and growth of the partial
+file under the updater cache's `pending/` directory, so servers that omit
+`Content-Length` are covered too. After two minutes without either signal, ADE
+cancels the download with electron-updater's cancellation token. A new check,
+including the next periodic check or Check again, starts a fresh full-archive
+download from the newest release. Windows uses the same watchdog and
+cancellation for its full NSIS installer download.
+
+The watchdog stands down once progress reports show every byte has arrived;
+the rename and the Windows signature check can then finish without progress
+reports. A server that omits `Content-Length` never reports completion, so
+there the watchdog keeps running through those steps; they take seconds (the
+checksum is computed while the bytes stream in), far inside the two minutes. If the
+Mac sleeps and the watchdog misses more than four polling intervals, it resets
+the inactivity window instead of treating sleep as a stalled connection. If
+electron-updater did not provide a cancellation token, ADE logs that the
+download is unwatched. A staged-archive restore that stalls returns to its
+saved `ready` state, as it does after any failed restore.
 
 ## Quit deadline during the native handoff
 
@@ -544,7 +572,7 @@ and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
 ## Automatic installation policy
 
 Packaged builds keep checking for and downloading updates, but restarting to
-install them is manual by default. Settings > General exposes the machine-local
+install them is manual by default. Settings → ADE service exposes the machine-local
 `AutoUpdatePreferences` contract:
 
 - `automaticInstall: false` by default. A `ready` update waits for the user to

@@ -108,10 +108,9 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { ProviderOutdatedNoticeRow } from "./ProviderOutdatedNoticeRow";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
-import type { AgentChatContextAttachment, AgentChatEventMetadata, AgentChatFileRef } from "../../../shared/types";
+import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { getToolMeta } from "./chatToolAppearance";
 import { deriveChatSources, type ChatSource, type ChatSources } from "../../../shared/chatSources";
@@ -223,6 +222,7 @@ import {
   computeScrollTopForRow,
   placeMinimapEntriesOnVisibleRows,
   resolveRowAnchorAtScrollTop,
+  isReaderAuthoredMessage,
   type ChatUserMinimapSourceEntry,
 } from "./chatUserMinimap.logic";
 import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
@@ -2479,25 +2479,6 @@ function dispatchAdeCardAction(
 }
 
 /**
- * True for a message the reader wrote. ADE, the scheduler and other agents
- * also deliver `user_message` events (a board move, a PR watch wake, a
- * scheduled wake, a child's completion, a relay, a resume prompt); none of
- * those is the reader answering a scene.
- */
-function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null | undefined): boolean {
-  if (!metadata) return true;
-  return !(
-    metadata.boardMove
-    || metadata.prWatchWake
-    || metadata.scheduledWake
-    || metadata.spawnCompletion
-    || metadata.agentRelay
-    || metadata.hostContinuation
-    || metadata.usageLimitResume
-  );
-}
-
-/**
  * Whether a text event holds a ```scene fence. Remembered per event object and
  * text length, so a settled row is scanned once and a row still growing is
  * scanned again.
@@ -3655,23 +3636,6 @@ function renderEvent(
           chipLabel={chipLabel}
         />
       );
-    }
-
-    if (event.status === "acp_provider_outdated") {
-      const providerUpdate = typeof event.detail === "object" && event.detail && !Array.isArray(event.detail)
-        ? event.detail.providerUpdate
-        : undefined;
-      if (providerUpdate) {
-        return (
-          <ProviderOutdatedNoticeRow
-            message={event.message}
-            update={providerUpdate}
-            className={cn(style.border, style.bg, style.text)}
-            icon={<NoticeIcon size={11} weight="bold" />}
-            chipLabel="update"
-          />
-        );
-      }
     }
 
     // Warnings are one text-sized line, like the thread's other rows; the full
@@ -7591,10 +7555,22 @@ function AgentChatMessageListMain({
   // `overflow-anchor: none` on the pane keeps the browser out of it.
   useLayoutEffect(() => {
     const anchor = pendingListAnchorRef.current;
-    if (!anchor) return;
     pendingListAnchorRef.current = null;
     const el = scrollRef.current;
-    if (!el || stickToBottomRef.current) return;
+    if (el && stickToBottomRef.current) {
+      // A reader following the tail takes no anchor, so nothing else re-pins
+      // in this commit: a prepended page would paint one frame at the old
+      // scrollTop, blank on the virtualized path. Pin before paint instead.
+      // Stands down where the view places itself (see the capture above).
+      if (
+        !pendingFoldAnchorRef.current
+        && !pendingRevealScrollKeyRef.current
+        && !pendingChatEventAnchorRef.current
+        && !scrollRestoreActiveRef.current
+      ) pinScrollToBottomNow(el);
+      return;
+    }
+    if (!anchor || !el) return;
     let shift: number | null = null;
     for (const row of anchor.rows) {
       const top = readLaidOutChatRowTop(el, row.key);
@@ -7619,7 +7595,7 @@ function AgentChatMessageListMain({
     el.scrollTop = Math.max(0, before + shift);
     if (el.scrollTop !== before) programmaticScrollTargetRef.current = el.scrollTop;
     setScrollTop(el.scrollTop);
-  }, [groupedRowKeys, measuredRowStartOffsets]);
+  }, [groupedRowKeys, measuredRowStartOffsets, pinScrollToBottomNow]);
 
   // Apply a pending fold anchor: move scrollTop by exactly how far the anchor
   // row moved, so the fold change reads as happening below/inside the reader's
@@ -8090,8 +8066,8 @@ function AgentChatMessageListMain({
     return minimapIndex >= 0 ? minimapIndex : null;
   }, [presentedRows, minimapSourceEntries, scrollToPromptHistoryRequest]);
 
-  // Ticks are 1:1 with entries, so the ordinal IS the rail index — no
-  // display-index translation step exists any more.
+  // Keep the active user ordinal independent of queued annotations and the
+  // visible 50-entry rail window; ChatUserMinimap maps it to the current entry.
   // Same position the virtual window drew from, so the rail and the rows agree.
   const activeFullUserOrdinal = useMemo(
     () => computeActiveFullUserOrdinal(windowScrollTop, minimapSourceEntries, rowStartOffsets),

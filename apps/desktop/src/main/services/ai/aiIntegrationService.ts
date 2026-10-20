@@ -48,7 +48,7 @@ import {
   type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { disabledProviderSet } from "../../../shared/providerEnablement";
+import { disabledProviderSet, isProviderDisabled } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
 import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
@@ -85,7 +85,7 @@ import {
   initialize as initModelsDevService,
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
-import { isRecord } from "../shared/utils";
+import { isRecord, toOptionalString } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -105,7 +105,7 @@ import {
 import { verifyExplicitCursorModelSelection } from "../chat/cursorModelSelection";
 import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
-import { buildProviderConnections } from "./providerConnectionStatus";
+import { buildProviderConnections, type CopilotSdkAuthProbe } from "./providerConnectionStatus";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "./piInstallation";
 import {
   getProviderRuntimeHealth,
@@ -117,7 +117,8 @@ import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, with
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
-import { resolveCopilotExecutable } from "./acpExecutables";
+import { resolveCopilotSdkRuntime } from "./acpExecutables";
+import { ACP_PROVIDER_IDS } from "../../../shared/acpProviderMetadata";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
 import { COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, refreshCopilotModelCatalog, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
@@ -129,6 +130,8 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
 import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
@@ -140,9 +143,7 @@ export type AiTaskType =
   | "implementation"
   | "review"
   | "conflict_resolution"
-  | "commit_message"
   | "narrative"
-  | "pr_description"
   | "terminal_summary"
   | "session_title"
   | "session_summary"
@@ -154,8 +155,6 @@ export type AiTaskType =
 export type AiFeatureKey =
   | "narratives"
   | "conflict_proposals"
-  | "commit_messages"
-  | "pr_descriptions"
   | "terminal_summaries"
   | "initial_context";
 
@@ -181,6 +180,7 @@ export type AiIntegrationStatus = {
     grok?: boolean;
     copilot?: boolean;
     devin?: boolean;
+    antigravity?: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
@@ -193,10 +193,11 @@ export type AiIntegrationStatus = {
     grok?: AgentModelDescriptor[];
     copilot?: AgentModelDescriptor[];
     devin?: AgentModelDescriptor[];
+    antigravity?: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -218,9 +219,9 @@ export type AiIntegrationStatus = {
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: string[];
-  /** True when the `opencode` CLI is on PATH (ADE still spawns the OpenCode server via the SDK). */
+  /** True when ADE's pinned OpenCode is on this machine (the binary ADE spawns its OpenCode server from). */
   opencodeBinaryInstalled?: boolean;
-  /** Where the resolved `opencode` binary came from ("user-installed", "bundled", or "missing"). */
+  /** Where that binary came from ("tools-cache", "bundled" for a source checkout's copy, or "missing"). */
   opencodeBinarySource?: OpenCodeBinarySource;
   /** Last inventory probe error, if any (empty models when set after a failed probe). */
   opencodeInventoryError?: string | null;
@@ -303,8 +304,6 @@ function readCursorSdkAgentName(agent: object): string {
 const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   narratives: true,
   conflict_proposals: true,
-  commit_messages: false,
-  pr_descriptions: true,
   terminal_summaries: true,
   initial_context: true,
 };
@@ -320,7 +319,6 @@ const SESSION_INTELLIGENCE_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
 const EXPLICIT_MODEL_ONLY_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
   ...SESSION_INTELLIGENCE_TASK_TYPES,
   "context_compaction",
-  "commit_message",
 ]);
 
 export function readConfiguredFeatureModel(aiConfig: unknown, feature: AiFeatureKey): string | null {
@@ -333,10 +331,6 @@ export function readConfiguredFeatureModel(aiConfig: unknown, feature: AiFeature
 
 export function missingFeatureModelMessage(feature: AiFeatureKey): string {
   switch (feature) {
-    case "commit_messages":
-      return "Choose a Commit Messages model in Settings or type a commit message manually.";
-    case "pr_descriptions":
-      return "Choose a PR Descriptions model in Settings or write the description manually.";
     case "terminal_summaries":
       return "Choose a Summaries model in Settings.";
     case "conflict_proposals":
@@ -453,7 +447,7 @@ function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiC
     auth: {
       ready: binary.present && ready,
       mode: binary.present && ready ? "oauth" : "none",
-      detail: binary.present && ready ? null : installed ? "Claude CLI is installed but no active login was detected." : "Claude authentication was not detected.",
+      detail: binary.present && ready ? null : installed ? "No active Claude login was detected." : "Claude authentication was not detected.",
     },
   };
 }
@@ -597,7 +591,8 @@ function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
   runtimeReadyAcpProviders?: ReadonlySet<string>,
-  copilotLogin?: string | null,
+  /** The SDK answered the live sign-in check, so its verdict in `auth` stands. */
+  copilotSdkVerified = false,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -635,6 +630,9 @@ function redactDetectedAuth(
 
   for (const cliStatus of cliStatuses) {
     if (!cliStatus.installed) continue;
+    // The SDK's live verdict already sits in `auth`; the disk heuristic must
+    // not overwrite it (it misses keychain and `gh` logins).
+    if (cliStatus.cli === "copilot" && copilotSdkVerified) continue;
     const runtimeReady = runtimeReadyAcpProviders?.has(cliStatus.cli) === true;
     const existingIndex = redacted.findIndex(
       (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
@@ -645,7 +643,6 @@ function redactDetectedAuth(
       path: cliStatus.path ?? cliStatus.cli,
       authenticated: runtimeReady || cliStatus.authenticated,
       verified: runtimeReady || cliStatus.verified,
-      ...(cliStatus.cli === "copilot" && copilotLogin ? { login: copilotLogin } : {}),
     };
     if (existingIndex >= 0) {
       redacted[existingIndex] = normalizedEntry;
@@ -1000,6 +997,7 @@ export const PROVIDER_STATUS_FAMILIES = {
   grok: "xai",
   copilot: "github-copilot",
   devin: "devin",
+  antigravity: "antigravity",
 } as const;
 
 function buildStatusModelLists(
@@ -1021,6 +1019,7 @@ function buildStatusModelLists(
     grok: availability.grok ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.grok) : [],
     copilot: availability.copilot ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.copilot) : [],
     devin: availability.devin ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.devin) : [],
+    antigravity: availability.antigravity ? agentModelsFromAvailable(available, PROVIDER_STATUS_FAMILIES.antigravity) : [],
   };
 }
 
@@ -1112,17 +1111,40 @@ export function createAiIntegrationService(args: {
     };
   };
 
-  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<{ isAuthenticated: boolean; login?: string } | null> => {
-    const executable = resolveCopilotExecutable({ auth, env: process.env });
+  let lastCopilotProbeFailure: string | null = null;
+  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<CopilotSdkAuthProbe> => {
+    const runtime = resolveCopilotSdkRuntime({ auth, env: process.env });
+    // Nothing to start: no pinned download, bundled copy or `copilot` CLI.
+    if (runtime.source === "fallback-command") return { runtime, auth: null };
     const baseEnv = { ...process.env };
-    const connection = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
     try {
-      const value = await connection.pooled.request<unknown>("auth");
-      if (!value || typeof value !== "object") return null;
-      const row = value as Record<string, unknown>;
-      return { isAuthenticated: row.isAuthenticated === true, ...(typeof row.login === "string" && row.login.trim() ? { login: row.login.trim() } : {}) };
-    } finally {
-      releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+      const connection = await acquireCopilotSdkConnection({ cliPath: runtime.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
+      try {
+        const value = await connection.pooled.request<unknown>("auth");
+        if (!value || typeof value !== "object") return { runtime, auth: null };
+        const row = value as Record<string, unknown>;
+        lastCopilotProbeFailure = null;
+        const login = toOptionalString(row.login);
+        const authType = toOptionalString(row.authType);
+        const statusMessage = toOptionalString(row.statusMessage);
+        return {
+          runtime,
+          auth: {
+            isAuthenticated: row.isAuthenticated === true,
+            ...(login ? { login } : {}),
+            ...(authType ? { authType } : {}),
+            ...(statusMessage ? { statusMessage } : {}),
+          },
+        };
+      } finally {
+        releaseCopilotSdkConnection(connection.poolKey, connection.generation);
+      }
+    } catch (error) {
+      // Once per distinct failure: this runs on every status refresh.
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastCopilotProbeFailure) logger.warn("ai.copilot_sdk_auth_status_unavailable", { error: message });
+      lastCopilotProbeFailure = message;
+      return { runtime, auth: null };
     }
   };
 
@@ -1144,7 +1166,7 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
-    const copilotExecutable = resolveCopilotExecutable({ auth, env: process.env });
+    const copilotExecutable = resolveCopilotSdkRuntime({ auth, env: process.env });
     if (copilotExecutable.source !== "fallback-command") {
       const cached = copilotModelsCache;
       if (!cached || Date.now() - cached.savedAt >= COPILOT_MODELS_TTL_MS) {
@@ -1191,6 +1213,7 @@ export function createAiIntegrationService(args: {
       ["kimi", PROVIDER_STATUS_FAMILIES.kimi],
       ["grok", PROVIDER_STATUS_FAMILIES.grok],
       ["devin", PROVIDER_STATUS_FAMILIES.devin],
+      ["antigravity", PROVIDER_STATUS_FAMILIES.antigravity],
     ] as const;
     for (const [provider, family] of acpModelFamilies) {
       const health = getProviderRuntimeHealth(provider);
@@ -1248,9 +1271,11 @@ export function createAiIntegrationService(args: {
     );
     const hasDroidApiKey = Boolean(process.env.FACTORY_API_KEY?.trim());
     if (hasDroidCliAuth || hasDroidApiKey) {
+      // Discovery runs ADE's pinned Droid; until it is downloaded there is no list.
+      const droidExecutable = resolveDroidExecutable();
       try {
-        const { path: droidPath } = resolveDroidExecutable({ auth });
-        const droidModels = await discoverDroidCliModelDescriptors(droidPath, { mode: discoveryMode });
+        if (droidExecutable.source === "fallback-command") throw new Error("Droid is not downloaded on this machine yet.");
+        const droidModels = await discoverDroidCliModelDescriptors(droidExecutable.path, { mode: discoveryMode });
         available = [
           ...available.filter((descriptor) => !(descriptor.family === "factory" && descriptor.isCliWrapped)),
           ...droidModels,
@@ -1864,8 +1889,8 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI provider is available. Install and authenticate Claude Code and/or Codex CLI.");
     }
 
-    // Titles and commit messages always run. Settings no longer gates them.
-    if (args.taskType !== "session_title" && args.taskType !== "commit_message" && !getFeatureFlag(args.feature)) {
+    // Titles always run. Settings no longer gates them.
+    if (args.taskType !== "session_title" && !getFeatureFlag(args.feature)) {
       logger.warn("ai.task.skipped_feature_disabled", {
         requestId,
         taskType: args.taskType,
@@ -2028,7 +2053,8 @@ export function createAiIntegrationService(args: {
   };
 
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
-  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number } | null = null;
+  // `toolInstallGeneration`: an on-demand tool download changes what is detected, so it voids the cache.
+  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number; toolInstallGeneration: number } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
   let providerReadinessCacheGeneration = 0;
 
@@ -2097,6 +2123,7 @@ export function createAiIntegrationService(args: {
         && options?.refreshOpenCodeInventory !== true
         && statusCache
         && statusCache.runtimeHealthVersion === runtimeHealthVersion
+        && statusCache.toolInstallGeneration === pinnedToolInstallGeneration()
         && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS
       ) {
         return statusCache.result;
@@ -2120,6 +2147,7 @@ export function createAiIntegrationService(args: {
       const request = (async (): Promise<AiIntegrationStatus> => {
         const requestId = randomUUID();
         const totalStartedAt = Date.now();
+        const toolInstallGeneration = pinnedToolInstallGeneration();
         const phases: AiStatusPhaseTiming[] = [];
         const shouldProbeCliModels = options?.force === true || options?.refreshOpenCodeInventory === true;
         const phaseContext = {
@@ -2164,33 +2192,40 @@ export function createAiIntegrationService(args: {
             force: options?.force,
             shallowCliAuth: !shouldProbeCliModels,
           }));
-          let copilotSdkLogin: string | null = null;
-          try {
-            const sdkAuth = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
-            if (sdkAuth) {
-              copilotSdkLogin = sdkAuth.login ?? null;
-              const copilotEntry: DetectedAuth = {
-                type: "cli-subscription",
-                cli: "copilot",
-                path: resolveCopilotExecutable({ auth, env: process.env }).path,
-                authenticated: sdkAuth.isAuthenticated,
-                verified: sdkAuth.isAuthenticated,
-                ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
-              };
-              const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
-              if (copilotIndex >= 0) {
-                auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
-              } else {
-                auth = [...auth, copilotEntry];
-              }
+          // A provider signed in since launch whose pinned tool was never
+          // downloaded starts downloading now, before the probes below, so its
+          // status reads "downloading"; the refresh after it lands sees the tool.
+          const startedToolFetches = startDemandedAgentToolFetches({
+            enabled: (provider) => !isProviderDisabled(projectConfigService.get().effective.ai, provider),
+            opencodeBacked: auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter" || entry.type === "local"),
+          });
+          if (startedToolFetches.length) logger.info("ai.pinned_tool_fetch_started", { tools: startedToolFetches.join(",") });
+          const copilotProbe = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
+          const sdkAuth = copilotProbe.auth;
+          if (sdkAuth) {
+            // A live answer, so it is verified either way: a signed-out
+            // verdict must read as signed out, not as unknown.
+            const copilotEntry: DetectedAuth = {
+              type: "cli-subscription",
+              cli: "copilot",
+              path: copilotProbe.runtime.path,
+              authenticated: sdkAuth.isAuthenticated,
+              verified: true,
+              ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
+            };
+            const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
+            if (copilotIndex >= 0) {
+              auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
+            } else {
+              auth = [...auth, copilotEntry];
             }
-          } catch (error) {
-            logger.debug?.("ai.copilot_sdk_auth_status_unavailable", { error: error instanceof Error ? error.message : String(error) });
           }
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const installedAcp = ( ["qwen", "kimi", "grok", "devin"] as const)
+          // The handshake runs ADE's pinned copy, so only providers whose
+          // copy is on this machine are probed; the rest read "downloading".
+          const installedAcp = ACP_PROVIDER_IDS
             .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
           // The disk heuristic proves only that a provider left credentials on
           // disk. A forced Settings refresh must wait for the ACP handshake so
@@ -2205,8 +2240,8 @@ export function createAiIntegrationService(args: {
                 logger,
               }))
             : {};
-          const runtimeReadyAcpProviders = new Set<string>();
-          for (const provider of ["qwen", "kimi", "grok", "devin"] as const) {
+          const runtimeReadyAcpProviders = new Set<(typeof ACP_PROVIDER_IDS)[number]>();
+          for (const provider of ACP_PROVIDER_IDS) {
             const probe = acpProbeResults[provider];
             const health = getProviderRuntimeHealth(provider);
             if (probe?.state === "ready" || health?.state === "ready") {
@@ -2220,8 +2255,8 @@ export function createAiIntegrationService(args: {
             const cli = cliStatuses.find((status) => status.cli === provider);
             authForModels.push({
               type: "cli-subscription",
-              cli: provider as "qwen" | "kimi" | "grok" | "copilot" | "devin",
-              path: cli?.path ?? provider,
+              cli: provider,
+              path: cli?.path ?? "",
               authenticated: true,
               verified: true,
             });
@@ -2239,6 +2274,7 @@ export function createAiIntegrationService(args: {
           const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses, {
             piInstallation,
             piInventory: piProfileInventory,
+            copilot: copilotProbe,
           }));
           const configuredLocalProviders = timeSyncPhase(
             "read_local_provider_config",
@@ -2269,6 +2305,7 @@ export function createAiIntegrationService(args: {
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
             copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
             devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
+            antigravity: enabled("antigravity") && Boolean(providerConnections.antigravity?.runtimeAvailable),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2285,6 +2322,7 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.copilot) return availability.copilot === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.devin) return availability.devin === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.antigravity) return availability.antigravity === true;
             return true;
           }));
 
@@ -2369,7 +2407,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotSdkLogin),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotProbe.auth != null),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,
@@ -2388,7 +2426,7 @@ export function createAiIntegrationService(args: {
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {
-            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
+            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion, toolInstallGeneration };
           }
           logger.info("ai.status.summary", {
             ...phaseContext,
@@ -2514,44 +2552,6 @@ export function createAiIntegrationService(args: {
         timeoutMs: args.timeoutMs,
         model: args.model,
         jsonSchema: args.jsonSchema
-      });
-    },
-
-    async draftPrDescription(args: {
-      laneId: string;
-      cwd: string;
-      prompt: string;
-      timeoutMs?: number;
-      model?: string;
-      reasoningEffort?: string | null;
-      imagePaths?: string[];
-    }): Promise<ExecuteAiTaskResult> {
-      return await executeReadOnlyOneShotTask({
-        feature: "pr_descriptions",
-        taskType: "pr_description",
-        cwd: args.cwd,
-        prompt: args.prompt,
-        timeoutMs: args.timeoutMs,
-        model: args.model,
-        reasoningEffort: args.reasoningEffort
-      });
-    },
-
-    async generateCommitMessage(args: {
-      cwd: string;
-      prompt: string;
-      timeoutMs?: number;
-      model?: string;
-      reasoningEffort?: string | null;
-    }): Promise<ExecuteAiTaskResult> {
-      return await executeReadOnlyOneShotTask({
-        feature: "commit_messages",
-        taskType: "commit_message",
-        cwd: args.cwd,
-        prompt: args.prompt,
-        timeoutMs: args.timeoutMs,
-        model: args.model,
-        reasoningEffort: args.reasoningEffort
       });
     },
 

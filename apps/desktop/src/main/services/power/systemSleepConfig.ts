@@ -19,6 +19,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import type { SystemSleepConfig } from "../../../shared/types/keepAwake";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
@@ -46,6 +47,15 @@ export function execSystemText(
   args: string[],
   timeoutMs: number,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  // `powercfg` runs from the brain's settings read; on Windows a direct spawn
+  // runs CreateProcess on the event loop (windows-quirks §11).
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, { timeoutMs, maxBuffer: 4 * 1024 * 1024 }).then((result) => ({
+      ok: result.error == null && result.exitCode === 0,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }));
+  }
   return new Promise((resolve) => {
     execFile(
       command,

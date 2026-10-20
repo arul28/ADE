@@ -180,6 +180,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeLevel,
   KeepAwakeSnapshot,
+  RemoteMcpAction,
   AutoUpdateSnapshot,
   UpdateImpact,
   UpdateInstallImpact,
@@ -432,7 +433,11 @@ import type {
   BudgetCapProvider,
   BudgetCapConfig,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -543,8 +548,6 @@ import type {
   GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitListBranchesArgs,
   GitGetUserIdentityArgs,
   GitUserIdentity,
@@ -648,7 +651,6 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   DismissIntegrationCleanupArgs,
-  DraftPrDescriptionArgs,
   GitHubPrSnapshot,
   GitHubPrStack,
   LandPrArgs,
@@ -691,7 +693,6 @@ import type {
   PrChatSessionLink,
   StackLinkOffer,
   PrDeployment,
-  PrAiSummary,
   PostPrReviewCommentArgs,
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
@@ -710,8 +711,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  AiReviewSummaryArgs,
-  AiReviewSummary,
   PrAgentPermissionMode,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
@@ -723,6 +722,8 @@ import type {
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
+  ListSessionsOptions,
+  GetSessionOptions,
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
@@ -827,6 +828,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -1023,6 +1027,7 @@ import type {
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -1059,11 +1064,6 @@ import type {
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmissionEvent,
-  FeedbackSubmitDraftArgs,
   SearchIndexStatus,
   SearchQueryArgs,
   SearchQueryResult,
@@ -1101,6 +1101,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   ProjectMoveAttention,
@@ -1168,6 +1169,13 @@ declare global {
         /** Swallow this window's menu accelerators while a takeover drives. */
         setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
+        /**
+         * Probes the background service now if its cached installed/running
+         * answer is older than two seconds, and resolves once it has landed.
+         * Call it when a surface that shows that answer opens; `getInfo` itself
+         * answers from cache. Absent on the hosted-web client.
+         */
+        refreshServiceHealth?: () => Promise<void>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
         /**
          * The browsers this machine can open a link in, each with its app icon
@@ -1319,6 +1327,11 @@ declare global {
           opts: { preview: StorageCleanupPreview },
           pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
+      };
+      /** Project health: issues with a fix each, from the machine that owns the project. */
+      projectHealth: {
+        getReport: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<ProjectHealthReport>;
+        fix: (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null) => Promise<ProjectHealthFixResult>;
       };
       /**
        * One archive across lanes, chats, and shells. Every call takes an
@@ -1569,11 +1582,14 @@ declare global {
         ) => Promise<{ disconnected: boolean }>;
       };
       personalChats: {
+        /** `target` names the machine; left out, the window's bound machine. */
         call: (
           request: PersonalChatCallArgs,
+          target?: PersonalChatMachineTarget | null,
         ) => Promise<PersonalChatCallResponse>;
         streamEvents: (
           request?: PersonalChatStreamEventsArgs,
+          target?: PersonalChatMachineTarget | null,
         ) => Promise<PersonalChatStreamEventsResult>;
       };
       keybindings: {
@@ -1599,6 +1615,22 @@ declare global {
         isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
         museBinaryStatus: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
         ensureMuseBinary: (pin?: OpenProjectBinding | null) => Promise<MuseBinaryStatus>;
+        /**
+         * ADE's pinned copy of a provider's tool on the machine `pin` names.
+         * Optional: an older preload predates it, so callers guard.
+         */
+        pinnedToolStatus?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
+        /** Start (or join) that copy's download there and return at once; poll `pinnedToolStatus`. */
+        pinnedToolDownload?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
+        /**
+         * Antigravity sign-in on the machine `pin` names (the ACP `authenticate`
+         * request). Optional: an older preload or brain predates it.
+         */
+        antigravitySignInStatus?: (pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        antigravitySignInStart?: (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        /** Forward a pasted 127.0.0.1 return URL to that machine's agent. */
+        antigravitySignInComplete?: (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        antigravitySignInCancel?: (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
         /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
         museSettings: <R extends MuseSettingsRequest>(
           args: MuseSettingsRunArgs<R>,
@@ -1618,16 +1650,9 @@ declare global {
          * have it and callers must guard before reaching for it.
          */
         acpProviderDiagnostics?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
           runDoctor?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
-        /**
-         * Runs the provider's one-click updater on this machine. Optional: an
-         * older host that predates it leaves this undefined.
-         */
-        acpProviderUpdate?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
-        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderUpdateResult>;
         opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;
@@ -2209,6 +2234,15 @@ declare global {
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
         onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
         listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
+        /** Lockfiles in the main checkout of the pinned (or tab's) machine and whether each install is current. */
+        getDependencyStatus: (
+          args?: GetLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
+        acknowledgeDependencyStatus: (
+          args?: AcknowledgeLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
         getTemplate: (
           args: GetLaneTemplateArgs,
         ) => Promise<LaneTemplate | null>;
@@ -2272,10 +2306,12 @@ declare global {
         list: (
           args?: ListSessionsArgs,
           pin?: OpenProjectBinding | null,
+          options?: ListSessionsOptions,
         ) => Promise<TerminalSessionSummary[]>;
         get: (
           sessionId: string,
           pin?: OpenProjectBinding | null,
+          options?: GetSessionOptions,
         ) => Promise<TerminalSessionDetail | null>;
         delete: (
           args: DeleteSessionArgs,
@@ -4034,10 +4070,6 @@ declare global {
           args: GitCommitArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
-        generateCommitMessage: (
-          args: GitGenerateCommitMessageArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
           args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
@@ -4220,16 +4252,6 @@ declare global {
           args: SuggestResolverTargetArgs,
         ) => Promise<SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
-      };
-      feedback: {
-        prepareDraft: (
-          args: FeedbackPrepareDraftArgs,
-        ) => Promise<FeedbackPreparedDraft>;
-        submitDraft: (
-          args: FeedbackSubmitDraftArgs,
-        ) => Promise<FeedbackSubmission>;
-        list: () => Promise<FeedbackSubmission[]>;
-        onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
@@ -4463,9 +4485,6 @@ declare global {
         getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
-        draftDescription: (
-          args: DraftPrDescriptionArgs,
-        ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
         updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;
         retargetBase: (args: {
@@ -4620,9 +4639,6 @@ declare global {
         setDraft: (args: SetPrDraftArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         setAutoMerge: (args: SetPrAutoMergeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        aiReviewSummary: (
-          args: AiReviewSummaryArgs,
-        ) => Promise<AiReviewSummary>;
         dismissIntegrationCleanup: (
           args: DismissIntegrationCleanupArgs,
           pin?: OpenProjectBinding | null,
@@ -4632,8 +4648,6 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<CleanupIntegrationWorkflowResult>;
         getDeployments: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDeployment[]>;
-        getAiSummary: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrAiSummary | null>;
-        regenerateAiSummary: (prId: string) => Promise<PrAiSummary>;
         postReviewComment: (
           args: PostPrReviewCommentArgs,
         ) => Promise<PrReviewThreadComment>;
@@ -4815,9 +4829,15 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
-      keepAwakeGet: () => Promise<KeepAwakeSnapshot>;
-      keepAwakeSetLevel: (level: KeepAwakeLevel) => Promise<KeepAwakeSnapshot>;
-      keepAwakeFixSystemSleep: () => Promise<KeepAwakeFixResult>;
+      remoteMcpCall: <T = unknown>(
+        action: RemoteMcpAction,
+        args?: Record<string, unknown>,
+        pin?: OpenProjectBinding | null,
+      ) => Promise<T>;
+      keepAwakeGet: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
+      keepAwakeSetLevel: (level: KeepAwakeLevel, pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
+      keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeFixResult>;
+      keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error: string | null }>;
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;

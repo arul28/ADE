@@ -1,18 +1,21 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
-import {
-  ACP_PROVIDER_METADATA,
-  type AcpProviderInstallSource,
-} from "../../../desktop/src/shared/acpProviderMetadata";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
 
+/**
+ * How ADE recognises one agent's failures in a chat.
+ *
+ * There is no install command: ADE runs its own pinned copy of every agent and
+ * downloads it for the machine that runs the chat, so a "missing" verdict is
+ * answered with that download (the chat card's Download/Retry), never with a
+ * command that installs the vendor's CLI.
+ */
 export type AgentCliDescriptor = {
   agent: string;
   displayName: string;
   binaryNames: readonly string[];
-  installCommand: string;
   authCommand: string;
   authRecoveryRules?: readonly {
     authCommand: string;
@@ -25,7 +28,6 @@ export type AgentCliErrorMatch = {
   agent: string;
   displayName: string;
   category: AgentCliErrorCategory;
-  installCommand: string;
   authCommand: string;
 };
 
@@ -33,70 +35,9 @@ function hostPlatform(): NodeJS.Platform {
   return typeof process !== "undefined" ? process.platform : "linux";
 }
 
-function npmGlobalInstallCommand(packageName: string): string {
-  if (hostPlatform() === "win32") {
-    return `npm install -g ${packageName}`;
-  }
-  return `mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g ${packageName}`;
-}
-
-/**
- * Wrap one ACP provider's install source for the shell this registry's callers
- * use. The source itself (package name or vendor installer) belongs to
- * `acpProviderMetadata.ts`; only the shell framing is added here. npm packages
- * land in a writable prefix, while the native installers are already shell
- * commands and run as written.
- */
-function acpInstallCommand(source: AcpProviderInstallSource): string {
-  return source.kind === "npm" ? npmGlobalInstallCommand(source.packageName) : source.command;
-}
-
-/**
- * One vendor command, wrapped for the shell this registry's callers use.
- *
- * The command text itself belongs to
- * `apps/desktop/src/shared/providerRemediation.ts`, which is the one table for
- * every `ShippedProvider`. This function adds only what the call site needs:
- * a `NPM_CONFIG_PREFIX` prelude so a POSIX `npm install -g` lands somewhere the
- * user can write, and `powershell.exe -NoProfile -Command` so a Windows
- * `irm … | iex` line runs from a `cmd.exe` recovery card. No row's command
- * contains a double quote, so the PowerShell wrapping needs no escaping; keep
- * it that way when editing the shared table.
- */
-function shellInstallCommand(displayCommand: string): string {
-  if (hostPlatform() === "win32") {
-    if (displayCommand.startsWith("npm ")) return displayCommand;
-    return `powershell.exe -NoProfile -Command "${displayCommand}"`;
-  }
-  const NPM_PREFIX = "npm install -g ";
-  if (displayCommand.startsWith(NPM_PREFIX)) {
-    return npmGlobalInstallCommand(displayCommand.slice(NPM_PREFIX.length));
-  }
-  return `mkdir -p "$HOME/.local/bin" && ${displayCommand}`;
-}
-
-/**
- * The install and login commands for one `ShippedProvider`, from the one table.
- *
- * A provider that is not a `ShippedProvider` — Qwen, Kimi, Grok — is an ACP
- * provider and writes its own strings below, because the shared table
- * deliberately does not carry them. Copilot is an SDK provider in ADE, but its
- * native CLI install and login strings are still written below for the
- * terminal CLI.
- */
-function sharedRemediation(provider: ShippedProvider): {
-  installCommand: string;
-  authCommand: string;
-} {
-  const resolved = resolveProviderRemediation(provider, hostPlatform());
-  return {
-    // Every shipped row has an install command on both platforms today. The
-    // docs URL is the honest fallback if one ever becomes "no installer here".
-    installCommand: resolved.installCommand
-      ? shellInstallCommand(resolved.installCommand)
-      : (resolved.docsUrl ?? ""),
-    authCommand: resolved.loginCommand ?? "",
-  };
+/** The login command for one `ShippedProvider`, from the one table. */
+function sharedRemediation(provider: ShippedProvider): { authCommand: string } {
+  return { authCommand: resolveProviderRemediation(provider, hostPlatform()).loginCommand ?? "" };
 }
 
 export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
@@ -156,8 +97,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "muse",
     displayName: "Muse Code",
     binaryNames: ["muse"],
-    // No installer: ADE fetches its own pinned build (the shared table's
-    // `installCommand` is null), so recovery points at Meta's docs.
     ...sharedRemediation("muse"),
     notAuthErrorPatterns: [
       // muse 1.4.7: "missing meta credentials: run `muse login` or set META_API_KEY, …"
@@ -170,8 +109,8 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "droid",
     displayName: "Factory Droid",
     binaryNames: ["droid"],
-    // Factory's own installer, and its interactive `/login` flow rather than a
-    // non-interactive `login` subcommand — both from the shared table.
+    // Factory's interactive `/login` flow rather than a non-interactive
+    // `login` subcommand, from the shared table.
     ...sharedRemediation("droid"),
     notAuthErrorPatterns: [
       /\bdroid\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
@@ -184,7 +123,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "qwen",
     displayName: "Qwen Code",
     binaryNames: ["qwen"],
-    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.qwen.install),
     // 0.24.0 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
     authCommand: "qwen --auth-type=openai",
     notAuthErrorPatterns: [
@@ -196,10 +134,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "kimi",
     displayName: "Kimi Code",
     binaryNames: ["kimi"],
-    // Kimi ships a native binary rather than an npm package, so there is no
-    // portable one-liner to print here. Point at the vendor's own installer
-    // instead of guessing a package name that would fail on paste.
-    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.kimi.install),
     authCommand: "kimi login",
     notAuthErrorPatterns: [
       /\bkimi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
@@ -211,7 +145,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "grok",
     displayName: "Grok CLI",
     binaryNames: ["grok"],
-    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.grok.install),
     authCommand: "grok login",
     notAuthErrorPatterns: [
       /\bgrok\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
@@ -223,7 +156,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "copilot",
     displayName: "GitHub Copilot CLI",
     binaryNames: ["copilot"],
-    installCommand: "npm install -g @github/copilot",
     authCommand: "copilot login",
     notAuthErrorPatterns: [
       /\bcopilot\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials)\b/i,
@@ -235,7 +167,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "devin",
     displayName: "Devin CLI",
     binaryNames: ["devin"],
-    installCommand: acpInstallCommand(ACP_PROVIDER_METADATA.devin.install),
     authCommand: "devin auth login",
     notAuthErrorPatterns: [
       /\bdevin\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials|sign\s*in)\b/i,
@@ -247,6 +178,21 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       // `auth login` first." before it answers `initialize`.
       /\blog\s*in\s+to\s+use\s+devin\b/i,
       /\bnot\s+logged\s+in\b[\s\S]{0,120}\brun\s+[`'"]?auth\s+login[`'"]?/i,
+    ],
+  },
+  {
+    agent: "antigravity",
+    displayName: "Antigravity",
+    binaryNames: ["agy_acp_server"],
+    // No terminal login: ADE runs the agent's own ACP `authenticate` from
+    // Settings > Providers > Antigravity on the machine that runs the chat.
+    authCommand: "",
+    notAuthErrorPatterns: [
+      // agy_acp_server 1.4.1: unauthenticated `session/new` is -32000
+      // "Authentication required", data.message "No authentication method selected. …".
+      /\bno authentication method selected\b/i,
+      /\bantigravity\b.*\b(not logged in|not authenticated|unauthorized|authentication (?:failed|required)|login required|sign\s*in)\b/i,
+      /\bgemini[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
     ],
   },
 ];
@@ -331,6 +277,19 @@ function failedSpawnExecutable(text: string): string | null {
 }
 
 /**
+ * Whether `text` is one of ADE's own sentences for a pinned copy that is not on
+ * the machine (`pinnedToolBlocker` in the desktop's `pinnedProviderTools.ts`):
+ * downloading, couldn't download, not available here, or not downloaded yet.
+ * A chat start that throws one of these is the chat's own agent missing.
+ */
+export function isPinnedToolNotReadyMessage(text: string): boolean {
+  return /\bADE is downloading .+ for this machine\b/.test(text)
+    || /\bCouldn't download .+?: .+ Retry from Settings > Providers\./.test(text)
+    || /\bis not available on this machine \(/.test(text)
+    || /\bADE has not downloaded .+ for this machine\b/.test(text);
+}
+
+/**
  * Whether `text` says the binary of `agent` (any of its registered names, or
  * the agent id itself) could not be started.
  */
@@ -348,7 +307,6 @@ function toMatch(descriptor: AgentCliDescriptor, category: AgentCliErrorCategory
     agent: descriptor.agent,
     displayName: descriptor.displayName,
     category,
-    installCommand: descriptor.installCommand,
     authCommand: aliasAuthCommand ?? descriptor.authCommand,
   };
 }
@@ -357,6 +315,9 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   const text = message.trim();
   if (!text) return null;
   const preferred = AGENT_CLI_REGISTRY.find((descriptor) => descriptorMatchesPreferred(descriptor, preferredAgent));
+  // The chat's own agent could not start because ADE's copy is not on this
+  // machine yet: the card offers the download instead of a red crash frame.
+  if (preferred && isPinnedToolNotReadyMessage(text)) return toMatch(preferred, "missing", text);
   const candidates = preferred
     ? [preferred, ...AGENT_CLI_REGISTRY.filter((descriptor) => descriptor !== preferred)]
     : AGENT_CLI_REGISTRY;

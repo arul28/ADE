@@ -31,6 +31,7 @@ import {
 } from "./SyncDevicesSection";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
+import { useAppStore } from "../../state/appStore";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -127,6 +128,7 @@ function device(overrides: Partial<SyncDeviceRuntimeState> = {}): SyncDeviceRunt
 function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
   return {
     status: makeStatus(),
+    projectStatus: makeStatus(),
     devices: [],
     loading: false,
     busy: false,
@@ -521,6 +523,40 @@ describe("ThisMacCard", () => {
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Generate" })).toBeNull();
     expect(generatePin).not.toHaveBeenCalled();
+  });
+
+  describe("Stop following", () => {
+    const followerButton = { name: "Stop following Mac Studio" };
+    const acknowledgement = { name: /I understand this computer will host sync for Repo/ };
+    // The button acts on the project open in this window, so one has to be open.
+    beforeEach(() => useAppStore.setState({ project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" } as any }));
+    afterEach(() => useAppStore.setState({ project: null }));
+    const followerStatus = () => makeStatus({
+      mode: "viewer", role: "viewer", runtimeRole: "viewer", viewerReason: "saved_connection", runtimeMode: "viewer",
+      client: { state: "error", host: "192.168.1.89", port: 8788, hostName: "Mac Studio" } as SyncRoleSnapshot["client"],
+    });
+
+    it.each([
+      { case: "the window changed projects while the question was open", moveWindow: true, getStatus: async () => followerStatus() },
+      {
+        case: "the project's status cannot be read while the question was open",
+        moveWindow: false,
+        getStatus: async () => { throw new Error("The background service did not answer."); },
+      },
+    ])("sends no disconnect when $case", async ({ moveWindow, getStatus }) => {
+      const disconnectFromBrain = vi.fn(async () => makeStatus());
+      (globalThis.window as any).ade = { sync: { disconnectFromBrain, getStatus } };
+      render(<ThisMacCard sync={makeSync({ status: followerStatus(), projectStatus: followerStatus() })} sessionState="active" />);
+
+      fireEvent.click(screen.getByRole("button", followerButton));
+      if (moveWindow) act(() => useAppStore.setState({ project: { rootPath: "/other", displayName: "Other", baseRef: "main" } as any }));
+      fireEvent.click(screen.getByRole("checkbox", acknowledgement));
+      fireEvent.click(screen.getByRole("button", { name: "Stop following" }));
+
+      // Both guards return after the status read, so wait for the question to close before asserting.
+      await waitFor(() => expect(screen.queryByText("Stop following Mac Studio?")).toBeNull());
+      expect(disconnectFromBrain).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -460,7 +460,7 @@ How each surface decides the effect:
   scroll that the locate caused are not counted. A `wait` and an action with
   `--no-observe` answer `not checked`.
 - **Who can use the ADE browser.** One machine-wide setting, "Agents can use
-  the ADE browser", in the browser's ⋯ menu and in Settings → General → ADE
+  the ADE browser", in the browser's ⋯ menu and in Settings → Behaviour → ADE
   browser:
   - **All agents, all lanes** (default). No prompt.
   - **Agents in lanes I approve.** ADE asks once per lane.

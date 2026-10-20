@@ -1305,7 +1305,6 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "review",
   "conflict_resolution",
   "narrative",
-  "pr_description",
   "terminal_summary",
   "session_title",
   "session_summary",
@@ -1318,8 +1317,6 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
 const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context"
 ];

@@ -1241,7 +1241,7 @@ extension WorkSessionDestinationView {
       }
       sessionActionRenameText = ""
       if personalChat {
-        _ = try? await syncService.refreshPersonalChats(includeArchived: true)
+        _ = try? await syncService.refreshPersonalChats(includeArchived: true, sessionId: sessionId)
       }
       await refreshChatStateAfterAction(forceRemote: false)
       errorMessage = nil

@@ -12,6 +12,7 @@ import { useEffect } from "react";
 import { rootAppStoreApi } from "../state/appStore";
 import { fetchAccountStatus, subscribeAccountStatus } from "./account";
 import { registerAccountSettingsSync } from "./accountSettingsFlush";
+import { compactStoredHarnessPresetLogos } from "./harnessLogoCompaction";
 import {
   startAccountSettingsSync,
 } from "./accountSettingsSync";
@@ -82,7 +83,19 @@ export function useAccountSettingsSync(): void {
     // Published so a save or a launch can await the brain's own answer instead
     // of racing the 30-second tick; see `accountSettingsFlush`.
     registerAccountSettingsSync(stop);
+    // A preset logo too large to sync keeps the whole preset list off the
+    // account, so any that arrive (an old save, an import, a pull from an
+    // older ADE) are shrunk as soon as they appear.
+    let lastPresets = rootAppStoreApi.getState().harnessPresets;
+    void compactStoredHarnessPresetLogos(rootAppStoreApi).catch(() => undefined);
+    const stopLogoCompaction = rootAppStoreApi.subscribe(() => {
+      const presets = rootAppStoreApi.getState().harnessPresets;
+      if (presets === lastPresets) return;
+      lastPresets = presets;
+      void compactStoredHarnessPresetLogos(rootAppStoreApi).catch(() => undefined);
+    });
     return () => {
+      stopLogoCompaction();
       registerAccountSettingsSync(null);
       stop();
     };

@@ -19,6 +19,7 @@ import {
   type PackedGridSpan,
   resizePackedGridItem,
 } from "./packedSessionGridMath";
+import { cssZoomOf } from "../../lib/webZoom";
 
 type ResizeDirection = "e" | "w";
 
@@ -252,7 +253,8 @@ export function PackedSessionGrid({
       const state = resizeStateRef.current;
       if (!state || trackWidth <= 0) return;
       const colUnit = trackWidth + GRID_GAP_PX;
-      const deltaCols = Math.round((event.clientX - state.startX) / colUnit);
+      // The pointer delta is screen px; the column unit is layout px.
+      const deltaCols = Math.round((event.clientX - state.startX) / cssZoomOf() / colUnit);
       const nextPlacementsById = resizePackedGridItem({
         placementsById: state.startPlacementsById,
         tileId: state.tileId,

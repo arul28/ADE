@@ -10,7 +10,7 @@ icon: "robot"
   </div>
 </Frame>
 
-Claude Code runs inside ADE through the **bundled Claude Agent SDK** — there's no separate `claude` CLI to install. Pick a Claude model in any chat and ADE starts the session in the selected lane's worktree, applies your permission mode, streams tool calls live, and records the transcript to History.
+Claude Code runs inside ADE through the **bundled Claude Agent SDK** and ADE's own copy of Claude Code, downloaded for each machine the first time it is needed — there's no separate `claude` CLI to install, and your existing `claude` sign-in is reused. ADE keeps its copy at a tested version and turns Claude Code's self-update off. Pick a Claude model in any chat and ADE starts the session in the selected lane's worktree, applies your permission mode, streams tool calls live, and records the transcript to History.
 
 ## Setup
 

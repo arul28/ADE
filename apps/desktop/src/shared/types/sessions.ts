@@ -115,6 +115,8 @@ export type TerminalToolType =
   | "grok-chat"
   | "copilot-chat"
   | "devin-chat"
+  // Antigravity is ACP-only: it has a chat runtime and no terminal CLI.
+  | "antigravity-chat"
   | "aider"
   | "continue"
   | "other";
@@ -930,6 +932,24 @@ export type ListSessionsArgs = {
    * caller's to filter, exactly as they are for every other list.
    */
   chatSessionId?: string;
+};
+
+/**
+ * How a list read treats a host that cannot answer. Web clients resolve an
+ * unanswered list to `[]` by default. `authoritative` rejects instead, and never
+ * answers from an earlier list, so a caller can tell "no rows" from "no answer".
+ */
+export type ListSessionsOptions = {
+  authoritative?: boolean;
+};
+
+/**
+ * How a single-session read treats a host that cannot answer. Web clients resolve
+ * an unanswered read to `null` by default, which reads like "no such session".
+ * `authoritative` rejects instead, so `null` only ever means the row is gone.
+ */
+export type GetSessionOptions = {
+  authoritative?: boolean;
 };
 
 export type DeleteSessionArgs = {

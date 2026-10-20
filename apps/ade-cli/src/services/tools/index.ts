@@ -24,7 +24,11 @@
  * widen the module's public surface, not a convenience.
  *
  * Consumers:
- *   - `cacheLookup.ts` (deep import) is the single entry point the three
+ *   - `pinnedTool.ts` (deep import) is the resolver/status entry point for every
+ *     provider: `resolvePinnedTool` (current pin, else previous) and
+ *     `getPinnedToolStatus` (ready / downloading / failed / unavailable / missing).
+ *     `onDemand.ts` (deep import) starts or joins downloads (`pinnedToolDownload`).
+ *   - `cacheLookup.ts` (deep import) is the older single-path lookup the
  *     desktop executable resolvers call before their bundled-node_modules probe.
  *   - `ade tools status|ensure|gc` (commands/tools.ts).
  *   - `ade serve` fires a background ensure at startup via a deep import of

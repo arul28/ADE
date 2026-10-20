@@ -9,11 +9,11 @@ import Foundation
 ///   NX_DEVICELCMDKEYMASK  = 0x00000008
 ///   NX_DEVICERCMDKEYMASK  = 0x00000010
 ///
-/// This matters because the whole point of the both-Command chord is that it
-/// costs no permission: `NSEvent.modifierFlags` is a *static poll of current
-/// hardware state*, not an event tap, so it works with no Accessibility grant
-/// and no input monitoring prompt. A `CGEventTap` or a global key monitor would
-/// read the same keys and require the user to approve ADE first.
+/// This was the pre-macOS-27 route and costs no permission: the static flags
+/// property is a hardware-state read, not an event tap. macOS 27 stopped
+/// populating the left/right bits there, so this detector is now the fallback
+/// for older systems only; `CommandKeyChordDetector` reads the key code from a
+/// listen-only event tap on the macOS versions where the poll is blind.
 public enum ModifierMask {
     public static let leftCommand: UInt = 0x0000_0008
     public static let rightCommand: UInt = 0x0000_0010

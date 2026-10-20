@@ -63,6 +63,7 @@ export const PROVIDER_COLOR_TABLE = {
     qwen: "#6D4AFF",
     moonshot: "#1F1F1F",
     devin: "#1F1F1F",
+    antigravity: "#3186FF",
   },
   group: {
     claude: "#D97757",
@@ -79,6 +80,7 @@ export const PROVIDER_COLOR_TABLE = {
     ollama: "#A1A1AA",
     lmstudio: "#9F7BEA",
     devin: "#A1A1AA",
+    antigravity: "#3186FF",
   },
   chat: {
     claude: "#D97706",
@@ -123,6 +125,7 @@ export const PROVIDER_COLOR_TABLE = {
     grok: "#DC2626",
     copilot: "#8B5CF6",
     devin: "#1F1F1F",
+    antigravity: "#3186FF",
   },
   dynamic: {
     pi: "#181C25",
@@ -161,6 +164,7 @@ export const PROVIDER_COLOR_TABLE = {
     kimi: "#1F1F1F",
     copilot: "#3FB950",
     devin: "#A1A1AA",
+    antigravity: "#3186FF",
   },
   defaults: {
     badge: "#A78BFA",

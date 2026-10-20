@@ -108,6 +108,7 @@ import {
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { readClaudeWorkflowAgentMessages } from "./claudeWorkflowTranscript";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
   discoverClaudePluginPaths,
@@ -217,7 +218,7 @@ import { discoverCursorSlashCommandsAsync } from "./cursorSlashCommandDiscovery"
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
 import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
-import { classifyAgentCliError, isAgentBinaryMissingError } from "../../../../../ade-cli/src/services/agentRegistry";
+import { classifyAgentCliError, isAgentBinaryMissingError, isPinnedToolNotReadyMessage } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -331,7 +332,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AdeDb } from "../state/kvDb";
 import {
   cleanupAbandonedTempFiles,
-  readJsonWithRecovery,
+  createStampedJsonCache,
   writeFileAtomic,
   writeJsonWithPrevious,
 } from "../state/durableFile";
@@ -409,9 +410,17 @@ import {
   encodeOpenCodeCustomCredentialId,
   listLaunchableCredentials,
 } from "./harnessPresetCredentialCatalog";
-import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
+import { HARNESS_PRESET_BODIES, type HarnessPreset } from "../../../shared/harnessPresets";
+import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
-import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
+import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
+import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import {
+  pinnedToolForProvider,
+  pinnedToolNotReadyError,
+  resolvePinnedCursorAgentCli,
+} from "../ai/pinnedProviderTools";
 import { createCodexVoiceSessions } from "./codexVoiceSession";
 import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
@@ -708,6 +717,7 @@ import {
   queuedSteersCanReorder,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
+  CTO_THREAD_ROLLED_OVER_STATUS,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
@@ -949,7 +959,16 @@ import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
   resolveClaudeCodeExecutable,
+  type ClaudeCodeExecutableResolution,
 } from "../ai/claudeCodeExecutable";
+import { claudeFallForwardNotice, handleClaudeVersionRejection } from "../ai/claudeFallForward";
+import {
+  detectClaudeVersionRejectionInError,
+  detectClaudeVersionRejectionInMessage,
+  detectCodexVersionRejection,
+  type ClaudeVersionRejection,
+  type CodexVersionRejection,
+} from "../ai/providerVersionRejection";
 import type { createAiIntegrationService, ProviderTaskAccount } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
@@ -1115,6 +1134,13 @@ import {
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import {
+  buildContinuityCapturePrompt,
+  buildContinuitySnapshot,
+  CAPTURE_KNOWN_FACTS,
+  parseContinuityCapture,
+  type ContinuityCaptureEntry,
+} from "../cto/ctoMemoryCapture";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
@@ -1204,7 +1230,6 @@ import {
   type AcpSlashCommand,
   type AcpRuntimeState,
 } from "./acpHost";
-import { ACP_PROVIDER_METADATA, acpInstallDisplayCommand } from "../../../shared/acpProviderMetadata";
 import {
   codexConfigHome,
   copilotConfigHome,
@@ -1264,8 +1289,10 @@ import {
 import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
 import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
-import { resolveCopilotExecutable } from "../ai/acpExecutables";
+import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -4814,6 +4841,13 @@ type ManagedChatSession = {
    * tears it down first. In memory only: a restarted brain builds a new one.
    */
   profileRestartPending?: boolean;
+  /**
+   * Something was built for this chat while its custom provider or stored key
+   * could not be resolved, so it carries the harness's own sign-in. The next
+   * turn that can resolve the route tears that process down first rather than
+   * run on it. In memory only: a restarted brain builds a new one.
+   */
+  launchRouteFellBack?: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   /**
@@ -4987,6 +5021,8 @@ type ManagedChatSession = {
   cursorSdkPendingRotationPreviousAgentId?: string;
   continuitySummaryUpdatedAt: string | null;
   continuitySummaryInFlight: boolean;
+  /** Completed CTO turns since the last background memory pass. */
+  ctoTurnsSinceMemoryCheckpoint?: number;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -5453,6 +5489,9 @@ const COMPACT_FIRST_INLINE_WAIT_MS = 90_000;
 const COMPACT_FIRST_IDLE_POLL_MS = 200;
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
+// Every reader of recent conversation wants at most the last 40 entries; tool
+// output dominates a transcript's bytes, so the window is generous.
+const RECENT_TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 
@@ -6557,6 +6596,7 @@ const CHAT_SESSION_TOOL_TYPES = [
   "grok-chat",
   "copilot-chat",
   "devin-chat",
+  "antigravity-chat",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -6588,6 +6628,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   if (toolType === "devin" || toolType === "devin-chat") return "devin";
+  if (toolType === "antigravity-chat") return "antigravity";
   return "codex";
 }
 
@@ -6603,6 +6644,7 @@ function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
   if (provider === "grok") return "grok-chat";
   if (provider === "copilot") return "copilot-chat";
   if (provider === "devin") return "devin-chat";
+  if (provider === "antigravity") return "antigravity-chat";
   return "codex-chat";
 }
 
@@ -7839,6 +7881,7 @@ function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string
   if (provider === "grok") return `chat:grok:${sessionId}`;
   if (provider === "copilot") return `chat:copilot:${sessionId}`;
   if (provider === "devin") return `chat:devin:${sessionId}`;
+  if (provider === "antigravity") return `chat:antigravity:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
 
@@ -10651,6 +10694,12 @@ export function createAgentChatService(args: {
    * without their secret values.
    */
   readAccountSecret?: ((vaultKey: string) => string | null) | null;
+  /**
+   * Add a preset a launch carried (`AgentChatCreateArgs.presetSnapshot`) to
+   * this machine's copy of the account's preset list, unless it holds the same
+   * preset already at the same or a newer edit.
+   */
+  adoptHarnessPreset?: ((preset: HarnessPreset) => string | null | void) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
   resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
@@ -11473,12 +11522,12 @@ export function createAgentChatService(args: {
    * cache key carries both ids so switching a chat's preset re-resolves rather
    * than serving the previous brain's environment.
    *
-   * An `unsupported` result is remembered as "no plan" and reported once: the
-   * chat then launches on the harness's own sign-in, which is the honest
-   * fallback, and the notice tells the user which capability was dropped.
+   * An `unsupported` result is "no plan", and its reason is kept in
+   * `launchPlanBlockBySession`: the send gate refuses the turn with it rather
+   * than let the chat run on the harness's own sign-in.
    */
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
-  const launchPlanNoticeBySession = new Map<string, string>();
+  const launchPlanBlockBySession = new Map<string, string>();
 
   /**
    * The model a chat on a preset sends. Prepares the launch first, before
@@ -11543,35 +11592,99 @@ export function createAgentChatService(args: {
           presetId: presetId || undefined,
           reason: result.unsupported,
         });
-        // Said in the chat, not only the log: the turn now runs on the
-        // harness's own sign-in, and a model another vendor serves will not
-        // exist there, so the user needs the real reason next to the failure.
-        // Once per reason: this resolver runs on every helper lookup too.
-        if (launchPlanNoticeBySession.get(managed.session.id) !== result.unsupported) {
-          launchPlanNoticeBySession.set(managed.session.id, result.unsupported);
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "warning",
-            severity: "warning",
-            message: `This chat's custom provider could not be used, so it runs on ${managed.session.provider === "claude" ? "Claude Code" : managed.session.provider}'s own sign-in: ${result.unsupported}`,
-          });
-        }
+        // Never a quiet fallback: the send gate (`launchRouteBlockReason`)
+        // refuses the turn with this reason, so the chat never runs on the
+        // harness's own sign-in when the user picked another provider.
+        launchPlanBlockBySession.set(managed.session.id, result.unsupported);
+        managed.launchRouteFellBack = true;
         // A reason the user can fix without touching the chat (the proxy
         // starting, an OpenCode sign-in refreshed) is not remembered: the next
         // turn resolves again and picks the route back up.
         if (result.reasonCode) return null;
       } else {
         plan = result;
-        launchPlanNoticeBySession.delete(managed.session.id);
+        // `null` here is "no route applies" (a key a provider reads on its
+        // own, like Muse's), not a failure: nothing to block.
+        launchPlanBlockBySession.delete(managed.session.id);
       }
     } catch (error) {
       logger.warn("agent_chat.harness_preset_resolve_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      launchPlanBlockBySession.set(managed.session.id, "ADE could not prepare it on this machine.");
+      managed.launchRouteFellBack = true;
+      return null;
     }
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;
+  };
+
+  /**
+   * Why this chat's turn must not run, or null when it may.
+   *
+   * A chat that names a custom provider (or a stored key) runs on it or not at
+   * all. Running it on the harness's own sign-in instead spends the wrong
+   * account on the wrong model, and the user only finds out afterwards.
+   */
+  const launchRouteBlockReason = (managed: ManagedChatSession): string | null => {
+    const presetId = managed.session.presetId?.trim() ?? "";
+    const credentialId = managed.session.credentialId?.trim() ?? "";
+    if (!presetId && !credentialId) return null;
+    if (resolveSessionLaunchPlan(managed)) return null;
+    const reason = launchPlanBlockBySession.get(managed.session.id);
+    if (!reason) return null;
+    return presetId
+      ? `This chat's custom provider could not be used, so the message was not sent. ${reason}`
+      : `This chat's saved key could not be used, so the message was not sent. ${reason}`;
+  };
+
+  /** Ends a turn that never started because its route could not be resolved. */
+  const emitLaunchRouteSendFailure = (
+    managed: ManagedChatSession,
+    args: AgentChatSendArgs,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    // The text stays in the chat so it can be copied and sent again once the
+    // provider is fixed; the provider itself never saw it.
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: args.text,
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
+        ? { displayText: args.displayText.trim() }
+        : {}),
+      attachments: args.attachments ?? [],
+      turnId,
+      messageId: randomUUID(),
+    });
+    emitRefusedTurnEnd(managed, turnId, message);
+  };
+
+  /** Preserve a blocked follow-up without ending the live turn it tried to steer. */
+  const emitLaunchRouteSteerFailure = (
+    managed: ManagedChatSession,
+    args: AgentChatSendArgs,
+    message: string,
+  ): void => {
+    const turnId = randomUUID();
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: args.text,
+      ...(args.displayText !== undefined && args.displayText.trim() !== args.text.trim()
+        ? { displayText: args.displayText.trim() }
+        : {}),
+      attachments: args.attachments ?? [],
+      turnId,
+      messageId: randomUUID(),
+      deliveryState: "failed",
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message,
+      errorInfo: { category: "unknown", provider: managed.session.provider, model: managed.session.model },
+      turnId,
+    });
   };
 
   /**
@@ -11845,6 +11958,9 @@ export function createAgentChatService(args: {
       // channel URL or RPC socket from the provider preset.
       Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntime.runtimeSocketPath));
     }
+    // ADE runs its own pinned copy of the provider and moves that pin itself,
+    // so the copy must never update itself in place.
+    Object.assign(env, providerSelfUpdateEnv(managed.session.provider));
     return env;
   };
 
@@ -12054,6 +12170,13 @@ export function createAgentChatService(args: {
   }
   // Before any chat loads, so no persist can race the rewrite.
   sweepPersistedCallerMcpHeaderValues(chatSessionsDir, logger);
+  // Each chat's state file, read once and reused while the file is unchanged, so a
+  // listing does not re-read every chat. Other brains and the sweep above also write
+  // these files, so a hit is checked against the file's stat, not this brain's writes.
+  const persistedStateFiles = createStampedJsonCache(isPersistedChatStateShape, {
+    maxEntries: 1_000,
+    maxBytes: 16 * 1024 * 1024,
+  });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -13992,6 +14115,38 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The newest part of a session's transcript, plus events not yet on disk.
+   *
+   * For readers that only want recent conversation. The CTO's memory pass runs
+   * every few turns, and a whole-file read of a long CTO transcript (one
+   * reached 1.4M tokens) is a synchronous parse of tens of megabytes on the
+   * brain's event loop.
+   */
+  const readRecentTranscriptEnvelopes = (
+    managed: ManagedChatSession,
+    maxBytes = RECENT_TRANSCRIPT_MAX_BYTES,
+  ): AgentChatEventEnvelope[] => {
+    const buffered = (eventHistoryBySession.get(managed.session.id) ?? [])
+      .filter((entry) => entry.sessionId === managed.session.id);
+    try {
+      const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
+      if (!transcriptPath) return buffered;
+      const tail = readTranscriptTailForHistory(transcriptPath, fs.statSync(transcriptPath), maxBytes);
+      const fromFile = parseAgentChatTranscript(tail.raw)
+        .filter((entry) => entry.sessionId === managed.session.id);
+      if (!buffered.length) return fromFile;
+      return mergeEnvelopeStreams(fromFile, buffered)
+        .filter((entry) => entry.sessionId === managed.session.id);
+    } catch (error) {
+      logger.warn("agent_chat.recent_transcript_read_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return buffered;
+    }
+  };
+
   const readTranscriptTailForHistory = (
     transcriptPath: string,
     stat: fs.Stats,
@@ -15408,18 +15563,19 @@ export function createAgentChatService(args: {
 
   const collectConversationEntries = (
     managed: ManagedChatSession,
-  ): SessionMetadataConversationEntry[] => {
+  ): Array<SessionMetadataConversationEntry & { displayText?: string }> => {
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
     // admin"), so one reply is many `text` events: join each turn's chunks
-    // with `joinAssistantChunk`, the same rule the live ring uses.
-    // `includeBuffered` adds events still on their way to disk, so a refresh
-    // right after a turn ends sees that turn's last words.
-    const fromTranscript: Array<SessionMetadataConversationEntry & { turnId?: string; messageId?: string }> = [];
+    // with `joinAssistantChunk`, the same rule the live ring uses. Only the
+    // transcript's recent tail is read, plus events still on their way to
+    // disk, so a refresh right after a turn ends sees that turn's last words.
+    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string }> = [];
     try {
-      for (const { event } of readTranscriptEnvelopes(managed, { includeBuffered: true })) {
+      for (const { event } of readRecentTranscriptEnvelopes(managed)) {
         if (event.type === "user_message") {
           const text = event.text.trim();
-          if (text) fromTranscript.push({ role: "user", text });
+          const displayText = event.displayText?.trim();
+          if (text) fromTranscript.push({ role: "user", text, ...(displayText ? { displayText } : {}) });
         } else if (event.type === "text") {
           const last = fromTranscript[fromTranscript.length - 1];
           if (last?.role === "assistant" && last.turnId === event.turnId) {
@@ -15438,9 +15594,13 @@ export function createAgentChatService(args: {
     // the latest turns in a different shape.
     const source = fromTranscript.length
       ? fromTranscript
-      : managed.recentConversationEntries.map((entry) => ({ role: entry.role, text: entry.text }));
+      : managed.recentConversationEntries.map((entry) => ({ role: entry.role, text: entry.text, displayText: entry.displayText }));
     return source
-      .map((entry) => ({ role: entry.role, text: entry.text.trim() }))
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+        ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
+      }))
       .filter((entry) => entry.text.length > 0);
   };
 
@@ -15484,14 +15644,17 @@ export function createAgentChatService(args: {
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
-  const buildDeterministicContinuitySummary = (managed: ManagedChatSession): string | null => {
-    const recentConversation = buildRecentConversationContext(managed, 20).trim();
-    if (!recentConversation.length) return null;
-    return [
-      "Recent continuity snapshot:",
-      recentConversation,
-    ].join("\n");
-  };
+  const CTO_MEMORY_CHECKPOINT_TURNS = 6;
+
+  /** What the person typed, not the wrapper ADE sent: the memory pass reads this. */
+  const collectCaptureEntries = (managed: ManagedChatSession): ContinuityCaptureEntry[] =>
+    collectConversationEntries(managed).map((entry) => ({
+      role: entry.role === "user" ? "user" : "assistant",
+      text: entry.role === "user" ? entry.displayText?.trim() || entry.text : entry.text,
+    }));
+
+  const buildDeterministicContinuitySummary = (managed: ManagedChatSession): string | null =>
+    buildContinuitySnapshot(collectCaptureEntries(managed), managed.continuitySummary);
 
   // Mirror a continuity summary into the CTO's durable thread-state.md so the
   // rolling summary survives even if the in-memory session is torn down. Never
@@ -15569,17 +15732,19 @@ export function createAgentChatService(args: {
     return deterministic;
   };
 
-  const maybeRefreshIdentityContinuitySummary = async (
+  /**
+   * ADE's memory pass over an identity thread: one call to the cheap helper
+   * model on the vendor the chat already uses, reading ADE's own transcript.
+   * Returns the rolling summary, and files any durable facts it found into the
+   * CTO's memory. This is what makes memory independent of the model
+   * remembering to call saveMemory, and of which provider it runs on.
+   */
+  const runIdentityMemoryPass = async (
     managed: ManagedChatSession,
-    reason: "compaction" | "provider_reset",
-  ): Promise<void> => {
-    // Deterministic flush runs first and unconditionally so the durable
-    // thread-state is guaranteed fresh even when an LLM upgrade is still in
-    // flight (the switch path depends on this synchronous prefix).
-    const deterministic = flushIdentityContinuityDeterministic(managed, reason);
-    if (!deterministic) return;
-    if (managed.continuitySummaryInFlight) return;
-
+    reason: string,
+  ): Promise<string | null> => {
+    const entries = collectCaptureEntries(managed);
+    if (!entries.length) return null;
     const auth = await detectAuth().catch(() => []);
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
@@ -15588,51 +15753,132 @@ export function createAgentChatService(args: {
       sessionModelId: managed.session.modelId,
       sessionModel: managed.session.model,
     });
-    if (!candidateModelIds.length) return;
-
-    const prompt = [
-      "You are ADE's continuity compaction assistant.",
-      "Summarize the persistent identity chat's active continuity for recovery after provider resets or context compaction.",
-      "Focus on current objectives, active delegations, decisions already made, and blockers that still matter.",
-      "Return 3-6 concise bullet points and do not add Markdown headings.",
-      "",
-      `Reason: ${reason}`,
-      `Identity: ${managed.session.identityKey}`,
-      deterministic,
-    ].join("\n");
-
-    managed.continuitySummaryInFlight = true;
-    try {
-      const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-        run: async (descriptor) => {
-          const response = await runSessionIntelligencePrompt({
-            cwd: managed.laneWorktreePath,
-            modelId: descriptor.id,
-            prompt,
-            taskType: "continuity_summary",
-            providerAccount: sessionProviderAccount(managed),
-          });
-          const text = response.text.trim();
-          return text.length ? text : null;
-        },
-        onFailure: (failure) => {
-          logger.warn("agent_chat.identity_continuity_summary_failed", {
+    if (!candidateModelIds.length) return null;
+    const memory = managed.session.identityKey === "cto" ? ctoMemoryService : null;
+    const prompt = buildContinuityCapturePrompt({
+      reason,
+      entries,
+      knownFacts: memory?.listKnownFacts(CAPTURE_KNOWN_FACTS) ?? [],
+      previousSummary: managed.continuitySummary,
+    });
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+        const text = response.text.trim();
+        return text.length ? text : null;
+      },
+      onFailure: (failure) => {
+        logger.warn("agent_chat.identity_continuity_summary_failed", {
+          sessionId: managed.session.id,
+          reason,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    if (!result) return null;
+    const capture = parseContinuityCapture(result);
+    if (memory && capture.facts.length) {
+      try {
+        const filed = memory.captureFacts(capture.facts);
+        if (filed.saved.length) {
+          logger.info("agent_chat.cto_memory_captured", {
             sessionId: managed.session.id,
             reason,
-            modelId: failure.descriptor.id,
-            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+            saved: filed.saved.length,
+            skipped: filed.skipped,
           });
-        },
-      });
-      if (result) {
-        managed.continuitySummary = result;
+        }
+      } catch (error) {
+        logger.warn("agent_chat.cto_memory_capture_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return capture.summary;
+  };
+
+  const maybeRefreshIdentityContinuitySummary = async (
+    managed: ManagedChatSession,
+    reason: "compaction" | "provider_reset" | "checkpoint",
+  ): Promise<void> => {
+    // Deterministic flush runs first and unconditionally so the durable
+    // thread-state is guaranteed fresh even when an LLM upgrade is still in
+    // flight (the switch path depends on this synchronous prefix). A
+    // checkpoint skips it: nothing is about to be lost, and a failed pass
+    // should leave the last good summary exactly as it was.
+    if (reason !== "checkpoint" && !flushIdentityContinuityDeterministic(managed, reason)) return;
+    if (managed.continuitySummaryInFlight) return;
+    managed.continuitySummaryInFlight = true;
+    try {
+      const summary = await runIdentityMemoryPass(managed, reason);
+      if (summary) {
+        managed.continuitySummary = summary;
         managed.continuitySummaryUpdatedAt = nowIso();
         persistChatState(managed);
-        writeCtoThreadStateFromSummary(managed, result, reason);
+        writeCtoThreadStateFromSummary(managed, summary, reason);
       }
     } finally {
       managed.continuitySummaryInFlight = false;
     }
+  };
+
+  /**
+   * Count a settled CTO turn toward the next memory checkpoint.
+   *
+   * Compaction alone is too rare to be the memory schedule: a long thread on a
+   * big window went weeks between compactions, and its thread state stayed a
+   * month old the whole time. Every few turns the same pass runs in the
+   * background, on the cheap helper model.
+   */
+  const noteCtoTurnForMemoryCheckpoint = (managed: ManagedChatSession): void => {
+    const count = (managed.ctoTurnsSinceMemoryCheckpoint ?? 0) + 1;
+    if (count < CTO_MEMORY_CHECKPOINT_TURNS) {
+      managed.ctoTurnsSinceMemoryCheckpoint = count;
+      return;
+    }
+    managed.ctoTurnsSinceMemoryCheckpoint = 0;
+    void maybeRefreshIdentityContinuitySummary(managed, "checkpoint").catch((error) => {
+      logger.warn("agent_chat.cto_memory_checkpoint_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /**
+   * An identity thread's provider compacted its context, on any provider.
+   *
+   * This used to hang off Claude's compaction observer only, so a Codex CTO
+   * compacted without flushing `thread-state.md` and without being told its
+   * doctrine again. Two things happen here:
+   * - started: the deterministic flush, from ADE's own transcript, before the
+   *   provider's summary replaces what the model can see.
+   * - completed: the best-effort summary upgrade, and the once-per-thread
+   *   static block is re-armed. It was said once at the top of the thread, and
+   *   a compacted thread keeps only what the provider's summary kept, so
+   *   without this a compacted CTO quietly stops being told who it is.
+   */
+  const observeIdentityCompaction = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "context_compact" | "codex_context_compaction" }>,
+  ): void => {
+    if (event.state === "started") {
+      flushIdentityContinuityDeterministic(managed, "compaction");
+      return;
+    }
+    // A `context_compact` with no state comes from a completion-only source.
+    if (event.state !== "completed" && !(event.type === "context_compact" && event.state === undefined)) return;
+    resetStagedSection(managed.ctoStaticContext);
+    void maybeRefreshIdentityContinuitySummary(managed, "compaction");
+    refreshReconstructionContext(managed);
   };
 
   const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
@@ -15724,7 +15970,9 @@ export function createAgentChatService(args: {
       sections.push({ id: null, text: ctoStateService.buildReconstructionContext(8) });
     }
 
-    if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim()) {
+    // The CTO's memory sections already carry this summary as its thread state
+    // (every write goes to both), so it would be said twice on every turn.
+    if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim() && !(isCto && ctoMemoryService)) {
       sections.push({
         id: null,
         text: ["Continuity Summary", managed.continuitySummary.trim()].join("\n"),
@@ -16864,9 +17112,12 @@ export function createAgentChatService(args: {
       piRuntimeSetupInterruptRequested.delete(managed);
       throw new Error("Pi session interrupted during setup.");
     }
+    // ADE's pinned Pi package tree, downloaded first when this machine never used Pi.
+    const piDownload = chatPinnedToolDownload(managed, "pi", "Pi");
+    if (piDownload) await piDownload;
     const installation = resolvePiInstallation(buildAgentRuntimeEnv(managed));
     if (!installation.sdkAvailable || !installation.packageRoot || !installation.packageEntry) {
-      throw new Error(installation.blocker ?? "Pi SDK is not available. Install Pi or configure ADE_PI_PACKAGE_ROOT.");
+      throw new Error(installation.blocker ?? "ADE could not load its Pi package on this machine.");
     }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const piProfileId = managed.session.piProfileId?.trim() || descriptor?.piProfileId?.trim() || "default";
@@ -18764,7 +19015,7 @@ export function createAgentChatService(args: {
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    const recovered = readJsonWithRecovery(filePath, isPersistedChatStateShape);
+    const recovered = persistedStateFiles.read(filePath);
     if (recovered.value === null) return null;
     if (recovered.source === "previous") {
       logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
@@ -19333,6 +19584,43 @@ export function createAgentChatService(args: {
       processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
   });
 
+  /**
+   * What one chat listing reads once for all of its rows. Each of these is a
+   * disk or database read per row otherwise: the project config (its read stats
+   * every path the config names), the machine's provider accounts (a registry
+   * file read per lookup), and each owner's liveness (a runtime-process query
+   * per owner). A listing builds one scope and its rows share the answers; the
+   * scope lives only for that call, so the first read of a call is as fresh as
+   * a row's own read was.
+   */
+  const createSummaryCallScope = () => {
+    let config: ReturnType<typeof projectConfigService.get> | null = null;
+    let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> | null = null;
+    const ownerDecisions = new Map<string, ChatRuntimeOwnershipDecision>();
+    return {
+      projectConfig: () => {
+        config ??= projectConfigService.get();
+        return config;
+      },
+      providerInstance: (id: string) => {
+        accounts ??= getMachineProviderInstanceStore().list();
+        const trimmed = id.trim();
+        return accounts.find((account) => account.id === trimmed) ?? null;
+      },
+      ownershipOf: (owner: ChatRuntimeOwner): ChatRuntimeOwnershipDecision => {
+        // The decision reads only these four owner fields, and `self` is fixed for this service.
+        const key = JSON.stringify([owner.brainId, owner.pid, owner.startedAt ?? null, owner.adeHome ?? null]);
+        let decision = ownerDecisions.get(key);
+        if (!decision) {
+          decision = chatRuntimeOwnershipDecision(owner);
+          ownerDecisions.set(key, decision);
+        }
+        return decision;
+      },
+    };
+  };
+  type SummaryCallScope = ReturnType<typeof createSummaryCallScope>;
+
   const chatRuntimeAdoptable = (
     sessionId: string,
     persisted?: PersistedChatState | null,
@@ -19362,6 +19650,7 @@ export function createAgentChatService(args: {
   const siblingBrainOwnerOnDisk = (
     sessionId: string,
     persisted?: PersistedChatState | null,
+    scope?: SummaryCallScope,
   ): ChatRuntimeOwner | null => {
     let owner: ChatRuntimeOwner | null = null;
     try {
@@ -19370,7 +19659,8 @@ export function createAgentChatService(args: {
         : persisted?.runtimeOwner ?? null;
     } catch { /* unreadable state is unowned */ }
     if (!owner) return null;
-    return chatRuntimeOwnershipDecision(owner).verdict === "live-foreign-brain" ? owner : null;
+    const decision = scope ? scope.ownershipOf(owner) : chatRuntimeOwnershipDecision(owner);
+    return decision.verdict === "live-foreign-brain" ? owner : null;
   };
 
   /**
@@ -19383,7 +19673,8 @@ export function createAgentChatService(args: {
   const liveForeignChatRuntimeOwner = (
     sessionId: string,
     persisted?: PersistedChatState | null,
-  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted);
+    scope?: SummaryCallScope,
+  ): ChatRuntimeOwner | null => siblingBrainOwnerOnDisk(sessionId, persisted, scope);
 
   /**
    * Refuse to drive a chat another live brain owns. Every caller here would
@@ -19475,7 +19766,8 @@ export function createAgentChatService(args: {
       case "qwen":
       case "kimi":
       case "grok":
-      case "devin": return { acpSessionId: candidate.pointer };
+      case "devin":
+      case "antigravity": return { acpSessionId: candidate.pointer };
       default: return {};
     }
   };
@@ -20077,16 +20369,18 @@ export function createAgentChatService(args: {
     return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  // Turn-completion hook. Worker/subordinate activity logging has been removed
-  // with the workers subsystem; this remains as the turn-end extension point that
-  // the CTO memory system (durable thread flushes) will hook into.
-  // Deterministic per-turn journal for the CTO's daily log. On each completed
-  // (or failed) CTO turn we append one compact line capturing the user's intent
-  // and the outcome. No LLM call; fully guarded so a failure never breaks the
-  // turn. Non-CTO sessions are ignored.
+  // Deterministic per-turn journal for the CTO's daily log: one compact line of
+  // the user's intent and the outcome per settled CTO turn. No LLM call; fully
+  // guarded so a failure never breaks the turn. Non-CTO sessions are ignored.
+  //
+  // Called from `commitChatEvent` on `done`, the one place every provider
+  // agrees a turn is over. It used to be called by hand from each provider's
+  // own completion path, and Codex's main-thread path never got the call: a
+  // Codex CTO ran 29 turns without writing one line to the daily log.
   const appendCtoTurnJournal = (
     managed: ManagedChatSession,
-    input: { assistantText?: string | null; failureNote?: string | null } = {},
+    done: Extract<AgentChatEvent, { type: "done" }>,
+    errorText: string | null,
   ): void => {
     if (managed.session.identityKey !== "cto" || !ctoMemoryService) return;
     try {
@@ -20095,15 +20389,20 @@ export function createAgentChatService(args: {
       let lastAssistant = "";
       for (let i = entries.length - 1; i >= 0; i -= 1) {
         const entry = entries[i];
-        if (!lastAssistant && entry.role === "assistant") lastAssistant = entry.text.trim();
+        // Only this turn's answer: a failed turn that wrote nothing must not be
+        // journaled with the previous turn's reply as its outcome.
+        const sameTurn = !done.turnId || !entry.turnId || entry.turnId === done.turnId;
+        if (!lastAssistant && entry.role === "assistant" && sameTurn) lastAssistant = entry.text.trim();
         if (!lastUser && entry.role === "user") {
           lastUser = (entry.displayText?.trim() || entry.text.trim());
         }
-        if (lastUser && lastAssistant) break;
+        if (lastUser) break;
       }
-      const outcome = input.failureNote?.trim()
-        ? input.failureNote.trim()
-        : (input.assistantText?.trim() || lastAssistant);
+      const outcome = done.status === "failed"
+        ? `Turn failed${errorText?.trim() ? `: ${errorText.trim()}` : ""}`
+        : done.status === "interrupted"
+          ? `Stopped${lastAssistant ? `: ${lastAssistant}` : ""}`
+          : lastAssistant;
       if (!lastUser && !outcome) return;
       ctoMemoryService.appendTurnJournal({ user: lastUser, outcome });
     } catch (error) {
@@ -20137,19 +20436,12 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
-  /** Install command each ACP CLI documents, from the shared provider table. Only used to write the error card. */
-  const ACP_INSTALL_COMMANDS: Record<AcpChatProvider, string> = {
-    qwen: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.qwen.install),
-    kimi: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.kimi.install),
-    grok: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.grok.install),
-    devin: acpInstallDisplayCommand(ACP_PROVIDER_METADATA.devin.install),
-  };
-
   /**
    * Turn an ACP failure into the same card shape the tracked CLIs produce.
    *
-   * Only two verdicts are reachable here: the binary is missing, or the
-   * credential is not good. Anything else is a real error and keeps the red
+   * Only two verdicts are reachable here: ADE's pinned copy is not on this
+   * machine (the card offers its Download/Retry), or the credential is not
+   * good. Anything else is a real error and keeps the red
    * frame, because telling someone to log in when the agent crashed sends them
    * to fix the wrong thing.
    */
@@ -20162,13 +20454,13 @@ export function createAgentChatService(args: {
     const base = {
       agent: provider,
       displayName: dialect.displayName,
-      installCommand: ACP_INSTALL_COMMANDS[provider],
-      authCommand: dialect.authProbe.loginCommand,
+      // Antigravity has no terminal login; its card points at Settings.
+      authCommand: dialect.authProbe.loginCommand ?? "",
     };
     // Only a message that names this agent's binary as the missing thing. A
     // bare "command not found" is as often the agent's reply to a slash command
     // it does not know, and "no such file or directory" a tool's missing file.
-    if (isAgentBinaryMissingError(text, provider)) {
+    if (isAgentBinaryMissingError(text, provider) || isPinnedToolNotReadyMessage(text)) {
       return { ...base, category: "missing" as const };
     }
     if (isAcpAuthError(text)) return { ...base, category: "unauthenticated" as const };
@@ -20213,7 +20505,6 @@ export function createAgentChatService(args: {
           agent: match.agent,
           displayName: match.displayName,
           category: match.category,
-          installCommand: match.installCommand,
           authCommand: match.authCommand,
         },
       },
@@ -21114,7 +21405,23 @@ export function createAgentChatService(args: {
     ) {
       managed.liveTurnErrorText = storedEvent.message;
     } else if (storedEvent.type === "done") {
+      // Read before `recordSettledTurnHealth` spends it.
+      const turnErrorText = managed.liveTurnErrorText;
       recordSettledTurnHealth(managed, storedEvent);
+      appendCtoTurnJournal(managed, storedEvent, turnErrorText);
+      if (managed.session.identityKey === "cto") {
+        if (storedEvent.status === "completed") {
+          noteCtoTurnForMemoryCheckpoint(managed);
+        } else if (
+          // THIS turn failed on overflow. An interrupted turn keeps the
+          // previous verdict, and pressing Stop must not rotate the thread.
+          storedEvent.status === "failed"
+          && managed.lastTurnFailure?.kind === "context_overflow"
+          && (!storedEvent.turnId || managed.lastTurnFailure.turnId === storedEvent.turnId)
+        ) {
+          maybeAutoRolloverCtoThread(managed, storedEvent.turnId ?? null);
+        }
+      }
     }
 
     // Session summaries are generated only when the chat is explicitly ended in ADE,
@@ -21881,6 +22188,7 @@ export function createAgentChatService(args: {
       // before the rest of the event is bookkept. Terminal states only: an
       // event with no state is not evidence that the compaction finished.
       if (event.state === "completed" || event.state === "failed") settleCompactionWaiters(managed.session.id);
+      if (managed.session.identityKey) observeIdentityCompaction(managed, event);
     }
     if (event.type === "context_compact") {
       if (event.state === "failed") {
@@ -22190,7 +22498,9 @@ export function createAgentChatService(args: {
     ensureCodexThread: (managed, runtime) => ensureCodexControlThread(managed, runtime, "voice"),
     resolveCodexExecutable: (managed) => {
       const env = buildAgentRuntimeEnv(managed);
-      return { executable: resolveCodexExecutable({ env }).path, env };
+      const executable = resolveCodexExecutable({ env }).path;
+      if (!executable) throw pinnedToolNotReadyError("codex", "Codex");
+      return { executable, env };
     },
     chatSummary: (sessionId) => sessionService.get(sessionId) ?? null,
   });
@@ -22589,10 +22899,6 @@ export function createAgentChatService(args: {
       );
     }
     if (!options.completed) return;
-    if (managed.session.identityKey) {
-      void maybeRefreshIdentityContinuitySummary(managed, "compaction");
-      refreshReconstructionContext(managed);
-    }
     if (!internalTrigger) {
       logger.info("agent_chat.claude_context_compaction_observed", {
         sessionId: managed.session.id,
@@ -23288,9 +23594,15 @@ export function createAgentChatService(args: {
     // started) carries no task_type. It is still that shell: classified as a
     // subagent it became a "Background task" row stuck at running, because the
     // shell's end only ever reaches its background row.
+    // A background Workflow (or subagent) is in the same background-task sets,
+    // and its task_progress carries no task_type either; read as a shell, every
+    // workflow_progress snapshot after its start was swallowed.
     const knownBackgroundShell = !rawTaskType
       && !messageAgentType
       && !existing?.agentType
+      && existing?.taskType !== "local_workflow"
+      && existing?.taskType !== "subagent"
+      && existing?.taskType !== "cron"
       && Boolean(taskId && (runtime.liveBackgroundTaskIds.has(taskId) || runtime.backgroundTaskTitleById.has(taskId)));
     const taskType = localBashIsBackground || knownBackgroundShell
       ? "background"
@@ -25572,6 +25884,33 @@ export function createAgentChatService(args: {
     "Cursor tool approval was cancelled because the session closed.";
 
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
+  // Bumped by every teardown, so a runtime start that began before one is not
+  // joined by a send after it (`joinRuntimeStart`).
+  const runtimeTeardownEpochs = new WeakMap<ManagedChatSession, number>();
+  const runtimeTeardownEpoch = (managed: ManagedChatSession): number => runtimeTeardownEpochs.get(managed) ?? 0;
+
+  /**
+   * One runtime start per chat at a time: a send that arrives while a start
+   * (or its first-use download) runs joins it instead of spawning a second
+   * runtime that would orphan the first. A teardown in between (restart, model
+   * switch, close) ends the sharing, and the next send starts afresh.
+   */
+  const joinRuntimeStart = <R>(
+    starts: WeakMap<ManagedChatSession, { epoch: number; promise: Promise<R> }>,
+    managed: ManagedChatSession,
+    start: () => Promise<R>,
+  ): Promise<R> => {
+    const inFlight = starts.get(managed);
+    if (inFlight && inFlight.epoch === runtimeTeardownEpoch(managed)) return inFlight.promise;
+    const promise = start().finally(() => {
+      if (starts.get(managed)?.promise === promise) starts.delete(managed);
+    });
+    // Read after `start()` ran to its first await: a start that tears down a
+    // dead runtime of its own bumps the epoch, and must stay joinable.
+    starts.set(managed, { epoch: runtimeTeardownEpoch(managed), promise });
+    return promise;
+  };
+
   const teardownRuntime = (
     managed: ManagedChatSession,
     openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" | "restart" = "handle_close",
@@ -25580,6 +25919,7 @@ export function createAgentChatService(args: {
       cursorPermissionWaiterReason?: string;
     },
   ): void => {
+    runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
     closeHttpMcpServers(managed);
@@ -27665,9 +28005,6 @@ export function createAgentChatService(args: {
       ...(state.queuedTurnCount != null ? { queuedTurnCount: state.queuedTurnCount } : {}),
       ...(terminalReason ? { terminalReason, terminalReasonSource: "sdk" as const } : {}),
     });
-    if (state.assistantText.trim().length > 0) {
-      appendCtoTurnJournal(managed, { assistantText: state.assistantText });
-    }
     const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
     if (endSha) {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -28754,6 +29091,10 @@ export function createAgentChatService(args: {
       }
       const metadata = extractClaudeResultMetadata(resultMsg);
       logClaudeStartupFailure(logger, managed, metadata, turnId);
+      const idleVersionRejection = detectClaudeVersionRejectionInMessage(resultMsg);
+      if (idleVersionRejection) {
+        void handleClaudeChatVersionRejection(managed, runtime, idleVersionRejection, { turnId, restart: null });
+      }
       state.canonicalModel = metadata.canonicalModel;
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
@@ -29056,6 +29397,8 @@ export function createAgentChatService(args: {
       onBackendDispatched?: () => void;
       /** This run is the single automatic retry after a too-long handoff replay. */
       replayOverflowRetry?: boolean;
+      /** This run is the single restart after ADE moved past a Claude Code Anthropic refused at startup. */
+      versionFallForwardRetry?: boolean;
       /** The user message is already in the transcript; do not echo it again. */
       suppressUserEcho?: boolean;
     },
@@ -29163,6 +29506,32 @@ export function createAgentChatService(args: {
     let reportedInitModel: string | null = null;
     const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
+    /** Anthropic refusing this build as too old, if this turn saw it. */
+    const claudeVersionRejection: { value: ClaudeVersionRejection | null } = { value: null };
+    const sdkSessionIdBeforeTurn = runtime.sdkSessionId;
+    // A startup refusal ran nothing, so the turn runs again once on the new build.
+    const restartAfterFallForward = args.versionFallForwardRetry === true
+      ? null
+      : () => {
+        // The CLI died before it wrote anything: a thread id this turn assigned is not resumable.
+        if (runtime.sdkSessionId && runtime.sdkSessionId !== sdkSessionIdBeforeTurn) {
+          runtime.sdkSessionId = null;
+          persistChatState(managed);
+        }
+        void runClaudeTurn(managed, {
+          ...args,
+          versionFallForwardRetry: true,
+          suppressUserEcho: true,
+          onDispatched: undefined,
+          onBackendDispatched: undefined,
+        }).catch((restartError) => {
+          logger.warn("agent_chat.claude_fall_forward_restart_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: restartError instanceof Error ? restartError.message : String(restartError),
+          });
+        });
+      };
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedPermissionDeniedToolUseIds = new Set<string>();
@@ -30634,6 +31003,7 @@ export function createAgentChatService(args: {
         // assistant message — process content blocks
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
+          claudeVersionRejection.value ??= detectClaudeVersionRejectionInMessage(assistantMsg);
           const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
           if (earlyUserMessageUuid && !resultUserMessageUuid) {
             resultUserMessageUuid = earlyUserMessageUuid;
@@ -31087,6 +31457,7 @@ export function createAgentChatService(args: {
         if (msg.type === "result") {
           await settleDetachedClaudeToolCalls(managed, runtime);
           const resultMsg = msg as any;
+          claudeVersionRejection.value ??= detectClaudeVersionRejectionInMessage(resultMsg);
           const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
           const diagnosticOnlyError = resultMsg.is_error === true
             && resultErrors.all.length > 0
@@ -31392,10 +31763,6 @@ export function createAgentChatService(args: {
         void emitTurnDiffSummaryIfChanged(managed, turnId);
       }
 
-      if (assistantText.trim().length > 0) {
-        appendCtoTurnJournal(managed, { assistantText });
-      }
-
       // Adopt the SDK-generated session title (once) when the turn settles and
       // the chat still carries the provider-default name. Fire-and-forget.
       if (runtimeStillCurrent) maybeAdoptClaudeSdkSessionTitle(managed, runtime);
@@ -31442,6 +31809,12 @@ export function createAgentChatService(args: {
 
       // This path drains the queue itself below; a Compact first hold has nothing to keep.
       if (managed.compactFirstHold === "holding") managed.compactFirstHold = undefined;
+      if (claudeVersionRejection.value && managed.runtime === runtime) {
+        void handleClaudeChatVersionRejection(managed, runtime, claudeVersionRejection.value, {
+          turnId,
+          restart: restartAfterFallForward,
+        });
+      }
       // Process queued steers (skip if session was disposed during execution)
       if (managed.runtime === runtime) {
         if (extraUsageStopRequested) {
@@ -31486,6 +31859,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       const effectiveError = timeoutError ?? error;
+      claudeVersionRejection.value ??= detectClaudeVersionRejectionInError(effectiveError);
       settleClaudeInitialInputDispatch(
         runtime,
         effectiveError instanceof Error ? effectiveError : new Error(String(effectiveError)),
@@ -31561,7 +31935,6 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
@@ -31638,8 +32011,6 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
-
         // If resume failed, clear sessionId and the caller can retry fresh
         if (runtime.sdkSessionId && isClaudeStaleSessionError(effectiveError)) {
           const staleSdkSessionId = runtime.sdkSessionId;
@@ -31677,6 +32048,13 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (claudeVersionRejection.value && !runtime.interrupted && managed.runtime === runtime) {
+        void handleClaudeChatVersionRejection(managed, runtime, claudeVersionRejection.value, {
+          turnId,
+          // A steer's sender handles a failure before dispatch itself.
+          restart: failedBeforeBackendDispatch ? null : restartAfterFallForward,
+        });
+      }
       if (args.replayOverflowRetry === true && !runtime.interrupted) {
         claudeReplayOverflow.reportRetryFailed(managed, runtime, turnId);
       }
@@ -31700,7 +32078,10 @@ export function createAgentChatService(args: {
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
     const env = buildAgentRuntimeEnv(managed);
+    const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
+    if (claudeDownload) await claudeDownload;
     const resolved = resolveClaudeCodeExecutable({ env });
+    if (resolved.source === "fallback-command") throw pinnedToolNotReadyError("claude-code", "Claude Code");
     const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
     logger.debug("agent_chat.claude_background_cli_spawn", {
       sessionId: managed.session.id,
@@ -32152,9 +32533,6 @@ export function createAgentChatService(args: {
       } else {
         reportProviderRuntimeFailure("claude", result.state?.detail ?? result.state?.state ?? result.status);
       }
-      if (result.assistantText.trim().length > 0) {
-        appendCtoTurnJournal(managed, { assistantText: result.assistantText });
-      }
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
         sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -32184,7 +32562,6 @@ export function createAgentChatService(args: {
         status: "failed",
         ...doneModel,
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       persistChatState(managed);
     }
   };
@@ -32208,6 +32585,8 @@ export function createAgentChatService(args: {
       // Devin reads `~/.config/devin` (%APPDATA%\devin on Windows) and honors
       // no override env var, so ADE sets nothing.
       case "devin": return null;
+      // Antigravity keeps the default GEMINI_HOME (the shared login).
+      case "antigravity": return null;
     }
   };
 
@@ -32498,16 +32877,18 @@ export function createAgentChatService(args: {
       if (!preflight.ok) throw new Error(preflight.message);
     }
 
-    const cliStatuses = await detectCliAuthStatuses({ skipAuthProbe: true }).catch(() => []);
-    const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
-    const executable = resolveAcpExecutable(provider, {
-      env: runtimeEnv,
-      ...(cli?.path ? { auth: [{ type: "cli-subscription", cli: provider, path: cli.path, authenticated: cli.authenticated, verified: cli.verified }] } : {}),
-    });
-    if (executable.source === "fallback-command" && cli && !cli.installed) {
-      throw new Error(
-        `The ${dialect.displayName} CLI (\`${dialect.binaryNames[0]}\`) was not found on this machine. Install it, then refresh AI settings.`,
-      );
+    // ADE's pinned copy, downloaded first when this machine never used the
+    // provider. Never a CLI the user installed.
+    const pinnedTool = pinnedToolForProvider(provider);
+    if (pinnedTool) {
+      const download = chatPinnedToolDownload(managed, pinnedTool.tool, pinnedTool.label);
+      if (download) await download;
+    }
+    const executable = resolveAcpExecutable(provider, { env: runtimeEnv });
+    if (executable.source === "fallback-command" && !args.acpSpawnOverride) {
+      throw pinnedTool
+        ? pinnedToolNotReadyError(pinnedTool.tool, pinnedTool.label)
+        : new Error(`ADE has no ${dialect.displayName} runtime on this machine.`);
     }
 
     const configHome = acpConfigHomeFor(provider, runtimeEnv);
@@ -32529,7 +32910,8 @@ export function createAgentChatService(args: {
       logSkillDelivery(managed, {
         mechanism: "qwen-skill-directories",
         rootCount: qwenSkillDefaults.roots.length,
-        delivered: qwenSkillDefaults.path !== null,
+        // The file also carries ADE's update switch, so it can exist with no skills in it.
+        delivered: qwenSkillDefaults.roots.length > 0,
         ...(qwenSkillDefaults.reason ? { reason: qwenSkillDefaults.reason } : {}),
       });
     }
@@ -32539,6 +32921,8 @@ export function createAgentChatService(args: {
       : acpModelTokenFor(managed.session);
     const spawnPlan = dialect.buildSpawnPlan({
       binaryPath: executable.path,
+      ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
+      ...(executable.files ? { binaryFiles: executable.files } : {}),
       cwd: managed.laneWorktreePath,
       baseEnv: runtimeEnv,
       modelId: modelToken,
@@ -32901,7 +33285,6 @@ export function createAgentChatService(args: {
       );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -33038,7 +33421,6 @@ export function createAgentChatService(args: {
         emitAcpTurnFailure(managed, turnId, message);
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -34157,7 +34539,6 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
       emitChatEvent(managed, { type: "done", turnId: setupTurnId, status: "failed", ...doneModel() });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -34301,7 +34682,6 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, done);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } catch (error) {
@@ -34317,7 +34697,6 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "error", message, turnId });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel() });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -34522,7 +34901,6 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       persistChatState(managed);
       return;
     }
@@ -34608,7 +34986,6 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "error", message, turnId });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, doneEvent);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
       }
       persistChatState(managed);
     } finally {
@@ -34807,8 +35184,6 @@ export function createAgentChatService(args: {
         ...(servedModel ? { servedModel } : {}),
         account: turnUsageAccounts.openCode(managed, served?.providerID || turn.requestedModel.providerID),
       });
-      const finalText = turn.mapper.finalText();
-      if (finalText.trim().length > 0) appendCtoTurnJournal(managed, { assistantText: finalText });
       void computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed))
         .then((endSha) => {
           if (endSha) sessionService.setHeadShaEnd(managed.session.id, endSha);
@@ -34852,7 +35227,6 @@ export function createAgentChatService(args: {
         ...(doneUsage ? { usage: doneUsage.usage } : {}),
         ...doneCost,
       });
-      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
     }
     persistChatState(managed);
     turn.settle();
@@ -39981,6 +40355,15 @@ export function createAgentChatService(args: {
       ...(errorInfo ? { errorInfo } : {}),
       ...(detail ? { detail } : {}),
     });
+    // OpenAI's exact per-model "needs a newer Codex" refusal (only errors, never
+    // assistant text). Mid-turn: a notice, never a resend.
+    const versionRejection = detectCodexVersionRejection({
+      message,
+      errorInfo: input.errorInfo,
+      detail,
+      requestedModel: managed.session.model,
+    });
+    if (versionRejection) void handleCodexChatVersionRejection(managed, runtime, versionRejection, turnId);
   }
 
   async function finishCodexTurnFromReconciledState(
@@ -41288,18 +41671,24 @@ export function createAgentChatService(args: {
   // `projectConfigService.get()` resolves and validates the whole config, and this
   // runs per usage event, so the compaction block is read at most once a second.
   let compactionConfigCache: { at: number; value: Record<string, unknown> | undefined } | null = null;
-  const readCompactionConfig = (): Record<string, unknown> | undefined => {
+  const readCompactionConfig = (scope?: SummaryCallScope): Record<string, unknown> | undefined => {
+    if (scope) return scope.projectConfig().effective.ai?.compaction;
     const now = Date.now();
     if (!compactionConfigCache || now - compactionConfigCache.at > 1_000) {
       compactionConfigCache = { at: now, value: projectConfigService.get().effective.ai?.compaction };
     }
     return compactionConfigCache.value;
   };
-  const compactionSettingsForSession = (session: { provider?: string; instanceId?: string | null }) => {
+  const compactionSettingsForSession = (
+    session: { provider?: string; instanceId?: string | null },
+    scope?: SummaryCallScope,
+  ) => {
     const provider = session.provider ?? "";
-    const defaults = normalizeCompactionSettings(readCompactionConfig()?.[provider]);
+    const defaults = normalizeCompactionSettings(readCompactionConfig(scope)?.[provider]);
     const account = isProviderInstanceProvider(provider)
-      ? getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider))
+      ? (scope
+        ? scope.providerInstance(session.instanceId ?? defaultProviderInstanceId(provider))
+        : getMachineProviderInstanceStore().get(session.instanceId ?? defaultProviderInstanceId(provider)))
       : null;
     return { ...defaults, ...account?.compaction };
   };
@@ -41309,8 +41698,11 @@ export function createAgentChatService(args: {
    * starts at `never`, so nobody who never opened the setting sees an offer;
    * turning it on in Settings → Providers is what shows it.
    */
-  const compactionIdleModeFor = (session: { provider?: string; instanceId?: string | null }): "ask" | "always" | "never" => {
-    return compactionSettingsForSession(session).idleMode ?? compactionIdleModeDefault(session.provider);
+  const compactionIdleModeFor = (
+    session: { provider?: string; instanceId?: string | null },
+    scope?: SummaryCallScope,
+  ): "ask" | "always" | "never" => {
+    return compactionSettingsForSession(session, scope).idleMode ?? compactionIdleModeDefault(session.provider);
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   /** OpenCode runs `/compact` only when its server lists the command. */
@@ -41338,7 +41730,84 @@ export function createAgentChatService(args: {
     } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
   };
 
+  /**
+   * The download of the provider's pinned tool when this machine has not
+   * fetched it yet, telling the chat while it waits; null when the tool is on
+   * disk, so a ready runtime starts with no extra await. A failed download is
+   * left to the resolver, which finds ADE's previous copy or nothing; the
+   * start then throws the download state (`pinnedToolNotReadyError`). It
+   * never falls back to a CLI the user installed.
+   */
+  const chatPinnedToolDownload = (managed: ManagedChatSession | null, tool: string, label: string): Promise<void> | null => {
+    const download = pinnedToolDownload(tool);
+    if (!download) return null;
+    if (managed) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Downloading ${label} for this machine`,
+        detail: "ADE downloads each agent the first time this machine uses it. The chat continues when it finishes.",
+      });
+    }
+    // onDemand.ts logs the outcome; a failure leaves resolution as it was.
+    return download.then(() => undefined);
+  };
+
+  /** The Codex build and spawn env each app-server runs: a refusal names the build refused and probes with the same account. */
+  const codexLaunchByRuntime = new WeakMap<CodexRuntime, { resolution: CodexExecutableResolution; env: NodeJS.ProcessEnv }>();
+  /** Runtimes that already reacted to a version refusal (once each). */
+  const codexVersionRejectionHandled = new WeakSet<CodexRuntime>();
+
+  /**
+   * OpenAI refused this chat's model for the Codex that ran (its exact
+   * per-model sentence, `providerVersionRejection.ts`). `codexFallForward.ts`
+   * re-checks with one short request, and moves this machine to OpenAI's
+   * newest Codex only when that build is accepted for the model. The refusal
+   * arrives on a model request inside a turn (Codex's app-server never meets it
+   * at startup), so nothing is resent: once switched, the idle app-server is
+   * stopped so the user's next message starts the new build.
+   */
+  const handleCodexChatVersionRejection = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    rejection: CodexVersionRejection,
+    turnId: string | null,
+  ): Promise<void> => {
+    if (codexVersionRejectionHandled.has(runtime)) return;
+    codexVersionRejectionHandled.add(runtime);
+    const turnScope = turnId ? { turnId } : {};
+    const launch = codexLaunchByRuntime.get(runtime);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: `OpenAI says ${rejection.model} needs a newer Codex. ADE is checking with one short request whether a newer Codex fixes it…`,
+      ...turnScope,
+    });
+    const accountEnv = launch?.env ?? buildAgentRuntimeEnv(managed);
+    const outcome = await handleCodexVersionRejection({
+      rejection,
+      rejected: launch?.resolution ?? resolveCodexExecutable({ env: accountEnv }),
+      accountEnv,
+      logger,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: codexFallForwardNotice(outcome, { after: "resend" }),
+      ...turnScope,
+    });
+    // Only an idle app-server that is still this chat's is stopped; a turn the
+    // user started meanwhile is never cut off.
+    if (outcome.switched && managed.runtime === runtime && !managed.closed && !runtime.activeTurnId) {
+      teardownRuntime(managed, "restart");
+    }
+  };
+
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+    const codexDownload = chatPinnedToolDownload(managed, "codex", "Codex");
+    if (codexDownload) await codexDownload;
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
       cwd: managed.laneWorktreePath,
@@ -41347,10 +41816,13 @@ export function createAgentChatService(args: {
     });
     const spawnEnv = buildAgentRuntimeEnv(managed);
     let codexExecutable: string;
+    let codexResolution: CodexExecutableResolution;
     try {
-      codexExecutable = resolveCodexExecutable({ env: spawnEnv }).path;
+      codexResolution = resolveCodexExecutable({ env: spawnEnv });
+      codexExecutable = codexResolution.path;
       if (!codexExecutable) {
-        throw new Error("Codex executable path was empty.");
+        // The download above finished without a copy: report its state.
+        throw pinnedToolNotReadyError("codex", "Codex");
       }
     } catch (error) {
       logger.error("Failed to resolve Codex executable for spawn in agentChatService (resolveCodexExecutable)", {
@@ -41369,7 +41841,12 @@ export function createAgentChatService(args: {
     // thread on this app-server, not just this chat.
     const compact = compactionSettingsFor(managed);
     const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
-    const appServerArgs = ["app-server", ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : [])];
+    const appServerArgs = [
+      "app-server",
+      // ADE's pinned Codex never checks for (or offers) its own update.
+      ...CODEX_NO_UPDATE_CHECK_ARGS,
+      ...(compact.atTokens ? ["-c", `model_auto_compact_token_limit=${Math.min(compact.atTokens, window || compact.atTokens)}`] : []),
+    ];
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -41531,6 +42008,7 @@ export function createAgentChatService(args: {
         );
       }
     };
+    codexLaunchByRuntime.set(runtime, { resolution: codexResolution, env: spawnEnv });
 
     reader.on("line", (line) => {
       const payload = parseJsonLine(line);
@@ -41719,9 +42197,14 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "codex") return managed.runtime;
+    return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
+  };
+
+  const attachNewCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
     runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
@@ -42294,6 +42777,54 @@ export function createAgentChatService(args: {
     return { behavior: "completed", result: choice };
   };
 
+  /** The Claude Code each runtime's latest query was built on: a refusal names the build refused. */
+  const claudeExecutableByRuntime = new WeakMap<ClaudeRuntime, ClaudeCodeExecutableResolution>();
+  /** Runtimes whose pre-warm already started again after a fall-forward (once each). */
+  const claudeFallForwardRestartedRuntimes = new WeakSet<ClaudeRuntime>();
+
+  /**
+   * Anthropic refused this chat's Claude Code as too old (an exact signal,
+   * `providerVersionRejection.ts`). Moves this machine to Anthropic's newest
+   * build when it can (`claudeFallForward.ts`, at most once per pin per
+   * process) and says what happened; once switched, the chat's next query
+   * runs the new build. `restart` is for a refusal at startup, where nothing
+   * ran: the session starts once more on the new build. A refusal mid-turn is
+   * never resent; the user sends the message again.
+   */
+  const handleClaudeChatVersionRejection = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    rejection: ClaudeVersionRejection,
+    options: { turnId?: string | null; restart: (() => void) | null },
+  ): Promise<void> => {
+    const turnScope = options.turnId ? { turnId: options.turnId } : {};
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: "Anthropic refused this Claude Code as too old. ADE is checking for a newer build for this machine…",
+      ...turnScope,
+    });
+    const outcome = await handleClaudeVersionRejection({
+      rejection,
+      rejected: claudeExecutableByRuntime.get(runtime) ?? resolveClaudeCodeExecutable(),
+      logger,
+    });
+    // Only an idle session that is still this chat's is restarted or reset; a
+    // turn the user started meanwhile is never cut off.
+    const idle = managed.runtime === runtime && !managed.closed && !runtime.busy;
+    const restart = outcome.switched && rejection.signal !== "api_min_version" && idle ? options.restart : null;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: claudeFallForwardNotice(outcome, { after: restart ? "restart" : "resend" }),
+      ...turnScope,
+    });
+    if (outcome.switched && idle) await resetClaudeQuerySession(managed, runtime, "session_reset");
+    restart?.();
+  };
+
   const buildClaudeQueryOptions = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -42347,6 +42878,10 @@ export function createAgentChatService(args: {
       Object.assign(claudeEnv, claudeAccountPromptCacheEnv(managed.session.instanceId, claudeEnv));
     }
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
+    // Callers await the download first; still none means it failed, is not
+    // available for this machine, or downloads are off here.
+    if (claudeExecutable.source === "fallback-command") throw pinnedToolNotReadyError("claude-code", "Claude Code");
+    claudeExecutableByRuntime.set(runtime, claudeExecutable);
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     // ADE's preferred default, supplied only when no settings file states one.
     const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
@@ -43215,6 +43750,11 @@ export function createAgentChatService(args: {
       claudeSubprocessReaper.reapForSession(managed.session.id, "claude_stale_start");
       throw new Error("Claude query start superseded by reset/interrupt");
     };
+    const claudeDownload = chatPinnedToolDownload(managed, "claude-code", "Claude Code");
+    if (claudeDownload) {
+      await claudeDownload;
+      assertCurrentStart();
+    }
     const options = buildClaudeQueryOptions(managed, runtime);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
@@ -43590,6 +44130,8 @@ export function createAgentChatService(args: {
     const runtime = managed.runtime;
     if (!runtime || runtime.kind !== "claude") return;
     if (runtime.query || runtime.warmQuery || runtime.warmupDone) return;
+    // A warm query built now would carry the harness's own sign-in.
+    if (launchRouteBlockReason(managed)) return;
 
     runtime.warmupCancelled = false;
     const warmupStartedAt = Date.now();
@@ -43617,6 +44159,8 @@ export function createAgentChatService(args: {
         }
       };
       try {
+        const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
+        if (claudeDownload) await claudeDownload;
         const options = buildClaudeQueryOptions(managed, runtime);
         if (runtime.forkFromSdkSessionId) {
           if (!runtime.sdkSessionId) {
@@ -43699,6 +44243,18 @@ export function createAgentChatService(args: {
             "claude",
             error instanceof Error ? error.message : String(error),
           );
+        }
+        const warmupVersionRejection = detectClaudeVersionRejectionInError(error);
+        if (warmupVersionRejection) {
+          // A refused pre-warm ran nothing; warm the session once more on the new build.
+          void handleClaudeChatVersionRejection(managed, runtime, warmupVersionRejection, {
+            restart: claudeFallForwardRestartedRuntimes.has(runtime)
+              ? null
+              : () => {
+                claudeFallForwardRestartedRuntimes.add(runtime);
+                prewarmClaudeQuery(managed);
+              },
+          });
         }
         logger.warn("agent_chat.claude_prewarm_failed", {
           sessionId: managed.session.id,
@@ -45362,6 +45918,7 @@ export function createAgentChatService(args: {
     acpPermissionMode: requestedAcpPermissionModeArg,
     instanceId: requestedInstanceId,
     presetId: requestedPresetId,
+    presetSnapshot: requestedPresetSnapshot,
     credentialId: requestedCredentialId,
     piProfileId: requestedPiProfileId,
     piProviderId: requestedPiProviderId,
@@ -45459,6 +46016,15 @@ export function createAgentChatService(args: {
     // preset's model before any provider default can fill the gap: a default
     // recorded "Claude Opus" on a chat that ran DeepSeek.
     const trimmedPresetId = requestedPresetId?.trim() ?? "";
+    // The launching machine's copy, for a list that has not synced here yet.
+    let presetSnapshotAdoptionNotice: string | null = null;
+    if (trimmedPresetId && requestedPresetSnapshot?.id === trimmedPresetId) {
+      try {
+        presetSnapshotAdoptionNotice = args.adoptHarnessPreset?.(requestedPresetSnapshot) || null;
+      } catch (error) {
+        logger.warn("agent_chat.preset_snapshot_adopt_failed", { presetId: trimmedPresetId, error: getErrorMessage(error) });
+      }
+    }
     const presetSpec = trimmedPresetId ? readPresetLaunchTarget(trimmedPresetId, resolveMachineAdeDir()) : null;
     const callerModel = typeof model === "string" ? model : "";
     const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
@@ -46139,6 +46705,15 @@ export function createAgentChatService(args: {
     );
     managedSessions.set(sessionId, managed);
 
+    if (presetSnapshotAdoptionNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        severity: "warning",
+        message: presetSnapshotAdoptionNotice,
+      });
+    }
+
     // This SHA is best-effort session metadata. Do not hold chat creation (and
     // the first user message) on a git subprocess that can take seconds on a
     // remote or busy worktree. The first turn captures its own before-SHA when
@@ -46218,6 +46793,9 @@ export function createAgentChatService(args: {
       ...publicArgs
     } = args as AgentChatCreateArgs & { launchedBySessionId?: unknown };
     const actor = publicArgs.runtimeActor;
+    // A snapshot is written into the account's preset list, which is the
+    // user's to change: an agent's create runs on the list as it stands.
+    if (actor?.kind === "agent") delete publicArgs.presetSnapshot;
     // A recovery continues an earlier chat; it is not a launch by the actor.
     const launchedBySessionId = !publicArgs.orchestrationParentSessionId?.trim()
       && !publicArgs.recoveredFromSessionId?.trim()
@@ -46450,8 +47028,10 @@ export function createAgentChatService(args: {
       // Not on `runtime`: the process that forks keeps the new thread's writer
       // lock, and the forked chat resumes it from its own app-server.
       const forkEnv = buildAgentRuntimeEnv(managed);
+      const forkExecutable = resolveCodexExecutable({ env: forkEnv }).path;
+      if (!forkExecutable) throw pinnedToolNotReadyError("codex", "Codex");
       const forkedThreadId = await forkCodexThreadInEphemeralAppServer({
-        executable: resolveCodexExecutable({ env: forkEnv }).path,
+        executable: forkExecutable,
         env: forkEnv,
         cwd: managed.laneWorktreePath,
         forkParams: {
@@ -47663,7 +48243,8 @@ export function createAgentChatService(args: {
             || targetProvider === "qwen"
             || targetProvider === "kimi"
             || targetProvider === "grok"
-            || targetProvider === "copilot",
+            || targetProvider === "copilot"
+            || targetProvider === "antigravity",
           ...(targetProvider === "cursor" ? { cursorSource: "sdk" } : {}),
         });
         modelAvailable = availableModels.some((model) =>
@@ -49051,11 +49632,11 @@ export function createAgentChatService(args: {
    * writes: Droid's SDK `resumeSession` (`droid.load_session`, same binary and
    * `~/.factory/sessions`), OpenCode's `session.get` on the user-env server
    * (same data dir as the CLI), Pi's `SessionManager.list(cwd)` over the one
-   * store chat and CLI share. Copilot's ACP server loads a CLI-created
-   * session over `session/load` from the same `~/.copilot/session-state`
-   * (verified live on 1.0.88, 2026-09-24); ADE already holds the transcript,
-   * so the load replay is suppressed. Qwen, Kimi and Grok are left out until
-   * the same is shown for them.
+   * store chat and CLI share. Copilot's SDK `resumeSession` opens a
+   * CLI-created session from the same `~/.copilot/session-state` (verified
+   * live on runtime 1.0.98, 2026-10-18); the events it returns are not
+   * replayed, since ADE already holds the transcript. Qwen, Kimi and Grok are
+   * left out until the same is shown for them.
    */
   const NATIVE_CHAT_CONTINUE_PROVIDERS: ReadonlySet<AgentChatImportProvider> = new Set<AgentChatImportProvider>([
     "droid",
@@ -49644,8 +50225,8 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Continue a Droid, OpenCode or Pi session as an ADE chat: a chat in the
-   * session's own lane whose provider pointer is the external session id, so
+   * Continue a Droid, OpenCode, Pi, Muse or Copilot session as an ADE chat: a
+   * chat in the session's own lane whose provider pointer is the external session id, so
    * the first turn opens that session the same way a restart reopens one of
    * ADE's own chats. The history is written for display only — the provider
    * already holds it, so nothing is replayed into the prompt.
@@ -49718,7 +50299,7 @@ export function createAgentChatService(args: {
       } else if (provider === "muse") {
         seedForkedProviderPointer(managed, { museSessionId: externalSessionId });
       } else if (provider === "copilot") {
-        seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
+        seedForkedProviderPointer(managed, { copilotSdkSessionId: externalSessionId });
       }
       const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
       applyImportedChatMetadata(managed, args, events, importedAt, "continue");
@@ -50340,7 +50921,6 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
 
-    appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
   };
 
@@ -50384,23 +50964,28 @@ export function createAgentChatService(args: {
       detail: { kind: "disk_pressure", state },
       turnId,
     });
+    emitRefusedTurnEnd(managed, turnId, message, "disk_full");
+  };
+
+  /** The error, failed status and done that end a turn ADE refused to start. */
+  const emitRefusedTurnEnd = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    code?: AdeRecoveryErrorCode,
+  ): void => {
     emitChatEvent(managed, {
       type: "error",
       message,
       errorInfo: {
         category: "unknown",
-        code: "disk_full",
+        ...(code ? { code } : {}),
         provider: managed.session.provider,
         model: managed.session.model,
       },
       turnId,
     });
-    emitChatEvent(managed, {
-      type: "status",
-      turnStatus: "failed",
-      message,
-      turnId,
-    });
+    emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
     emitChatEvent(managed, {
       type: "done",
       turnId,
@@ -53064,7 +53649,6 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       // `args.onBackendDispatched` is cleared the moment the ack is registered,
@@ -53087,7 +53671,6 @@ export function createAgentChatService(args: {
       } else {
         const classified = classifyCursorTurnFailure(managed, error);
         emitCursorTurnFailed(managed, { turnId, turnModel, turnModelId }, classified);
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${classified.message}` });
       }
       persistChatState(managed);
       // The terminal set for this turn has now been emitted; the tag stops the
@@ -53871,7 +54454,6 @@ export function createAgentChatService(args: {
         }
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       turnStatus = runtime.interrupted ? "interrupted" : "failed";
@@ -53910,7 +54492,6 @@ export function createAgentChatService(args: {
           model: turnModel,
           ...(turnModelId ? { modelId: turnModelId } : {}),
         });
-        appendCtoTurnJournal(managed, { failureNote: `Cloud turn failed: ${msg}` });
       }
       persistChatState(managed);
       if (failedBeforeDispatch) throw error;
@@ -54988,14 +55569,21 @@ export function createAgentChatService(args: {
     else teardownRuntime(managed, "restart");
   };
 
+  const copilotRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CopilotRuntime> }>();
   const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
     if (managed.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process)) {
       return managed.runtime;
     }
+    return joinRuntimeStart(copilotRuntimeStarts, managed, () => startCopilotRuntime(managed));
+  };
+
+  const startCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
-    const auth = await detectAuth();
-    const executable = resolveCopilotExecutable({ auth, env: buildAgentRuntimeEnv(managed) });
+    const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
+    if (copilotDownload) await copilotDownload;
     const baseEnv = buildAgentRuntimeEnv(managed);
+    const executable = resolveCopilotSdkRuntime({ env: baseEnv });
+    if (executable.source === "fallback-command") throw pinnedToolNotReadyError("copilot", "the Copilot runtime");
     const home = copilotConfigHome({ env: baseEnv });
     const acquired = await acquireCopilotSdkConnection({ cliPath: executable.path, baseDirectory: home, baseEnv, logger });
     const persisted = readPersistedState(managed.session.id);
@@ -55072,6 +55660,12 @@ export function createAgentChatService(args: {
         if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
+        // A sub-agent's prompt, idle, abort or task end is not the turn's: only
+        // the mapper sees it (its card shows it).
+        if (typeof eventRecord.agentId === "string" && eventRecord.agentId) {
+          for (const mapped of mapCopilotSdkEvent(event, { turnId: current.activeTurnId, state: current.eventMapperState })) emitChatEvent(target, mapped);
+          return;
+        }
         // The prompt ADE sent is the turn's first `user.message` that is not an
         // Autopilot continuation, a hidden injection (`source` set) or ephemeral.
         const userMessageData = eventRecord.type === "user.message" ? eventData : null;
@@ -55177,19 +55771,24 @@ export function createAgentChatService(args: {
         const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
         const kind = typeof request.kind === "string" ? request.kind : "tool";
         const mode = target.session.copilotPermissionMode ?? "ask";
-        if (request.managedApprovalRequired !== true && mode === "full-auto") {
+        // The worker attaches the event's prompt: the judge's recommendation,
+        // managed policy and the session-approval data live there.
+        const prompt = request.promptRequest && typeof request.promptRequest === "object"
+          ? request.promptRequest as Record<string, unknown>
+          : null;
+        const managedApprovalRequired = request.managedApprovalRequired === true || prompt?.managedApprovalRequired === true;
+        if (!managedApprovalRequired && mode === "full-auto") {
           return { kind: "approve-once", approvedInteractively: false };
         }
         // Assisted: Copilot's safety judge attaches a recommendation and leaves
         // the decision to ADE. Only an explicit "approve" skips the prompt;
         // "requireApproval", "excluded" and judge errors still ask.
-        const assisted = request.assistedApproval && typeof request.assistedApproval === "object"
-          ? request.assistedApproval as Record<string, unknown>
-          : null;
-        if (request.managedApprovalRequired !== true && mode === "assisted" && assisted?.recommendation === "approve") {
+        const assistedRaw = prompt?.assistedApproval ?? request.assistedApproval;
+        const assisted = assistedRaw && typeof assistedRaw === "object" ? assistedRaw as Record<string, unknown> : null;
+        if (!managedApprovalRequired && mode === "assisted" && assisted?.recommendation === "approve") {
           return { kind: "approve-once", approvedInteractively: false };
         }
-        if (request.managedApprovalRequired !== true && mode === "auto-edit" && (kind === "read" || kind === "write")) {
+        if (!managedApprovalRequired && mode === "auto-edit" && (kind === "read" || kind === "write")) {
           const requestedPath = typeof request.fileName === "string" ? request.fileName : typeof request.path === "string" ? request.path : "";
           if (requestedPath) {
             // Real paths, so a symlink in the lane that points outside it still asks.
@@ -55211,6 +55810,7 @@ export function createAgentChatService(args: {
           ?? (typeof request.diff === "string" ? request.diff : null)
           ?? (typeof request.description === "string" ? request.description : typeof request.toolName === "string" ? request.toolName : title);
         const itemId = typeof request.requestId === "string" ? request.requestId : randomUUID();
+        const sessionApproval = copilotSessionApproval(prompt);
         const response = await requestChatInput({
           chatSessionId: target.session.id,
           title,
@@ -55225,7 +55825,8 @@ export function createAgentChatService(args: {
             question: kind === "exit_plan_mode" ? "Approve this plan and let Copilot continue?" : copilotPermissionQuestion(kind, request, commandText),
             options: [
               { label: "Allow once", value: "approve-once" },
-              { label: "Allow for this session", value: "approve-for-session" },
+              // Only when Copilot can remember it (see copilotSessionApproval).
+              ...(sessionApproval ? [{ label: copilotSessionApprovalLabel(sessionApproval), value: "approve-for-session" }] : []),
               { label: "Deny", value: "reject" },
             ],
           }],
@@ -55236,7 +55837,9 @@ export function createAgentChatService(args: {
         if (choice === "reject" || response.decision === "decline" || response.decision === "cancel") {
           return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
         }
-        if (response.decision === "accept_for_session" || choice === "approve-for-session") return { kind: "approve-for-session" };
+        if (response.decision === "accept_for_session" || choice === "approve-for-session") {
+          return sessionApproval ?? { kind: "approve-once", approvedInteractively: true };
+        }
         if (response.decision === "accept") return { kind: "approve-once", approvedInteractively: true };
         return { kind: "reject", feedback: response.responseText || "Denied in ADE." };
       };
@@ -55260,6 +55863,73 @@ export function createAgentChatService(args: {
         });
         const answer = response.answers["copilot-user-input"]?.[0] ?? response.responseText ?? "";
         return { answer, wasFreeform: !choices.includes(answer) };
+      };
+      acquired.pooled.bridge.onAutoModeSwitchRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target || target.runtime?.kind !== "copilot") return "no";
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const retryAfter = typeof request.retryAfterSeconds === "number" && request.retryAfterSeconds > 0
+          ? ` The limit resets in about ${Math.ceil(request.retryAfterSeconds / 60)} min.`
+          : "";
+        let answer: "yes" | "yes_always" | "no" = "no";
+        try {
+          const response = await requestChatInput({
+            chatSessionId: target.session.id,
+            title: "Copilot hit a rate limit",
+            body: `Continue this turn on Auto, which picks an available model?${retryAfter}`,
+            source: "ade",
+            kind: "structured_question",
+            questions: [{ id: "copilot-auto-switch", question: "Switch this chat to Auto?", options: [
+              { label: "Switch to Auto", value: "yes" },
+              { label: "Always switch to Auto", value: "yes_always" },
+              { label: "Wait for the limit", value: "no" },
+            ] }],
+          });
+          const choice = response.answers["copilot-auto-switch"]?.[0];
+          if (choice === "yes" || choice === "yes_always") answer = choice;
+        } catch (error) {
+          // A card that never got an answer is a "no": the held error below
+          // must still become the turn's error.
+          logger.warn("agent_chat.copilot_auto_switch_prompt_failed", {
+            sessionId: target.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        // The rate-limit error was held back for this prompt. Declining makes
+        // it the turn's error, so the usage-limit resume can be armed.
+        const current = target.runtime?.kind === "copilot" ? target.runtime : null;
+        const held = current?.eventMapperState.heldRateLimitError ?? null;
+        if (current) current.eventMapperState.heldRateLimitError = null;
+        if (answer === "no" && held && current) {
+          current.eventMapperState.turnError = held.message;
+          emitChatEvent(target, held);
+        }
+        return answer;
+      };
+      acquired.pooled.bridge.onElicitationRequest = async (chatId, _waiterId, rawRequest) => {
+        const target = managedSessions.get(chatId);
+        if (!target || target.runtime?.kind !== "copilot") return { action: "cancel" };
+        const request = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : {};
+        const source = typeof request.elicitationSource === "string" && request.elicitationSource.trim() ? request.elicitationSource.trim() : "An MCP server";
+        const message = typeof request.message === "string" && request.message.trim() ? request.message : `${source} is requesting input.`;
+        const url = request.mode === "url" && typeof request.url === "string" ? request.url : null;
+        const schema = request.requestedSchema && typeof request.requestedSchema === "object" ? request.requestedSchema as Record<string, unknown> : null;
+        const questions = url ? [] : mcpElicitationQuestions(schema).map(({ options, ...question }) => ({ ...question, ...(options ? { options } : {}) }));
+        const response = await requestChatInput({
+          chatSessionId: target.session.id,
+          title: `${source} needs your input`,
+          body: url ? `${message}\n\n${url}` : message,
+          source: "ade",
+          kind: questions.length ? "structured_question" : "approval",
+          ...(questions.length ? { questions } : {}),
+        });
+        if (response.decision === "decline") return { action: "decline" };
+        if (response.decision === "cancel" || response.timedOut) return { action: "cancel" };
+        if (url) return { action: "accept" };
+        return {
+          action: "accept",
+          content: mcpElicitationContent(schema, response.answers, response.responseText) as Record<string, string | number | boolean | string[]>,
+        };
       };
       acquired.pooled.bridge.onMcpAuthRequest = async (chatId, _waiterId, request) => {
         const target = managedSessions.get(chatId);
@@ -55432,9 +56102,19 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
-      emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "completed", turnId });
+      // A rate-limit error held for the Auto-switch question that nothing
+      // answered with "yes" is still this turn's error.
+      const held = runtime.eventMapperState.heldRateLimitError;
+      runtime.eventMapperState.heldRateLimitError = null;
+      if (held && !runtime.interrupted && !runtime.eventMapperState.turnError) {
+        runtime.eventMapperState.turnError = held.message;
+        emitChatEvent(managed, held);
+      }
+      // A root `session.error` ends the turn even though `session.idle` follows.
+      const endStatus = runtime.interrupted ? "interrupted" : runtime.eventMapperState.turnError ? "failed" : "completed";
+      emitChatEvent(managed, { type: "status", turnStatus: endStatus, turnId });
       emitChatEvent(managed, {
-        type: "done", status: runtime.interrupted ? "interrupted" : "completed", turnId,
+        type: "done", status: endStatus, turnId,
         model: managed.session.model, modelId: managed.session.modelId ?? undefined,
         usage: copilotSdkDoneUsage(runtime.eventMapperState),
         servedModel: runtime.eventMapperState.servedModel ?? undefined,
@@ -55506,8 +56186,12 @@ export function createAgentChatService(args: {
     let poolGeneration = 0;
     let released = false;
     try {
-      const auth = await detectAuth();
+      // ADE's pinned Droid, downloaded first when this machine never used it.
+      const droidDownload = chatPinnedToolDownload(managed, "droid", "Droid");
+      if (droidDownload) await droidDownload;
       throwIfDroidSetupInterrupted();
+      const droidExecutable = resolveDroidExecutable({ env: buildAgentRuntimeEnv(managed) });
+      if (droidExecutable.source === "fallback-command") throw pinnedToolNotReadyError("droid", "Droid");
       const droidMcpLeases = await ensureHttpMcpLeases(managed);
       // Droid's native MCP config is user/project scoped. The worker keeps
       // ADE's inline lease and disables every other live MCP tool through the
@@ -55525,7 +56209,7 @@ export function createAgentChatService(args: {
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
-        droidPath: resolveDroidExecutable({ auth }).path,
+        droidPath: droidExecutable.path,
         workspacePath: managed.laneWorktreePath,
         sessionId: managed.session.id,
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
@@ -55805,7 +56489,6 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
@@ -55859,7 +56542,6 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
       if (failedBeforeDispatch) throw error;
@@ -56819,6 +57501,24 @@ export function createAgentChatService(args: {
       if (diskDecision && !diskDecision.allowed) {
         emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
         return;
+      }
+      if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
+        const blocked = launchRouteBlockReason(managed);
+        if (blocked) {
+          emitLaunchRouteSteerFailure(managed, args, blocked);
+          return;
+        }
+      }
+      if (!runtimeMidTurn(managed) && managed.session.status !== "active") {
+        const blocked = launchRouteBlockReason(managed);
+        // Whatever was built while the route could not be resolved carries the
+        // harness's own sign-in; it never serves a turn.
+        if (managed.launchRouteFellBack && managed.runtime) teardownRuntime(managed, "restart");
+        managed.launchRouteFellBack = false;
+        if (blocked) {
+          emitLaunchRouteSendFailure(managed, args, blocked);
+          return;
+        }
       }
     }
     // A user-originated message clears the lifecycle markers (settled /
@@ -60850,6 +61550,7 @@ export function createAgentChatService(args: {
 
   const summarizeSessionRow = async (
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
+    scope: SummaryCallScope = createSummaryCallScope(),
   ): Promise<AgentChatSessionSummary> => {
     const persisted = readPersistedState(row.id);
     const liveManagedInitial = managedSessions.get(row.id) ?? null;
@@ -60872,7 +61573,7 @@ export function createAgentChatService(args: {
     }
     const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
-    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted);
+    const foreignRuntimeOwner = liveForeignChatRuntimeOwner(row.id, persisted, scope);
     const persistedProvider = liveSession?.provider ?? persisted?.provider ?? null;
     const provider = persistedProvider ?? providerFromToolType(row.toolType);
     if (persistedProvider && isChatToolType(row.toolType)) {
@@ -60953,9 +61654,8 @@ export function createAgentChatService(args: {
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
     try {
-      scheduledWorkPaused =
-        projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
-      const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
+      scheduledWorkPaused = scope.projectConfig().effective.ai?.chat?.scheduledWorkPaused === true;
+      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused) ?? null;
       nextWakeAt = next == null ? null : new Date(next).toISOString();
       scheduledWorkPaused =
         scheduledWorkScheduler?.isSessionPaused(row.id) === true
@@ -61053,7 +61753,7 @@ export function createAgentChatService(args: {
       ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
-            compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }),
+            compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
             // Always sent, so a client built with an older floor offers at this one.
             compactFirstMinTokens: compactFirstMinTokens ?? COMPACT_FIRST_MIN_TOKENS,
             // The provider's documented (or, for Claude, measured) cache window.
@@ -61271,9 +61971,77 @@ export function createAgentChatService(args: {
     } satisfies AgentChatSessionSummary;
   };
 
+  /**
+   * A chat's spawn parent and kind as its metadata file records them, for a
+   * chat that is not live. Memoized per file: the stat (inode, size, mtime)
+   * says whether the cached read still holds, so a list parses only the files
+   * that changed since the last one.
+   */
+  const persistedSpawnLineageMemo = new Map<string, {
+    stamp: string;
+    parentId: string;
+    spawnKind: AgentChatSession["spawnKind"] | null;
+  }>();
+  const persistedSpawnLineage = (sessionId: string) => {
+    // A stat that fails, or a filesystem without a usable inode (Node documents
+    // `ino` as filesystem-specific), just means no memo: the file is read.
+    let stamp = "";
+    try {
+      const stat = fs.statSync(metadataPathFor(sessionId), { throwIfNoEntry: false });
+      if (stat && stat.ino) stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch {
+      stamp = "";
+    }
+    const memo = persistedSpawnLineageMemo.get(sessionId);
+    if (stamp && memo?.stamp === stamp) return memo;
+    const persisted = readPersistedState(sessionId);
+    const lineage = {
+      stamp,
+      parentId: persisted?.orchestrationParentSessionId?.trim() || "",
+      spawnKind: persisted?.spawnKind ?? null,
+    };
+    if (stamp) persistedSpawnLineageMemo.set(sessionId, lineage);
+    return lineage;
+  };
+
+  /**
+   * The orphan repair a summary does, for the window rows a named list does
+   * not summarize. Summarizing every window row used to run it for each one on
+   * every list. Only a subagent whose parent chat is gone is handed to
+   * `reconcileOrphanedSubagent`, which re-checks the parent itself.
+   */
+  const repairOrphanedChildren = (rows: readonly { id: string }[]): void => {
+    // The memo only ever holds the window's rows: an id that left it is dropped.
+    const windowIds = new Set(rows.map((row) => row.id));
+    for (const id of persistedSpawnLineageMemo.keys()) {
+      if (!windowIds.has(id)) persistedSpawnLineageMemo.delete(id);
+    }
+    for (const row of rows) {
+      const live = managedSessions.get(row.id);
+      if (live) {
+        reconcileOrphanedSubagent(live);
+        continue;
+      }
+      let lineage: ReturnType<typeof persistedSpawnLineage>;
+      try {
+        lineage = persistedSpawnLineage(row.id);
+      } catch {
+        // One unreadable metadata file must not fail the list; that row just skips repair.
+        continue;
+      }
+      const { parentId, spawnKind } = lineage;
+      if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentChatStillExists(parentId)) continue;
+      try {
+        reconcileOrphanedSubagent(ensureManagedSession(row.id));
+      } catch {
+        // Listing must not fail because an orphaned child cannot be loaded.
+      }
+    }
+  };
+
   const listSessions = async (
     laneId?: string,
-    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
+    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
@@ -61282,11 +62050,21 @@ export function createAgentChatService(args: {
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
+    // A summary costs a metadata read and a config read per row, so a caller
+    // that shows a few chats names them and only those are summarized. The
+    // 500-row window is unchanged: a named chat outside it is still not listed.
+    const namedIds = options?.sessionIds ? new Set(options.sessionIds) : null;
+    // Summarizing a row also repairs its orphan, so the rows left unsummarized
+    // are repaired here. An unnamed list summarizes every row and needs nothing.
+    if (namedIds) repairOrphanedChildren(chatRows);
+    const summarizedRows = namedIds ? chatRows.filter((row) => namedIds.has(row.id)) : chatRows;
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
 
-    return (await Promise.all(chatRows.map((row) => summarizeSessionRow(row))))
+    // One scope for the whole call: the config, the accounts and each owner are read once, not per row.
+    const scope = createSummaryCallScope();
+    return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row, scope))))
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
@@ -61359,6 +62137,23 @@ export function createAgentChatService(args: {
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
     return await summarizeSessionRow(row);
+  };
+
+  /**
+   * A chat's identity key, read from the same sources in the same order as the
+   * summary's `identityKey`, without summarizing it. The session list asks this of
+   * every page chat the window missed. A summary also reads project config and can
+   * write back (a canonical tool type, an orphaned subagent), which that check does
+   * not need.
+   */
+  const getSessionIdentityKey = async (sessionId: string): Promise<AgentChatIdentityKey | null> => {
+    await scheduledWorkReady;
+    const trimmed = sessionId.trim();
+    if (!trimmed.length) return null;
+    const row = sessionService.get(trimmed);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    const liveSession = managedSessions.get(trimmed)?.session ?? null;
+    return liveSession?.identityKey || readPersistedState(trimmed)?.identityKey || null;
   };
 
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
@@ -62558,7 +63353,7 @@ export function createAgentChatService(args: {
     // the CTO on a thread it can never steer.
     if (args.identityKey === "cto" && !providerSupportsLiveRedirect(provider)) {
       throw new Error(
-        "The CTO needs a model that can steer a live turn — Claude, Codex, or Cursor. Pick one in CTO settings.",
+        "The CTO needs a model that can steer a live turn — Claude, Codex, Cursor, or OpenCode. Pick one in CTO settings.",
       );
     }
 
@@ -62596,13 +63391,14 @@ export function createAgentChatService(args: {
    * thread. The policy lives in `identityThreadRotation.ts` over an injected
    * deps bag; these are the closures that give it this service's world.
    */
-  const identityThreadRotation = createIdentityThreadRotation<ManagedChatSession>({
+  const identityThreadRotation = createIdentityThreadRotation<ManagedChatSession, ChatScheduledWorkRecord>({
     logger,
     nowIso,
     ensureManagedSession,
     listIdentitySessions: (identityKey) => listIdentitySessions(identityKey),
     describeSession: (managed) => ({
       id: managed.session.id,
+      laneId: managed.session.laneId,
       status: managed.session.status,
       summaryOrPreview: sessionService.get(managed.session.id)?.summary?.trim()
         ?? managed.preview?.trim()
@@ -62612,9 +63408,12 @@ export function createAgentChatService(args: {
       failure: managed.lastTurnFailure,
       context: managed.contextHealth,
     }),
+    // What the person typed, not what ADE wrapped around it: a hand-off built
+    // from `text` once filed eight copies of an injected preamble, clipped
+    // before the words the user actually said.
     listUserMessages: (managed) => collectConversationEntries(managed)
       .filter((entry) => entry.role === "user")
-      .map((entry) => entry.text),
+      .map((entry) => entry.displayText?.trim() || entry.text),
     listScheduledWorkLines: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? [])
       .map((schedule) => schedule.prompt || schedule.kind),
     runSessionTurn: (args) => runSessionTurn(args),
@@ -62629,12 +63428,91 @@ export function createAgentChatService(args: {
     writeThreadState: (managed, summary, reason) => {
       writeCtoThreadStateFromSummary(managed, summary, reason);
     },
+    summarizeForHandoff: (managed) => runIdentityMemoryPass(managed, "session_rotation"),
+    scheduledWork: {
+      // Work the person or the CTO armed and that has not fired yet. Not a
+      // Claude provider schedule (bound to the outgoing SDK session; the
+      // disposal pauses it), not a fired one-shot (already delivered, and its
+      // past `fireAt` would fire it again at once), and not ADE's own resume
+      // rows, which describe a task the new thread does not have.
+      take: (managed) => (scheduledWorkScheduler?.list(managed.session.id) ?? []).filter((schedule) =>
+        (schedule.status === "scheduled" || schedule.status === "paused")
+        && !schedule.source
+        && !(schedule.provider === "claude" && schedule.durable === true)),
+      restore: async (rows, sessionId) => {
+        await scheduledWorkReady;
+        const scheduler = scheduledWorkScheduler;
+        if (!scheduler) return { restored: 0, failed: rows.map((row) => row.reason || row.prompt) };
+        let restored = 0;
+        const failed: string[] = [];
+        // One row at a time, each on its own: a row that fails must not take
+        // the rest down with it.
+        for (const row of rows) {
+          const { terminalAt: _terminalAt, activeTurnId: _activeTurnId, ...rest } = row;
+          try {
+            await scheduler.upsert({
+              ...rest,
+              sessionId,
+              // A cron's next occurrence is recomputed from now.
+              ...(row.kind === "cron" ? { fireAt: undefined } : {}),
+              status: row.pausedFlag ? "paused" : "scheduled",
+            });
+            restored += 1;
+          } catch (error) {
+            logger.warn("agent_chat.identity_rotation_schedule_row_failed", {
+              scheduleId: row.id,
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            failed.push(row.reason || row.prompt);
+          }
+        }
+        return { restored, failed };
+      },
+    },
+    rollover: {
+      readInputs: (managed, failedTurnId) => {
+        const userMessages = readRecentTranscriptEnvelopes(managed)
+          .map((envelope) => envelope.event)
+          .filter((event): event is Extract<AgentChatEvent, { type: "user_message" }> => event.type === "user_message");
+        const last = userMessages.at(-1);
+        // The failed turn's own message, never an earlier one already answered.
+        const isFailedTurns = Boolean(last && (!failedTurnId || !last.turnId || last.turnId === failedTurnId));
+        const resendable = last && isFailedTurns && isPersonAuthoredUserMessage(last.metadata) && last.text.trim();
+        return {
+          personMessageCount: userMessages.filter((event) => isPersonAuthoredUserMessage(event.metadata)).length,
+          failedMessage: resendable
+            ? {
+              text: last.text.trim(),
+              ...(last.displayText?.trim() ? { displayText: last.displayText.trim() } : {}),
+              ...(last.attachments?.length ? { attachments: last.attachments } : {}),
+              ...(last.contextAttachments?.length ? { contextAttachments: last.contextAttachments } : {}),
+            }
+            : null,
+        };
+      },
+      isClosed: (managed) => managed.closed,
+      announce: (sessionId, resent) => {
+        emitChatEvent(ensureManagedSession(sessionId), {
+          type: "system_notice",
+          noticeKind: "info",
+          status: CTO_THREAD_ROLLED_OVER_STATUS,
+          message: resent
+            ? "The previous CTO thread was over its context limit, so ADE started this one with a hand-off. Your last message was sent again here."
+            : "The previous CTO thread was over its context limit, so ADE started this one with a hand-off.",
+        });
+      },
+      resend: async (sessionId, message) => {
+        await sendMessage({ sessionId, ...message });
+      },
+      defer: (run) => { setTimeout(run, 0); },
+      nowMs: () => Date.now(),
+    },
     // Read once at construction rather than per rotation: the memory service is
     // wired when the chat service is built and never swapped under it.
     memory: ctoMemoryService
       ? {
         appendDailyEntry: (line) => ctoMemoryService.appendDailyEntry(line),
-        appendMemoryFact: (line) => ctoMemoryService.appendMemoryFact(line),
       }
       : null,
     // The same pair `hasActiveWorkloads` uses: the session row carries the
@@ -62646,7 +63524,12 @@ export function createAgentChatService(args: {
     ensureIdentitySession: (args) => ensureIdentitySession(args),
   });
 
-  const { getSessionTurnHealth, getCtoThreadHealth, startFreshIdentitySession } = identityThreadRotation;
+  const {
+    getSessionTurnHealth,
+    getCtoThreadHealth,
+    startFreshIdentitySession,
+    maybeAutoRollover: maybeAutoRolloverCtoThread,
+  } = identityThreadRotation;
 
   /**
    * Cancel every pending-input surface before a user settles the session.
@@ -63507,6 +64390,7 @@ export function createAgentChatService(args: {
     "kimi",
     "grok",
     "copilot",
+    "antigravity",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
   // A newly applied model manifest can add, hide, or re-default models, so the
@@ -63668,9 +64552,9 @@ export function createAgentChatService(args: {
         const cursorCli = auth.find((entry) =>
           entry.type === "cli-subscription" && entry.cli === "cursor" && entry.authenticated !== false,
         );
-        const cursorCliPath = cursorCli?.type === "cli-subscription" && cursorCli.cli === "cursor"
-          ? cursorCli.path
-          : null;
+        // ADE's pinned Cursor CLI, only once it is on this machine: a model
+        // list never starts its download.
+        const cursorCliPath = cursorCli ? resolvePinnedCursorAgentCli()?.command ?? null : null;
         // Probe only the source the requesting surface runs models through —
         // chat surfaces use the SDK (~300ms), CLI lane drafts use the CLI
         // (a process spawn that can take seconds). The other source serves
@@ -63738,9 +64622,11 @@ export function createAgentChatService(args: {
 
     if (provider === "droid") {
       try {
-        const auth = await detectAuth();
-        const droidPath = resolveDroidExecutable({ auth }).path;
-        const ordered = await discoverDroidSdkModelDescriptors(droidPath, {
+        // Models come from ADE's pinned Droid once it is on this machine; a
+        // list read never starts its download.
+        const droidExecutable = resolveDroidExecutable();
+        if (droidExecutable.source === "fallback-command") return [];
+        const ordered = await discoverDroidSdkModelDescriptors(droidExecutable.path, {
           mode: args.activateRuntime ? "probe" : "cached-or-fallback",
         });
         const preferred = pickDefaultDroidDescriptorFromCliList(ordered);
@@ -63769,10 +64655,12 @@ export function createAgentChatService(args: {
       try {
         const descriptors = args.activateRuntime
           ? await (async () => {
-              const auth = await detectAuth();
               const baseEnv = userProcessEnv();
+              const runtime = resolveCopilotSdkRuntime({ env: baseEnv });
+              // A list read never starts the runtime's download.
+              if (runtime.source === "fallback-command") return readCopilotModelCatalogCache()?.descriptors ?? copilotSdkModelDescriptors([]);
               return (await refreshCopilotModelCatalog({
-                cliPath: resolveCopilotExecutable({ auth, env: baseEnv }).path,
+                cliPath: runtime.path,
                 baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger,
               })).descriptors;
             })()
@@ -64011,6 +64899,7 @@ export function createAgentChatService(args: {
     "droid",
     "kimi",
     "qwen",
+    "antigravity",
   ] as const satisfies readonly AgentChatProvider[];
 
   /**
@@ -64102,6 +64991,7 @@ export function createAgentChatService(args: {
       "muse",
       "kimi",
       "qwen",
+      "antigravity",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
@@ -64694,6 +65584,7 @@ export function createAgentChatService(args: {
       dedicatedTranscriptPath,
       current.transcriptPath,
     ]);
+    persistedStateFiles.forget(persistedMetadataPath);
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
@@ -65545,7 +66436,7 @@ export function createAgentChatService(args: {
         if (route.leavesCredential) delete managed.session.credentialId;
         managed.leftLaunchRoute = route.leftLaunchRoute;
         sessionLaunchPlanCache.delete(managed.session.id);
-        launchPlanNoticeBySession.delete(managed.session.id);
+        launchPlanBlockBySession.delete(managed.session.id);
       }
       const launchModel = joinsPreset && nextPresetId
         ? await resolvePresetLaunchModel(nextProvider, nextPresetId, nextModel)
@@ -67576,11 +68467,28 @@ export function createAgentChatService(args: {
       : await resolveClaudeSessionLaneFallback(
         laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
       );
-    const messages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
+    const sdkMessages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
     });
+    // A workflow agent's transcript sits outside the SDK's search path. A chat
+    // that is not loaded has no known account home, so try every one.
+    const messages = sdkMessages.length > 0
+      ? sdkMessages
+      : await readClaudeWorkflowAgentMessages({
+        configHomes: managed ? [sessionConfigHome(managed)] : claudeConfigRoots(),
+        cwd: laneFallback.dir,
+        claudeSessionId,
+        agentId: normalizedAgentId,
+        ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+        ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+        onUnexpectedError: (stage, error) => logger.warn("agent_chat.claude_workflow_transcript_read_failed", {
+          sessionId: normalizedSessionId,
+          stage,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      }) ?? sdkMessages;
     const childModel = messages
       .map(normalizeClaudeSdkSessionMessageModel)
       .find((candidate): candidate is string => Boolean(candidate))
@@ -68428,6 +69336,7 @@ export function createAgentChatService(args: {
     sessionId,
     text,
     displayText,
+    metadata,
     attachments = [],
     contextAttachments = [],
     reasoningEffort,
@@ -68465,6 +69374,7 @@ export function createAgentChatService(args: {
       sessionId,
       text,
       displayText,
+      ...(metadata ? { metadata } : {}),
       attachments,
       contextAttachments,
       reasoningEffort,
@@ -69694,6 +70604,7 @@ export function createAgentChatService(args: {
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,
+    getSessionIdentityKey,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
     getTurnStartedAt: (sessionId: string): string | null => {
       const live = managedSessions.get(sessionId)?.session;

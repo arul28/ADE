@@ -178,7 +178,6 @@ import type { createPortAllocationService } from "../../../../desktop/src/main/s
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
@@ -1115,7 +1114,6 @@ type SyncHostServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
   prService: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
@@ -1281,11 +1279,14 @@ function ensureBootstrapToken(filePath: string): string {
 }
 
 function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
-  const isBinary = hasNullByte(buf);
+  const mimeType = inferMimeType(filePath);
+  // An image is binary whatever its first 8 KiB holds: the NUL scan is only a guess
+  // about the bytes, and the type is known. Read as UTF-8 an image has no data URL.
+  const isBinary = hasNullByte(buf) || mimeType?.startsWith("image/") === true;
   return {
     path: filePath,
     size: buf.length,
-    mimeType: inferMimeType(filePath),
+    mimeType,
     encoding: isBinary ? "base64" : "utf-8",
     isBinary,
     content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
@@ -2343,7 +2344,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
-    prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
     sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,
@@ -2365,6 +2365,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,
     appControlSyncStream: args.appControlSyncStream ?? null,

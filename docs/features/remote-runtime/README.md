@@ -34,11 +34,15 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`syncPairedMachineStore.ts`, whose endpoint list is append-only except for
   `forgetEndpoint`: an address that provably answered as a *different* host is
   dropped rather than demoted, because `markEndpointFailed` re-adds whatever it
-  records a failure for and the recently-failing demotion expires after two
-  minutes — a neighbour's tailnet name that once landed in the record would
-  otherwise be retried forever. The record's own endpoint always survives, so a
-  machine can never be left with nothing to dial), LAN → tailnet → relay ordering
-  (`pairedRuntimeRoutes.ts`), typed handshake rejections
+  records a failure for and a failing address stays in the list until it
+  answers or mDNS sees it after that failure — a neighbour's tailnet name that
+  once landed in the record would otherwise be dialled on every connect. The
+  record's own endpoint always survives, so a machine can never be left with
+  nothing to dial), LAN → tailnet → relay ordering (`pairedRuntimeRoutes.ts`:
+  an address with two or more consecutive silent failures and no answer or
+  mDNS sighting since ranks after the routes that are not failing; it is still
+  dialled, last; only timeouts, unreachable and unknown errors demote, so a
+  host that answered with a rejection never does), typed handshake rejections
   (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
   host's structured `hello_error.code` and the rejecting host's identity, so
   classification never pattern-matches the host's prose;
@@ -96,6 +100,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   actions keep their action-specific budgets. Automatic reconnects use bounded
   exponential backoff from 30 s to 5 minutes and remain eligible indefinitely,
   so a temporary sleep/network gap does not require restarting the desktop app.
+- `apps/desktop/src/renderer/components/settings/SettingsMachineScope.tsx`
+  and `settings/health/useHealthData.ts` — machine-scoped Settings pages pass
+  the selected machine binding to project reads and clear the previous
+  machine's lane, storage and health data before loading the new target.
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
   the store behind those streams. Subscriptions are keyed by
   `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
@@ -647,12 +655,6 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   when no other machine holds the branch, the entry is this machine (ids
   compared, never names), the other machine is on a different branch, or the
   other machine has nothing unpushed.
-- `apps/desktop/src/renderer/components/chat/thisMachineProjectRoot.ts` —
-  resolves the machine picker's "This computer" option back to *this repository's*
-  local checkout by repo identity (reusing `deriveLaneMachineOptions`' rule)
-  rather than to the first local tab in insertion order, and refuses to switch
-  when there is no local counterpart. Used by the chat composer's machine picker
-  and the Chats tab.
 - `apps/desktop/src/renderer/state/appStore.ts`,
   `apps/desktop/src/renderer/components/app/App.tsx`,
   `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
@@ -1174,6 +1176,10 @@ run a local repair against data owned by the remote machine. See
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
+   The same discovery also runs in the main process at launch (after the first
+   autoconnects start) and on wake or unlock, so a demoted LAN address that
+   answers the network again is ranked first at the next connect without a dial.
+   A connect never waits on it.
 2. Select a same-account computer for the primary PIN-less flow. ADE dials the
    directory-verified Relay first; when the target publishes an ed25519
    identity key in its directory row (`pubkey`), adoption can also fall back
@@ -1484,7 +1490,7 @@ The update command stages the next release under `$ADE_HOME/runtime/updates/`, v
 
 ## What works remotely
 
-Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, native GitHub stack actions, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route deliberately retains the window binding: when opened from a remote-bound project tab, `personalChats.call` / `streamEvents` go to that remote machine's hidden personal-chat scope; from a local or no-project window they go to the local brain. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.iconDataUrl` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, native GitHub stack actions, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, cross-machine handoff destination checks/acceptance, and event streaming through the remote runtime. The global Chats route lists personal chats from every connected machine. Each call names its machine, so row actions and event reads reach the owner; the new-chat picker chooses where a new chat runs without changing the project tab. Calls without a target still use the window's bound machine, which is also where the Browser tab's docked chat runs. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.iconDataUrl` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
 ### Which desktop shows it
 
@@ -1590,7 +1596,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - "<Machine> says this device's pairing is out of date — pair it again." — the host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. When the machine is also on this ADE account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.
 - The headline never lists routes. It is one sentence derived from the dominant attempt failure; every host, port, duration and the diagnostic ID stay in the collapsed **Details** list built from `RemoteRuntimeConnectErrorInfo.attempts`.
 - Attempt failures are classified from the host's structured `hello_error.code`, never from its message text — see [When the connect fails, the user reads one sentence](#when-the-connect-fails-the-user-reads-one-sentence) for the code table. Both `repair_required` and `auth_failed` mean the same thing to a paired client, so iOS treats them identically when deciding whether a saved pairing may be dropped — and only ever when the rejecting host's identity matches the saved pairing.
-- `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and the recently-failing demotion expires after two minutes), so a neighbour's tailnet name that once landed in the record would be retried forever.
+- `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and a demoted address is still dialled, last, until it answers or mDNS sees it again), so a neighbour's tailnet name that once landed in the record would be dialled on every connect.
 
 ## Pairing identity and paired-secret lifetime
 
@@ -1852,7 +1858,7 @@ parallel.
 
 The same action is offered where this computer's own update lives: **Update
 other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
-under Updates in Settings > General and under Your computers on the Account
+under Updates in Settings → ADE service and under Your computers on the Account
 page. It lists each connected machine with its version, "Update & restart" for
 the ones behind, and "Update all N". Every place that starts or shows one of
 these updates, the install dialog below included, goes through one store

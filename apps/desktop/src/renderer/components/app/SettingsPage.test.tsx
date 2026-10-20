@@ -54,14 +54,20 @@ vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSectio
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
 vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
-vi.mock("../settings/StorageSection", () => ({ StorageSection: stubSection(["storage"]) }));
+vi.mock("../settings/lanes/LanesSettingsPage", () => ({
+  LanesSettingsPage: stubSection(["lane-list", "storage", "archive", "auto-rebase", "rebase-suggestions", "lane-templates"]),
+}));
+vi.mock("../settings/location/LocationPage", () => ({ LocationPage: stubSection(["project-location", "project-health"]) }));
+vi.mock("../settings/overview/SettingsOverview", () => ({ SettingsOverview: stubSection(["needs-attention", "at-a-glance"]) }));
+vi.mock("../settings/health/HealthService", () => ({ ServiceStatusSection: stubSection(["diagnostics"]) }));
+vi.mock("../settings/BackgroundServiceSection", () => ({ BackgroundServiceSection: stubSection(["background-service"]) }));
+vi.mock("../settings/ResetAdeSection", () => ({ ResetAdeSection: stubSection(["reset-ade"]) }));
 vi.mock("../settings/SessionLifecycleSection", () => ({ SessionLifecycleSection: stubSection(["session-lifecycle"]) }));
 vi.mock("../settings/AdeUsageSection", () => ({ AdeUsageSection: stubSection(["ade-usage"]) }));
 vi.mock("../settings/RemoteContextBadge", () => ({ RemoteSettingsBanner: () => null }));
 vi.mock("../account/AccountPage", () => ({
   AccountPage: ({ embedded }: { embedded?: boolean }) => <div>{embedded ? "account embedded" : "account page"}</div>,
 }));
-vi.mock("./FeedbackReporterModal", () => ({ FeedbackReporterModal: () => null }));
 
 function LocationProbe() {
   const location = useLocation();
@@ -99,7 +105,7 @@ describe("SettingsPage", () => {
     // review and very visible to whoever saved the URL.
     renderSettings("/settings?tab=lane-templates");
 
-    expect(await screen.findByRole("heading", { name: "Lanes" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Lanes", level: 1 })).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("?tab=lanes-git");
     });
@@ -123,14 +129,24 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("falls back to General for a tab id it has never shipped", async () => {
+  it("falls back to Overview for a tab id it has never shipped", async () => {
     renderSettings("/settings?tab=not-a-real-tab");
-    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Overview", level: 1 })).toBeTruthy();
+  });
+
+  it("lands a legacy page's link on the card it named, on the page that holds it now", async () => {
+    // `?tab=archive` was the Archive page; the archive is a block of
+    // Project → Lanes now, so the link opens Lanes at the archive.
+    renderSettings("/settings?tab=archive");
+    expect(await screen.findByRole("heading", { name: "Lanes", level: 1 })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("?tab=lanes-git#archive");
+    });
   });
 
   it("hides cards that do not match the search, and restores them when cleared", async () => {
     const { container } = renderSettings("/settings?tab=lanes-git");
-    await screen.findByRole("heading", { name: "Lanes" });
+    await screen.findByRole("heading", { name: "Lanes", level: 1 });
 
     expect(visibleAnchors(container)).toContain("lane-templates");
 
@@ -147,8 +163,8 @@ describe("SettingsPage", () => {
   });
 
   it("keeps a parent card visible when a nested setting matches", async () => {
-    const { container } = renderSettings("/settings?tab=general");
-    await screen.findByRole("heading", { name: "General" });
+    const { container } = renderSettings("/settings?tab=service");
+    await screen.findByRole("heading", { name: "ADE service", level: 1 });
 
     fireEvent.change(searchBox(), { target: { value: "updates" } });
 
@@ -160,7 +176,7 @@ describe("SettingsPage", () => {
 
   it("offers matches from other tabs and navigates to the one you pick", async () => {
     renderSettings("/settings?tab=lanes-git");
-    await screen.findByRole("heading", { name: "Lanes" });
+    await screen.findByRole("heading", { name: "Lanes", level: 1 });
 
     fireEvent.change(searchBox(), { target: { value: "theme" } });
 
@@ -172,25 +188,22 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("lists Account first in the Account group and renders the account page in place", async () => {
+  it("lists Overview, then the You group starting with Account, and renders the account page in place", async () => {
     renderSettings("/settings?tab=account");
 
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // Nav rows are grouped (Account/Project/Machines) now, so the first
-    // entries are the rest of the Account group, not a flat alphabetical or
-    // registration-order list. Appearance and Apple devices are per computer
-    // and live under Machines.
-    expect(rows.slice(0, 3)).toEqual(["Account", "Chat", "Notifications"]);
+    // Overview sits alone at the top, then the groups (You/Project/Computer).
+    // Appearance and Apple devices are per computer and live under Computer.
+    expect(rows.slice(0, 4)).toEqual(["Overview", "Account", "Chat", "Notifications"]);
   });
 
-  it("carries feedback, help, zoom, and the identity row above the sections", async () => {
+  it("carries help, zoom, and the identity row above the sections", async () => {
     renderSettings("/settings?tab=appearance");
     await screen.findByRole("heading", { name: "Appearance" });
 
-    expect(screen.getByRole("button", { name: "Send feedback" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Help menu" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Zoom out" })).toBeTruthy();

@@ -336,3 +336,58 @@ describe("chat history ordering", () => {
     expect(merged).toEqual([prompt, delayedLive, done]);
   });
 });
+
+describe("warm switch onto a resident transcript with a resent tool call", () => {
+  // The resident window holds a tool call the provider sent twice; the next snapshot page starts on the resend.
+  const toolCall = (timestamp: string, args: Record<string, unknown>) => toolEnvelope(timestamp, { type: "tool_call", tool: "bash", args, itemId: "toolu_resend", logicalItemId: "toolu_resend", turnId: "turn-37" });
+  const toolResult = (timestamp: string) => toolEnvelope(timestamp, { type: "tool_result", tool: "bash", result: { ok: true }, itemId: "toolu_resend", logicalItemId: "toolu_resend", turnId: "turn-37" } as AgentChatEventEnvelope["event"]);
+  const seq = (entry: AgentChatEventEnvelope, sequence: number) => ({ ...entry, sequence });
+
+  it("keeps the resident prefix when the snapshot head is a resend of a held call", () => {
+    const firstSend = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo" });
+    // The resend as the pane holds it: first send's time, resend's payload.
+    const heldResend = toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" });
+    const result = toolResult("2026-10-17T07:04:40.581Z");
+    const late = [envelope("2026-10-17T07:04:41.000Z", "activity two"), envelope("2026-10-17T07:04:42.000Z", "text")];
+    const resident = [
+      envelope("2026-10-17T07:00:00.000Z", "older one"), envelope("2026-10-17T07:03:00.000Z", "older two"), firstSend,
+      envelope("2026-10-17T07:03:37.100Z", "activity"), envelope("2026-10-17T07:03:37.500Z", "ade card"), heldResend, result, ...late,
+    ];
+    const snapshot = [toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }), result, ...late];
+
+    const merged = mergeAgentChatHistorySnapshot(structuredClone(snapshot), resident);
+
+    // One row for the call, at the first send's place and time, with the resend's payload.
+    expect(merged.map((entry) => entry.event.type)).toEqual(["text", "text", "tool_call", "text", "text", "tool_result", "text", "text"]);
+    expect(merged[0]).toBe(resident[0]);
+    expect(merged[2]).toMatchObject({ timestamp: firstSend.timestamp, event: { args: { command: "rg foo --hidden" } } });
+    expect(merged.slice(3)).toEqual(resident.slice(3).filter((entry) => entry !== heldResend));
+  });
+
+  it("keeps the resident prefix when the resend was already collapsed into the first send's row", () => {
+    // The merge holds one row for the call, so the sequence numbers are what join the head to it.
+    const result = seq(toolResult("2026-10-17T07:04:40.581Z"), 1242);
+    const late = [seq(envelope("2026-10-17T07:04:41.000Z", "activity two"), 1243), seq(envelope("2026-10-17T07:04:42.000Z", "text"), 1244)];
+    const resident = [
+      seq(envelope("2026-10-17T07:00:00.000Z", "older one"), 1), seq(envelope("2026-10-17T07:03:00.000Z", "older two"), 2),
+      seq(toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo --hidden" }), 1238), seq(envelope("2026-10-17T07:03:37.100Z", "activity"), 1239),
+      seq(envelope("2026-10-17T07:03:37.500Z", "ade card"), 1240), result, ...late,
+    ];
+    const snapshot = [seq(toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }), 1241), result, ...late];
+
+    const merged = mergeAgentChatHistorySnapshot(structuredClone(snapshot), resident);
+
+    expect(merged.map((entry) => entry.event.type)).toEqual(resident.map((entry) => entry.event.type));
+    expect(merged[2]).toMatchObject({ timestamp: "2026-10-17T07:03:36.821Z" });
+  });
+
+  it("still drops a prefix that holds the first send but ends at a sequence hole", () => {
+    // Events 1236..1240 sit on neither side of the hole, so keeping the prefix would pin it.
+    const stale = [seq(toolCall("2026-10-17T07:03:36.821Z", { command: "rg foo" }), 1234), seq(envelope("2026-10-17T07:03:37.000Z", "stale activity"), 1235)];
+    const result = seq(toolResult("2026-10-17T07:04:40.581Z"), 1242);
+
+    const merged = mergeAgentChatHistorySnapshot([seq(toolCall("2026-10-17T07:03:38.765Z", { command: "rg foo --hidden" }), 1241), result], [...stale, result]);
+
+    expect(merged.map((entry) => entry.sequence)).toEqual([1241, 1242]);
+  });
+});

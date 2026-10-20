@@ -13,11 +13,17 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { selectDemandedAgentTools, type AgentToolDemand } from "./agentToolDemand";
+import {
+  notePinnedToolProgress,
+  pinnedToolFetchInFlight,
+  trackPinnedToolFetch,
+} from "../../../../../ade-cli/src/services/tools/onDemand";
 
 export type AgentToolsCacheService = {
   getSnapshot(): AgentToolsCacheSnapshot;
   onStateChange(listener: (snapshot: AgentToolsCacheSnapshot) => void): () => void;
-  /** Fetch anything missing. Safe to call repeatedly; concurrent calls coalesce. */
+  /** Fetch the missing tools this machine uses (`agentToolDemand.ts`). Safe to call repeatedly; concurrent calls coalesce. */
   ensureMissing(): Promise<AgentToolsCacheSnapshot>;
   dispose(): void;
 };
@@ -47,6 +53,8 @@ export function createAgentToolsCacheService(args: {
   ensure?: typeof ensureTools;
   resolve?: typeof tryResolveTool;
   listPinned?: typeof listPinnedTools;
+  /** Which pinned tools this machine fetches unasked; the rest download when something needs them. */
+  selectDemand?: (pinned: readonly string[]) => AgentToolDemand;
   gc?: typeof gcTools;
   now?: () => number;
 }): AgentToolsCacheService {
@@ -55,6 +63,7 @@ export function createAgentToolsCacheService(args: {
   const gc = args.gc ?? gcTools;
   const now = args.now ?? Date.now;
   const pinned = (args.listPinned ?? listPinnedTools)();
+  const selectDemand = args.selectDemand ?? ((tools: readonly string[]) => selectDemandedAgentTools(tools));
 
   const states = new Map<string, AgentToolCacheState>(
     pinned.map((tool) => [tool, { tool, status: "missing", percent: null, errorKind: null }]),
@@ -108,6 +117,7 @@ export function createAgentToolsCacheService(args: {
   }
 
   function applyProgress(progress: ToolProgress): void {
+    notePinnedToolProgress(progress);
     const previous = states.get(progress.tool);
     let next: AgentToolCacheState;
     if (progress.phase === "installed" || progress.phase === "cached") {
@@ -178,7 +188,8 @@ export function createAgentToolsCacheService(args: {
 
   async function run(): Promise<AgentToolsCacheSnapshot> {
     refreshInstalled();
-    const missing = pinned.filter((tool) => states.get(tool)?.status !== "installed");
+    const demanded = new Set(selectDemand(pinned).fetch);
+    const missing = pinned.filter((tool) => demanded.has(tool) && states.get(tool)?.status !== "installed");
     if (missing.length === 0) {
       emit();
       return snapshot();
@@ -188,7 +199,15 @@ export function createAgentToolsCacheService(args: {
     for (const tool of missing) {
       const startedAtMs = now();
       try {
-        await ensure([tool], { onProgress: applyProgress });
+        // Through the shared tracker, so a chat that needs this tool meanwhile
+        // joins this download and status reads see it in flight. A download a
+        // chat already started reports no progress here, so mark it now.
+        if (pinnedToolFetchInFlight(tool)) {
+          states.set(tool, { tool, status: "fetching", percent: null, errorKind: null });
+          emit();
+        }
+        const failure = await trackPinnedToolFetch(tool, () => ensure([tool], { onProgress: applyProgress }));
+        if (failure) throw failure;
         states.set(tool, { tool, status: "installed", percent: null, errorKind: null });
         args.logger.info("agentTools.fetched", { tool });
         captureOutcome(tool, "success", now() - startedAtMs);

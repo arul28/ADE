@@ -1,17 +1,15 @@
+import { fixedFrameOf, fixedPoint, fixedViewport } from "./webZoom";
+
 /**
- * Place a `position: fixed` menu above an anchor using only the anchor rect
- * for the vertical axis.
+ * Place a `position: fixed` menu above an anchor. The anchor rect is a screen
+ * rect, and `left`/`top` are written in the frame the menu is placed in
+ * (`fixedFrameOf`): the viewport under hosted web's body zoom, or the transformed
+ * container the menu renders into. Converting the rect there keeps the menu on
+ * its anchor, where a raw rect written as a style would be zoomed twice.
  *
- * `bottom: window.innerHeight - rect.top` is correct under Electron webFrame
- * zoom, where innerHeight and getBoundingClientRect share a CSS-pixel space.
- * Hosted web applies CSS `zoom` on <body>: innerHeight stays in viewport
- * pixels, then `bottom` is multiplied by zoom, and the menu jumps to the top
- * of the window. That is why the permission picker (always opens upward)
- * drifted while Radix/model pickers that set `top` from the rect did not.
- *
- * `top: rect.top` plus `translateY(calc(-100% - gap))` keeps the offset in
- * the same zoomed space as the rect, and the percentage is the menu's own
- * height so callers do not have to measure first.
+ * `top: anchor.top` plus `translateY(calc(-100% - gap))` keeps the gap in style
+ * pixels, and the percentage is the menu's own height, so callers do not have to
+ * measure first.
  */
 
 export type FixedMenuAboveAnchorStyle = {
@@ -28,18 +26,24 @@ export function fixedMenuAboveAnchorStyle(
     gap?: number;
     gutter?: number;
     align?: "start" | "end";
-    viewportWidth?: number;
+    /** The element the menu renders into, when it is not the body. */
+    container?: Element | null;
   },
 ): FixedMenuAboveAnchorStyle {
   const gap = options.gap ?? 8;
   const gutter = options.gutter ?? 8;
-  const viewportWidth = options.viewportWidth ?? window.innerWidth;
-  const rawLeft = options.align === "end" ? rect.right - options.width : rect.left;
-  const maxLeft = Math.max(gutter, viewportWidth - options.width - gutter);
-  const left = Math.min(Math.max(gutter, rawLeft), maxLeft);
+  const frame = fixedFrameOf(options.container ?? null);
+  const viewport = fixedViewport(frame);
+  const anchorLeft = fixedPoint(frame, rect.left, rect.top).left;
+  const anchorRight = fixedPoint(frame, rect.right, rect.top).left;
+  const anchorTop = fixedPoint(frame, rect.left, rect.top).top;
+  const rawLeft = options.align === "end" ? anchorRight - options.width : anchorLeft;
+  const minLeft = viewport.left + gutter;
+  const maxLeft = Math.max(minLeft, viewport.right - options.width - gutter);
+  const left = Math.min(Math.max(minLeft, rawLeft), maxLeft);
   return {
     left,
-    top: rect.top,
+    top: anchorTop,
     width: options.width,
     transform: `translateY(calc(-100% - ${gap}px))`,
   };

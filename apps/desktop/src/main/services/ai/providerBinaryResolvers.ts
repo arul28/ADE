@@ -6,9 +6,13 @@
  * would drift from the one that decides whether chat can start, and the status
  * screen would then disagree with the product.
  *
+ * Every row reports ADE's own pinned copy only. A provider CLI the user
+ * installed never counts: nothing would spawn it. A miss carries the tools
+ * cache's reason (downloading, failed, not available here) as `detail`.
+ *
  * A row returns what it found and nothing more. The install rules the probe
- * loop applies to every row — a bare command name confirmed against PATH, an
- * execute-bit check, a `--version` spawn — live in `providerStatusProbe.ts`.
+ * loop applies to every row — an execute-bit check, a `--version` spawn —
+ * live in `providerStatusProbe.ts`.
  */
 
 import fs from "node:fs";
@@ -19,10 +23,9 @@ import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { museBinaryBlocker, resolveMuseExecutable } from "./museExecutable";
-import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import { resolvePiInstallation } from "./piInstallation";
+import { pinnedToolState } from "./pinnedProviderTools";
 import type { ShippedProvider } from "../../../shared/providers";
-import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import type {
   FsLike,
@@ -80,24 +83,23 @@ export function cursorSdkPackageDir(
   }
 }
 
+/** A row for a miss: no path, and the tools cache's reason. */
+function pinnedMiss(tool: string, label: string): ResolvedProviderBinary {
+  return { path: null, detail: pinnedToolState(tool, label).blocker };
+}
+
 export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> = {
   claude: (context) => {
     const resolved = resolveClaudeCodeExecutable({ env: context.env, platform: context.platform });
-    return resolved.source === "fallback-command"
-      ? { path: null, requiresPathConfirmation: true, command: resolved.path }
-      : { path: resolved.path };
+    return resolved.source === "fallback-command" ? pinnedMiss("claude-code", "Claude Code") : { path: resolved.path };
   },
   codex: (context) => {
     const resolved = resolveCodexExecutable({ env: context.env });
-    return resolved.source === "fallback-command"
-      ? { path: null, requiresPathConfirmation: true, command: resolved.path }
-      : { path: resolved.path };
+    return resolved.source === "fallback-command" ? pinnedMiss("codex", "Codex") : { path: resolved.path };
   },
   droid: (context) => {
     const resolved = resolveDroidExecutable({ env: context.env });
-    return resolved.source === "fallback-command"
-      ? { path: null, requiresPathConfirmation: true, command: resolved.path }
-      : { path: resolved.path };
+    return resolved.source === "fallback-command" ? pinnedMiss("droid", "Droid") : { path: resolved.path };
   },
   // No context argument: OpenCode's binary manager owns its own env handling
   // and its own cache, and re-implementing either would be a second detection
@@ -105,29 +107,25 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
   opencode: async () => {
     try {
       const resolved = resolveOpenCodeBinaryPath();
-      return resolved
-        ? { path: resolved }
-        : { path: null, requiresPathConfirmation: true, command: "opencode" };
+      return resolved ? { path: resolved } : pinnedMiss("opencode", "OpenCode");
     } catch {
-      return { path: null, requiresPathConfirmation: true, command: "opencode" };
+      return pinnedMiss("opencode", "OpenCode");
     }
   },
   pi: (context) => {
     const installation = resolvePiInstallation(context.env);
-    const target = installation.cliPath ?? installation.packageRoot;
-    if (!target) {
+    if (!installation.packageRoot) {
       return { path: null, detail: installation.blocker };
     }
     return {
-      path: target,
-      // Pi's version lives in the package manifest the resolver already read.
-      // Spawning `pi --version` would pay a process for a value in hand.
+      // Pi is a package ADE's Node imports, not a binary; its CLI is a script.
+      path: installation.packageRoot,
+      // Pi's version lives in the pin the resolver already read. Spawning
+      // `pi --version` would pay a process for a value in hand.
       version: installation.version,
       skipVersionProbe: true,
-      installedWithoutBinary: installation.cliPath == null,
-      detail: installation.cliPath
-        ? installation.blocker
-        : `Pi's SDK package is installed at ${installation.packageRoot}; no \`pi\` CLI is on PATH.`,
+      installedWithoutBinary: true,
+      detail: installation.blocker,
     };
   },
   /**
@@ -154,20 +152,11 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
     return { path: null, detail: `${museBinaryBlocker(resolved) ?? ""}${userNote}` };
   },
   /**
-   * Cursor is two things wearing one name. The chat runtime is the `@cursor/sdk`
-   * Node package, not a binary; the `cursor-agent` CLI is a separate install
-   * that only model discovery and the Work tab use. Either one means "Cursor
-   * works here", so `installed` is the OR of them and `detail` says which was
-   * found — a bare `installed: true` with a `node_modules` path would read as a
-   * broken CLI detection.
+   * Cursor chat runs on the `@cursor/sdk` Node package ADE bundles, not on a
+   * CLI, so the package is the install. A `cursor-agent` the user installed
+   * does not count.
    */
   cursor: (context) => {
-    for (const candidate of CURSOR_CLI_EXECUTABLES.launchCandidates) {
-      const found = resolveExecutableFromKnownLocations(candidate, context.env);
-      if (found) {
-        return { path: found.path, detail: `Cursor CLI (\`${candidate}\`) found on PATH.` };
-      }
-    }
     const packageDir = cursorSdkPackageDir(context.fs);
     if (packageDir) {
       return {
@@ -179,8 +168,7 @@ export const DEFAULT_RESOLVERS: Record<ShippedProvider, ProviderBinaryResolver> 
     }
     return {
       path: null,
-      detail: "Neither the @cursor/sdk package nor a `cursor-agent` CLI was found.",
+      detail: "ADE's bundled @cursor/sdk package was not found.",
     };
   },
 };
-

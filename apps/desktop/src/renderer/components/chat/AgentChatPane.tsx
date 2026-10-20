@@ -331,9 +331,12 @@ import {
   retainChatSession,
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
+import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
-import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
+import { cancelWorkDraftLaneRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -374,6 +377,7 @@ import { DraftMachinePicker, type DraftMachineOption } from "./DraftMachinePicke
 import { useNewLaneDraftConfig } from "./useNewLaneDraftConfig";
 import { CursorCloudAdvancedMenu } from "./CursorCloudAdvancedMenu";
 import { useCursorCloudDraftState } from "./useCursorCloudDraftState";
+import { releaseDeletedTerminalIds, rememberKnownTerminalId } from "./knownTerminalIds";
 import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
@@ -566,6 +570,80 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+// Each chat's last proof read, per machine, so a warm switch shows that chat's
+// own proof while its read is in flight. Keyed by pin key and session id: one
+// chat's proof is never shown for another chat or another machine. Recency is
+// the last successful read. Off in tests, like the view cache, since tests
+// share this module.
+const COMPUTER_USE_SNAPSHOT_CACHE_ENABLED = import.meta.env.MODE !== "test";
+const MAX_COMPUTER_USE_SNAPSHOT_CACHE_ENTRIES = 64;
+/** The pane's proof snapshot, with the pin key (machine) its read went to. */
+type ComputerUseSnapshotState = {
+  snapshot: ComputerUseOwnerSnapshot;
+  pinKey: string | null;
+};
+type ComputerUseSnapshotCacheEntry = {
+  snapshot: ComputerUseOwnerSnapshot;
+  // The read that wrote it. An older read never replaces a newer entry.
+  readSequence: number;
+};
+const computerUseSnapshotCacheByKey = new Map<string, ComputerUseSnapshotCacheEntry>();
+let computerUseReadSequence = 0;
+
+function computerUseSnapshotCacheKey(pinKey: string | null, sessionId: string): string {
+  return `${pinKey ?? "local"}|${sessionId}`;
+}
+
+/** Read without touching LRU recency — safe to call during render. */
+function peekComputerUseSnapshotCache(pinKey: string | null, sessionId: string): ComputerUseOwnerSnapshot | null {
+  if (!COMPUTER_USE_SNAPSHOT_CACHE_ENABLED) return null;
+  return computerUseSnapshotCacheByKey.get(computerUseSnapshotCacheKey(pinKey, sessionId))?.snapshot ?? null;
+}
+
+function writeComputerUseSnapshotCache(
+  pinKey: string | null,
+  sessionId: string,
+  snapshot: ComputerUseOwnerSnapshot,
+  readSequence: number,
+): void {
+  if (!COMPUTER_USE_SNAPSHOT_CACHE_ENABLED) return;
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (existing && existing.readSequence > readSequence) return;
+  computerUseSnapshotCacheByKey.delete(key);
+  computerUseSnapshotCacheByKey.set(key, { snapshot, readSequence });
+  while (computerUseSnapshotCacheByKey.size > MAX_COMPUTER_USE_SNAPSHOT_CACHE_ENTRIES) {
+    const oldest = computerUseSnapshotCacheByKey.keys().next().value;
+    if (typeof oldest !== "string") break;
+    computerUseSnapshotCacheByKey.delete(oldest);
+  }
+}
+
+/** A failed read drops the chat's entry, unless a newer read already wrote one. */
+function dropComputerUseSnapshotCache(pinKey: string | null, sessionId: string, readSequence: number): void {
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (!existing || existing.readSequence > readSequence) return;
+  computerUseSnapshotCacheByKey.delete(key);
+}
+
+/** The drawer's optimistic artifact removal also applies to the cached copy. */
+function removeArtifactFromComputerUseSnapshotCache(pinKey: string | null, sessionId: string, artifactId: string): void {
+  const key = computerUseSnapshotCacheKey(pinKey, sessionId);
+  const existing = computerUseSnapshotCacheByKey.get(key);
+  if (!existing) return;
+  const { snapshot } = existing;
+  // Re-set in place, so the entry keeps its recency.
+  computerUseSnapshotCacheByKey.set(key, {
+    ...existing,
+    snapshot: {
+      ...snapshot,
+      artifacts: snapshot.artifacts.filter((artifact) => artifact.id !== artifactId),
+      recentArtifacts: snapshot.recentArtifacts.filter((artifact) => artifact.id !== artifactId),
+    },
+  });
+}
 
 type ChatActionsAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 
@@ -2005,7 +2083,8 @@ type ChatRuntimeProviderKey =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
@@ -4380,21 +4459,8 @@ export function AgentChatPane({
   const [replayForkDisclosure, setReplayForkDisclosure] = useState<AgentChatReplayForkDisclosure | null>(null);
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
-  const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
-  const openClaudeLoginInPrimaryLane = useCallback(async () => {
-    try {
-      await createClaudeLoginTerminalInWork({ navigate });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [navigate]);
-  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
-    if (family === "anthropic") {
-      void openClaudeLoginInPrimaryLane();
-      return;
-    }
-    openAiProvidersSettings();
-  }, [openAiProvidersSettings, openClaudeLoginInPrimaryLane]);
+  const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseSnapshotState | null>(null);
+  const [claudeSignInTarget, setClaudeSignInTarget] = useState<ComposerClaudeSignInTarget | null>(null);
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
@@ -4489,9 +4555,15 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
-  // Terminals this pane has revealed or already knows exist. Survives the reveal
-  // effect's re-subscriptions, so a replayed "created" cannot reopen the pane.
+  // Terminals this pane has revealed or seen listed by the chat. Survives the
+  // reveal effect's re-subscriptions, so a replayed "created" cannot reopen the
+  // pane. An id leaves only when its terminal is gone: by its "deleted" event, or,
+  // for a deletion missed while the pane was hidden, when the chat's next read omits
+  // it and a lookup finds no row (see releaseDeletedTerminalIds). An omission alone
+  // never releases one: a list can be stale or partial.
   const knownTerminalIdsRef = useRef(new Set<string>());
+  // Which chat each remembered terminal belongs to, so a chat's read only checks its own ids.
+  const knownTerminalOwnersRef = useRef(new Map<string, string>());
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
   const openTerminalPanel = useCallback(() => {
     if (onOpenTerminalPane) {
@@ -4846,8 +4918,8 @@ export function AgentChatPane({
    */
   const renderSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
   renderSelectedSessionIdRef.current = selectedSessionId;
-  const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
-  const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
+  const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; pinKey: string | null; promise: Promise<void> } | null>(null);
+  const lastComputerUseSnapshotRef = useRef<{ sessionId: string; pinKey: string | null; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const seededInitialSummaryRef = useRef(false);
   /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
@@ -5014,6 +5086,24 @@ export function AgentChatPane({
       : chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId)),
     [chatMachineRouter, foreignRenderedLaneId, hostRuntimePin, laneId, renderedSession?.laneId],
   );
+  // The proof snapshot this pane may show: only the rendered chat's own, read
+  // from the rendered chat's own machine (`renderedChatRuntimePin`, not the
+  // selection's, which trails a switch). The state is shown only when both the
+  // chat and the machine it was read from match. Until a chat's read lands, its
+  // last-known snapshot on its own machine stands in (a visible tile only: an
+  // inactive tile keeps none). Another chat's or another machine's snapshot
+  // never does. Derived at render, so a switch paints without an empty frame.
+  const renderedChatPinKey = renderedChatRuntimePin?.key ?? null;
+  const renderedStateSnapshot = computerUseSnapshot
+    && computerUseSnapshot.pinKey === renderedChatPinKey
+    && computerUseSnapshot.snapshot.owner?.kind === "chat_session"
+    && computerUseSnapshot.snapshot.owner.id === renderedSessionId
+    ? computerUseSnapshot.snapshot
+    : null;
+  const renderedComputerUseSnapshot = renderedStateSnapshot
+    ?? (renderedSessionId && isTileActive
+      ? peekComputerUseSnapshotCache(renderedChatPinKey, renderedSessionId)
+      : null);
   // Lifecycle actions must follow the session currently rendered in the pane.
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
@@ -6547,11 +6637,11 @@ export function AgentChatPane({
     : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
-      ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
+      ? "Droid is not available. Let ADE finish downloading Droid for this machine, then sign in to Factory or set FACTORY_API_KEY."
       : activeProviderConnection?.provider === "muse"
         ? "Muse Code is not available. Let ADE finish downloading its pinned Muse, then sign in with `" + MUSE_LOGIN_COMMAND + "` or set META_API_KEY."
       : activeProviderConnection?.provider === "cursor"
-        ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+        ? "Cursor agent is not available. Sign in with Cursor or add a Cursor API key in Settings > Providers."
       : null);
 
   const mergedRuntimeBanner = useMemo(() => {
@@ -7477,6 +7567,45 @@ export function AgentChatPane({
     };
   }, [isPersonalPane, projectBinding, projectRoot]);
 
+  // The picker greys Claude out from the composer machine's status, so its
+  // "Login to Claude" signs in that same machine, with Settings' own flow.
+  const openProviderSignIn = useCallback((
+    family?: ProviderFamily,
+    signInTarget?: readonly unknown[] | OpenProjectBinding | null,
+  ) => {
+    if (family !== "anthropic") {
+      openAiProvidersSettings();
+      return;
+    }
+    const hasExplicitTarget = signInTarget === null
+      || (typeof signInTarget === "object" && !Array.isArray(signInTarget));
+    const explicitBinding = hasExplicitTarget
+      ? signInTarget as OpenProjectBinding | null
+      : undefined;
+    // A personal pane has no project machine; it signs in the tab's machine.
+    const scope = hasExplicitTarget
+      ? explicitBinding ? { runtimePin: explicitBinding } : null
+      : resolveAiStatusRuntimeScope();
+    if (!scope && !isPersonalPane) {
+      setError(hasExplicitTarget
+        ? "The selected handoff machine is not available for sign-in. Open a project on that machine first."
+        : "Pick a machine for this chat before signing in to Claude.");
+      return;
+    }
+    // A null pin means the tab's own machine; Settings pins that one too when
+    // it is another computer.
+    const pin = scope?.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
+    const machineId = machineIdForBinding(pin);
+    setClaudeSignInTarget({
+      // Each click is a fresh sign-in, even for the same machine.
+      openId: Date.now(),
+      pin,
+      machineId,
+      isThisMachine: machineId === THIS_MACHINE_ID,
+      machineName: pin?.kind === "remote" ? pin.runtimeName : THIS_MACHINE_NAME,
+    });
+  }, [isPersonalPane, openAiProvidersSettings, projectBinding, resolveAiStatusRuntimeScope]);
+
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey))
@@ -7588,6 +7717,10 @@ export function AgentChatPane({
     shouldRefreshOpenCodeInventoryForStatus,
     modelCatalogScopeKey,
   ]);
+  const closeClaudeSignIn = useCallback((changed: boolean) => {
+    setClaudeSignInTarget(null);
+    if (changed) void refreshAvailableModels({ force: true });
+  }, [refreshAvailableModels]);
 
   useEffect(() => {
     let active = true;
@@ -7949,13 +8082,20 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
+    // The machine this read goes to, fixed now: its in-flight slot and its
+    // cache entry belong to it, whatever the pin does while the read runs.
+    const pinKey = chatRuntimePinRef.current?.key ?? null;
     if (!options?.force) {
       const inFlight = computerUseSnapshotInFlightRef.current;
-      if (inFlight?.sessionId === sessionId) {
+      if (inFlight?.sessionId === sessionId && inFlight.pinKey === pinKey) {
         return inFlight.promise;
       }
       const previous = lastComputerUseSnapshotRef.current;
-      if (previous?.sessionId === sessionId && Date.now() - previous.fetchedAt < COMPUTER_USE_SNAPSHOT_COOLDOWN_MS) {
+      if (
+        previous?.sessionId === sessionId
+        && previous.pinKey === pinKey
+        && Date.now() - previous.fetchedAt < COMPUTER_USE_SNAPSHOT_COOLDOWN_MS
+      ) {
         return;
       }
     }
@@ -7963,6 +8103,7 @@ export function AgentChatPane({
     // A personal chat's computer-use owner lives in the machine scope, not
     // this project's runtime; asking the project would only miss.
     if (isPersonalPane) return;
+    const readSequence = ++computerUseReadSequence;
     let request: Promise<void> | null = null;
     request = (async () => {
       try {
@@ -7971,17 +8112,27 @@ export function AgentChatPane({
         }, chatRuntimePinRef.current);
         lastComputerUseSnapshotRef.current = {
           sessionId,
+          pinKey,
           fetchedAt: Date.now(),
         };
+        writeComputerUseSnapshotCache(pinKey, sessionId, snapshot, readSequence);
         // A read that a newer one replaced writes nothing: its data is older.
         if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
-          setComputerUseSnapshot(snapshot);
+          setComputerUseSnapshot({ snapshot, pinKey });
         }
       } catch {
+        // A failed read drops this chat's cached proof, unless keepOnError keeps it.
+        if (!options?.keepOnError) dropComputerUseSnapshotCache(pinKey, sessionId, readSequence);
         if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
-          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          // `keepOnError` keeps this chat's proof on screen, never another chat's
+          // or another machine's.
           setComputerUseSnapshot((current) => (
-            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+            options?.keepOnError
+              && current?.pinKey === pinKey
+              && current.snapshot.owner?.kind === "chat_session"
+              && current.snapshot.owner.id === sessionId
+              ? current
+              : null
           ));
         }
       } finally {
@@ -7990,7 +8141,7 @@ export function AgentChatPane({
         }
       }
     })();
-    computerUseSnapshotInFlightRef.current = { sessionId, promise: request };
+    computerUseSnapshotInFlightRef.current = { sessionId, pinKey, promise: request };
     try {
       await request;
     } catch {
@@ -8730,25 +8881,63 @@ export function AgentChatPane({
     // the machine to hear them from and read them on.
     const pin = chatRuntimePinRef.current;
     const knownTerminalIds = knownTerminalIdsRef.current;
+    const knownTerminalOwners = knownTerminalOwnersRef.current;
     // Re-subscribing replays events the new subscriber missed, so a terminal
     // that already existed (its "created" from minutes ago) arrives again. Every
     // terminal the chat has when this subscription starts is therefore known,
     // not news. Ids are compared, not `startedAt`: a remote machine's clock is
     // not ours, and a shell it just started must still reveal.
-    const baseline = selectedSessionId
-      ? sessionsApi.list({ chatSessionId: selectedSessionId, limit: null }, pin).then(
-        (rows) => {
-          for (const row of rows) knownTerminalIds.add(row.id);
-          return true;
-        },
-        (error: unknown) => {
-          // Without the baseline an old terminal cannot be told from a new one,
-          // so this subscription reveals nothing rather than reopen a closed pane.
-          console.error("[AgentChatPane] terminal baseline read failed", { sessionId: selectedSessionId, error });
-          return false;
-        },
-      )
-      : Promise.resolve(true);
+    //
+    // Until a read has loaded, nothing is news, because an unloaded baseline cannot
+    // tell an old terminal from a new one. A failed read leaves it unloaded and the
+    // next event retries it. The read is authoritative, so an unanswered list cannot
+    // pass for "the chat has no terminals".
+    const baselineChatSessionId = selectedSessionId;
+    let baselineLoaded = !baselineChatSessionId;
+    let baselineRead: Promise<boolean> | null = null;
+    const loadBaseline = (): Promise<boolean> => {
+      if (baselineLoaded || !baselineChatSessionId) return Promise.resolve(true);
+      // Events that arrive while a read is in flight share it.
+      if (!baselineRead) {
+        baselineRead = sessionsApi.list(
+          { chatSessionId: baselineChatSessionId, limit: null },
+          pin,
+          { authoritative: true },
+        )
+          .then((rows) => {
+            // Anything but a list is a failed read, not an empty chat.
+            if (!Array.isArray(rows)) throw new Error("the chat's terminal list did not come back as a list");
+            const listedIds = new Set<string>();
+            for (const row of rows) {
+              rememberKnownTerminalId(knownTerminalIds, row.id);
+              knownTerminalOwners.set(row.id, baselineChatSessionId);
+              listedIds.add(row.id);
+            }
+            // An omission alone releases nothing (a read can be stale or partial);
+            // each omitted id of this chat is looked up, and only a gone row lets go.
+            void releaseDeletedTerminalIds({
+              known: knownTerminalIds,
+              owners: knownTerminalOwners,
+              chatSessionId: baselineChatSessionId,
+              listedIds,
+              // Authoritative, so an unanswered read rejects and keeps the id rather than reading as "gone".
+              lookup: (id) => sessionsApi.get(id, pin, { authoritative: true }),
+            });
+            baselineLoaded = true;
+            return true;
+          })
+          .catch((error: unknown) => {
+            console.error("[AgentChatPane] terminal baseline read failed", { sessionId: baselineChatSessionId, error });
+            return false;
+          })
+          .finally(() => {
+            // Cleared on every outcome, so a failed read is retried by the next event.
+            baselineRead = null;
+          });
+      }
+      return baselineRead;
+    };
+    void loadBaseline();
     const revealCreatedTerminal = async (sessionId: string) => {
       if (knownTerminalIds.has(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
@@ -8758,8 +8947,8 @@ export function AgentChatPane({
         return;
       }
       // A replay can land before the baseline read does, so judge it after.
-      const baselineLoaded = await baseline;
-      if (disposed || !baselineLoaded || !session) return;
+      const baselineOk = await loadBaseline();
+      if (disposed || !baselineOk || !session) return;
       if (knownTerminalIds.has(sessionId)) return;
       const selectedChatSessionId = selectedSessionIdRef.current;
       if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
@@ -8769,7 +8958,8 @@ export function AgentChatPane({
 
       // Each terminal reveals once per pane: a duplicate or replayed "created"
       // for it never reopens the pane the user closed.
-      knownTerminalIds.add(sessionId);
+      rememberKnownTerminalId(knownTerminalIds, sessionId);
+      knownTerminalOwners.set(sessionId, selectedChatSessionId);
       openTerminalPanel();
       if (!hasExternalTerminalPane) {
         setTerminalRevealRequest({
@@ -8782,6 +8972,13 @@ export function AgentChatPane({
     };
 
     const unsubscribe = sessionsApi.onChanged((event) => {
+      // A deleted terminal's row is gone, so get() finds nothing to reveal and its
+      // id can leave the set. No chat read would ever release it otherwise.
+      if (event.reason === "deleted") {
+        knownTerminalIds.delete(event.sessionId);
+        knownTerminalOwners.delete(event.sessionId);
+        return;
+      }
       if (event.reason !== "created") return;
       void revealCreatedTerminal(event.sessionId);
     }, pin);
@@ -9263,7 +9460,10 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(readableSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
+    // The read goes to the pin's machine, read through the ref. Its key must
+    // re-run the refresh: the same chat on another machine has its own proof.
   }, [
+    chatRuntimePinKey,
     isTileActive,
     lockedSingleSessionMode,
     readableSessionId,
@@ -9857,13 +10057,22 @@ export function AgentChatPane({
       // event may not carry an owner. Optimistically remove the matching id
       // from this drawer, then force an authoritative snapshot refresh.
       if (event.type === "artifact-deleted" && (event.owner == null || belongsToSelectedChat)) {
+        // Only this chat's snapshot on this pin is edited. A late event from the
+        // previous machine must not remove an artifact from the new one.
         setComputerUseSnapshot((current) => current
+          && current.pinKey === chatRuntimePinKey
+          && current.snapshot.owner?.kind === "chat_session"
+          && current.snapshot.owner.id === selectedSessionId
           ? {
               ...current,
-              artifacts: current.artifacts.filter((artifact) => artifact.id !== event.artifactId),
-              recentArtifacts: current.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+              snapshot: {
+                ...current.snapshot,
+                artifacts: current.snapshot.artifacts.filter((artifact) => artifact.id !== event.artifactId),
+                recentArtifacts: current.snapshot.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+              },
             }
           : current);
+        removeArtifactFromComputerUseSnapshotCache(chatRuntimePinKey, selectedSessionId, event.artifactId);
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
@@ -10726,6 +10935,19 @@ export function AgentChatPane({
     setAttachmentsWithIds,
     updateSubmittedDraftTextEdit,
   ]);
+
+  // A "New chat in this lane" request names its lane; the draft restored above
+  // may still target "Auto-create lane", which would hide that lane and create
+  // a new one on send.
+  const workDraftProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  useWorkDraftLaneRequest({
+    ready: isWorkDraftComposer && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue,
+    projectStateKey: workDraftProjectStateKey,
+    onRequest: () => {
+      setDraftLaunchTargetId(null);
+      clearNewLaneConfig();
+    },
+  });
 
   const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
     version: 1,
@@ -11896,7 +12118,12 @@ export function AgentChatPane({
     if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
       throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
     }
-    const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
+    const resolvedProvider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
+    if (resolvedProvider === "antigravity") {
+      // Google ships Antigravity's agent for ACP only; there is no terminal CLI.
+      throw new Error("Antigravity runs as a chat only. Start a chat with this model instead of a CLI session.");
+    }
+    const provider = resolvedProvider;
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
     const supportsFastMode = modelSupportsFastMode(desc);
     const launchFastMode = supportsFastMode
@@ -15091,12 +15318,13 @@ export function AgentChatPane({
     : (laneId ?? "");
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
+    cancelWorkDraftLaneRequest(workDraftProjectStateKey);
     // Picking "Auto-create lane" keeps a configured recipe (it is the same
     // pending-lane target); picking any real lane drops it — the user chose a
     // concrete destination instead.
     if (!isAutoCreateLaneOptionId(nextLaneId)) clearNewLaneConfig();
     handleDraftLaneSelectionChange(nextLaneId);
-  }, [clearNewLaneConfig, handleDraftLaneSelectionChange]);
+  }, [clearNewLaneConfig, handleDraftLaneSelectionChange, workDraftProjectStateKey]);
   // Switching machines keeps the lane only when it lives there; otherwise the
   // draft falls back to a new lane on the chosen machine.
   const keepLaneOnMachine = useCallback((cloud: CloudLaneProvider | null) => {
@@ -15180,6 +15408,7 @@ export function AgentChatPane({
       ? DEVIN_CLOUD_MACHINE_ID
       : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
+    cancelWorkDraftLaneRequest(workDraftProjectStateKey);
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setDevinCloudMode(false);
@@ -15198,7 +15427,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode]);
+  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {
@@ -15611,7 +15840,7 @@ export function AgentChatPane({
     modelFamily: composerModelDescribesRenderedChat ? selectedModelDesc?.family ?? null : null,
     modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
   });
-  const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
+  const proofArtifactCount = renderedComputerUseSnapshot?.artifacts?.length ?? 0;
   // Always handed to the drawer: the panel is runtime-agnostic (Codex and
   // Claude both emit subagent/plan/goal events) and renders nothing when it
   // has nothing, so the drawer never shows an empty agents area. A host-side
@@ -15757,7 +15986,7 @@ export function AgentChatPane({
   const proofTabContent = (
     <div ref={proofDrawerRef}>
       <ChatComputerUsePanel
-        snapshot={computerUseSnapshot}
+        snapshot={renderedComputerUseSnapshot}
         events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
@@ -16106,7 +16335,7 @@ export function AgentChatPane({
       footer={chatAccountNote}
       sections={[
         { key: "agents", content: agentsTabContent },
-        (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },
+        (proofArtifactCount > 0 || (proofShowRequested && renderedComputerUseSnapshot)) && { key: "proof", content: proofTabContent },
         selectedMission && missionHasContent(selectedMission) && {
           key: "mission",
           content: (
@@ -16840,7 +17069,7 @@ export function AgentChatPane({
             musePermissionMode={musePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
-            computerUseSnapshot={computerUseSnapshot}
+            computerUseSnapshot={renderedComputerUseSnapshot}
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
@@ -17882,7 +18111,7 @@ export function AgentChatPane({
                         onStopSubagent={listStopSubagent}
                         unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
-                        proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
+                        proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : renderedComputerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
@@ -18243,6 +18472,7 @@ export function AgentChatPane({
           nativeControls={handoffNativeControlState}
           onNativeControlsChange={applyHandoffNativeControls}
           onOpenSignIn={openProviderSignIn}
+          machineBindings={openProjectBindings}
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}
           onStopTurn={interrupt}
@@ -18256,6 +18486,9 @@ export function AgentChatPane({
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />
+      ) : null}
+      {claudeSignInTarget ? (
+        <ComposerClaudeSignIn key={claudeSignInTarget.openId} target={claudeSignInTarget} onClose={closeClaudeSignIn} />
       ) : null}
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser

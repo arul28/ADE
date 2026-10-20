@@ -53,7 +53,7 @@ describe("resolveClaudeCodeExecutable", () => {
     });
   });
 
-  it("uses the detected Claude auth path before falling back to PATH lookup", () => {
+  it("does not use a detected Claude auth path when ADE has no pinned copy", () => {
     expect(
       resolveClaudeCodeExecutable({
         auth: [
@@ -73,10 +73,7 @@ describe("resolveClaudeCodeExecutable", () => {
         platform: "freebsd",
         arch: "x64",
       }),
-    ).toEqual({
-      path: "/opt/homebrew/bin/claude",
-      source: "auth",
-    });
+    ).toEqual({ path: "", source: "fallback-command" });
   });
 
   it("prefers the packaged bundled native binary before detected auth paths", () => {

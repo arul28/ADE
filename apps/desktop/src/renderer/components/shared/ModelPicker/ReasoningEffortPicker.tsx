@@ -1,6 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { CaretDown } from "@phosphor-icons/react";
+import { CaretDown, Check } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { toneText } from "../../lanes/laneDesignTokens";
@@ -226,6 +226,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const activePointerGestureRef = useRef<ActivePointerGesture | null>(null);
   const suppressTierClickRef = useRef(false);
   const suppressTierClickTimerRef = useRef<number | null>(null);
+  const copilotOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const { rememberReasoning, getReasoningForFamily } = useReasoningByFamily();
   useEffect(() => {
     if (open) return;
@@ -449,17 +450,105 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   if (copilotAuto && onCopilotAutoTierChange) {
     const options = [["efficiency", "Efficiency"], ["balance", "Balance"], ["intelligence", "Intelligence"]] as const;
     const selected = copilotAutoTier ?? "balance";
+    const selectedLabel = options.find(([value]) => value === selected)?.[1] ?? "Balance";
+    const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        nextIndex = (index + 1) % options.length;
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        nextIndex = (index - 1 + options.length) % options.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = options.length - 1;
+      }
+      if (nextIndex == null) return;
+      event.preventDefault();
+      copilotOptionRefs.current[nextIndex]?.focus();
+      const next = options[nextIndex];
+      if (next) onCopilotAutoTierChange(next[0]);
+    };
     return (
       <Popover.Root open={open} onOpenChange={(next) => setOpen(disabled ? false : next)}>
         <Popover.Trigger asChild>
-          <button type="button" disabled={disabled} className={cn("inline-flex h-7 items-center gap-1 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11px] text-fg/75", triggerClassName, className)} aria-label="Copilot Auto profile">
-            {options.find(([value]) => value === selected)?.[1] ?? "Balance"}
+          <button
+            type="button"
+            disabled={disabled}
+            data-state={open ? "open" : "closed"}
+            className={cn(
+              "inline-flex min-w-0 items-center rounded-md border font-sans transition-colors duration-150",
+              compact ? "h-6 gap-1.5 px-1.5 text-[9px]" : "h-8 gap-2 px-2.5 text-[11px] sm:text-[12px]",
+              "border-fg/[0.06] bg-fg/[0.03] text-fg/80 hover:border-fg/[0.12] hover:bg-fg/[0.06]",
+              open && "border-fg/[0.12] bg-fg/[0.06]",
+              disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
+              triggerClassName,
+              className,
+            )}
+            aria-label="Copilot Auto profile"
+            aria-haspopup="dialog"
+            aria-expanded={open}
+          >
+            <span className="shrink-0 font-medium leading-none text-fg/80">{selectedLabel}</span>
+            <CaretDown
+              size={compact ? 9 : 10}
+              weight="bold"
+              className={cn(
+                "shrink-0 text-muted-fg/60 transition-transform duration-150",
+                open && "rotate-180 text-fg/80",
+              )}
+            />
           </button>
         </Popover.Trigger>
         <Popover.Portal container={portalContainer ?? undefined}>
-          <Popover.Content side="top" align="start" sideOffset={6} className="rounded-lg border border-fg/10 bg-panel p-1 shadow-xl" style={{ zIndex: Z_LAYERS.popover }}>
-            {options.map(([value, label]) => <button key={value} type="button" className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-fg/5" aria-pressed={selected === value} onClick={() => { onCopilotAutoTierChange(value); setOpen(false); }}>{label}</button>)}
-            {copilotAutoTierPending ? <div role="status" className="px-2 py-1.5 text-[11px] text-muted-fg">Applies from the next message</div> : null}
+          <Popover.Content
+            side="top"
+            align="start"
+            sideOffset={6}
+            collisionPadding={8}
+            avoidCollisions
+            className="outline-none"
+            style={{ zIndex: Z_LAYERS.popover }}
+          >
+            <div
+              className="relative isolate flex w-[288px] flex-col overflow-hidden rounded-2xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-2.5 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md"
+              role="radiogroup"
+              aria-label="Copilot Auto profile"
+            >
+              <div className="flex items-center justify-between gap-3 px-1 pb-2.5 pt-0.5">
+                <span className="font-sans text-[12px] leading-none text-muted-fg/72">Copilot Auto</span>
+                <span className="shrink-0 font-sans text-[10px] leading-none text-muted-fg/50">Profile</span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {options.map(([value, label], index) => {
+                  const isActive = selected === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={isActive}
+                      ref={(el) => { copilotOptionRefs.current[index] = el; }}
+                      tabIndex={isActive ? 0 : -1}
+                      onKeyDown={(event) => handleOptionKeyDown(event, index)}
+                      onClick={() => { onCopilotAutoTierChange(value); setOpen(false); }}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left font-sans text-[12px] leading-none outline-none transition-colors duration-150",
+                        "focus-visible:ring-1 focus-visible:ring-fg/25",
+                        isActive ? "bg-fg/[0.06] text-fg" : "text-muted-fg/75 hover:bg-fg/[0.05] hover:text-fg/90",
+                      )}
+                    >
+                      <span className="truncate">{label}</span>
+                      {isActive ? <Check size={12} weight="bold" className="shrink-0 text-fg/70" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+              {copilotAutoTierPending ? (
+                <p role="status" className="mt-2 px-1 font-sans text-[10px] leading-4 text-muted-fg/60">
+                  Applies from the next message
+                </p>
+              ) : null}
+            </div>
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>

@@ -7,6 +7,7 @@ import {
   applyChatLaunchEvent,
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
+  chatLaunchRowSourcesNow,
   chatLaunchStore,
   getChatLaunchEntry,
   getChatLaunchOriginClientId,
@@ -14,6 +15,7 @@ import {
   hydrateChatLaunchFromHost,
   insertOptimisticChatLaunch,
   markChatLaunchStartFailed,
+  noteChatLaunchSourceRead,
   resetChatLaunchStartFailure,
   resetChatLaunchStoreForTests,
   useChatLaunchForPane,
@@ -162,10 +164,30 @@ describe("chat launch stand-ins", () => {
     const withReal = mergeChatLaunchRows([realRow], [optimistic("launch-1")]);
     expect(withReal).toEqual([realRow]);
     expect(mergeChatLaunchRows([], [optimistic("launch-1")], new Set(["launch-1"]))).toEqual([]);
-    expect(mergeChatLaunchRows([], [optimistic("launch-1", { phase: "cancelled" })])).toEqual([]);
-    // Once the chat exists and the agent runs, only the host's row lists it.
-    expect(mergeChatLaunchRows([], [optimistic("launch-1", { sessionCreated: true, agentStarted: true, phase: "completed" })])).toEqual([]);
+    const cancelled = optimistic("launch-1", { phase: "cancelled" });
+    expect(selectRosterChatLaunches([{ snapshot: cancelled, binding: BINDING_A, bindingKey: BINDING_A.key }], BINDING_A.key, new Set())).toEqual([]);
     expect(mergeChatLaunchRows([], [optimistic("launch-1", { sessionCreated: true })])).toHaveLength(1);
+    // Once the chat exists and the agent runs, the host's row takes over; the stand-in bridges
+    // until the host lists the chat or the reads end it (see chatLaunchAwaitsHostRow).
+    const started = optimistic("launch-1", { sessionCreated: true, agentStarted: true, phase: "completed" });
+    const startedAtMs = Date.parse("2026-09-22T10:00:00.000Z");
+    const bridging = [{ snapshot: started, binding: BINDING_A, bindingKey: BINDING_A.key, pendingEndedAtMs: startedAtMs }];
+    expect(selectRosterChatLaunches(bridging, BINDING_A.key, new Set())).toHaveLength(1);
+  });
+
+  it("ends a started chat's bridge on two reads that began after its start and did not list it", () => {
+    applyChatLaunchSnapshot(BINDING_A, optimistic("launch-1", { sessionCreated: true, sequence: 1 }));
+    applyChatLaunchSnapshot(BINDING_A, optimistic("launch-1", { sessionCreated: true, agentStarted: true, phase: "completed", sequence: 2 }));
+    const at = getChatLaunchEntry("launch-1")?.pendingEndedAtMs ?? Number.NaN;
+    const listed = () => selectRosterChatLaunches(chatLaunchRowSourcesNow(), BINDING_A.key, new Set()).length === 1;
+    // A read from before the start, another binding's read, and a read that listed the chat do not count.
+    noteChatLaunchSourceRead(BINDING_A.key, at, new Set());
+    noteChatLaunchSourceRead(BINDING_B.key, at + 1, new Set());
+    noteChatLaunchSourceRead(BINDING_A.key, at + 1, new Set(["launch-1"]));
+    noteChatLaunchSourceRead(BINDING_A.key, at + 1, new Set());
+    expect(listed()).toBe(true);
+    noteChatLaunchSourceRead(BINDING_A.key, at + 2, new Set());
+    expect(listed()).toBe(false);
   });
 
   it("lists launches of this binding and of the same project on another machine only", () => {

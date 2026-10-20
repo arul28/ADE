@@ -15,6 +15,14 @@ function getPlatformValue(): string {
   return "";
 }
 
+function bridgedPlatform(): string {
+  if (typeof window === "undefined") return "";
+  const bridged = (
+    window as { ade?: { app?: { runtimeTarget?: { platform?: unknown } } } }
+  ).ade?.app?.runtimeTarget?.platform;
+  return typeof bridged === "string" ? bridged : "";
+}
+
 /**
  * Host platform/arch as captured by preload. `navigator.platform` cannot answer
  * this — Chromium reports "Win32" on Windows on ARM as well — so anything that
@@ -71,6 +79,11 @@ export function rendererPlatformAttribute(
   if (/win/i.test(platformValue)) return "win32";
   if (/linux/i.test(platformValue)) return "linux";
   return "unknown";
+}
+
+/** Whether the host desktop app runs on Windows. */
+export function isWindowsPlatform(platform = bridgedPlatform()): boolean {
+  return /^win/i.test(platform);
 }
 
 /**

@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
@@ -31,11 +32,11 @@ import {
   type AppOpenSystemSettingsPaneResult,
 } from "../../../shared/types/systemSettings";
 import { createBuiltInBrowserIpcArgParsers } from "./builtInBrowserIpcArgs";
-import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
 import type {
   KeepAwakeFixResult,
   KeepAwakeSnapshot,
 } from "../../../shared/types/keepAwake";
+import { isRemoteMcpAction } from "../../../shared/types/remoteMcp";
 import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
@@ -48,7 +49,7 @@ import {
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
-import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskPressure";
+import { createDiskPressureMonitor, type DiskPressureMonitor, type DiskPressureSnapshot } from "../storage/diskPressure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
@@ -101,7 +102,8 @@ import { isProviderInstanceProvider } from "../../../shared/types/providerInstan
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
-import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
+import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -283,7 +285,6 @@ import type {
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
-  DraftPrDescriptionArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -328,8 +329,6 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCreateTagArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
   GitGetCommitMessageArgs,
@@ -686,7 +685,11 @@ import type {
   AiFeatureKey,
   AiProviderConnections,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -777,10 +780,6 @@ import type {
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmitDraftArgs,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -954,7 +953,7 @@ import {
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderCliUpdateAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -965,7 +964,6 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
-import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
@@ -1047,6 +1045,8 @@ import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBrid
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
+import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -1064,7 +1064,6 @@ import {
   buildLanePresenceByLaneId,
   decorateLaneSummariesWithPresence,
 } from "../lanes/laneListSnapshotService";
-import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
@@ -1351,7 +1350,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prWatchService: PrWatchService | null;
-  prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -1374,6 +1372,7 @@ export type AppContext = {
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
+  projectHealthService?: ProjectHealthService | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
@@ -1382,9 +1381,12 @@ export type AppContext = {
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   keepAwakeService?: KeepAwakeService | null;
+  keepAwakeAction?: (action: string, args?: Record<string, unknown>) => Promise<unknown>;
+  /** This machine's own brain's `remote_mcp` domain (Settings → ADE MCP). */
+  remoteMcpAction?: (action: string, args?: Record<string, unknown>) => Promise<unknown>;
+  keepAwakeMigrateLegacy?: () => Promise<boolean>;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
-  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
 };
 
@@ -1450,8 +1452,6 @@ function escapeCsvCell(value: string | null | undefined): string {
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context"
 ];
@@ -1567,7 +1567,11 @@ async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettin
     force: args?.force === true,
     skipAuthProbe: args?.force !== true,
   });
-  const providerConnections = await buildProviderConnections(cliStatuses);
+  // No live sign-in probe here, but ADE's own Copilot runtime still counts as
+  // installed; the disk check answers for the sign-in.
+  const providerConnections = await buildProviderConnections(cliStatuses, {
+    copilot: { runtime: resolveCopilotSdkRuntime({ env: process.env }), auth: null },
+  });
   const hasConfirmedSubscriptionProvider =
     providerConnections.claude.authAvailable ||
     providerConnections.codex.authAvailable ||
@@ -2496,11 +2500,12 @@ export function registerIpc({
   };
 
   /**
-   * Runtime action calls all share one channel; name the action they carry so
-   * IPC summaries and perf runs can tell `lanes.list` from `chat.send`.
+   * Runtime action calls all share one channel each (local and remote); name
+   * the action they carry so IPC summaries and perf runs can tell `lanes.list`
+   * from `chat.send`, on this machine or another.
    */
   const perfChannelLabel = (channel: string, args: unknown[]): string => {
-    if (channel !== IPC.localRuntimeCallAction) return channel;
+    if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return channel;
     const request = (args[0] as { request?: { domain?: unknown; action?: unknown } } | undefined)?.request;
     return typeof request?.domain === "string" && typeof request.action === "string"
       ? `${channel}:${request.domain}.${request.action}`
@@ -4226,6 +4231,14 @@ export function registerIpc({
     }
   );
 
+  // Called as a surface that shows the background service opens. Status reads do
+  // not probe it on their own while the brain is connected, so this asks for a
+  // fresh answer for that surface. Recovery and reports ask through
+  // `getStatusAfterServiceProbe`.
+  ipcMain.handle(IPC.appRefreshServiceHealth, async (): Promise<void> => {
+    await localRuntimeConnectionPool?.refreshServiceHealthForView();
+  });
+
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     const localRuntimeStatus = localRuntimeConnectionPool
       ? await localRuntimeConnectionPool.getFreshStatus()
@@ -4338,8 +4351,19 @@ export function registerIpc({
     await restartBrainForRepair(projectRecoveryService, productAnalyticsService);
   });
 
+  // With no project open (or one on another machine) there is no project
+  // monitor, but this computer's disk can still fill up: read the disk ADE's
+  // own folder lives on. It samples only when asked, so it costs nothing idle.
+  let machineDiskPressureMonitor: DiskPressureMonitor | null = null;
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
-    const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
+    let projectMonitor: DiskPressureMonitor | null = null;
+    try {
+      projectMonitor = getCtx().diskPressureMonitor ?? null;
+    } catch {
+      // No project context yet: this computer's monitor below answers.
+    }
+    const monitor = projectMonitor
+      ?? (machineDiskPressureMonitor ??= createDiskPressureMonitor({ roots: [resolveMachineAdeLayout().adeDir] }));
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
   });
 
@@ -4349,6 +4373,21 @@ export function registerIpc({
   ): Promise<StorageSnapshot> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.getSnapshot(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthGetReport, async (
+    _event,
+    args: { forceRefresh?: boolean } | undefined,
+  ): Promise<ProjectHealthReport> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.getReport(args ?? {});
+  });
+
+  ipcMain.handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    const result = await service.fix(args);
+    captureProjectDataRecovery("project_health_fix", result.ok ? "completed" : "failed");
+    return result;
   });
 
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
@@ -4958,7 +4997,7 @@ export function registerIpc({
   // missing and which way people recover. Nothing about the project. The 1 h
   // dedupe bounds a retry loop to 24 events per key per day.
   const captureProjectDataRecovery = (
-    action: "project_data_restore" | "project_data_start_fresh" | "project_move",
+    action: "project_data_restore" | "project_data_start_fresh" | "project_move" | "project_health_fix",
     outcome: "completed" | "failed",
   ) => {
     try {
@@ -5018,11 +5057,16 @@ export function registerIpc({
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     return controller.preflight({ projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot) });
   });
-  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown }) => {
+  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown; copyDependencies?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const result = await controller.start(
-      { projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot), moveAgentHistory: arg?.moveAgentHistory === true },
+      {
+        projectRoot: root,
+        destinationRoot: requireDestination(arg?.destinationRoot),
+        moveAgentHistory: arg?.moveAgentHistory === true,
+        copyDependencies: arg?.copyDependencies === true,
+      },
       windowId,
     );
     // A move refused before it began (another move running, a check that now
@@ -5194,7 +5238,7 @@ export function registerIpc({
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatusAfterServiceProbe() ?? null,
         getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)
@@ -5517,6 +5561,39 @@ export function registerIpc({
     return startMuseBinaryFetch();
   });
 
+  // The unpinned route: ADE's pinned copy of a provider's tool on this
+  // machine. A pinned call goes to the owning machine's `ai.pinnedToolStatus`
+  // / `ai.pinnedToolDownload`.
+  ipcMain.handle(IPC.aiPinnedToolStatus, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+    const { getPinnedProviderToolStatus } = await import("../ai/pinnedProviderTools");
+    return getPinnedProviderToolStatus(arg.provider);
+  });
+
+  ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+    const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
+    return startPinnedProviderToolDownload(arg.provider);
+  });
+
+  // The unpinned route for Antigravity sign-in on this machine; a pinned call
+  // goes to the owning machine's `ai.antigravitySignIn*` actions.
+  ipcMain.handle(IPC.aiAntigravitySignInStatus, async (): Promise<AntigravitySignInState> => {
+    const { getAntigravitySignInState } = await import("../ai/antigravitySignIn");
+    return getAntigravitySignInState();
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInStart, async (_event, arg: AntigravitySignInStartArgs): Promise<AntigravitySignInState> => {
+    const { startAntigravitySignIn, setAntigravitySignInLogger } = await import("../ai/antigravitySignIn");
+    setAntigravitySignInLogger(getCtx().logger);
+    return startAntigravitySignIn(arg);
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInComplete, async (_event, arg: AntigravitySignInCompleteArgs): Promise<AntigravitySignInState> => {
+    const { completeAntigravitySignIn } = await import("../ai/antigravitySignIn");
+    return completeAntigravitySignIn(arg);
+  });
+  ipcMain.handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
+    const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
+    return cancelAntigravitySignIn(arg);
+  });
+
   // The unpinned route for Settings > Muse Code on this machine; a pinned call
   // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
   ipcMain.handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
@@ -5677,29 +5754,6 @@ export function registerIpc({
         cwd: ctx.project.rootPath,
         ...(arg.runDoctor === true ? { runDoctor: true } : {}),
       });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiAcpProviderUpdate,
-    async (
-      _event,
-      arg: { provider: AcpChatProvider },
-    ): Promise<AcpProviderUpdateResult> => {
-      const ctx = getCtx();
-      // Same reasoning as diagnostics: this updates the CLI on the machine the
-      // main process runs on, never a remote host's.
-      const result = await runAcpProviderUpdate({
-        provider: arg.provider,
-        cwd: ctx.project.rootPath,
-      });
-      captureProviderCliUpdateAnalytics({
-        analytics: productAnalyticsService,
-        surface: "desktop",
-        provider: arg.provider,
-        outcome: result.ok ? "completed" : "failed",
-      });
-      return result;
     },
   );
 
@@ -6474,14 +6528,25 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
-      event,
-      "sync.disconnectFromBrain",
-      {},
-      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain"),
-    );
-    if (runtimeStatus.handled) return runtimeStatus.result;
-    return await (await requireSyncService()).disconnectFromBrain();
+    // Disconnect acts on the project this window shows, and on no other, and it
+    // never boots one. With no such project there is nothing to act on, so it
+    // fails closed: no unscoped runtime call (the brain refuses those), and no
+    // in-process sync service, since that can select and boot a project of its own.
+    const rootPath = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
+    if (!localRuntimeConnectionPool || !rootPath) {
+      throw new Error("This project isn't loaded yet. Open it and try again.");
+    }
+    try {
+      return await localRuntimeConnectionPool.callSyncForRoot<SyncRoleSnapshot>(
+        rootPath,
+        "sync.disconnectFromBrain",
+      );
+    } catch (error) {
+      if (isSyncServiceUnavailableError(error)) {
+        throw new Error("This project isn't loaded yet. Open it and try again.");
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
@@ -11476,15 +11541,6 @@ export function registerIpc({
     return ctx.gitService.commit(arg);
   });
 
-  ipcMain.handle(
-    IPC.gitGenerateCommitMessage,
-    async (_event, arg: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["gitService"] as const);
-      return ctx.gitService.generateCommitMessage(arg);
-    }
-  );
-
   ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
@@ -12074,25 +12130,6 @@ export function registerIpc({
       }
     },
   );
-
-  // ── Feedback Reporter ──────────────────────────────────────────────
-  ipcMain.handle(IPC.feedbackPrepareDraft, async (_event, arg: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.prepareDraft(arg);
-  });
-
-  ipcMain.handle(IPC.feedbackSubmitDraft, async (_event, arg: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.submitPreparedDraft(arg);
-  });
-
-  ipcMain.handle(IPC.feedbackList, async (): Promise<FeedbackSubmission[]> => {
-    const ctx = getCtx();
-    if (!ctx.feedbackReporterService) return [];
-    return ctx.feedbackReporterService.list();
-  });
 
   // Electron main stops exchanging the account refresh credential here, and
   // asks the brain for a token instead. Exactly one process per machine may
@@ -12775,11 +12812,6 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
-    const ctx = ensurePrReadContext();
-    return await ctx.prService.draftDescription(arg);
-  });
-
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.land(arg);
@@ -13398,18 +13430,11 @@ export function registerIpc({
   ipcMain.handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
   ipcMain.handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
-  ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => ensurePrReadContext().prService.aiReviewSummary(args));
 
   // PRs Tab redesign (Timeline + Rails)
   ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDeployments(args.prId);
-  });
-  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.getSummary(args.prId) ?? null);
-  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => {
-    const service = getCtx().prSummaryService;
-    if (!service) throw new Error("PR summary service is unavailable for this project window.");
-    return service.regenerateSummary(args.prId);
   });
   ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => ensurePrReadContext().prService.postReviewComment(args));
   ipcMain.handle(
@@ -14017,33 +14042,70 @@ export function registerIpc({
     return { detection };
   });
 
-  // A renderer running against a main process without the service must still
-  // get a well-formed snapshot — and one that says "off", because a missing
-  // service holds no lock. The shape lives with the type so the four surfaces
-  // that report "no lock held" cannot drift apart.
+  // ADE MCP on This computer: always this machine's own brain, never
+  // the project tab's bound runtime (which may be another machine). A pinned
+  // machine goes straight from the preload to its runtime action instead.
+  ipcMain.handle(IPC.remoteMcpCall, async (_event, action: unknown, args: unknown): Promise<unknown> => {
+    if (!isRemoteMcpAction(action)) throw new Error("Unknown ADE MCP action.");
+    const call = getCtx().remoteMcpAction;
+    if (!call) throw new Error("ADE MCP isn't available until this computer's ADE brain is running.");
+    const actionArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+    return await call(action, actionArgs);
+  });
+
   ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
-    const service = getCtx().keepAwakeService;
-    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+    const ctx = getCtx();
+    const action = ctx.keepAwakeAction;
+    if (!action) throw new Error("Keep-awake settings aren't available until this machine's brain is running.");
+    try {
+      return await action("getSnapshot") as KeepAwakeSnapshot;
+    } catch (error) {
+      if (!isUnsupportedAdeActionError(error) || !ctx.keepAwakeService) throw error;
+      ctx.keepAwakeService.start();
+      return await ctx.keepAwakeService.getSnapshot();
+    }
   });
 
   ipcMain.handle(
     IPC.keepAwakeSetLevel,
     async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
-      const service = getCtx().keepAwakeService;
-      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+      const ctx = getCtx();
+      const action = ctx.keepAwakeAction;
+      if (!action) throw new Error("Keep-awake settings aren't available until this machine's brain is running.");
+      try {
+        return await action("setLevel", { level }) as KeepAwakeSnapshot;
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error) || !ctx.keepAwakeService) throw error;
+        ctx.keepAwakeService.start();
+        return await ctx.keepAwakeService.setLevel(level);
+      }
     },
   );
 
   ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
-    const service = getCtx().keepAwakeService;
-    if (!service) {
-      return {
-        ok: false,
-        error: "ADE can't change this right now.",
-        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
-      };
+    const ctx = getCtx();
+    const service = ctx.keepAwakeService;
+    if (process.platform === "darwin" && service) return await service.fixSystemSleep();
+    if (ctx.keepAwakeAction) {
+      try {
+        return await ctx.keepAwakeAction("fixSystemSleep") as KeepAwakeFixResult;
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error) || !service) throw error;
+      }
     }
-    return await service.fixSystemSleep();
+    if (service) return await service.fixSystemSleep();
+    throw new Error("ADE can't change this right now.");
+  });
+
+  ipcMain.handle(IPC.keepAwakeMigrateLegacy, async (): Promise<boolean> => {
+    return await getCtx().keepAwakeMigrateLegacy?.() ?? false;
+  });
+
+  ipcMain.handle(IPC.keepAwakeApplyLidClosed, async (_event, disabled: unknown) => {
+    if (typeof disabled !== "boolean") throw new Error("Choose whether lid-closed mode should be on or off.");
+    const service = getCtx().keepAwakeService;
+    if (!service) throw new Error("Lid-closed mode is only available on this Mac.");
+    return await service.applyLidClosed(disabled);
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, async () => {

@@ -475,7 +475,7 @@ describe("TopBar", () => {
 
   // Account, Settings, feedback, help, and zoom moved to the project sidebar
   // (the footer cog and the settings sidebar header).
-  it("keeps account, settings, feedback, help, and zoom out of the top bar", () => {
+  it("keeps account, settings, help, and zoom out of the top bar", () => {
     useAppStore.setState({
       project: { rootPath: "/Users/arul/ADE", name: "ADE" },
       projectBinding: null,
@@ -486,7 +486,6 @@ describe("TopBar", () => {
     render(<TopBar />);
 
     expect(screen.queryByRole("button", { name: /^Account/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Report bug or suggest feature" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Zoom in" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Zoom out" })).toBeNull();
   });

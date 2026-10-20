@@ -7,6 +7,13 @@ import { createComputerUseArtifactBrokerService, resolveTempImportRoots } from "
 import { createHash } from "node:crypto";
 import { isIsoMediaExtension, readMp4CreationTime, readMp4CreationTimeFromFile } from "./mediaCreationTime";
 
+// The agent-browser probe runs through child_process. Calls pass through to the
+// real module unless a test answers them.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFile: vi.fn(actual.execFile), spawnSync: vi.fn(actual.spawnSync) };
+});
+
 function createLogger() {
   return {
     debug: () => {},
@@ -1388,6 +1395,146 @@ describe("computerUseArtifactBrokerService", () => {
       expect(broker.listArtifacts({ artifactId: still.id })).toHaveLength(1);
       expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKind: "scene_still" }))
         .toHaveLength(0);
+    });
+  });
+
+  describe("agent-browser probe", () => {
+    const TTL_MS = 60_000;
+    type ProbeCallback = (error: (Error & { code?: unknown }) | null) => void;
+    const exitedWith = (code: number): Error & { code: number } =>
+      Object.assign(new Error(`exited ${code}`), { code });
+    const timedOut = (): Error =>
+      Object.assign(new Error("timed out"), { code: null, killed: true, signal: "SIGTERM" });
+    // A probe's answer lands a few promise hops after its callback. setImmediate runs after them.
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const available = (broker: ReturnType<typeof createComputerUseArtifactBrokerService>) =>
+      broker.getBackendStatus().backends.find((backend) => backend.name === "agent-browser")?.available;
+
+    let now: number;
+    let previousOffThread: string | undefined;
+    let childProcess: typeof import("node:child_process");
+    let actualChildProcess: typeof import("node:child_process");
+    let createBroker: typeof createComputerUseArtifactBrokerService;
+    /** Callbacks of the agent-browser probes started so far, oldest first. */
+    let started: ProbeCallback[];
+    /** How many agent-browser probes ran synchronously on this thread. */
+    let syncProbes: number;
+
+    beforeEach(async () => {
+      previousOffThread = process.env.ADE_DISABLE_OFF_THREAD_SPAWN;
+      // Probes run through execFile on this thread, where the mock can answer them.
+      process.env.ADE_DISABLE_OFF_THREAD_SPAWN = "1";
+      now = Date.parse("2026-10-18T12:00:00Z");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(now);
+      // The probe cache is module state, so each test loads a fresh copy.
+      vi.resetModules();
+      childProcess = await import("node:child_process");
+      actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      ({ createComputerUseArtifactBrokerService: createBroker } = await import("./computerUseArtifactBrokerService"));
+      started = [];
+      syncProbes = 0;
+      vi.mocked(childProcess.execFile).mockImplementation((((_file: string, args: readonly string[], _options: unknown, callback: ProbeCallback) => {
+        if (args.some((arg) => arg.includes("agent-browser"))) started.push(callback);
+        else callback(exitedWith(1));
+        return undefined;
+      }) as any));
+      // The synchronous probe answers the same way the async one does: installed.
+      vi.mocked(childProcess.spawnSync).mockImplementation((((_file: string, args: readonly string[]) => {
+        if (!args.some((arg) => arg.includes("agent-browser"))) return { status: 1 };
+        syncProbes += 1;
+        return { status: 0 };
+      }) as any));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.mocked(childProcess.execFile).mockImplementation(actualChildProcess.execFile);
+      vi.mocked(childProcess.spawnSync).mockImplementation(actualChildProcess.spawnSync);
+      if (previousOffThread === undefined) delete process.env.ADE_DISABLE_OFF_THREAD_SPAWN;
+      else process.env.ADE_DISABLE_OFF_THREAD_SPAWN = previousOffThread;
+    });
+
+    it.each([
+      { outcome: "has not answered yet", settle: null },
+      { outcome: "timed out", settle: timedOut() },
+      { outcome: "could not start", settle: Object.assign(new Error("spawn sh ENOENT"), { code: "ENOENT" }) },
+    ])("a read after a first probe that $outcome probes once on this thread and reports that answer", async ({ settle }) => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      expect(started).toHaveLength(1);
+      if (settle) {
+        // A probe that gives no answer caches nothing, so the read below probes for itself.
+        started[0]!(settle);
+        await flush();
+      }
+
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(1);
+      expect(started).toHaveLength(1);
+
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(1);
+      expect(started).toHaveLength(1);
+
+      if (!settle) {
+        // The first probe started before the read's own probe, so its late answer is older and must not replace it.
+        started[0]!(exitedWith(1));
+        await flush();
+        expect(available(broker)).toBe(true);
+      }
+    });
+
+    it("a warm read never probes on this thread, and a read past the TTL starts one background refresh that later reads join", async () => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      started[0]!(null);
+      await flush();
+
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(0);
+      expect(started).toHaveLength(1);
+
+      vi.setSystemTime(now + TTL_MS);
+      // The stale answer is returned at once. The refresh runs off this thread, and the second read joins it.
+      expect(available(broker)).toBe(true);
+      expect(available(broker)).toBe(true);
+      expect(syncProbes).toBe(0);
+      expect(started).toHaveLength(2);
+    });
+
+    it.each([
+      { previous: "installed", firstAnswer: null, expected: true },
+      { previous: "missing", firstAnswer: exitedWith(1), expected: false },
+    ])("a refresh that times out keeps the $previous answer, and the next call retries at once", async ({ firstAnswer, expected }) => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      started[0]!(firstAnswer);
+      await flush();
+      expect(available(broker)).toBe(expected);
+
+      vi.setSystemTime(now + TTL_MS);
+      expect(available(broker)).toBe(expected);
+      expect(started).toHaveLength(2);
+      started[1]!(timedOut());
+      await flush();
+
+      // A timeout says nothing about the tool, so the last answer stands.
+      expect(available(broker)).toBe(expected);
+      // The next call retries at once, instead of waiting out another TTL.
+      expect(started).toHaveLength(3);
+      expect(syncProbes).toBe(0);
+    });
+
+    it("an answer that changes is seen within one TTL plus one call", async () => {
+      const broker = createBroker({ db, projectId: "project-1", projectRoot, logger: createLogger() });
+      started[0]!(exitedWith(1));
+      await flush();
+      expect(available(broker)).toBe(false);
+
+      vi.setSystemTime(now + TTL_MS);
+      // The stale answer is returned at once, and the refresh it starts is the one call.
+      expect(available(broker)).toBe(false);
+      started[1]!(null);
+      await flush();
+      expect(available(broker)).toBe(true);
     });
   });
 });

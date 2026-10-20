@@ -47,6 +47,7 @@ export default defineConfig([
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
       copilotSdkWorker: "../desktop/src/main/services/chat/copilotSdkWorker.ts",
+      piSdkWorker: "../desktop/src/main/services/chat/piSdkWorker.ts",
       usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
     },
     format: ["cjs"],

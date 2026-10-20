@@ -1,5 +1,6 @@
 import type {
   AgentChatIdentityKey,
+  AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionTurnHealth,
   CtoThreadHealth,
@@ -34,7 +35,10 @@ export type IdentityHandoffDistillation = {
   thin: boolean;
 };
 
-export type IdentityThreadRotationDeps<TManaged> = {
+/** The person's message a rollover sends again, attachments included. */
+export type RolloverMessage = Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments">;
+
+export type IdentityThreadRotationDeps<TManaged, TScheduled = unknown> = {
   logger: {
     info: (event: string, meta?: Record<string, unknown>) => void;
     warn: (event: string, meta?: Record<string, unknown>) => void;
@@ -48,6 +52,7 @@ export type IdentityThreadRotationDeps<TManaged> = {
   ) => Promise<ReadonlyArray<{ sessionId: string }>>;
   describeSession: (managed: TManaged) => {
     id: string;
+    laneId: string;
     status: AgentChatSession["status"];
     /** The session summary, or the live preview when no summary exists yet. */
     summaryOrPreview: string;
@@ -64,6 +69,8 @@ export type IdentityThreadRotationDeps<TManaged> = {
     sessionId: string;
     text: string;
     displayText: string;
+    /** Marks the turn as ADE's, so nothing later mistakes it for the person's message. */
+    metadata: { hostContinuation: { reason: "cto_handoff_note" } };
     timeoutMs: number;
   }) => Promise<{ status: string; outputText: string }>;
   /** The deterministic continuity flush a compaction also runs. */
@@ -72,10 +79,45 @@ export type IdentityThreadRotationDeps<TManaged> = {
   writeContinuitySummary: (managed: TManaged, summary: string) => void;
   /** Mirror the note into the CTO's durable thread state. */
   writeThreadState: (managed: TManaged, summary: string, reason: string) => void;
+  /**
+   * A hand-off written by ADE's helper model from the transcript on disk, for
+   * a thread that cannot write its own (over its limit, or the turn failed).
+   * Null when no helper is reachable. Also files any durable facts it finds.
+   */
+  summarizeForHandoff: (managed: TManaged) => Promise<string | null>;
+  /**
+   * Scheduled work still armed on the outgoing thread, taken before it is
+   * disposed (disposal cancels it) and re-armed on the new thread. Without
+   * this a rotation silently dropped the nightly memory pass and every
+   * check-in the CTO had scheduled. Null when no scheduler is wired.
+   */
+  scheduledWork: {
+    take: (managed: TManaged) => TScheduled[];
+    /** Re-arms each row on the new thread; names the rows that could not move. */
+    restore: (rows: TScheduled[], sessionId: string) => Promise<{ restored: number; failed: string[] }>;
+  } | null;
+  /** What the automatic rollover needs beyond a rotation. */
+  rollover: {
+    /**
+     * One read of the thread's recent transcript: how many messages the
+     * person sent in it, and the message of the failed turn — only when the
+     * person wrote it (not a wake, a report, or ADE's own prompt).
+     */
+    readInputs: (managed: TManaged, failedTurnId: string | null) => {
+      personMessageCount: number;
+      failedMessage: RolloverMessage | null;
+    };
+    isClosed: (managed: TManaged) => boolean;
+    /** First row of the new thread; the CTO page follows the thread on it. */
+    announce: (sessionId: string, resent: boolean) => void;
+    resend: (sessionId: string, message: RolloverMessage) => Promise<void>;
+    /** Run after the current event commit returns. */
+    defer: (run: () => void) => void;
+    nowMs: () => number;
+  };
   /** Durable memory writes, absent when no memory service is wired. */
   memory: {
     appendDailyEntry: (line: string) => void;
-    appendMemoryFact: (line: string) => void;
   } | null;
   /**
    * Is a turn running on this thread right now — foreground or background?
@@ -136,8 +178,18 @@ export function isIdentityRotationTurnActiveError(error: unknown): boolean {
   return error instanceof IdentityRotationTurnActiveError;
 }
 
-export function createIdentityThreadRotation<TManaged>(
-  deps: IdentityThreadRotationDeps<TManaged>,
+/**
+ * An automatic rollover needs a thread with real history behind it. One that
+ * overflows within its first few messages is not full: the message is too
+ * big, and a new thread would fail the same way.
+ */
+const AUTO_ROLLOVER_MIN_USER_MESSAGES = 3;
+/** Stops a loop if a fresh thread overflows again straight away. */
+const AUTO_ROLLOVER_COOLDOWN_MS = 10 * 60_000;
+const AUTO_ROLLOVER_MIN_OCCUPANCY_PCT = 60;
+
+export function createIdentityThreadRotation<TManaged, TScheduled = unknown>(
+  deps: IdentityThreadRotationDeps<TManaged, TScheduled>,
 ) {
   /**
    * Can this chat take another turn, and is it close to the edge?
@@ -205,7 +257,11 @@ export function createIdentityThreadRotation<TManaged>(
     // already on disk, so it works on a thread that cannot think — and a thread
     // with nothing in it at all needs no model round-trip to tell us so.
     const described = deps.describeSession(managed);
-    const summary = described.summaryOrPreview.trim();
+    // A thread that died on an error previews that error. "Where it left off:
+    // Prompt is too long" says nothing about the work, so it is left out.
+    const failureText = deps.readTurnHealthRecord(managed).failure?.message.trim() ?? "";
+    const preview = described.summaryOrPreview.trim();
+    const summary = failureText && (failureText.startsWith(preview) || preview.startsWith(failureText)) ? "" : preview;
     const recent = deps.listUserMessages(managed)
       .slice(-8)
       .map((text) => `- ${clipHandoffLine(text)}`);
@@ -232,12 +288,30 @@ export function createIdentityThreadRotation<TManaged>(
             "Write only the note.",
           ].join("\n"),
           displayText: "Write your hand-off note before this thread is retired.",
+          metadata: { hostContinuation: { reason: "cto_handoff_note" } },
           timeoutMs: 120_000,
         });
         const text = asked.status === "completed" ? asked.outputText.trim() : "";
         if (text.length) return { text, source: "model", thin: false };
       } catch (error) {
         deps.logger.warn("agent_chat.identity_handoff_turn_failed", {
+          sessionId: described.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // The thread could not write its own note. ADE's helper model reads the
+    // transcript on disk instead, which works on a thread that cannot think.
+    if (sections.length) {
+      try {
+        const helped = (await deps.summarizeForHandoff(managed))?.trim() ?? "";
+        if (helped.length) {
+          const asks = recent.length ? `\n\n${["What was asked, most recent last:", ...recent].join("\n")}` : "";
+          return { text: `${helped}${asks}`, source: "model", thin: false };
+        }
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_handoff_helper_failed", {
           sessionId: described.id,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -253,6 +327,16 @@ export function createIdentityThreadRotation<TManaged>(
       );
     }
     return { text: sections.join("\n\n"), source: "deterministic", thin };
+  };
+
+  const appendDailyEntrySafely = (line: string): void => {
+    try {
+      deps.memory?.appendDailyEntry(line);
+    } catch (error) {
+      deps.logger.warn("agent_chat.identity_rotation_daily_entry_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   /**
@@ -272,17 +356,41 @@ export function createIdentityThreadRotation<TManaged>(
    * knows better; the over-limit path does not even need it, because a thread
    * that cannot take a turn has no live turn to lose.
    */
-  const startFreshIdentitySession = async (args: {
-    identityKey: AgentChatIdentityKey;
-    laneId: string;
-    force?: boolean;
-  }): Promise<{
+  type RotationResult = {
     session: AgentChatSession;
     previousSessionId: string | null;
     handoff: IdentityHandoff;
-  }> => {
+  };
+  let rotationInFlight: Promise<RotationResult> | null = null;
+
+  /**
+   * One rotation at a time. The person's "Start fresh" and ADE's own rollover
+   * both fire exactly when a thread is full, and the hand-off inside a
+   * rotation waits on a model for seconds; two overlapping rotations read the
+   * same outgoing thread and each opened a new one. A second caller gets the
+   * first rotation's result.
+   */
+  const startFreshIdentitySession = (args: {
+    identityKey: AgentChatIdentityKey;
+    laneId: string;
+    force?: boolean;
+  }): Promise<RotationResult> => {
+    if (rotationInFlight) return rotationInFlight;
+    const running = rotateIdentitySession(args).finally(() => {
+      if (rotationInFlight === running) rotationInFlight = null;
+    });
+    rotationInFlight = running;
+    return running;
+  };
+
+  const rotateIdentitySession = async (args: {
+    identityKey: AgentChatIdentityKey;
+    laneId: string;
+    force?: boolean;
+  }): Promise<RotationResult> => {
     const existing = (await deps.listIdentitySessions(args.identityKey))[0] ?? null;
     let handoff: IdentityHandoff = { written: false, thin: false, source: "none" };
+    let carriedScheduledWork: TScheduled[] = [];
 
     if (existing) {
       const managed = deps.ensureManagedSession(existing.sessionId);
@@ -304,15 +412,22 @@ export function createIdentityThreadRotation<TManaged>(
         // The same routine a compaction runs, for the same reason: the rolling
         // summary and `thread-state.md` are what the NEXT thread reads first.
         deps.flushContinuity(managed, "session_rotation");
-        deps.writeContinuitySummary(managed, distilled.text);
-        deps.writeThreadState(managed, distilled.text, "session_rotation");
+        // A thin hand-off has nothing to say, so it must not replace what is
+        // already written. Retiring a thread that never took a turn used to
+        // overwrite the previous thread's real hand-off with "could not be
+        // summarized" and file that sentence as a durable fact.
+        if (!distilled.thin) {
+          deps.writeContinuitySummary(managed, distilled.text);
+          deps.writeThreadState(managed, distilled.text, "session_rotation");
+        }
         if (args.identityKey === "cto" && deps.memory) {
-          const stamp = deps.nowIso().slice(0, 10);
+          // The hand-off goes in the daily log, which keeps every one of them
+          // and is searchable. It used to be filed as a durable "fact" too,
+          // which made a twelve-line status note rank beside real decisions.
           deps.memory.appendDailyEntry(
-            `Thread retired (${existing.sessionId}) and a fresh CTO session started${distilled.thin ? " — hand-off was thin; see the retired transcript" : ""}.`,
-          );
-          deps.memory.appendMemoryFact(
-            `${stamp} hand-off from retired CTO thread ${existing.sessionId}: ${distilled.text}`,
+            distilled.thin
+              ? `Thread retired (${existing.sessionId}) and a fresh CTO session started — hand-off was thin; see the retired transcript.`
+              : `Thread retired (${existing.sessionId}) and a fresh CTO session started. Hand-off: ${clipHandoffLine(distilled.text, 1_500)}`,
           );
         }
         handoff = { written: true, thin: distilled.thin, source: distilled.source };
@@ -324,6 +439,19 @@ export function createIdentityThreadRotation<TManaged>(
           sessionId: existing.sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      try {
+        carriedScheduledWork = deps.scheduledWork?.take(managed) ?? [];
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_rotation_schedule_snapshot_failed", {
+          sessionId: existing.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // The disposal below cancels them; say so where the CTO will read it.
+        // The hand-off already named the scheduled work by title.
+        appendDailyEntrySafely(
+          `Scheduled work on retired thread ${existing.sessionId} could not be moved to the new thread; re-create it from the hand-off.`,
+        );
       }
       try {
         await deps.dispose({ sessionId: existing.sessionId });
@@ -340,14 +468,95 @@ export function createIdentityThreadRotation<TManaged>(
       laneId: args.laneId,
       reuseExisting: false,
     });
+    let scheduledWorkCarried = 0;
+    if (carriedScheduledWork.length && deps.scheduledWork) {
+      let failed: string[] = [];
+      try {
+        const restored = await deps.scheduledWork.restore(carriedScheduledWork, session.id);
+        scheduledWorkCarried = restored.restored;
+        failed = restored.failed;
+      } catch (error) {
+        deps.logger.warn("agent_chat.identity_rotation_schedule_restore_failed", {
+          sessionId: session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        failed = [`all ${carriedScheduledWork.length} scheduled job(s)`];
+      }
+      if (failed.length) {
+        appendDailyEntrySafely(
+          `Scheduled work that could not move to the new CTO thread (re-create it): ${failed.map((line) => clipHandoffLine(line, 120)).join("; ")}`,
+        );
+      }
+    }
     deps.logger.info("agent_chat.identity_session_rotated", {
       identityKey: args.identityKey,
       previousSessionId: existing?.sessionId ?? null,
       sessionId: session.id,
       handoffSource: handoff.source,
       handoffThin: handoff.thin,
+      scheduledWorkCarried,
     });
     return { session, previousSessionId: existing?.sessionId ?? null, handoff };
+  };
+
+  let autoRolloverInFlight = false;
+  let autoRolloverLastAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Retire a CTO thread that no longer fits its context window, without being
+   * asked, and send the person's failed message again on the fresh one.
+   *
+   * Rotation stays an offer while the thread still answers. Once it cannot,
+   * every message fails the same way — one thread took ten failed turns over
+   * thirteen hours before anyone pressed the button — so waiting protects
+   * nothing. Only a message the person wrote is sent again: a scheduled wake
+   * or a child report carries delivery metadata that belongs to the old
+   * thread, and replayed as plain text it would read as the person asking.
+   * The hand-off covers those.
+   */
+  const maybeAutoRollover = (managed: TManaged, failedTurnId: string | null): boolean => {
+    const { rollover } = deps;
+    if (autoRolloverInFlight || rotationInFlight || rollover.isClosed(managed)) return false;
+    if (rollover.nowMs() - autoRolloverLastAt < AUTO_ROLLOVER_COOLDOWN_MS) return false;
+    // Full, not just handed one oversized message: enough of the person's
+    // messages, or a context that was already well filled before this turn.
+    // The second matters on threads whose recent transcript is mostly tool
+    // output, where few messages fit in the window ADE reads.
+    const occupancyPct = deps.readTurnHealthRecord(managed).context?.occupancyPct ?? 0;
+    const inputs = rollover.readInputs(managed, failedTurnId);
+    if (
+      inputs.personMessageCount < AUTO_ROLLOVER_MIN_USER_MESSAGES
+      && occupancyPct < AUTO_ROLLOVER_MIN_OCCUPANCY_PCT
+    ) return false;
+    const described = deps.describeSession(managed);
+    const message = inputs.failedMessage;
+    autoRolloverInFlight = true;
+    autoRolloverLastAt = rollover.nowMs();
+    deps.logger.info("agent_chat.cto_auto_rollover_started", { sessionId: described.id });
+    // Deferred: the caller is inside the commit of the failed turn's `done`,
+    // and the rotation disposes this very session.
+    rollover.defer(() => {
+      void (async () => {
+        try {
+          const result = await startFreshIdentitySession({ identityKey: "cto", laneId: described.laneId, force: true });
+          rollover.announce(result.session.id, Boolean(message));
+          if (message) await rollover.resend(result.session.id, message);
+          deps.logger.info("agent_chat.cto_auto_rollover_completed", {
+            previousSessionId: described.id,
+            sessionId: result.session.id,
+            handoffSource: result.handoff.source,
+          });
+        } catch (error) {
+          deps.logger.warn("agent_chat.cto_auto_rollover_failed", {
+            sessionId: described.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          autoRolloverInFlight = false;
+        }
+      })();
+    });
+    return true;
   };
 
   return {
@@ -355,5 +564,6 @@ export function createIdentityThreadRotation<TManaged>(
     getCtoThreadHealth,
     distilIdentityHandoff,
     startFreshIdentitySession,
+    maybeAutoRollover,
   };
 }

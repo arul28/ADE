@@ -106,6 +106,91 @@ public enum Geometry {
         )
     }
 
+    /// Places lane displays in a diagonal chain from an exposed real-screen
+    /// corner. The input order is the chain order, usually display creation
+    /// order, and the returned placements preserve each display's measured size
+    /// and scale.
+    ///
+    /// Quartz keeps displays that touch at one point, but rejects a gap. It
+    /// also lets a pointer cross a shared edge like an ordinary screen edge.
+    /// Starting at the lowest, leftmost safe corner puts the chain outside the
+    /// real-display union and leaves only a diagonal corner path between it and
+    /// the user's screens.
+    public static func cornerChainPlacements(
+        realDisplayFrames: [CGRect],
+        laneDisplayTemplates: [DisplayPlacement],
+        obstacleDisplayFrames: [CGRect] = [],
+        requiresIntegralOrigins: Bool = false
+    ) -> [DisplayPlacement]? {
+        let realFrames = realDisplayFrames.filter { $0.width > 0 && $0.height > 0 }
+        let obstacles = (realFrames + obstacleDisplayFrames).filter { $0.width > 0 && $0.height > 0 }
+        guard !realFrames.isEmpty,
+              !laneDisplayTemplates.isEmpty,
+              laneDisplayTemplates.allSatisfy({ $0.width > 0 && $0.height > 0 })
+        else { return nil }
+
+        let anchors = realFrames.flatMap { frame in
+            [
+                CornerAnchor(point: CGPoint(x: frame.minX, y: frame.minY), xDirection: -1, yDirection: -1),
+                CornerAnchor(point: CGPoint(x: frame.maxX, y: frame.minY), xDirection: 1, yDirection: -1),
+                CornerAnchor(point: CGPoint(x: frame.minX, y: frame.maxY), xDirection: -1, yDirection: 1),
+                CornerAnchor(point: CGPoint(x: frame.maxX, y: frame.maxY), xDirection: 1, yDirection: 1),
+            ]
+        }.sorted {
+            if $0.point.y != $1.point.y { return $0.point.y > $1.point.y }
+            if $0.point.x != $1.point.x { return $0.point.x < $1.point.x }
+            if $0.xDirection != $1.xDirection { return $0.xDirection < $1.xDirection }
+            return $0.yDirection < $1.yDirection
+        }
+
+        for anchor in anchors {
+            var edge = anchor.point
+            var planned: [DisplayPlacement] = []
+            var isSafe = true
+
+            for template in laneDisplayTemplates {
+                let x = anchor.xDirection < 0 ? edge.x - template.width : edge.x
+                let y = anchor.yDirection < 0 ? edge.y - template.height : edge.y
+                guard !requiresIntegralOrigins || (x == x.rounded() && y == y.rounded()) else {
+                    isSafe = false
+                    break
+                }
+                let placement = DisplayPlacement(
+                    origin: CGPoint(x: x, y: y),
+                    width: template.width,
+                    height: template.height,
+                    scale: template.scale
+                )
+                guard obstacles.allSatisfy({ !overlapsOrSharesEdge(placement.frame, $0) }) else {
+                    isSafe = false
+                    break
+                }
+                planned.append(placement)
+                edge = CGPoint(
+                    x: edge.x + CGFloat(anchor.xDirection) * template.width,
+                    y: edge.y + CGFloat(anchor.yDirection) * template.height
+                )
+            }
+
+            if isSafe, planned.count == laneDisplayTemplates.count { return planned }
+        }
+        return nil
+    }
+
+    private struct CornerAnchor {
+        let point: CGPoint
+        let xDirection: Int
+        let yDirection: Int
+    }
+
+    /// A corner contact is safe; positive-area overlap and any shared edge are
+    /// rejected because macOS and the pointer treat both as connected screens.
+    private static func overlapsOrSharesEdge(_ first: CGRect, _ second: CGRect) -> Bool {
+        let overlapWidth = min(first.maxX, second.maxX) - max(first.minX, second.minX)
+        let overlapHeight = min(first.maxY, second.maxY) - max(first.minY, second.minY)
+        return overlapWidth >= 0 && overlapHeight >= 0 && (overlapWidth > 0 || overlapHeight > 0)
+    }
+
     /// Cocoa `NSEvent.mouseLocation` is bottom-left of the primary display.
     /// Quartz / `CGEvent` / `CGWarpMouseCursorPosition` is top-left of the
     /// primary. Same x; y flips against the primary's height.

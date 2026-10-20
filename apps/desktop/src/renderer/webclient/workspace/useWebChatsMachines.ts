@@ -1,12 +1,11 @@
 /**
- * The Chats page's machine picker, in the browser.
+ * The Chats page's machines, in the browser.
  *
- * Desktop already ships this control: `/chats` runs on whichever machine the
- * window is bound to, and its picker rebinds the window — "This computer" resolving
- * through `chat/thisMachineProjectRoot.ts`. The hosted client keeps the same
- * control and the same meaning, with one substitution: a browser has no "This
- * computer", so the options are the account's machines and rebinding means pointing the
- * federated adapter's chats surface at one of them.
+ * The Chats rail lists the chats of every live machine at once
+ * (`liveMachines`, by target id). The picker beside the composer chooses where
+ * a new chat runs; a browser has no "This computer", so its options are the
+ * account's machines, and picking one points the federated adapter's chats
+ * surface at it.
  *
  * Options are keyed by `machineCatalogKey`, not by target id, because a machine
  * this browser has never dialled has no target id yet. Selecting one connects
@@ -26,6 +25,10 @@ export type WebChatsMachinePicker = {
   options: WebChatsMachineOption[];
   /** Resolves to an error message, or null when the switch landed. */
   select(machineId: string): Promise<string | null>;
+  /** Target id of the machine the Chats surface addresses: where a new chat runs. */
+  targetId: string | null;
+  /** Every connected machine by target id: the Chats rail lists all of their chats. */
+  liveMachines: Array<{ id: string; name: string }>;
 };
 
 function entryTargetIds(machine: WebMachineEntry): string[] {
@@ -35,7 +38,7 @@ function entryTargetIds(machine: WebMachineEntry): string[] {
   return ids;
 }
 
-/** Null on the desktop, where the window's own binding is the picker's subject. */
+/** Null on the desktop, which lists This computer and its connected remote runtimes instead. */
 export function useWebChatsMachines(): WebChatsMachinePicker | null {
   const workspace = useOptionalWebWorkspace();
 
@@ -64,11 +67,24 @@ export function useWebChatsMachines(): WebChatsMachinePicker | null {
     const current = targetId
       ? machines.find((machine) => entryTargetIds(machine).includes(targetId)) ?? null
       : null;
+    const liveMachines: Array<{ id: string; name: string }> = [];
+    for (const machine of machines) {
+      const liveTargetId = machine.status === "live" ? machine.session?.targetId : null;
+      if (liveTargetId && !liveMachines.some((entry) => entry.id === liveTargetId)) {
+        liveMachines.push({ id: liveTargetId, name: machine.name });
+      }
+    }
+    // The addressed machine is connected even before its row reads "live".
+    if (targetId && current && !liveMachines.some((entry) => entry.id === targetId)) {
+      liveMachines.unshift({ id: targetId, name: current.name });
+    }
     return {
       machineId: current?.key ?? null,
       machineLabel: current?.name ?? null,
       options: machines.map((machine) => ({ id: machine.key, name: machine.name })),
       select,
+      targetId,
+      liveMachines,
     };
   }, [machines, select, workspace]);
 }

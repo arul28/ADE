@@ -60,6 +60,9 @@ export function resolveCrsqliteExtensionPath(): string | null {
     process.resourcesPath ? path.join(process.resourcesPath, relativePath) : null,
     // Installed static/headless brain: native tarball is extracted to
     // <ADE_HOME>/runtime/<target>/, carrying crsqlite at vendor/crsqlite/<arch>/.
+    // The SEA banner records the root it actually found (another home, or an
+    // ADE_RUNTIME_ROOT override) as ADE_RESOLVED_RUNTIME_ROOT; trust that first.
+    process.env.ADE_RESOLVED_RUNTIME_ROOT?.trim() ? path.join(process.env.ADE_RESOLVED_RUNTIME_ROOT.trim(), relativePath) : null,
     path.join(adeHome, "runtime", platformArchDir(), relativePath),
     path.resolve(process.cwd(), relativePath),
     path.resolve(process.cwd(), "apps", "desktop", relativePath),

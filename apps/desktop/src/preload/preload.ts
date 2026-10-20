@@ -168,6 +168,7 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -259,6 +260,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeLevel,
   KeepAwakeSnapshot,
+  RemoteMcpAction,
   AutoUpdateSnapshot,
   UpdateImpact,
   UpdateInstallImpact,
@@ -298,7 +300,11 @@ import type {
   AdeCliInstallResult,
   AdeCliStatus,
   AcpProviderDiagnostics,
-  AcpProviderUpdateResult,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -350,7 +356,6 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
-  DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -462,8 +467,6 @@ import type {
   GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitListCommitFilesArgs,
   GitListRecentCommitsArgs,
   GitFileActionArgs,
@@ -559,7 +562,6 @@ import type {
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   PrDeployment,
-  PrAiSummary,
   PostPrReviewCommentArgs,
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
@@ -575,8 +577,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  AiReviewSummaryArgs,
-  AiReviewSummary,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -877,6 +877,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -1166,6 +1169,7 @@ import type {
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -1206,11 +1210,6 @@ import type {
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
-  FeedbackPrepareDraftArgs,
-  FeedbackPreparedDraft,
-  FeedbackSubmission,
-  FeedbackSubmissionEvent,
-  FeedbackSubmitDraftArgs,
   SearchIndexStatus,
   SearchQueryArgs,
   SearchQueryResult,
@@ -1218,6 +1217,8 @@ import type {
 } from "../shared/types";
 import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "../shared/laneGitHubIssue";
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
+import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shared/harnessPresets";
+import { isRoutePresetId } from "../shared/harnessRoutes";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -1479,6 +1480,30 @@ const sessionDeltaCache = createKeyedShortIpcCache<SessionDeltaSummary | null>(
     ),
   1_000,
 );
+
+/**
+ * The create args with this machine's copy of the preset they name.
+ *
+ * The chat may run on another machine (a pin, or a project tab bound to one),
+ * whose synced copy of the account's preset list can be behind this one; the
+ * snapshot lets it run the preset the user picked here. Best effort: an
+ * unreadable list sends the args as they were.
+ */
+async function withPresetSnapshot<Args extends { presetId?: string; presetSnapshot?: AgentChatCreateArgs["presetSnapshot"] }>(
+  args: Args,
+): Promise<Args> {
+  const presetId = args.presetId?.trim();
+  if (!presetId || isRoutePresetId(presetId) || args.presetSnapshot) return args;
+  try {
+    const result = await ipcRenderer.invoke(IPC.accountSettingsGet, { scope: "all", key: HARNESS_PRESETS_SETTING_KEY }) as
+      AccountSettingsResult<unknown> | null;
+    if (!result || result.ok !== true) return args;
+    const preset = normalizeHarnessPresetList(result.value).find((entry) => entry.id === presetId);
+    return preset ? { ...args, presetSnapshot: preset } : args;
+  } catch {
+    return args;
+  }
+}
 
 const agentChatSummaryCache =
   createKeyedShortIpcCache<AgentChatSessionSummary | null>(
@@ -2994,11 +3019,6 @@ const remoteGitHubStatusChangedFanout = createRemoteRuntimeFanout<GitHubStatus>(
     githubAppInstallationStatusCache.clear();
   },
 });
-const remoteFeedbackEventFanout = createRemoteRuntimeFanout<FeedbackSubmissionEvent>({
-  eventType: "feedback_submission_event",
-  label: "feedback",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-});
 const remoteComputerUseEventFanout = createRemoteRuntimeFanout<ComputerUseEventPayload>({
   eventType: "computer_use_event",
   label: "computer use",
@@ -3079,7 +3099,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAutomationsEventFanout,
   remoteConflictEventFanout,
   remoteGitHubStatusChangedFanout,
-  remoteFeedbackEventFanout,
   remoteComputerUseEventFanout,
   remoteIosSimulatorEventFanout,
   remoteMacDesktopEventFanout,
@@ -3185,11 +3204,6 @@ const subscribeLocalConflictEvents =
   createLocalIpcEventSubscription<ConflictEventPayload>(
     IPC.conflictsEvent,
     "conflict event",
-  );
-const subscribeLocalFeedbackEvents =
-  createLocalIpcEventSubscription<FeedbackSubmissionEvent>(
-    IPC.feedbackOnUpdate,
-    "feedback event",
   );
 const subscribeLocalOpenCodeOAuthStatusEvents =
   createLocalIpcEventSubscription<OpenCodeOAuthStatusEvent>(
@@ -3774,12 +3788,6 @@ function subscribeRemoteGitHubStatusChangedEvents(
   return remoteGitHubStatusChangedFanout.subscribe(cb);
 }
 
-function subscribeRemoteFeedbackEvents(
-  cb: (payload: FeedbackSubmissionEvent) => void,
-): () => void {
-  return remoteFeedbackEventFanout.subscribe(cb);
-}
-
 function subscribeRemoteComputerUseEvents(
   cb: (payload: ComputerUseEventPayload) => void,
 ): () => void {
@@ -3947,16 +3955,6 @@ function isRebaseEventPayload(
   );
 }
 
-function subscribeFeedbackEvents(
-  cb: (payload: FeedbackSubmissionEvent) => void,
-): () => void {
-  const removeLocal = subscribeLocalFeedbackEvents(cb);
-  const removeRemote = subscribeRemoteFeedbackEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
-}
 
 function subscribePinnedProjectRuntimeEvents<T>(
   pin: OpenProjectBinding | null | undefined,
@@ -4598,6 +4596,7 @@ const adeBridge = {
     setIgnoreMenuShortcuts: async (ignore: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    refreshServiceHealth: async (): Promise<void> => ipcRenderer.invoke(IPC.appRefreshServiceHealth),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     getInstalledBrowsers: async (): Promise<InstalledBrowser[]> =>
       ipcRenderer.invoke(IPC.appGetInstalledBrowsers),
@@ -4866,6 +4865,19 @@ const adeBridge = {
     ): Promise<StorageCleanupResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
         ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
+  },
+  projectHealth: {
+    getReport: async (
+      args: { forceRefresh?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectHealthReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "getReport", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthGetReport, args),
+      ),
+    fix: async (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "fix", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthFix, args),
       ),
   },
   archive: {
@@ -5360,12 +5372,14 @@ const adeBridge = {
   personalChats: {
     call: async (
       request: PersonalChatCallArgs,
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatCallResponse> =>
-      ipcRenderer.invoke(IPC.personalChatsCall, request),
+      ipcRenderer.invoke(IPC.personalChatsCall, request, target ?? null),
     streamEvents: async (
       request: PersonalChatStreamEventsArgs = {},
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatStreamEventsResult> =>
-      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request),
+      ipcRenderer.invoke(IPC.personalChatsStreamEvents, request, target ?? null),
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>
@@ -5461,6 +5475,36 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "ensureMuseBinary", {}, () =>
         ipcRenderer.invoke(IPC.aiEnsureMuseBinary),
       ),
+    // ADE's pinned copy of a provider's tool lives in the tools cache of the
+    // machine that runs the provider, so its status and Download/Retry go to
+    // the machine that owns the chat, lane or Settings page.
+    pinnedToolStatus: async (args: { provider: string }, pin?: OpenProjectBinding | null): Promise<PinnedProviderToolStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "pinnedToolStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPinnedToolStatus, args),
+      ),
+    pinnedToolDownload: async (args: { provider: string }, pin?: OpenProjectBinding | null): Promise<PinnedProviderToolStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "pinnedToolDownload", { args }, () =>
+        ipcRenderer.invoke(IPC.aiPinnedToolDownload, args),
+      ),
+    // Antigravity sign-in runs where the provider row's machine runs the
+    // agent; start, its status reads, a pasted return URL and cancel all go
+    // to that same machine.
+    antigravitySignInStatus: async (pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStatus", {}, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+      ),
+    antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+      ),
+    antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInComplete", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+      ),
+    antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiAntigravitySignInCancel, args),
+      ),
     // Settings > Muse Code: one Settings-owned `muse serve` host per page visit
     // on the machine the page is showing (never a chat's host). The page
     // closes it with `museSettingsClose` when it leaves.
@@ -5544,7 +5588,7 @@ const adeBridge = {
           ),
       ),
     acpProviderDiagnostics: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity";
       runDoctor?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AcpProviderDiagnostics> =>
       // Unpinned stays on desktop IPC: it reports on the CLIs installed on the
@@ -5554,14 +5598,6 @@ const adeBridge = {
       pin
         ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "acpProviderDiagnostics", { args })
         : ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
-    acpProviderUpdate: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
-    }, pin?: OpenProjectBinding | null): Promise<AcpProviderUpdateResult> =>
-      // Same rule as diagnostics: unpinned updates This computer's CLI, a pin
-      // updates the named machine's.
-      pin
-        ? callPinnedRuntimeAction<AcpProviderUpdateResult>(pin, "ai", "acpProviderUpdate", { args })
-        : ipcRenderer.invoke(IPC.aiAcpProviderUpdate, args),
     opencodeAuthMethods: async (pin?: OpenProjectBinding | null): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),
@@ -7165,6 +7201,19 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "listTemplates", {}, () =>
         ipcRenderer.invoke(IPC.lanesListTemplates),
       ),
+    // Runtime-only: the brain reads the checkout of the machine that owns it.
+    getDependencyStatus: (
+      args: GetLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "getDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
+    acknowledgeDependencyStatus: (
+      args: AcknowledgeLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "acknowledgeDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
     getTemplate: async (
       args: GetLaneTemplateArgs,
     ): Promise<LaneTemplate | null> =>
@@ -7750,8 +7799,10 @@ const adeBridge = {
    * Always runtime-backed: there is no in-process Electron implementation.
    */
   chatLaunch: {
-    start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args }),
+    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", {
+        args: args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args,
+      }),
     get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
       callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
     list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
@@ -7843,8 +7894,9 @@ const adeBridge = {
         ? runtime.result
         : agentChatSummaryCache.get(sessionId);
     },
-    create: async (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null): Promise<AgentChatSession> => {
+    create: async (rawArgs: AgentChatCreateArgs, pin?: OpenProjectBinding | null): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      const args = await withPresetSnapshot(rawArgs);
       const session = pin
         ? await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "createSession", { args })
         : await (async () => {
@@ -7861,10 +7913,11 @@ const adeBridge = {
       return session as AgentChatSession;
     },
     launch: async (
-      args: AgentChatLaunchArgs,
+      rawArgs: AgentChatLaunchArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      const args = await withPresetSnapshot(rawArgs);
       // The lane's machine runs the launch; a pin addresses it directly.
       if (pin) {
         const pinned = await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "launchHeadless", { args });
@@ -11523,17 +11576,6 @@ const adeBridge = {
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    generateCommitMessage: async (
-      args: GitGenerateCommitMessageArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<GitGenerateCommitMessageResult> =>
-      callPinnedOrBoundRuntimeActionOr<GitGenerateCommitMessageResult>(
-        pin,
-        "git",
-        "generateCommitMessage",
-        { args },
-        () => ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
-      ),
     listRecentCommits: async (
       args: GitListRecentCommitsArgs,
       pin?: OpenProjectBinding | null,
@@ -12115,28 +12157,6 @@ const adeBridge = {
       ),
     onEvent: subscribeConflictEvents,
   },
-  feedback: {
-    prepareDraft: async (
-      args: FeedbackPrepareDraftArgs,
-    ): Promise<FeedbackPreparedDraft> =>
-      callProjectRuntimeActionOr("feedback", "prepareDraft", { args }, () =>
-        ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
-      ),
-    submitDraft: async (
-      args: FeedbackSubmitDraftArgs,
-    ): Promise<FeedbackSubmission> =>
-      callProjectRuntimeActionOr(
-        "feedback",
-        "submitPreparedDraft",
-        { args },
-        () => ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
-      ),
-    list: async (): Promise<FeedbackSubmission[]> =>
-      callProjectRuntimeActionOr("feedback", "list", {}, () =>
-        ipcRenderer.invoke(IPC.feedbackList),
-      ),
-    onUpdate: subscribeFeedbackEvents,
-  },
   github: {
     getStatus: async (opts?: {
       forceRefresh?: boolean;
@@ -12717,12 +12737,6 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "delete", { args }, () =>
         ipcRenderer.invoke(IPC.prsDelete, args),
       ),
-    draftDescription: async (
-      args: DraftPrDescriptionArgs,
-    ): Promise<{ title: string; body: string }> =>
-      callProjectRuntimeActionOr("pr", "draftDescription", { args }, () =>
-        ipcRenderer.invoke(IPC.prsDraftDescription, args),
-      ),
     land: async (args: LandPrArgs, pin?: OpenProjectBinding | null): Promise<LandResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "land", { args }, () =>
         ipcRenderer.invoke(IPC.prsLand, args),
@@ -13206,12 +13220,6 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "rerunChecks", { args }, () =>
         ipcRenderer.invoke(IPC.prsRerunChecks, args),
       ),
-    aiReviewSummary: async (
-      args: AiReviewSummaryArgs,
-    ): Promise<AiReviewSummary> =>
-      callProjectRuntimeActionOr("pr", "aiReviewSummary", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
-      ),
     dismissIntegrationCleanup: async (
       args: DismissIntegrationCleanupArgs,
       pin?: OpenProjectBinding | null,
@@ -13237,17 +13245,6 @@ const adeBridge = {
     getDeployments: async (prId: string, pin?: OpenProjectBinding | null): Promise<PrDeployment[]> =>
       callPrReadRuntimeActionOr(pin, "getDeployments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
-      ),
-    getAiSummary: async (prId: string, pin?: OpenProjectBinding | null): Promise<PrAiSummary | null> =>
-      callPrReadRuntimeActionOr(pin, "getAiSummary", { arg: prId }, () =>
-        ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
-      ),
-    regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "regenerateAiSummary",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
       ),
     postReviewComment: async (
       args: PostPrReviewCommentArgs,
@@ -13957,11 +13954,41 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
-  keepAwakeGet: (): Promise<KeepAwakeSnapshot> => ipcRenderer.invoke(IPC.keepAwakeGet),
-  keepAwakeSetLevel: (level: KeepAwakeLevel): Promise<KeepAwakeSnapshot> =>
-    ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
-  keepAwakeFixSystemSleep: (): Promise<KeepAwakeFixResult> =>
-    ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
+  // Keep-awake is a "This computer" section: with no pin it means this
+  // computer, so it goes to local IPC (which asks this machine's own brain),
+  // never to the project tab's bound runtime, which may be another machine.
+  keepAwakeGet: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "getSnapshot", {});
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeGet);
+  },
+  keepAwakeSetLevel: async (level: KeepAwakeLevel, pin?: OpenProjectBinding | null): Promise<KeepAwakeSnapshot> => {
+    if (pin) {
+      return await callPinnedRuntimeAction<KeepAwakeSnapshot>(pin, "keep_awake", "setLevel", { args: { level } });
+    }
+    await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeSetLevel, level);
+  },
+  keepAwakeFixSystemSleep: async (pin?: OpenProjectBinding | null): Promise<KeepAwakeFixResult> => {
+    if (pin) return await callPinnedRuntimeAction<KeepAwakeFixResult>(pin, "keep_awake", "fixSystemSleep", {});
+    // macOS fixes run in this desktop process; elsewhere the brain owns the level first.
+    if (process.platform !== "darwin") await ipcRenderer.invoke(IPC.keepAwakeMigrateLegacy).catch(() => false);
+    return await ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep);
+  },
+  keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; error: string | null }> =>
+    pin
+      ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
+      : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
+  // ADE MCP is a "This computer" section like keep-awake: no pin means
+  // this machine's own brain (through main), a pin means that machine's brain.
+  remoteMcpCall: async <T = unknown>(
+    action: RemoteMcpAction,
+    args?: Record<string, unknown>,
+    pin?: OpenProjectBinding | null,
+  ): Promise<T> => {
+    if (pin) return await callPinnedRuntimeAction<T>(pin, "remote_mcp", action, { args: args ?? {} });
+    return await ipcRenderer.invoke(IPC.remoteMcpCall, action, args ?? {}) as T;
+  },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

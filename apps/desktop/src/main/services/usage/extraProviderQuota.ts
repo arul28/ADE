@@ -21,7 +21,7 @@ import { getApiKey } from "../ai/apiKeyStore";
 import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
-import { copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
+import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
 import { asRecord, finiteNumberOrNull, sha256Hex, toOptionalString } from "../shared/utils";
 import {
   parseCopilotIdentity,
@@ -573,7 +573,7 @@ export async function pollCopilotQuota(
   io: ExtraQuotaIo = {},
 ): Promise<UsageProviderPollResult> {
   const resolved = resolveIo(io);
-  let token = envToken(resolved.env, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN");
+  let token = envToken(resolved.env, ...COPILOT_TOKEN_ENV_KEYS);
   if (!token) {
     const hosts = await resolved.readText(copilotHostsPath(resolved));
     token = hosts ? readCopilotTokenFromHosts(hosts) : null;

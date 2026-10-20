@@ -92,6 +92,8 @@ export function MoveProjectDialog({
   const [volumes, setVolumes] = useState<ProjectMoveVolume[] | null>(null);
   const [parentFolder, setParentFolder] = useState<string | null>(null);
   const [moveHistory, setMoveHistory] = useState(false);
+  // null: follow the checks (copy when there is room). A choice sticks across re-checks.
+  const [copyDependenciesChoice, setCopyDependenciesChoice] = useState<boolean | null>(null);
   const [preflight, setPreflight] = useState<ProjectMovePreflight | null>(null);
   const [checking, setChecking] = useState(false);
   const [progress, setProgress] = useState<ProjectMoveProgress | null>(null);
@@ -189,7 +191,7 @@ export function MoveProjectDialog({
     setProgress(null);
     setError(null);
     try {
-      const result = await api.start({ projectRoot, destinationRoot, moveAgentHistory: moveHistory });
+      const result = await api.start({ projectRoot, destinationRoot, moveAgentHistory: moveHistory, copyDependencies });
       setRecord(result.record);
       if (result.ok) {
         // The window reopened the project at its new folder; its tab replaces
@@ -263,6 +265,8 @@ export function MoveProjectDialog({
     .filter((check) => check.status !== "ok")
     .sort((a, b) => (a.status === b.status ? 0 : a.status === "blocked" ? -1 : 1));
   const blocked = issues.some((check) => check.status === "blocked");
+  const canCopyDependencies = Boolean(preflight?.canCopyDependencies);
+  const copyDependencies = canCopyDependencies && (preflight?.sameDrive || (copyDependenciesChoice ?? true));
   const otherHistory = (preflight?.agentHistory ?? []).filter((entry) => entry.handling === "move" && entry.count > 0 && !entry.adeOwned);
   const afterMove = [
     ...(preflight?.notes ?? []),
@@ -371,6 +375,34 @@ export function MoveProjectDialog({
               {issues.map((check) => <Issue key={check.id} check={check} />)}
             </div>
 
+            {preflight && preflight.dependencyBytes > 0 ? (
+              preflight.sameDrive ? (
+                <div className="ade-pm-option">
+                  <span>
+                    <span className="ade-pm-issue-title">Dependencies come along</span>
+                    <span className="ade-pm-muted">Same drive: {formatBytes(preflight.dependencyBytes)} of node_modules are cloned, so nothing needs reinstalling.</span>
+                  </span>
+                </div>
+              ) : (
+                <label className="ade-pm-option">
+                  <span>
+                    <span className="ade-pm-issue-title">Copy dependencies too ({formatBytes(preflight.dependencyBytes)})</span>
+                    <span className="ade-pm-muted">
+                      {canCopyDependencies
+                        ? "Nothing to reinstall after the move. Off: ADE offers to reinstall them afterwards."
+                        : "Not enough room on the new drive. ADE offers to reinstall them after the move."}
+                    </span>
+                  </span>
+                  <SettingsToggle
+                    checked={copyDependencies}
+                    disabled={!canCopyDependencies}
+                    onChange={setCopyDependenciesChoice}
+                    label="Copy dependencies too"
+                  />
+                </label>
+              )
+            ) : null}
+
             {otherHistory.length ? (
               <label className="ade-pm-option">
                 <span>
@@ -385,7 +417,16 @@ export function MoveProjectDialog({
               <div className="ade-pm-after">
                 <span className="kit-eyebrow">After the move</span>
                 <ul>
-                  {afterMove.map((note) => <li key={note.id} title={note.detail}>{note.title}</li>)}
+                  {afterMove.map((note) => (
+                    <li key={note.id}>
+                      {note.detail ? (
+                        <details>
+                          <summary>{note.title}</summary>
+                          <span className="ade-pm-muted" style={{ whiteSpace: "pre-wrap", display: "block", marginTop: 4 }}>{note.detail}</span>
+                        </details>
+                      ) : note.title}
+                    </li>
+                  ))}
                 </ul>
               </div>
             ) : null}
@@ -503,7 +544,7 @@ export function MoveProjectDialog({
                     {record.cleanup.choice === "pending" ? (
                       <>
                         <div className="ade-pm-muted ade-pm-mono" title={record.originalParkedAt ?? ""}>{displayPath(record.originalParkedAt ?? "")}</div>
-                        <div className="ade-pm-muted">No rush: you can clean it up later from Settings → Project location.</div>
+                        <div className="ade-pm-muted">No rush: you can clean it up later from Settings → Location.</div>
                       </>
                     ) : (
                       <div className="ade-pm-muted">

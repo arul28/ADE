@@ -29,11 +29,11 @@ import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
+  LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
-  ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
@@ -167,8 +167,6 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // worker a local one does, so the transport must outlive the worker's own
   // ceiling — and stay under the renderer's IPC budget for this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS],
-  // A provider CLI update on the paired machine; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
-  ["ai.acpProviderUpdate", ACP_PROVIDER_UPDATE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A remote Mac runtime builds with the same xcodebuild a local one does, so
   // the transport has to outlive a cold build. Without these the launch and
   // the three compiling Preview Lab actions fell back to RuntimeRpcClient's
@@ -176,6 +174,9 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // so it failed with "Remote ADE service timed out" while the remote build
   // was still running.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A lane template's installs on the other machine; see LANE_ENV_SETUP_TIMEOUT_MS.
+  ["lane.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["lane.applyTemplate", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],

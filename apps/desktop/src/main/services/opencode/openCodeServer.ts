@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -13,6 +14,8 @@ import {
   shouldUseWindowsCmdWrapper,
 } from "../shared/processExecution";
 import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
+import { pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import {
   ADE_OPENCODE_MANAGED_ENV,
   ADE_OPENCODE_OWNER_PID_ENV,
@@ -422,7 +425,7 @@ function buildOpenCodeServerEnv(args: {
   env.OPENCODE_CONFIG = args.configFile;
   env.OPENCODE_SERVER_PASSWORD = args.password;
   // ADE resolves and pins the binary, so OpenCode's own updater stays off.
-  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+  Object.assign(env, pinnedToolSelfUpdateEnv("opencode"));
   env[ADE_OPENCODE_MANAGED_ENV] = "1";
   env[ADE_OPENCODE_OWNER_PID_ENV] = String(process.pid);
   return env;
@@ -431,7 +434,7 @@ function buildOpenCodeServerEnv(args: {
 function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeServeLaunchSpec {
   const executable = resolveOpenCodeBinaryPath();
   if (!executable) {
-    throw new Error("OpenCode executable is not available.");
+    throw pinnedToolNotReadyError("opencode", "OpenCode");
   }
   const serveArgs = ["serve", "--hostname=127.0.0.1", `--port=${args.port}`];
   // Only shim through cmd.exe when the resolved target actually needs it (a
@@ -874,11 +877,15 @@ export async function acquireOpenCodeServer(args: {
   if (!entry) {
     let pending = inFlightEntries.get(profile.key);
     if (!pending) {
-      pending = startEntry({
+      // Terminals and sign-in reach the server without a chat; a machine that
+      // never used OpenCode downloads it before the first launch. A live
+      // server needs no download, and concurrent starts share this one.
+      const download = pinnedToolDownload("opencode");
+      pending = (download ?? Promise.resolve()).then(() => startEntry({
         profile,
         config: args.config ?? { share: "disabled", update: "disable" },
         logger: args.logger,
-      }).finally(() => {
+      })).finally(() => {
         inFlightEntries.delete(profile.key);
       });
       inFlightEntries.set(profile.key, pending);

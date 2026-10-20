@@ -58,6 +58,12 @@ const RETIRED_REVIEW_TABLES = [
   "review_suppressions",
 ] as const;
 
+/**
+ * The retired AI PR summary cache. It was a machine-local table, but older
+ * builds registered it as a CRR, so its shadow tables can still exist.
+ */
+const RETIRED_PR_AI_SUMMARY_TABLES = ["pull_request_ai_summaries"] as const;
+
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set([
   "unified_memories",
@@ -65,6 +71,7 @@ const SYNC_RETIRED_TABLES = new Set([
   "queue_landing_state",
   ...RETIRED_EXECUTION_TABLES,
   ...RETIRED_REVIEW_TABLES,
+  ...RETIRED_PR_AI_SUMMARY_TABLES,
 ]);
 
 function isRetiredIncomingSyncTable(tableName: string): boolean {
@@ -1216,7 +1223,6 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
   // clients read effective config through RPC, never from a synced replica,
   // so these tables must not be CRRs.
-  "pull_request_ai_summaries",
   "runtime_processes",
   // The sync host's per-peer delivered-changeset watermark. It is keyed by the
   // host's own site id and describes this machine's send progress, so it must
@@ -1696,6 +1702,13 @@ function dropRetiredReviewSchema(db: DatabaseSyncType, logger?: Logger): void {
   const presentTables = dropRetiredTables(db, RETIRED_REVIEW_TABLES, "retired-review-schema", logger);
   if (presentTables.length === 0) return;
   logger?.info("db.retired_review_schema_cleaned", { tables: presentTables });
+}
+
+/** Remove the retired AI PR summary cache from upgraded databases. */
+function dropRetiredPrAiSummarySchema(db: DatabaseSyncType, logger?: Logger): void {
+  const presentTables = dropRetiredTables(db, RETIRED_PR_AI_SUMMARY_TABLES, "retired-pr-ai-summary-schema", logger);
+  if (presentTables.length === 0) return;
+  logger?.info("db.retired_pr_ai_summary_schema_cleaned", { tables: presentTables });
 }
 
 function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
@@ -3576,19 +3589,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_pr_auto_link_ignores_project_repo on pr_auto_link_ignores(project_id, repo_owner, repo_name)");
 
-  // Phase 21: AI PR summary cache (keyed by PR + headSha so pushes invalidate).
-  db.run(`
-    create table if not exists pull_request_ai_summaries (
-      pr_id text not null,
-      head_sha text not null,
-      summary_json text not null,
-      generated_at text not null,
-      primary key(pr_id, head_sha),
-      foreign key(pr_id) references pull_requests(id)
-    )
-  `);
-  db.run("create index if not exists idx_pr_ai_summaries_pr_id on pull_request_ai_summaries(pr_id)");
-
   db.run(`
     create table if not exists pull_request_snapshots (
       pr_id text primary key,
@@ -4832,6 +4832,11 @@ export async function openKvDb(
     }
     try {
       dropRetiredReviewSchema(db, logger);
+    } catch (error) {
+      if (!isReadonlyDatabaseError(error)) throw error;
+    }
+    try {
+      dropRetiredPrAiSummarySchema(db, logger);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }

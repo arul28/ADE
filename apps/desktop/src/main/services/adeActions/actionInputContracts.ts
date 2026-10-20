@@ -314,6 +314,67 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   lane: {
+    getDependencyStatus: {
+      description:
+        "Read the lockfiles in this machine's main checkout (npm, pnpm, yarn, bun, CocoaPods, Bundler, Poetry, uv, Pipenv, Composer, Cargo, Go, SwiftPM), "
+        + "whether each one is installed and whether it changed after the last install, the one-line update command for this machine, "
+        + "and the project's default lane template. Reads only; never installs.",
+      input: "object { refresh?: boolean } (refresh skips the 20 s cache)",
+      example: "ade lanes deps --text",
+    },
+    acknowledgeDependencyStatus: {
+      description:
+        "Mark the current lockfiles as installed for tools ADE cannot watch (tracksInstall: false: bun, Bundler, Python tools). "
+        + "Tools with an install record clear by themselves when the install finishes.",
+      input: "object { lockfiles?: string[] } (paths relative to the main checkout; omit for all)",
+      example: "ade lanes action acknowledgeDependencyStatus --input-json '{\"lockfiles\":[\"Gemfile.lock\"]}'",
+    },
+    listTemplates: {
+      description: "List this machine's lane templates for the project. Templates live in this machine's .ade/local.yaml and never sync; add --machine to read another machine's.",
+      input: "none",
+      example: "ade lanes templates list --text",
+    },
+    getTemplate: {
+      description: "Read one lane template.",
+      input: "object { templateId: string }",
+      example: "ade lanes templates show ade-lane --json",
+    },
+    getDefaultTemplate: {
+      description: "Read the id of the template every new lane on this machine runs, or null.",
+      input: "none",
+      example: "ade lanes templates default --text",
+    },
+    setDefaultTemplate: {
+      description: "Choose the template every new lane on this machine runs. Pass null to stop running one.",
+      input: "object { templateId: string | null }",
+      example: "ade lanes templates default ade-lane",
+    },
+    saveTemplate: {
+      description:
+        "Create or replace a lane template on this machine. Steps run in this order: envFiles, docker, dependencies (each command runs directly, "
+        + "without a shell, in its cwd), mountPoints, copyPaths (from the main checkout), setupScript "
+        + "(shell commands; injectPrimaryPath sets $PRIMARY_WORKTREE_PATH). Each command may run 20 minutes.",
+      input:
+        "object { template: { id: string, name: string, description?, envFiles?: [{ source, dest, vars? }], dependencies?: [{ command: string[], cwd? }], "
+        + "copyPaths?: [{ source, dest? }], envVars?: Record<string,string>, portRange?: { start, end }, "
+        + "setupScript?: { commands?: string[], unixCommands?: string[], windowsCommands?: string[], scriptPath?, unixScriptPath?, windowsScriptPath?, injectPrimaryPath?: boolean } } }",
+      example: "ade lanes templates save --json '{\"id\":\"web\",\"name\":\"Web\",\"dependencies\":[{\"command\":[\"npm\",\"install\"],\"cwd\":\"apps/web\"}]}'",
+    },
+    applyTemplate: {
+      description: "Run a template's setup in an existing lane and wait for it to finish (up to 45 minutes). Returns each step's status and error.",
+      input: "object { laneId: string, templateId: string }",
+      example: "ade lanes templates apply ade-lane --lane <lane> --text",
+    },
+    deleteTemplate: {
+      description: "Delete a lane template on this machine.",
+      input: "object { templateId: string }",
+      example: "ade lanes templates delete ade-lane",
+    },
+    initEnv: {
+      description: "Run the project's lane environment setup (no template) in a lane and wait for it to finish.",
+      input: "object { laneId: string }",
+      example: "ade lanes action initEnv --arg laneId=<lane>",
+    },
     getReclaimRisk: {
       description: "Preview what ADE can safely remove for one lane, including estimated bytes and any blocked reasons.",
       input: "object { laneId: string }",

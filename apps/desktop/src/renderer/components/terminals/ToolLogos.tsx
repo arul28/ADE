@@ -2,7 +2,7 @@ import React from "react";
 import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { DevinLogo, DroidLogo, MuseLogo, PiLogo } from "../shared/ProviderLogos";
+import { DevinLogo, DroidLogo, MuseLogo, PiLogo, ProviderLogo } from "../shared/ProviderLogos";
 import droidMarkSrc from "../../assets/provider-logos/droid-mark.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
 import museGlyphSrc from "@lobehub/icons-static-svg/icons/meta.svg";
@@ -118,6 +118,10 @@ export const DevinToolLogo: React.FC<LogoProps> = ({ size = 16, className }) => 
   <DevinLogo size={size} className={className} />
 );
 
+const AntigravityToolLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <ProviderLogo family="antigravity" size={size} className={className} />
+);
+
 const USAGE_PROVIDER_LOGOS = {
   claude: ClaudeLogo,
   codex: CodexLogo,
@@ -163,6 +167,7 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "copilot-chat": CopilotLogo,
   devin: DevinToolLogo,
   "devin-chat": DevinToolLogo,
+  "antigravity-chat": AntigravityToolLogo,
   shell: ShellLogo,
 };
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { CostSnapshot, UsageProvider } from "../../../shared/types";
 import { isRecord } from "../shared/utils";
-import { terminateProcessTree } from "../shared/processExecution";
+import { isEmbeddedAdeRuntime, terminateProcessTree } from "../shared/processExecution";
 import { extraProviderHomesEnvName } from "./ledgers/localUsageLedgers";
 
 /**
@@ -132,11 +132,6 @@ export function resolveUsageLedgerWorkerPath(baseDir = __dirname): string {
     path.join(baseDir, "usageLedgerWorkerEntry.ts"),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
-}
-
-function isEmbeddedAdeRuntime(): boolean {
-  const sea = process.getBuiltinModule?.("node:sea") as { isSea?: () => boolean } | undefined;
-  return sea?.isSea?.() === true;
 }
 
 function isCostSnapshot(value: unknown): value is CostSnapshot {

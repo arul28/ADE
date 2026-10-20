@@ -46,7 +46,6 @@ vi.mock("../shared/remoteTrackingBranch", () => ({
   fetchRemoteTrackingBranch: vi.fn(),
 }));
 
-import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { githubReadFailureBackoffMs } from "./githubReadBackoff";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -55,7 +54,6 @@ import {
   GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
 } from "./prService";
 import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
-import { parsePrBrief, prBriefHints } from "../../../shared/prBrief";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -320,7 +318,6 @@ interface BuildServiceOpts {
   autoRebaseService?: any;
   refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   projectConfigService?: any;
-  aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
   operationService?: any;
   /**
@@ -394,7 +391,6 @@ function buildService(opts: BuildServiceOpts = {}) {
     rebaseSuggestionService: opts.rebaseSuggestionService,
     autoRebaseService: opts.autoRebaseService,
     refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
-    ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
     onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
   });
@@ -6235,14 +6231,11 @@ describe("prService.delete", () => {
     await service.delete({ prId: "pr-row-1", closeOnGitHub: false, archiveLane: false });
 
     const runSql: string[] = db.run.mock.calls.map((call: unknown[]) => String(call[0]));
-    const summaryDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_ai_summaries"));
     const snapshotDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_snapshots"));
     const prDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_requests"));
 
-    expect(summaryDeleteIndex).toBeGreaterThanOrEqual(0);
     expect(snapshotDeleteIndex).toBeGreaterThanOrEqual(0);
     expect(prDeleteIndex).toBeGreaterThanOrEqual(0);
-    expect(summaryDeleteIndex).toBeLessThan(prDeleteIndex);
     expect(snapshotDeleteIndex).toBeLessThan(prDeleteIndex);
   });
 });
@@ -7003,137 +6996,6 @@ describe("prService.land", () => {
     expect(result.success).toBe(true);
     const spawnEnv = mockChildProcess.spawn.mock.calls[0]?.[2]?.env;
     expect(spawnEnv).toBe(process.env);
-  });
-});
-
-/**
- * The parts of a draft nobody has written yet, as the PR view reads them. The
- * author is told each one is still a placeholder, so an empty draft cannot be
- * opened as a finished description without a note.
- */
-function emptyDraftParts(body: string): string[] {
-  expect(prBriefHints(body).map((hint) => hint.code)).toEqual(["placeholder"]);
-  return (parsePrBrief(body)?.parts ?? []).map((part) => part.kind);
-}
-
-describe("prService.draftDescription", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const makeAi = (impl?: () => unknown) =>
-    ({ draftPrDescription: vi.fn(impl ?? (() => undefined)) }) as any;
-
-  // Regression: explicit AI draft requests (requireAi) must run the real AI
-  // path using the requested model even though the stored providerMode is the
-  // default "guest" — providerMode is NOT derived from live CLI auth, so a
-  // connected runtime would otherwise be wrongly refused.
-  it("runs the AI path on the requested model when requireAi is set, even in guest providerMode", async () => {
-    // NB: this file mocks extractFirstJsonObject → null, so parsePrDraftJson
-    // always falls back to using the raw model text as the body. We assert the
-    // call shape (the regression) and that the AI output reaches the draft.
-    const aiIntegrationService = makeAi(async () => ({ text: "Drafted by the chat model." }));
-    const { service } = buildService({ aiIntegrationService });
-
-    const draft = await (service as any).draftDescription({
-      laneId: LANE_ID,
-      requireAi: true,
-      model: "openai/gpt-5.5",
-    });
-
-    expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
-    expect(aiIntegrationService.draftPrDescription.mock.calls[0][0]).toMatchObject({
-      laneId: LANE_ID,
-      model: "openai/gpt-5.5",
-    });
-    expect(draft.body).toContain("Drafted by the chat model.");
-  });
-
-  it("surfaces a precise error (not the misleading provider message) when no AI service exists", async () => {
-    const { service } = buildService();
-
-    await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
-    ).rejects.toThrow(/open this lane in the desktop app to draft with AI/);
-  });
-
-  it("returns the deterministic template (no AI call) when requireAi is not set in guest mode", async () => {
-    const aiIntegrationService = makeAi();
-    const { service } = buildService({ aiIntegrationService });
-
-    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
-
-    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
-  });
-
-  it("treats an empty (non-throwing) model response as a failure when requireAi is set", async () => {
-    const aiIntegrationService = makeAi(async () => ({ text: "   " }));
-    const { service } = buildService({ aiIntegrationService });
-
-    await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true, model: "openai/gpt-5.5" }),
-    ).rejects.toThrow(/AI draft failed: the model returned an empty response\./);
-  });
-
-  it("rethrows AI failures as an explicit draft error when requireAi is set", async () => {
-    const aiIntegrationService = makeAi(async () => {
-      throw new Error("No AI provider is available.");
-    });
-    const { service } = buildService({ aiIntegrationService });
-
-    await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true, model: "openai/gpt-5.5" }),
-    ).rejects.toThrow(/AI draft failed: No AI provider is available\./);
-  });
-
-  it("refuses requireAi drafts when no PR Descriptions model is configured", async () => {
-    const aiIntegrationService = makeAi();
-    const { service } = buildService({ aiIntegrationService });
-
-    await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
-    ).rejects.toThrow(missingFeatureModelMessage("pr_descriptions"));
-    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-  });
-
-  it("returns the deterministic template (no AI call) when subscription mode has no PR model", async () => {
-    const aiIntegrationService = makeAi();
-    const { service } = buildService({
-      aiIntegrationService,
-      projectConfigService: {
-        get: () => ({ effective: { providerMode: "subscription", ai: {} } }),
-      },
-    });
-
-    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
-
-    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
-    expect(emptyDraftParts(draft.body)).toEqual(["why", "changed", "evidence", "not_checked"]);
-  });
-
-  it("uses the configured PR Descriptions model when the caller omits model", async () => {
-    const aiIntegrationService = makeAi(async () => ({ text: "Drafted from settings." }));
-    const { service } = buildService({
-      aiIntegrationService,
-      projectConfigService: {
-        get: () => ({
-          effective: {
-            providerMode: "subscription",
-            ai: { featureModelOverrides: { pr_descriptions: "openai/gpt-5.5" } },
-          },
-        }),
-      },
-    });
-
-    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
-
-    expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
-    expect(aiIntegrationService.draftPrDescription.mock.calls[0][0]).toMatchObject({
-      laneId: LANE_ID,
-      model: "openai/gpt-5.5",
-    });
-    expect(draft.body).toContain("Drafted from settings.");
   });
 });
 

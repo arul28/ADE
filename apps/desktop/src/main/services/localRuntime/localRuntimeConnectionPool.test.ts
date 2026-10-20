@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { signalChildProcessTree } from "../shared/utils";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -184,7 +186,7 @@ function withTsxNodeOptions(value: string | undefined, loaderPath: string): stri
   return existing ? `${existing} --import ${loaderUrl}` : `--import ${loaderUrl}`;
 }
 
-// Mirrors LOCAL_RUNTIME_STARTUP_TIMEOUT_MS in the pool itself: a cold Windows
+// Mirrors LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS in the timeout policy: a cold Windows
 // runtime start (process spawn + tsx transform + SQLite init) is genuinely
 // slower than on macOS/Linux, so production already waits 30s there against 10s
 // elsewhere. The readiness budget below is a ceiling, not a sleep — a healthy
@@ -2619,6 +2621,328 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  describe("quit stops a desktop-owned brain cooperatively on Windows", () => {
+    // A stand-in for a brain on the runtime endpoint. It answers `runtime/info`
+    // with its own pid, as the real brain does, and prints one line per request,
+    // so a test waits on what the pool actually sent. `mode` decides what it does
+    // with `shutdown`.
+    const BRAIN_STUB_SOURCE = String.raw`
+const net = require("node:net");
+const [endpoint, mode] = process.argv.slice(2);
+const reply = (socket, id, result) => socket.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+net.createServer((socket) => {
+  let pending = "";
+  socket.on("data", (chunk) => {
+    pending += chunk.toString("utf8");
+    for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+      const message = JSON.parse(pending.slice(0, end));
+      pending = pending.slice(end + 1);
+      if (message.method === "runtime/info") {
+        process.stdout.write("runtime-info\n");
+        reply(socket, message.id, { pid: process.pid });
+      } else if (message.method === "shutdown") {
+        process.stdout.write("shutdown-requested\n");
+        if (mode === "never-answers") continue;
+        reply(socket, message.id, {});
+        if (mode === "ack-and-exit") socket.end(() => process.exit(0));
+      }
+    }
+  });
+}).listen(endpoint, () => process.stdout.write("ready\n"));
+setInterval(() => {}, 1000);
+`;
+    type BrainMode = "ack-and-exit" | "ack-and-hang" | "never-answers";
+    let stubDir = "";
+    let stubPath = "";
+
+    beforeAll(() => {
+      stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-quit-brain-"));
+      stubPath = path.join(stubDir, "brain-stub.cjs");
+      fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
+    });
+
+    afterAll(() => {
+      fs.rmSync(stubDir, { recursive: true, force: true });
+    });
+
+    // Chosen with the real platform, before `asWindows` changes what the pool sees.
+    function runtimeEndpoint(): string {
+      const id = randomUUID().slice(0, 8);
+      return process.platform === "win32"
+        ? `\\\\.\\pipe\\ade-quit-${id}`
+        : path.join(os.tmpdir(), `ade-quit-${id}.sock`);
+    }
+
+    function startBrain(endpoint: string, mode: BrainMode) {
+      const child = spawn(process.execPath, [stubPath, endpoint, mode], {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      spawnedDaemons.add(child);
+      child.once("exit", () => spawnedDaemons.delete(child));
+      let output = "";
+      const wake: Array<() => void> = [];
+      child.stdout?.on("data", (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+        for (const resolve of wake.splice(0)) resolve();
+      });
+      return {
+        child,
+        output: () => output,
+        // Resolves on the stub's own stdout, so no test waits on a wall-clock delay.
+        async saw(line: string): Promise<void> {
+          while (!output.split("\n").includes(line)) {
+            await new Promise<void>((resolve) => wake.push(resolve));
+          }
+        },
+      };
+    }
+
+    function poolOwning(child: ChildProcess | null, socketPath: string): LocalRuntimeConnectionPool {
+      const pool = new LocalRuntimeConnectionPool("1.2.3", {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never, { disableSync: true });
+      const internals = pool as unknown as {
+        ownedRuntimeChild: ChildProcess | null;
+        ownedRuntimeSocketPath: string | null;
+        activeConnection: { socketPath: string } | null;
+      };
+      internals.ownedRuntimeChild = child;
+      internals.ownedRuntimeSocketPath = child ? socketPath : null;
+      internals.activeConnection = { socketPath };
+      return pool;
+    }
+
+    // The branch under test is `process.platform === "win32"`. Faked here so the
+    // rows run the Windows path on every CI host; the real kill goes to a stub
+    // this test started, never to an arbitrary pid.
+    async function asWindows<T>(run: () => Promise<T>): Promise<T> {
+      const original = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      try {
+        return await run();
+      } finally {
+        if (original) Object.defineProperty(process, "platform", original);
+      }
+    }
+
+    it("keeps connection admission open when there is no desktop-owned brain to stop", async () => {
+      const endpoint = runtimeEndpoint();
+      const pool = poolOwning(null, endpoint);
+      const client = { close: vi.fn() };
+      const internals = pool as unknown as {
+        connect: (create: () => Promise<unknown>) => Promise<unknown>;
+      };
+      const create = vi.fn(async () => ({ client, child: null, socketPath: endpoint }));
+
+      try {
+        await asWindows(async () => {
+          await pool.stopOwnedRuntimeCooperatively();
+          await expect(internals.connect(create)).resolves.toEqual({
+            client,
+            child: null,
+            socketPath: endpoint,
+          });
+        });
+        expect(create).toHaveBeenCalledTimes(1);
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it("does not force-kill the brain when it acknowledges the shutdown and exits", async () => {
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, "ack-and-exit");
+      await brain.saw("ready");
+      const pool = poolOwning(brain.child, endpoint);
+      const kill = vi.spyOn(brain.child, "kill");
+      const exited = once(brain.child, "exit");
+      try {
+        await asWindows(async () => {
+          await pool.stopOwnedRuntimeCooperatively();
+          pool.dispose();
+        });
+        const [exitCode] = await exited;
+        // Exit code 0 is the brain's own `process.exit`. A forced kill leaves 1 on Windows.
+        expect(exitCode).toBe(0);
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it.each([
+      ["acknowledges the shutdown and keeps running", "ack-and-hang"],
+      ["never answers the shutdown", "never-answers"],
+    ] as const)("force-kills the brain only when the 3 s budget runs out if it %s", async (_label, mode: BrainMode) => {
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, mode);
+      await brain.saw("ready");
+      const pool = poolOwning(brain.child, endpoint);
+      const kill = vi.spyOn(brain.child, "kill");
+      const exited = once(brain.child, "exit");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        await asWindows(async () => {
+          const stopped = pool.stopOwnedRuntimeCooperatively();
+          await brain.saw("shutdown-requested");
+          await vi.advanceTimersByTimeAsync(2_999);
+          expect(kill).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          await stopped;
+        });
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        await exited;
+      } finally {
+        vi.useRealTimers();
+        pool.dispose();
+      }
+    });
+
+    it("never asks a service brain on the endpoint to stop, and force-kills only its own child", async () => {
+      const endpoint = runtimeEndpoint();
+      // The service brain holds the socket. The pool's own child is a different process.
+      const service = startBrain(endpoint, "ack-and-hang");
+      await service.saw("ready");
+      const owned = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      spawnedDaemons.add(owned);
+      owned.once("exit", () => spawnedDaemons.delete(owned));
+      const exited = once(owned, "exit");
+      const kill = vi.spyOn(owned, "kill");
+      const pool = poolOwning(owned, endpoint);
+      try {
+        await asWindows(() => pool.stopOwnedRuntimeCooperatively());
+        // The endpoint was asked for its pid, which proves the request reached the
+        // service. Its pid is not the child's, so nothing was sent to stop it.
+        await service.saw("runtime-info");
+        expect(service.output()).not.toContain("shutdown-requested");
+        expect(service.child.exitCode).toBeNull();
+        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        await exited;
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it("uses the owned isolated endpoint after its active connection resets", async () => {
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, "ack-and-exit");
+      await brain.saw("ready");
+      const pool = poolOwning(brain.child, endpoint);
+      const client = { close: vi.fn() };
+      const entry = { client, child: brain.child, socketPath: endpoint };
+      const internals = pool as unknown as {
+        activeClient: unknown;
+        activeConnection: unknown;
+        resetActiveConnection: (entry: unknown) => void;
+      };
+      internals.activeClient = client;
+      internals.activeConnection = entry;
+      const kill = vi.spyOn(brain.child, "kill");
+      const exited = once(brain.child, "exit");
+      try {
+        await asWindows(async () => {
+          internals.resetActiveConnection(entry);
+          expect(internals.activeConnection).toBeNull();
+          await pool.stopOwnedRuntimeCooperatively();
+          pool.dispose();
+        });
+        const [exitCode] = await exited;
+        // A graceful stop must use the child's isolated endpoint after the
+        // active connection has been dropped, even though another socket may
+        // be configured as this machine's primary endpoint.
+        expect(exitCode).toBe(0);
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it("rejects connection and spawn attempts while cooperative shutdown waits", async () => {
+      await withFakeRuntimeCli(
+        () => "setInterval(() => {}, 1_000);\n",
+        async ({ socketPath }) => {
+          const endpoint = runtimeEndpoint();
+          const brain = startBrain(endpoint, "ack-and-hang");
+          await brain.saw("ready");
+          const pool = poolOwning(brain.child, endpoint);
+          const internals = pool as unknown as {
+            connect: (create: () => Promise<unknown>) => Promise<unknown>;
+            spawnRuntime: (socketPath: string) => ChildProcess;
+            ownedRuntimeChild: ChildProcess | null;
+          };
+          const connect = internals.connect.bind(pool);
+          const spawnRuntime = internals.spawnRuntime.bind(pool);
+          const originalChild = brain.child;
+          let createCalled = false;
+          let unexpectedChild: ChildProcess | null = null;
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+          try {
+            await asWindows(async () => {
+              const stop = pool.stopOwnedRuntimeCooperatively();
+              try {
+                await brain.saw("shutdown-requested");
+
+                const connectAttempt = connect(async () => {
+                  createCalled = true;
+                  throw new Error("A connection factory ran during shutdown.");
+                });
+                await expect(connectAttempt).rejects.toThrow("Local runtime connection pool is stopping.");
+                expect(createCalled).toBe(false);
+
+                let spawnError: unknown;
+                try {
+                  unexpectedChild = spawnRuntime(`${socketPath}-replacement`);
+                } catch (error) {
+                  spawnError = error;
+                }
+                expect(spawnError).toBeInstanceOf(Error);
+                expect((spawnError as Error).message).toBe("Local runtime connection pool is stopping.");
+                expect(unexpectedChild).toBeNull();
+                expect(internals.ownedRuntimeChild).toBe(originalChild);
+              } finally {
+                await vi.advanceTimersByTimeAsync(3_000);
+                await stop;
+              }
+            });
+          } finally {
+            vi.useRealTimers();
+            pool.dispose();
+            const spawnedChild = unexpectedChild as ChildProcess | null;
+            if (spawnedChild && spawnedChild.exitCode == null && spawnedChild.signalCode == null) {
+              const exited = once(spawnedChild, "exit");
+              signalChildProcessTree(spawnedChild, "SIGKILL");
+              await exited.catch(() => []);
+            }
+          }
+        },
+      );
+    });
+
+    it("does not wait for a desktop-owned brain that has already exited", async () => {
+      const endpoint = runtimeEndpoint();
+      const gone = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+      await once(gone, "exit");
+      const kill = vi.spyOn(gone, "kill");
+      const pool = poolOwning(gone, endpoint);
+      // Fake timers are never advanced here, so this resolves only if no timer is awaited.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        await asWindows(() => pool.stopOwnedRuntimeCooperatively());
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        pool.dispose();
+      }
+    });
+  });
+
   it("reattaches to an externally managed machine daemon after the desktop-side client disconnects", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
@@ -4684,6 +5008,174 @@ describe("service health probe never blocks the main thread", () => {
       state: "error",
       installed: true,
       message: "Unable to query the ADE supervisor process.",
+    });
+  });
+
+  describe("read window", () => {
+    const FOUR_MINUTES_MS = 4 * 60_000;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+    beforeEach(() => {
+      // Only Date is faked: the promise flushes below wait on a real setImmediate.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+      Object.defineProperty(process, "platform", { value: "win32" });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+    });
+
+    // `service` is what the machine service reports on the next probe. With
+    // `held`, a probe stays in flight until `landProbe()` lets it answer, as a
+    // real probe takes seconds.
+    const createPool = ({ held = false }: { held?: boolean } = {}) => {
+      const service = { installed: true, running: true };
+      let calls = 0;
+      const answers: Array<() => void> = [];
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: () => {
+          calls += 1;
+          const observed = { ...asyncTestServiceStatus(), ...service };
+          if (!held) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
+        },
+      });
+      const internals = pool as unknown as { activeClient: unknown };
+      return {
+        pool,
+        service,
+        probes: () => calls,
+        landProbe: () => answers.shift()?.(),
+        // A new client object is a new connection to a brain.
+        connectTo: (client: unknown) => {
+          internals.activeClient = client;
+        },
+      };
+    };
+
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    it("a status read inside the long window does not probe while connected to the same brain", async () => {
+      const { pool, probes, connectTo } = createPool();
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+    });
+
+    it("a new brain is probed on its first read, then the long window applies", async () => {
+      const { pool, probes, connectTo } = createPool();
+      // The last probe ran against a brain that has since gone.
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(1);
+
+      vi.setSystemTime(Date.now() + 10_000);
+      connectTo({});
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(2);
+
+      vi.setSystemTime(Date.now() + FOUR_MINUTES_MS);
+      pool.getStatus();
+      await settle();
+      expect(probes()).toBe(2);
+    });
+
+    it("a recovery read waits for a probe already running in the window, then probes again after the service is removed", async () => {
+      const { pool, service, probes, connectTo, landProbe } = createPool({ held: true });
+      connectTo({});
+      // A status poll has started a probe whose answer has not landed yet.
+      pool.getStatus();
+      const joined = pool.getStatusAfterServiceProbe();
+      landProbe();
+      expect((await joined).serviceHealth.installed).toBe(true);
+      expect(probes()).toBe(1);
+
+      // The service is removed while ADE stays connected to its brain.
+      service.installed = false;
+      service.running = false;
+      vi.setSystemTime(Date.now() + 60_000);
+      const removed = pool.getStatusAfterServiceProbe();
+      landProbe();
+      const status = await removed;
+      expect(probes()).toBe(2);
+      expect(status.serviceHealth.installed).toBe(false);
+    });
+
+    it("a recovery read after a service install does not resolve with a probe that began before it", async () => {
+      // The first probe begins while the service is absent and is held until the
+      // test lands it; every later probe answers at once.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-window-install-"));
+      const logPath = path.join(dir, "installs.log");
+      const cliPath = path.join(dir, "fake-cli.cjs");
+      fs.writeFileSync(
+        cliPath,
+        [
+          "const fs = require('node:fs');",
+          `fs.appendFileSync(${JSON.stringify(logPath)}, 'install\\n');`,
+          "process.stdout.write(JSON.stringify({ ok: true, path: 'com.ade.runtime', message: 'installed' }));",
+        ].join("\n"),
+      );
+      const originalEnv = {
+        ADE_CLI_JS: process.env.ADE_CLI_JS,
+        ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      };
+      let installed = false;
+      let calls = 0;
+      const answers: Array<() => void> = [];
+      const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+        queryServiceStatusAsync: () => {
+          calls += 1;
+          // Each probe reports the service as it stands when the probe asks.
+          const observed = {
+            ...asyncTestServiceStatus(),
+            installed,
+            running: installed,
+            message: installed ? "ADE test service is running." : "ADE test service is not installed.",
+          };
+          if (calls > 1) return Promise.resolve(observed);
+          return new Promise((resolve) => answers.push(() => resolve(observed)));
+        },
+      });
+      try {
+        process.env.ADE_CLI_JS = cliPath;
+        process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+
+        // A status poll starts a probe while the service is still absent.
+        pool.getStatus();
+        expect(calls).toBe(1);
+
+        // The pool installs the service itself while that probe is still in flight.
+        vi.setSystemTime(Date.now() + 500);
+        installed = true;
+        await pool.installServiceBestEffort();
+        expect(fs.readFileSync(logPath, "utf8")).toBe("install\n");
+
+        // Two recovery reads inside the window share one probe that begins after the install.
+        const recovered = pool.getStatusAfterServiceProbe();
+        const sharedRecovery = pool.getStatusAfterServiceProbe();
+        answers.shift()!();
+        const [status, shared] = await Promise.all([recovered, sharedRecovery]);
+        expect(status.serviceHealth).toMatchObject({ installed: true });
+        expect(shared.serviceHealth).toMatchObject({ installed: true });
+        expect(calls).toBe(2);
+      } finally {
+        pool.dispose();
+        if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+        else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+        if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+        else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });

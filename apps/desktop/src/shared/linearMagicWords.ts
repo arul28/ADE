@@ -8,10 +8,6 @@ export function linearPrMagicWord(closeOnMerge: boolean): "Fixes" | "Refs" {
   return closeOnMerge ? "Fixes" : "Refs";
 }
 
-export function buildLinearPrTitle(issue: LaneLinearIssue): string {
-  return `${issue.identifier}: ${issue.title}`.trim();
-}
-
 export function buildLinearPrReference(issue: LaneLinearIssue, closeOnMerge: boolean): string {
   return `${linearPrMagicWord(closeOnMerge)} ${issue.identifier}`;
 }

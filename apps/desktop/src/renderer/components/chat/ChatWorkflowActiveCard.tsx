@@ -1,6 +1,6 @@
-import { useMemo } from "react";
-import { CaretRight, Check, CircleNotch, Stop, TreeStructure, X } from "@phosphor-icons/react";
-import type { AgentChatWorkflowAgent, AgentChatWorkflowPhase, AgentChatWorkflowProgress } from "../../../shared/types";
+import { useEffect, useMemo, useReducer, useState } from "react";
+import { CaretRight, Check, Circle, CircleNotch, Stop, TreeStructure, X } from "@phosphor-icons/react";
+import type { AgentChatWorkflowAgent, AgentChatWorkflowProgress } from "../../../shared/types";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { pluralCount } from "../../../shared/formatting";
 import { cn } from "../ui/cn";
@@ -76,8 +76,22 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
       .map((snapshot) => workflowLineageParentTaskId(snapshot.taskId))
       .filter((parentId): parentId is string => parentId !== undefined),
   );
+  const claimedMemberIds = new Set<string>();
   const runs: ChatWorkflowRun[] = directParents.map((parent) => {
-    const members = snapshots.filter((snapshot) => workflowLineageParentTaskId(snapshot.taskId) === parent.taskId);
+    // Snapshot derivation keys a workflow agent by its agentId, which drops the
+    // `<taskId>::a<index>` lineage; the run's own roster names those agents.
+    const rosterIds = new Set(
+      parent.workflowProgress.agents.flatMap((agent) => (agent.agentId ? [agent.agentId, agent.key] : [agent.key])),
+    );
+    const members = snapshots.filter((snapshot) => (
+      snapshot.taskId !== parent.taskId
+      && (
+        workflowLineageParentTaskId(snapshot.taskId) === parent.taskId
+        || rosterIds.has(snapshot.taskId)
+        || (snapshot.agentId !== undefined && rosterIds.has(snapshot.agentId))
+      )
+    ));
+    members.forEach((member) => claimedMemberIds.add(member.taskId));
     return {
       id: parent.taskId,
       name: workflowName(parent),
@@ -87,22 +101,34 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     };
   });
 
+  // Each workflow task is its own run with its own Stop, even when two share
+  // a name. A legacy member that carries only the name joins the workflow of
+  // that name when exactly one exists.
+  const fallbackWorkflowIdsByName = new Map<string, string[]>();
+  for (const snapshot of snapshots) {
+    const name = snapshot.workflowName?.trim();
+    if (!name || snapshot.taskType !== "local_workflow" || directParentIds.has(snapshot.taskId)) continue;
+    fallbackWorkflowIdsByName.set(name, [...(fallbackWorkflowIdsByName.get(name) ?? []), snapshot.taskId]);
+  }
   const fallbackGroups = new Map<string, ChatSubagentSnapshot[]>();
   for (const snapshot of snapshots) {
     const name = snapshot.workflowName?.trim();
     if (!name) continue;
-    if (directParentIds.has(snapshot.taskId)) continue;
+    if (directParentIds.has(snapshot.taskId) || claimedMemberIds.has(snapshot.taskId)) continue;
     const lineageParentId = workflowLineageParentTaskId(snapshot.taskId);
     if (lineageParentId && directParentIds.has(lineageParentId)) continue;
     // A synthetic child without its parent is incomplete history, not a
     // stoppable workflow. Keep it out of the fallback so the renderer never
     // routes a stop action to the child's task ID.
     if (lineageParentId && !snapshotIds.has(lineageParentId)) continue;
+    const namedWorkflowIds = fallbackWorkflowIdsByName.get(name) ?? [];
     const groupKey = lineageParentId
       ? "lineage:" + lineageParentId
-      : lineageParentIds.has(snapshot.taskId)
+      : lineageParentIds.has(snapshot.taskId) || snapshot.taskType === "local_workflow"
         ? "lineage:" + snapshot.taskId
-        : "name:" + name;
+        : namedWorkflowIds.length === 1
+          ? "lineage:" + namedWorkflowIds[0]
+          : "name:" + name;
     const group = fallbackGroups.get(groupKey) ?? [];
     group.push(snapshot);
     fallbackGroups.set(groupKey, group);
@@ -126,6 +152,15 @@ export function deriveChatWorkflowRuns(snapshots: ChatSubagentSnapshot[]): ChatW
     });
   }
   return runs.sort((left, right) => Date.parse(right.parent.updatedAt) - Date.parse(left.parent.updatedAt));
+}
+
+/** Task IDs for workflow parents, which are represented by the workflow card. */
+/** Every snapshot a workflow run draws: its parent and its agents. */
+export function workflowRunTaskIds(snapshots: ChatSubagentSnapshot[]): Set<string> {
+  return new Set(deriveChatWorkflowRuns(snapshots).flatMap((run) => [
+    run.parent.taskId,
+    ...run.members.map((member) => member.taskId),
+  ]));
 }
 
 function statusLabel(status: WorkflowStatus): string {
@@ -153,23 +188,22 @@ function workflowDuration(run: ChatWorkflowRun, nowMs: number): number | null {
     if (Number.isFinite(started)) return Math.max(0, nowMs - started);
     return typeof reported === "number" && reported > 0 ? reported : null;
   }
-  if (typeof reported === "number" && reported > 0) return reported;
-  if (!Number.isFinite(started)) return null;
+  // A finished run's own span: Claude's reported duration_ms for a Workflow
+  // task is not the run's wall time (a 16 s run reported 3 s).
   const end = Date.parse(run.parent.updatedAt);
-  if (!Number.isFinite(end)) return null;
-  return Math.max(0, end - started);
+  if (Number.isFinite(started) && Number.isFinite(end)) return Math.max(0, end - started);
+  return typeof reported === "number" && reported > 0 ? reported : null;
 }
 
+/** Sums the roster when it carries numbers; the parent's usage is the fallback, not a total of its agents. */
 function workflowTotals(run: ChatWorkflowRun): { tokens: number | null; tools: number | null } {
+  const rosterTokens = run.progress.agents.reduce((total, agent) => total + (agent.tokens ?? 0), 0);
+  const rosterTools = run.progress.agents.reduce((total, agent) => total + (agent.toolCalls ?? 0), 0);
   const parentTokens = run.parent.usage?.totalTokens;
   const parentTools = run.parent.usage?.toolUses;
   return {
-    tokens: typeof parentTokens === "number"
-      ? parentTokens
-      : run.progress.agents.reduce((total, agent) => total + (agent.tokens ?? 0), 0) || null,
-    tools: typeof parentTools === "number"
-      ? parentTools
-      : run.progress.agents.reduce((total, agent) => total + (agent.toolCalls ?? 0), 0) || null,
+    tokens: rosterTokens > 0 ? rosterTokens : parentTokens ?? null,
+    tools: rosterTools > 0 ? rosterTools : parentTools ?? null,
   };
 }
 
@@ -227,6 +261,67 @@ function workflowAgentCounts(views: WorkflowAgentView[]): {
   };
 }
 
+function displayWorkflowModel(model: string | undefined | null): string | null {
+  const trimmed = model?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^[^/]+\//, "");
+}
+
+function relativeActivityTime(timestamp: string | undefined, nowMs: number): string | null {
+  if (!timestamp) return null;
+  const activityMs = Date.parse(timestamp);
+  if (!Number.isFinite(activityMs)) return null;
+  const elapsedMs = Math.max(0, nowMs - activityMs);
+  if (elapsedMs < 10_000) return "just now";
+  if (elapsedMs < 60_000) return `${Math.floor(elapsedMs / 1_000)}s ago`;
+  if (elapsedMs < 3_600_000) return `${Math.floor(elapsedMs / 60_000)}m ago`;
+  return `${Math.floor(elapsedMs / 3_600_000)}h ago`;
+}
+
+type WorkflowPhaseBlock = {
+  title: string;
+  rows: WorkflowAgentView[];
+};
+
+function workflowPhaseBlocks(
+  phases: AgentChatWorkflowProgress["phases"],
+  planPhases: readonly string[] | undefined,
+  views: WorkflowAgentView[],
+): { phases: WorkflowPhaseBlock[]; other: WorkflowAgentView[] } {
+  const orderedTitles: string[] = [];
+  const phaseTitles = new Set<string>();
+  for (const phase of [...phases].sort((left, right) => left.index - right.index)) {
+    if (phaseTitles.has(phase.title)) continue;
+    phaseTitles.add(phase.title);
+    orderedTitles.push(phase.title);
+  }
+  for (const title of planPhases ?? []) {
+    if (phaseTitles.has(title)) continue;
+    phaseTitles.add(title);
+    orderedTitles.push(title);
+  }
+
+  const phaseRows = new Map<string, WorkflowAgentView[]>();
+  for (const view of views) {
+    const title = view.agent.phaseTitle;
+    if (!title || !phaseTitles.has(title)) continue;
+    const rows = phaseRows.get(title) ?? [];
+    rows.push(view);
+    phaseRows.set(title, rows);
+  }
+
+  return {
+    phases: orderedTitles.map((title) => ({ title, rows: phaseRows.get(title) ?? [] })),
+    other: views.filter((view) => !view.agent.phaseTitle || !phaseTitles.has(view.agent.phaseTitle)),
+  };
+}
+
+function phaseDefaultExpanded(runStatus: WorkflowStatus, rows: readonly WorkflowAgentView[]): boolean {
+  return runStatus === "running"
+    ? rows.some((view) => view.status === "running" || view.status === "failed")
+    : rows.some((view) => view.status === "failed" || view.status === "stopped");
+}
+
 function WorkflowStatusIcon({ status }: { status: WorkflowStatus | WorkflowAgentDisplayStatus }) {
   if (status === "completed") return <Check aria-hidden size={12} weight="bold" className="text-emerald-300/85" />;
   if (status === "failed") return <X aria-hidden size={12} weight="bold" className="text-rose-300/85" />;
@@ -247,7 +342,18 @@ export function ChatWorkflowActiveCard({
   onStopWorkflow?: (snapshot: ChatSubagentSnapshot) => void;
 }) {
   const runs = useMemo(() => deriveChatWorkflowRuns(snapshots), [snapshots]);
+  const [, refreshRelativeTimes] = useReducer((revision: number) => revision + 1, 0);
+  const hasTimedRunningActivity = runs.some((run) => (
+    run.parent.status === "running"
+      && run.progress.agents.some((agent) => Boolean(agent.lastActivityAt))
+  ));
+  useEffect(() => {
+    if (!hasTimedRunningActivity) return;
+    const interval = window.setInterval(() => refreshRelativeTimes(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [hasTimedRunningActivity, refreshRelativeTimes]);
   if (runs.length === 0) return null;
+  const nowMs = Date.now();
 
   return (
     <section
@@ -258,11 +364,13 @@ export function ChatWorkflowActiveCard({
       <header className="flex items-center justify-between px-3.5 pb-1 pt-3">
         <span className="flex items-center gap-1.5 font-sans text-[10.5px] font-medium uppercase tracking-[0.06em] text-fg/45">
           <TreeStructure aria-hidden size={12} weight="bold" className="shrink-0 text-amber-300/75" />
-          Workflow activity
+          Workflow
         </span>
-        <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
-          {runs.length} tracked
-        </span>
+        {runs.length > 1 ? (
+          <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
+            {pluralCount(runs.length, "run")}
+          </span>
+        ) : null}
       </header>
       <div className="space-y-px px-2">
         {runs.map((run) => (
@@ -270,6 +378,7 @@ export function ChatWorkflowActiveCard({
             key={run.id}
             run={run}
             plan={plans?.get(run.parent.taskId) ?? null}
+            nowMs={nowMs}
             onSelectSubagent={onSelectSubagent}
             onStopWorkflow={onStopWorkflow}
           />
@@ -280,46 +389,40 @@ export function ChatWorkflowActiveCard({
 }
 
 /**
- * One run, drawn inside the section — no box, no dialog: the run's name and
- * state, then one quiet block per phase with its agent rows (same vocabulary as
- * the transcript's workflow run). A run whose provider published no
- * `workflow_progress` shows the phases its *script* declares instead, marked as
- * the plan it is; a running run carries its own Stop.
+ * One run, drawn inside the section — no box or dialog. Provider phases come
+ * first, then any remaining phases declared by the script.
  */
 function WorkflowRunBlock({
   run,
   plan,
+  nowMs,
   onSelectSubagent,
   onStopWorkflow,
 }: {
   run: ChatWorkflowRun;
   plan: ChatWorkflowScriptPlan | null;
+  nowMs: number;
   onSelectSubagent?: (snapshot: ChatSubagentSnapshot) => void;
   onStopWorkflow?: (snapshot: ChatSubagentSnapshot) => void;
 }) {
   const progress = run.progress;
-  const views = workflowAgentViews(run);
+  const views = useMemo(() => workflowAgentViews(run), [run]);
   const counts = workflowAgentCounts(views);
   const totals = workflowTotals(run);
   const total = views.length + progress.queuedCount;
-  const durationMs = workflowDuration(run, Date.now());
+  const durationMs = workflowDuration(run, nowMs);
   const running = run.parent.status === "running";
-  const phaseOfIndex = new Map<number, string>();
-  for (const agent of progress.agents) {
-    if (agent.phaseTitle) phaseOfIndex.set(agent.index, agent.phaseTitle);
-  }
-  const claimed = new Set<number>();
-  const blocks = progress.phases.map((phase) => {
-    const rows = views.filter((view) => {
-      const title = phaseOfIndex.get(view.agent.index);
-      return title === phase.title;
-    });
-    rows.forEach((view) => claimed.add(view.agent.index));
-    return { title: phase.title, rows };
-  }).filter((block) => block.rows.length > 0);
-  const unphased = views.filter((view) => !claimed.has(view.agent.index));
+  const { phases, other } = useMemo(
+    () => workflowPhaseBlocks(progress.phases, plan?.phases, views),
+    [progress.phases, plan?.phases, views],
+  );
+  const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({});
   // No live telemetry: the script's own plan is what this run published.
   const plannedOnly = progress.agents.length === 0 && progress.queuedCount === 0;
+  const phaseGroups = useMemo<WorkflowPhaseBlock[]>(
+    () => other.length > 0 ? [...phases, { title: "Other", rows: other }] : phases,
+    [other, phases],
+  );
 
   return (
     <div data-testid="chat-workflow-run" data-workflow-name={run.name} className="min-w-0 rounded-md px-1.5 pb-1.5 pt-1">
@@ -327,150 +430,201 @@ function WorkflowRunBlock({
         <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5 text-fg/85" title={run.name}>
           {run.name}
         </span>
-        <span className={cn("shrink-0 font-sans text-[10.5px]", statusTone(run.parent.status))}>
-          {statusLabel(run.parent.status)}
-        </span>
-        {durationMs !== null ? (
-          <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg/35">
-            {formatDurationMs(durationMs)}
-          </span>
+        {running && onStopWorkflow ? (
+          <button
+            type="button"
+            onClick={() => onStopWorkflow(run.parent)}
+            aria-label="Stop workflow"
+            title="Stop workflow"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+          >
+            <Stop aria-hidden size={10} weight="fill" />
+            Stop
+          </button>
         ) : null}
       </div>
       <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-0.5 font-sans text-[10.5px] tabular-nums text-fg/40">
-        {total > 0 ? <span>{counts.completed}/{total} agents</span> : null}
-        {counts.running > 0 ? <span className="text-violet-200/70">{counts.running} running</span> : null}
-        {counts.failed > 0 ? <span className="text-rose-300/80">{counts.failed} failed</span> : null}
-        {counts.stopped > 0 ? <span>{counts.stopped} stopped</span> : null}
-        {progress.queuedCount > 0 ? <span>{progress.queuedCount} queued</span> : null}
-        {totals.tokens !== null && totals.tokens > 0 ? <span>{formatContextTokens(totals.tokens)} tok</span> : null}
-        {totals.tools !== null ? <span>{totals.tools} tools</span> : null}
+        <span className={cn("whitespace-nowrap", statusTone(run.parent.status))}>{statusLabel(run.parent.status)}</span>
+        {durationMs !== null ? <span className="whitespace-nowrap">{formatDurationMs(durationMs)}</span> : null}
+        {total > 0 ? <span className="whitespace-nowrap">{counts.completed}/{total} agents</span> : null}
+        {counts.running > 0 ? <span className="whitespace-nowrap text-violet-200/70">{counts.running} running</span> : null}
+        {counts.failed > 0 ? <span className="whitespace-nowrap text-rose-300/80">{counts.failed} failed</span> : null}
+        {counts.stopped > 0 ? <span className="whitespace-nowrap">{counts.stopped} stopped</span> : null}
+        {progress.queuedCount > 0 ? <span className="whitespace-nowrap">{progress.queuedCount} queued</span> : null}
+        {totals.tokens !== null && totals.tokens > 0 ? <span className="whitespace-nowrap">{formatContextTokens(totals.tokens)} tok</span> : null}
+        {totals.tools !== null ? <span className="whitespace-nowrap">{totals.tools} tools</span> : null}
       </div>
 
       {plannedOnly ? (
         <div className="mt-1 min-w-0" data-testid="chat-workflow-planned-phases">
-          {/* No live status exists for these phases, so none is drawn: a neutral
-              dot would read as "queued". The caption says what they are. */}
-          <div className="pl-0.5 font-sans text-[10.5px] text-fg/35">
-            {plan
-              ? `Plan from its script · ${pluralCount(plan.lines, "line")} · no agent rows published`
-              : "No phase detail published for this run"}
+          <div className="truncate whitespace-nowrap pl-0.5 font-sans text-[10.5px] text-fg/35">
+            {running ? "Waiting for agent status…" : "No agent status was recorded"}
           </div>
-          {plan && plan.phases.length > 0 ? (
-            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-0.5">
-              {plan.phases.map((title, index) => (
-                <span key={`${index}-${title}`} className="flex min-w-0 items-center gap-1.5">
-                  {index > 0 ? <span aria-hidden className="text-fg/25">›</span> : null}
-                  <span className="min-w-0 truncate font-sans text-[11.5px] text-fg/70" title={title}>{title}</span>
-                </span>
-              ))}
-            </div>
-          ) : null}
+          <div className="mt-0.5 space-y-0.5">
+            {phaseGroups.map((phase) => (
+              <PhaseRow
+                key={phase.title}
+                phase={phase}
+                expanded={false}
+                onToggle={() => undefined}
+                onSelectSubagent={onSelectSubagent}
+                nowMs={nowMs}
+                pendingOnly
+              />
+            ))}
+          </div>
         </div>
       ) : (
         <div className="mt-1 space-y-0.5">
-          {blocks.map((block) => (
-            <div key={block.title}>
-              <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5 pt-1">
-                <PhaseStateIcon state={phaseStateOfViews(block.rows)} />
-                <span className="min-w-0 truncate font-sans text-[11px] text-fg/60" title={block.title}>
-                  {block.title}
-                </span>
-                <span className="shrink-0 font-sans text-[10px] text-fg/35">
-                  {pluralCount(block.rows.length, "agent")}
-                </span>
-              </div>
-              {block.rows.map((view) => (
-                <WorkflowAgentRow key={`${view.agent.key}-${view.agent.index}`} view={view} onSelect={onSelectSubagent} />
-              ))}
-            </div>
-          ))}
-          {unphased.length > 0 ? (
-            <div>
-              {blocks.length > 0 ? (
-                <div className="flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5 pt-1">
-                  <PhaseStateIcon state={phaseStateOfViews(unphased)} />
-                  <span className="font-sans text-[11px] text-fg/60">Other</span>
-                  <span className="shrink-0 font-sans text-[10px] text-fg/35">
-                    {pluralCount(unphased.length, "agent")}
-                  </span>
-                </div>
-              ) : null}
-              {unphased.map((view) => (
-                <WorkflowAgentRow key={`${view.agent.key}-${view.agent.index}`} view={view} onSelect={onSelectSubagent} />
-              ))}
-            </div>
-          ) : null}
+          {phaseGroups.map((phase) => {
+            const isPending = phase.rows.length === 0;
+            const defaultExpanded = phaseDefaultExpanded(run.parent.status, phase.rows);
+            const expanded = expandedPhases[phase.title] ?? defaultExpanded;
+            return (
+              <PhaseRow
+                key={phase.title}
+                phase={phase}
+                expanded={expanded}
+                onToggle={() => setExpandedPhases((current) => ({ ...current, [phase.title]: !expanded }))}
+                onSelectSubagent={onSelectSubagent}
+                nowMs={nowMs}
+                pendingOnly={isPending}
+              />
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
 
-      {running && onStopWorkflow ? (
+function PhaseRow({
+  phase,
+  expanded,
+  onToggle,
+  onSelectSubagent,
+  nowMs,
+  pendingOnly,
+}: {
+  phase: WorkflowPhaseBlock;
+  expanded: boolean;
+  onToggle: () => void;
+  onSelectSubagent?: (snapshot: ChatSubagentSnapshot) => void;
+  nowMs: number;
+  pendingOnly: boolean;
+}) {
+  const state = pendingOnly ? "pending" : phaseStateOfViews(phase.rows);
+  const summary = (
+    <>
+      <PhaseStateIcon state={state} />
+      <span className={cn("min-w-0 flex-1 truncate font-sans text-[11px]", pendingOnly ? "text-fg/35" : "text-fg/60")} title={phase.title}>
+        {phase.title}
+      </span>
+      <span className="ml-auto shrink-0 text-right font-sans text-[10px] tabular-nums text-fg/35">
+        {pendingOnly ? "—" : `${phase.rows.filter((view) => view.status === "completed").length}/${phase.rows.length}`}
+      </span>
+    </>
+  );
+
+  return (
+    <div>
+      {pendingOnly ? (
+        <div className="flex min-w-0 items-center gap-1.5 px-1.5 py-1">{summary}</div>
+      ) : (
         <button
           type="button"
-          onClick={() => onStopWorkflow(run.parent)}
-          className="mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.035]"
         >
-          <Stop aria-hidden size={10} weight="fill" />
-          Stop workflow
+          {summary}
         </button>
+      )}
+      {!pendingOnly && expanded ? (
+        <div className="pl-1">
+          {phase.rows.map((view) => (
+            <WorkflowAgentRow
+              key={`${view.agent.key}-${view.agent.index}`}
+              view={view}
+              onSelect={onSelectSubagent}
+              nowMs={nowMs}
+            />
+          ))}
+        </div>
       ) : null}
     </div>
   );
 }
 
-/** One agent of a run: status mark, name, what it found, tokens · time. */
+/** One agent of a run, with running activity or finished usage on a second line. */
 function WorkflowAgentRow({
   view,
   onSelect,
+  nowMs,
 }: {
   view: WorkflowAgentView;
   onSelect?: (snapshot: ChatSubagentSnapshot) => void;
+  nowMs: number;
 }) {
   const { agent, member, status, summary } = view;
-  const metrics = [
-    typeof agent.tokens === "number" ? formatContextTokens(agent.tokens) : null,
-    agent.durationMs ? formatSubagentDurationMs(agent.durationMs) : null,
-  ].filter((part): part is string => Boolean(part)).join(" · ");
+  const model = displayWorkflowModel(agent.model);
+  // One detail line under the name, so a narrow pane never squeezes the name:
+  // running → what it is doing now; completed → what it cost.
+  const detail = (status === "running"
+    ? [model, agent.lastToolName?.trim() || null, relativeActivityTime(agent.lastActivityAt, nowMs)]
+    : status === "completed"
+      ? [
+        model,
+        typeof agent.tokens === "number" ? formatContextTokens(agent.tokens) : null,
+        typeof agent.toolCalls === "number" ? pluralCount(agent.toolCalls, "tool") : null,
+        typeof agent.durationMs === "number" ? formatSubagentDurationMs(agent.durationMs) : null,
+      ]
+      : []
+  ).filter((part): part is string => Boolean(part)).join(" · ");
+  const rowTitle = [agent.name, model].filter((part): part is string => Boolean(part)).join(" · ");
+  const summaryTone = status === "stopped" ? "text-amber-200/75" : "text-rose-200/80";
   const content = (
-    <>
-      <span className="mt-[1px] shrink-0"><WorkflowStatusIcon status={status} /></span>
-      <span className="min-w-0 max-w-[62%] shrink-0 truncate font-sans text-[11.5px] text-fg/75" title={agent.name}>
-        {agent.name}
+    <span className="flex w-full min-w-0 flex-col gap-0.5">
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0"><WorkflowStatusIcon status={status} /></span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] text-fg/75">{agent.name}</span>
+        {member ? <CaretRight aria-hidden size={11} className="shrink-0 text-fg/25 group-hover:text-fg/60" /> : null}
       </span>
-      {summary && (status === "failed" || status === "stopped") ? (
-        <span className="min-w-0 flex-1 truncate font-sans text-[10.5px] text-rose-200/80" title={summary}>
+      {detail ? (
+        <span className="truncate pl-[22px] text-left font-sans text-[10.5px] tabular-nums text-fg/40">{detail}</span>
+      ) : null}
+      {(status === "failed" || status === "stopped") && summary ? (
+        <span className={cn("truncate pl-[22px] text-left font-sans text-[10.5px]", summaryTone)} title={summary}>
           {summary}
         </span>
       ) : null}
-      {metrics ? <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg/35">{metrics}</span> : null}
-      {member ? <CaretRight aria-hidden size={11} className="shrink-0 text-fg/25 group-hover:text-fg/60" /> : null}
-    </>
+    </span>
   );
   return member && onSelect ? (
     <button
       type="button"
       onClick={() => onSelect(member)}
       aria-label={`Open ${agent.name} details`}
+      title={rowTitle}
       data-testid="chat-workflow-agent-row"
-      className="group flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.045]"
+      className="group flex w-full min-w-0 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.045]"
     >
       {content}
     </button>
   ) : (
-    <div className="flex min-w-0 items-center gap-2 px-1.5 py-1" data-testid="chat-workflow-agent-row">{content}</div>
+    <div className="flex min-w-0 px-1.5 py-1" title={rowTitle} data-testid="chat-workflow-agent-row">{content}</div>
   );
 }
 
-function phaseStateOfViews(views: readonly WorkflowAgentView[]): "queued" | "running" | "done" | "failed" | "stopped" {
-  // A stopped agent is not a failure: the run's tally says "N stopped" in its
-  // own tone for the same agents, and the transcript's twin of this rule makes
-  // the same distinction. A red X here would call an interrupted run broken.
+function phaseStateOfViews(views: readonly WorkflowAgentView[]): "pending" | "running" | "done" | "failed" | "stopped" {
+  if (views.length === 0) return "pending";
   if (views.some((view) => view.status === "failed")) return "failed";
   if (views.some((view) => view.status === "stopped")) return "stopped";
   if (views.some((view) => view.status === "running")) return "running";
-  return views.length > 0 ? "done" : "queued";
+  return "done";
 }
 
-function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "failed" | "stopped" }) {
+function PhaseStateIcon({ state }: { state: "pending" | "running" | "done" | "failed" | "stopped" }) {
   if (state === "done") return <Check aria-hidden size={11} weight="bold" className="shrink-0 text-emerald-300/85" />;
   if (state === "failed") return <X aria-hidden size={11} weight="bold" className="shrink-0 text-rose-300/85" />;
   if (state === "stopped") {
@@ -479,6 +633,6 @@ function PhaseStateIcon({ state }: { state: "queued" | "running" | "done" | "fai
   if (state === "running") {
     return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-accent-bright,#C4B5FD)]" />;
   }
-  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg/25" />;
+  return <Circle aria-hidden size={11} className="shrink-0 text-fg/30" />;
 }
 

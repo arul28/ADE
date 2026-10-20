@@ -315,6 +315,14 @@ single `opencode serve` is shared across chats — used to produce a record owne
 by nothing, invisible to everyone, while every command reported success. That
 now fails loudly instead of lying, which is better and still not proof.
 
+**Projects on an external drive.** macOS won't let the Simulator's own service
+write to a removable or external volume, and it can't ask for permission, so
+`xcrun simctl io … screenshot <path>` or `recordVideo <path>` into a project on
+such a drive fails with "Operation not permitted". `ade apple` handles this (it
+captures on the internal disk and saves the file into the lane for you). If you
+ever run `simctl io` by hand, write to `/tmp`. Builds, installs and tests work
+from the drive.
+
 If you must attach a file from elsewhere, run `ade proof attach` from **inside
 the lane worktree** so ADE can place it, and read the last line: it names the
 lane and the chat the artifact landed on. `lane none / chat none` is a failure,

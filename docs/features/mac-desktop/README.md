@@ -2,8 +2,8 @@
 
 Each lane can own a private macOS screen. ADE creates a virtual display named
 after the lane, parks the lane's windows on it, and drives those windows through
-the Accessibility API. The user's real display and the real pointer stay
-untouched.
+the Accessibility API. Without an active input lease, the user's pointer stays
+on a real display.
 
 The Work tools pane shows that screen live, the `ade mac-desktop` command family
 drives it (aliases `ade mac-desk` and `ade desk`; `ade desktop` stays the app
@@ -28,6 +28,25 @@ A virtual display solves this because macOS puts every display — real or
 virtual — on one global coordinate plane. A window parked at `x = 8000` is a
 real window with a real accessibility tree and real ScreenCaptureKit content. It
 is simply not where the user is looking.
+
+### Display placement and the pointer fence
+
+macOS keeps displays that touch at one corner, but snaps a requested gap back to
+an adjacent arrangement. A shared edge also lets an ordinary straight pointer
+move cross between screens. ADE places lane displays in a diagonal chain from a
+safe corner of the real-display layout, using a session-only arrangement so it
+does not change the saved display preferences. A debounced display-change
+callback reapplies the chain after a monitor, mode, or lane display changes; it
+stops after three refused placements for the same display layout.
+
+A listen-only mouse event tap watches for an unleased physical pointer entering
+an ADE display and returns it to the nearest point inside the real display it
+came from. It leaves driver-posted input and active leases alone. A physical
+drag is fenced too, so a window the person drags cannot be lost on a lane
+display; a lane's own lease or gesture is never interrupted. On a single
+5120x1440 display, relative HID pushes diagonally into the corner crossed onto
+the lane display without the fence and stop just inside the corner with it.
+The offscreen-region fallback has no virtual display to fence.
 
 Four rules make the isolation hold:
 
@@ -87,6 +106,7 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PointerFence.swift` | Listen-only pointer fence for unleased physical movement onto ADE displays. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/ScrollDelta.swift` | A scroll direction and line count as wheel deltas, for the real and background paths. |
@@ -240,7 +260,8 @@ client.
   `macDesktop.takeControl` / `returnControl` / `renewLease` / `input`, all
   controller-only (never `viewerAllowed`) and advertised with
   `hello.features.macDesktopControl`. The browser pane draws the same strip
-  state ("You have control · Return to agent"), forwards pointer and keyboard
+  state as the desktop pane — a pill on the picture, "You're driving this
+  screen. Press Esc to give it back · Return to agent" — forwards pointer and keyboard
   through `useMacDesktopRealInput` with a sync sender, draws the same local
   cursor glyph, and renews the lease every TTL/3. It gives control back when
   the user hands it back, the tab hides, the page unloads, the socket closes,
@@ -333,7 +354,13 @@ names the holding lane.
    synthetic event posted without Accessibility is dropped by macOS with no
    error: the service refuses real input with `MAC_DESKTOP_PERMISSION_REQUIRED`
    naming the grant (`macDesktopInput.ts`) instead of letting a takeover look
-   like a dead screen.
+   like a dead screen. A person cannot take control at all while either grant
+   is off: `takeControl` refuses with `MAC_DESKTOP_PERMISSION_REQUIRED` on the
+   host, so the phone, the web client and the desktop all get the same answer,
+   and the pane disables Take over and the click-to-take on the picture. The
+   grant is made on the real screen through the permission card; macOS ignores
+   synthetic clicks on its privacy switches, and a password sheet raised on a
+   lane display would take the keyboard, Escape included.
 3. **Idle release.** A display with no parked windows, no stream reader and no
    running recording for `MAC_DESKTOP_IDLE_RELEASE_MS` is destroyed on a 30s
    sweep. The next open recreates it. The display size comes from the

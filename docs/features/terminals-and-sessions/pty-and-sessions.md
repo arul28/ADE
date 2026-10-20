@@ -218,13 +218,39 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
    `running`.
 8. Best-effort capture of `headShaStart` via `computeHeadShaBestEffort`
    so `sessionDeltaService` has a git anchor.
-9. Pick a launch strategy:
+9. Swap in ADE's pinned CLI (`pty/pinnedProviderCli.ts`). Every
+   provider terminal — work, resume, login — runs ADE's own pinned copy
+   by absolute path, never the CLI on the PATH. This is one late swap,
+   after resume backfill, Pi session/lease work, Claude `--plugin-dir` /
+   `--session-id` and preassigned ids, so every parser
+   (`claudeInvocationInCommandLine`, `providerInvocationInCommandLine`,
+   resume parsing) still sees bare-word lines, and the swapped line is
+   never persisted (resume commands stay bare). It replaces the command
+   word of a direct command, of a POSIX shell wrapper's `-c` line (at the
+   start and after `&&`/`||`/`|`/`;`, skipping `KEY=value` prefixes), of
+   Windows Droid's `powershell -Command` line, and of shell startup
+   commands that run a provider CLI (Settings ACP sign-in, the chat auth
+   card, `claude auth login`). Node-run CLIs get their leading args
+   (Qwen `<node> <cli-entry.js>`, Cursor `<node> [--use-system-ca]
+   <index.js> --disable-auto-update`, Pi `<pinned node> <dist/cli.js>`);
+   Codex gets `-c check_for_update_on_startup=false` and Grok
+   `--no-auto-update`; the PTY env gets the tool's self-update switches
+   (plus `CURSOR_INVOKED_AS=cursor-agent`). Windows runs the pin's `.exe`
+   or `node.exe`, never a cmd shim. When the pin is still downloading,
+   the PTY opens a clean shell, prints "ADE is downloading <Tool> for this
+   machine. It starts here when the download finishes.", holds initial
+   input, and types the launch once the copy lands; a failure or an
+   unavailable target prints the sentence and closes the PTY with exit 1
+   (a state known up front makes `create()` throw). OpenCode's TUI
+   attaches to ADE's server, so `create()` awaits OpenCode's download
+   first. A plain shell with no command is untouched, which is how a user
+   runs their own CLI.
+10. Pick a launch strategy:
    - When `args.command` is present (e.g. the renderer asked for
      `claude` with explicit argv from `buildTrackedCliLaunchCommand`),
      spawn that program directly. If the direct spawn fails, fall back
      to a shell candidate so an `args.startupCommand` shadow command
-     can still execute the CLI through the user's shell rc — useful
-     when Claude/Codex are only resolvable through `~/.zshrc` shims.
+     can still execute the CLI through a shell.
    - Otherwise iterate the shell candidate list (`/bin/zsh`,
      `/bin/bash`, `/bin/sh`, or Windows equivalents), retrying across
      candidates if the first spawn fails. Plain interactive shell
@@ -246,7 +272,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      replay uses the same rule, and Droid uses an explicit no-profile
      PowerShell descriptor because its temporary settings-file lifecycle
      genuinely requires shell statements.
-10. If the spawn ended up in a shell (no direct launch, or direct
+11. If the spawn ended up in a shell (no direct launch, or direct
     launch fell back), type `args.startupCommand` into the PTY so the
     shell executes the CLI. Direct launches that succeeded skip this —
     they already received argv. The write can be deferred by
@@ -261,7 +287,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     `AgentChatPane`) to give the spawned shell a beat to finish
     drawing its initial prompt before the CLI invocation is typed in,
     avoiding a half-rendered command in the user's scrollback.
-11. If `args.initialInput` is a non-empty string, `create` schedules
+12. If `args.initialInput` is a non-empty string, `create` schedules
     writing it into the PTY after an optional `initialInputDelayMs` delay
     (clamped 0--10 000 ms). The initial input is submitted using the
     agent CLI input protocol (bracketed paste envelope, chunked writes,
@@ -707,11 +733,11 @@ command argument whenever structured resume metadata is available.
 
 ### AI-driven titles
 
-CLI sessions are always ADE-named. The cheap helper for the ADE
-provider (Haiku 5.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
-`resumeMetadata.launch.model`, then the deterministic title already on
-the row. ADE does not prefer Claude JSONL `ai-title` or Codex thread
-names over that chain.
+CLI sessions are always ADE-named, on one model: the cheap helper for a
+Claude, Codex or Cursor CLI (Haiku 5.5 / GPT-6 Luna / Composer 2.5),
+otherwise `resumeMetadata.launch.model`. When that misses, the
+deterministic title already on the row stays. ADE does not prefer
+Claude JSONL `ai-title` or Codex thread names over it.
 
 - **Output snippet title** (shell and other non-chat CLIs):
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of

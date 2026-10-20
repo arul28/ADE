@@ -2572,7 +2572,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const replayA = await clientA.queue.next("chat_event");
     expect((replayA.payload as { sessionId: string; event: { text: string } }).sessionId).toBe("session-1");
     await expect(clientB.queue.next("chat_event", 250)).rejects.toThrow(/Timed out waiting for chat_event/);
-  }, 15_000);
+  });
 
   it("ships live turn state on the chat_subscribe ack so mid-turn subscribers see streaming state", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-chat-turnstate-"), createLogger() as any);
@@ -2677,7 +2677,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const unknownAck = await client.queue.next("chat_subscribe");
     expect(unknownAck.payload).toMatchObject({ sessionId: "session-unknown" });
     expect(unknownAck.payload).not.toHaveProperty("turnActive");
-  }, 15_000);
+  });
 
   it("resubscribes chat listeners after reconnect and routes chat remote commands", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-chat-commands-"), createLogger() as any);
@@ -2885,7 +2885,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     });
     expect((deleteResult.result.payload as { ok: boolean }).ok).toBe(true);
     expect(chatService.service.deleteSession).toHaveBeenCalledWith({ sessionId: "session-1" });
-  }, 15_000);
+  });
 
   it("pairs a phone peer and preserves paired reconnect identity even if hello metadata is spoofed", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);

@@ -120,11 +120,11 @@ describe("active-turn dispatch modes", () => {
 
 describe("CTO live-redirect providers", () => {
   it("lists exactly the providers that can redirect a turn already in flight", () => {
-    expect([...CTO_LIVE_REDIRECT_PROVIDERS]).toEqual(["claude", "codex", "cursor"]);
-    for (const provider of ["claude", "codex", "cursor"]) {
+    expect([...CTO_LIVE_REDIRECT_PROVIDERS]).toEqual(["claude", "codex", "cursor", "opencode"]);
+    for (const provider of ["claude", "codex", "cursor", "opencode"]) {
       expect(providerSupportsLiveRedirect(provider)).toBe(true);
     }
-    for (const provider of ["opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot", ""]) {
+    for (const provider of ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""]) {
       expect(providerSupportsLiveRedirect(provider)).toBe(false);
     }
     expect(providerSupportsLiveRedirect("  CURSOR ")).toBe(true);

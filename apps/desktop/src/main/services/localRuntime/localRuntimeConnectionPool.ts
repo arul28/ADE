@@ -38,6 +38,7 @@ import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { requestAdeRuntimeShutdown } from "../../../../../ade-cli/src/serviceManager/runtimeShutdownRequest";
 import {
   SYSTEM_PROJECT_REGISTRATION,
   type ProjectRegistrationIntent,
@@ -64,13 +65,17 @@ import {
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+  LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
-const LOCAL_RUNTIME_STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+// Disk scans and project-health checks are slow by design, and Settings →
+// Health runs them when it opens. Counting them made the page report its own
+// scans as the service being slow.
+const RUNTIME_HEALTH_EXCLUDED_DOMAINS: ReadonlySet<string> = new Set(["storage", "project_health"]);
 const LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS = 2_000;
 const LOCAL_RUNTIME_STARTUP_RETRY_MS = 250;
 // Ring-cap the in-memory slow-action window so a sustained slow-call storm can
@@ -83,7 +88,7 @@ type LocalRuntimeConnection = {
   socketPath: string;
 };
 
-type SlowActionSample = { at: number; totalMs: number };
+type SlowActionSample = { at: number; totalMs: number; failed: boolean };
 
 type RuntimeEventNotification = {
   subscriptionId: string;
@@ -171,10 +176,23 @@ const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WA
  * exactly as it did before — so a wedged runtime still costs a bounded delay.
  */
 const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
+/**
+ * How long quit gives this desktop's own brain to exit after it is asked to
+ * shut down, on Windows, before the brain is force-killed. The request and the
+ * wait share this one budget. 3 s is the quit budget the user approved for the
+ * round-4 Windows fixes. See `stopOwnedRuntimeCooperatively`.
+ */
+const LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS = 3_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
 const LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS = 15_000;
+// How old a cached service-health snapshot may be when a status read finds it.
+// Windows probes are expensive (~14 child processes each), so while the pool is
+// connected to the machine service's own brain a snapshot is kept for the long
+// window instead; see `serviceHealthReadMaxAgeMs`.
+const SERVICE_HEALTH_READ_MAX_AGE_MS = 2_000;
+const SERVICE_HEALTH_STEADY_MAX_AGE_MS = 5 * 60_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -1062,6 +1080,31 @@ function disposeOwnedRuntimeChild(
   cleanupTimer.unref?.();
 }
 
+/** Node's record that the child exited. Once it has, the pid is reaped and must not be signalled. */
+function hasChildExited(child: ChildProcess): boolean {
+  return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null;
+}
+
+/**
+ * Resolves `true` when `child` exits and `false` when `timeoutMs` passes first.
+ * Never rejects. The timer is unref'd like the other bounded waits in this file.
+ */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (hasChildExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, Math.max(0, timeoutMs));
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+}
+
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
   const startedAt = Date.now();
   let lastError: Error | null = null;
@@ -1113,6 +1156,7 @@ const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
 
 export class LocalRuntimeConnectionPool {
   private disposed = false;
+  private stopping = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
@@ -1121,6 +1165,8 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
   private ownedRuntimeChild: ChildProcess | null = null;
+  /** The endpoint belongs to the child, even after its active connection resets. */
+  private ownedRuntimeSocketPath: string | null = null;
   private appFallback: LocalRuntimeStatus["appFallback"] = null;
   private appFallbackHandoverPending: LocalRuntimeStatus["appFallback"] = null;
   /** Set while an install runs in place of the fallback it stopped. */
@@ -1190,9 +1236,21 @@ export class LocalRuntimeConnectionPool {
   private serviceHealthRefreshPromise: Promise<void> | null = null;
   // Wall clock at which the in-flight probe started. A caller can only join
   // that probe when it began recently enough to satisfy its own `maxAgeMs`.
-  private serviceHealthRefreshStartedAtMs = 0;
+  // Null while the probe is queued and has not begun: it will ask after any
+  // caller that joins it, so every caller may join it.
+  private serviceHealthRefreshStartedAtMs: number | null = 0;
+  // Bumped whenever the service or the connection under it changes through the
+  // pool; see `bumpServiceStateGeneration`.
+  private serviceStateGeneration = 0;
+  // The generation the probe behind the cached snapshot began under. Only the
+  // current generation may serve that snapshot, or be joined while it runs.
+  private serviceHealthSnapshotGeneration = 0;
+  // The brain client the last probe started under, while the pool was steady on
+  // it; null when it was not. Only a snapshot taken under the client that is
+  // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
+  private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
-  // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
+  // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
   /** Lanes whose App Control frames this desktop's windows show. */
@@ -1218,8 +1276,69 @@ export class LocalRuntimeConnectionPool {
     // Read-only status must never wait on (or block for) the service probe:
     // this runs on every `app.getInfo`/status poll and the Windows probe costs
     // ~2.1s. Kick a background refresh and answer from cache.
-    void this.refreshServiceHealth();
+    void this.refreshServiceHealth(this.serviceHealthReadMaxAgeMs());
     return this.statusSnapshot();
+  }
+
+  /**
+   * For a surface the person just opened to read service health (About): probe
+   * now when the cached answer is older than the read window, and resolve once
+   * it has landed, so the next status read sees the new answer. Not for polls.
+   */
+  refreshServiceHealthForView(): Promise<void> {
+    return this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+  }
+
+  /**
+   * For a recovery or a report that chooses what to do from service health. It
+   * joins a probe already running only when that probe began within the 2 s read
+   * window and in the current service-state generation, and otherwise queues one
+   * probe behind it that every later caller shares. So the answer is never the
+   * five-minute steady snapshot, and never a probe from before an install, repair,
+   * connect, disconnect or mode change. It never probes with
+   * `maxAgeMs: 0`: the recovery screen polls this every 2 s, and a probe per call
+   * queued behind a ~4 s probe would grow without bound. `getStatus` is the read
+   * for polls; `getFreshStatus` is the poll behind `app.getInfo`.
+   */
+  async getStatusAfterServiceProbe(): Promise<LocalRuntimeStatus> {
+    await this.refreshServiceHealth(SERVICE_HEALTH_READ_MAX_AGE_MS);
+    return this.statusSnapshot();
+  }
+
+  /**
+   * How old a cached service-health snapshot a read may serve before it probes
+   * again. Only `steadyWindowApplies` gets the long window; everything else
+   * (disconnected, connecting, an app-owned fallback, an install in flight, a
+   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
+   */
+  private serviceHealthReadMaxAgeMs(): number {
+    return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
+  }
+
+  /**
+   * Whether the cached snapshot may be read through the long window: Windows,
+   * connected to the brain client the snapshot was taken under, and that brain
+   * is the machine service's own (see `isServiceHealthSteady`).
+   */
+  private steadyWindowApplies(): boolean {
+    return process.platform === "win32"
+      && this.isServiceHealthSteady()
+      && this.serviceHealthSteadyClient === this.activeClient;
+  }
+
+  /**
+   * Connected to the brain this pool expects: the machine service's own, not an
+   * app-owned fallback or an isolated runtime, with no service install running
+   * and no failed probe waiting to be retried. The pool has no heartbeat; a brain
+   * that goes away clears `activeClient` in `onDisconnect`, and that is the
+   * signal this reads.
+   */
+  private isServiceHealthSteady(): boolean {
+    return this.activeClient !== null
+      && !this.isolatedModeActive
+      && this.appFallback === null
+      && this.serviceInstallPromise === null
+      && this.serviceHealthStatus.state !== "error";
   }
 
   private statusSnapshot(): LocalRuntimeStatus {
@@ -1306,8 +1425,8 @@ export class LocalRuntimeConnectionPool {
     return Array.from(new Set(pids));
   }
 
-  private recordSlowAction(atMs: number, totalMs: number): void {
-    this.slowActionSamples.push({ at: atMs, totalMs });
+  private recordSlowAction(atMs: number, totalMs: number, failed = false): void {
+    this.slowActionSamples.push({ at: atMs, totalMs, failed });
     // Keep the window bounded on both age and count.
     const horizon = atMs - RUNTIME_HEALTH_WINDOW_MS;
     if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.slowActionSamples[0]!.at < horizon) {
@@ -1323,16 +1442,20 @@ export class LocalRuntimeConnectionPool {
     const recent = this.slowActionSamples.filter((sample) => sample.at >= horizon);
     // Prune while we are here so idle pools do not retain a stale window.
     this.slowActionSamples = recent;
+    // A failed call is counted once, as failed, however long it took: a
+    // timeout is a failure first.
+    const slow = recent.filter((sample) => !sample.failed);
     let p95: number | null = null;
-    if (recent.length > 0) {
-      const sorted = recent.map((sample) => sample.totalMs).sort((left, right) => left - right);
+    if (slow.length > 0) {
+      const sorted = slow.map((sample) => sample.totalMs).sort((left, right) => left - right);
       // Nearest-rank p95: index ceil(0.95*n)-1, clamped into range.
       const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
       p95 = sorted[rank]!;
     }
     return {
-      slowActions24h: recent.length,
+      slowActions24h: slow.length,
       slowActionP95Ms: p95,
+      failedActions24h: recent.length - slow.length,
       sampledAt: new Date(nowMs).toISOString(),
     };
   }
@@ -1354,23 +1477,37 @@ export class LocalRuntimeConnectionPool {
    * and a failing connect would each start their own child.
    *
    * Staleness contract: callers that only *read* health (`getStatus`) accept a
-   * snapshot up to one refresh interval old and never wait; callers that need a
-   * fresh answer to choose a recovery code await this with `maxAgeMs: 0`. The
-   * cache is only ever invalidated by time, so "fresh" is enforced on the probe
-   * itself: a caller only joins an in-flight probe that *started* within its
-   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that
-   * began before the install/repair it is asking about — it queues its own
-   * behind the running one.
+   * snapshot up to their read window old (`serviceHealthReadMaxAgeMs`) and never
+   * wait; callers that choose a recovery or a report from it wait for a probe
+   * within the read window, through `getStatusAfterServiceProbe`; the install
+   * and repair path asks with `maxAgeMs: 0`. The cache ages out by time, and it
+   * is also invalidated by the service-state generation: a snapshot or a running
+   * probe from an earlier generation is never served, because an install, repair,
+   * connect, disconnect or mode change since then may have made it describe a
+   * service that is gone. Otherwise "fresh" is enforced on the probe itself: a
+   * caller joins a probe only if it has not begun yet, or it *started* within its
+   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that began
+   * before the install/repair it is asking about — it queues its own behind a
+   * probe that is running, and joins one that has not started.
    */
-  private refreshServiceHealth(maxAgeMs = 2_000): Promise<void> {
+  private refreshServiceHealth(maxAgeMs = SERVICE_HEALTH_READ_MAX_AGE_MS): Promise<void> {
     const requestedAtMs = Date.now();
-    if (requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
+    const generation = this.serviceStateGeneration;
     const inFlight = this.serviceHealthRefreshPromise;
+    const inFlightStartedAtMs = this.serviceHealthRefreshStartedAtMs;
     // Strictly greater: `Date.now()` has millisecond granularity, so a probe
     // that started in the same tick as a `maxAgeMs: 0` call may still have
     // asked before the install it is being questioned about. At any other
     // `maxAgeMs` this only moves the boundary by a millisecond.
-    if (inFlight && this.serviceHealthRefreshStartedAtMs > requestedAtMs - maxAgeMs) return inFlight;
+    // Checked before the cache age: a probe still running has not landed, so
+    // the cache holds the answer from before it, and a caller inside its window
+    // must wait for that probe rather than read the older snapshot.
+    const joinable = inFlightStartedAtMs === null
+      || (this.serviceHealthSnapshotGeneration === generation && inFlightStartedAtMs > requestedAtMs - maxAgeMs);
+    if (inFlight && joinable) return inFlight;
+    if (this.serviceHealthSnapshotGeneration === generation && requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) {
+      return Promise.resolve();
+    }
     const applyStatus = (status: ServiceManagerStatusResult) => {
       this.serviceHealthStatus = {
         state: serviceHealthState(status),
@@ -1402,9 +1539,14 @@ export class LocalRuntimeConnectionPool {
       // the age check while it runs.
       this.serviceHealthRefreshStartedAtMs = Date.now();
       this.serviceHealthCheckedAtMs = this.serviceHealthRefreshStartedAtMs;
+      this.serviceHealthSnapshotGeneration = this.serviceStateGeneration;
+      this.serviceHealthSteadyClient = this.isServiceHealthSteady() ? this.activeClient : null;
       return (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
         .then(applyStatus, applyError);
     };
+    // A probe queued behind another has not begun, so it reads as not started
+    // until `runProbe` runs: every caller that arrives meanwhile joins it.
+    this.serviceHealthRefreshStartedAtMs = null;
     // An in-flight probe that started too early for this caller cannot answer
     // it, but running both at once would mean two probe children: queue behind
     // it instead. Its outcome is its own caller's to observe, so a rejection
@@ -1418,6 +1560,25 @@ export class LocalRuntimeConnectionPool {
       });
     this.serviceHealthRefreshPromise = refresh;
     return refresh;
+  }
+
+  /**
+   * The service or the connection to it changed through the pool: a service
+   * child started or settled, or the pool connected, disconnected or changed
+   * runtime mode. A probe that began under an older generation may describe the
+   * service as it was, so from now on no read joins a probe that began before
+   * this, or takes its snapshot. The next read queues one probe, and the reads
+   * after it share that probe.
+   */
+  private bumpServiceStateGeneration(): void {
+    this.serviceStateGeneration += 1;
+  }
+
+  /** Moves the brain client the pool is connected to. A change of client is a connection change. */
+  private setActiveClient(client: RuntimeRpcClient | null): void {
+    if (this.activeClient === client) return;
+    this.activeClient = client;
+    this.bumpServiceStateGeneration();
   }
 
   /**
@@ -1524,6 +1685,9 @@ export class LocalRuntimeConnectionPool {
     env?: NodeJS.ProcessEnv;
   }): Promise<ServiceManagerCommandResult> {
     return await new Promise<ServiceManagerCommandResult>((resolve, reject) => {
+      // The service starts changing as the child starts: a probe that began
+      // before this may describe it as it was.
+      this.bumpServiceStateGeneration();
       const child = spawn(process.execPath, [options.cliPath, "serve", options.flag], {
         env: options.env ?? buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
@@ -1565,6 +1729,11 @@ export class LocalRuntimeConnectionPool {
           parsed: parseRuntimeServiceManagerOutput(output),
         });
       });
+    }).finally(() => {
+      // The service was just installed or removed, so a snapshot taken before
+      // this settled may no longer describe it: the next read probes again.
+      this.serviceHealthSteadyClient = null;
+      this.bumpServiceStateGeneration();
     });
   }
 
@@ -2085,7 +2254,9 @@ export class LocalRuntimeConnectionPool {
         const tCall = Date.now();
         const totalMs = tCall - tStart;
         if (totalMs > SLOW_ACTION_THRESHOLD_MS || callError) {
-          this.recordSlowAction(tCall, totalMs);
+          if (!RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
+            this.recordSlowAction(tCall, totalMs, Boolean(callError));
+          }
           this.logger.warn("local_runtime.action_slow", {
             domain: request.domain,
             action: request.action,
@@ -2340,6 +2511,71 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
+  /**
+   * Quit on Windows: ask this desktop's own brain to shut down, and force-kill
+   * it if it is still running when the budget runs out, or at once if it does
+   * not acknowledge the request.
+   *
+   * Windows has no deliverable SIGTERM, so `dispose()`'s signal is a
+   * `TerminateProcess` that skips the brain's shutdown hooks: the SQLite/CRDT
+   * flush, chat and terminal teardown, the socket cleanup. The brain's
+   * `shutdown` RPC runs the same `finish()` its SIGTERM handler runs, so it is
+   * asked first, over the endpoint recorded when that child was spawned.
+   *
+   * Scope: only the child this pool spawned (`ownedRuntimeChild`), which is
+   * local by construction. The request goes out only after the child's recorded
+   * endpoint reports that child's pid, so a service brain on another socket is
+   * never asked to stop. The request and wait share the 3 s budget. The method
+   * always resolves, so quit cannot hang here. A brain that has already exited
+   * is not waited for.
+   *
+   * POSIX is unchanged. `dispose()` still sends SIGTERM there, which the brain
+   * already handles cooperatively.
+   *
+   * `closeAdmission` defaults to true for app quit. An updater handoff passes
+   * false because the app may remain open if the installer does not take over.
+   */
+  async stopOwnedRuntimeCooperatively(options: { closeAdmission?: boolean } = {}): Promise<void> {
+    if (process.platform !== "win32") return;
+    const child = this.ownedRuntimeChild;
+    if (!child || child.pid == null || hasChildExited(child)) return;
+    // Normal quit closes admission synchronously, before waiting on the shutdown
+    // RPC. The updater leaves admission open in case the install handoff fails
+    // and the app keeps running.
+    if (options.closeAdmission !== false) this.stopping = true;
+    this.clearIsolatedRecoveryTimer();
+    const pid = child.pid;
+    const deadline = Date.now() + LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS;
+    try {
+      const socketPath = this.ownedRuntimeSocketPath
+        ?? this.activeConnection?.socketPath
+        ?? resolveMachineAdeLayout().socketPath;
+      const acknowledged = await requestAdeRuntimeShutdown({
+        pid,
+        socketPath,
+        timeoutMs: LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS,
+      }).then((result) => result.requested, () => false);
+      if (acknowledged) await waitForChildExit(child, deadline - Date.now());
+      if (hasChildExited(child)) {
+        this.logger.info("local_runtime.quit_brain_exited", { pid, acknowledged });
+        return;
+      }
+      this.logger.warn("local_runtime.quit_brain_force_stopped", { pid, acknowledged });
+      // Clear the slot first, so `dispose()` does not signal this handle a second time.
+      if (this.ownedRuntimeChild === child) {
+        this.ownedRuntimeChild = null;
+        this.ownedRuntimeSocketPath = null;
+      }
+      disposeOwnedRuntimeChild(child, socketPath);
+    } catch (error) {
+      // Not rethrown: quit goes on, and `dispose()` still force-kills the brain.
+      this.logger.warn("local_runtime.quit_brain_stop_failed", {
+        pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -2347,16 +2583,19 @@ export class LocalRuntimeConnectionPool {
     this.markIsolatedMode(false, { notify: false });
     this.clearAppFallback("stopped");
     const ownedChild = this.ownedRuntimeChild;
-    const ownedSocket = this.activeConnection?.socketPath ?? resolveMachineAdeLayout().socketPath;
+    const ownedSocket = this.ownedRuntimeSocketPath
+      ?? this.activeConnection?.socketPath
+      ?? resolveMachineAdeLayout().socketPath;
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
-    this.activeClient = null;
+    this.setActiveClient(null);
     this.activeRuntimePid = null;
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
     this.ownedRuntimeChild = null;
+    this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
     this.projectsByRoot.clear();
     this.projectRegistrationsByRoot.clear();
@@ -2384,7 +2623,7 @@ export class LocalRuntimeConnectionPool {
       if (this.connection === connection) {
         this.connection = null;
         this.activeConnection = null;
-        this.activeClient = null;
+        this.setActiveClient(null);
         this.activeRuntimePid = null;
         this.activeRuntimeSyncPort = null;
         this.activeRuntimePublishHealth = null;
@@ -2402,6 +2641,9 @@ export class LocalRuntimeConnectionPool {
     if (this.disposed) {
       throw new Error("Local runtime connection pool is disposed.");
     }
+    if (this.stopping) {
+      throw new Error("Local runtime connection pool is stopping.");
+    }
   }
 
   private isCurrentConnection(entry: LocalRuntimeConnection): boolean {
@@ -2412,7 +2654,7 @@ export class LocalRuntimeConnectionPool {
     if (!this.isCurrentConnection(entry)) return false;
     this.connection = null;
     this.activeConnection = null;
-    this.activeClient = null;
+    this.setActiveClient(null);
     this.activeRuntimePid = null;
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
@@ -2727,6 +2969,7 @@ export class LocalRuntimeConnectionPool {
     const fallback = this.appFallback;
     if (!fallback) return;
     this.appFallback = null;
+    this.bumpServiceStateGeneration();
     this.logger.info(`local_runtime.app_fallback_${event}`, {
       reason: fallback.reason,
       since: fallback.since,
@@ -2758,7 +3001,13 @@ export class LocalRuntimeConnectionPool {
     // "installed" includes a service brain that is still starting: it holds
     // the socket, so the fallback must not reclaim it. Should that brain die,
     // the next connect starts the fallback by itself.
-    if (!reason || this.disposed || this.serviceInstallStatus.state === "installed" || this.connection) return;
+    if (
+      !reason
+      || this.disposed
+      || this.stopping
+      || this.serviceInstallStatus.state === "installed"
+      || this.connection
+    ) return;
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
     try {
       await this.connect(() => this.startAppFallback(socketPath, reason));
@@ -2810,6 +3059,7 @@ export class LocalRuntimeConnectionPool {
       const client = await this.connectSpawnedRuntime(socketPath, child);
       this.appFallbackHandoverPending = null;
       this.appFallback = { reason, since: new Date().toISOString() };
+      this.bumpServiceStateGeneration();
       this.logger.warn("local_runtime.app_fallback_started", {
         socketPath, pid: child.pid ?? null, reason,
       });
@@ -2938,7 +3188,10 @@ export class LocalRuntimeConnectionPool {
       const client = await this.connectClient(socketPath, { isMachineService: true });
       const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
       if (!child) this.noteServiceHandover();
-      if (!child) this.ownedRuntimeChild = null;
+      if (!child) {
+        this.ownedRuntimeChild = null;
+        this.ownedRuntimeSocketPath = null;
+      }
       return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -3074,7 +3327,10 @@ export class LocalRuntimeConnectionPool {
         const client = await this.connectClient(socketPath, { isMachineService: true });
         const child = this.activeRuntimePid === this.ownedRuntimeChild?.pid ? this.ownedRuntimeChild : null;
         if (!child) this.noteServiceHandover();
-        if (!child) this.ownedRuntimeChild = null;
+        if (!child) {
+          this.ownedRuntimeChild = null;
+          this.ownedRuntimeSocketPath = null;
+        }
         return { client, child, socketPath };
       } catch (error) {
         lastError = error;
@@ -3131,6 +3387,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
       this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child: null, socketPath };
     } catch (error) {
@@ -3180,6 +3437,7 @@ export class LocalRuntimeConnectionPool {
   private markIsolatedMode(active: boolean, options: { notify?: boolean } = {}): void {
     if (this.isolatedModeActive === active) return;
     this.isolatedModeActive = active;
+    this.bumpServiceStateGeneration();
     if (options.notify === false) return;
     try {
       this.options.onRuntimeModeChange?.(active ? "isolated" : "primary");
@@ -3231,7 +3489,10 @@ export class LocalRuntimeConnectionPool {
     this.markIsolatedMode(false);
     this.clearVersionSkewStatus();
     closeRuntimeClient(entry.client);
-    if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
+    if (this.ownedRuntimeChild === entry.child) {
+      this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
+    }
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
   }
 
@@ -3347,7 +3608,7 @@ export class LocalRuntimeConnectionPool {
     if (!options.preserveVersionSkew) {
       this.clearVersionSkewStatus();
     }
-    this.activeClient = client;
+    this.setActiveClient(client);
     this.noteConnectedRuntime(options.isMachineService === true);
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
@@ -3362,7 +3623,7 @@ export class LocalRuntimeConnectionPool {
       });
       this.connection = null;
       this.activeConnection = null;
-      this.activeClient = null;
+      this.setActiveClient(null);
       this.activeRuntimePid = null;
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
@@ -3378,7 +3639,7 @@ export class LocalRuntimeConnectionPool {
     child: ChildProcess,
     options: { preserveVersionSkew?: boolean } = {},
   ): Promise<RuntimeRpcClient> {
-    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_TIMEOUT_MS;
+    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS;
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       if (child.exitCode != null || child.signalCode != null) {
@@ -3451,6 +3712,7 @@ export class LocalRuntimeConnectionPool {
       windowsHide: true,
     });
     this.ownedRuntimeChild = child;
+    this.ownedRuntimeSocketPath = socketPath;
     const outputBase = {
       logger: this.logger,
       socketPath,
@@ -3471,10 +3733,11 @@ export class LocalRuntimeConnectionPool {
       if (this.ownedRuntimeChild !== child) return;
       const client = this.activeClient;
       this.ownedRuntimeChild = null;
+      this.ownedRuntimeSocketPath = null;
       this.clearAppFallback("stopped");
       this.connection = null;
       this.activeConnection = null;
-      this.activeClient = null;
+      this.setActiveClient(null);
       this.activeRuntimePid = null;
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;

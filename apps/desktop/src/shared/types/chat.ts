@@ -15,6 +15,7 @@ export type AcpToolKind =
   | "switch_mode"
   | "other";
 
+import type { HarnessPreset } from "../harnessPresets";
 import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
@@ -83,14 +84,34 @@ export type AgentChatProvider =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
+  | "antigravity"
   | (string & {});
+
+/** Providers that can own persistent Work chats (some do not have a CLI). */
+export const CHAT_PROVIDER_IDS = [
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "muse",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "antigravity",
+] as const;
+export type ChatProviderId = (typeof CHAT_PROVIDER_IDS)[number];
 
 /**
  * Providers ADE drives over the Agent Client Protocol. They share one host and
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "devin", "antigravity"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -577,6 +598,8 @@ export type AgentChatHostContinuationMetadata = {
     | "interrupted_turn_recovery"
     | "continuity_recovery"
     | "cto_intro"
+    /** ADE asking a CTO thread that is about to be retired for its hand-off note. */
+    | "cto_handoff_note"
     /** A chat wait the agent armed fired (`chat.armWait`). */
     | "chat_wait"
     /** A background job the agent was waiting on ended. */
@@ -629,17 +652,6 @@ export type AgentChatVoiceSession = {
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
-  /**
-   * An ACP provider CLI older than the range ADE has tested. The notice row
-   * offers an Update button when `canUpdate` is true and the host can run it.
-   */
-  providerUpdate?: {
-    provider: AcpChatProvider;
-    installedVersion: string;
-    targetVersion: string;
-    canUpdate: boolean;
-    note: string | null;
-  };
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
@@ -1392,6 +1404,8 @@ export type AgentChatWorkflowAgent = {
   toolCalls?: number;
   durationMs?: number;
   lastToolName?: string;
+  /** ISO time of the agent's newest transcript line, when ADE could read it. */
+  lastActivityAt?: string;
 };
 
 export type AgentChatWorkflowProgress = {
@@ -1655,8 +1669,8 @@ export type AgentChatEvent =
         agentCli?: {
           agent: string;
           displayName: string;
+          /** `missing`: ADE's pinned copy is not on the chat's machine (the card offers Download/Retry). */
           category: "missing" | "unauthenticated";
-          installCommand: string;
           authCommand: string;
         };
       };
@@ -3000,8 +3014,8 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
    * subagent pins as one value, so it is the id that has to survive a resume —
    * re-deriving the launch from the individual fields would lose whichever of
    * them the preset set and the session does not carry. A preset that has since
-   * been deleted resolves to `unsupported` at launch and the chat falls back to
-   * the harness's native sign-in with a notice.
+   * been deleted resolves to `unsupported` at launch, and the chat's turns fail
+   * with the reason rather than run on the harness's native sign-in.
    */
   presetId?: string;
   /**
@@ -3824,7 +3838,8 @@ export type AgentChatModelCatalogRefreshProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -4090,9 +4105,17 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /**
    * Launch this chat from a saved harness preset. The runtime resolves it
    * against the account-scoped preset list and the machine's own stores; an id
-   * that no longer names a preset produces a notice, not a failed create.
+   * that no longer names a preset fails the chat's turns with the reason, not
+   * the create.
    */
   presetId?: string;
+  /**
+   * The launching machine's copy of the preset `presetId` names. The chat may
+   * run on another machine whose synced copy of the list is behind; that
+   * machine adds this one to its list when it has no newer copy. Ids into the
+   * key and sign-in stores only, never a secret.
+   */
+  presetSnapshot?: HarnessPreset;
   /**
    * Launch this chat on a specific stored API credential, for a model chosen
    * from a provider-card key rather than from a preset.
@@ -5016,6 +5039,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
+  antigravity: ["queue"],
   copilot: ["inline", "queue"],
 };
 
@@ -5150,8 +5174,20 @@ export function unsupportedActiveTurnDispatchModeMessage(
  * Cursor qualifies through interrupt-and-resend: the live run is cancelled and
  * the message continues on the same agent thread, which is still a redirect of
  * work in flight rather than a wait for the turn boundary.
+ *
+ * OpenCode qualifies through its own inbox: an inline message is delivered at
+ * the running turn's next step boundary, inside the same execution. It is also
+ * what puts every model OpenCode reaches (Zen, OpenRouter, local models) in
+ * reach of the CTO.
  */
-export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor"] as const;
+export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor", "opencode"] as const;
+
+/**
+ * `system_notice.status` on the first row of a CTO thread ADE opened by itself
+ * because the previous one no longer fit its context window. The CTO page
+ * follows the thread when it sees it.
+ */
+export const CTO_THREAD_ROLLED_OVER_STATUS = "cto_thread_rolled_over";
 
 /** True when `provider` can redirect a turn that is already running. */
 export function providerSupportsLiveRedirect(provider: string): boolean {

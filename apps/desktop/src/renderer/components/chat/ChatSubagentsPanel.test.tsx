@@ -127,7 +127,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("3/5")).toBeTruthy();
   });
 
-  it("draws a workflow run inline: its phases, its agent rows and its telemetry", () => {
+  it("renders workflow phases and keeps workflow agents in the workflow section", () => {
     const workflow: ChatSubagentSnapshot = {
       ...baseSnapshot,
       taskId: "workflow-1",
@@ -163,7 +163,9 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     };
     const workflowAgent: ChatSubagentSnapshot = {
       ...baseSnapshot,
-      taskId: "workflow-1::a0",
+      // Snapshot derivation keys real workflow agents by agentId, without
+      // the synthetic <workflow>::a<n> lineage used by older event histories.
+      taskId: "agent-1",
       agentId: "agent-1",
       description: "cloud:security",
       agentType: "security",
@@ -186,31 +188,44 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     );
 
     // Drawn where it is: one section, no card to open and no dialog to escape.
-    expect(screen.getByTestId("chat-workflow-active-card-list")).toBeTruthy();
+    const workflowList = screen.getByTestId("chat-workflow-active-card-list");
+    expect(screen.getAllByTestId("chat-workflow-run")).toHaveLength(1);
+    expect(within(workflowList).queryByText(/^\d+ runs?$/)).toBeNull();
     expect(screen.queryByTestId("chat-workflow-details-dialog")).toBeNull();
 
     const run = screen.getByTestId("chat-workflow-run");
     expect(run.getAttribute("data-workflow-name")).toBe("CodeReview");
-    expect(within(run).getByText("Active")).toBeTruthy();
     // One agent published a row and two are still queued behind the phase.
     expect(within(run).getByText("0/3 agents")).toBeTruthy();
     expect(within(run).getByText("1 running")).toBeTruthy();
     expect(within(run).getByText("2 queued")).toBeTruthy();
-    expect(within(run).getByText("1.2k tok")).toBeTruthy();
-    expect(within(run).getByText("2 tools")).toBeTruthy();
-    // The phase holding the agent, and that agent's own telemetry.
-    expect(within(run).getAllByText("CodeReview").length).toBeGreaterThan(0);
-    expect(within(run).queryByText("Foundation")).toBeNull();
+    expect(within(run).getByText("4.2k tok")).toBeTruthy();
+    expect(within(run).getByText("12 tools")).toBeTruthy();
+    // The active phase is expanded by default and the declared, unstarted
+    // phase remains a plain row.
+    const activePhase = within(run).getByRole("button", { name: /CodeReview/ });
+    expect(activePhase.getAttribute("aria-expanded")).toBe("true");
+    expect(within(run).getByText("Foundation")).toBeTruthy();
+    expect(within(run).queryByRole("button", { name: /Foundation/ })).toBeNull();
     const agentRow = within(run).getByTestId("chat-workflow-agent-row");
     expect(within(agentRow).getByText("cloud:security")).toBeTruthy();
-    expect(within(agentRow).getByText("4.2k")).toBeTruthy();
+    expect(within(agentRow).getByText("rg")).toBeTruthy();
+    // Roster matching also keeps this real agent snapshot out of Subagents.
+    expect(screen.queryByRole("button", { name: /Subagents/ })).toBeNull();
+
+    fireEvent.click(activePhase);
+    expect(activePhase.getAttribute("aria-expanded")).toBe("false");
+    expect(within(run).queryByTestId("chat-workflow-agent-row")).toBeNull();
+    fireEvent.click(activePhase);
+    expect(within(run).getByTestId("chat-workflow-agent-row")).toBeTruthy();
+
     // An agent with a row behind it is reachable, and the run carries its Stop.
     expect(within(run).getByRole("button", { name: "Open cloud:security details" })).toBeTruthy();
     fireEvent.click(within(run).getByRole("button", { name: "Stop workflow" }));
     expect(stopWorkflow).toHaveBeenCalledWith(workflow);
   });
 
-  it("shows a running run's live span, and its script's plan when no phase detail was published", () => {
+  it("shows a running run's live span and its script phases while agent status is pending", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T00:00:10.000Z"));
     const workflow: ChatSubagentSnapshot = {
@@ -244,16 +259,19 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     // 10s since it started, never the 1s sample the provider happened to send.
     expect(within(run).getByText("10s")).toBeTruthy();
     expect(within(run).queryByText("1s")).toBeNull();
-    // No agent rows exist to draw, so the script's own plan stands in — named
-    // as the plan it is rather than passed off as progress.
+    // The script plan supplies pending phase rows until live agent status is
+    // published; those rows are not disclosure controls.
     const planned = screen.getByTestId("chat-workflow-planned-phases");
-    expect(planned.textContent).toContain("Plan from its script · 42 lines · no agent rows published");
+    const caption = planned.firstElementChild?.textContent?.trim() ?? "";
+    expect(caption.length).toBeGreaterThan(0);
+    expect(caption).not.toContain("\n");
     expect(within(planned).getByText("Scan")).toBeTruthy();
     expect(within(planned).getByText("Report")).toBeTruthy();
+    expect(within(planned).queryAllByRole("button")).toHaveLength(0);
     expect(within(run).queryByTestId("chat-workflow-agent-row")).toBeNull();
   });
 
-  it("draws every tracked run, newest first, with no disclosure control", () => {
+  it("orders workflow runs newest first and reveals finished agents on demand", () => {
     const workflows = Array.from({ length: 4 }, (_, index): ChatSubagentSnapshot => ({
       ...baseSnapshot,
       taskId: "workflow-" + index,
@@ -262,12 +280,13 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       taskType: "local_workflow",
       workflowName: "Workflow " + index,
       workflowProgress: {
-        phases: [],
+        phases: [{ index: 0, title: "Phase " + index }],
         agents: [{
           key: "workflow-" + index + "::a0",
           index: 0,
           name: "agent-" + index,
           status: "completed",
+          phaseTitle: "Phase " + index,
           summary: "Finished",
         }],
         queuedCount: 0,
@@ -285,14 +304,19 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    expect(screen.getByText("4 tracked")).toBeTruthy();
-    expect(screen.getByTestId("chat-workflow-active-card-list").querySelectorAll("[data-workflow-name]"))
-      .toHaveLength(4);
-    expect([...screen.getAllByTestId("chat-workflow-run")].map((node) => node.getAttribute("data-workflow-name")))
+    const workflowList = screen.getByTestId("chat-workflow-active-card-list");
+    expect(within(workflowList).getByText(/\b4 runs?\b/)).toBeTruthy();
+    const runs = screen.getAllByTestId("chat-workflow-run");
+    expect(runs).toHaveLength(4);
+    expect(runs.map((node) => node.getAttribute("data-workflow-name")))
       .toEqual(["Workflow 3", "Workflow 2", "Workflow 1", "Workflow 0"]);
-    // Every run's agents stay reachable without an expander.
-    expect(screen.getAllByTestId("chat-workflow-agent-row")).toHaveLength(4);
-    expect(screen.queryByTestId("chat-workflow-show-all")).toBeNull();
+    expect(screen.queryAllByTestId("chat-workflow-agent-row")).toHaveLength(0);
+    const newestPhase = within(runs[0]!).getByRole("button", { name: /Phase 3/ });
+    expect(newestPhase.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(newestPhase);
+    expect(newestPhase.getAttribute("aria-expanded")).toBe("true");
+    expect(within(runs[0]!).getAllByTestId("chat-workflow-agent-row")).toHaveLength(1);
+    expect(screen.getAllByTestId("chat-workflow-agent-row")).toHaveLength(1);
   });
 
   it("keeps same-named legacy workflow lineage separate from a rich workflow", () => {
@@ -1218,12 +1242,13 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     // Clear lives inline on the Completed row, only once the bucket is expanded.
     expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Completed (2)" }));
+    // Workflow parents and their agents no longer contribute to Completed.
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-    expect(screen.getByText("Subagents · all clear")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Restore/ }).length).toBeGreaterThan(0);
     expect(JSON.parse(window.localStorage.getItem(`ade.chat.paneCleared.v1:${sessionId}`) ?? "null")).toEqual({
-      subagents: ["chat:child-1", "done-2"],
+      subagents: ["done-2"],
       background: [],
       schedule: [],
     });
@@ -1254,7 +1279,6 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
     expect(screen.getByText("running")).toBeTruthy();
-    expect(screen.queryByText("Subagents · all clear")).toBeNull();
 
     const resumedEvents: AgentChatEventEnvelope[] = [
       ...childEvents,
@@ -1283,7 +1307,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(resumedChild?.workflowName).toBeUndefined();
     expect(resumedChild?.resourceLinks).toBeUndefined();
     expect(resumedChild?.workflowProgress).toBeUndefined();
-    fireEvent.click(screen.getByRole("button", { name: "Restore (1)" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Restore (1)" })[0]!);
     expect(screen.getByRole("button", { name: "Completed (1)" })).toBeTruthy();
   });
 

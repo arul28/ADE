@@ -10,20 +10,27 @@ export function SessionLifecycleSection() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     setSettings(null);
+    setLoadFailed(false);
+    setError(null);
     void window.ade.sessions.getLifecycleSettings(pin)
       .then((next) => {
         if (!cancelled) setSettings(next);
       })
       .catch(() => {
-        if (!cancelled) setError("Session lifecycle settings are unavailable right now.");
+        if (cancelled) return;
+        setLoadFailed(true);
+        setError("Session lifecycle settings are unavailable right now.");
       });
     return () => {
       cancelled = true;
     };
-  }, [pin]);
+  }, [pin, attempt]);
 
   const update = async (enabled: boolean) => {
     if (saving) return;
@@ -52,12 +59,23 @@ export function SessionLifecycleSection() {
           title="Auto-settle sessions when lane PR merges"
           hint="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
           control={
-            <SettingsToggle
-              label="Auto-settle sessions when lane PR merges"
-              checked={settings?.autoSettleLaneSessionsOnPrMerge ?? true}
-              disabled={!settings || saving}
-              onChange={(enabled) => void update(enabled)}
-            />
+            // Until the machine answers, the toggle is not drawn: a switch
+            // shown "on" while loading (or after a failed read) claimed a
+            // setting nobody had read.
+            settings ? (
+              <SettingsToggle
+                label="Auto-settle sessions when lane PR merges"
+                checked={settings.autoSettleLaneSessionsOnPrMerge}
+                disabled={saving}
+                onChange={(enabled) => void update(enabled)}
+              />
+            ) : loadFailed ? (
+              <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
+                Try again
+              </button>
+            ) : (
+              <span className="ade-modern-muted" aria-live="polite">Loading…</span>
+            )
           }
         >
           {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}

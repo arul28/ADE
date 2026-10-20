@@ -2415,7 +2415,7 @@ describe("AgentChatPane companion drawers", () => {
     }
   });
 
-  it("a slow older proof read never overwrites a newer one, and a failed read after a chat switch never shows the other chat's proof", async () => {
+  it("a slow older proof read never overwrites a newer one, and a chat switch never shows the other chat's proof, while its read is pending or after it fails", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);
@@ -2469,7 +2469,7 @@ describe("AgentChatPane companion drawers", () => {
         .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((resolve) => { finishSlowRead = resolve; }))
         .mockResolvedValue(snapshotFor(first.sessionId, [artifact("proof-new", "Newer proof")]));
       seedDrawerStore();
-      const paneFor = (session: AgentChatSessionSummary) => (
+      const paneFor = (session: AgentChatSessionSummary, runtimePin?: OpenProjectBinding) => (
         <MemoryRouter>
           <AgentChatPane
             laneId={session.laneId}
@@ -2477,6 +2477,7 @@ describe("AgentChatPane companion drawers", () => {
             hideSessionTabs
             initialSessionSummary={session}
             onSessionCreated={vi.fn()}
+            runtimePin={runtimePin}
           />
         </MemoryRouter>
       );
@@ -2489,13 +2490,53 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByText("Newer proof")).toBeTruthy();
       expect(screen.queryByText("Older proof")).toBeNull();
 
-      // The pane moves to the second chat, whose proof cannot be read.
-      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockRejectedValue(new Error("runtime offline"));
+      // The pane moves to the second chat. Its proof read is still in flight, and
+      // the first chat's proof count must not show while it waits.
+      let failSecondRead: (error: Error) => void = () => {};
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot)
+        .mockRejectedValue(new Error("runtime offline"))
+        .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((_resolve, reject) => { failSecondRead = reject; }));
       view.rerender(paneFor(second));
-      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      const drawerButton = await screen.findByRole("button", { name: "Open chat actions drawer" });
+      expect(within(drawerButton).queryByText("1")).toBeNull();
+      // Then the second chat's proof cannot be read.
+      await act(async () => { failSecondRead(new Error("runtime offline")); });
       await showProof("wts-second", second.sessionId);
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.queryByText("Newer proof")).toBeNull();
+
+      // The same chat moves to another machine. Its proof on the first machine
+      // must not show while the other machine's read is pending, and that
+      // machine's proof replaces it when the read lands.
+      view.unmount();
+      const studioBinding: OpenProjectBinding = {
+        kind: "remote",
+        key: "remote:studio:project-1",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/Volumes/work/project-under-test",
+        displayName: "project-under-test",
+        gitOriginUrl: "https://github.com/acme/project-under-test",
+      };
+      let resolveStudioRead: (snapshot: ComputerUseOwnerSnapshot) => void = () => {};
+      const studioRead = new Promise<ComputerUseOwnerSnapshot>((resolve) => { resolveStudioRead = resolve; });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementation((_args, pin) => (
+        pin?.key === studioBinding.key
+          ? studioRead
+          : Promise.resolve(snapshotFor(second.sessionId, [artifact("proof-local", "Local proof")]))
+      ));
+      const machineView = render(paneFor(second, LOCAL_PROJECT_BINDING));
+      await waitFor(() => expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).getByText("1")).toBeTruthy());
+      machineView.rerender(paneFor(second, studioBinding));
+      expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).queryByText("1")).toBeNull();
+      await waitFor(() => expect(
+        vi.mocked(window.ade.computerUse.getOwnerSnapshot).mock.calls.some(([, pin]) => pin?.key === studioBinding.key),
+      ).toBe(true));
+      await act(async () => {
+        resolveStudioRead(snapshotFor(second.sessionId, [artifact("proof-studio-a", "Studio proof"), artifact("proof-studio-b", "Studio proof 2")]));
+      });
+      await waitFor(() => expect(within(screen.getByRole("button", { name: /chat actions drawer/ })).getByText("2")).toBeTruthy());
     } finally {
       resetWorkToolShowRequestsForTests();
       setDocumentVisibleForTests(null);

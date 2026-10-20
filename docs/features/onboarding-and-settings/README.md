@@ -80,6 +80,17 @@ Main process:
   effects do not re-run (and cancel an in-flight provider sign-in) on every
   cross-machine sync tick — the scope's `pin` is the machine identity a section
   keys its runtime effects on, not a value to rebuild per render.
+- `apps/desktop/src/renderer/components/settings/overview/SettingsOverview.tsx`
+  and `overview/useNeedsAttention.ts` — Overview's area cards and aggregated
+  attention list. A failed source read adds a "couldn't check" row with Check
+  again; a capability missing on an older build is simply absent.
+- `apps/desktop/src/renderer/components/settings/lanes/LanesSettingsPage.tsx`
+  and `lanes/LaneList.tsx` — Project → Lanes views and lane list. The desktop
+  has Lanes, Space, Archive and Rules tabs; the web client shows Archive and
+  Rules. Hash links and Settings search switch to the view containing a card.
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — project-move start
+  forwards `copyDependencies`; disk pressure falls back to this computer's ADE
+  storage root when no local project monitor is available.
 - `apps/desktop/src/main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`, and
   `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
@@ -130,13 +141,12 @@ Main process:
   brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
   compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
   mutex, not a race.
-- `apps/desktop/src/main/services/power/keepAwakeService.ts` and
-  `systemSleepConfig.ts` — the opt-in keep-awake setting. The service holds an
-  Electron `powerSaveBlocker` only while a turn is actually running, reads and
-  writes the macOS lid-sleep switch, and reads the machine's own idle-sleep
-  timer so the UI can offer to fix a setting that would stop agents anyway.
-  Constructed in `main.ts` with `readActiveTurns` wired to the runtime pool's
-  `activitySummary()`. See [Keeping the machine awake](#keeping-the-machine-awake).
+- `apps/ade-cli/src/services/power/brainKeepAwakeService.ts` — the brain-owned
+  keep-awake preference and turn-following lock. The desktop helper in
+  `apps/desktop/src/main/services/power/keepAwakeService.ts` handles the local
+  macOS authorization prompt and is an in-process fallback only when an older
+  brain does not expose the new action; `systemSleepConfig.ts` reads and fixes
+  the OS's idle-sleep timer. See [Keeping the machine awake](#keeping-the-machine-awake).
 - `apps/desktop/src/shared/types/keepAwake.ts` — `KeepAwakeLevel`,
   `KeepAwakeSnapshot`, `normalizeKeepAwakePreferences` (anything unrecognized
   degrades to `never` — an unreadable preference must never be read as "hold the
@@ -243,12 +253,13 @@ Main process:
   application. The active renderer
   no longer mounts guided tours.
 - `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` — the
-  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure on
-  packaged launch, one `ensureTools` call per tool so a single failure cannot
-  abandon the rest, GCs superseded versions only after a fully clean pass, and
-  publishes an `AgentToolsCacheSnapshot` (per-tool status, percent, typed
-  `errorKind`) to the AI Runtimes band over IPC. Resolution failures are per
-  tool, never per pass. See
+  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure of the
+  tools this machine uses (`agentToolDemand.ts`) on packaged launch, one
+  `ensureTools` call per tool so a single failure cannot abandon the rest, GCs
+  superseded versions only after a fully clean pass, and keeps an
+  `AgentToolsCacheSnapshot` (per-tool status, percent, typed `errorKind`) over
+  IPC. Resolution failures are per tool, never per pass. Other tools download on
+  demand (`onDemand.ts`). See
   [agent-tools-cache.md](./agent-tools-cache.md).
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
@@ -741,7 +752,7 @@ Renderer — settings:
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#auto-updates`, `#pr-chat-transcripts`.
 - `apps/desktop/src/renderer/components/settings/AutoUpdatesSection.tsx`
-  — the Updates block inside the top Settings > General ADE card. Automatic installation is off by
+  — the Updates block inside Settings → ADE service. Automatic installation is off by
   default, leaving installation under the top-right control. Enabling it
   reveals the default-on **Wait until active work finishes** safety option,
   which delays the restart countdown until no agent turn or work session is
@@ -899,7 +910,7 @@ Renderer — settings:
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
   sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
-  `IntegrationBanners`, and write surfaces such as `FeedbackReporterModal`;
+  and `IntegrationBanners`;
   App-only read connectivity therefore keeps PR data live while still prompting
   for GitHub CLI or a PAT before a mutation. This module only translates the
   service's `credentialState` into copy — it does not re-derive the account's
@@ -949,11 +960,9 @@ Renderer — settings:
   GitHub problem and is not fixed on the GitHub card, whereas an outage and
   every auth failure are — there the credential ADE holds is readable and it is
   the account behind it, or GitHub itself, that has the objection.
-- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` and
-  `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
-  app shell raises a write-access banner for an otherwise connected App-only
-  status, and feedback submission requires a write-capable credential rather
-  than treating read connectivity as sufficient. The gh-CLI/token banner routes
+- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — consumes
+  the shared read/write distinction. The app shell raises a write-access
+  banner for an otherwise connected App-only status. The gh-CLI/token banner routes
   its single action by the `target` the derivation supplies — the GitHub
   connection settings route, or the same Connections panel the relay banner
   opens — and keys its dismissal fingerprint on the sub-state, so a store that
@@ -1031,10 +1040,10 @@ Renderer — settings:
   `ade` available to the user's own terminals.
 - `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
   — Pause all scheduled work and the active durable-job list. Naming,
-  commit suggestions, idle status lines, and similar background helpers
-  pick a cheap model from the ADE provider that owns the session
-  (Haiku 5.5 at `low` effort for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
-  Cursor; other providers reuse the session model). There is no
+  idle status lines, and similar background helpers run on one model
+  from the ADE provider that owns the session (Haiku 5.5 at `low` effort
+  for Claude, GPT-6 Luna at `low` for Codex, Composer 2.5 for Cursor;
+  every other provider uses the session's own model). There is no
   Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
   wakeups, cron tasks, and `/loop` schedules across the project runtime
@@ -1069,8 +1078,9 @@ Renderer — settings:
   `provider/model` slugs writing `ai.customModelSlugs`, both via
   `updateConfig`). When the OpenCode provider inventory is served from the
   persisted disk cache on a cold start, `opencodeProvidersStale` renders an
-  italic "updating…" hint until the first live probe. When the OpenCode
-  binary is missing the group collapses to an install card. The **Pi** card is a
+  italic "updating…" hint until the first live probe. When ADE's OpenCode
+  copy is not downloaded yet the group collapses to a card with the pinned-copy
+  line and Download/Retry. The **Pi** card is a
   `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
   `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
   `PiProvidersPanel.tsx`.
@@ -1086,9 +1096,10 @@ Renderer — settings:
   come from `providerAccountIdentity.ts`, the same reader the usage poller uses,
   so Providers and the Limits cards cannot disagree about who is signed in.
 - `apps/desktop/src/shared/providerRemediation.ts` — the single source of the
-  install command, login command, display name, and docs URL for every
-  CLI-backed provider, with the Windows spelling where the vendor ships a
-  different installer. Four surfaces read it and none keeps its own copy: the
+  login command, display name, and docs URL for every CLI-backed provider. It
+  has no install commands any more: ADE downloads its own pinned copy of every
+  agent ([agent tools cache](agent-tools-cache.md)), and `installCommand` is
+  always `null`. Four surfaces read it and none keeps its own copy: the
   Settings CLI-tools cards (`settings/providers/cliTools.ts`), the model
   picker's empty states (`shared/ModelPicker/providerEmptyState.tsx`), the CLI
   agent registry (`apps/ade-cli/src/services/agentRegistry.ts`), and the
@@ -1097,9 +1108,7 @@ Renderer — settings:
   Each string is the vendor's own documented one, and two are not the obvious
   guess: Droid has no non-interactive login, so the honest `loginCommand` is the
   bare `droid`, and Pi signs in through the interactive CLI's `/login`, so its
-  `loginCommand` is the bare `pi`. On Windows, Claude, Cursor and Droid each
-  ship a PowerShell installer rather than the POSIX line; a `curl … | sh` shown
-  to a Windows user is a dead end, not a fix.
+  `loginCommand` is the bare `pi`.
 - `apps/desktop/src/renderer/components/settings/PiProvidersPanel.tsx`
   — Pi's half of Settings → Providers: the sign-in flow and the provider
   catalog. Its own module because Pi's catalog is the size of OpenCode's and the
@@ -1891,7 +1900,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). Settings → General shows the
+   on macOS, equivalents on other platforms). Settings → ADE service shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
@@ -2003,11 +2012,26 @@ Settings is organised by **scope**. The sidebar group is the answer to "where
 does this save, and who does it affect", said once at the top of a group instead
 of repeated as a badge on every row:
 
+Settings opens on **Overview**: one **Needs attention** list (every problem
+from the project, this computer, other machines, providers, MCP servers,
+integrations and Apple, each with its Fix button where there is one, and "Ask
+an agent" for the whole list) and an **At a glance** card per area. A failed
+read appears as a "couldn't check" row with Check again instead of claiming
+nothing needs attention. It gathers problems in the renderer
+(`settings/overview/useNeedsAttention.ts`); the project part is
+`projectHealth.getReport`
+([`project-health.md`](./project-health.md)). Nothing else is called Health.
+
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Chat, Notifications, Activity, MCP servers, Usage |
-| **Project** | Your account, for this repository | Secrets |
-| **Machines** | The selected machine | General, Appearance (This computer), Apple devices (This computer), Providers, Lanes, Integrations, Diagnostics |
+| **Overview** | — | Needs attention, At a glance |
+| **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
+| **Project** | The open project (routed to the machine that owns it) | Lanes (Lanes, Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
+
+General and the old Diagnostics/Health page are gone; every entry kept its
+id and anchor, and old tab links (`general`, `storage`, `disk`, `diagnostics`,
+`health`, `archive`, `project-location`, …) land on the page that holds them.
 
 The Machines group contains one set of pages per project machine. Calls from a
 machine page use that machine's binding; sections that only work on the current
@@ -2029,13 +2053,16 @@ because its callback cannot reach it, and the API key path is shown instead.
 Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
 integration banner, a PR's GitHub notice) landing on the tab's machine.
 
-Section pages are one column of a few named blocks, each with an icon, a
-title and one line: General is **ADE**, **This project**, **This computer**,
-**Privacy** and a red **Danger zone** holding Reset ADE; Lanes is **How lanes
-behave** and **Templates**; Integrations is **GitHub** and **Linear**;
-Diagnostics is **Disk** and **Sessions**. When a page has two or more blocks, a
-sticky rail (`SettingsSectionRail`) lists them and scrolls to each; it appears
-only when the page container is 900px or wider.
+Section pages use one-column blocks. Project → Lanes is a four-tab page:
+**Lanes** lists active lanes with All, Stale, Has changes and Running count
+tiles; **Space** shows lane and ADE storage; **Archive** manages archived
+lanes; **Rules** holds lane storage, session lifecycle and lane-start rules.
+The hosted web client shows Archive and Rules only. Links and Settings search
+switch to the tab containing the destination. Bulk archive re-reads git state
+before applying the merged-PR exception, then skips dirty, active or unpushed
+lanes. A machine change clears the previous machine's lane, storage and health
+data before loading the new machine. Disk pressure remains available in
+Settings with no project open by reading this computer's ADE storage root.
 
 ### Settings with no project
 
@@ -2075,7 +2102,7 @@ The pages themselves:
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
-| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
@@ -2101,14 +2128,17 @@ surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 
 ### Keeping the machine awake
 
-**Keep this Mac awake while agents work** (Settings > General > Sleep, anchor
-`keep-awake`) is one radiogroup with three levels, persisted as
-`keepAwakePreferences` on `GlobalState`:
+**Keep this Mac awake while agents work** (Settings → Behaviour, anchor
+`keep-awake`) is one radiogroup with three levels. The selected machine's brain
+stores the preference in `<ADE_HOME>/keep-awake.json`, so the rule remains in
+effect after the desktop quits and the brain serves a phone. On first use, the
+desktop migrates `keepAwakePreferences` from `GlobalState` and removes the old
+value only after the brain confirms the migration:
 
 | Level | What it does | Where it works |
 |---|---|---|
 | `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | Electron `powerSaveBlocker.start("prevent-app-suspension")`, held **only while a turn is running**. Stops idle sleep. Not the lid. | macOS, Windows |
+| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain. Stops idle sleep. Not the lid. | macOS, Windows |
 | `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
 
 The distinction between the middle and top levels is the whole point of the
@@ -2117,21 +2147,20 @@ only.** An `IOPMAssertion` held continuously for 35 days sat through two
 clamshell sleeps. Nothing in this feature's code or copy may imply otherwise.
 Only `pmset -a disablesleep` survives a closed lid, and it is root-only and
 machine-wide — which is why the top level asks for a password and warns that it
-stays on after you quit. Windows has no equivalent, so the third level is
-**absent** on Windows rather than disabled; a greyed row would imply one is
-coming. The renderer keys that off `snapshot.lidClosedSupported` rather than a
-client-side platform check, and only the copy ("this Mac" vs "this PC") reads
-the local platform.
+stays on after you quit. The password prompt runs in the selected Mac's desktop;
+for a remote Mac, open Settings on that Mac to authorize the change. Windows has
+no equivalent, so the third level is **absent** on Windows rather than disabled.
+The selected brain reports its platform, so the settings pane describes the
+machine it is showing.
 
 Two behaviors follow from the level being an arming switch, not a pin:
 
-- The blocker follows the **turn**, not the setting. A 5-second poll asks the
-  runtime pool how many agent turns are active and acquires or releases
-  accordingly; a failed read counts as zero, failing toward releasing the lock.
-  Choosing `never` releases synchronously instead of waiting for the next poll.
-  The `runtime.activitySummary` call the poll depends on carries its own 4-second
-  budget precisely because a wedged call inheriting the 10-minute RPC default
-  could hold the lock long after the user turned it off.
+- The lock follows the **work**, not the setting. A 5-second brain poll counts
+  active agent turns plus tracked agent CLI sessions whose PTY state is
+  `running`; idle shells and merely-open sessions do not count. One helper runs
+  for the full active period, and a failed activity read releases the lock.
+  `never` releases synchronously. macOS's `-w` and the Windows process-handle
+  wait also release the lock when the brain exits.
 - The snapshot reports what the **machine** says, not what the stored level
   says. A `lid-closed` level whose assertion was released behind ADE's back
   renders a "This Mac can still sleep." alert with a **Turn on again** action,
@@ -2146,10 +2175,15 @@ one-click fix. The macOS fix writes system power settings and is labelled
 **Fix — needs your password**; the Windows fix edits the signed-in user's active
 scheme and needs no elevation.
 
-The three IPC channels are `ade.keepAwake.get`, `ade.keepAwake.setLevel`, and
-`ade.keepAwake.fixSystemSleep`. Hosted web and the browser mock implement the
-same names against `INERT_KEEP_AWAKE_SNAPSHOT` and answer the fix with "Change
-this on the computer itself."
+Reads and writes use the remote-capable `keep_awake` runtime action, pinned to
+the selected machine. The local desktop handles the macOS admin prompt because
+the brain has no GUI. Fixing the local Mac's system sleep timer still uses that
+prompt; a remote Mac is directed to its own Settings, while Windows uses the
+selected brain action. The desktop starts its old in-process blocker only when
+the connected local brain reports that it lacks the new action; successful
+brain reads stop that fallback before it can duplicate the brain's lock. Hosted
+web and the browser mock report the frozen inert snapshot and direct the user
+to change power settings on the computer.
 
 For what happens when the machine sleeps anyway, see
 [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
@@ -2157,7 +2191,7 @@ and [machine power and sleep in the account directory](../sync-and-multi-device/
 
 ### Capturing a window with a key gesture
 
-**Settings > General > Screen capture > "Capture with a key gesture"**
+**Settings → Behaviour → "Capture with a key gesture"**
 (anchor `capture-gesture`, `CaptureGestureSection.tsx`) arms the global
 screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
 [Capture gesture](../capture-gesture/README.md).
@@ -2174,13 +2208,16 @@ welcome. `GlobalCaptureGestureHost` pushes the stored value down through
 renderer and the main process cannot know whether to run the helper until
 a window tells it.
 
-The card shows helper **health**, not just a toggle, because the two
-interesting failures are both things only the user can fix: macOS has not
+The card shows helper **health**, not just a toggle, because the
+interesting failures are all things only the user can fix: macOS has not
 been told ADE may record the screen (`permission_denied`, recovery
-`grant_permission`), or the helper is missing from the install
-(`missing`, recovery `reinstall_or_update`). A bare switch that is on
-while the gesture does nothing is the exact state this card exists to
-prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`
+`grant_permission`), macOS 27 has not been told ADE may watch the keyboard
+(`permission_denied` with an Input Monitoring message, recovery `retry`,
+because the helper installs its tap again in place), the key monitor could
+not start (`monitor_unavailable`, recovery `retry`), or the helper is
+missing from the install (`missing`, recovery `reinstall_or_update`). A
+bare switch that is on while the gesture does nothing is the exact state
+this card exists to prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`
 rather than a toggle, and `captureGestureBridgeAvailable()` is an `in`
 probe rather than a property read — the hosted web adapter's fallback
 proxy fabricates callable namespaces for missing properties, so
@@ -2195,7 +2232,7 @@ proxy fabricates callable namespaces for missing properties, so
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
+| Keep-awake level | `<ADE_HOME>/keep-awake.json` | brain-owned and machine-scoped; old `GlobalState.keepAwakePreferences` migrates once; unreadable state fails toward `never` |
 | GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
 | Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
@@ -2327,8 +2364,8 @@ only surface that shows the whole set of local logins for that provider. No
 other provider page has the panel, because no other provider can hold more than
 one identity per machine. Sign-in for Claude and Codex lives on each account
 row and on **Add account**. The left column does not repeat a Sign in section.
-A missing CLI still shows an Install block there, because the account rows do
-not carry the install command.
+A copy that is not downloaded yet shows the pinned-copy row (Download/Retry)
+under the status chip instead.
 
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the

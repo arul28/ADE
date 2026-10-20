@@ -1,30 +1,18 @@
 /**
- * What each CLI-backed provider is called, how it authenticates, and how it is
- * installed — including the Windows install path, which is a different command
- * for every vendor and used to be missing entirely.
+ * What each CLI-backed provider is called and how it authenticates.
  *
- * The install commands themselves come from
- * `apps/desktop/src/shared/providerRemediation.ts`, the one table for every
- * shipped provider. This module adds only the prose a Settings card wants
- * around them ("ensure `droid` is on PATH"), so a card and a setup screen
- * cannot name two different installers for one vendor.
+ * There is no install story here: ADE runs its own pinned copy of every
+ * provider, downloaded into the agent-tools cache of the machine that runs
+ * it, and never a CLI the user installed or put on PATH. Whether that copy is
+ * on the machine yet is the pinned-tool row's job (`usePinnedToolStatus`).
  */
-import { resolveProviderRemediation } from "../../../../shared/providerRemediation";
 import type { AiClaudeAvailability, AiProviderConnectionStatus } from "../../../../shared/types";
 import { rendererPlatformAttribute } from "../../../lib/platform";
 
 export type CliName = "claude" | "codex" | "cursor" | "droid" | "copilot";
 
-/** The shared table's command for one CLI on one platform, never empty. */
-function sharedInstallCommand(cli: CliName, platform: NodeJS.Platform): string {
-  if (cli === "copilot") return "Install GitHub Copilot CLI";
-  const resolved = resolveProviderRemediation(cli, platform);
-  return resolved.installCommand ?? resolved.docsUrl ?? "";
-}
-
-// Factory ships a native Windows build of `droid` with its own installer and
-// its own way of setting an environment variable — a POSIX `export` line and a
-// bare docs link leave a Windows user with nothing to run.
+// Factory's own way of setting an environment variable differs on Windows; a
+// POSIX `export` line leaves a Windows user with nothing to run.
 // https://docs.factory.ai/cli/getting-started/quickstart
 const DROID_LOGIN_CMD = rendererPlatformAttribute() === "win32"
   ? "setx FACTORY_API_KEY … (or sign in via `droid` interactive login)"
@@ -35,9 +23,6 @@ export type CliTool = {
   label: string;
   authStory: string;
   loginCmd: string;
-  installHint: string;
-  /** Used instead of installHint on Windows, where the vendor ships a different installer. */
-  windowsInstallHint?: string;
 };
 
 export const CLI_TOOLS: CliTool[] = [
@@ -46,41 +31,30 @@ export const CLI_TOOLS: CliTool[] = [
     label: "Claude Code",
     authStory: "Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.",
     loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
-    installHint: sharedInstallCommand("claude", "darwin"),
-    // Anthropic's documented Windows installs: the PowerShell native installer
-    // (drops claude.exe in %USERPROFILE%\.localin) or WinGet.
-    windowsInstallHint: `${sharedInstallCommand("claude", "win32")} (PowerShell), or winget install Anthropic.ClaudeCode`,
   },
   {
     cli: "codex",
     label: "Codex CLI",
     authStory: "Uses your ChatGPT sign-in — Plus/Pro subscription or OPENAI_API_KEY.",
     loginCmd: "codex login",
-    installHint: sharedInstallCommand("codex", "darwin"),
   },
   {
     cli: "cursor",
     label: "Cursor",
     authStory: "Sign in with Cursor or use a Cursor API key.",
     loginCmd: "Sign in with Cursor or add a Cursor API key",
-    // This card asks for a key rather than an install, so it points at the
-    // table's docs URL instead of its install command.
-    installHint: `Get a Cursor API key from ${resolveProviderRemediation("cursor", "darwin").docsUrl ?? ""}`,
   },
   {
     cli: "droid",
     label: "Droid",
     authStory: "Uses your Factory login or FACTORY_API_KEY.",
     loginCmd: DROID_LOGIN_CMD,
-    installHint: `${sharedInstallCommand("droid", "darwin")} — ensure \`droid\` is on PATH`,
-    windowsInstallHint: `${sharedInstallCommand("droid", "win32")} — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH`,
   },
   {
     cli: "copilot",
     label: "GitHub Copilot",
-    authStory: "Uses your GitHub Copilot sign-in.",
+    authStory: "Runs on the Copilot runtime ADE downloads and reuses your GitHub sign-in.",
     loginCmd: "copilot login",
-    installHint: "npm install -g @github/copilot",
   },
 ];
 
@@ -90,12 +64,6 @@ export function cliTool(cli: CliName): CliTool {
   return found;
 }
 
-const isWindowsRenderer = rendererPlatformAttribute() === "win32";
-
-export function installHintFor(tool: CliTool): string {
-  return (isWindowsRenderer && tool.windowsInstallHint) || tool.installHint;
-}
-
 export function buildCliMessage(
   tool: CliTool,
   connection: AiProviderConnectionStatus | null | undefined,
@@ -103,26 +71,25 @@ export function buildCliMessage(
   if (connection?.runtimeAvailable) {
     return "Connection verified.";
   }
+  // The pinned copy's state (downloading, couldn't download, not available
+  // on this machine) or the sign-in that is missing, in the host's words.
   if (connection?.blocker) {
     return connection.blocker;
   }
   if (connection?.runtimeDetected && !connection.authAvailable) {
-    return `CLI detected but not signed in. Run: ${tool.loginCmd}`;
+    return `Not signed in. Run: ${tool.loginCmd}`;
   }
   if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `Local credentials exist but CLI not found in PATH. Install: ${installHintFor(tool)}`;
+    return `Signed in. ADE downloads ${tool.label} for this machine the first time it is used.`;
   }
-  const pathAdvice = isWindowsRenderer
-    ? "If already installed, add its folder to your Windows PATH (System Properties -> Environment Variables), reopen ADE, and use Refresh."
-    : "If already installed, ensure it is on your shell PATH and use Refresh.";
-  return `CLI not found in PATH. Install: ${installHintFor(tool)}. ${pathAdvice}`;
+  return `ADE downloads ${tool.label} for this machine the first time it is used.`;
 }
 
 export function buildClaudeAvailabilityMessage(
   availability: AiClaudeAvailability | null | undefined,
 ): string {
   if (!availability?.binary.present) {
-    return "Claude unavailable (binary missing; should not happen with bundled install; run /doctor).";
+    return "ADE's Claude Code is not on this machine yet. It downloads the first time this machine uses it.";
   }
   if (!availability.auth.ready) {
     return availability.auth.detail || "Sign in to use Claude";
@@ -221,23 +188,4 @@ export function shortCredentialSource(
     default:
       return null;
   }
-}
-
-/**
- * OpenCode 2's documented install methods, per platform. Windows has neither
- * Homebrew nor a POSIX shell to pipe the install script into, and OpenCode 2
- * documents only its npm package there. The 1.x formula and script install 1.x,
- * which ADE no longer drives.
- */
-export function openCodeInstallCommands(
-  platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
-): string[] {
-  if (platform === "win32") {
-    return ["npm i -g @opencode/cli"];
-  }
-  return [
-    "brew install anomalyco/tap/opencode-v2",
-    "npm i -g @opencode/cli",
-    "curl -fsSL https://opencode.ai/v2/install | bash",
-  ];
 }

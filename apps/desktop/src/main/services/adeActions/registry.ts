@@ -43,6 +43,11 @@ import {
   storeApiCredential,
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
+import type {
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+} from "../../../shared/types/config";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
@@ -82,6 +87,7 @@ import {
 } from "../../../shared/types/attention";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { remoteMcpActionHandlers } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpService";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -111,7 +117,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { isAcpChatProvider } from "../../../shared/types/chat";
-import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
@@ -141,7 +147,10 @@ import {
 } from "../chat/draftService";
 import type {
   AiConfig,
+  AcknowledgeLaneDependencyStatusArgs,
   ApplyLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   ArchiveAndReclaimLaneArgs,
   DeleteLaneArgs,
   DeleteLaneResult,
@@ -194,6 +203,11 @@ import {
 import { createArchiveService } from "../archive/archiveService";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import {
+  acknowledgeLaneDependencyStatus,
+  readLaneDependencyStatus,
+  type LaneDependencyStatusDeps,
+} from "../lanes/laneDependencyStatus";
+import {
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
@@ -236,7 +250,6 @@ import { createProxyActionDomainService } from "../../../../../ade-cli/src/servi
 import {
   captureSecretRequestedAnalytics,
   captureNotificationSentAnalytics,
-  captureProviderCliUpdateAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
@@ -563,6 +576,32 @@ function toService(value: unknown): OpaqueService | null {
 function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
   const proxyService = runtime.getProxyService?.() ?? runtime.proxyService;
   return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
+}
+
+/**
+ * ADE MCP for Settings. Every write is user-only (the desktop), so an
+ * agent can neither read nor grant it; `ade mcp` reaches the same service
+ * through the machine method `remoteMcp.call`.
+ */
+function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.remoteMcpService;
+  if (!service) return null;
+  const handlers = remoteMcpActionHandlers(service, "desktop");
+  return Object.fromEntries(
+    Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
+  );
+}
+
+function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.keepAwakeService;
+  if (!service) return null;
+  return {
+    getSnapshot: () => service.getSnapshot(),
+    setLevel: (args: { level?: unknown }) => service.setLevel(args?.level),
+    migrateLegacyPreference: (args: { level?: unknown }) =>
+      service.migrateLegacyPreference(args?.level),
+    fixSystemSleep: () => service.fixSystemSleep(),
+  };
 }
 
 // The base64/in-memory ceiling, single-sourced so the constant and the
@@ -1946,8 +1985,19 @@ async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: 
   );
 }
 
-/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
-function laneEnvironmentSetupDeps(
+/** Deps for `lane.getDependencyStatus` / `lane.acknowledgeDependencyStatus`: the main checkout of this runtime's project. */
+function laneDependencyStatusDeps(runtime: AdeRuntime): LaneDependencyStatusDeps {
+  return {
+    projectRoot: runtime.projectRoot,
+    cacheDir: runtime.paths.cacheDir,
+    getDefaultTemplateId: () => runtime.laneTemplateService?.getDefaultTemplateId() ?? null,
+    getTemplateCount: () => runtime.laneTemplateService?.listTemplates().length ?? 0,
+    logger: runtime.logger,
+  };
+}
+
+/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate, and `create_lane`'s setup). */
+export function laneEnvironmentSetupDeps(
   runtime: AdeRuntime,
   laneEnvironmentService: NonNullable<AdeRuntime["laneEnvironmentService"]>,
 ): LaneEnvironmentSetupDeps {
@@ -2231,6 +2281,18 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     deleteTemplate: (args?: { templateId?: string }) => {
       requireService(runtime.laneTemplateService, "Lane template service not available.").deleteTemplate(requireNonEmptyString(args?.templateId, "templateId"));
     },
+    getDependencyStatus: (args?: GetLaneDependencyStatusArgs): Promise<LaneDependencyStatus> =>
+      readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: args?.refresh === true }),
+    acknowledgeDependencyStatus: (args?: AcknowledgeLaneDependencyStatusArgs): Promise<LaneDependencyStatus> => {
+      const lockfiles = Array.isArray(args?.lockfiles)
+        ? args.lockfiles.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        : undefined;
+      // Only an omitted list means "all"; an empty one changes nothing.
+      if (lockfiles && lockfiles.length === 0) {
+        return readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: true });
+      }
+      return acknowledgeLaneDependencyStatus(laneDependencyStatusDeps(runtime), lockfiles ? { lockfiles } : {});
+    },
     portGetLease: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       await ensureActiveLanePortLease(runtime, laneId);
@@ -2450,10 +2512,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
           ...(typeof args?.label === "string" ? { label: args.label } : {}),
         }),
       ),
-    // Diagnostics and the updater report on the CLIs installed on the machine
-    // this runtime runs on. Exposed as actions so Settings can show (and
-    // update) another machine's install through that machine's own runtime,
-    // rather than reading This computer's answer and labelling it theirs.
+    // Diagnostics report on ADE's pinned CLI on the machine this runtime runs
+    // on. Exposed as an action so Settings can show another machine's copy
+    // through that machine's own runtime, rather than reading This
+    // computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
       const provider = args?.provider;
       if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
@@ -2461,19 +2523,6 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         provider,
         cwd: runtime.projectRoot,
         ...(args?.runDoctor === true ? { runDoctor: true } : {}),
-      });
-    },
-    acpProviderUpdate: (args?: { provider?: string }) => {
-      const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
-      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot }).then((result) => {
-        captureProviderCliUpdateAnalytics({
-          analytics: runtime.productAnalyticsService,
-          surface: "api",
-          provider,
-          outcome: result.ok ? "completed" : "failed",
-        });
-        return result;
       });
     },
     piLoginProviders: () => listPiLoginProviders(),
@@ -2588,6 +2637,44 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     ensureMuseBinary: async () => {
       const { startMuseBinaryFetch } = await import("../ai/museExecutable");
       return startMuseBinaryFetch();
+    },
+    // ADE's pinned copy of any provider's tool on THIS machine, for the
+    // Settings rows and chat cards of a chat or lane that lives here.
+    // `pinnedToolDownload` starts (or joins) the download and returns at
+    // once; callers poll `pinnedToolStatus` for progress.
+    pinnedToolStatus: async (args?: { provider?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      const { getPinnedProviderToolStatus } = await import("../ai/pinnedProviderTools");
+      return getPinnedProviderToolStatus(provider);
+    },
+    pinnedToolDownload: async (args?: { provider?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
+      return startPinnedProviderToolDownload(provider);
+    },
+    // Antigravity sign-in on THIS machine: the ACP `authenticate` request run
+    // by ADE's pinned agent here. A browser elsewhere pastes the 127.0.0.1
+    // address Google ended on (`antigravitySignInComplete`), which is forwarded
+    // to the agent's listener on this machine only.
+    antigravitySignInStatus: async () => {
+      const { getAntigravitySignInState } = await import("../ai/antigravitySignIn");
+      return getAntigravitySignInState();
+    },
+    antigravitySignInStart: async (args?: AntigravitySignInStartArgs) => {
+      const { startAntigravitySignIn, setAntigravitySignInLogger } = await import("../ai/antigravitySignIn");
+      setAntigravitySignInLogger(runtime.logger);
+      return startAntigravitySignIn(args as AntigravitySignInStartArgs);
+    },
+    antigravitySignInComplete: async (args?: AntigravitySignInCompleteArgs) => {
+      const { completeAntigravitySignIn } = await import("../ai/antigravitySignIn");
+      return completeAntigravitySignIn({
+        flowId: requireNonEmptyString(args?.flowId, "flowId"),
+        callbackUrl: requireNonEmptyString(args?.callbackUrl, "callbackUrl"),
+      });
+    },
+    antigravitySignInCancel: async (args?: AntigravitySignInCancelArgs) => {
+      const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
+      return cancelAntigravitySignIn({ flowId: requireNonEmptyString(args?.flowId, "flowId") });
     },
     // Settings > Providers > Muse Code on THIS machine: plugins, marketplaces,
     // skills, hooks, computer use and feedback, through a short-lived
@@ -2796,8 +2883,6 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
 const AI_SETTINGS_FEATURE_KEYS: AiFeatureKey[] = [
   "narratives",
   "conflict_proposals",
-  "commit_messages",
-  "pr_descriptions",
   "terminal_summaries",
   "initial_context",
 ];
@@ -3310,7 +3395,6 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
 function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
   const prService = runtime.prService;
   if (!prService) return null;
-  const prSummaryService = runtime.prSummaryService ?? null;
 
   return {
     ...(prService as unknown as OpaqueService),
@@ -3326,16 +3410,6 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
     aiResolutionStop(args?: unknown) {
       return getPrAiRuntimeBridge(runtime).stop(args);
     },
-    ...(prSummaryService
-      ? {
-          getAiSummary(prId: unknown) {
-            return prSummaryService.getSummary(readStringActionArg(prId, "prId"));
-          },
-          regenerateAiSummary(prId: unknown) {
-            return prSummaryService.regenerateSummary(readStringActionArg(prId, "prId"));
-          },
-        }
-      : {}),
   };
 }
 
@@ -4085,6 +4159,14 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 }
 
 
+function buildProjectHealthDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const projectHealthService = runtime.projectHealthService;
+  if (!projectHealthService) return null;
+  return {
+    getReport: (args?: { forceRefresh?: boolean }) => projectHealthService.getReport(args ?? {}),
+    fix: (args: { fixId: string }) => projectHealthService.fix(args),
+  };
+}
 
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
@@ -4098,6 +4180,8 @@ export function getAdeActionDomainServices(
         ))
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
+    keep_awake: toService(buildKeepAwakeDomainService(runtime)),
+    remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),
@@ -4126,10 +4210,10 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     jira: toService(runtime.jiraService),
     issues: toService(runtime.issueTrackerService),
-    feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
+    project_health: toService(buildProjectHealthDomainService(runtime)),
     archive: toService(createArchiveService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),

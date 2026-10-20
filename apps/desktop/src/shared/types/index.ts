@@ -39,7 +39,6 @@ export * from "./projectSecrets";
 export * from "./personalChats";
 
 export * from "./linearSync";
-export * from "./feedback";
 export * from "./search";
 export * from "./externalSessions";
 export * from "./externalSessionDetail";
@@ -55,6 +54,7 @@ export * from "./accountStore";
 export * from "./attention";
 export * from "./power";
 export * from "./keepAwake";
+export * from "./remoteMcp";
 export * from "../appleDeviceSettings";
 export * from "./subscriptionProxy";
 export * from "./quitPrompt";

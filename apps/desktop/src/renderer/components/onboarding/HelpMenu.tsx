@@ -7,6 +7,7 @@ import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 type MenuPosition = { top: number; left?: number; right?: number } | null;
 
@@ -40,11 +41,15 @@ export function HelpMenu({
   const openAt = useCallback(() => {
     const el = buttonRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
+    // Rect and window are measured in screen px; the menu's `left`/`right`/`top` are
+    // written in the viewport frame (see `fixedFrameOf`), so both are converted.
+    const frame = fixedFrameOf(null);
+    const r = fixedRect(frame, el.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     setPosition(
       align === "start"
         ? { top: r.bottom + 6, left: Math.max(8, r.left) }
-        : { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) },
+        : { top: r.bottom + 6, right: Math.max(8, viewport.width - r.right) },
     );
     setOpen(true);
   }, [align]);

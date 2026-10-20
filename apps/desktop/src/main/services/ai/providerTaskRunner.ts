@@ -8,18 +8,31 @@ import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/
 import type { DetectedAuth } from "./authDetector";
 import type { AgentPermissionMode } from "./agentExecutor";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { claudeFallForwardNotice, handleClaudeVersionRejection } from "./claudeFallForward";
 import { resolveClaudeCliModel } from "./claudeModelUtils";
 import { resolveCodexExecutable } from "./codexExecutable";
+import { codexFallForwardNotice, handleCodexVersionRejection } from "./codexFallForward";
+import { detectCodexVersionRejectionInOutput } from "./providerVersionRejection";
+import { requirePinnedProviderExecutable } from "./pinnedProviderTools";
 import {
-  resolveCopilotExecutable,
+  detectClaudeVersionRejectionInMessage,
+  detectClaudeVersionRejectionInOutput,
+  type ClaudeVersionRejection,
+} from "./providerVersionRejection";
+import { CODEX_NO_UPDATE_CHECK_ARGS, GROK_NO_AUTO_UPDATE_ARG, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import {
+  resolveAntigravityExecutable,
+  resolveCopilotSdkRuntime,
   resolveGrokExecutable,
   resolveKimiExecutable,
   resolveQwenExecutable,
+  type AcpExecutableResolution,
 } from "./acpExecutables";
 import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeSession";
-import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { terminateChildProcessTree } from "../shared/utils";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
@@ -31,7 +44,10 @@ import {
   resolveGrokCliModelForLaunch,
   resolveKimiCliModelForLaunch,
   resolveCodexCliModelForLaunch,
+  resolveDevinCliModelForLaunch,
+  resolvePiCliModelForLaunch,
   resolveQwenCliModelForLaunch,
+  piThinkingLevel,
 } from "../../../shared/cliLaunch";
 import { resolveCliProviderForModel } from "../../../shared/modelRegistry";
 import type { Item } from "@muse-code/sdk/dist/src/msp.js";
@@ -39,6 +55,11 @@ import { isMuseKnownNotification, startPinnedMuseHost } from "../chat/museSdkHos
 import { addUsage, museCompletionUsage, type MuseTurnUsage } from "../chat/museSdkEventMapper";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
+import { requirePinnedProviderCli } from "../pty/pinnedProviderCli";
+import { inspectAntigravityCredentials } from "./antigravityAuth";
+import { runAcpOneShotPrompt } from "../chat/acpHost/acpOneShotPrompt";
+import { resolvePiInstallation } from "./piInstallation";
+import { buildPiWorkerEnvironment } from "../chat/piSdkEnvironment";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -205,10 +226,15 @@ async function runCommand(args: {
   timeoutMs?: number;
   stdinText?: string;
   env?: Record<string, string>;
+  /** The environment to build on; the user's process environment when omitted. */
+  baseEnv?: NodeJS.ProcessEnv;
 }): Promise<SpawnResult> {
+  // The CLI leads its own process group (POSIX), so a timeout kills the whole
+  // tree: SIGTERM, then SIGKILL if anything is still there. Windows kills the
+  // tree with `taskkill /T /F`.
   return await new Promise((resolve, reject) => {
     const env = {
-      ...userProcessEnv(),
+      ...(args.baseEnv ?? userProcessEnv()),
       ...args.env,
       NO_COLOR: "1",
       TERM: "dumb",
@@ -218,9 +244,13 @@ async function runCommand(args: {
       cwd: args.cwd,
       env,
       stdio: [args.stdinText != null ? "pipe" : "ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true,
     });
+    const killTree = () => {
+      terminateChildProcessTree(child).unref?.();
+    };
 
     let stdout = "";
     let stderr = "";
@@ -229,7 +259,7 @@ async function runCommand(args: {
     const timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
-      terminateProcessTree(child, "SIGTERM");
+      killTree();
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);
 
@@ -247,7 +277,7 @@ async function runCommand(args: {
       if (settled || isBenignStdinCloseError(error)) return;
       settled = true;
       clearTimeout(timeoutHandle);
-      terminateProcessTree(child, "SIGTERM");
+      killTree();
       reject(error);
     });
 
@@ -291,6 +321,20 @@ function extractClaudeError(stdout: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Anthropic refusing the run's Claude Code as too old: the JSON result, or the exit and its output. */
+function claudeTaskVersionRejection(result: SpawnResult): ClaudeVersionRejection | null {
+  const trimmed = result.stdout.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const rejection = detectClaudeVersionRejectionInMessage(JSON.parse(trimmed));
+      if (rejection) return rejection;
+    } catch {
+      // Not a JSON result; read it as text below.
+    }
+  }
+  return detectClaudeVersionRejectionInOutput(result);
 }
 
 /** Why a CLI exited non-zero: stderr, else the tail of stdout, else nothing. */
@@ -347,15 +391,28 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   }
   cliArgs.push("-p");
 
-  const resolved = resolveClaudeCodeExecutable({ auth: args.auth });
-  const result = await runCommand({
-    command: resolved.path,
+  const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
+  const run = (command: string) => runCommand({
+    command,
     argv: cliArgs,
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: prompt,
-    env: args.accountEnv,
+    env: { ...providerSelfUpdateEnv("claude"), ...args.accountEnv },
   });
+  let result = await run(resolved.path);
+  const versionRejection = claudeTaskVersionRejection(result);
+  if (versionRejection) {
+    // Anthropic refused this build as too old. Once ADE has moved to the
+    // newest build the task runs again there, once: a refusal ran nothing,
+    // except that an API refusal may have opened the named session already.
+    const outcome = await handleClaudeVersionRejection({ rejection: versionRejection, rejected: resolved });
+    const rerun = outcome.switched && (versionRejection.signal !== "api_min_version" || !sessionId);
+    if (!rerun) {
+      throw new Error(`Claude failed: ${versionRejection.message} ${claudeFallForwardNotice(outcome, { after: "retry" })}`);
+    }
+    result = await run(resolveClaudeCodeExecutable().path);
+  }
   const reportedError = extractClaudeError(result.stdout);
   if (reportedError) {
     throw new Error(`Claude failed: ${reportedError}`);
@@ -378,6 +435,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
   const outPath = path.join(tmpDir, "out.txt");
   const cliArgs = [
     "exec",
+    ...CODEX_NO_UPDATE_CHECK_ARGS,
     "--color",
     "never",
     "--sandbox",
@@ -418,16 +476,38 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
 
-  const resolved = resolveCodexExecutable({ auth: args.auth });
+  let resolved: ReturnType<typeof resolveCodexExecutable>;
   try {
-    const result = await runCommand({
-      command: resolved.path,
+    resolved = await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable());
+  } catch (error) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
+  }
+  try {
+    const run = (command: string) => runCommand({
+      command,
       argv: cliArgs,
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       stdinText: combinedPrompt,
       env: args.accountEnv,
     });
+    let result = await run(resolved.path);
+    const versionRejection = detectCodexVersionRejectionInOutput({ ...result, requestedModel: codexModel });
+    if (versionRejection) {
+      // OpenAI refused the model for this Codex. A refused request ran
+      // nothing, so once ADE has moved to a newer Codex that OpenAI accepts
+      // for it, the task runs again there, once.
+      const outcome = await handleCodexVersionRejection({
+        rejection: versionRejection,
+        rejected: resolved,
+        accountEnv: { ...userProcessEnv(), ...args.accountEnv },
+      });
+      if (!outcome.switched) {
+        throw new Error(`Codex failed: ${versionRejection.message} ${codexFallForwardNotice(outcome, { after: "retry" })}`);
+      }
+      result = await run(resolveCodexExecutable().path);
+    }
     const output = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8").trim() : result.stdout.trim();
     if (result.exitCode !== 0) {
       throw new Error(describeCliFailure("Codex", result));
@@ -586,17 +666,25 @@ async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
   }
 }
 
-/** Run an ADE-owned metadata prompt through a provider's native CLI. */
+/** Run an ADE-owned metadata prompt through ADE's pinned copy of a provider's CLI. */
 async function runAcpOneShotTask(
   args: ProviderTaskRunnerArgs,
-  config: { command: string; argv: string[]; providerLabel: string; stdinText?: string },
+  config: {
+    provider: "qwen" | "kimi" | "grok";
+    resolved: AcpExecutableResolution;
+    argv: string[];
+    providerLabel: string;
+    stdinText?: string;
+  },
 ): Promise<ProviderTaskRunnerResult> {
   const result = await runCommand({
-    command: config.command,
-    argv: config.argv,
+    command: config.resolved.path,
+    // Qwen's pin is a Node plus its script; the script comes first.
+    argv: [...(config.resolved.args ?? []), ...config.argv],
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: config.stdinText,
+    env: providerSelfUpdateEnv(config.provider),
   });
   if (result.exitCode !== 0) {
     throw new Error(describeCliFailure(config.providerLabel, result));
@@ -625,8 +713,8 @@ async function runCopilotTask(args: ProviderTaskRunnerArgs): Promise<ProviderTas
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const resolved = resolveCopilotExecutable({ auth: args.auth });
-  const baseEnv = userProcessEnv({ ...process.env, ...(args.accountEnv ?? {}) });
+  const resolved = await requirePinnedProviderExecutable("copilot", () => resolveCopilotSdkRuntime());
+  const baseEnv = userProcessEnv({ ...process.env, ...providerSelfUpdateEnv("copilot"), ...(args.accountEnv ?? {}) });
   const baseDirectory = copilotConfigHome({ env: baseEnv });
   const acquired = await acquireCopilotSdkConnection({
     cliPath: resolved.path,
@@ -667,9 +755,10 @@ async function runQwenTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
   const cliArgs = ["--safe-mode", "--output-format", "text"];
   const model = resolveQwenCliModelForLaunch(args.descriptor.providerModelId);
   if (model) cliArgs.push("--model", model);
-  const resolved = resolveQwenExecutable({ auth: args.auth });
+  const resolved = await requirePinnedProviderExecutable("qwen", () => resolveQwenExecutable());
   return await runAcpOneShotTask(args, {
-    command: resolved.path,
+    provider: "qwen",
+    resolved,
     argv: cliArgs,
     providerLabel: "Qwen",
     stdinText: combinedPrompt,
@@ -702,8 +791,8 @@ async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
     const model = resolveKimiCliModelForLaunch(args.descriptor.providerModelId);
     if (model) cliArgs.push("--model", model);
     cliArgs.push("--agent-file", agentPath, "--output-format", "text", "--prompt", combinedPrompt);
-    const resolved = resolveKimiExecutable({ auth: args.auth });
-    return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Kimi" });
+    const resolved = await requirePinnedProviderExecutable("kimi", () => resolveKimiExecutable());
+    return await runAcpOneShotTask(args, { provider: "kimi", resolved, argv: cliArgs, providerLabel: "Kimi" });
   } finally {
     fs.rmSync(taskDir, { recursive: true, force: true });
   }
@@ -715,7 +804,7 @@ async function runGrokTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
   const combinedPrompt = args.system?.trim()
     ? `${args.system.trim()}\n\n${prompt}`
     : prompt;
-  const cliArgs = ["--permission-mode", "plan", "--no-subagents", "--disable-web-search"];
+  const cliArgs = [GROK_NO_AUTO_UPDATE_ARG, "--permission-mode", "plan", "--no-subagents", "--disable-web-search"];
   const model = resolveGrokCliModelForLaunch(args.descriptor.providerModelId);
   if (model) cliArgs.push("--model", model);
   if (args.jsonSchema) {
@@ -724,8 +813,161 @@ async function runGrokTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
     cliArgs.push("--output-format", "plain");
   }
   cliArgs.push("--single", combinedPrompt);
-  const resolved = resolveGrokExecutable({ auth: args.auth });
-  return await runAcpOneShotTask(args, { command: resolved.path, argv: cliArgs, providerLabel: "Grok" });
+  const resolved = await requirePinnedProviderExecutable("grok", () => resolveGrokExecutable());
+  return await runAcpOneShotTask(args, { provider: "grok", resolved, argv: cliArgs, providerLabel: "Grok" });
+}
+
+function combinedTaskPrompt(args: ProviderTaskRunnerArgs): string {
+  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  return args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
+}
+
+/**
+ * The cwd for a one-shot on a CLI that files every run under its directory
+ * (Droid, Devin, Antigravity): one fixed ADE directory, so a chat title never
+ * lands in the project's own session history, and a job that has everything
+ * in its prompt has no workspace to read.
+ */
+function oneShotScratchCwd(): string {
+  const dir = path.join(os.tmpdir(), "ade-provider-task");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Run `body` with a private temp directory that is removed afterwards. */
+async function withTaskDir<T>(prefix: string, body: (dir: string) => Promise<T>): Promise<T> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    return await body(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function textTaskResult(args: ProviderTaskRunnerArgs, text: string, sessionId: string | null = null): ProviderTaskRunnerResult {
+  return { text, structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null, sessionId };
+}
+
+/**
+ * `droid exec` on ADE's pinned Droid. With no `--auto` it runs read-only, so a
+ * title or summary can never change anything. The prompt goes through a file:
+ * a transcript excerpt is too long for a Windows command line.
+ */
+async function runDroidTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Droid");
+  const cli = await requirePinnedProviderCli("droid");
+  return await withTaskDir("ade-droid-task-", async (dir) => {
+    const promptPath = path.join(dir, "prompt.md");
+    fs.writeFileSync(promptPath, combinedTaskPrompt(args), "utf8");
+    const cliArgs = [...cli.leadingArgs, "exec", "-m", args.descriptor.providerModelId, "-o", "text"];
+    const effort = resolveTaskReasoningEffort(args);
+    if (effort) cliArgs.push("-r", effort);
+    cliArgs.push("-f", promptPath);
+    const result = await runCommand({
+      command: cli.command,
+      argv: cliArgs,
+      cwd: oneShotScratchCwd(),
+      timeoutMs: args.timeoutMs,
+      env: cli.env,
+    });
+    if (result.exitCode !== 0) throw new Error(describeCliFailure("Droid", result));
+    return textTaskResult(args, result.stdout.trim());
+  });
+}
+
+/**
+ * `devin -p` on ADE's pinned Devin. Print mode auto-approves read-only tools
+ * only (`--permission-mode auto`) and cannot ask, so nothing else runs. stdin
+ * is closed: signed out, Devin tries an interactive login and gives up at
+ * once ("Login canceled") instead of waiting.
+ */
+async function runDevinTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Devin");
+  const cli = await requirePinnedProviderCli("devin");
+  return await withTaskDir("ade-devin-task-", async (dir) => {
+    const promptPath = path.join(dir, "prompt.md");
+    fs.writeFileSync(promptPath, combinedTaskPrompt(args), "utf8");
+    const cliArgs = [...cli.leadingArgs, "-p", "--prompt-file", promptPath, "--permission-mode", "auto"];
+    const model = resolveDevinCliModelForLaunch(args.descriptor.providerModelId);
+    if (model) cliArgs.push("--model", model);
+    // The scratch cwd is not a trusted workspace, and print mode cannot ask.
+    cliArgs.push("--respect-workspace-trust", "false");
+    const result = await runCommand({
+      command: cli.command,
+      argv: cliArgs,
+      cwd: oneShotScratchCwd(),
+      timeoutMs: args.timeoutMs,
+      env: cli.env,
+    });
+    if (result.exitCode !== 0) throw new Error(describeCliFailure("Devin", result));
+    return textTaskResult(args, result.stdout.trim());
+  });
+}
+
+/**
+ * `pi -p` on ADE's pinned Node and Pi: no tools, no extensions, skills,
+ * prompt templates or context files, no saved session. It sees the same
+ * environment and profile directory a Pi chat does (`buildPiWorkerEnvironment`).
+ */
+async function runPiTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Pi");
+  const cli = await requirePinnedProviderCli("pi");
+  const agentDir = resolvePiInstallation().agentDir;
+  const cliArgs = [
+    ...cli.leadingArgs,
+    "-p",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+    "--no-approve",
+  ];
+  const model = resolvePiCliModelForLaunch(args.descriptor.providerModelId);
+  if (model) cliArgs.push("--model", model);
+  const thinking = piThinkingLevel(args.reasoningEffort);
+  if (thinking) cliArgs.push("--thinking", thinking);
+  if (args.system?.trim()) cliArgs.push("--system-prompt", args.system.trim());
+  const result = await runCommand({
+    command: cli.command,
+    argv: cliArgs,
+    cwd: args.cwd,
+    timeoutMs: args.timeoutMs,
+    // Pi reads a piped prompt from stdin in print mode.
+    stdinText: appendStructuredOutputInstruction(args.prompt, args.jsonSchema),
+    baseEnv: { ...buildPiWorkerEnvironment(userProcessEnv(), agentDir), PI_CODING_AGENT_DIR: agentDir },
+    env: cli.env,
+  });
+  if (result.exitCode !== 0) throw new Error(describeCliFailure("Pi", result));
+  return textTaskResult(args, result.stdout.trim());
+}
+
+/**
+ * Antigravity has no print mode: a short ACP session on ADE's pinned
+ * `agy_acp_server`, the chat's model, one prompt, then the process is killed.
+ * With no sign-in on this machine it fails before starting the agent.
+ */
+async function runAntigravityTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
+  rejectUnsupportedAcpTaskImages(args, "Antigravity");
+  const baseEnv = userProcessEnv();
+  const credentials = await inspectAntigravityCredentials(baseEnv);
+  if (!credentials.authenticated) {
+    throw new Error("Antigravity is not signed in on this machine. Sign in from Settings > Providers > Antigravity.");
+  }
+  const executable = await requirePinnedProviderExecutable("antigravity", () => resolveAntigravityExecutable({ env: baseEnv }));
+  const result = await runAcpOneShotPrompt({
+    provider: "antigravity",
+    executable,
+    cwd: oneShotScratchCwd(),
+    baseEnv,
+    modelToken: args.descriptor.providerModelId.trim() || null,
+    prompt: combinedTaskPrompt(args),
+    timeoutMs: Math.max(1_000, args.timeoutMs ?? 120_000),
+  });
+  return textTaskResult(args, result.text, result.sessionId);
 }
 
 async function runOpenCodeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
@@ -766,18 +1008,30 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
   if (args.descriptor.family === "muse") {
     return await runMuseTask(args);
   }
+  // Every provider runs its own models on its own pinned runtime. OpenCode
+  // runs only what is OpenCode's: API-key, OpenRouter and local models.
   const cliProvider = resolveCliProviderForModel(args.descriptor);
-  if (cliProvider === "qwen") {
-    return await runQwenTask(args);
+  switch (cliProvider) {
+    case null:
+      return await runOpenCodeTask(args);
+    case "qwen":
+      return await runQwenTask(args);
+    case "kimi":
+      return await runKimiTask(args);
+    case "grok":
+      return await runGrokTask(args);
+    case "copilot":
+      return await runCopilotTask(args);
+    case "droid":
+      return await runDroidTask(args);
+    case "devin":
+      return await runDevinTask(args);
+    case "pi":
+      return await runPiTask(args);
+    case "antigravity":
+      return await runAntigravityTask(args);
+    default:
+      // Claude, Codex, Cursor and Muse were routed above by family.
+      throw new Error(`ADE has no one-shot runner for ${cliProvider} model '${args.descriptor.id}'.`);
   }
-  if (cliProvider === "kimi") {
-    return await runKimiTask(args);
-  }
-  if (cliProvider === "grok") {
-    return await runGrokTask(args);
-  }
-  if (cliProvider === "copilot") {
-    return await runCopilotTask(args);
-  }
-  return await runOpenCodeTask(args);
 }

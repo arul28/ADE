@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
+import { withExclusiveFileLock } from "../../lib/exclusiveFileLock";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 /**
@@ -14,104 +14,9 @@ import { resolveMachineAdeLayout } from "../projects/machineLayout";
  *
  * The lock lives next to the socket, is released on completion, and is reaped
  * when its owning pid is gone (or, for an unreadable lock, after 30s) so a
- * crashed spawner cannot wedge the machine.
+ * crashed spawner cannot wedge the machine. The claim mechanics are shared with
+ * the service install lock in lib/exclusiveFileLock.ts.
  */
-
-type SocketSpawnLockOwner = {
-  id: string | null;
-  pid: number | null;
-};
-
-function createSocketSpawnLockOwner(): SocketSpawnLockOwner {
-  return {
-    id: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    pid: process.pid,
-  };
-}
-
-function serializeSocketSpawnLockOwner(owner: SocketSpawnLockOwner): string {
-  return JSON.stringify({
-    id: owner.id,
-    pid: owner.pid,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-function readSocketSpawnLockOwner(lockPath: string): SocketSpawnLockOwner {
-  const raw = fs.readFileSync(lockPath, "utf8");
-  try {
-    const parsed = JSON.parse(raw) as { id?: unknown; pid?: unknown };
-    return {
-      id: typeof parsed.id === "string" ? parsed.id : null,
-      pid: typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0
-        ? parsed.pid
-        : null,
-    };
-  } catch {
-    const [pidLine] = raw.split(/\r?\n/u);
-    const pid = Number.parseInt(pidLine ?? "", 10);
-    return {
-      id: null,
-      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
-    };
-  }
-}
-
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-// A contended `open(..., "wx")` reports EEXIST -- on Windows too.
-//
-// This branch used to also treat EPERM/EACCES as contention, on the theory that
-// Windows leaves a delete-pending name behind after the holder's unlink. That
-// is FALSE for this lock: libuv opens with FILE_SHARE_DELETE, so unlink-while-
-// open succeeds immediately and the next `open(..., "wx")` succeeds too. A
-// 10-process contention run on Windows 11 26200 produced ONLY EEXIST, zero
-// mutual-exclusion violations, and no leaked lock file.
-//
-// Keeping EPERM/EACCES in here had a real cost: a GENUINE permission denial on
-// %ADE_HOME%\runtime\spawn-locks (ACLs, EDR, a redirected profile) was retried
-// as if it were contention, so every `ade` command burned the full 10s deadline
-// and then reported "Timed out waiting for ADE socket spawn lock" instead of
-// the permission error the user could act on. EBUSY stays: it is what a
-// sharing-mode conflict from an antivirus scanner holding the file surfaces as,
-// and that one genuinely does resolve on its own.
-function isSocketSpawnLockContention(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  if (code === "EEXIST") return true;
-  if (process.platform !== "win32") return false;
-  return code === "EBUSY";
-}
-
-function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
-  try {
-    const stat = fs.statSync(lockPath);
-    const owner = readSocketSpawnLockOwner(lockPath);
-    if (owner.pid != null && processExists(owner.pid)) return false;
-    if (owner.pid == null && Date.now() - stat.mtimeMs <= 30_000) return false;
-    fs.unlinkSync(lockPath);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
-  }
-}
-
-function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null): void {
-  if (!ownerId) return;
-  try {
-    const owner = readSocketSpawnLockOwner(lockPath);
-    if (owner.id !== ownerId) return;
-    fs.unlinkSync(lockPath);
-  } catch {
-    // ignore cleanup races
-  }
-}
 
 function isWindowsNamedPipePath(socketPath: string): boolean {
   return socketPath
@@ -146,34 +51,8 @@ export function socketSpawnLockPath(socketPath: string): string {
 
 export async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
   if (socketPath.startsWith("tcp://")) return await task();
-  const lockPath = socketSpawnLockPath(socketPath);
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 10_000;
-  const owner = createSocketSpawnLockOwner();
-  let fd: number | null = null;
-  while (fd == null) {
-    try {
-      fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
-      break;
-    } catch (error) {
-      if (!isSocketSpawnLockContention(error)) throw error;
-      if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`, { cause: error });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
-  try {
-    return await task();
-  } finally {
-    if (fd != null) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-    }
-    unlinkSocketSpawnLockIfOwner(lockPath, owner.id);
-  }
+  return await withExclusiveFileLock(socketSpawnLockPath(socketPath), task, {
+    waitMs: 10_000,
+    label: "ADE socket spawn lock",
+  });
 }

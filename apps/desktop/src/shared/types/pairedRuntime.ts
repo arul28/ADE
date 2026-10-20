@@ -171,10 +171,10 @@ export type DesktopPairedMachineCredentials = {
 export type DesktopPairedMachineEndpointState = {
   endpoint: string;
   lastSucceededAt: number | null;
-  /** Recent consecutive dial failures demote, but never remove, this route. */
+  /** Consecutive dial failures demote, but never remove, this route until it answers or mDNS sees it again. */
   lastFailedAt?: number | null;
   consecutiveFailures?: number;
-  /** Fresh discovery wins within a route kind before historical success. */
+  /** Fresh discovery wins within a route kind before historical success, and clears a failure streak it post-dates. */
   lastDiscoveredAt?: number | null;
 };
 

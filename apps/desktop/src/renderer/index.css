@@ -154,8 +154,8 @@ h6 {
   color: color-mix(in srgb, var(--color-warning) 95%, var(--shell-header-fg));
 }
 
-/* Off Windows the chip is a label, not a control: there is no Windows beta
-   notice to re-open there, so it must not offer a click affordance. */
+/* The channel badge is informational, so it keeps the same label treatment on
+   hover instead of suggesting an action. */
 .ade-shell-channel-badge[data-static="true"],
 .ade-shell-channel-badge[data-static="true"]:hover {
   cursor: default;

@@ -1,8 +1,15 @@
 import {
   isSameChannelSyncHostOwner,
+  ownerMatchesWindowsProcess,
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
 import { createFailureLogDeduper } from "../runtime/failureLogDeduper";
+import {
+  terminatePidGracefullyAsync,
+  type PidStopOutcome,
+  type TerminatePidDeps,
+  type WindowsProcessFacts,
+} from "../../serviceManager/common";
 import {
   classifyStorageFault,
   type StorageFault,
@@ -20,6 +27,18 @@ export type SyncHostStartupLoopDeps = {
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Platform the same-channel takeover runs on; defaults to `process.platform`.
+   * Windows has no SIGTERM a brain can handle, so a takeover there asks the
+   * stale brain to shut down over its RPC endpoint first and force-kills only
+   * what does not leave (see `common.terminatePidGracefullyAsync`).
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * win32 takeover only: the cooperative-shutdown and last-resort-kill seams of
+   * `common.terminatePidGracefullyAsync`. Production leaves them unset.
+   */
+  terminatePidDeps?: Omit<TerminatePidDeps, "kill" | "platform" | "pidAlive">;
   /**
    * Where a classified storage fault is recorded so the desktop can show it.
    * Wired at the call site to the machine-scoped last-failure report, which is
@@ -204,23 +223,41 @@ function defaultSleep(ms: number): Promise<void> {
 
 async function terminatePidAsync(
   pid: number,
-  deps: Required<Pick<SyncHostStartupLoopDeps, "kill" | "pidAlive" | "sleep">>,
-): Promise<void> {
-  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
+  deps: Required<Pick<SyncHostStartupLoopDeps, "kill" | "pidAlive" | "sleep">> & {
+    platform: NodeJS.Platform;
+    terminatePidDeps: NonNullable<SyncHostStartupLoopDeps["terminatePidDeps"]>;
+    /** win32: whether the process read from `pid` still is the lock owner that was read. */
+    ownerMatches: (facts: WindowsProcessFacts) => boolean;
+  },
+): Promise<PidStopOutcome> {
+  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return "stopped";
+  if (deps.platform === "win32") {
+    // A bare SIGTERM here would be TerminateProcess, which skips the stale
+    // brain's flush. The RPC shutdown is the only orderly exit Windows offers, and
+    // the last-resort kill needs the lock owner's identity still to hold: the lock
+    // file can outlive the brain and its pid can have been reused.
+    return terminatePidGracefullyAsync(pid, {
+      isExpectedProcess: deps.ownerMatches,
+      ...deps.terminatePidDeps,
+      platform: "win32",
+      pidAlive: deps.pidAlive,
+    });
+  }
   try {
     deps.kill(pid, "SIGTERM");
   } catch {
-    return;
+    return "stopped";
   }
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    if (!deps.pidAlive(pid)) return;
+    if (!deps.pidAlive(pid)) return "stopped";
     await deps.sleep(100);
   }
   try {
     deps.kill(pid, "SIGKILL");
+    return "killed";
   } catch {
-    // best effort
+    return "stopped";
   }
 }
 
@@ -247,6 +284,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   const fastRetryCount = deps.fastRetryCount ?? 5;
   const attemptTimeoutMs = Math.max(1, deps.attemptTimeoutMs ?? 120_000);
   const sustainedStorageFaultAttempts = deps.sustainedStorageFaultAttempts ?? 3;
+  const platform = deps.platform ?? process.platform;
   let attempt = 0;
   let lastFailureSignature = "";
   let consecutiveStorageFaults = 0;
@@ -459,7 +497,20 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             ownerApp: owner.appName ?? null,
             ownerPid: owner.pid,
           });
-          await terminatePidAsync(owner.pid, { kill, pidAlive, sleep });
+          const outcome = await terminatePidAsync(owner.pid, {
+            kill,
+            pidAlive,
+            sleep,
+            platform,
+            terminatePidDeps: deps.terminatePidDeps ?? {},
+            ownerMatches: (facts) => ownerMatchesWindowsProcess(owner, facts),
+          });
+          if (outcome === "not-proven" || outcome === "failed") {
+            // The stale owner is still running and was not proven to be the brain
+            // recorded in the lock. Retry on the next attempt; do not claim the takeover.
+            deps.log(`ADE brain could not verify the stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}); it was left running.`);
+            logEvent("sync.host_takeover_unverified", { attempt, ownerPid: owner.pid });
+          }
           continue;
         }
       }

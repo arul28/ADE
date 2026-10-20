@@ -36,35 +36,35 @@ export function harnessAvailability(
   if (harness === "claude") {
     const claude = providers?.claude;
     if (!claude) return UNKNOWN;
-    if (!claude.binary?.present) return { available: false, reason: "Claude Code is not installed on this computer." };
-    if (!claude.auth?.ready) return { available: false, reason: "Claude Code is installed but not signed in." };
+    if (!claude.binary?.present) return { available: false, reason: "ADE has not downloaded Claude Code for this machine yet." };
+    if (!claude.auth?.ready) return { available: false, reason: "Claude Code is not signed in." };
     return { available: true, reason: "" };
   }
   if (harness === "codex") {
     return providers?.codex
       ? { available: true, reason: "" }
-      : { available: false, reason: "Codex CLI is not installed or not signed in." };
+      : { available: false, reason: "Codex is not downloaded for this machine or not signed in." };
   }
   if (harness === "cursor") {
     return providers?.cursor
       ? { available: true, reason: "" }
-      : { available: false, reason: "Cursor is not installed or not signed in." };
+      : { available: false, reason: "Cursor is not downloaded for this machine or not signed in." };
   }
   if (harness === "droid") {
     return providers?.droid
       ? { available: true, reason: "" }
-      : { available: false, reason: "Droid is not installed or not signed in." };
+      : { available: false, reason: "Droid is not downloaded for this machine or not signed in." };
   }
   if (harness === "opencode") {
     if (status.opencodeBinaryInstalled === false) {
-      return { available: false, reason: "OpenCode is not installed on this computer." };
+      return { available: false, reason: "ADE has not downloaded OpenCode for this machine yet." };
     }
     return { available: true, reason: "" };
   }
   if (harness === "pi") {
     const pi = status.piInstallation;
     if (!pi) return UNKNOWN;
-    if (!pi.installed) return { available: false, reason: "Pi is not installed on this computer." };
+    if (!pi.installed) return { available: false, reason: "ADE has not downloaded Pi for this machine yet." };
     if (pi.blocker) return { available: false, reason: pi.blocker };
     return { available: true, reason: "" };
   }
@@ -74,7 +74,7 @@ export function harnessAvailability(
   if (acp === undefined) return UNKNOWN;
   return acp
     ? { available: true, reason: "" }
-    : { available: false, reason: "Not installed or not signed in." };
+    : { available: false, reason: "Not downloaded for this machine or not signed in." };
 }
 
 /** Readiness for every harness, for the wizard's card grid. */

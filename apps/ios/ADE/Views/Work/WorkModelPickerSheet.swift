@@ -28,6 +28,7 @@ struct WorkModelPickerSheet: View {
   let lanes: [LaneSummary]
   let isBusy: Bool
   let commandScope: WorkModelPickerScope
+  let personalMachineKey: String?
   /// Extra per-model gate applied on top of availability scoping. Surfaces with
   /// a narrower contract than "every configured model" pass one — the CTO only
   /// accepts providers that can redirect a live turn.
@@ -62,6 +63,7 @@ struct WorkModelPickerSheet: View {
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     lanes: [LaneSummary] = [],
     commandScope: WorkModelPickerScope = .project,
+    personalMachineKey: String? = nil,
     harnessPresets: [SyncMachineInventoryPreset] = [],
     isBusy: Bool,
     modelFilter: ((WorkModelOption) -> Bool)? = nil,
@@ -81,6 +83,7 @@ struct WorkModelPickerSheet: View {
     self.cursorAvailabilityMode = cursorAvailabilityMode
     self.lanes = lanes
     self.commandScope = commandScope
+    self.personalMachineKey = personalMachineKey
     self.isBusy = isBusy
     self.modelFilter = modelFilter
     self.harnessPresets = harnessPresets
@@ -706,7 +709,7 @@ struct WorkModelPickerSheet: View {
     let refreshProvider: String?
     switch groupKey {
     case "opencode", "cursor", "droid", "pi", "muse", "lmstudio", "ollama",
-         "qwen", "kimi", "grok", "copilot":
+         "qwen", "kimi", "grok", "copilot", "devin", "antigravity":
       refreshProvider = groupKey
     default:
       refreshProvider = nil
@@ -744,7 +747,8 @@ struct WorkModelPickerSheet: View {
       return try await syncService.getPersonalChatModelCatalog(
         mode: mode,
         refreshProvider: refreshProvider,
-        cursorSource: cursorSource
+        cursorSource: cursorSource,
+        machineKey: personalMachineKey
       )
     }
     return try await syncService.getChatModelCatalog(

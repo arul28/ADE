@@ -187,6 +187,13 @@ export function useSyncConnections() {
 
   return {
     status,
+    /**
+     * The window's project's own sync status (the routed read). `status` above
+     * describes the machine, which can host while this project follows another
+     * machine, so whether the project follows is read from here. Null until the
+     * first read answers.
+     */
+    projectStatus: routedStatus,
     devices,
     loading,
     busy,

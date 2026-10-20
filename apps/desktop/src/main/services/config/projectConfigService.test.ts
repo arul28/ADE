@@ -537,7 +537,7 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
       version: 1,
       ai: {
         features: { narratives: true },
-        featureModelOverrides: { pr_descriptions: "openai/gpt-safe" },
+        featureModelOverrides: { narratives: "openai/gpt-safe" },
         taskRouting: { planning: { model: "anthropic/claude-safe", provider: "claude" } },
         customModelSlugs: ["openai/gpt-pinned"],
         permissions: { cli: { mode: "full-auto", sandboxPermissions: "danger-full-access" } },
@@ -557,7 +557,7 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     const snapshot = makeService(root, adeDir, logger).get();
     expect(snapshot.local.ai).toMatchObject({
       features: { narratives: true },
-      featureModelOverrides: { pr_descriptions: "openai/gpt-safe" },
+      featureModelOverrides: { narratives: "openai/gpt-safe" },
       taskRouting: { planning: { model: "anthropic/claude-safe" } },
       customModelSlugs: ["openai/gpt-pinned"],
       sessionIntelligence: { titles: { enabled: true, modelId: "openai/title-safe" } },
@@ -757,7 +757,7 @@ describe("projectConfigService - AI mode migration", () => {
     expect((persistedProviders?.contextTools as Record<string, unknown> | undefined)).toBeDefined();
   });
 
-  it("preserves commit message feature settings and chat settings on read/save", () => {
+  it("drops removed commit-message/PR-description feature keys and preserves chat settings on read/save", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-commit-messages-");
 
     const localPath = path.join(adeDir, "local.yaml");
@@ -769,16 +769,22 @@ describe("projectConfigService - AI mode migration", () => {
         laneOverlayPolicies: [],
         automations: [],
         ai: {
+          // Older builds wrote these two features; reading them must not fail.
           features: {
             commit_messages: true,
+            pr_descriptions: false,
           },
           featureModelOverrides: {
             commit_messages: "openai/gpt-5.4-mini",
+            pr_descriptions: "openai/gpt-5.5",
             terminal_summaries: null,
           },
           featureReasoningOverrides: {
             commit_messages: "minimal",
             terminal_summaries: null,
+          },
+          budgets: {
+            pr_descriptions: { dailyLimit: 3 },
           },
           chat: {
             autoTitleEnabled: true,
@@ -805,10 +811,12 @@ describe("projectConfigService - AI mode migration", () => {
     });
 
     const snapshot = service.get();
-    expect(snapshot.effective.ai?.features?.commit_messages).toBe(true);
-    expect(snapshot.effective.ai?.featureModelOverrides?.commit_messages).toBe("openai/gpt-5.4-mini");
+    const effectiveAi = snapshot.effective.ai as Record<string, any> | undefined;
+    expect(effectiveAi?.features).toBeUndefined();
+    expect(effectiveAi?.featureModelOverrides).toEqual({ terminal_summaries: null });
+    expect(effectiveAi?.budgets).toBeUndefined();
     expect(snapshot.effective.ai?.featureModelOverrides?.terminal_summaries).toBeNull();
-    expect(snapshot.effective.ai?.featureReasoningOverrides?.commit_messages).toBe("minimal");
+    expect(effectiveAi?.featureReasoningOverrides).toEqual({ terminal_summaries: null });
     expect(snapshot.effective.ai?.featureReasoningOverrides?.terminal_summaries).toBeNull();
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.enabled).toBe(true);
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.modelId).toBe("openai/gpt-5.4-mini");
@@ -829,10 +837,10 @@ describe("projectConfigService - AI mode migration", () => {
     });
 
     const persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
-    expect(persisted.ai?.features?.commit_messages).toBe(true);
-    expect(persisted.ai?.featureModelOverrides?.commit_messages).toBe("openai/gpt-5.4-mini");
-    expect(persisted.ai?.featureModelOverrides?.terminal_summaries).toBeNull();
-    expect(persisted.ai?.featureReasoningOverrides?.commit_messages).toBe("minimal");
+    expect(persisted.ai?.features).toBeUndefined();
+    expect(persisted.ai?.featureModelOverrides).toEqual({ terminal_summaries: null });
+    expect(persisted.ai?.budgets).toBeUndefined();
+    expect(persisted.ai?.featureReasoningOverrides?.commit_messages).toBeUndefined();
     expect(persisted.ai?.featureReasoningOverrides?.terminal_summaries).toBeNull();
     expect(persisted.ai?.chat?.autoTitleEnabled).toBeUndefined();
     expect(persisted.ai?.chat?.autoTitleModelId).toBeUndefined();

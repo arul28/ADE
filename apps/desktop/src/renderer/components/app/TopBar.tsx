@@ -117,6 +117,7 @@ import {
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { AccountAvatar } from "../account/AccountAvatar";
 import { useAccountStatus } from "../../lib/account";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -436,10 +437,13 @@ function HeaderStatusMenu({
   const openMenu = useCallback(() => {
     const el = buttonRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
+    // Screen rect and window, converted into the viewport frame the sheet is written in.
+    const frame = fixedFrameOf(null);
+    const rect = fixedRect(frame, el.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     setMenuPos({
       top: rect.bottom + 6,
-      right: Math.max(8, window.innerWidth - rect.right),
+      right: Math.max(8, viewport.width - rect.right),
     });
     setOpen(true);
   }, []);

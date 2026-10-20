@@ -11,6 +11,7 @@ import { ensureTools, gcTools, resolveTool, tryResolvePreviousTool, tryResolveTo
 import { type ToolsManifest, parseToolsManifest } from "./manifest";
 import { TOOL_INSTALL_SENTINEL, toolSentinelPath, toolVersionDir } from "./paths";
 import { acquireToolLock, isToolLockContention } from "./lock";
+import { enablePinnedToolFetch, pinnedToolDownload, pinnedToolFetchInFlight, pinnedToolInstallGeneration } from "./onDemand";
 
 const execFileAsync = promisify(execFile);
 
@@ -356,6 +357,30 @@ describe("gcTools", () => {
     expect(result.removed).not.toContain(foreign);
     expect(fs.existsSync(foreign)).toBe(true);
   });
+
+  it("gives legacy packages the full grace period from the first ledger creation", async () => {
+    vi.useFakeTimers();
+    try {
+      const createdAt = new Date("2026-08-01T12:00:00.000Z");
+      vi.setSystemTime(createdAt);
+      const manifest = manifestFor({ entryPath: "bin/demo", integrity: `sha512-${"A".repeat(86)}==` });
+      const legacy = toolVersionDir(toolsRoot, "opencode-darwin-arm64", "1.18.0");
+      await fsp.mkdir(legacy, { recursive: true });
+
+      const firstCollection = await gcTools(baseContext(manifest));
+
+      expect(firstCollection.removed).not.toContain(path.dirname(legacy));
+      expect(fs.existsSync(legacy)).toBe(true);
+
+      vi.setSystemTime(new Date(createdAt.getTime() + 15 * 24 * 60 * 60_000));
+      const laterCollection = await gcTools(baseContext(manifest));
+
+      expect(laterCollection.removed).toContain(path.dirname(legacy));
+      expect(fs.existsSync(path.dirname(legacy))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("tryResolvePreviousTool", () => {
@@ -667,5 +692,46 @@ describe("acquireToolLock", () => {
     await acquisition.release();
 
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe("pinnedToolDownload", () => {
+  // A chat, a task and a status refresh can all ask for the same missing tool;
+  // they must share one install, and an offline machine must not retry on
+  // every status refresh.
+  it("shares one download per tool, counts it once, and backs off after a failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const archive = await buildTarball({ "bin/demo": "#!/bin/sh\necho demo\n", "package.json": "{}" });
+      const manifest = manifestFor({ entryPath: "bin/demo", integrity: archive.integrity });
+      const logger = { info: vi.fn(), warn: vi.fn() };
+      enablePinnedToolFetch(logger);
+      const offline: ToolDownloader = async () => {
+        throw new ToolError("getaddrinfo ENOTFOUND registry.npmjs.org", { kind: "network", tool: "demo" });
+      };
+
+      const failure = await pinnedToolDownload("demo", { ...baseContext(manifest), download: offline });
+      expect(failure?.kind).toBe("network");
+      expect(logger.warn).toHaveBeenCalledWith("tools.on_demand_fetch_failed", { tool: "demo", kind: "network" });
+      expect(pinnedToolDownload("demo", { ...baseContext(manifest), download: offline }), "still backing off").toBeNull();
+
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      const recorder: Recorder = { calls: 0 };
+      const context = { ...baseContext(manifest), download: stubDownloader(archive.path, archive.integrity, recorder) };
+      const generation = pinnedToolInstallGeneration();
+      const first = pinnedToolDownload("demo", context);
+      const second = pinnedToolDownload("demo", context);
+      expect(first, "a retry once the backoff passed").not.toBeNull();
+      expect(second, "the second caller joins the running download").not.toBeNull();
+      expect(pinnedToolFetchInFlight("demo")).toBe(true);
+
+      await expect(Promise.all([first, second])).resolves.toEqual([null, null]);
+      expect(recorder.calls).toBe(1);
+      expect(pinnedToolInstallGeneration()).toBe(generation + 1);
+      expect(pinnedToolFetchInFlight("demo")).toBe(false);
+      expect(pinnedToolDownload("demo", context), "installed, nothing to fetch").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

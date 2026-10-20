@@ -6,11 +6,11 @@ import {
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS,
   PI_LOGIN_IPC_TIMEOUT_MS,
   CURSOR_LOGIN_IPC_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
-  ACP_PROVIDER_UPDATE_TIMEOUT_MS,
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
@@ -51,9 +51,6 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
     cursorAuthLogin: IPC.aiCursorAuthLogin,
-    // A provider CLI update on a paired machine runs the same install as a
-    // local one; see ACP_PROVIDER_UPDATE_TIMEOUT_MS.
-    acpProviderUpdate: IPC.aiAcpProviderUpdate,
   },
   lane: {
     create: IPC.lanesCreate,
@@ -62,6 +59,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     importBranch: IPC.lanesImportBranch,
     archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
+    initEnv: IPC.lanesInitEnv,
+    applyTemplate: IPC.lanesApplyTemplate,
   },
   ios_simulator: {
     // A remote runtime builds with the same xcodebuild as a local one, so a
@@ -134,6 +133,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       : LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
   if (channel === IPC.localRuntimeCallSync) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
+  // The This-Machine status read. Its handler answers with the degraded
+  // snapshot at LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS, so this timer must
+  // outlive that answer. On the 30s default a Windows cold start (45s cap) would
+  // show the opaque IPC timeout instead.
+  if (channel === IPC.syncGetLocalStatus) return LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS;
   // Reconnecting forwards to the brain on the same 30s sync budget. On the 30s
   // IPC default the two would expire together and the renderer would render an
   // opaque IPC timeout instead of the brain's legible reason — so this channel
@@ -198,6 +202,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.lanesArchive:
     case IPC.lanesDelete:
       return 4 * 60_000;
+    // A lane template's installs and setup script; see LANE_ENV_SETUP_TIMEOUT_MS.
+    case IPC.lanesInitEnv:
+    case IPC.lanesApplyTemplate:
+      return localRuntimeActionIpcTimeoutMs("lane", "applyTemplate");
     // Handoff runs an AI brief + session creation + first-message dispatch
     // (and cross-machine prepare additionally packages provider history);
     // it must outlive the daemon-side 120s action timeout so the false
@@ -239,10 +247,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // the page — while the daemon kept scanning for another nine minutes.
     case IPC.usageRefreshHistory:
       return USAGE_REFRESH_HISTORY_TIMEOUT_MS;
-    // An unpinned provider CLI update runs on this machine's main process; see
-    // ACP_PROVIDER_UPDATE_TIMEOUT_MS.
-    case IPC.aiAcpProviderUpdate:
-      return ACP_PROVIDER_UPDATE_TIMEOUT_MS;
     // A cold iOS launch is a full xcodebuild plus boot, install and launch. The
     // service's own inner budgets sum to roughly 930s in the worst case, so the
     // IPC timer has to sit above that or the renderer reports a failure for a

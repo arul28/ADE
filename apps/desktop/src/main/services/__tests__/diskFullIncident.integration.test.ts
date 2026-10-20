@@ -110,14 +110,16 @@ function sessionServiceFor(row: Record<string, any>) {
 }
 
 function recoveryPool(): ProjectRecoveryConnectionPool {
+  const status: ReturnType<ProjectRecoveryConnectionPool["getStatus"]> = {
+    connectionState: "idle",
+    runtimeMode: "primary",
+    versionSkew: { state: "none", appVersion: null, runtimeVersion: null, message: null, updatedAt: null },
+    serviceInstall: { state: "not_attempted", attempted: false, path: null, message: null, exitCode: null, updatedAt: null },
+    serviceHealth: { state: "unknown", installed: null, running: null, path: null, message: null, checkedAt: null },
+  };
   return {
-    getStatus: vi.fn(() => ({
-      connectionState: "idle",
-      runtimeMode: "primary",
-      versionSkew: { state: "none", appVersion: null, runtimeVersion: null, message: null, updatedAt: null },
-      serviceInstall: { state: "not_attempted", attempted: false, path: null, message: null, exitCode: null, updatedAt: null },
-      serviceHealth: { state: "unknown", installed: null, running: null, path: null, message: null, checkedAt: null },
-    })),
+    getStatus: vi.fn(() => status),
+    getStatusAfterServiceProbe: vi.fn(async () => status),
     installServiceBestEffort: vi.fn(async () => {}),
     uninstallServiceBestEffort: vi.fn(async () => {}),
     callSync: vi.fn(async () => ({ pong: true })) as any,

@@ -3,6 +3,7 @@ import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { SyncHostBlocker } from "../sync/syncService";
+import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 
 type SwitchSyncHostOptions = {
@@ -90,7 +91,7 @@ export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
   const target = blocker.host
     ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
     : "";
-  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.`;
+  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or stop following it on this computer: in Connections, under This computer, choose Stop following.`;
 }
 
 /** The target project follows another machine, so this machine cannot host it. */
@@ -202,6 +203,8 @@ export class ProjectScopeRegistry {
        * the bridge is built after this registry.
        */
       crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+      /** One machine service shared by all scopes hosted by this brain. */
+      keepAwakeService?: BrainKeepAwakeService | null;
       onDisposeProject?: (projectId: ProjectId) => void;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
@@ -370,6 +373,9 @@ export class ProjectScopeRegistry {
         ...(syncRuntime ? { syncRuntime } : {}),
         ...(this.options.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
+          : {}),
+        ...(this.options.keepAwakeService
+          ? { keepAwakeService: this.options.keepAwakeService }
           : {}),
       });
       try {

@@ -2,6 +2,7 @@ import React from "react";
 import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import type { DigestPushTick } from "./prDigestTimelineModel";
+import { cssZoomOf } from "../../../lib/webZoom";
 
 /**
  * A thin rail of ticks on the Overview's right edge — one per push. A click
@@ -24,7 +25,8 @@ export function PrPushTickRail({
   const place = (target: HTMLElement, tick: DigestPushTick) => {
     const wrapper = wrapperRef.current?.getBoundingClientRect();
     const own = target.getBoundingClientRect();
-    setHover({ tick, top: wrapper ? own.top - wrapper.top : 0 });
+    // Screen rect difference, written as layout px in the absolute wrapper.
+    setHover({ tick, top: wrapper && wrapperRef.current ? (own.top - wrapper.top) / cssZoomOf(wrapperRef.current) : 0 });
   };
   if (ticks.length === 0) return null;
   return (

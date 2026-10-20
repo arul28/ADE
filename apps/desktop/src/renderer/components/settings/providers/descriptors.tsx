@@ -87,7 +87,7 @@ function probeFailedView(ctx: ProvidersViewContext, who: string): ProviderStatus
   };
 }
 
-/** Status for the three providers ADE only detects on PATH. */
+/** Status for the CLI-backed providers ADE runs from its own pinned copy. */
 function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" | "copilot"): ProviderStatusView {
   if (statusProbeFailed(ctx)) return probeFailedView(ctx, cliTool(cli).label);
   if (ctx.isInitialCheckInFlight) return CHECKING;
@@ -100,15 +100,14 @@ function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" 
   if (connection?.runtimeDetected || connection?.authAvailable) {
     return { state: "sign-in", label: "Sign in required", message };
   }
-  return { state: "not-installed", label: "Not installed", message, errorLine: connection?.blocker ?? null };
+  return { state: "not-installed", label: "Not downloaded", message, errorLine: connection?.blocker ?? null };
 }
 
-/** Where the OpenCode binary came from, in words (the host reports a token). */
+/** Where ADE's OpenCode binary came from, in words (the host reports a token). */
 const OPENCODE_BINARY_SOURCE_LABELS: Record<string, string> = {
-  "user-installed": "Your install",
-  "tools-cache": "ADE-managed",
+  "tools-cache": "ADE's pinned copy",
   bundled: "Bundled with ADE",
-  missing: "Not installed",
+  missing: "Not downloaded",
 };
 
 export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
@@ -131,7 +130,10 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       if (availability?.binary.present) {
         return { state: "sign-in", label: "Sign in required", message };
       }
-      return { state: "not-installed", label: "Not installed", message, errorLine: message };
+      // Not on this machine yet: the status payload says why (downloading,
+      // failed, not available here) in the pinned tool's own words.
+      const blocker = ctx.status?.providerConnections?.claude?.blocker ?? message;
+      return { state: "not-installed", label: "Not downloaded", message: blocker, errorLine: blocker };
     },
     models: (ctx) => descriptorModels(ctx.status?.models?.claude ?? []),
     // What the runtime reported at its last start, so it fills in after the
@@ -230,7 +232,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "copilot",
     label: "GitHub Copilot",
-    tagline: "Uses your GitHub Copilot sign-in through the Copilot CLI and SDK.",
+    tagline: "Uses your GitHub Copilot sign-in through the Copilot SDK.",
     logo: (size) => <ProviderLogo family="github-copilot" size={size} />,
     permissions: { family: "github-copilot", isCliWrapped: true, key: "copilot" },
     status: (ctx) => cliStatus(ctx, "copilot"),
@@ -266,7 +268,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       if (connection?.runtimeDetected) {
         return { state: "sign-in", label: "Sign in required", message };
       }
-      return { state: "not-installed", label: "Not installed", message, errorLine: connection?.blocker ?? null };
+      return { state: "not-installed", label: "Not downloaded", message, errorLine: connection?.blocker ?? null };
     },
     models: (ctx) => {
       const live = descriptorModels(ctx.status?.models?.muse ?? []);
@@ -296,7 +298,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "pi",
     label: "Pi",
-    tagline: "Uses Pi’s installed SDK package and redacted auth status from its native profile.",
+    tagline: "Runs ADE’s pinned Pi SDK with your Pi profile’s sign-in (shown redacted).",
     logo: (size) => <PiLogo size={size} />,
     permissions: { family: "pi", isCliWrapped: false, key: "pi" },
     status: (ctx) => {
@@ -320,7 +322,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         return { state: "connected", label: "Connected", message, errorLine };
       }
       if (!installation?.installed && !connection?.runtimeDetected) {
-        return { state: "not-installed", label: "Not installed", message, errorLine };
+        return { state: "not-installed", label: "Not downloaded", message, errorLine };
       }
       if (installation?.installed && !installation.sdkAvailable) {
         return { state: "attention", label: "Needs attention", message, errorLine: errorLine ?? message };
@@ -360,15 +362,15 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       if (ctx.status?.opencodeBinaryInstalled === false) {
         return {
           state: "not-installed",
-          label: "Not installed",
-          message: "OpenCode powers every subscription, API key, and local model. Install it, then re-check.",
+          label: "Not downloaded",
+          message: "OpenCode powers every subscription, API key, and local model. ADE downloads it for this machine the first time it is used.",
         };
       }
       if (ctx.status?.opencodeInventoryError) {
         return {
           state: "attention",
           label: "Needs attention",
-          message: "OpenCode is installed, but its provider catalog could not be read.",
+          message: "OpenCode is ready, but its provider catalog could not be read.",
           errorLine: ctx.status.opencodeInventoryError,
         };
       }
@@ -377,8 +379,8 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         state: "connected",
         label: "Connected",
         message: connected === 0
-          ? "OpenCode is installed. No model providers are connected yet."
-          : `OpenCode is installed with ${connected} connected provider${connected === 1 ? "" : "s"}.`,
+          ? "OpenCode is ready. No model providers are connected yet."
+          : `OpenCode is ready with ${connected} connected provider${connected === 1 ? "" : "s"}.`,
       };
     },
     models: (ctx) => (ctx.status?.availableModelIds ?? []).map((id) => ({ id, label: String(id) })),

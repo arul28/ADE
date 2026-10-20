@@ -355,6 +355,7 @@ const PICKER_FAMILY_BY_CATALOG_GROUP: Record<ProviderGroupKey, ProviderFamily> =
   grok: "xai",
   copilot: "github-copilot",
   devin: "devin",
+  antigravity: "antigravity",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };

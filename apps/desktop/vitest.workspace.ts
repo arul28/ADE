@@ -1,5 +1,6 @@
 import path from "node:path";
 import { defineWorkspace } from "vitest/config";
+import { windowsScaledTimeout } from "./vitest.timeouts";
 
 const emojiDataStub = path.resolve(
   __dirname,
@@ -18,8 +19,8 @@ const sceneThreeStub = path.resolve(
 );
 
 const shared = {
-  testTimeout: 20_000,
-  hookTimeout: 20_000,
+  testTimeout: windowsScaledTimeout(20_000),
+  hookTimeout: windowsScaledTimeout(20_000),
   setupFiles: ["src/test/setup.ts"],
   pool: "forks" as const,
   poolOptions: {
@@ -47,8 +48,8 @@ export default defineWorkspace([
       // remoteRuntime.offlineRpc.integration.test.ts, which predates this
       // project and no longer passes — fix or delete it before broadening.
       include: ["src/main/services/__tests__/*.integration.test.{ts,tsx}"],
-      testTimeout: 60_000,
-      hookTimeout: 60_000,
+      testTimeout: windowsScaledTimeout(60_000),
+      hookTimeout: windowsScaledTimeout(60_000),
     },
   },
   {

@@ -32,6 +32,10 @@ import {
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
+import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
+import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
+import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -49,9 +53,11 @@ import {
   isCtoOnlyAdeAction,
   isSecretBearingAdeAction,
   isUserOnlyAdeAction,
+  laneEnvironmentSetupDeps,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import { readRuntimeFileWatchSenderId, toRuntimeFileWatchArgs } from "../../desktop/src/main/services/adeActions/actionArgs";
 import { createFileWatchLedger } from "../../desktop/src/main/services/files/fileWatchLedger";
 import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
@@ -106,6 +112,7 @@ import {
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import type { LaneEnvInitProgress } from "../../desktop/src/shared/types/config";
 import { isTrackedAgentCliToolType } from "../../desktop/src/shared/types/sessions";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
@@ -322,30 +329,11 @@ const DEFAULT_PTY_ROWS = 36;
 
 const RESOURCE_MIME_JSON = "application/json";
 
-function resolveExecutableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-  const lookup = process.platform === "win32"
-    ? { command: "where.exe", args: [trimmed] }
-    // `-l` lets a user's shell profile replace PATH (notably on macOS, where
-    // zsh can restore Homebrew's PATH ahead of a lane-provided executable).
-    // Resolution must honor the environment we pass to the PTY, so use a
-    // non-login shell and let the caller supply the already-resolved PATH.
-    : { command: env.SHELL?.trim() || "/bin/sh", args: ["-c", `command -v ${shellEscapeArg(trimmed)}`] };
-  const result = spawnSync(lookup.command, lookup.args, {
-    encoding: "utf8",
-    env,
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-  });
-  if (result.status !== 0 || typeof result.stdout !== "string") return null;
-  const first = result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!first) return null;
-  return path.isAbsolute(first) ? first : null;
-}
+/** `create_lane` / `import_lane` inputs that choose how the new lane is set up. */
+const NEW_LANE_SETUP_TOOL_PROPERTIES = {
+  templateId: { type: "string", minLength: 1, description: "Lane template to set the lane up with. Default: the project's default template on this machine." },
+  skipSetup: { type: "boolean", description: "Leave the lane a plain git worktree: no template, no environment setup." },
+} as const;
 
 const TOOL_SPECS: ToolSpec[] = [
   {
@@ -402,7 +390,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_lane",
-    description: "Create a new lane/worktree for task execution.",
+    description: "Create a new lane/worktree for task execution, then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -413,7 +401,8 @@ const TOOL_SPECS: ToolSpec[] = [
         parentLaneId: { type: "string" },
         baseBranch: { type: "string" },
         branchName: { type: "string" },
-        linearIssue: LINEAR_ISSUE_TOOL_SCHEMA
+        linearIssue: LINEAR_ISSUE_TOOL_SCHEMA,
+        ...NEW_LANE_SETUP_TOOL_PROPERTIES
       }
     }
   },
@@ -910,7 +899,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "import_lane",
-    description: "Create a lane for an existing git branch by checking it out in a new ADE-managed worktree. Fails when the branch is already checked out in another worktree, because that worktree is already a lane.",
+    description: "Create a lane for an existing git branch by checking it out in a new ADE-managed worktree, then set it up like create_lane. Fails when the branch is already checked out in another worktree, because that worktree is already a lane.",
     inputSchema: {
       type: "object",
       required: ["branchRef"],
@@ -919,7 +908,8 @@ const TOOL_SPECS: ToolSpec[] = [
         branchRef: { type: "string", minLength: 1 },
         name: { type: "string" },
         description: { type: "string" },
-        baseBranch: { type: "string" }
+        baseBranch: { type: "string" },
+        ...NEW_LANE_SETUP_TOOL_PROPERTIES
       }
     }
   },
@@ -1033,27 +1023,16 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "commit_changes",
-    description: "Stage and commit lane changes. If message is omitted, ADE generates one with the configured Commit Messages model.",
+    description: "Stage and commit lane changes with the given commit message.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["message"],
       properties: {
         laneId: { type: "string", minLength: 1 },
         message: { type: "string", minLength: 1 },
         amend: { type: "boolean", default: false },
         stageAll: { type: "boolean", default: true }
-      }
-    }
-  },
-  {
-    name: "generate_commit_message",
-    description: "Generate a commit message for a lane using ADE's Commit Messages model settings.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        laneId: { type: "string", minLength: 1 },
-        amend: { type: "boolean", default: false }
       }
     }
   },
@@ -1564,6 +1543,49 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
  * from this brain's services with the same projection the chat uses, so a
  * data-driven scene previews with real content instead of its empty state.
  */
+/**
+ * Set up a lane an agent just created, the way the desktop's create dialog
+ * does: the chosen template, else the project's default template, else the
+ * project's lane environment config. New lanes get no packages from ADE any
+ * other way, so skipping this left agent lanes unable to build or test.
+ *
+ * The lane already exists, so a failed setup is reported in the result, not
+ * thrown: the caller still gets the lane and can retry the setup.
+ */
+/** Refuse an unknown `templateId` before a lane exists, so a typo never leaves a lane behind. */
+function assertNewLaneTemplateExists(runtime: AdeRuntime, toolArgs: Record<string, unknown>): void {
+  if (toolArgs.skipSetup === true) return;
+  const templateId = asOptionalTrimmedString(toolArgs.templateId);
+  if (!templateId) return;
+  if (!runtime.laneTemplateService?.getTemplate(templateId)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Lane template '${templateId}' was not found on this machine. Run "ade lanes templates list".`,
+    );
+  }
+}
+
+async function runNewLaneSetup(
+  runtime: AdeRuntime,
+  laneId: string,
+  toolArgs: Record<string, unknown>,
+): Promise<{ templateId: string | null; progress: LaneEnvInitProgress | null; error?: string } | null> {
+  if (toolArgs.skipSetup === true) return null;
+  const templateId = asOptionalTrimmedString(toolArgs.templateId) ?? runtime.laneTemplateService?.getDefaultTemplateId() ?? null;
+  try {
+    if (!runtime.laneEnvironmentService) throw new Error("Lane environment service not available.");
+    const progress = await runLaneEnvironmentSetup(
+      laneEnvironmentSetupDeps(runtime, runtime.laneEnvironmentService),
+      { laneId, ...(templateId ? { templateId } : {}) },
+    );
+    return { templateId, progress };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    runtime.logger.warn("ade_rpc.new_lane_setup_failed", { laneId, templateId, error: message });
+    return { templateId, progress: null, error: message };
+  }
+}
+
 async function scenePreviewData(runtime: AdeRuntime, source: string): Promise<SceneDataPayload | null> {
   const parsed = parseSceneFence(sceneSourceFromInput(source));
   if (isSceneParseFailure(parsed) || !parsed.data.length) return null;
@@ -1620,7 +1642,6 @@ const READ_ONLY_TOOLS = new Set([
   "git_list_branches",
   "git_get_user_identity",
   "prs_list_open",
-  "generate_commit_message",
   "list_stashes",
   "simulate_integration",
   "get_pr_health",
@@ -6688,6 +6709,7 @@ async function runTool(args: {
 
 
     const nameArg = assertNonEmptyString(toolArgs.name, "name");
+    assertNewLaneTemplateExists(runtime, toolArgs);
     const description = asOptionalTrimmedString(toolArgs.description);
     const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
     let baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
@@ -6727,22 +6749,27 @@ async function runTool(args: {
       ...(linearIssue ? { linearIssue } : {})
     });
 
+    const setup = await runNewLaneSetup(runtime, lane.id, toolArgs);
     return {
       lane: mapLaneSummary(lane as unknown as Record<string, unknown>),
       ...(baseWarning ? { warning: baseWarning } : {}),
+      ...(setup ? { setup } : {}),
     };
   }
 
   if (name === "import_lane") {
     const branchRef = assertNonEmptyString(toolArgs.branchRef, "branchRef");
+    assertNewLaneTemplateExists(runtime, toolArgs);
     const imported = await runtime.laneService.importBranch({
       branchRef,
       ...(asOptionalTrimmedString(toolArgs.name) ? { name: asOptionalTrimmedString(toolArgs.name)! } : {}),
       ...(asOptionalTrimmedString(toolArgs.description) ? { description: asOptionalTrimmedString(toolArgs.description)! } : {}),
       ...(asOptionalTrimmedString(toolArgs.baseBranch) ? { baseBranch: asOptionalTrimmedString(toolArgs.baseBranch)! } : {}),
     });
+    const setup = await runNewLaneSetup(runtime, imported.id, toolArgs);
     return {
       lane: mapLaneSummary(imported as unknown as Record<string, unknown>),
+      ...(setup ? { setup } : {}),
     };
   }
 
@@ -7742,18 +7769,13 @@ async function runTool(args: {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "commit_changes");
     const amend = asBoolean(toolArgs.amend, false);
     const stageAll = asBoolean(toolArgs.stageAll, true);
+    const message = asOptionalTrimmedString(toolArgs.message);
+    if (!message) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "commit_changes requires a commit message.");
+    }
 
     if (stageAll) {
       await runtime.gitService.stageAll({ laneId, paths: [] });
-    }
-
-    const explicitMessage = asOptionalTrimmedString(toolArgs.message);
-    const generated = explicitMessage
-      ? null
-      : await runtime.gitService.generateCommitMessage({ laneId, amend });
-    const message = explicitMessage ?? generated?.message ?? "";
-    if (!message.trim().length) {
-      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "Commit message is empty after generation.");
     }
 
     const action = await runtime.gitService.commit({ laneId, message, amend });
@@ -7763,19 +7785,6 @@ async function runTool(args: {
       action,
       commit: latest[0] ?? null,
       message,
-      messageSource: explicitMessage ? "provided" : "generated",
-      ...(generated?.model ? { generatedByModel: generated.model } : {})
-    };
-  }
-
-  if (name === "generate_commit_message") {
-    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "generate_commit_message");
-    const amend = asBoolean(toolArgs.amend, false);
-    const result = await runtime.gitService.generateCommitMessage({ laneId, amend });
-    return {
-      laneId,
-      amend,
-      ...result,
     };
   }
 
@@ -8143,7 +8152,8 @@ async function runTool(args: {
     }
     const finalPrompt = promptSegments.join("\n").trim();
 
-    const commandArgs: string[] = [];
+    // ADE's pinned Codex never checks for its own update; the preview stays short.
+    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS] : [];
     const commandPreviewParts: string[] = [provider];
     if (model) {
       commandArgs.push("--model", model);
@@ -8217,7 +8227,11 @@ async function runTool(args: {
     const startupCommand = startupEnvPrefixParts.length > 0
       ? `${startupEnvPrefixParts.join(" ")} ${commandPreviewParts.join(" ")}`
       : commandPreviewParts.join(" ");
-    const providerExecutable = resolveExecutableOnPath(provider);
+    // ADE's pinned copy (downloaded first if this machine never used it),
+    // never a `claude`/`codex` from the PATH.
+    const providerExecutable = (await requirePinnedProviderExecutable(provider, () =>
+      provider === "claude" ? resolveClaudeCodeExecutable() : resolveCodexExecutable())).path;
+    Object.assign(workerEnv, providerSelfUpdateEnv(provider));
 
     const created = await runtime.ptyService.create({
       laneId,
@@ -8226,7 +8240,8 @@ async function runTool(args: {
       title,
       tracked: true,
       toolType: `${provider}-orchestrated`,
-      ...(providerExecutable ? { command: providerExecutable, args: commandArgs } : {}),
+      command: providerExecutable,
+      args: commandArgs,
       env: workerEnv,
       startupCommand
     });

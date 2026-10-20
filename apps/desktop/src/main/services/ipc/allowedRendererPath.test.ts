@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE,
   resolveWithinAllowedDirs,
@@ -23,8 +23,27 @@ fs.writeFileSync(outsideFile, "secret");
 afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const allowedDirs = [allowedDir, secondAllowedDir];
+
+// Fs calls made refusing `candidate`, in order, with its leaf name masked.
+function probesOf(candidate: string): string[] {
+  const spies = {
+    lstatSync: vi.spyOn(fs, "lstatSync"), statSync: vi.spyOn(fs, "statSync"),
+    readlinkSync: vi.spyOn(fs, "readlinkSync"), realpathSync: vi.spyOn(fs.realpathSync, "native"),
+  };
+  expect(() => resolveWithinAllowedDirs(allowedDirs, candidate), candidate)
+    .toThrow(new Error(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE));
+  return Object.entries(spies)
+    .flatMap(([name, spy]) => spy.mock.calls.map((args, i) => ({
+      order: spy.mock.invocationCallOrder[i],
+      text: `${name}(${String(args[0]).split(path.basename(candidate)).join("<leaf>")})`,
+    })))
+    .sort((a, b) => a.order - b.order).map((call) => call.text);
+}
 
 describe("resolveWithinAllowedDirs", () => {
   it("accepts a file inside an allowed directory, in canonical form", () => {
@@ -168,5 +187,26 @@ describe("resolveWithinAllowedDirs", () => {
   it("keeps the allowlist verdict when another root is missing from disk", () => {
     expect(() => resolveWithinAllowedDirs([missingAllowedDir, allowedDir], outsideFile))
       .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+  });
+
+  // An outside name must refuse with the same text whether it exists, is
+  // missing, or is reached through a link out of the allowlist. Otherwise the
+  // text shows which of them exists.
+  it("refuses a present, a missing and a linked outside name with the same message and calls", (ctx) => {
+    const escapeDir = path.join(allowedDir, "table-escape-dir");
+    try {
+      fs.symlinkSync(outsideDir, escapeDir, "dir");
+    } catch {
+      ctx.skip();
+      return;
+    }
+    const candidates = [
+      outsideFile,
+      path.join(outsideDir, "not-there.png"),
+      path.join(escapeDir, "secret.txt"),
+      path.join(escapeDir, "not-there.png"),
+    ];
+    const probes = candidates.map((candidate) => probesOf(candidate));
+    expect([probes[1], probes[3]]).toEqual([probes[0], probes[2]]);
   });
 });

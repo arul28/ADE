@@ -4,6 +4,7 @@
  * @see https://lobehub.com/icons/skill.md
  */
 import anthropic from "@lobehub/icons-static-svg/icons/anthropic.svg";
+import antigravityColor from "@lobehub/icons-static-svg/icons/antigravity-color.svg";
 import azureColor from "@lobehub/icons-static-svg/icons/azure-color.svg";
 import baseten from "@lobehub/icons-static-svg/icons/baseten.svg";
 import bedrockColor from "@lobehub/icons-static-svg/icons/bedrock-color.svg";
@@ -35,6 +36,9 @@ import zai from "@lobehub/icons-static-svg/icons/zai.svg";
 
 /** ADE `ProviderFamily` (lowercase) → bundled SVG URL */
 export const LOBE_PROVIDER_ICON_SRC: Record<string, string> = {
+  // Google Antigravity (the ACP agent); the same mark the editor menu uses.
+  antigravity: antigravityColor,
+  "google-antigravity": antigravityColor,
   anthropic,
   openai,
   google: googleColor,

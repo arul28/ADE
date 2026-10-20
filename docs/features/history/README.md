@@ -406,7 +406,7 @@ Defined in `apps/desktop/src/shared/ipc.ts`, handled in
 All lane-scoped `ade.git.*` reads and mutations validate the lane
 worktree root before running provider Git commands. A missing or stale
 worktree path throws the same "restore or recreate the lane worktree"
-error for history reads, commit-message generation, branch/stash/sync
+error for history reads, branch/stash/sync
 metadata, and mutating Git actions.
 
 The conflict-resume channels (`gitRebaseContinue`, `gitRebaseAbort`,

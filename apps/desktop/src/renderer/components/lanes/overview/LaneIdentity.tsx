@@ -22,6 +22,7 @@ import { LinearIssueBadge } from "../LinearIssueBadge";
 import { COLORS, toneText } from "../laneDesignTokens";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
+import { cssZoomOf } from "../../../lib/webZoom";
 
 function Sep() {
   return <span aria-hidden className="text-muted-fg/35">·</span>;
@@ -36,12 +37,6 @@ function Sep() {
 const LANE_MENU_WIDTH = 340;
 
 /** The hosted web client zooms <body>; Electron zooms the whole frame (factor 1). */
-function webZoomFactor(): number {
-  const raw = document.documentElement?.style?.getPropertyValue("--ade-web-zoom-factor");
-  const factor = raw ? Number.parseFloat(raw) : 1;
-  return Number.isFinite(factor) && factor > 0 ? factor : 1;
-}
-
 const TONE_COLOR: Record<LaneStatusTone, string> = {
   muted: COLORS.textMuted,
   accent: "var(--ade-lane-violet, #B9A6F5)",
@@ -169,12 +164,12 @@ export function LaneIdentity({
                 onClick={() => {
                   const rect = menuRef.current?.getBoundingClientRect();
                   if (!rect) return;
-                  // The menu is placed in CSS pixels inside <body>, so undo
-                  // any hosted-web zoom on the button's screen position.
-                  const zoom = webZoomFactor();
-                  const right = rect.right / zoom;
-                  const left = Math.max(8, right - LANE_MENU_WIDTH);
-                  onOpenMenu(new DOMRect(left, rect.top / zoom, right - left, rect.height / zoom));
+                  // Screen px throughout: the consumer converts a rect into its frame.
+                  // The layout width and the 8px gutter are scaled to screen px here.
+                  const zoom = cssZoomOf();
+                  const right = rect.right;
+                  const left = Math.max(8 * zoom, right - LANE_MENU_WIDTH * zoom);
+                  onOpenMenu(new DOMRect(left, rect.top, right - left, rect.height));
                 }}
                 testId="lane-more"
               >

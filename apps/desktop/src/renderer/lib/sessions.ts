@@ -105,7 +105,8 @@ export type KnownChatProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolType> = {
   claude: "claude-chat",
@@ -120,6 +121,7 @@ export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolT
   grok: "grok-chat",
   copilot: "copilot-chat",
   devin: "devin-chat",
+  antigravity: "antigravity-chat",
 };
 
 const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
@@ -135,6 +137,7 @@ const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
   "grok-chat": "grok",
   "copilot-chat": "copilot",
   "devin-chat": "devin",
+  "antigravity-chat": "antigravity",
 };
 
 /**
@@ -214,6 +217,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
   if (toolType === "devin-chat") return "Devin chat";
+  if (toolType === "antigravity-chat") return "Antigravity chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";
@@ -299,6 +303,7 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["grok", "Grok"],
   ["copilot", "Copilot"],
   ["devin", "Devin"],
+  ["antigravity", "Antigravity"],
 ];
 
 /** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */
@@ -336,6 +341,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
   if (toolType === "devin-chat") return "Devin chat";
+  if (toolType === "antigravity-chat") return "Antigravity chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";

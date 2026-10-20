@@ -65,6 +65,7 @@ docs/
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar
     ├── pull-requests/                     # stacking, queue, conflict simulation
+    ├── ade-mcp/                           # ADE MCP: AI apps run `ade` on a computer through ADE Relay
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair

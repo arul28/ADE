@@ -38,6 +38,20 @@ import { formatProviderDiagnosticsReport } from "./providerDiagnosticsReport";
 import type { AcpSettingsProviderId, ProviderDescriptor, ProvidersViewContext } from "./types";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
+import { PinnedToolStatusRow } from "./bodies/PinnedToolStatusRow";
+
+/**
+ * Whether the status payload already says this provider's runtime is on the
+ * machine. It also counts a source checkout's `node_modules` copy and a
+ * developer override, which the tools cache does not know about.
+ */
+function pinnedRuntimeReady(id: string, ctx: ProvidersViewContext): boolean {
+  if (id === "claude") return ctx.status?.availableProviders?.claude?.binary.present === true;
+  if (id === "opencode") return ctx.status?.opencodeBinaryInstalled === true;
+  const connections = ctx.status?.providerConnections as Record<string, { runtimeDetected?: boolean } | undefined> | undefined;
+  return connections?.[id]?.runtimeDetected === true;
+}
 
 /**
  * The model list body: a search field and an internally-scrolling list. Used
@@ -142,6 +156,17 @@ export function ProviderDetailPage({
   // Claude and Codex are the only providers that can hold more than one local
   // login, so they are the only ones with an Accounts panel.
   const multiAccountProvider = isProviderInstanceProvider(descriptor.id) ? descriptor.id : null;
+  // ADE's pinned copy of this provider on the page's machine. Muse keeps its
+  // own download row (MuseAuthActions), so it is not read twice.
+  const refreshStatus = ctx.actions.refreshStatus;
+  const pinnedTool = usePinnedToolStatus(descriptor.id === "muse" ? null : descriptor.id, pin, {
+    onReady: () => void refreshStatus({ force: true, silent: true }),
+  });
+  const runtimeReady = pinnedRuntimeReady(descriptor.id, ctx);
+  // The pinned line says why a not-downloaded provider is not ready, and says
+  // it better; the status sentence would only repeat it.
+  const showStatusMessage = !connected && Boolean(status.message)
+    && !(status.state === "not-installed" && pinnedTool.status);
   const diagnosticReport = formatProviderDiagnosticsReport({
     label: descriptor.label,
     status,
@@ -200,11 +225,13 @@ export function ProviderDetailPage({
           </div>
 
           {/* One short line, only when there is something to say beyond "Connected". */}
-          {!connected && status.message ? (
+          {showStatusMessage ? (
             <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 }}>
               {status.message}
             </div>
           ) : null}
+
+          <PinnedToolStatusRow handle={pinnedTool} runtimeReady={runtimeReady} />
 
           {facts.map((fact) => (
             <div key={`${fact.label}:${fact.value}`} style={{ display: "flex", alignItems: "flex-start", gap: 6, minWidth: 0 }}>

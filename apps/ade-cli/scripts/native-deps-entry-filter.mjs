@@ -27,7 +27,7 @@ function targetParts(target) {
 // Exported because the packaged DESKTOP app has to exclude exactly the same
 // set: apps/desktop/scripts/after-pack-runtime-fixes.cjs prunes and then hard-
 // asserts on it, and both artifact validators check the packaged tree against
-// it. Two hand-maintained copies of a 26-name list is precisely the drift that
+// it. Two hand-maintained copies of a 34-name list is precisely the drift that
 // ships 600+ MB of dead binaries again, so there is only one list.
 export const RUNTIME_FETCHED_TOOL_PACKAGES = new Set([
   "@openai/codex-darwin-arm64",
@@ -56,6 +56,14 @@ export const RUNTIME_FETCHED_TOOL_PACKAGES = new Set([
   "@opencode/cli-windows-arm64",
   "@opencode/cli-windows-x64",
   "@opencode/cli-windows-x64-baseline",
+  "@github/copilot-sdk-darwin-arm64",
+  "@github/copilot-sdk-darwin-x64",
+  "@github/copilot-sdk-linux-arm64",
+  "@github/copilot-sdk-linux-x64",
+  "@github/copilot-sdk-linuxmusl-arm64",
+  "@github/copilot-sdk-linuxmusl-x64",
+  "@github/copilot-sdk-win32-arm64",
+  "@github/copilot-sdk-win32-x64",
 ]);
 
 export function nodePtyPrebuildTarget(target) {

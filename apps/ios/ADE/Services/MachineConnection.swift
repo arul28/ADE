@@ -756,7 +756,9 @@ final class MachineConnection {
     return ChatThreadKey(
       machineKey: machineKey,
       sessionId: sessionId,
-      scope: .crossProject(projectId: scope.projectId, rootPath: scope.rootPath)
+      scope: scope.projectId.isEmpty
+        ? .personal
+        : .crossProject(projectId: scope.projectId, rootPath: scope.rootPath)
     )
   }
 
@@ -797,9 +799,20 @@ final class MachineConnection {
     stalledChatSessionIds.remove(sessionId)
     guard isLive else { return }
     // The host matches the scope of the subscription it drops.
-    var payload: [String: Any] = ["sessionId": sessionId, "projectId": scope.projectId]
-    if !scope.rootPath.isEmpty { payload["projectRootPath"] = scope.rootPath }
+    var payload: [String: Any] = ["sessionId": sessionId]
+    applyChatScope(scope, to: &payload)
     send(type: "chat_unsubscribe", requestId: nil, payload: payload)
+  }
+
+  /// A chat's scope on the wire. An empty project id is a personal chat: it is
+  /// tagged as one so the host never binds it to a project's session.
+  private func applyChatScope(_ scope: (projectId: String, rootPath: String), to payload: inout [String: Any]) {
+    if scope.projectId.isEmpty {
+      payload["chatScope"] = "personal"
+      return
+    }
+    payload["projectId"] = scope.projectId
+    if !scope.rootPath.isEmpty { payload["projectRootPath"] = scope.rootPath }
   }
 
   private func restoreChatSubscriptions() {
@@ -815,9 +828,8 @@ final class MachineConnection {
     var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": syncChatSubscriptionMaxBytes,
-      "projectId": scope.projectId,
     ]
-    if !scope.rootPath.isEmpty { payload["projectRootPath"] = scope.rootPath }
+    applyChatScope(scope, to: &payload)
     let resumePoint = chatThreadKey(sessionId: sessionId).flatMap { registry.resumePoint(for: $0) }
     for (field, value) in chatThreadSubscribeResumeFields(
       hostSupportsChatLogV2: supportsChatLogV2,
@@ -1014,9 +1026,8 @@ final class MachineConnection {
     var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": syncChatHistoryTailPageMaxBytes,
-      "projectId": scope.projectId,
     ]
-    if !scope.rootPath.isEmpty { payload["projectRootPath"] = scope.rootPath }
+    applyChatScope(scope, to: &payload)
     if supportsChatLogV2 { payload["chatLogV2"] = true }
     switch olderRequest {
     case .beforeSequence(let sequence): payload["beforeSequence"] = sequence
@@ -1046,11 +1057,12 @@ final class MachineConnection {
     case .beforeSequence(let sequence): args["beforeSequence"] = sequence
     case .beforeOffset(let offset): args["beforeOffset"] = offset
     }
+    let personal = scope.projectId.isEmpty
     let commandRaw = try await sendCommand(
-      action: "chat.getChatEventHistoryPage",
+      action: personal ? "personalChats.getEventHistoryPage" : "chat.getChatEventHistoryPage",
       args: args,
-      projectId: scope.projectId,
-      projectRootPath: scope.rootPath.isEmpty ? nil : scope.rootPath,
+      projectId: personal ? nil : scope.projectId,
+      projectRootPath: personal || scope.rootPath.isEmpty ? nil : scope.rootPath,
       timeoutNanoseconds: 8_000_000_000
     )
     return try await decodeOlderPage(commandRaw, sessionId: sessionId)

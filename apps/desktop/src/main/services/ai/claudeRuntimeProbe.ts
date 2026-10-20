@@ -1,7 +1,9 @@
 import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-// Deep import rather than the `services/tools` barrel: this is the only symbol
-// the probe needs and the barrel pulls the whole fetch/install stack with it.
-import { pinnedToolFetchPending } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+// Deep import rather than the `services/tools` barrel: the barrel pulls the
+// whole fetch/install stack with it.
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { pinnedToolNotReadyError } from "./pinnedProviderTools";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
@@ -14,21 +16,27 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { noteClaudeCodeInit } from "./claudeCodeInit";
+import { handleClaudeVersionRejection } from "./claudeFallForward";
+import {
+  detectClaudeVersionRejectionInError,
+  detectClaudeVersionRejectionInMessage,
+  type ClaudeVersionRejection,
+} from "./providerVersionRejection";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
 export const CLAUDE_RUNTIME_AUTH_ERROR =
   "Claude Code is detected, but ADE chat could not authenticate it. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
 const DEFAULT_RUNTIME_FAILURE =
-  "Claude Code is installed, but ADE could not confirm that the Claude chat runtime can start from this app session.";
+  "ADE could not confirm that its Claude Code runtime can start from this app session.";
 /**
  * First run on a cold tools cache: nothing is wrong, the pinned runtime is
  * simply still coming down. Surfacing the SDK's raw "not found" there reads as
  * a broken install, which it is not.
  */
 export const CLAUDE_RUNTIME_FETCH_PENDING_ERROR =
-  "ADE is still downloading the Claude Code runtime (first-run setup). "
-  + "It retries automatically — see Settings → AI Runtimes.";
+  "ADE is still downloading the Claude Code runtime for this machine. "
+  + "Start the chat again when it finishes.";
 /** The pinned tool that backs the Claude runtime, as named in the tools manifest. */
 const CLAUDE_TOOL_NAME = "claude-code";
 
@@ -139,11 +147,26 @@ export async function probeClaudeRuntimeHealth(args: {
     return;
   }
 
+  // No copy of ADE's pinned Claude Code here yet: start (or join) its
+  // download and spawn nothing. The connection status already reports the
+  // download state, so this is neither cached nor published as runtime health,
+  // which would outlive the download.
+  const claudeExecutable = resolveClaudeCodeExecutable();
+  if (claudeExecutable.source === "fallback-command") {
+    const downloading = pinnedToolDownload(CLAUDE_TOOL_NAME) != null;
+    args.logger?.info?.("ai.claude_runtime_probe.skipped_not_downloaded", {
+      projectRoot,
+      message: downloading ? CLAUDE_RUNTIME_FETCH_PENDING_ERROR : pinnedToolNotReadyError(CLAUDE_TOOL_NAME, "Claude Code").message,
+    });
+    return;
+  }
+
+  // Anthropic refusing this build as too old, if the probe saw it.
+  const seen: { versionRejection: ClaudeVersionRejection | null } = { versionRejection: null };
   const probe = (async (): Promise<ClaudeRuntimeProbeResult> => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
     let stream: ReturnType<typeof claudeQuery> | null = null;
-    const claudeExecutable = resolveClaudeCodeExecutable();
 
     try {
       stream = claudeQuery({
@@ -154,6 +177,7 @@ export async function probeClaudeRuntimeHealth(args: {
           tools: [],
           abortController,
           pathToClaudeCodeExecutable: claudeExecutable.path,
+          env: { ...process.env, ...providerSelfUpdateEnv("claude") },
           // This probe only answers "can the runtime start and authenticate". Left
           // unisolated it boots the user's entire MCP fleet and writes a session file on
           // every cache miss, which is slow and makes a broken MCP server look like a
@@ -168,6 +192,7 @@ export async function probeClaudeRuntimeHealth(args: {
 
       for await (const message of stream) {
         if (message.type === "system" && message.subtype === "init") noteClaudeCodeInit(message);
+        seen.versionRejection ??= detectClaudeVersionRejectionInMessage(message);
         const result = resultFromSdkMessage(message);
         if (result) {
           return cacheResult(projectRoot, result);
@@ -178,19 +203,12 @@ export async function probeClaudeRuntimeHealth(args: {
         message: DEFAULT_RUNTIME_FAILURE,
       });
     } catch (error) {
-      const resolvedToRealExecutable = claudeExecutable.source !== "fallback-command";
-      const missingMessageIsFalseNegative = resolvedToRealExecutable
-        && isExecutablePath(claudeExecutable.path)
+      seen.versionRejection ??= detectClaudeVersionRejectionInError(error);
+      const missingMessageIsFalseNegative = isExecutablePath(claudeExecutable.path)
         && normalizeErrorMessage(error).toLowerCase().includes("native binary not found");
-      // Nothing resolved AND the pinned tool has not landed yet: this is the
-      // cold first-run window, not a broken machine. Say so instead of passing
-      // the SDK's raw "not found" through.
-      const fetchPending = !resolvedToRealExecutable && pinnedToolFetchPending(CLAUDE_TOOL_NAME);
-      const runtimeFailureMessage = fetchPending
-        ? CLAUDE_RUNTIME_FETCH_PENDING_ERROR
-        : missingMessageIsFalseNegative
-          ? `Claude runtime failed to spawn resolved executable ${claudeExecutable.path}: ${normalizeErrorMessage(error)}`
-          : normalizeErrorMessage(error);
+      const runtimeFailureMessage = missingMessageIsFalseNegative
+        ? `Claude runtime failed to spawn resolved executable ${claudeExecutable.path}: ${normalizeErrorMessage(error)}`
+        : normalizeErrorMessage(error);
       const result = isClaudeRuntimeAuthError(error)
         ? { state: "auth-failed", message: CLAUDE_RUNTIME_AUTH_ERROR } satisfies ClaudeRuntimeProbeResult
         : { state: "runtime-failed", message: runtimeFailureMessage } satisfies ClaudeRuntimeProbeResult;
@@ -209,6 +227,14 @@ export async function probeClaudeRuntimeHealth(args: {
   try {
     const result = await probe;
     publishResult(result);
+    if (seen.versionRejection) {
+      // Move to Anthropic's newest build in the background; once it runs, the
+      // cached failure is stale.
+      void handleClaudeVersionRejection({ rejection: seen.versionRejection, rejected: claudeExecutable, logger: args.logger })
+        .then((outcome) => {
+          if (outcome.switched) probeCache.delete(projectRoot);
+        });
+    }
     if (result.state === "ready") {
       args.logger?.info?.("ai.claude_runtime_probe.ready", { projectRoot });
     } else {

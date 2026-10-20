@@ -26,6 +26,7 @@ const ADE_ENV_KEYS = [
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",
   "ADE_OWNER_ID",
+  "ADE_TOOLS_ROOT",
 ] as const;
 const originalAdeEnv = new Map<string, string | undefined>(
   ADE_ENV_KEYS.map((key) => [key, process.env[key]]),
@@ -42,15 +43,18 @@ beforeEach(() => {
   for (const key of ADE_ENV_KEYS) {
     delete process.env[key];
   }
+  process.env.ADE_TOOLS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rpc-tools-"));
 });
 
 afterEach(() => {
+  const toolsRoot = process.env.ADE_TOOLS_ROOT;
   setPlatform(originalPlatform);
   for (const key of ADE_ENV_KEYS) {
     const value = originalAdeEnv.get(key);
     if (value == null) delete process.env[key];
     else process.env[key] = value;
   }
+  if (toolsRoot) fs.rmSync(toolsRoot, { recursive: true, force: true });
 });
 
 function createRuntime() {
@@ -285,7 +289,6 @@ function createRuntime() {
       discardFile: vi.fn(async () => ({ success: true })),
       restoreStagedFile: vi.fn(async () => ({ success: true })),
       commit: vi.fn(async () => ({ success: true })),
-      generateCommitMessage: vi.fn(async () => ({ message: "generated commit message", model: "gpt-5-mini" })),
       listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }]),
       getSyncStatus: vi.fn(async () => ({ ahead: 1, behind: 0, tracking: true })),
       fetch: vi.fn(async () => ({ success: true })),
@@ -355,7 +358,6 @@ function createRuntime() {
     prService: {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
-      draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
       createFromLane: vi.fn(async () => ({
         id: "pr-new",
         laneId: "lane-1",
@@ -2205,11 +2207,11 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "cto-1", role: "cto" });
 
     const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
-    // `appendMemoryFact` takes optional tags; an untagged save passes an
-    // explicit null rather than omitting the argument.
+    // An untagged save passes null tags and the default kind/pin options.
     expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith(
       "Prefer sentence case.",
       null,
+      { kind: null, pin: false },
     );
     expect(saved.structuredContent).toEqual(
       expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),
@@ -2852,7 +2854,11 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CLAUDE_CODE_EXECUTABLE_PATH: claudePath,
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -2909,7 +2915,11 @@ describe("adeRpcServer", () => {
     createFakePathExecutable(binDir, "codex");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CODEX_EXECUTABLE: path.join(binDir, "codex"),
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3501,7 +3511,11 @@ describe("adeRpcServer", () => {
     const codexPath = createFakePathExecutable(binDir, "codex");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CODEX_EXECUTABLE: codexPath,
+    }, async () => {
       await initialize(handler, { role: "cto" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3755,7 +3769,11 @@ describe("adeRpcServer", () => {
     const claudePath = createFakePathExecutable(binDir, "claude");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+    const response = await withEnv({
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      CLAUDE_CODE_EXECUTABLE_PATH: claudePath,
+    }, async () => {
       await initialize(handler, { role: "agent", runId: "run-from-identity" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
@@ -3790,42 +3808,20 @@ describe("adeRpcServer", () => {
     expect(createCall.command).toBe(claudePath);
   });
 
-  it("keeps spawn_agent on shell startup when the provider executable cannot be resolved", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-path-")), SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "agent" });
-      return await callTool(handler, "spawn_agent", {
-        laneId: "lane-1",
-        provider: "claude",
-        prompt: "Implement API wiring",
-      });
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        command: expect.any(String),
-      })
-    );
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startupCommand: expect.stringContaining("claude"),
-      })
-    );
-  });
-
-  it("does not use POSIX env assignment in unresolved Windows spawn_agent startup commands", async () => {
+  it("does not use POSIX env assignment for Windows spawn_agent launches", async () => {
     setPlatform("win32");
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    const response = await withEnv({ PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")) }, async () => {
+    const codexPath = "C:\\ADE\\codex.exe";
+    const response = await withEnv({
+      PATH: fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-empty-win-path-")),
+      CODEX_EXECUTABLE: codexPath,
+    }, async () => {
       await initialize(handler, { role: "agent" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
-        provider: "claude",
+        provider: "codex",
         prompt: "Implement API wiring",
         runId: "run-1",
         attemptId: "attempt-win-fallback",
@@ -3833,7 +3829,6 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).not.toContain("ADE_RUN_ID=run-1");
     expect(response.structuredContent.startupCommand).not.toContain("ADE_ATTEMPT_ID=attempt-win-fallback");
     expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
@@ -3845,6 +3840,9 @@ describe("adeRpcServer", () => {
         }),
         startupCommand: response.structuredContent.startupCommand,
       })
+    );
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ command: codexPath }),
     );
   });
 
@@ -4111,12 +4109,10 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.stageAll).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.gitService.commit).toHaveBeenCalledTimes(1);
-    expect(fixture.runtime.gitService.generateCommitMessage).not.toHaveBeenCalled();
     expect(response.structuredContent.commit.sha).toBe("abc123");
-    expect(response.structuredContent.messageSource).toBe("provided");
   });
 
-  it("generates a commit message when commit_changes message is omitted", async () => {
+  it("rejects commit_changes without a message before staging anything", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -4126,38 +4122,9 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
     });
 
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: false,
-    });
-    expect(fixture.runtime.gitService.commit).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: false,
-      message: "generated commit message",
-    });
-    expect(response.structuredContent.messageSource).toBe("generated");
-    expect(response.structuredContent.generatedByModel).toBe("gpt-5-mini");
-  });
-
-  it("returns generated commit text without creating a commit", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const response = await callTool(handler, "generate_commit_message", {
-      laneId: "lane-1",
-      amend: true,
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      amend: true,
-    });
+    expect(response?.isError).toBe(true);
+    expect(fixture.runtime.gitService.stageAll).not.toHaveBeenCalled();
     expect(fixture.runtime.gitService.commit).not.toHaveBeenCalled();
-    expect(response.structuredContent.message).toBe("generated commit message");
   });
 
   it("imports an existing branch as a lane", async () => {
@@ -4238,7 +4205,6 @@ describe("adeRpcServer", () => {
       baseBranch: "main",
     });
     expect(defaulted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).not.toHaveBeenCalled();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",
@@ -7782,6 +7748,35 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({ name: "new-feature" })
     );
+  });
+
+  it("create_lane refuses an unknown template before any lane exists, and returns a failed setup with the lane", async () => {
+    const fixture = createRuntime();
+    (fixture.runtime as any).laneTemplateService = {
+      getTemplate: vi.fn((templateId: string) => (templateId === "web" ? { id: "web", name: "Web" } : null)),
+      getDefaultTemplateId: vi.fn(() => "web"),
+    };
+    (fixture.runtime as any).laneEnvironmentService = {};
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
+
+    // A typo must not leave a lane behind: the check runs before creation.
+    const refused = await callTool(handler, "create_lane", { name: "typo", templateId: "nope" });
+    expect(refused?.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("nope");
+    expect(fixture.runtime.laneService.create).not.toHaveBeenCalled();
+
+    // The default template is used, and a setup that fails is reported next to
+    // the lane rather than thrown, so the caller still learns the lane's id.
+    const created = await callTool(handler, "create_lane", { name: "new-feature" });
+    expect(created?.isError).toBeUndefined();
+    expect(created.structuredContent.lane.id).toBe("lane-new");
+    expect(created.structuredContent.setup.templateId).toBe("web");
+    expect(typeof created.structuredContent.setup.error).toBe("string");
+
+    const plain = await callTool(handler, "create_lane", { name: "plain", templateId: "nope", skipSetup: true });
+    expect(plain?.isError).toBeUndefined();
+    expect(plain.structuredContent.setup).toBeUndefined();
   });
 
   it("defaults a base-less create_lane to the fetched remote-tracking ref", async () => {

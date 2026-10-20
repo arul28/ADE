@@ -22,6 +22,11 @@ export type ChatPaneScope = {
   agentChat: AgentChatApi;
   /** Model-catalog scope the personal model picker registered its descriptors under. */
   modelCatalogScopeKey: string;
+  /**
+   * The machine the chat runs on, when the scope names one (the Chats page
+   * lists every machine's chats); otherwise the window's machine.
+   */
+  machineName?: string | null;
 };
 
 const AgentChatApiContext = createContext<AgentChatApi | null>(null);

@@ -2707,7 +2707,6 @@ export type SyncRemoteCommandAction =
   | "git.discardFile"
   | "git.restoreStagedFile"
   | "git.commit"
-  | "git.generateCommitMessage"
   | "git.listRecentCommits"
   | "git.listCommitFiles"
   | "git.getFileHistory"
@@ -2824,8 +2823,6 @@ export type SyncRemoteCommandAction =
   | "prs.getDetail"
   | "prs.getDetailBundle"
   | "prs.postReviewComment"
-  | "prs.getAiSummary"
-  | "prs.regenerateAiSummary"
   | "prs.getIntegrationResolutionState"
   | "prs.delete"
   | "prs.cleanupBranch"
@@ -2872,7 +2869,6 @@ export type SyncRemoteCommandAction =
   | "prs.linkToLane"
   | "prs.preflightCreateLaneFromPrBranch"
   | "prs.createLaneFromPrBranch"
-  | "prs.draftDescription"
   | "prs.land"
   | "prs.updateBranch"
   | "prs.close"
@@ -2889,7 +2885,6 @@ export type SyncRemoteCommandAction =
   | "prs.replyToReviewThread"
   | "prs.setReviewThreadResolved"
   | "prs.reactToComment"
-  | "prs.aiReviewSummary"
   | "prs.simulateIntegration"
   | "prs.commitIntegration"
   | "prs.listIntegrationWorkflows"
@@ -2918,6 +2913,9 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  // Proof records for the hosted web client's citations and scene stills. Read-only;
+  // the desktop reads the same list through its own IPC.
+  | "computerUse.listArtifacts"
   // The lane's private macOS screen. `getStatus` / `streamSubscribe` /
   // `streamUnsubscribe` are read-only; `start` / `stop` exist for the hosted
   // web client (the phone is view-only and never calls them). Records and the

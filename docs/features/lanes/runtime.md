@@ -65,11 +65,10 @@ steps in order:
    `resolvePathWithinRoot` (symlink-aware) to prevent path traversal.
 2. **`docker`** — start lane-specific Docker Compose services.
    Compose file path validated against the project root.
-3. **`dependencies`** — run install commands from an allowlist:
-   `npm`, `yarn`, `pnpm`, `pip`, `pip3`, `bundle`, `cargo`, `go`,
-   `composer`, `poetry`, `pipenv`, `bun`. Any command outside this
-   set is rejected. Working directories must resolve inside the
-   worktree.
+3. **`dependencies`** — run install commands, each one directly (no
+   shell), in its `cwd`. Any command runs, like the setup script: both
+   come only from this machine's `.ade/local.yaml`. Working directories
+   must resolve inside the worktree.
 4. **`mount-points`** — configure runtime mount points for agent
    profiles/context. Source and destination validated.
 5. **`copy-paths`** — same validation as env files; used for copying
@@ -295,6 +294,104 @@ set" from "default explicitly cleared" so the Settings UI can surface
 the difference.
 
 IPC: `ade.lanes.templates.list / get / getDefault / setDefault / apply`.
+
+### From the CLI
+
+Use `ade lanes templates list|show|save|default|apply|delete` to manage lane
+templates, and `ade lanes deps` to check lockfiles and installed dependencies.
+The agent tools `create_lane` and `import_lane` set a new lane up themselves,
+the way the desktop dialog does: `templateId`, else the default template, else
+the project's lane environment config, and they wait for it (`skipSetup: true`
+leaves a plain worktree). So `ade lanes create`, `ade lanes child`,
+`create-from-linear`, `batch-create-from-linear`, `ade chat create` with a new
+lane, and the TUI all get it; `ade lanes create` takes `--template <id>` and
+`--no-template`. A failed setup is returned in `setup.error` or the progress,
+not thrown: the lane exists.
+
+The phone's paths that make a lane for a chat (the Hub composer, Work's new
+chat, Linear launch) send `setup: "default"` with the sync `lanes.create`
+command. The host answers with the lane at once and then runs the default
+template (or the lane environment config) in the background, the way the
+desktop's Work tab does; progress reaches every client through the lane env
+events, and a failure is logged as `sync.lane_default_setup_failed`. The phone's
+lane sheet keeps its own explicit template step and does not send the flag. An
+older host ignores the field. Pass `--machine <name>` to run a command on another machine. Templates
+are stored per machine and do not sync.
+
+## Main checkout packages
+
+New lanes get no packages from ADE. Until 2026-10 every new lane had its root
+and `apps/*/node_modules` linked to the main checkout's; that hardcoded step is
+gone, because one shared folder let an install in a lane change the main
+checkout and every other lane, and the links leaked into commits. Lanes created
+before the change keep their links. A project that wants packages in each lane
+uses a default lane template.
+
+`lane.getDependencyStatus` (`laneDependencyStatus.ts`, `ade lanes deps`) reads
+the main checkout of the machine that owns it and never installs anything:
+
+- **Which lockfiles.** `git ls-files --cached --others --exclude-standard` for
+  the known lockfile names, so ignored folders (`node_modules`) and nested
+  repositories are never walked. At most 50; `truncated` says when there are
+  more. Without git, only the root is read.
+- **Installed and out of date.** Tools with an install record are read
+  directly: npm compares `package-lock.json` with the hidden
+  `node_modules/.package-lock.json` (exact, per package); pnpm, yarn and
+  Composer compare the lockfile's time with the install record's
+  (`.modules.yaml`, `.yarn-state.yml` / `install-state.gz`,
+  `vendor/composer/installed.json`), and remember the content last seen
+  installed so a branch switch away and back is not reported; CocoaPods compares
+  `Podfile.lock` with `Pods/Manifest.lock`. bun, Bundler, Poetry, uv and Pipenv
+  leave no record ADE can read (`tracksInstall: false`): the first fingerprint
+  ADE sees counts as installed, a different one later is out of date, and
+  `lane.acknowledgeDependencyStatus` makes the current one count. Cargo, Go and
+  SwiftPM fetch at build time and are never out of date. A lockfile whose
+  install folder does not exist is "not installed", not out of date.
+- **Fingerprints** live in the project's machine-local `.ade/cache/dependency-baselines.json`.
+- **Cost.** One `git ls-files` plus a `stat` per lockfile; a lockfile is hashed
+  (and npm's two lockfiles parsed) only when its size or time changed. Results
+  are cached for 20 s. The ADE repo (11 lockfiles) reads in about 90 ms.
+- **`updateCommand`** is one line `ade lanes deps` prints for a person to copy:
+  POSIX `(cd 'dir' && npm install) && …`, or PowerShell `Push-Location
+  -LiteralPath 'dir'; npm install; Pop-Location; …` on Windows. The desktop
+  does not run it.
+
+The desktop shows two notices from it (`useLaneDependencyBanners.tsx`), for the
+open project tab's machine:
+
+- **Packages in the main checkout are out of date** (docked, info). **Update**
+  opens one tracked shell per out-of-date folder in the primary lane, started in
+  that folder and running only its install command (no shell syntax, so it runs
+  the same in zsh, fish, PowerShell, cmd and Git Bash), shows the first in
+  Work, and checks again every 15 s until the lockfiles read as installed (then
+  a success toast). Tools ADE cannot watch are acknowledged when Update starts.
+  Dismissing it lasts until a lockfile changes again; it can be dismissed while
+  the update runs.
+- **Set up a lane template** (floating prompt, accent) when the project has
+  lockfiles and no default template. **Set up with an agent** opens a new chat
+  draft in the primary lane with a setup prompt (`laneTemplateSetupPrompt.ts`)
+  and snoozes the prompt two weeks; × also snoozes it two weeks; **Don't show
+  again** hides it for that project on that machine. Settings › Lane templates
+  has the same **Set up with an agent** button for the machine the page shows.
+
+The prompt tells the agent what lanes and templates are, lists the lockfiles,
+asks the user whether to make one template for all machines or one per machine
+(`--machine`), suggests (without doing) a faster package manager or setting
+after online research, forbids changing the package manager or lockfiles, and
+lists the checks: a test lane, its own folders, one quick check, the main
+checkout unchanged, real disk with `df`, then delete the test lane.
+
+The hosted web client has no sync command for the status, so it shows neither
+notice.
+
+### Template step limits
+
+Each install command and each setup command or script may run 20 minutes
+(`LANE_ENV_COMMAND_TIMEOUT_MS`). The callers of `lane.initEnv` and
+`lane.applyTemplate` wait 45 minutes (`LANE_ENV_SETUP_TIMEOUT_MS`: local
+runtime table, IPC, and the remote transport a little shorter). Install steps
+used to accept only twelve tools (npm, pnpm, …) and skipped any other command
+without a word; they now run any command, as the setup script already could.
 
 ## Overlay policies
 

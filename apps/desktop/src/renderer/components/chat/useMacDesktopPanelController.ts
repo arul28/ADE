@@ -298,6 +298,12 @@ export function useMacDesktopPanelController({
    * works and clicks do not, so Start stays possible and the card says so.
    */
   const missingPermissions = macDesktopMissingPermissions(status?.permissions);
+  /**
+   * No takeover while a grant is off; the host refuses it too. The permission
+   * card is the way forward, and it opens System Settings on the real screen,
+   * which is the only place macOS accepts the grant.
+   */
+  const takeoverBlocked = missingPermissions.length > 0;
   const [permissionCheck, setPermissionCheck] = useState<MacDesktopPermissionCheck | null>(null);
   /**
    * The pane's own "Stop Mac Desktop?" question, for the header's Stop and
@@ -502,6 +508,7 @@ export function useMacDesktopPanelController({
   }, [heartbeat, iHaveControl, returnControl]);
 
   const takeControl = useCallback(async () => {
+    if (takeoverBlocked) return;
     setBusy(true);
     try {
       const next = await macDesktopApi().takeControl(
@@ -514,7 +521,7 @@ export function useMacDesktopPanelController({
     } finally {
       setBusy(false);
     }
-  }, [errorText, laneId, setStatus, setStatusError]);
+  }, [errorText, laneId, setStatus, setStatusError, takeoverBlocked]);
 
   /* ── Real input, only while the user holds the lease ──────────────────── */
 
@@ -584,8 +591,8 @@ export function useMacDesktopPanelController({
   takeControlRef.current = takeControl;
   const realInputRef = useRef(realInput);
   realInputRef.current = realInput;
-  const controlStateRef = useRef({ iHaveControl, busy });
-  controlStateRef.current = { iHaveControl, busy };
+  const controlStateRef = useRef({ iHaveControl, busy, takeoverBlocked });
+  controlStateRef.current = { iHaveControl, busy, takeoverBlocked };
   useEffect(() => {
     const node = surfaceNode;
     if (!node) return;
@@ -594,7 +601,7 @@ export function useMacDesktopPanelController({
       if (!state.iHaveControl) {
         // The first click on the screen takes control; the strip button is
         // the same action. Right-click is a menu, not a claim.
-        if (!state.busy && event.button !== 2) void takeControlRef.current();
+        if (!state.busy && !state.takeoverBlocked && event.button !== 2) void takeControlRef.current();
         return;
       }
       realInputRef.current.onPointerDown(event as unknown as ReactPointerEvent<HTMLDivElement>);
@@ -1004,7 +1011,7 @@ export function useMacDesktopPanelController({
     captureError, setCaptureError, captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending,
     viewRect, selectedWindowId, setSelectedWindowId, lastObservation, surfaceNode, videoHost, canvasSlot,
     attachCanvasSlot, attachSurface, errorText, display, lease, windows, supported, iHaveControl, parkedWindows,
-    claimAppIcons, missingPermissions, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
+    claimAppIcons, missingPermissions, takeoverBlocked, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
     restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,

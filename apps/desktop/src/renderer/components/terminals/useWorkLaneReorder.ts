@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
+import { cssZoomOf } from "../../lib/webZoom";
 
 type LaneDrop = { laneId: string; edge: "before" | "after" } | null;
 
@@ -87,8 +88,10 @@ export function useWorkLaneReorder(
         const container = listScrollRef.current;
         if (!container) return;
         const bounds = container.getBoundingClientRect();
-        const fromTop = event.clientY - bounds.top;
-        const fromBottom = bounds.bottom - event.clientY;
+        // Screen px; the 48px thresholds and the ramp are layout px.
+        const zoom = cssZoomOf(container);
+        const fromTop = (event.clientY - bounds.top) / zoom;
+        const fromBottom = (bounds.bottom - event.clientY) / zoom;
         const ramp = (distance: number) => 2 + 14 * (1 - Math.max(0, distance) / 48);
         if (fromTop < 48) setLaneAutoScrollVelocity(-ramp(fromTop));
         else if (fromBottom < 48) setLaneAutoScrollVelocity(ramp(fromBottom));

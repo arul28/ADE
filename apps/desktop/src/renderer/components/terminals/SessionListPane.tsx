@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -9,6 +9,7 @@ import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
 import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, NO_LANE_PRS, useLanePrsByLaneId } from "./useLanePrs";
+import { useArchivedMissingLaneIds } from "./useArchivedMissingLanes";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -995,6 +996,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
+  resolveSessionRuntimePin,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -1131,6 +1133,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   }) => void;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
+  /**
+   * The machine a chat runs on: `null` is the project tab's own machine. Asks
+   * which machine owns a chat whose lane is missing, so the archived-lane read
+   * goes to that machine rather than the tab's.
+   */
+  resolveSessionRuntimePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   /**
@@ -2185,13 +2193,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
 
   const pendingLaunchLaneIds = usePendingChatLaunchLaneIds();
-  // Groups whose lane the lane list does not have, split once into lanes a
-  // new-lane launch is still setting up and genuinely orphaned sessions.
-  const { missingLaneSessionGroups, launchingLaneGroups, orphanLaneGroups } = useMemo(() => {
-    type LaneGroup = [string, TerminalSessionSummary[]];
-    if (!sessionsGroupedByLane) {
-      return { missingLaneSessionGroups: [] as LaneGroup[], launchingLaneGroups: [] as LaneGroup[], orphanLaneGroups: [] as LaneGroup[] };
-    }
+  type LaneGroup = [string, TerminalSessionSummary[]];
+  // Groups whose lane the lane list does not have. Split below into lanes a
+  // new-lane launch is still setting up, lanes that are archived (their chats
+  // are kept, and the lane list leaves them out), and genuinely orphaned sessions.
+  const missingLaneSessionGroups = useMemo((): LaneGroup[] => {
+    if (!sessionsGroupedByLane) return [];
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
     const latestStartedAt = (sessions: TerminalSessionSummary[]): number => {
       const times = sessions
@@ -2203,7 +2210,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       const trimmed = (name ?? "").trim();
       return trimmed.length > 0 ? trimmed : fallback;
     };
-    const missing: LaneGroup[] = [...sessionsGroupedByLane.entries()]
+    return [...sessionsGroupedByLane.entries()]
       .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
       .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {
         const leftLatest = latestStartedAt(leftSessions);
@@ -2213,11 +2220,25 @@ export const SessionListPane = React.memo(function SessionListPane({
         const rightName = orphanLabel(rightSessions[0]?.laneName, rightLaneId);
         return leftName.localeCompare(rightName);
       });
+  }, [lanes, sessionsGroupedByLane]);
+  // The tab's key scopes a chat with a null pin (the tab's own machine), so a
+  // project switch asks again instead of keeping the previous project's answer.
+  const archivedLaneIds = useArchivedMissingLaneIds(
+    missingLaneSessionGroups,
+    resolveSessionRuntimePin,
+    projectBinding?.key ?? null,
+  );
+  const { launchingLaneGroups, archivedLaneGroups, orphanLaneGroups } = useMemo(() => {
     const launching: LaneGroup[] = [];
+    const archived: LaneGroup[] = [];
     const orphaned: LaneGroup[] = [];
-    for (const group of missing) (pendingLaunchLaneIds.has(group[0]) ? launching : orphaned).push(group);
-    return { missingLaneSessionGroups: missing, launchingLaneGroups: launching, orphanLaneGroups: orphaned };
-  }, [lanes, pendingLaunchLaneIds, sessionsGroupedByLane]);
+    for (const group of missingLaneSessionGroups) {
+      if (pendingLaunchLaneIds.has(group[0])) launching.push(group);
+      else if (archivedLaneIds.has(group[0])) archived.push(group);
+      else orphaned.push(group);
+    }
+    return { launchingLaneGroups: launching, archivedLaneGroups: archived, orphanLaneGroups: orphaned };
+  }, [archivedLaneIds, missingLaneSessionGroups, pendingLaunchLaneIds]);
   const handoffOnlyMissingLaneGroups = useMemo(() => {
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
     const missingSessionLaneIds = new Set(missingLaneSessionGroups.map(([laneId]) => laneId));
@@ -3722,6 +3743,33 @@ export const SessionListPane = React.memo(function SessionListPane({
             >
               The lane record is missing from the latest runtime snapshot. Refresh to reconcile this group with its
               owning machine. ADE will not delete sessions, Git branches, worktrees, commits, or pull requests.
+            </div>
+            {renderHandoffCards(laneHandoffJobs)}
+            {renderLaneSessionLists(laneId, list)}
+          </StickyGroupHeader>
+        );
+      })}
+      {archivedLaneGroups.map(([laneId, list]) => {
+        const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
+        const trimmedLaneName = (list[0]?.laneName ?? "").trim();
+        const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneHandoffJobs[0]?.laneName ?? laneId;
+        return (
+          <StickyGroupHeader
+            key={laneId}
+            sectionId={`archived:${laneId}`}
+            icon={<Archive size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
+            label={`Archived lane: ${label}`}
+            count={list.length + laneHandoffJobs.length}
+            collapsed={workCollapsedLaneIds.includes(laneId)}
+            heading
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
+          >
+            <div
+              className="mx-1.5 mb-1.5 border-l border-fg/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
+              data-testid="archived-lane-explanation"
+            >
+              This lane is archived, so the lane list leaves it out. Its chats are kept. Manage the lane under
+              Settings › This computer › Archive.
             </div>
             {renderHandoffCards(laneHandoffJobs)}
             {renderLaneSessionLists(laneId, list)}

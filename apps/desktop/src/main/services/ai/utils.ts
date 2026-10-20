@@ -1,15 +1,16 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+
+/** The probe for one command: `where` on Windows, a login shell's `command -v` elsewhere. */
+function commandExistsProbe(command: string): { file: string; args: string[] } {
+  if (process.platform === "win32") return { file: "where", args: [command] };
+  return { file: "sh", args: ["-lc", `command -v ${command} >/dev/null 2>&1`] };
+}
 
 export function commandExists(command: string): boolean {
   try {
-    if (process.platform === "win32") {
-      const result = spawnSync("where", [command], {
-        encoding: "utf8",
-        windowsHide: true,
-      });
-      return result.status === 0;
-    }
-    const result = spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], {
+    const { file, args } = commandExistsProbe(command);
+    const result = spawnSync(file, args, {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -20,20 +21,90 @@ export function commandExists(command: string): boolean {
 }
 
 const COMMAND_EXISTS_CACHE_MS = 60_000;
+const COMMAND_EXISTS_PROBE_TIMEOUT_MS = 10_000;
+/**
+ * The last answer for each command and when it was checked. A command with no
+ * entry has no answer yet. A background probe that fails or times out never
+ * creates one, so the next synchronous read still probes the command.
+ */
 const commandExistsCache = new Map<string, { available: boolean; checkedAt: number }>();
+/** The commands with a background probe in flight. A request for one joins it. */
+const commandExistsRefreshing = new Set<string>();
 
 /**
- * `commandExists` with a short memory. Each probe is a synchronous login shell
- * (~10-20 ms on macOS, where `path_helper` runs), so callers on per-message or
- * per-tool paths must not probe every time: it blocks the brain's event loop.
+ * `commandExists`, run off the event loop. Resolves `null` when the probe could
+ * not run or timed out: that says nothing about the command, so the caller keeps
+ * its last answer instead of reading a hung probe as "not installed".
+ */
+async function commandExistsOffThread(command: string): Promise<boolean | null> {
+  const { file, args } = commandExistsProbe(command);
+  if (offThreadSpawnEnabled()) {
+    const result = await execFileOffThread(file, args, { timeoutMs: COMMAND_EXISTS_PROBE_TIMEOUT_MS });
+    return result.exitCode === null ? null : result.exitCode === 0;
+  }
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: COMMAND_EXISTS_PROBE_TIMEOUT_MS, windowsHide: true }, (error) => {
+      if (!error) resolve(true);
+      else resolve(typeof error.code === "number" ? false : null);
+    });
+  });
+}
+
+/**
+ * Starts a background probe for `command` unless one is in flight, and caches
+ * its answer. A probe that gives no answer leaves the cache as it was: a stale
+ * answer keeps its check time, so the next call past the TTL probes again. An
+ * answer checked after this probe started (a synchronous first probe that ran
+ * while it was in flight) is newer, so this probe does not replace it.
+ */
+function refreshCommandExists(command: string): void {
+  if (commandExistsRefreshing.has(command)) return;
+  commandExistsRefreshing.add(command);
+  const startedAt = Date.now();
+  void commandExistsOffThread(command)
+    .catch(() => null)
+    .then((available) => {
+      if (available === null) return;
+      const current = commandExistsCache.get(command);
+      if (current && current.checkedAt >= startedAt) return;
+      commandExistsCache.set(command, { available, checkedAt: Date.now() });
+    })
+    .finally(() => {
+      commandExistsRefreshing.delete(command);
+    });
+}
+
+/**
+ * `commandExists` with a short memory that does not block the brain's event loop
+ * once a command has an answer. Each probe is a login shell (10-20 ms on macOS,
+ * where `path_helper` runs; about 40 ms on Windows for `where`), and callers on
+ * per-message paths ask on every send.
+ *
+ * A cached answer is returned at once, whatever its age. Once it is past the
+ * TTL, the call also starts a background probe, and a later call returns that
+ * probe's answer. A command with no answer yet is probed synchronously, once,
+ * and that answer is cached. {@link prewarmCommandExists} starts those first
+ * probes early, so a send usually finds an answer already cached.
  */
 export function commandExistsCached(command: string): boolean {
-  const nowMs = Date.now();
   const cached = commandExistsCache.get(command);
-  if (cached && nowMs - cached.checkedAt < COMMAND_EXISTS_CACHE_MS) return cached.available;
+  if (cached) {
+    if (Date.now() - cached.checkedAt >= COMMAND_EXISTS_CACHE_MS) refreshCommandExists(command);
+    return cached.available;
+  }
   const available = commandExists(command);
-  commandExistsCache.set(command, { available, checkedAt: nowMs });
+  commandExistsCache.set(command, { available, checkedAt: Date.now() });
   return available;
+}
+
+/**
+ * Starts the first probe of each command in the background, so the first
+ * `commandExistsCached` call for it usually finds an answer and does not probe.
+ */
+export function prewarmCommandExists(commands: readonly string[]): void {
+  for (const command of commands) {
+    if (!commandExistsCache.has(command)) refreshCommandExists(command);
+  }
 }
 
 export function isCursorAdminApiKey(value: string | null | undefined): boolean {

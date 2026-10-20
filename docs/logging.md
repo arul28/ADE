@@ -231,6 +231,30 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
+Five local lines record a provider refusing ADE's pinned build as too old, and
+none is a PostHog event. `ai.claude_fall_forward` (warn) records each Claude
+fall-forward attempt (`claudeFallForward.ts`) with `tool`, `signal`,
+`pinnedVersion`, `rejectedClaudeCodeVersion`, `requiredVersion`,
+`vendorMessage`, `outcome` (`switched` or `not_switched`), and then either
+`overrideVersion` / `claudeCodeVersion` or `reason` / `detail`. It goes to the
+caller's logger, else the machine log (`desktop-main.jsonl`).
+`ai.codex_fall_forward` (warn) records each Codex fall-forward attempt
+(`codexFallForward.ts`) with `tool`, `signal`, `model`, `pinnedVersion`,
+`vendorMessage`, `modelProbes` (one-request probes run, which use the user's
+quota), `outcome`, and then either `overrideVersion` / `codexVersion` or
+`reason` / `detail` / `newestCodexVersion`. `ai.muse_fall_forward` (warn)
+records each Muse attempt (`museFallForward.ts`) with `tool`, `signal`
+(`vendor_min_version`), `pinnedVersion`, `minVersion`, `urgency`,
+`channelVersion`, `outcome`, and `reason` / `detail` when it did not switch.
+`ai.muse_vendor_floor` (warn) records a Meta floor ADE cannot meet without an
+update, with `minVersion`, `runningVersion` and `urgency`. All three go to the
+same logger as the Claude line.
+`agent_chat.copilot_client_update_required` (warn) records Copilot's
+organisation-policy floor (`copilotSdkPool.ts`) with `requiredVersion`,
+`reportedVersion` and `pinnedVersion`; Copilot has no fall-forward. All are
+rare vendor refusals with no user action behind them, and `vendorMessage` is
+vendor text that cannot cross the analytics boundary.
+
 Claude mod UI (what Claude Code plugins draw in a chat) writes three local
 debug lines and no PostHog event: `agent_chat.claude_plugin_ui_render_failed`
 (session id, render site, error message), `agent_chat.claude_plugin_ui_action_failed`
@@ -255,9 +279,12 @@ The capture gesture writes its own local structured line family, and it is not
 a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
 `helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
-`helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
-records why a chord was refused or a shot never arrived and carries no window
-title, app name, or image.
+`helper_path_outside_output_dir`, `input_monitoring_required`,
+`chord_unavailable`, `chord_ignored`, `late_answer_dropped`); it records why a
+chord was refused or a shot never arrived and carries no window title, app
+name, or image. The two setup-health lines are not PostHog events: a missing
+grant or a monitor that cannot start is an environment fact, not a person
+using the gesture, and the settings health card is the user-facing surface.
 
 When an agent switches its lane to a new branch during a turn, ADE adopts
 the branch or leaves the choice to the user, and writes the local structured
@@ -367,14 +394,18 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
-| `updates` | `provider_cli_updated` | `completed`, `failed` | coarse provider family (the ACP CLIs report `other`); never the version, install path, or output |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
 | `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
 | `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
+| `ade_mcp` | `server_toggled` | `enabled`, `disabled` | omitted; never the machine, its server URL, or a connection |
+| `ade_mcp` | `app_connected`, `token_created`, `connection_removed` | `completed` | omitted; never the app's name, its redirect host, the access level, a token, or a command it ran |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
+| `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
+| `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -383,19 +414,20 @@ path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
 
-ADE's one-click update of a user-installed provider CLI (from the provider's
-Settings page or the chat warning for a CLI older than ADE supports) records
-`updates/provider_cli_updated` where the update runs: the desktop IPC handler
-(`surface: "desktop"`) and the `ai.acpProviderUpdate` action (`surface: "api"`).
-It is a rare, deliberate click, deduplicated per outcome and provider family
-for an hour, so the worst case is a few events a day inside the existing
-`ade_feature_used` 140-per-day / 30-per-minute ceilings.
-
 A browser sign-in to an MCP server (Settings › MCP servers) records
 `mcp_servers/sign_in` once when it ends, in the desktop IPC handler that runs
 it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the
 existing `ade_feature_used` ceilings.
+
+ADE MCP (Settings › Computer › ADE MCP, `ade mcp`) records its decisions in
+the brain, after the change is stored: `server_toggled` when it is switched on
+or off, `token_created` and `connection_removed` from Settings (`desktop`) or
+`ade mcp` (`api`), and `app_connected` when an app finishes signing in
+(`api`). Each is deduplicated per action and outcome for an hour, so the worst
+case is five events a day inside the existing `ade_feature_used` ceilings. The
+commands connected apps run are never captured; they are counted only in the
+local activity log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the
@@ -447,7 +479,7 @@ installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
 Choosing a keep-awake level records the same `ade_feature_used` event at the
-keep-awake service's persist boundary — after the choice is written, so a
+brain keep-awake service's persist boundary — after the choice is written, so a
 refused level (the lid-closed one whose password prompt was cancelled) is never
 counted as adopted. It carries `feature: "connections"`,
 `action: "preferences_changed"`, and one closed `outcome`:
@@ -1065,11 +1097,16 @@ carry no path, project identity, Trash location or error text. A per-action,
 per-outcome one-hour deduplication key bounds a retry loop to 24 accepted
 events per key, 96 across the four, per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was
-raised. Moving a project (Settings → General → Project location) records the
+raised. Moving a project (Settings → Location) records the
 same event at the same boundary with `action: "project_move"` and
 `outcome: "completed" | "failed"` once a move ran; a move refused before it
 began is not counted. The same one-hour key bounds it to 48 accepted events
-per installation per day. The diagnosis itself is not reported: a folder the person moved or
+per installation per day. Pressing a project health fix (Settings → Location
+or Lanes) records it too, with `action: "project_health_fix"` and `outcome`
+from the fix result (`completed` when every step worked, else `failed`); which
+fix ran is not sent. The same key bounds it to 48 accepted events per
+installation per day. A fix run on another machine goes through that
+machine's runtime, not this IPC handler, and is not counted. The diagnosis itself is not reported: a folder the person moved or
 deleted is their action, not a fault in ADE. The dashboard spec is untouched.
 
 Pressing "Report issue" on any of ADE's error surfaces — the project recovery
@@ -1303,6 +1340,17 @@ It records only the successful user action—not lane names, paths, sizes,
 blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
+
+The renderer records `template_setup_started` when the setup chat draft opens
+(`from_banner` or `from_settings`), `template_suggestion_hidden` when the prompt
+is hidden (`completed`), and `deps_update_started` when an install terminal
+starts (`completed` or `failed`). They are emitted from
+`renderer/lib/laneSetupAnalytics.ts` because the chat draft and terminal start
+are renderer decisions with no durable backend mutation. They never carry a
+lane, path, lockfile name, package manager, folder count, template id or name,
+machine, or error text. A 24-hour per-action-and-outcome key allows at most five
+accepted events per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised.
 
 Opening the account-wide Activity control (renamed from "Attention" in the UI;
 the analytics taxonomy deliberately keeps the frozen `attention` keys) records

@@ -130,6 +130,32 @@ export function downloadedUpdateArchivePresent(cacheDir: string): boolean {
   return scan(root) || scan(path.join(root, "pending"));
 }
 
+/**
+ * Bytes electron-updater has written under `pending/`, where a running download
+ * lands as `temp-<name>`. The download watchdog reads this as a second sign of
+ * life: a server that sends no Content-Length gets no progress events at all.
+ * Null when the directory cannot be read.
+ */
+export function updaterPendingBytes(cacheDir: string): number | null {
+  const pending = path.join(path.resolve(cacheDir), "pending");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(pending, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let total = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    try {
+      total += fs.statSync(path.join(pending, entry.name)).size;
+    } catch {
+      // A file removed between readdir and stat contributes nothing.
+    }
+  }
+  return total;
+}
+
 function errorCode(error: unknown): string {
   if (!error || typeof error !== "object") return "";
   const code = (error as { code?: unknown }).code;

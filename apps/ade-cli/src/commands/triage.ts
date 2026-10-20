@@ -17,6 +17,7 @@ import {
   buildTriageLaunchPlan,
   describeTriageProviders,
   detectTriageProviders,
+  triageProviderUnavailableSentence,
   spawnTriageAgent,
   triageLaunchNotice,
   TRIAGE_PROVIDERS,
@@ -32,13 +33,14 @@ import {
 } from "./triagePlaybook";
 
 /**
- * `ade triage` — hand a broken install to the user's own coding agent.
+ * `ade triage` — hand a broken install to a coding agent (ADE's pinned copy).
  *
  * `ade doctor` says which check failed and `ade report-issue` produces something
  * to file. Neither fixes anything, and the person staring at either one is
  * usually the person least able to act on it. This command builds the two files
  * an agent needs — a redacted machine context and a maintained playbook — and
- * then gets out of the way: it launches whichever agent CLI is installed and
+ * then gets out of the way: it launches whichever of ADE's pinned agent CLIs
+ * this machine already has, and
  * lets the user talk to it directly, or, with `--agent`, prints the paths for an
  * agent that is already running (an ADE Work chat, say) to pick up.
  *
@@ -248,9 +250,11 @@ export async function runTriageCommand(
     // Requirement of this command, not an accident: a machine with no agent CLI
     // still gets the handoff, and exits 0. The files are the deliverable; the
     // launch is a convenience.
+    // ADE runs only its own pinned copies, so "not found" means one of the
+    // pinned-tool states, never "install it".
     const message = options.provider
-      ? `${options.provider} is not installed on this machine. Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`
-      : `No agent CLI found (looked for ${TRIAGE_PROVIDERS.map((p) => p.name).join(", ")}). Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`;
+      ? `${triageProviderUnavailableSentence(options.provider)} Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`
+      : `ADE has no agent CLI on this machine yet (it runs only its own copies of ${TRIAGE_PROVIDERS.map((p) => p.name).join(", ")}, downloaded the first time ADE uses each). Everything an agent needs is written out — paste the prompt below into whatever agent you do have.`;
     return {
       payload: { ...base, mode: "no-provider", launched: null, message },
       exitCode: 0,

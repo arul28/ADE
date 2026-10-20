@@ -40,7 +40,10 @@ export const PROVIDER_OUTPUT_CAP_BYTES = 16 * 1024;
 export const PROVIDER_STATUS_DETAILS = {
   /** A resolver threw. Its message is appended. */
   detectionFailed: (message: string): string => `Detection failed: ${message}`,
-  /** A bare command name that no PATH lookup confirmed. */
+  /**
+   * No longer produced: status rows count only ADE's pinned copy, never a
+   * PATH hit. Kept until /test removes the test that names it.
+   */
   notOnPath: (command: string): string =>
     `No \`${command}\` was found on PATH or in the known install directories.`,
   /** A real file, without the execute bit. POSIX only; Windows has no such bit. */

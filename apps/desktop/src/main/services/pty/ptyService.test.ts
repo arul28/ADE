@@ -11,6 +11,10 @@ import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
+const PINNED_CLAUDE = "/ade-test/tools/claude/claude";
+const PINNED_CODEX = "/ade-test/tools/codex/codex -c check_for_update_on_startup=false";
+const PINNED_CURSOR = "/ade-test/tools/cursor/cursor-agent";
+
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
@@ -52,6 +56,9 @@ const mocks = vi.hoisted(() => {
         throw error;
       }
       const stat = fileStats.get(p);
+      if (p.startsWith("/ade-test/tools/")) {
+        return { size: 0, mtimeMs: 0, mode: 0o100755, isDirectory: () => false, isFile: () => true };
+      }
       return {
         size: stat?.size ?? fileContents.get(p)?.length ?? 0,
         mtimeMs: stat?.mtimeMs ?? 0,
@@ -308,6 +315,35 @@ vi.mock("node:child_process", () => ({
   execFileSync: mocks.execFileSync,
   spawnSync: mocks.spawnSync,
 }));
+
+// PTY behavior is exercised with ADE-owned pinned copies. Stub the cache
+// boundary's resolved install records while keeping the launcher composition
+// (absolute executable, leading args, and self-update env) real.
+vi.mock("./pinnedProviderCli", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pinnedProviderCli")>();
+  const installed = (provider: string) => {
+    const windows = process.platform === "win32";
+    const binary = provider === "cursor" ? "cursor-agent" : provider;
+    const command = windows
+      ? `C:\\ade-test\\tools\\${provider}\\${binary}.exe`
+      : `/ade-test/tools/${provider}/${binary}`;
+    return {
+      provider,
+      command,
+      leadingArgs: provider === "pi"
+        ? ["/ade-test/tools/pi/dist/cli.js"]
+        : provider === "codex" ? ["-c", "check_for_update_on_startup=false"] : [],
+      env: provider === "claude"
+        ? { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" }
+        : {},
+    };
+  };
+  return {
+    ...actual,
+    pinnedProviderCliState: (provider: string) => ({ kind: "ready", cli: installed(provider) }),
+    requirePinnedProviderCli: async (provider: string) => installed(provider),
+  };
+});
 
 vi.mock("../git/git", () => ({
   runGit: mocks.runGit,
@@ -2009,10 +2045,16 @@ describe("ptyService", () => {
 
       const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
       expect(ptyLib.spawn).toHaveBeenCalledWith(
-        "claude",
+        expect.stringMatching(/[/\\]claude(?:\.exe)?$/),
         expect.arrayContaining(["--plugin-dir", pluginRoot]),
         expect.any(Object),
       );
+      expect(ptyLib.spawn.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        env: expect.objectContaining({
+          DISABLE_AUTOUPDATER: "1",
+          CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1",
+        }),
+      }));
       expect(ptyLib.spawn.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
         "--plugin-dir=/tmp/custom-plugin",
       ]));
@@ -2032,7 +2074,7 @@ describe("ptyService", () => {
         }),
       });
       const spawn = vi.fn((command: string) => {
-        if (command === "claude") throw new Error("ENOENT");
+        if (command.endsWith("/claude") || command.endsWith("\\claude.exe")) throw new Error("ENOENT");
         return mockPty;
       });
       loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
@@ -2052,7 +2094,7 @@ describe("ptyService", () => {
       // the fallback line carries the bundled plugin AND the same deterministic
       // session id the direct-spawn argv got.
       expect(mockPty.write).toHaveBeenCalledWith(
-        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
+        `ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent ${PINNED_CLAUDE} --plugin-dir \"${pluginRoot}\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r`,
       );
     });
 
@@ -2080,7 +2122,7 @@ describe("ptyService", () => {
       // Only the deterministic session id is added; the plugin flag already
       // present in the startup command is not duplicated.
       expect(mockPty.write).toHaveBeenCalledWith(
-        `ADE_RUN_ID=run-1 claude --session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
+        `ADE_RUN_ID=run-1 ${PINNED_CLAUDE} --session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
       );
     });
 
@@ -2175,7 +2217,7 @@ describe("ptyService", () => {
       // bash's own argv must be untouched apart from the rewritten -lc payload.
       expect(spawnedArgs.slice(0, 3)).toEqual(["--noprofile", "--norc", "-lc"]);
       expect(spawnedArgs).toHaveLength(4);
-      expect(spawnedArgs[3]).toBe(`claude --plugin-dir "${pluginRoot}" --resume claude-session-123`);
+      expect(spawnedArgs[3]).toBe(`${PINNED_CLAUDE} --plugin-dir "${pluginRoot}" --resume claude-session-123`);
     });
 
     it("keeps a resumable session's prior status when the resume launch dies immediately", async () => {
@@ -3357,59 +3399,6 @@ describe("ptyService", () => {
       }
     });
 
-    it("moves node_modules bins behind user paths for Codex CLI launches", async () => {
-      const previousPathEntries = Object.entries(process.env)
-        .filter(([key]) => key.toLowerCase() === "path");
-      for (const [key] of previousPathEntries) delete process.env[key];
-      process.env.PATH = [
-        "/repo/apps/desktop/node_modules/.bin",
-        "/opt/homebrew/bin",
-        "/usr/bin",
-        "/tmp/project/node_modules/.bin",
-      ].join(path.delimiter);
-      try {
-        const { service, loadPty } = createHarness();
-
-        await service.create({
-          laneId: "lane-1",
-          title: "Codex CLI",
-          cols: 80,
-          rows: 24,
-          toolType: "codex",
-          command: "codex",
-          args: ["--no-alt-screen"],
-          startupCommand: "codex --no-alt-screen",
-        });
-
-        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-        const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
-        const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
-        const normalizedPathEntries = pathEntries.map((entry) => entry.replace(/\\/g, "/"));
-        const yarnGlobalBin = path.join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin");
-        const firstNodeModulesBin = normalizedPathEntries.findIndex((entry) =>
-          entry.endsWith("/repo/apps/desktop/node_modules/.bin"),
-        );
-        expect(firstNodeModulesBin).toBeGreaterThanOrEqual(0);
-        expect(pathEntries).toContain("/opt/homebrew/bin");
-        expect(pathEntries).toContain("/usr/bin");
-        expect(pathEntries.indexOf("/opt/homebrew/bin")).toBeLessThan(firstNodeModulesBin);
-        expect(pathEntries.indexOf("/usr/bin")).toBeLessThan(firstNodeModulesBin);
-        expect(normalizedPathEntries.slice(-2).map((entry) => entry.replace(/^[A-Za-z]:/, ""))).toEqual([
-          "/repo/apps/desktop/node_modules/.bin",
-          "/tmp/project/node_modules/.bin",
-        ]);
-        expect(pathEntries).toContain(path.join(os.homedir(), ".asdf", "shims"));
-        expect(pathEntries.indexOf(yarnGlobalBin)).toBeGreaterThanOrEqual(0);
-        expect(pathEntries.indexOf(yarnGlobalBin)).toBeLessThan(pathEntries.indexOf("/repo/apps/desktop/node_modules/.bin"));
-      } finally {
-        for (const key of Object.keys(process.env)) {
-          if (key.toLowerCase() === "path") delete process.env[key];
-        }
-        for (const [key, value] of previousPathEntries) process.env[key] = value;
-      }
-    });
-
     it("does not send Cursor initialInput into the workspace trust prompt", async () => {
       vi.useFakeTimers();
       try {
@@ -3628,7 +3617,7 @@ describe("ptyService", () => {
     it("falls back to typing startupCommand in a shell when direct command spawn fails", async () => {
       const { service, mockPty, loadPty } = createHarness();
       const spawn = vi.fn((command: string) => {
-        if (command === "codex") throw new Error("ENOENT");
+        if (command.includes("/codex/codex")) throw new Error("ENOENT");
         return mockPty;
       });
       loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
@@ -3645,8 +3634,8 @@ describe("ptyService", () => {
       });
 
       expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        ["--no-alt-screen", "ADE session guidance"],
+        "/ade-test/tools/codex/codex",
+        ["-c", "check_for_update_on_startup=false", "--no-alt-screen", "ADE session guidance"],
         expect.any(Object),
       );
       expect(spawn).toHaveBeenCalledWith(
@@ -3654,7 +3643,7 @@ describe("ptyService", () => {
         expect.any(Array),
         expect.any(Object),
       );
-      expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen \"ADE session guidance\"\r");
+      expect(mockPty.write).toHaveBeenCalledWith(`${PINNED_CODEX} --no-alt-screen \"ADE session guidance\"\r`);
     });
 
     it("falls back to a shell exec command when direct command spawn fails before a terminal attaches", async () => {
@@ -3749,105 +3738,6 @@ describe("ptyService", () => {
       const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
       expect(ptyLib.spawn.mock.calls[0]?.[0]).toBe(shell);
       expect(mockPty.write).toHaveBeenCalledWith(`${expectedCommand}\r`);
-    });
-
-    it("launches Cursor through the legacy Windows agent.cmd alias when needed", async () => {
-      setPlatform("win32");
-      const previousAppData = process.env.APPDATA;
-      const previousComSpec = process.env.ComSpec;
-      const appData = "C:\\Users\\ADE User\\AppData\\Roaming";
-      const agentPath = path.join(appData, "npm", "agent.cmd");
-      process.env.APPDATA = appData;
-      process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
-      mocks.fileStats.set(agentPath, { isDirectory: false, size: 1 });
-      mocks.dirEntries.set(path.dirname(agentPath), [path.basename(agentPath)]);
-      try {
-        const harness = createHarness();
-        await harness.service.create({
-          laneId: "lane-1",
-          title: "Cursor CLI",
-          cols: 80,
-          rows: 24,
-          command: "cursor-agent",
-          args: ["--resume", "chat with spaces & unicode-Ã©"],
-          toolType: "cursor-cli",
-        });
-
-        const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-        expect(ptyLib.spawn).toHaveBeenCalledWith(
-          "C:\\Windows\\System32\\cmd.exe",
-          expect.stringContaining(`"${agentPath}"`),
-          expect.any(Object),
-        );
-        expect(ptyLib.spawn.mock.calls[0]?.[1]).toContain("chat with spaces & unicode-Ã©");
-      } finally {
-        if (previousAppData == null) delete process.env.APPDATA;
-        else process.env.APPDATA = previousAppData;
-        if (previousComSpec == null) delete process.env.ComSpec;
-        else process.env.ComSpec = previousComSpec;
-      }
-    });
-
-    // The bare word `claude` has no extension, so resolveCliSpawnInvocation used
-    // to wrap every Windows launch in `cmd.exe /d /s /c "…"` — which expands
-    // %VAR%, flattens the ~2KB multi-line --append-system-prompt blob to one
-    // line, and dies past 8191 characters. The official installer's claude.exe
-    // spawns directly and argv arrives byte-for-byte.
-    it("launches Claude from the installed claude.exe instead of a cmd.exe wrapper", async () => {
-      setPlatform("win32");
-      const previousProfile = process.env.USERPROFILE;
-      const previousComSpec = process.env.ComSpec;
-      const home = "C:\\Users\\ADE User";
-      const claudePath = path.join(home, ".local", "bin", "claude.exe");
-      process.env.USERPROFILE = home;
-      process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
-      mocks.fileStats.set(claudePath, { isDirectory: false, size: 1 });
-      mocks.dirEntries.set(path.dirname(claudePath), [path.basename(claudePath)]);
-      try {
-        const harness = createHarness();
-        const guidance = "ADE guidance\nsecond line with %USERPROFILE% inside";
-        await harness.service.create({
-          laneId: "lane-1",
-          title: "Claude CLI",
-          cols: 80,
-          rows: 24,
-          command: "claude",
-          args: ["--append-system-prompt", guidance],
-          toolType: "claude",
-        });
-
-        const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-        const [spawnCommand, spawnArgs] = ptyLib.spawn.mock.calls[0] as [string, string | string[]];
-        expect(spawnCommand).toBe(claudePath);
-        // An array (not a verbatim command-line string) is the proof no shell
-        // sits between ADE and Claude.
-        expect(Array.isArray(spawnArgs)).toBe(true);
-        expect(spawnArgs).toContain(guidance);
-      } finally {
-        if (previousProfile == null) delete process.env.USERPROFILE;
-        else process.env.USERPROFILE = previousProfile;
-        if (previousComSpec == null) delete process.env.ComSpec;
-        else process.env.ComSpec = previousComSpec;
-      }
-    });
-
-    it("preserves an explicit Windows Cursor executable override", async () => {
-      setPlatform("win32");
-      const explicitPath = "D:\\Custom Tools\\Cursor\\cursor-agent.cmd";
-      const harness = createHarness();
-
-      await harness.service.create({
-        laneId: "lane-1",
-        title: "Custom Cursor CLI",
-        cols: 80,
-        rows: 24,
-        command: explicitPath,
-        args: ["--resume", "chat-123"],
-        toolType: "cursor-cli",
-      });
-
-      const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
-      expect(ptyLib.spawn.mock.calls[0]?.[1]).toContain(`"${explicitPath}"`);
     });
 
     it("registers the session via sessionService.create", async () => {
@@ -4603,7 +4493,7 @@ describe("ptyService", () => {
         "claude --resume claude-session-123",
       );
       expect(mockPty.write).toHaveBeenCalledWith(
-        `claude --plugin-dir "${pluginRoot}" --resume claude-session-123\r`,
+        `${PINNED_CLAUDE} --plugin-dir "${pluginRoot}" --resume claude-session-123\r`,
       );
     });
 
@@ -4674,7 +4564,7 @@ describe("ptyService", () => {
           "session-codex-picker",
           "codex resume thread-resume",
         );
-        expect(mockPty.write).toHaveBeenCalledWith("codex resume thread-resume\r");
+        expect(mockPty.write).toHaveBeenCalledWith(`${PINNED_CODEX} resume thread-resume\r`);
       } finally {
         vi.useRealTimers();
       }
@@ -5190,7 +5080,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen resume thread-storage continue"],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen resume thread-storage continue`],
           expect.any(Object),
         );
       } finally {
@@ -5258,7 +5148,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\"`],
         expect.any(Object),
       );
       expect(sessionService.get("session-ended-send")?.resumeMetadata?.launch).toMatchObject({
@@ -5313,7 +5203,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue`],
         expect.any(Object),
       );
     });
@@ -5364,7 +5254,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenLastCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\""],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
         expect.any(Object),
       );
 
@@ -5378,7 +5268,7 @@ describe("ptyService", () => {
       const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
       expect(laterSpawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\""],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
         expect.any(Object),
       );
     });
@@ -5412,7 +5302,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\""],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\"`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5458,7 +5348,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only"],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5551,7 +5441,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\""],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5600,11 +5490,11 @@ describe("ptyService", () => {
         await pending;
 
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
-        const [command, commandLine] = spawn.mock.calls[0] as [string, string];
-        expect(command).toMatch(/cmd(?:\.exe)?$/i);
-        expect(commandLine).toContain("thread-windows-percent");
-        expect(commandLine).not.toContain("100%");
-        expect(commandLine).not.toContain("%PATH%");
+        const [command, launchArgs] = spawn.mock.calls[0] as [string, string[]];
+        expect(command).toMatch(/codex(?:\.exe)?$/i);
+        expect(launchArgs.join(" ")).toContain("thread-windows-percent");
+        expect(launchArgs.join(" ")).not.toContain("100%");
+        expect(launchArgs.join(" ")).not.toContain("%PATH%");
         const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
         expect(writes).toContainEqual(
           expect.stringContaining(prompt),
@@ -5657,7 +5547,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\""],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5716,7 +5606,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-1"],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CURSOR} --model auto --resume cursor-chat-1`],
           expect.any(Object),
         );
         mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\n→ Add a follow-up\n");
@@ -5797,7 +5687,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --model auto --resume cursor-chat-trust"],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CURSOR} --model auto --resume cursor-chat-trust`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5974,7 +5864,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first"],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first`],
         expect.any(Object),
       );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);

@@ -599,7 +599,7 @@ without an active project.
 - `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`
 - `stageFile`, `stageAll`, `unstageFile`, `unstageAll`,
   `discardFile`, `restoreStagedFile`
-- `commit`, `generateCommitMessage`, `listRecentCommits`,
+- `commit`, `listRecentCommits`,
   `listCommitFiles`, `getCommitMessage`, `getFileHistory`
 - `revertCommit`, `cherryPickCommit`, `createTag`, `resetToCommit`
 - `isCommitInLaneHistory` — checks whether a given `commitSha` is
@@ -671,8 +671,7 @@ a boolean.
   — `getDetailBundle` groups a PR's status, checks, reviews, and
   comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
-- `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
-  `cleanupBranch`
+- `postReviewComment`, `delete`, `cleanupBranch`
 - `getIntegrationResolutionState`, `aiResolutionGetSession`,
   `aiResolutionStart`
 - `listProposals`, `getMergeContext`, `getMergeContexts`,
@@ -1201,7 +1200,7 @@ lane already attached to a Linear ticket; `laneService.create`
 derives the branch name (`linearIssueBranchName`) and persists the
 issue into `lane_linear_issues`.
 
-`parseCreatePrArgs` and `parseDraftPrDescriptionArgs` accept
+`parseCreatePrArgs` accepts
 `closeLinearIssueOnMerge: boolean`. When the lane has a connected
 issue, this flag drives whether `prService` injects `Fixes IDENT`
 (closes the issue when the PR merges) or `Refs IDENT` (links

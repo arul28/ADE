@@ -11,6 +11,7 @@ import {
   type LanePopoverPlacement,
 } from "../terminals/LaneCombobox";
 import { CursorCloudSecretsList, isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 const MENU_WIDTH = 260;
 
@@ -57,10 +58,13 @@ export function CursorCloudAdvancedMenu({
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
-    const rect = triggerRef.current.getBoundingClientRect();
+    // Screen rect and window, converted into the body frame the menu is written in.
+    const frame = fixedFrameOf(null);
+    const rect = fixedRect(frame, triggerRef.current.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     setPlacement(computeLanePopoverPlacement({
       trigger: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
+      viewport: { width: viewport.width, height: viewport.height },
       width: { min: MENU_WIDTH, max: MENU_WIDTH },
     }));
   }, []);

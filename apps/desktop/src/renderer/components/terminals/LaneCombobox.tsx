@@ -11,6 +11,7 @@ import { COLORS } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
 import { usePortalContainer } from "../ui/portalContainer";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
 /**
  * Synthetic lane id for the draft-composer “auto-create lane” row.
@@ -485,12 +486,15 @@ export function LaneCombobox({
   const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
-    const rect = triggerRef.current.getBoundingClientRect();
+    // The popover is placed in the frame of the node it portals into (see `fixedFrameOf`).
+    const frame = fixedFrameOf(portalContainer);
+    const rect = fixedRect(frame, triggerRef.current.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
     setPlacement(computeLanePopoverPlacement({
       trigger: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
+      viewport: { width: viewport.width, height: viewport.height },
     }));
-  }, []);
+  }, [portalContainer]);
   useLayoutEffect(() => {
     if (!open) return;
     updatePosition();

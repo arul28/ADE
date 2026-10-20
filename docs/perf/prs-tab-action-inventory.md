@@ -81,7 +81,6 @@ Evidence run ids used so far:
 | prs.detail.review-submit | Submit PR review | prompt-only | `PrDetailPane.tsx` |
 | prs.detail.request-reviewers | Edit/request reviewers | fixture-needed | hidden by timeline-rails overview in the current surface |
 | prs.detail.labels | Edit labels | fixture-needed | hidden by timeline-rails overview in the current surface |
-| prs.detail.ai-summary | Generate AI summary | fixture-needed | hidden by timeline-rails overview in the current surface |
 | prs.detail.issue-resolver | Open issue resolver modal | fixture-needed | needs actionable failed checks or unresolved review threads |
 | prs.detail.issue-resolver.start | Resolve issues with agent | sandbox-only | `PrIssueResolverModal.tsx` |
 | prs.detail.close-pr | Close PR | prompt-only | `PrDetailPane.tsx` |

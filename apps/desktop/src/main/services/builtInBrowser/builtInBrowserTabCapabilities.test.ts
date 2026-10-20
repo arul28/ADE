@@ -643,21 +643,54 @@ describe("built-in browser favicon inlining", () => {
 // see full — with no tab id to claim and no `--all`, so `browser open` silently
 // started another tab.
 describe("built-in browser claimable tabs", () => {
-  it("shows unowned tabs as claimable and still hides another chat's tabs", async () => {
+  it("shows unowned and expired tabs as claimable while hiding live leases", async () => {
     const { service } = await serviceWithTab();
     const unowned = service.getStatus().activeTabId!;
 
-    const mineStatus = await service.createTab({ url: LOCAL_URL, activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const mineStatus = await service.createTab({
+      url: LOCAL_URL,
+      activate: false,
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+    });
     const mine = mineStatus.tabs.at(-1)!.id;
-    const theirsStatus = await service.createTab({ url: LOCAL_URL, activate: false, laneId: "lane-2", chatSessionId: "chat-2" });
-    const theirs = theirsStatus.tabs.at(-1)!.id;
+    const staleStatus = await service.createTab({
+      url: LOCAL_URL,
+      activate: false,
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+      leaseTtlMs: 60_000,
+    });
+    const stale = staleStatus.tabs.at(-1)!;
+    const staleLeaseExpiry = Date.parse(stale.ownerLeaseExpiresAt!);
 
-    const scoped = service.getStatus({ laneId: "lane-1", chatSessionId: "chat-1" });
-    const byId = new Map(scoped.tabs.map((tab) => [tab.id, tab]));
-    expect([...byId.keys()].sort()).toEqual([mine, unowned].sort());
-    expect(byId.get(unowned)?.claimable).toBe(true);
-    expect(byId.get(mine)?.claimable).toBeUndefined();
-    expect(byId.has(theirs)).toBe(false);
+    // Advance only the clock used to check the lease. No wall-clock wait or
+    // timer callback is involved, and the later tab gets a fresh live lease.
+    const now = vi.spyOn(Date, "now").mockReturnValue(staleLeaseExpiry + 1);
+    try {
+      const theirsStatus = await service.createTab({
+        url: LOCAL_URL,
+        activate: false,
+        laneId: "lane-3",
+        chatSessionId: "chat-3",
+      });
+      const theirs = theirsStatus.tabs.at(-1)!.id;
+
+      const scoped = service.getStatus({ laneId: "lane-4", chatSessionId: "chat-4" });
+      const byId = new Map(scoped.tabs.map((tab) => [tab.id, tab]));
+      expect([...byId.keys()].sort()).toEqual([stale.id, unowned].sort());
+      expect(byId.get(unowned)?.claimable).toBe(true);
+      expect(byId.get(stale.id)?.claimable).toBe(true);
+      expect(byId.get(stale.id)?.ownerChatSessionId).toBe("chat-2");
+      expect(byId.has(theirs)).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+
+    const own = service.getStatus({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const ownTab = own.tabs.find((tab) => tab.id === mine);
+    expect(ownTab).toBeTruthy();
+    expect(ownTab?.claimable).toBeUndefined();
 
     // An unscoped read (the renderer) is unchanged: no `claimable` anywhere.
     expect(service.getStatus().tabs.every((tab) => tab.claimable === undefined)).toBe(true);

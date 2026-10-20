@@ -1,0 +1,13 @@
+/* AgentLaunchSetup: model controls, an editable prompt, then Cancel / Start. */
+.ade-agent-launch { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ade-agent-launch-prompt {
+  height: auto !important;
+  min-height: 140px;
+  max-height: 260px;
+  resize: vertical;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.ade-agent-launch-actions { display: flex; justify-content: flex-end; gap: 6px; }

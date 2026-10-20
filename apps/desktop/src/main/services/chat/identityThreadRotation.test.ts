@@ -41,6 +41,7 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     listIdentitySessions: async () => [{ sessionId: "session-old" }],
     describeSession: (managed) => ({
       id: managed.id,
+      laneId: "lane-1",
       // Not "active": an active thread is mid-turn and is never asked.
       status: "idle",
       summaryOrPreview: "Shipping the capture gesture on Windows.",
@@ -61,7 +62,18 @@ function makeDeps(overrides: Partial<IdentityThreadRotationDeps<Managed>> = {}) 
     flushContinuity: vi.fn(),
     writeContinuitySummary: vi.fn(),
     writeThreadState: vi.fn(),
-    memory: { appendDailyEntry: vi.fn(), appendMemoryFact: vi.fn() },
+    // No helper model is reachable unless a test says otherwise.
+    summarizeForHandoff: vi.fn(async () => null),
+    scheduledWork: null,
+    rollover: {
+      readInputs: () => ({ personMessageCount: 5, failedMessage: { text: "Did CI pass?" } }),
+      isClosed: () => false,
+      announce: vi.fn(),
+      resend: vi.fn(async () => undefined),
+      defer: (run) => run(),
+      nowMs: () => 0,
+    },
+    memory: { appendDailyEntry: vi.fn() },
     // Settled by default; the refusal tests are the ones that turn this on.
     isTurnActive: () => false,
     dispose: vi.fn(async () => undefined),
@@ -93,7 +105,7 @@ describe("distilIdentityHandoff", () => {
    */
   it("says so out loud when there was nothing readable to summarize", async () => {
     const { deps } = makeDeps({
-      describeSession: (managed) => ({ id: managed.id, status: "idle", summaryOrPreview: "   " }),
+      describeSession: (managed) => ({ id: managed.id, laneId: "lane-1", status: "idle", summaryOrPreview: "   " }),
       listUserMessages: () => [],
       listScheduledWorkLines: () => [],
     });
@@ -133,6 +145,62 @@ describe("distilIdentityHandoff", () => {
 });
 
 describe("startFreshIdentitySession", () => {
+  it("shares one rotation and resumes only its failed person message", async () => {
+    let finishSummary!: (summary: string | null) => void;
+    const pendingSummary = new Promise<string | null>((resolve) => { finishSummary = resolve; });
+    let finishResend!: () => void;
+    const resent = new Promise<void>((resolve) => { finishResend = resolve; });
+    const personMessage = { text: "Did the release workflow pass?", displayText: "Check the release workflow." };
+    const listIdentitySessions = vi.fn(async () => [{ sessionId: "session-old" }]);
+    const appendDailyEntry = vi.fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error("daily journal unavailable"); });
+    const { deps, session } = makeDeps({
+      listIdentitySessions,
+      summarizeForHandoff: vi.fn(() => pendingSummary),
+      memory: { appendDailyEntry },
+      scheduledWork: {
+        take: vi.fn(() => ["cron 09:00 — check CI"]),
+        restore: vi.fn(async () => ({ restored: 0, failed: ["cron 09:00 — check CI"] })),
+      },
+    });
+    const deferredRun: { current?: () => void } = {};
+    deps.rollover.defer = (run) => { deferredRun.current = run; };
+    const readInputs = vi.fn(() => ({ personMessageCount: 5, failedMessage: personMessage }));
+    deps.rollover.readInputs = readInputs;
+    deps.rollover.resend = vi.fn(async () => { finishResend(); });
+    const rotation = createIdentityThreadRotation(deps);
+
+    const pendingRotation = rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+    const concurrentRotation = rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+    expect(concurrentRotation).toBe(pendingRotation);
+    expect(rotation.maybeAutoRollover({ id: "session-old" }, "failed-turn")).toBe(false);
+    expect(readInputs).not.toHaveBeenCalled();
+
+    finishSummary("Keep the project moving.");
+    const [rotationResult, concurrentResult] = await Promise.all([pendingRotation, concurrentRotation]);
+    expect(listIdentitySessions).toHaveBeenCalledTimes(1);
+    expect(deps.dispose).toHaveBeenCalledTimes(1);
+    expect(deps.ensureIdentitySession).toHaveBeenCalledTimes(1);
+    expect(rotationResult).toBe(concurrentResult);
+    expect(rotationResult.session).toBe(session);
+
+    expect(rotation.maybeAutoRollover({ id: "session-old" }, "failed-turn")).toBe(true);
+    expect(readInputs).toHaveBeenCalledWith({ id: "session-old" }, "failed-turn");
+    expect(deferredRun.current).toBeDefined();
+
+    deferredRun.current?.();
+    await resent;
+
+    expect(deps.rollover.announce).toHaveBeenCalledWith("session-new", true);
+    expect(deps.rollover.resend).toHaveBeenCalledTimes(1);
+    expect(deps.rollover.resend).toHaveBeenCalledWith("session-new", personMessage);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "agent_chat.identity_rotation_daily_entry_failed",
+      expect.objectContaining({ error: "daily journal unavailable" }),
+    );
+  });
+
   it("distils, flushes and retires the old thread before opening a clean one", async () => {
     const { deps, session } = makeDeps();
     const rotation = createIdentityThreadRotation(deps);
@@ -152,8 +220,9 @@ describe("startFreshIdentitySession", () => {
       expect.stringContaining("Where it left off:"),
       "session_rotation",
     );
-    expect(deps.memory?.appendMemoryFact).toHaveBeenCalledWith(
-      expect.stringContaining("2026-09-16 hand-off from retired CTO thread session-old:"),
+    // The hand-off is journaled, not filed as a durable fact.
+    expect(deps.memory?.appendDailyEntry).toHaveBeenCalledWith(
+      expect.stringContaining("Thread retired (session-old) and a fresh CTO session started. Hand-off: Where it left off:"),
     );
     expect(deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
     // `reuseExisting: false` is the whole point — reusing would hand back the
@@ -171,8 +240,14 @@ describe("startFreshIdentitySession", () => {
    * on disk; only the note is lost, and the result says so.
    */
   it("still rotates when the hand-off write fails", async () => {
+    const appendDailyEntry = vi.fn(() => { throw new Error("daily journal unavailable"); });
     const { deps } = makeDeps({
       writeContinuitySummary: vi.fn(() => { throw new Error("disk full"); }),
+      memory: { appendDailyEntry },
+      scheduledWork: {
+        take: vi.fn(() => { throw new Error("snapshot failed"); }),
+        restore: vi.fn(async () => ({ restored: 0, failed: [] })),
+      },
     });
     const rotation = createIdentityThreadRotation(deps);
 
@@ -181,6 +256,10 @@ describe("startFreshIdentitySession", () => {
     expect(result.handoff).toEqual({ written: false, thin: false, source: "none" });
     expect(deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
     expect(deps.ensureIdentitySession).toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "agent_chat.identity_rotation_daily_entry_failed",
+      expect.objectContaining({ error: "daily journal unavailable" }),
+    );
   });
 
   /** Nothing to retire is not an error: the first thread rotates from nothing. */

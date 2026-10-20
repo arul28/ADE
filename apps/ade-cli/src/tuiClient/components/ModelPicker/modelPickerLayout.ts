@@ -37,11 +37,12 @@ const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
  * provider now and reports the way Droid does. Mirrors `ACP_PICKER_FAMILIES` in
  * desktop's useProviderAuthStatus.
  */
-const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "devin">[] = [
+const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "devin" | "antigravity">[] = [
   "qwen",
   "kimi",
   "grok",
   "devin",
+  "antigravity",
 ];
 
 function isAcpProvider(provider: AdeCodeProvider): provider is (typeof ACP_PROVIDERS)[number] {
@@ -171,6 +172,7 @@ const PROVIDER_BY_CATALOG_GROUP: Record<ProviderGroupKey, AdeCodeProvider> = {
   grok: "grok",
   copilot: "copilot",
   devin: "devin",
+  antigravity: "antigravity",
   opencode: "opencode",
   ollama: "ollama",
   lmstudio: "lmstudio",

@@ -522,8 +522,14 @@ export class RemoteConnectionService {
     return target;
   }
 
-  rememberDiscoveredMachines(machines: RemoteRuntimeDiscoveredMachine[]): void {
-    const discoveredAt = Date.now();
+  /**
+   * `observedAt` is when the browse started, not when it finished: a dial that
+   * failed during the browse must not be cleared by a sighting that may predate it.
+   */
+  rememberDiscoveredMachines(
+    machines: RemoteRuntimeDiscoveredMachine[],
+    observedAt = Date.now(),
+  ): void {
     for (const machine of machines) {
       if (!machine.hostIdentity) continue;
       const paired = this.pairedStore.get(machine.hostIdentity);
@@ -534,15 +540,19 @@ export class RemoteConnectionService {
         const state = paired.endpointStates?.find(
           (candidate) => candidate.endpoint === endpoint,
         );
+        // Inside the window a sighting is skipped only if it already comes after
+        // the route's last failure. Otherwise it is the one thing that clears
+        // the demotion, and skipping it would keep the route demoted for a minute.
         return state?.lastDiscoveredAt != null
-          && discoveredAt - state.lastDiscoveredAt
-            < DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS;
+          && observedAt - state.lastDiscoveredAt
+            < DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS
+          && state.lastDiscoveredAt > (state.lastFailedAt ?? 0);
       });
       if (discoveryIsFresh) continue;
       this.pairedStore.markEndpointsDiscovered(
         paired.hostIdentity.deviceId,
         endpoints,
-        discoveredAt,
+        observedAt,
       );
     }
   }

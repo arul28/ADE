@@ -1,5 +1,6 @@
 import type { AiProviderConnectionStatus, AiProviderConnections } from "../../../shared/types";
 import type { CliAuthStatus } from "./authDetector";
+import type { CopilotSdkRuntimeResolution } from "./acpExecutables";
 import {
   isCodexTokenStale,
   readClaudeCredentials,
@@ -26,9 +27,83 @@ import {
   ACP_PROVIDER_METADATA,
   type AcpProviderId,
 } from "../../../shared/acpProviderMetadata";
+import { COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
+import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
+
+/**
+ * Why a provider's runtime is not on this machine: the reason the CLI status
+ * carried, else the tools cache's own reading. Every provider runs ADE's own
+ * pinned copy, so this is a download state, never "install the CLI".
+ */
+function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): string {
+  if (cli?.pinnedBlocker) return cli.pinnedBlocker;
+  const tool = pinnedToolForProvider(provider);
+  return (tool ? pinnedToolState(tool.tool, tool.label).blocker : null)
+    ?? `ADE could not find its ${provider} runtime on this machine.`;
+}
+
+/** What the Copilot SDK runtime reported when ADE asked it who is signed in. */
+export type CopilotSdkAuthProbe = {
+  /** The runtime ADE starts for Copilot chats; only `fallback-command` means none was found. */
+  runtime: CopilotSdkRuntimeResolution;
+  /** Null when the probe itself failed; the disk check speaks instead. */
+  auth: { isAuthenticated: boolean; login?: string; authType?: string; statusMessage?: string } | null;
+};
+
+/**
+ * Why Copilot is signed out, in words the user can act on. A token in the
+ * environment wins over `copilot login`, so a bad one must be named: signing
+ * in again would not help.
+ */
+function copilotSignedOutBlocker(probe: CopilotSdkAuthProbe["auth"], env: NodeJS.ProcessEnv): string {
+  const tokenKey = COPILOT_TOKEN_ENV_KEYS.find((key) => env[key]?.trim());
+  if (tokenKey) {
+    const classic = (env[tokenKey]?.trim() ?? "").startsWith("ghp_");
+    return classic
+      ? `${tokenKey} holds a classic GitHub token, which Copilot does not accept, and it overrides your Copilot login. Unset ${tokenKey} or replace it with a fine-grained token that has the Copilot Requests permission, then refresh.`
+      : `Copilot rejected the token in ${tokenKey}, which overrides your Copilot login. Fix or unset ${tokenKey}, then refresh.`;
+  }
+  const detail = probe?.statusMessage?.trim();
+  return `${detail ? `${detail.replace(/\.$/, "")}. ` : ""}Sign in with \`copilot login\` or \`gh auth login\`, then refresh.`;
+}
+
+function buildCopilotConnection(
+  cli: CliAuthStatus | null,
+  probe: CopilotSdkAuthProbe | null | undefined,
+  checkedAt: string,
+  env: NodeJS.ProcessEnv,
+): AiProviderConnectionStatus {
+  const runtimePath = probe?.runtime.path ?? cli?.path ?? null;
+  const runtimeDetected = probe ? probe.runtime.source !== "fallback-command" : Boolean(cli?.installed);
+  // The SDK's live answer beats the disk heuristic, which misses keychain and
+  // `gh` logins and keeps stale ones.
+  // Copilot runs on ADE's runtime, so the disk check counts with no CLI installed.
+  const authAvailable = probe?.auth ? probe.auth.isAuthenticated : Boolean(cli?.authenticated);
+  const verified = Boolean(probe?.auth);
+  return {
+    ...createUnavailableStatus("copilot", checkedAt),
+    authAvailable,
+    runtimeDetected,
+    runtimeAvailable: authAvailable && runtimeDetected,
+    usageAvailable: authAvailable,
+    path: runtimePath,
+    sources: [{ kind: "cli", detected: runtimeDetected, authenticated: authAvailable, verified, path: runtimePath }],
+    blocker: !runtimeDetected
+      ? copilotRuntimeMissingBlocker(cli, authAvailable)
+      : !authAvailable ? copilotSignedOutBlocker(probe?.auth ?? null, env) : null,
+  };
+}
+
+function copilotRuntimeMissingBlocker(cli: CliAuthStatus | null, authAvailable: boolean): string {
+  const state = cli?.pinnedState ?? pinnedToolState("copilot", "the Copilot runtime").state;
+  if (state !== "missing") return runtimeMissingBlocker("copilot", cli);
+  return authAvailable
+    ? "ADE has not downloaded the Copilot runtime on this machine yet. Refresh to download it."
+    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it.";
+}
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | AcpProviderId,
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "muse" | "copilot" | AcpProviderId,
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -49,6 +124,7 @@ export async function buildProviderConnections(
   options?: {
     piInstallation?: PiInstallation | null;
     piInventory?: PiProfileInventory | null;
+    copilot?: CopilotSdkAuthProbe | null;
   },
 ): Promise<AiProviderConnections> {
   const checkedAt = nowIso();
@@ -71,6 +147,7 @@ export async function buildProviderConnections(
     cli: CliAuthStatus | null,
     localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
   ) => {
+    // `installed` is ADE's own pinned copy, the only one chats run on.
     const runtimeDetected = Boolean(cli?.installed);
     const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
     const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
@@ -88,29 +165,24 @@ export async function buildProviderConnections(
   const codexUsageAvailable = Boolean(codexLocalCreds && !isCodexTokenStale(codexLocalCreds));
 
   function resolveBlocker(
+    provider: "claude" | "codex",
     providerLabel: string,
     loginHint: string,
     flags: ReturnType<typeof deriveProviderFlags>,
+    cli: CliAuthStatus | null,
     extraBlocker?: string | null,
   ): string | null {
-    if (!flags.authAvailable && !flags.runtimeDetected) {
-      return `No ${providerLabel} authentication or CLI was found locally.`;
+    if (!flags.runtimeDetected) {
+      const missing = runtimeMissingBlocker(provider, cli);
+      return flags.authAvailable ? missing : `${missing} No ${providerLabel} login was found either. Run: ${loginHint}`;
     }
     if (flags.cliExplicitlyUnauthenticated) {
       return flags.localCredsDetected
-        ? `Local ${providerLabel} credentials were found, but ${providerLabel} CLI reports no active login. Run: ${loginHint}`
-        : `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
+        ? `Local ${providerLabel} credentials were found, but ${providerLabel} reports no active login. Run: ${loginHint}`
+        : `No ${providerLabel} login was detected. Run: ${loginHint}`;
     }
     if (!flags.authAvailable) {
-      return `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
-    }
-    if (!flags.runtimeDetected) {
-      // The login-shell/interactive-shell PATH probe is a POSIX-only step —
-      // `augmentProcessPathWithShellAndKnownCliDirs` skips it on Windows — so
-      // do not claim it happened, and give the right place to fix PATH.
-      return process.platform === "win32"
-        ? `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH (honouring PATHEXT) and the common Windows install directories: %APPDATA%\\npm, %USERPROFILE%\\.local\\bin, %LOCALAPPDATA%\\Programs, %LOCALAPPDATA%\\Microsoft\\WinGet\\Links. If ${providerLabel} is installed elsewhere, add that folder to your PATH in System Properties -> Environment Variables, reopen ADE, and refresh.`
-        : `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH, login-shell PATH, interactive-shell PATH, and common install directories. If ${providerLabel} is installed elsewhere, add that bin directory to your shell PATH and refresh.`;
+      return `No ${providerLabel} login was detected. Run: ${loginHint}`;
     }
     if (extraBlocker) return extraBlocker;
     return null;
@@ -173,7 +245,9 @@ export async function buildProviderConnections(
         path: args.cli?.path ?? null,
       },
     ];
-    status.blocker = resolveBlocker(args.label, args.loginHint, args.flags, args.extraBlocker);
+    status.blocker = args.provider === "claude" || args.provider === "codex"
+      ? resolveBlocker(args.provider, args.label, args.loginHint, args.flags, args.cli, args.extraBlocker)
+      : args.extraBlocker ?? null;
     // Plain read: `resolveProviderAccounts` already carries the last-known
     // account across a config that exists but could not be read, and already
     // clears it on a real sign-out, so Settings > Providers and the Limits
@@ -333,14 +407,10 @@ export async function buildProviderConnections(
   };
 
   let droidBlocker: string | null = null;
-  if (!droidFlags.authAvailable && !droidFlags.runtimeDetected) {
-    droidBlocker = "No Factory Droid CLI (`droid`) or FACTORY_API_KEY was found locally.";
+  if (!droidFlags.runtimeDetected) {
+    droidBlocker = runtimeMissingBlocker("droid", droidCli);
   } else if (!droidFlags.authAvailable) {
-    droidBlocker =
-      "Droid CLI is installed but no credentials were detected. Set FACTORY_API_KEY or sign in with the Factory CLI (`droid`).";
-  } else if (!droidFlags.runtimeDetected) {
-    droidBlocker =
-      "FACTORY_API_KEY is set, but ADE could not find the `droid` binary. Add Factory CLI to your PATH and refresh.";
+    droidBlocker = "No Droid credentials were detected. Set FACTORY_API_KEY or sign in with Droid (`droid`).";
   }
 
   const droid: AiProviderConnectionStatus = {
@@ -377,7 +447,7 @@ export async function buildProviderConnections(
   let piBlocker = piInstallation?.blocker ?? null;
   if (!piBlocker) {
     if (!piRuntimeDetected) {
-      piBlocker = "Pi is not installed.";
+      piBlocker = runtimeMissingBlocker("pi", null);
     } else if (!piAuthAvailable) {
       piBlocker = "No Pi providers are configured yet. Use Pi /login or edit auth.json/models.json.";
     } else if (!piRuntimeAvailable) {
@@ -426,7 +496,9 @@ export async function buildProviderConnections(
     const metadata = ACP_PROVIDER_METADATA[provider];
     const cli = cliStatuses.find((status) => status.cli === provider) ?? null;
     const runtimeDetected = Boolean(cli?.installed);
-    const authAvailable = Boolean(cli?.installed && cli.authenticated);
+    // Credentials are read off disk, so a signed-in provider whose pinned copy
+    // is still downloading reads as signed in and downloading.
+    const authAvailable = Boolean(cli?.authenticated);
     const health = getProviderRuntimeHealth(provider);
     const status: AiProviderConnectionStatus = {
       ...createUnavailableStatus(provider, checkedAt),
@@ -451,14 +523,24 @@ export async function buildProviderConnections(
         },
       ],
       blocker: !runtimeDetected
-        ? `The ${metadata.statusLabel} CLI (\`${provider}\`) was not found on this machine.`
+        ? runtimeMissingBlocker(provider, cli)
         : !authAvailable
-          ? `${metadata.statusLabel} is installed but no login was detected. Run: ${metadata.loginHint}`
+          ? metadata.loginCommand
+            ? `No ${metadata.statusLabel} login was detected. Run: ${metadata.loginHint}`
+            : `No ${metadata.statusLabel} login was detected: ${metadata.loginHint}.`
           : null,
     };
     applyRuntimeHealth(status, health);
     acpConnections[provider] = status;
   }
+
+  const copilot = buildCopilotConnection(
+    cliStatuses.find((status) => status.cli === "copilot") ?? null,
+    options?.copilot,
+    checkedAt,
+    process.env,
+  );
+  applyRuntimeHealth(copilot, getProviderRuntimeHealth("copilot"));
 
   return {
     claude,
@@ -468,6 +550,7 @@ export async function buildProviderConnections(
     ...(pi ? { pi } : {}),
     muse,
     ...acpConnections,
+    copilot,
   };
 }
 

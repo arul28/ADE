@@ -1,9 +1,11 @@
 /**
- * Holds this machine awake while an agent turn is running — and only then, and
- * only when the user has asked for it.
+ * Desktop-side power helpers for the keep-awake setting.
  *
- * The default is `never`. A wake lock drains a battery, so ADE takes one only
- * on an explicit choice, and drops it the moment the machine goes idle again.
+ * The machine brain owns the turn-following wake lock in
+ * `apps/ade-cli/src/services/power/brainKeepAwakeService.ts`. This service
+ * supplies the local macOS authorization dialog and system-sleep fix. Its
+ * optional in-process blocker remains for older direct callers, but main.ts no
+ * longer starts it, so it cannot duplicate the brain's lock.
  *
  * Two mechanisms, and they are not interchangeable:
  *
@@ -97,8 +99,12 @@ export type LidSleepController = {
 export type KeepAwakeService = {
   start(): void;
   dispose(): void;
+  /** Stop the legacy in-process lock after the brain takes ownership. */
+  stopLegacyFallback(): void;
   getSnapshot(): Promise<KeepAwakeSnapshot>;
   setLevel(level: unknown): Promise<KeepAwakeSnapshot>;
+  /** Desktop-only privileged step for the macOS lid-closed setting. */
+  applyLidClosed(disabled: boolean): Promise<{ ok: boolean; error: string | null }>;
   fixSystemSleep(): Promise<{ ok: boolean; error: string | null; snapshot: KeepAwakeSnapshot }>;
   /** Test seam: run one poll cycle synchronously. */
   refreshBlocker(): Promise<void>;
@@ -336,7 +342,23 @@ export function createKeepAwakeService(
       // re-prompting on every launch to put it back.
     },
 
+    stopLegacyFallback(): void {
+      if (timer) clearInterval(timer);
+      timer = null;
+      releaseBlocker();
+      preferences = { level: "never" };
+      levelError = null;
+      blockerError = null;
+    },
+
     getSnapshot: snapshot,
+
+    async applyLidClosed(disabled: boolean): Promise<{ ok: boolean; error: string | null }> {
+      if (!lidClosedSupported || !lidSleep) {
+        return { ok: false, error: "Lid-closed mode is only available on a Mac." };
+      }
+      return lidSleep.set(disabled);
+    },
 
     async setLevel(level: unknown): Promise<KeepAwakeSnapshot> {
       const next = normalizeKeepAwakePreferences({ level });

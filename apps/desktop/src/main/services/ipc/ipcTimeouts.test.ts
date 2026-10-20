@@ -21,7 +21,6 @@ import {
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
-import { ACP_PROVIDER_UPDATE_RUN_BUDGET_MS } from "../ai/acpProviderUpdate";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 describe("ipcInvokeTimeoutMs", () => {
@@ -30,9 +29,6 @@ describe("ipcInvokeTimeoutMs", () => {
     // default the renderer reported failure while the daemon was still signing
     // in, so in-app sign-in could never complete.
     ["a Pi sign-in", IPC.aiPiLoginStart, "piLoginStart", 10 * 60 * 1000],
-    // An npm or vendor install plus the version re-read. At the 30s default the
-    // renderer reported a failure (and offered "Try again") mid-install.
-    ["a provider CLI update", IPC.aiAcpProviderUpdate, "acpProviderUpdate", ACP_PROVIDER_UPDATE_RUN_BUDGET_MS],
   ] as const)("gives %s longer than the work it waits on, on every transport", (_label, channel, action, flowBudgetMs) => {
     expect(ipcInvokeTimeoutMs(channel)).toBeGreaterThan(flowBudgetMs);
     expect(longRunningLocalRuntimeActionTimeoutMs(`ai.${action}`)).toBeGreaterThan(flowBudgetMs);

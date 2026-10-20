@@ -71,7 +71,6 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
-    draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
     reopenPr: vi.fn().mockResolvedValue(undefined),
@@ -85,7 +84,6 @@ function createMockPrService() {
     replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
     setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
     reactToComment: vi.fn().mockResolvedValue(undefined),
-    aiReviewSummary: vi.fn().mockResolvedValue({ summary: "ready" }),
     simulateIntegration: vi.fn().mockResolvedValue({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" }),
     commitIntegration: vi.fn().mockResolvedValue({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] }),
     listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
@@ -153,7 +151,6 @@ function createMockGitService() {
     discardFile: vi.fn().mockResolvedValue(undefined),
     restoreStagedFile: vi.fn().mockResolvedValue(undefined),
     commit: vi.fn().mockResolvedValue({ sha: "abc123" }),
-    generateCommitMessage: vi.fn().mockResolvedValue({ message: "feat: auto" }),
     listRecentCommits: vi.fn().mockResolvedValue([]),
     listCommitFiles: vi.fn().mockResolvedValue([]),
     getFileHistory: vi.fn().mockResolvedValue([]),
@@ -423,7 +420,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("lanes.importBranch");
       expect(actions).toContain("prs.list");
       expect(actions).toContain("prs.createFromLane");
-      expect(actions).toContain("prs.draftDescription");
       expect(actions).toContain("prs.rerunChecks");
       expect(actions).toContain("prs.addComment");
       expect(actions).toContain("git.commit");
@@ -677,6 +673,40 @@ describe("createSyncRemoteCommandService", () => {
         description: "desc",
         baseBranch: "main",
       });
+    });
+
+    it("lanes.create with setup \"default\" answers with the lane, then sets it up with the default template", async () => {
+      const sheetLane = { id: "lane-sheet", name: "Sheet lane", laneType: "feature", worktreePath: "/repo/.ade/worktrees/lane-sheet" };
+      const lane = { id: "lane-new", name: "Phone lane", laneType: "feature", worktreePath: "/repo/.ade/worktrees/lane-new" };
+      laneService.create.mockResolvedValueOnce(sheetLane).mockResolvedValueOnce(lane);
+      laneService.list.mockResolvedValue([sheetLane, lane]);
+      const envInit = { dependencies: [{ command: ["npm", "install"] }] };
+      let markStarted: (args: unknown[]) => void = () => {};
+      const started = new Promise<unknown[]>((resolve) => { markStarted = resolve; });
+      const initLaneEnvironment = vi.fn(async (...args: unknown[]) => {
+        markStarted(args);
+        return { laneId: lane.id, steps: [], startedAt: "t", completedAt: "t", overallStatus: "completed" };
+      });
+      const withSetup = createSyncRemoteCommandService({
+        laneService, prService, ptyService, sessionService, fileService, gitService, diffService, agentChatService, conflictService,
+        projectConfigService: { getEffective: vi.fn(() => ({ laneEnvInit: envInit, laneOverlayPolicies: [] })) } as any,
+        laneEnvironmentService: { resolveEnvInitConfig: vi.fn(() => envInit), initLaneEnvironment } as any,
+        laneTemplateService: {
+          getDefaultTemplateId: vi.fn(() => null),
+          getTemplate: vi.fn(() => null),
+        } as any,
+        portAllocationService: { getLease: vi.fn(() => null) } as any,
+        logger: createLogger() as any,
+      });
+
+      // Without the flag (the lane sheet, older phones) nothing is set up here.
+      await withSetup.execute(makePayload("lanes.create", { name: "Sheet lane" }));
+      expect(await withSetup.execute(makePayload("lanes.create", { name: "Phone lane", setup: "default" }))).toEqual(lane);
+      expect(laneService.create).toHaveBeenLastCalledWith(expect.not.objectContaining({ setup: expect.anything() }));
+
+      const [setUpLane] = await started;
+      expect(setUpLane).toEqual(lane);
+      expect(initLaneEnvironment).toHaveBeenCalledTimes(1);
     });
 
     it("lanes.create throws when name is missing", async () => {
@@ -936,20 +966,6 @@ describe("createSyncRemoteCommandService", () => {
     it("prs.createFromLane throws when laneId or title is missing", async () => {
       await expect(service.execute(makePayload("prs.createFromLane", { laneId: "lane-1" })))
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
-    });
-
-    it("prs.draftDescription parses laneId and optional model controls", async () => {
-      const result = await service.execute(makePayload("prs.draftDescription", {
-        laneId: "lane-1",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-      }));
-      expect(prService.draftDescription).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        model: "gpt-5.4",
-        reasoningEffort: "medium",
-      });
-      expect(result).toEqual({ title: "Draft title", body: "Draft body" });
     });
 
     it("prs.land validates method enum", async () => {

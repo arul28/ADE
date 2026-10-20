@@ -49,7 +49,9 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           });
           return;
         }
-        if (event.type === "lane-renamed" || event.type === "lane-branch-updated") return;
+        // A reclaim follows its own "Lane archived" event, and the screen that
+        // started it reports the space it freed.
+        if (event.type === "lane-renamed" || event.type === "lane-branch-updated" || event.type === "lane-reclaimed") return;
         showToast({
           id: `lane-${event.type}-${event.laneId}`,
           title: event.laneName,
@@ -58,7 +60,9 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
               ? "Lane archived"
               : event.type === "lane-unarchived"
                 ? "Lane unarchived"
-                : "Lane deleted",
+                : event.type === "lane-restored"
+                  ? "Lane restored"
+                  : "Lane deleted",
           tone: "info",
           colorDot: dot,
         });

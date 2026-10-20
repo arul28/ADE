@@ -113,6 +113,7 @@ export type AdeCodeProvider =
     "codex" | "claude" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
   >
   | "devin"
+  | "antigravity"
   | "ollama"
   | "lmstudio";
 
@@ -323,22 +324,6 @@ export type ModelWizardRightPaneContent = {
   laneLabel?: string | null;
 };
 
-// Serializable state carried on the feedback form's RightPaneContent. Mirrors
-// the framework-free FeedbackFormState in feedbackForm.ts (type + multiline body
-// + toggleable auto-context footer) so the right-pane render, the keyboard input
-// guard, and the submit path all read/write the same object. `feedback:
-// "submitted"` is the transient flag that switches the pane to the success check.
-export interface FeedbackContextMeta {
-  type?: "bug" | "idea" | "praise";
-  body?: string;
-  showContext?: boolean;
-  provider?: string | null;
-  model?: string | null;
-  lane?: string | null;
-  lastError?: string | null;
-  feedback?: "submitted";
-}
-
 export type RightPaneContent =
   | { kind: "empty" }
   | ModelPickerRightPaneContent
@@ -443,7 +428,7 @@ export type RightPaneContent =
   | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged" | "chat-delete";
+      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "lane-delete" | "new-lane-from-unstaged" | "chat-delete";
       description?: string;
       laneId?: string;
       sessionId?: string;
@@ -457,9 +442,6 @@ export type RightPaneContent =
         branchRef: string | null;
         dirty: boolean;
       };
-      // Present only for the feedback form (command === "feedback"): the
-      // multiline form's serializable state (see FeedbackContextMeta).
-      feedback?: FeedbackContextMeta;
       // Present only for the new-lane form (command === "new-lane"): branch
       // names fetched once when the form opens, feeding the branch typeahead.
       branches?: Array<{ name: string; remote: boolean }>;

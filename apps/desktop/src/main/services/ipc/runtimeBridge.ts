@@ -3,6 +3,7 @@ import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/pro
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -12,6 +13,7 @@ import type {
   ListMyGitHubReposResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
+  PersonalChatMachineTarget,
   PersonalChatCallResponse,
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
@@ -596,6 +598,28 @@ export function registerRuntimeBridge({
   const remoteOpenProjectGenerations = new Map<string, number>();
   let remoteOpenProjectGeneration = 0;
   let lastDiscoveredMachines: RemoteRuntimeDiscoveryResult["machines"] = [];
+  // A sighting after a failure clears a demoted LAN address without a dial (see
+  // pairedEndpointIsFailing). So discovery also runs at launch and on wake or
+  // unlock, not only when the target list opens. Overlapping runs share one
+  // browse, and no connect waits on one.
+  let lanDiscoveryInFlight: Promise<RemoteRuntimeDiscoveryResult> | null = null;
+  const refreshLanDiscovery = (): Promise<RemoteRuntimeDiscoveryResult> => {
+    lanDiscoveryInFlight ??= (async () => {
+      const observedAt = Date.now();
+      const result = await discoverLanRuntimes();
+      lastDiscoveredMachines = result.machines;
+      remoteConnectionService.rememberDiscoveredMachines(result.machines, observedAt);
+      return result;
+    })().finally(() => {
+      lanDiscoveryInFlight = null;
+    });
+    return lanDiscoveryInFlight;
+  };
+  const logLanDiscoveryFailure = (error: unknown): void => {
+    console.warn("remote_runtime.lan_discovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
 
   remoteConnectionPool.onPortForwardsInvalidated((targetId) => {
     // Two caches outlive the tunnel unless they are told. The browser's
@@ -634,12 +658,19 @@ export function registerRuntimeBridge({
           console.warn("remote_runtime.account_reconciliation_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
+        })
+        // Discovery starts only after the first connects are under way, so it
+        // never runs ahead of one. It runs even when account trust did not
+        // reconcile: it only records what this network advertises.
+        .finally(() => {
+          void refreshLanDiscovery().catch(logLanDiscoveryFailure);
         });
     }, 0);
     autoconnectTimer.unref?.();
   }
   const probeRemoteConnectionsAfterWake = (): void => {
     remoteConnectionService.probeSavedConnections();
+    void refreshLanDiscovery().catch(logLanDiscoveryFailure);
   };
   powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
   powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
@@ -884,16 +915,35 @@ export function registerRuntimeBridge({
     return getWindowSession?.(windowId)?.binding ?? null;
   };
 
+  /**
+   * The remote target a personal-chat call goes to, or null for this
+   * computer. A call that names its machine goes there; one that does not
+   * goes to the machine the window is bound to.
+   */
+  const personalChatRemoteTargetId = (
+    sender: WebContents,
+    target: PersonalChatMachineTarget | null | undefined,
+  ): string | null => {
+    const named = typeof target?.machineId === "string" ? target.machineId.trim() : "";
+    if (named) return named === THIS_MACHINE_ID ? null : named;
+    const binding = personalChatBindingForSender(sender);
+    return binding?.kind === "remote" ? binding.targetId : null;
+  };
+
   ipcMain.handle(
     IPC.personalChatsCall,
-    async (event, request: PersonalChatCallArgs): Promise<PersonalChatCallResponse> => {
+    async (
+      event,
+      request: PersonalChatCallArgs,
+      target?: PersonalChatMachineTarget | null,
+    ): Promise<PersonalChatCallResponse> => {
       if (!request || typeof request !== "object" || typeof request.action !== "string") {
         throw new Error("A personal chat action is required.");
       }
-      const binding = personalChatBindingForSender(event.sender);
-      if (binding?.kind === "remote") {
+      const remoteTargetId = personalChatRemoteTargetId(event.sender, target);
+      if (remoteTargetId) {
         return await remoteConnectionService.callMachineMethod<PersonalChatCallResponse>(
-          binding.targetId,
+          remoteTargetId,
           "personalChats.call",
           request as unknown as Record<string, unknown>,
         );
@@ -913,6 +963,7 @@ export function registerRuntimeBridge({
     async (
       event,
       request: PersonalChatStreamEventsArgs = {},
+      target?: PersonalChatMachineTarget | null,
     ): Promise<PersonalChatStreamEventsResult> => {
       const normalized: PersonalChatStreamEventsArgs = {
         ...(typeof request?.cursor === "number" && Number.isFinite(request.cursor)
@@ -922,10 +973,10 @@ export function registerRuntimeBridge({
           ? { limit: Math.max(1, Math.min(500, Math.floor(request.limit))) }
           : {}),
       };
-      const binding = personalChatBindingForSender(event.sender);
-      if (binding?.kind === "remote") {
+      const remoteTargetId = personalChatRemoteTargetId(event.sender, target);
+      if (remoteTargetId) {
         return await remoteConnectionService.callMachineMethod<PersonalChatStreamEventsResult>(
-          binding.targetId,
+          remoteTargetId,
           "personalChats.streamEvents",
           normalized as Record<string, unknown>,
         );
@@ -957,10 +1008,7 @@ export function registerRuntimeBridge({
   ipcMain.handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
-      const result = await discoverLanRuntimes();
-      lastDiscoveredMachines = result.machines;
-      remoteConnectionService.rememberDiscoveredMachines(result.machines);
-      return result;
+      return await refreshLanDiscovery();
     },
   );
 

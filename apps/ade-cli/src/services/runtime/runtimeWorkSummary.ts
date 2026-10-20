@@ -25,9 +25,14 @@ function listRunningWorkSessions(runtime: AdeRuntime) {
 }
 
 export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCounts {
+  const activeWorkSessions = listRunningWorkSessions(runtime);
+  const activeAgentCliSessions = activeWorkSessions.filter(
+    (session) => isTrackedAgentCliToolType(session.toolType) && session.runtimeState === "running",
+  ).length;
   return {
     activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
-    activeWorkSessions: listRunningWorkSessions(runtime).length,
+    activeWorkSessions: activeWorkSessions.length,
+    ...(activeAgentCliSessions > 0 ? { activeAgentCliSessions } : {}),
   };
 }
 

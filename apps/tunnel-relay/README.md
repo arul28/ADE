@@ -84,6 +84,41 @@ location must never decide where a machine's object lives, so `/connect`,
 it creates the object, so this steers new machines and leaves existing ones
 exactly where they are.
 
+## ADE MCP
+
+The same Durable Object also carries a machine's remote MCP server
+(`docs/features/ade-mcp/README.md`). HTTP requests under
+`/m/<endpointKey>/` (and the OAuth discovery URLs
+`/.well-known/{oauth-protected-resource,oauth-authorization-server,openid-configuration}/m/<endpointKey>[/mcp]`)
+are sent to the brain over its **control socket** as `{t:"http", rid, …}` and
+answered with `{t:"http_res", rid, status, headers, body}`. No pipe, no second
+socket, no session object.
+
+- The endpoint key is not the `machineKey`: the brain derives it from its
+  relay secret and sends it in `mcp_state`; the object named
+  `mcp-endpoint:<endpointKey>` stores which machine it belongs to (first
+  writer wins, reached only through the Worker's internal
+  `/__mcp-endpoint` path), and the Worker caches that mapping. So the URL an
+  AI app holds cannot dial `/connect` or `/prewarm` for the machine.
+- The brain sends `{t:"mcp_state", enabled, endpointKey}` on every control open and toggle;
+  the DO keeps it in the control socket's attachment. Off (or a brain that
+  never says) → `404 ade_mcp_off` without waking the machine.
+- No control socket → `503 offline`. Over 16 in flight or 300 a minute →
+  `429`. Request bodies over 1 MiB → `413`. A request with no answer in 11
+  minutes → `504`; a control socket that closes or is replaced fails its
+  pending requests with `503` at once.
+- Only `authorization`, `content-type`, `accept`, `mcp-protocol-version`,
+  `mcp-session-id` and `user-agent` go to the brain; only a fixed list of
+  response headers comes back. Every answer carries permissive CORS, and
+  `OPTIONS` is answered by the Worker.
+- `GET /oauth/callback` is ADE sign-in's one registered return address. The
+  `state` names the machine before the dot; the request goes to that brain as
+  `/oauth/account-callback`.
+- The relay authenticates nothing here: tokens, OAuth and the ADE sign-in check
+  that proves a person approved all live on the brain, which redeems ADE's
+  sign-in code with a verifier only it holds. The relay can read the traffic
+  (TLS ends at Cloudflare) but cannot mint access.
+
 ## Trust model — read this
 
 The relay is a **trusted intermediary for frame contents**. Brain→CF and

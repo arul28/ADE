@@ -230,6 +230,9 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "kimi": return "kimi"
   case "grok": return "grok"
   case "copilot": return "copilot"
+  case "devin": return "devin"
+  // ACP-only: Antigravity has a chat runtime and no terminal CLI.
+  case "antigravity": return "antigravity"
   default: return "opencode"
   }
 }
@@ -333,6 +336,8 @@ private let workModelGroupOrder = [
   "codex",
   "muse",
   "cursor",
+  "devin",
+  "antigravity",
   "opencode",
   "pi",
   "copilot",
@@ -1535,6 +1540,8 @@ private func workProviderDisplayName(
   case "moonshot", "moonshotai", "kimi": return "Kimi"
   case "grok": return "Grok"
   case "copilot", "github-copilot": return "GitHub Copilot"
+  case "devin": return "Devin"
+  case "antigravity": return "Antigravity"
   default: return providerKey.capitalized
   }
 }
@@ -2130,6 +2137,14 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   }
   if provider == "copilot" || provider == "github-copilot" || modelId.hasPrefix("github-copilot/") {
     return "copilot"
+  }
+  // Devin and Antigravity carry other vendors' model names too (an Antigravity
+  // account lists Claude and GPT-OSS models), so they go before the heuristics.
+  if provider == "devin" || modelId.hasPrefix("devin/") {
+    return "devin"
+  }
+  if provider == "antigravity" || modelId.hasPrefix("antigravity/") {
+    return "antigravity"
   }
   if workCanonicalCodexRegistryId(for: modelId) != nil {
     return "codex"

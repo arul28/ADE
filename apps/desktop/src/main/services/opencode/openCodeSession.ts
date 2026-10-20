@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
 import type { Logger } from "../logging/logger";
 import { ADE_OPENCODE_LAUNCH_ENV } from "../../../shared/cliLaunch";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
 import { readOpenCodeDb } from "./openCodeCredentials";
 import {
   buildOpenCodeConfig,
@@ -137,9 +139,12 @@ export function isOpenCodeNotFoundError(error: unknown): boolean {
   return isOpenCodeTaggedError(error, "SessionNotFoundError");
 }
 
-export function ensureOpenCodeAvailable(): void {
+/** Download ADE's pinned OpenCode when this machine never used it, then require a binary. */
+export async function ensureOpenCodeAvailable(): Promise<void> {
+  const download = pinnedToolDownload("opencode");
+  if (download) await download;
   if (!resolveOpenCodeBinaryPath()) {
-    throw new Error("OpenCode is not available: no bundled or installed OpenCode 2 binary was found.");
+    throw pinnedToolNotReadyError("opencode", "OpenCode");
   }
 }
 
@@ -230,7 +235,7 @@ export async function startOpenCodeChatSession(args: {
   ownerId?: string | null;
   logger?: Logger | null;
 }): Promise<OpenCodeSessionHandle> {
-  ensureOpenCodeAvailable();
+  await ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: openCodeProfileFor({
       projectConfig: args.config.projectConfig,
@@ -342,7 +347,10 @@ export async function runOpenCodeTextPrompt(args: {
   signal?: AbortSignal;
   logger?: Logger | null;
 }): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
-  ensureOpenCodeAvailable();
+  await ensureOpenCodeAvailable();
+  // A first-use download can take minutes; a caller that gave up meanwhile
+  // gets no session and no prompt.
+  if (args.signal?.aborted) throw new Error("OpenCode prompt aborted.");
   const lease = await acquireOpenCodeServer({
     profile: sharedOpenCodeProfileFor(args.config.projectConfig),
     config: buildOpenCodeConfig(args.config),

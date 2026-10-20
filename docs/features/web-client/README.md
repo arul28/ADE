@@ -782,10 +782,11 @@ Reused desktop renderer (web-mode adaptation):
   sections scoped `hidden` are not rendered in web at all. Desktop renders
   sections exactly as before: no banner, no wrapper.
 - `apps/desktop/src/renderer/webclient/workspace/useWebChatsMachines.ts` - the
-  Chats page's machine picker in the browser. Desktop's picker rebinds the
-  window and offers "This Mac"; a browser has no This Mac, so the options are
-  the account's Macs and selecting one repoints the federated adapter's Chats
-  surface. Options are keyed by `machineCatalogKey` rather than target id,
+  Chats page's machines in the browser. The rail lists the chats of every live
+  machine (`liveMachines`, by target id), and the federated adapter's
+  `personalChats` override sends a call that names its machine to that
+  machine's chats adapter. The picker beside the composer chooses where a new
+  chat runs: options are keyed by `machineCatalogKey` rather than target id,
   because a machine this browser has never dialled has no target id yet -
   selecting it connects first and hands the resolved target to `activateChats`.
   It returns null on the desktop.

@@ -83,6 +83,8 @@ import {
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
+import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -418,10 +420,15 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
   ];
   const activeAgentTurns = parts.reduce((total, part) => total + part.activeAgentTurns, 0);
   const activeWorkSessions = parts.reduce((total, part) => total + part.activeWorkSessions, 0);
+  const activeAgentCliSessions = parts.reduce(
+    (total, part) => total + (part.activeAgentCliSessions ?? 0),
+    0,
+  );
   return {
     idle: activeAgentTurns === 0 && activeWorkSessions === 0,
     activeAgentTurns,
     activeWorkSessions,
+    ...(activeAgentCliSessions > 0 ? { activeAgentCliSessions } : {}),
   };
 }
 
@@ -459,6 +466,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "runtime.updateImpact",
   "account.call",
+  "remoteMcp.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -1818,14 +1826,19 @@ export function createMultiProjectRpcRequestHandler(
     return scope?.runtime.syncService ?? null;
   };
 
-  // Status and disconnect are recovery controls: if a project scope is already
-  // alive, use it without re-entering host activation (which may be timed out
-  // or backed off). Preserve the ordinary resolver when nothing is booted.
+  // The project a sync call names: its projectId, or the registered project at
+  // its projectRoot.
+  const requestedSyncProjectId = (params: Record<string, unknown>): ProjectId | null =>
+    readProjectId(params)
+    ?? (typeof params.projectRoot === "string"
+      ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
+      : null);
+
+  // Status is a recovery control: if a project scope is already alive, use it
+  // without re-entering host activation (which may be timed out or backed off).
+  // Preserve the ordinary resolver when nothing is booted.
   const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
-    const requestedProjectId = readProjectId(params)
-      ?? (typeof params.projectRoot === "string"
-        ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
-        : null);
+    const requestedProjectId = requestedSyncProjectId(params);
     const targetProjectId = requestedProjectId
       ?? scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
@@ -1838,6 +1851,29 @@ export function createMultiProjectRpcRequestHandler(
       ? scope
       : await scopeRegistry.resolveActiveSyncHost();
     return resolvedScope?.runtime.syncService ?? null;
+  };
+
+  // Disconnect rewrites the saved connection and clears the device records, so
+  // it acts only on the project a caller names, and only on a scope that is
+  // already ready. It never falls back to the active or most recently failing
+  // project (that is how a project nobody named got disconnected), and it never
+  // boots a project to find one.
+  const resolveDisconnectSyncService = (params: Record<string, unknown>) => {
+    const projectId = requestedSyncProjectId(params);
+    if (!projectId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "sync.disconnectFromBrain needs a projectId, or the projectRoot of a registered project. Only the project it names is disconnected.",
+      );
+    }
+    const syncService = scopeRegistry.getIfReady?.(projectId)?.runtime.syncService ?? null;
+    if (!syncService) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "This project isn't loaded yet. Open it and try again.",
+      );
+    }
+    return syncService;
   };
 
   const syncServiceUnavailable = (): JsonRpcError =>
@@ -2398,6 +2434,29 @@ export function createMultiProjectRpcRequestHandler(
         return { accepted: false, reason: outcome.reason ?? "unsupported" };
       }
       return { accepted: true };
+    }
+
+    if (method === "remoteMcp.call") {
+      // `ade mcp` in the person's own terminal. Granting an outside AI app this
+      // computer is the person's call: an agent (a chat-bound caller) never
+      // reaches it, and neither does anything below the cto role.
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "ADE MCP is managed by the person: run `ade mcp` in your own terminal, or use Settings → ADE MCP.",
+        );
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!isRemoteMcpAction(action)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown ADE MCP action "${action}".`);
+      }
+      const [{ getSharedRemoteMcpService }, { remoteMcpActionHandlers }] = await Promise.all([
+        import("./services/remoteMcp/remoteMcpShared"),
+        import("./services/remoteMcp/remoteMcpService"),
+      ]);
+      // Settings on this computer's desktop arrives here too (it needs no project).
+      const surface = isDesktopClientName(callerClientName()) ? "desktop" : "api";
+      return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
     // `ade notify`: machine-wide, so it neither needs nor registers the
@@ -3005,9 +3064,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.disconnectFromBrain") {
-      const syncService = await resolveRecoverySyncService(params);
-      if (!syncService) throw syncServiceUnavailable();
-      return await syncService.disconnectFromBrain();
+      return await resolveDisconnectSyncService(params).disconnectFromBrain();
     }
 
     if (method === "sync.forgetDevice") {

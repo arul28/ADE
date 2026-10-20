@@ -80,6 +80,7 @@ after a renderer reload and one visit to every tab.
 | Renderer | 0.0% / 0.2% | 550 / 551 MB (480 MB) | 25%, **610 MB** (macOS: 300 MB; open item) |
 | Brain (`cli.cjs serve`) | 0.9% / 0.3% | 341 / 341 MB (349 MB) | 10%, **380 MB** (macOS: 250 MB; open item) |
 | Network utility | 0.0% / 0.0% | 61 / 61 MB | *new* 80 MB |
+| Service-health probe tree (`runtime service-status --json` and its children: 14 processes per probe, about 5 PowerShells and a nested CLI) | **Before**, installed app 1.2.111, job object over 5 runs: 3.2-3.7 s CPU and 3.7-4.4 s wall per probe, one probe every 15 s while connected, so about 13.6 s CPU and 56 process launches per minute. **After** (installed app, integrated build 1.2.113 with #1799, 2026-10-19): 1 probe in 300 s idle while connected (was 20) | not sampled | *new*: not set yet; needs your OK |
 
 Right after launch (before any tab was visited) the renderer was 454 MB and
 the brain 239 MB. The CPU numbers are far lower than the macOS row because
@@ -145,6 +146,8 @@ Run without the app (`scripts/perf/service/`).
 | Files quick-open index build (this worktree) | `file-index.bench.mts` | 195 / 195 ms | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | 1.3-8.2 / 1.3-8.4 ms | 50 ms |
 | Project registry: one read per project (6) | `registry-read.bench.mts` | 0.1 / 0.1 ms | 5 ms |
+| Project icon detection, cold: one fresh-process resolve for each registered project (ADE 45 ms, Versic 38 ms; the other four 1-10 ms). Before (origin/main `c4ad80e1d`): 1,378 / 1,320 / 1,311 ms, median 1,320; ADE 593, Versic 635 | one-off `tsx` loop over `~/.ade/projects.json`, `resolveProjectIconPath` once per root (no bench file yet); median of 3 runs, interleaved with origin/main | 89 / 88 / 87 ms, median 88 | *new* 110 ms |
+| Project icon detection, warm: the same six roots again in that process. Before: 83.7 / 85.0 / 82.8 ms. A "no icon" result is not cached by design, so the four projects without an icon scan again | same | 3.7 / 3.8 / 3.6 ms, median 3.7 | *new* 5 ms |
 | Machine roster, warm (4 projects, 7 chats) | `roster.bench.mts` | 2.2-3.0 / 2.0-2.8 ms | 10 ms |
 | Machine roster, cold | `roster.bench.mts` | 59 / 51 ms | 150 ms |
 | Reading a 10 MB request, Content-Length framed | `rpc-read.bench.mts` | 6.9 / 7.0 ms | 30 ms |
@@ -159,6 +162,7 @@ Run without the app (`scripts/perf/service/`).
 | Tree watcher: CPU until ready (includes the bench's 1.5 s after close) | same | 407 / 313 ms (before: 3,344 / 3,234; 4,187 / 3,563 on the day) | *new* 500 ms |
 | Tree watcher: CPU at idle over 5 s | same | 0 / 93 ms (other agents were writing in the tree) | 150 ms |
 | Tree watcher: memory held by one open watcher of the repository | a focused script (`process.memoryUsage()` around ready, after GC) | 2 / 2 MB heap, 20 / 23 MB RSS (chokidar's native mode: 20 MB heap, 86 MB RSS) | *new* 30 MB RSS |
+| `sessions.list` handler, same 617-file fixture as the macOS row. Unscoped (`limit 500`) / lane (`limit 200`) / chat-scoped (3 rows). Median of 7 runs in each of 3 interleaved processes. Main `46b92f0b8` → round 1 `57f8b5e53` (state-file cache) → `f049cc176` (+ per-call hoists). Medians: unscoped 386 → 339 → 200 ms; lane 158 → 135 → 79 ms; chat 39 → 38 → 39 ms (not affected). Chat metadata reads per call: unscoped 352 → 0 → 0; lane 138 → 0 → 0. Config reads per call: unscoped 703 → 702 → 2; lane 274 → 274 → 2. Returned rows byte-identical across all three (parity dump, 12 shapes) | `session-list.bench.mts` | *new*, proposed, needs approval: unscoped 250 ms, lane 120 ms, chat 25 ms (chat is 39 ms here and unchanged by this work; see the macOS row) |
 
 Since Windows pass 1 (`ade/friend-feedback-bug-triage`, after `3137fc9b9`)
 `watchTree` on Windows is the single recursive native watch macOS uses
@@ -168,6 +172,18 @@ runs on Windows too (junctions stand in for the links) and found no difference
 from the poller in 228 steps (four seeds). The root was the primary checkout
 (`C:\Users\arul2\Documents\Programming\ADE`): a lane worktree path contains
 `.ade`, which the bench ignores, so it would watch nothing.
+
+### Brain: local chat send (new, Windows)
+
+| Metric | How | Baseline (run 1 / run 2) | Ceiling |
+|---|---|---|---|
+| Local new chat: Send → first Work row (the renderer's wait for the brain's `chat.createSession`, then `chat.sendMessage`, on this machine's brain). Before this change, installed app: 207–387 ms, median ~246 ms. After: see the next column | in-app, installed app, Send to the first row, several new chats | before: 207–387 ms (median ~246 ms); after (installed 1.2.114 = `main` 7a3615de5, 8 new chats 10 s apart): 69–211 ms, median ~158 ms | *new* 150 ms (the Mac Studio's brain takes ~113-128 ms for the same flow); open item: the median is 5% over, inside the macOS 120-175 ms range for the same action |
+
+The send path asks whether `agent-browser` is installed on every turn. The
+probe is a `where` process. Before this change it ran on the brain's event
+loop, about 40 ms, on the first ask and again each time the 60 s cache expired.
+Now the probe runs in the background, started when the brain creates its
+computer-use broker, and a send reads the cached answer without waiting.
 
 ### Process spawns (new, Windows)
 
@@ -181,6 +197,7 @@ from the poller in 228 steps (four seeds). The root was the primary checkout
 | A `.cmd` shim through `cmd.exe` (`npx --version` via `resolveCliSpawnInvocation`), median of 5 | 274 / 242 ms | *new* 340 ms |
 | Resolving 14 CLIs (`resolveExecutableFromKnownLocations`), listing cache dropped | 12.6 / 12.4 ms | *new* 16 ms |
 | The same, warm | 4.6 / 4.8 ms | *new* 6 ms |
+| OpenCode orphan recovery: longest main-thread block during the Windows process listing (`wmic`, then PowerShell `Get-CimInstance`; 478 processes). One-off script, no bench file yet: 5 interleaved warm runs of `listProcesses` (before, origin/main `56709aebc`) and `listProcessesAsync` (after) | after: median 20.5 ms, worst 24.7 ms, 43 event-loop ticks per call. Before: median 728 ms, worst 3,452 ms, 0 ticks. Wall time 727 → 672 ms median | *new* 30 ms |
 
 `copilot`, `agent`, `cursor-agent`, `gemini` and `bun` are not installed on
 this PC, so their lookups are misses (a miss walks every `PATH` entry).
@@ -393,6 +410,58 @@ statically.
   next thing to fix: run the spin on the compositor, then re-measure with
   `gpu-trace.mjs` on the PRs tab.
 
+## Installed app, round 4 (2026-10-19)
+
+The tables above are a dev build. These rows are the **installed** app on the
+same PC, measured the way a user runs it: the per-user background brain,
+connected to the Mac Studio (paired, over Tailscale), two project tabs
+(ADE, Versic), window 1327x829 CSS px, nothing streaming, a measurement hold
+so no builds or tests ran meanwhile.
+
+- **Before:** the installed release 1.2.111 at the start of round 4, plus a
+  test build of the same day (1.2.112, earlier round-4 fixes only) where a row
+  was first measured there.
+- **After:** a local, unsigned build of `main` at `7a3615de5` (1.2.114), which
+  has every round-4 PR (#1782, #1784-#1792, #1794-#1801). Some rows were
+  measured on the integrated test build 1.2.113 (the same PRs before they
+  merged); those say so.
+
+| Row | How | Before | After | Ceiling |
+|---|---|---|---|---|
+| Cold start: first window (CDP page target) | `coldstart` script, 3 launches, brain already running | 1.76-2.30 s | 1.11-1.22 s | *new* 1.5 s, proposed, needs approval |
+| Cold start: app mounted (>300 elements) | same | 2.58-4.06 s | 1.79-1.91 s | *new* 2.4 s, proposed, needs approval |
+| Cold start: settled (element count unchanged 2 s) | same | 6.43-7.89 s | 2.65-5.67 s | *new* 7 s, proposed, needs approval |
+| Relaunch keeps the running brain | same | no: replaced whenever the brain was over 120 s old (killing its chats and terminals) | yes, every launch | must stay yes |
+| Electron main busy in the first 12 s of launch | inspector, 1 ms sampling, 2-3 launches | 4,229 / 5,910 ms | 1,371 / 1,324 ms (integrated build of #1787-#1791) | *new* 1,700 ms, proposed, needs approval |
+| Tab switch: page settled, warm | `interaction.mjs tabs 4`, 3 runs | worst 185 ms (CTO); Automations 170 ms | 18-216 ms; worst Automations 164-216 ms, CTO 179-183 ms; long frames 0 except PRs 53 ms | 250 ms |
+| Project-tab switch: page settled, warm | `interaction.mjs projects 4` | 1.2.111: ADE 54-80, Versic 58-67 ms; 1.2.112: ADE 67-113, Versic 68-97 ms | ADE 59-151 (median 71), Versic 54-84 (median 77) ms over 8 runs; no long frames | 300 ms |
+| Chat switch: settled | `chat-switch.mjs 3`, 3 runs, Mac Studio chats | avg 22-47 ms; worst long task 136 ms | avg 18-45 ms; worst long task 53 ms | 250 ms |
+| Chat switch: first changed frame, warm (median) | `interaction.mjs chats 4`, 3 runs | ~61 ms (45-91) | 56-59 ms | 60 ms |
+| Chat switch: every DOM change settled, warm | same | median 267-273 ms, worst 337 ms (the previous chat's proof count was replaced ~245 ms after each switch, #1795) | median 170-171 ms, worst 183 ms | 250 ms |
+| New chat on a Mac Studio lane: Send → first row | in-app, 8 new chats | 102-183 ms (median ~113 ms) | 107-151 ms (median ~128 ms) | 150 ms |
+| New chat on a local lane: Send → first row | same | 207-387 ms (median ~246 ms) | 69-211 ms (median ~158 ms) | 150 ms (see the row above; open item) |
+| Launch → Mac Studio connected | connection snapshot after launch, 3 launches | ~11.1-11.5 s (a dead LAN address timed out after 10 s first) | 1.57-2.35 s (#1794) | *new* 4 s, proposed, needs approval |
+| Service-health probes, idle and connected | process watcher, 300 s | 20 (each 14 processes, ~3.4 s CPU) | 1 (1.2.113, #1799) | — |
+| `gh auth token` launches by the brain, idle | process watcher, 420 s, 3 pairs | 2 / 2 / 3 | 0 / 0 / 0 (#1801) | — |
+| Brain: longest idle event-loop stall | brain CPU profile, 5 min idle | 2.0-2.7 s stalls, ~39 near-misses (over 2 s) in 8 days of logs (project-icon scan, DPAPI) | longest busy stretch 169 ms (#1784, #1785) | *new* 300 ms, proposed, needs approval |
+| Brain: blocked per chat send by the `agent-browser` probe | brain CPU profile, 4 sends 65 s apart | 78-152 ms per send | 0 (#1796) | — |
+| Chat list (`chat.listSessions`) per call | 20 calls from the renderer, brain bundle swapped, interleaved | median 39-43 ms | median 19-21 ms (#1797) | — |
+| Idle CPU, Work open (% of one core) | per-process CPU time over 120 s | — | brain 3.8, main 1.1, main renderer 0.8, GPU 0.3, others 0-0.6 | see Processes |
+| Update: quit → new version running | real NSIS update 1.2.111 → 1.2.112, local feed | 42-44 s (two real updates of the release) | 38.6 s quit → main started (42.1 s from the click); 24 s of it is the old copy's uninstaller | *new* 60 s, proposed, needs approval |
+
+Notes:
+
+- The project-switch row is within run-to-run drift: the same-day 1.2.112
+  build was slower than the current build, and no round-4 change sits on that
+  path. Re-measure it against this row, not the 1.2.111 numbers.
+- The local new-chat row is the one open item: 158 ms median against a
+  150 ms ceiling, inside the macOS range for the same action (120-175 ms).
+  The remaining cost on this PC is the brain building the Claude query
+  options synchronously when a chat is created (~41 ms per create) and
+  git processes started for the new lane's status.
+- Every *new* ceiling here is a proposal and does not count until the owner
+  approves it.
+
 ## How to measure on Windows
 
 Everything below ran in Git Bash or PowerShell 7 on this PC.
@@ -432,12 +501,6 @@ Then:
 - Close every page that is not the app (`curl -s http://127.0.0.1:9222/json/list`,
   `curl -s http://127.0.0.1:9222/json/close/<id>`). The dev app opens a
   DevTools window on Windows.
-- Dismiss the **ADE on Windows is in beta** dialog
-  (`node scripts/perf/ui/cdp.mjs eval '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Dismiss")?.click()'`).
-  It comes back after every renderer reload, including the one
-  `render-count.mjs ... reload` does, and its blurred scrim covers the app: with
-  it open the chat switch's first frame was 139-179 ms instead of 88 ms, and
-  `press-to-paint.mjs` misses every press.
 - `render-count.mjs ... reload` leaves its render hook in the page, which
   inflates the heap (255 MB) and the renderer's memory. Reload the page from a
   fresh CDP session (`cdp.mjs eval 'location.reload()'`) before measuring

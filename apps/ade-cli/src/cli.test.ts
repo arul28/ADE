@@ -77,6 +77,7 @@ import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
+import { SDK_WORKER_COMMANDS } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
@@ -1483,6 +1484,13 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["__ade-usage-ledger-worker"])).toEqual({
       kind: "usage-ledger-worker",
     });
+  });
+
+  // The standalone runtime starts every SDK worker through these commands
+  // (sdkWorkerProcess.ts); one the CLI does not recognise is an "Unknown
+  // command" and a provider that cannot start on a headless machine.
+  it.each(Object.entries(SDK_WORKER_COMMANDS))("recognizes the hidden %s SDK worker entrypoint", (worker, command) => {
+    expect(buildCliPlan([command, "--ade-owner-pid=42"])).toEqual({ kind: "sdk-worker", worker });
   });
 
   it("passes the project root to the hidden icon worker entrypoint", () => {
@@ -4050,6 +4058,18 @@ describe("ADE CLI", () => {
     // Assert the rejection, not the exact provider roster: the roster grows
     // (muse, pi, qwen, …) and pinning its copy makes every addition edit here.
     ).toThrow(/provider must be one of/);
+  });
+
+  it.each([
+    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: true },
+    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--dry-run"], accepts: true },
+    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: false },
+  ])("validates Antigravity as a chat-only provider on $surface", ({ args, accepts }) => {
+    if (accepts) {
+      expect(() => buildCliPlan(args)).not.toThrow();
+    } else {
+      expect(() => buildCliPlan(args)).toThrow(/provider must be one of/);
+    }
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {
@@ -6649,6 +6669,43 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
     const dryRun = buildCliPlan(["chat", "launch", "hi", "--dry-run"]);
     expect(dryRun.kind).toBe("static");
+  });
+
+  it.each([
+    {
+      label: "rejects malformed chat.create input",
+      args: ["--arg", "chat.create=not-an-object"],
+      error: /chat launch needs chat.create to be an object/,
+    },
+    {
+      label: "lets the top-level provider override --provider",
+      args: ["--provider", "claude", "--arg", "provider=antigravity"],
+      provider: "antigravity",
+    },
+    {
+      label: "lets chat.create.provider override --provider",
+      args: ["--provider", "claude", "--arg", "chat.create.provider=antigravity"],
+      provider: "antigravity",
+    },
+    {
+      label: "rejects two disagreeing provider overrides",
+      args: ["--arg", "provider=claude", "--arg", "chat.create.provider=antigravity"],
+      error: /disagree/,
+    },
+  ])("chat launch $label", ({ args, error, provider }) => {
+    const build = () => buildCliPlan(["chat", "launch", "prompt", "--dry-run", ...args]);
+    if (error) {
+      expect(build).toThrow(error);
+      return;
+    }
+    const plan = build();
+    if (plan.kind !== "static") throw new Error("expected a dry-run plan");
+    expect(plan.value).toMatchObject({
+      input: {
+        provider,
+        chat: { create: { provider } },
+      },
+    });
   });
 
   it("builds chat launches / launch-status / launch-cancel over the launch actions", () => {

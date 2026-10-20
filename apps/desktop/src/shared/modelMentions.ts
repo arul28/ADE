@@ -281,6 +281,7 @@ const HARNESS_LABELS: Record<string, string> = {
   grok: "Grok",
   copilot: "Copilot",
   devin: "Devin",
+  antigravity: "Antigravity",
 };
 
 /** The harness that runs a provider group, e.g. "opencode" → "OpenCode". */

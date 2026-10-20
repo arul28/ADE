@@ -1733,7 +1733,7 @@ describe("pollCodexViaCliRpc", () => {
     }
   });
 
-  it("wraps extensionless Windows codex paths with cmd.exe and writes the combined JSONL payload once", async () => {
+  it("spawns ADE's pinned Windows Codex binary directly and writes the combined JSONL payload once", async () => {
     const fake = createFakeCodexChild({
       stdout: `${JSON.stringify({
         jsonrpc: "2.0",
@@ -1749,8 +1749,8 @@ describe("pollCodexViaCliRpc", () => {
     });
 
     mockState.resolveCodexExecutable.mockReturnValue({
-      path: "C:\\Users\\me\\AppData\\Local\\Programs\\codex",
-      source: "path",
+      path: "C:\\ade-test\\tools\\codex.exe",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -1759,9 +1759,9 @@ describe("pollCodexViaCliRpc", () => {
 
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledWith(
-      "cmd.exe",
-      ["/d", "/s", "/c", '""C:\\Users\\me\\AppData\\Local\\Programs\\codex" "-s" "read-only" "-a" "never" "app-server""'],
-      expect.objectContaining({ windowsVerbatimArguments: true }),
+      "C:\\ade-test\\tools\\codex.exe",
+      ["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"],
+      expect.objectContaining({ windowsVerbatimArguments: false }),
     );
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
@@ -1788,8 +1788,8 @@ describe("pollCodexViaCliRpc", () => {
     });
 
     mockState.resolveCodexExecutable.mockReturnValue({
-      path: "codex",
-      source: "path",
+      path: "/ade-test/tools/codex",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -1798,8 +1798,8 @@ describe("pollCodexViaCliRpc", () => {
 
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     const [spawnFile, spawnArgs, spawnOptions] = mockState.spawn.mock.calls[0]!;
-    expect(spawnFile).toBe("codex");
-    expect(spawnArgs).toEqual(["-s", "read-only", "-a", "never", "app-server"]);
+    expect(spawnFile).toBe("/ade-test/tools/codex");
+    expect(spawnArgs).toEqual(["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"]);
     expect(spawnOptions).toEqual(expect.objectContaining({ windowsVerbatimArguments: false }));
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
@@ -1832,7 +1832,7 @@ describe("pollCodexViaCliRpc", () => {
     child.stdin = stdinEmitter;
     child.kill = vi.fn();
 
-    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "/ade-test/tools/codex", source: "path" });
     mockState.spawn.mockReturnValue(child);
 
     const logger = createLogger();
@@ -1876,7 +1876,7 @@ describe("pollCodexViaCliRpc", () => {
 
     mockState.resolveCodexExecutable.mockReturnValue({
       path: "codex.exe",
-      source: "path",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -1899,7 +1899,7 @@ describe("pollCodexViaCliRpc", () => {
 
     mockState.resolveCodexExecutable.mockReturnValue({
       path: "codex.exe",
-      source: "path",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -1931,7 +1931,7 @@ describe("pollCodexViaCliRpc", () => {
     });
     mockState.resolveCodexExecutable.mockReturnValue({
       path: "codex.exe",
-      source: "path",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -2010,7 +2010,7 @@ describe("pollCodexViaCliRpc", () => {
         },
       })}\n`,
     });
-    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "/ade-test/tools/codex", source: "path" });
     mockState.spawn.mockReturnValue(fake.child);
 
     try {
@@ -2056,7 +2056,7 @@ describe("pollCodexViaCliRpc", () => {
         },
       })}\n`,
     });
-    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "/ade-test/tools/codex", source: "path" });
     mockState.spawn.mockReturnValue(fake.child);
 
     try {
@@ -2125,7 +2125,7 @@ describe("pollCodexViaCliRpc", () => {
     });
     mockState.resolveCodexExecutable.mockReturnValue({
       path: "codex.exe",
-      source: "path",
+      source: "tools-cache",
     });
     mockState.spawn.mockReturnValue(fake.child);
 
@@ -7507,7 +7507,7 @@ describe("per-account quota attribution", () => {
     ];
     const launches: Array<{ env: NodeJS.ProcessEnv | undefined; written: string[] }> = [];
     const analyticsEvents: ProductAnalyticsCapture[] = [];
-    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "/ade-test/tools/codex", source: "path" });
     mockState.spawn.mockImplementation((_command: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
       const fake = createFakeCodexChild({
         stdout: `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { outcome: "reset" } })}\n`,
@@ -8299,7 +8299,7 @@ describe("consumeCodexResetCredit", () => {
   });
 
   beforeEach(() => {
-    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "/ade-test/tools/codex", source: "path" });
   });
 
   it("sends one consume request carrying an idempotency key", async () => {

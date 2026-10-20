@@ -114,7 +114,6 @@ import type {
   AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
   AddPrCommentArgs,
-  AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   ChatTerminalActiveForChatArgs,
@@ -135,7 +134,6 @@ import type {
   DeletePrArgs,
   DeleteIntegrationProposalArgs,
   DismissIntegrationCleanupArgs,
-  DraftPrDescriptionArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GitBatchFileActionArgs,
@@ -143,7 +141,6 @@ import type {
   GitCommitArgs,
   GitCreateTagArgs,
   GitFileActionArgs,
-  GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
   GitGetFileHistoryArgs,
   GitCheckoutBranchArgs,
@@ -303,6 +300,8 @@ import {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { ComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import type { ComputerUseArtifactListArgs } from "../../../../desktop/src/shared/types";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
@@ -383,7 +382,6 @@ import type { createRebaseSuggestionService } from "../../../../desktop/src/main
 import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
@@ -580,7 +578,6 @@ type SyncRemoteCommandServiceArgs = {
   projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   /** False when this runtime has no RPC endpoint that accepts activity reports. */
   sessionActivityReportingEnabled?: boolean;
@@ -622,6 +619,12 @@ type SyncRemoteCommandServiceArgs = {
    * controllers feature-detect its absence rather than seeing it fail.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /**
+   * The proof store the hosted web client's citations read. Absent on a runtime
+   * that never built one, in which case `computerUse.*` is not registered and the
+   * web client reports a cited proof as unreadable rather than missing.
+   */
+  computerUseArtifactBrokerService?: Pick<ComputerUseArtifactBrokerService, "listArtifacts"> | null;
   /**
    * The runtime's Mac Desktop service. Present on a host that can hold a
    * display (and answers `supported: false` off macOS, which is how a Windows
@@ -3404,13 +3407,6 @@ function parseGitCommitArgs(value: Record<string, unknown>): GitCommitArgs {
   };
 }
 
-function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitGenerateCommitMessageArgs {
-  return {
-    laneId: requireString(value.laneId, "git.generateCommitMessage requires laneId."),
-    amend: asOptionalBoolean(value.amend),
-  };
-}
-
 function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListRecentCommitsArgs {
   const skip = asOptionalNumber(value.skip);
   const scope = value.scope === "lanes" || value.scope === "lane" ? value.scope : undefined;
@@ -3647,6 +3643,7 @@ const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProv
   "grok",
   "copilot",
   "devin",
+  "antigravity",
 ]);
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
@@ -3848,18 +3845,6 @@ function parseCreateLaneFromPrBranchArgs(value: Record<string, unknown>): Create
   };
 }
 
-function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
-  return {
-    laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
-    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
-    ...("reasoningEffort" in value
-      ? { reasoningEffort: value.reasoningEffort == null ? null : (asTrimmedString(value.reasoningEffort) ?? null) }
-      : {}),
-    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
-    ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
-  };
-}
-
 function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
   const prId = requirePrId(value, "prs.land");
   const method = asTrimmedString(value.method) as LandPrArgs["method"];
@@ -4035,13 +4020,6 @@ function parseReactToCommentArgs(value: Record<string, unknown>): ReactToPrComme
     prId: requirePrId(value, "prs.reactToComment"),
     commentId: requireString(value.commentId, "prs.reactToComment requires commentId."),
     content: content as ReactToPrCommentArgs["content"],
-  };
-}
-
-function parseAiReviewSummaryArgs(value: Record<string, unknown>): AiReviewSummaryArgs {
-  return {
-    prId: requirePrId(value, "prs.aiReviewSummary"),
-    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
   };
 }
 
@@ -4229,6 +4207,7 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
       || payload.provider === "grok"
       || payload.provider === "copilot"
       || payload.provider === "devin"
+      || payload.provider === "antigravity"
         ? { activateRuntime: true }
         : {}
     ),
@@ -4474,6 +4453,32 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
 }
 
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  /**
+   * Run a new lane's setup without holding the reply: the default lane
+   * template, else the project's lane environment config. Progress reaches
+   * every client through the lane env events; a failure is logged, and the
+   * lane stays (Settings or `lanes.applyTemplate` can run it again).
+   */
+  const startDefaultLaneSetup = (laneId: string): void => {
+    if (!args.laneEnvironmentService || !args.projectConfigService) return;
+    const templateId = args.laneTemplateService?.getDefaultTemplateId() ?? null;
+    void runLaneEnvironmentSetup(
+      {
+        laneService: args.laneService,
+        projectConfigService: args.projectConfigService,
+        portAllocationService: args.portAllocationService,
+        laneEnvironmentService: args.laneEnvironmentService,
+        laneTemplateService: args.laneTemplateService ?? null,
+      },
+      { laneId, ...(templateId ? { templateId } : {}), includeArchived: false },
+    ).catch((error: unknown) => {
+      args.logger.warn("sync.lane_default_setup_failed", {
+        laneId,
+        templateId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
@@ -4513,11 +4518,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     // create sheet's default) must branch from the project's configured
     // new-lane base — remote-first, matching desktop's create-lane dialog —
     // not from the possibly-stale LOCAL primary tip.
+    let lane: Awaited<ReturnType<typeof args.laneService.create>>;
     if (!parsed.baseBranch && !parsed.startPoint && !parsed.parentLaneId) {
       const remoteBase = await resolveLaneCreateRemoteBase(args);
-      if (remoteBase) return args.laneService.create({ ...parsed, baseBranch: remoteBase });
+      lane = await args.laneService.create(remoteBase ? { ...parsed, baseBranch: remoteBase } : parsed);
+    } else {
+      lane = await args.laneService.create(parsed);
     }
-    return args.laneService.create(parsed);
+    // `setup: "default"`: a phone path with no setup step of its own (a chat
+    // in a new lane) asks the host to set the lane up the way the desktop's
+    // Work tab does, in the background. New lanes get packages only this way.
+    if (payload.setup === "default") startDefaultLaneSetup(lane.id);
+    return lane;
   });
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
   // when the phone is offline we want the call to fail fast so the client uses
@@ -6018,6 +6030,34 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
 }
 
 /**
+ * Proof records for the hosted web client's citations and scene stills. Read-only
+ * and project-scoped, because proof lives on the machine that owns the lane or
+ * chat. Only the filters the broker's own list takes are forwarded, each checked
+ * for type, so the wire cannot ask for anything the broker does not already accept.
+ */
+function registerComputerUseRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const broker = args.computerUseArtifactBrokerService;
+  if (!broker) return;
+  register("computerUse.listArtifacts", { viewerAllowed: true }, async (payload) =>
+    broker.listArtifacts(computerUseListArgs(payload)));
+}
+
+function computerUseListArgs(payload: Record<string, unknown>): ComputerUseArtifactListArgs {
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+  return {
+    artifactId: text(payload.artifactId),
+    ownerKind: text(payload.ownerKind) as ComputerUseArtifactListArgs["ownerKind"],
+    ownerId: text(payload.ownerId),
+    kind: text(payload.kind) as ComputerUseArtifactListArgs["kind"],
+    metadataKind: text(payload.metadataKind) as ComputerUseArtifactListArgs["metadataKind"],
+    excludeMetadataKind: text(payload.excludeMetadataKind) as ComputerUseArtifactListArgs["excludeMetadataKind"],
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
+
+/**
  * Every Mac Desktop lease a sync connection took, keyed by lane.
  *
  * The holder id itself is derived from the connection, so a closed socket's
@@ -6901,8 +6941,6 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").restoreStagedFile(parseGitFileActionArgs(payload, "git.restoreStagedFile")));
   register("git.commit", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").commit(parseGitCommitArgs(payload)));
-  register("git.generateCommitMessage", { viewerAllowed: true }, async (payload) =>
-    requireService(args.gitService, "Git service not available.").generateCommitMessage(parseGitGenerateCommitMessageArgs(payload)));
   register("git.listRecentCommits", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").listRecentCommits(parseGitListRecentCommitsArgs(payload)));
   register("git.listCommitFiles", { viewerAllowed: true }, async (payload) =>
@@ -7659,12 +7697,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getDetailBundle(requirePrId(payload, "prs.getDetailBundle")));
   register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
-  register("prs.getAiSummary", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prSummaryService?.getSummary(requirePrId(payload, "prs.getAiSummary")) ?? null);
-  register("prs.regenerateAiSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.prSummaryService, "PR summary service not available.").regenerateSummary(
-      requirePrId(payload, "prs.regenerateAiSummary"),
-    ));
   register("prs.getIntegrationResolutionState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getIntegrationResolutionState(
       requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
@@ -7778,8 +7810,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
-  register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
   register("prs.updateBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.updateBranch(parseUpdateBranchArgs(payload)));
   register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -7832,8 +7862,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.reactToComment(parseReactToCommentArgs(payload));
     return { ok: true };
   });
-  register("prs.aiReviewSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.aiReviewSummary(parseAiReviewSummaryArgs(payload)));
   register("prs.simulateIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
   register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -7882,6 +7910,7 @@ let projectRemoteCommandDescriptors: SyncRemoteCommandDescriptor[] | null = null
 export function listProjectRemoteCommandDescriptors(): SyncRemoteCommandDescriptor[] {
   projectRemoteCommandDescriptors ??= createSyncRemoteCommandService({
     workToolsStateService: {},
+    computerUseArtifactBrokerService: {},
   } as unknown as SyncRemoteCommandServiceArgs).getDescriptors();
   return projectRemoteCommandDescriptors;
 }
@@ -8119,6 +8148,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
+  registerComputerUseRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });

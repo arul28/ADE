@@ -155,7 +155,10 @@ describe("generated tools manifest", () => {
   const manifest = loadToolsManifest();
 
   it("pins every supported target for every tool", () => {
-    expect(manifest.tools.map((tool) => tool.name)).toEqual(["codex", "claude-code", "opencode", "muse"]);
+    expect(manifest.tools.map((tool) => tool.name)).toEqual([
+      "codex", "claude-code", "opencode", "copilot", "muse", "droid", "grok", "qwen", "kimi", "devin",
+      "antigravity", "pi", "copilot-cli", "cursor-cli", "node",
+    ]);
     for (const tool of manifest.tools) {
       expect(Object.keys(tool.targets).sort()).toEqual([...TOOL_TARGETS].sort());
     }

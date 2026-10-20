@@ -42,10 +42,18 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "sendNotification",
     ],
   },
+  keep_awake: {
+    read: ["getSnapshot"],
+    write: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  },
+  remote_mcp: {
+    read: ["getStatus", "listActivity"],
+    write: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
+  },
   lane: {
     read: [
       "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",
-      "getDefaultTemplate", "getDeleteRisk", "getLeftoverWorktree", "getReclaimRisk",
+      "getDefaultTemplate", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
       "getEnvStatus", "getOverlay", "getStackChain", "getSummary", "getTemplate",
       "listAutoRebaseStatuses", "list", "listDeleteProgress", "listSnapshots",
       "listRebaseSuggestions", "listTemplates", "listLinearIssuesForLaneSessions",
@@ -56,7 +64,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "previewBranchSwitch", "proxyGetPreviewInfo", "proxyGetStatus",
     ],
     write: [
-      "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
+      "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
       "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
@@ -87,7 +95,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "abortRebase", "checkoutBranch", "cherryPickCommit", "commit", "continueRebase",
-      "createTag", "discardFile", "fetch", "generateCommitMessage", "mergeAbort",
+      "createTag", "discardFile", "fetch", "mergeAbort",
       "mergeContinue", "pull", "push", "rebaseAbort", "rebaseContinue", "redoLastHeadChange",
       "resetToCommit", "restoreStagedFile", "revertCommit", "stageAll", "stageFile",
       "stagePaths", "stash", "stashApply", "stashClear", "stashDrop", "stashPop", "stashPush",
@@ -123,7 +131,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getDetailByGithub", "getDeployments", "getForLane", "getFiles", "getFilesByGithub",
       "getGithubSnapshot", "listGithubStacks", "getIntegrationResolutionState",
       "getMergeContext", "getMergeContexts", "getMobileGithubDetail", "getMobileSnapshot",
-      "getPrHealth", "getAiSummary", "getReviewThreads", "getReviewThreadsByGithub",
+      "getPrHealth", "getReviewThreads", "getReviewThreadsByGithub",
       "getReviews", "getReviewsByGithub", "getStatus", "listAll", "listGroupPrs",
       "listIntegrationProposals", "listIntegrationWorkflows", "listPrsByLane",
       "listOpenPullRequests", "listSnapshots", "listWithConflicts", "listChatSessionsForPr",
@@ -131,14 +139,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "addComment", "reconcileOnFocus", "syncLanePr", "aiResolutionInput", "aiResolutionStart",
-      "aiResolutionStop", "aiReviewSummary", "cleanupBranch", "cleanupIntegrationWorkflow",
+      "aiResolutionStop", "cleanupBranch", "cleanupIntegrationWorkflow",
       "closePr", "commitIntegration", "createFromLane", "createLaneFromPrBranch",
       "createIntegrationLane", "createIntegrationLaneForProposal", "createIntegrationPr",
       "createGithubStack", "delete", "deleteIntegrationProposal", "dismissIntegrationCleanup",
-      "draftDescription", "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
+      "ingestGithubWebhook", "land", "linkToLane", "postReviewComment",
       "reactToComment", "recheckIntegrationStep", "refresh", "addGithubStackPullRequests",
       "requestReviewers", "resolveReviewThread", "retargetBase", "reopenPr", "setDraft",
-      "setAutoMerge", "replyToReviewThread", "rerunChecks", "regenerateAiSummary", "setLabels",
+      "setAutoMerge", "replyToReviewThread", "rerunChecks", "setLabels",
       "setReviewThreadResolved", "simulateIntegration", "startIntegrationResolution",
       "preflightCreateLaneFromPrBranch", "submitReview", "syncGithubStacks",
       "unstackGithubStack", "linkChatSession", "unlinkChatSession", "linkChatStack",
@@ -208,7 +216,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "listApiCredentials",
+      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -216,8 +224,9 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listCloudAgents",
     ],
     write: [
-      "getCursorAgentUsage", "ensureMuseBinary", "museSettings", "museSettingsClose",
-      "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential",
+      "getCursorAgentUsage", "ensureMuseBinary", "pinnedToolDownload", "antigravitySignInStart", "antigravitySignInComplete",
+      "antigravitySignInCancel", "museSettings", "museSettingsClose",
+      "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
@@ -390,14 +399,6 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["list", "get", "resolve"],
     write: ["comment", "setState", "create"],
   },
-  feedback: {
-    read: [
-      "list",
-    ],
-    write: [
-      "prepareDraft", "submitPreparedDraft",
-    ],
-  },
   usage: {
     read: [
       "getAdeUsageStats", "getCostBreakdown", "getModelDetail", "getModelPriceOverrides",
@@ -424,6 +425,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "cleanup", "compressNow", "runMaintenanceNow",
+    ],
+  },
+  project_health: {
+    read: [
+      "getReport",
+    ],
+    write: [
+      "fix",
     ],
   },
   archive: {
@@ -653,6 +662,7 @@ const UNREPLAYED_READS = new Set<string>([
   "conflicts.scanRebaseNeeds",
   "file.blame",
   "storage.cleanupPreview",
+  "project_health.getReport",
 ]);
 
 /**

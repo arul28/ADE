@@ -106,6 +106,7 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   pushPointer(pointers, "codex", asId(record.threadId));
   pushPointer(pointers, provider === "opencode" || !provider ? "opencode" : provider, asId(record.providerSessionId));
   pushPointer(pointers, "droid", asId(record.droidSdkSessionId));
+  pushPointer(pointers, "copilot", asId(record.copilotSdkSessionId));
   pushPointer(pointers, "pi", asId(record.piSessionId) ?? asId(record.piSessionFile));
   pushPointer(pointers, "muse", asId(record.museSessionId));
   pushPointer(pointers, "cursor", asId(record.cursorSdkAgentId));

@@ -59,6 +59,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
 | Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
+| Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
 | Chat list cards: re-renders | ~15/s | 0 | 0 |
@@ -134,6 +135,16 @@ Run without the app (`scripts/perf/service/`).
 | MCP App: file one app with the chat (218 KB page, its record, and the prune of a 40-app chat; `mcpAppStore.write`, runs in the brain once per tool call that has a page) | one-off `tsx` loop, 60 runs (no bench file yet) | — | 0.9–1.7 ms; reading one back 0.1 ms | 10 ms |
 | MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
+| `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
+
+On 2026-10-19, a focused Node 22 harness compared the existing 5-second
+desktop poll with the brain poll after this change. Both used the same activity
+summary over 35 registered projects (12 booted), with no active work, for 15 s:
+the old desktop loop used 0.711% process CPU for 3 summary reads; the brain loop
+used 0.082% for 4 reads. This is a service-only sample, not a full ADE process
+benchmark. The default remains `never`, so the brain adds no poll in the normal
+idle baseline above; the enabled path moves the existing poll to the brain and
+keeps its 5-second cadence.
 
 ### Desktop start-up (main process)
 
@@ -147,6 +158,7 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
 | Process start to first window, no compile cache (sd 17–33 ms) | `desktop-main-start.mjs --mode off` | — | 1023 ms | not set, needs your OK |
 | Process start to first window, warm compile cache (sd 40 ms) | `desktop-main-start.mjs --mode warm` | 1027 ms | 881 ms | not set, needs your OK |
 | Process start to first window, first launch after an update (`--mode cold`) | `desktop-main-start.mjs --mode cold` | — | 1114 ms | not set, needs your OK |
+| Cursor sign-in snapshot on the launch status path (`buildProviderConnections` → `getCursorSdkAuthSnapshot`): reads `~/.cursor/sdk/auth.json` instead of importing `@cursor/sdk` on the main thread. Windows 11 bench, not the macOS machine above; Electron main not measured | one-off `node` loop, 3 cold processes, Node 22.13.1 (`import()` of the SDK, then the file read) | 411–815 ms (cold SDK import) | 0.2–0.3 ms (file read) | not set, needs your OK |
 
 ### Open items (measured, over budget or unbudgeted)
 
@@ -245,7 +257,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
-| `interaction.mjs tabs\|chats\|projects\|pickers [rounds]` | Per tab, chat or project switch, or composer picker open (`pickers`; `SCREENCAST=1` for a covered window): time to the first frame that shows a change, time until the page stops changing, and long frames in between. Finer than long tasks, which miss every frame under 50 ms |
+| `interaction.mjs tabs\|chats\|projects\|pickers [rounds]` | Per tab, chat or project switch, or composer picker open (`pickers`; `SCREENCAST=1` for a covered window): time to the first frame that shows a change, time until the page stops changing (`settled`, every DOM change), and long frames in between. `content settled` ignores decoration and tickers (`data-perf-ignore`, `aria-hidden` inside `<main>`), and `content ready` is when the page's `<main>` first has new text. The rules are in `scripts/perf/ui/settle.mjs`. Finer than long tasks, which miss every frame under 50 ms |
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |

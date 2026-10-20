@@ -73,6 +73,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "putMachinePreferences",
     ],
   },
+  // Keep-awake preferences are machine-wide power policy. The desktop, phone,
+  // and direct user clients can change them; session-bound agents cannot.
+  keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
+  // ADE MCP grants an outside app this machine. Every action is also user-only
+  // (below), so only the desktop reaches it through the action bus.
+  remote_mcp: { allExcept: [] },
   linear_credentials: {
     only: [
       "setToken",
@@ -98,22 +104,24 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
   // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
-  // operator-only like the updater it pairs with.
+  // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
-  // settings, the same tier as the updater beside it.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // settings, the same tier.
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel"] },
   budget: { only: ["updateConfig"] },
-  feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
   usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
+  // A fix edits the project's data, git links or other tools' config: the
+  // person presses it. Agents read the report and offer the fixes.
+  project_health: { only: ["fix"] },
   // Restoring brings a lane's worktree and services back up — the CTO's call,
   // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
   archive: { only: ["restore"] },
@@ -291,6 +299,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // An agent asking to move a chat must not approve its own request. And only
   // a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: ["resolveCrossMachineHandoffApproval", "mcpAppRequest", "revokeMcpAppGrant"],
+  // Granting an outside AI app this computer is the person's call. `ade mcp`
+  // in their own terminal reaches the same service through `remoteMcp.call`.
+  remote_mcp: ["getStatus", "listActivity", "setEnabled", "createToken", "updateConnection", "removeConnection"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -317,6 +328,8 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   // Mints the loopback stream token.
   mac_desktop: ["startStream"],
   jira: ["connect"],
+  // A token gives an outside AI app this computer.
+  remote_mcp: ["createToken"],
 };
 
 /**
@@ -366,8 +379,18 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // the relay caps it at 60 an hour per account.
     "sendNotification",
   ],
+  keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  remote_mcp: [
+    "getStatus",
+    "listActivity",
+    "setEnabled",
+    "createToken",
+    "updateConnection",
+    "removeConnection",
+  ],
   lane: [
     "archive",
+    "acknowledgeDependencyStatus",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
     "attachGitHubIssueToSession",
@@ -394,6 +417,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getBranchDrift",
     "getChildren",
     "getDefaultTemplate",
+    "getDependencyStatus",
     "getDeleteRisk",
     "getLeftoverWorktree",
     "getReclaimRisk",
@@ -469,7 +493,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createTag",
     "discardFile",
     "fetch",
-    "generateCommitMessage",
     "getCommit",
     "getCommitMessage",
     "isCommitInLaneHistory",
@@ -544,7 +567,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "aiResolutionInput",
     "aiResolutionStart",
     "aiResolutionStop",
-    "aiReviewSummary",
     "cleanupBranch",
     "cleanupIntegrationWorkflow",
     "closePr",
@@ -558,7 +580,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "delete",
     "deleteIntegrationProposal",
     "dismissIntegrationCleanup",
-    "draftDescription",
     "getActionRuns",
     "getActionRunsByGithub",
     "getActivity",
@@ -588,7 +609,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getMobileGithubDetail",
     "getMobileSnapshot",
     "getPrHealth",
-    "getAiSummary",
     "getReviewThreads",
     "getReviewThreadsByGithub",
     "getReviews",
@@ -618,7 +638,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setAutoMerge",
     "replyToReviewThread",
     "rerunChecks",
-    "regenerateAiSummary",
     "setLabels",
     "setReviewThreadResolved",
     "simulateIntegration",
@@ -809,10 +828,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "isOpenCodeInstalled",
     "museBinaryStatus",
     "ensureMuseBinary",
+    "pinnedToolStatus",
+    "pinnedToolDownload",
+    "antigravitySignInStatus",
+    "antigravitySignInStart",
+    "antigravitySignInComplete",
+    "antigravitySignInCancel",
     "museSettings",
     "museSettingsClose",
     "acpProviderDiagnostics",
-    "acpProviderUpdate",
     "listApiCredentials",
     "getApiCredential",
     "storeApiCredential",
@@ -1044,7 +1068,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createIssue",
   ],
   issues: ["list", "get", "resolve", "comment", "setState", "create"],
-  feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: [
     "applyAccountRollups",
     "consumeResetCredit",
@@ -1069,6 +1092,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  project_health: ["fix", "getReport"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],

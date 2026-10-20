@@ -179,7 +179,7 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it.each(["project_data_restore", "project_data_start_fresh", "project_move"])("accepts the project storage %s fact with only its coarse fields", (action) => {
+  it.each(["project_data_restore", "project_data_start_fresh", "project_move", "project_health_fix"])("accepts the project storage %s fact with only its coarse fields", (action) => {
     const harness = makeHarness();
     expect(harness.service.capture({
       event: "ade_feature_used",
@@ -2086,6 +2086,37 @@ describe("product analytics producers", () => {
       outcome: "find_query_text",
     })).toEqual({ feature: "find", action: "find_opened" });
   });
+
+  it.each([
+    ["template_setup_started", "from_banner"],
+    ["template_setup_started", "from_settings"],
+    ["template_suggestion_hidden", "completed"],
+    ["deps_update_started", "completed"],
+    ["deps_update_started", "failed"],
+  ])("keeps the lane setup fact %s / %s unchanged", (action, outcome) => {
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "lanes",
+      action,
+      outcome,
+      source: "renderer_route",
+      lane: "private-lane-name",
+      path: "/private/project",
+      manager: "npm",
+      error: "private error text",
+    })).toEqual({ feature: "lanes", action, outcome, source: "renderer_route" });
+  });
+
+  it.each(["template_setup_started", "template_suggestion_hidden", "deps_update_started"])(
+    "drops an unknown outcome for lane setup action %s",
+    (action) => {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "lanes",
+        action,
+        outcome: "private_template_name",
+        source: "renderer_route",
+      })).toEqual({ feature: "lanes", action, source: "renderer_route" });
+    },
+  );
 
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the

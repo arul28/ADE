@@ -804,33 +804,33 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBe(1);
   });
 
-  it("keeps composite-key PR AI summary cache local-only", async () => {
-    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-local-");
+  it("keeps the composite-key PR auto-link ignore table local-only", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-auto-link-ignores-local-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
     expect(
       db.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_clock' limit 1",
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pr_auto_link_ignores__crsql_clock' limit 1",
       ),
     ).toBeNull();
     expect(
       db.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_pks' limit 1",
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pr_auto_link_ignores__crsql_pks' limit 1",
       ),
     ).toBeNull();
   });
 
-  it("removes stale CRR metadata for local-only PR AI summaries", async () => {
-    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-crr-cleanup-");
+  it("removes stale CRR metadata for a local-only table", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-auto-link-ignores-crr-cleanup-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const first = await openKvDb(dbPath, createLogger() as any);
-    first.run("create table pull_request_ai_summaries__crsql_clock(dummy integer)");
-    first.run("create table pull_request_ai_summaries__crsql_pks(dummy integer)");
+    first.run("create table pr_auto_link_ignores__crsql_clock(dummy integer)");
+    first.run("create table pr_auto_link_ignores__crsql_pks(dummy integer)");
     first.run(`
-      create trigger pull_request_ai_summaries__crsql_utrig
-      after update on pull_request_ai_summaries
+      create trigger pr_auto_link_ignores__crsql_utrig
+      after update on pr_auto_link_ignores
       begin
         select 1;
       end
@@ -842,23 +842,23 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
 
     expect(
       reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_clock' limit 1",
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pr_auto_link_ignores__crsql_clock' limit 1",
       ),
     ).toBeNull();
     expect(
       reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_pks' limit 1",
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pr_auto_link_ignores__crsql_pks' limit 1",
       ),
     ).toBeNull();
     expect(
       reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'trigger' and name = 'pull_request_ai_summaries__crsql_utrig' limit 1",
+        "select 1 as present from sqlite_master where type = 'trigger' and name = 'pr_auto_link_ignores__crsql_utrig' limit 1",
       ),
     ).toBeNull();
   });
 
-  it("removes metadata-only CRR rows for local-only PR AI summaries", async () => {
-    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-crr-metadata-only-");
+  it("removes metadata-only CRR rows for a local-only table", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-auto-link-ignores-crr-metadata-only-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const first = await openKvDb(dbPath, createLogger() as any);
     insertProjectGraph(first);
@@ -868,31 +868,34 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     // FK-less shape on disk. Recreate that legacy shape here — the current
     // retrofit intentionally no longer rewrites CRR-excluded tables, and
     // crsql_as_crr refuses tables with checked foreign keys.
-    first.run("drop table pull_request_ai_summaries");
+    first.run("drop table pr_auto_link_ignores");
     first.run(`
-      create table pull_request_ai_summaries (
-        pr_id text not null,
-        head_sha text not null,
-        summary_json text not null default '',
-        generated_at text not null default '',
-        primary key(pr_id, head_sha)
+      create table pr_auto_link_ignores (
+        project_id text not null,
+        repo_owner text not null default '',
+        repo_name text not null default '',
+        github_pr_number integer not null default 0,
+        lane_id text not null,
+        head_branch text,
+        created_at text not null default '',
+        primary key(project_id, repo_owner, repo_name, github_pr_number, lane_id)
       )
     `);
-    first.get("select crsql_as_crr(?)", ["pull_request_ai_summaries"]);
+    first.get("select crsql_as_crr(?)", ["pr_auto_link_ignores"]);
     first.run(
-      `insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at)
-       values (?, ?, ?, ?)`,
-      ["pr-1", "head-1", "{}", "2026-03-17T00:00:00.000Z"],
+      `insert into pr_auto_link_ignores(project_id, repo_owner, repo_name, github_pr_number, lane_id, created_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["proj-1", "acme", "ade", 1, "lane-1", "2026-03-17T00:00:00.000Z"],
     );
-    expect(first.get<{ count: number }>("select count(1) as count from crsql_changes where [table] = ?", ["pull_request_ai_summaries"])?.count).toBeGreaterThan(0);
+    expect(first.get<{ count: number }>("select count(1) as count from crsql_changes where [table] = ?", ["pr_auto_link_ignores"])?.count).toBeGreaterThan(0);
     for (const trigger of first.all<{ name: string }>(
       "select name from sqlite_master where type = 'trigger' and tbl_name = ? and name like ?",
-      ["pull_request_ai_summaries", "pull_request_ai_summaries__crsql_%trig"],
+      ["pr_auto_link_ignores", "pr_auto_link_ignores__crsql_%trig"],
     )) {
       first.run(`drop trigger if exists "${trigger.name}"`);
     }
-    first.run("drop table pull_request_ai_summaries__crsql_clock");
-    first.run("drop table pull_request_ai_summaries__crsql_pks");
+    first.run("drop table pr_auto_link_ignores__crsql_clock");
+    first.run("drop table pr_auto_link_ignores__crsql_pks");
     first.close();
 
     const reopened = await openKvDb(dbPath, createLogger() as any);
@@ -901,7 +904,7 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     expect(
       reopened.get<{ count: number }>(
         "select count(1) as count from crsql_changes where [table] = ?",
-        ["pull_request_ai_summaries"],
+        ["pr_auto_link_ignores"],
       )?.count,
     ).toBe(0);
   });

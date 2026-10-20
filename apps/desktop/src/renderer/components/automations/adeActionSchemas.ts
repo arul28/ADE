@@ -285,13 +285,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "git",
-    action: "generateCommitMessage",
-    label: "Generate commit message",
-    description: "Use AI to draft a commit message from the lane's currently staged changes.",
-    params: [LANE_ID_PARAM, { name: "amend", type: "boolean" }],
-  },
-  {
-    domain: "git",
     action: "getCommitMessage",
     label: "Get commit message",
     description: "Read the full commit message for a specific commit.",
@@ -808,13 +801,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     label: "Request PR reviewers",
     description: "Add reviewers to the PR.",
     params: [PR_ID_PARAM, { name: "reviewers", type: "string-array", required: true }],
-  },
-  {
-    domain: "pr",
-    action: "aiReviewSummary",
-    label: "AI PR review summary",
-    description: "Generate an AI-written PR review summary with risks and recommendations.",
-    params: [PR_ID_PARAM, { name: "model", type: "string" }],
   },
   {
     domain: "pr",
@@ -1492,40 +1478,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     label: "List Linear dispatch queue",
     description: "Return the queued Linear sync items waiting for dispatch.",
     params: [],
-  },
-
-  // ---------------------------------------------------------------------------
-  // feedback
-  // ---------------------------------------------------------------------------
-  {
-    domain: "feedback",
-    action: "list",
-    label: "List feedback submissions",
-    description: "Return recent in-app feedback submissions.",
-    params: [],
-  },
-  {
-    domain: "feedback",
-    action: "prepareDraft",
-    label: "Prepare feedback draft",
-    description: "Generate a structured GitHub-issue draft (title + body + labels) from user feedback input.",
-    params: [
-      { name: "draftInput", type: "json", required: true, description: "FeedbackDraftInput payload (category-specific)." },
-      { name: "modelId", type: "string", description: "Model used to generate the draft." },
-      { name: "reasoningEffort", type: "string" },
-    ],
-  },
-  {
-    domain: "feedback",
-    action: "submitPreparedDraft",
-    label: "Submit feedback draft",
-    description: "Open a GitHub issue from a prepared feedback draft.",
-    params: [
-      { name: "draft", type: "json", required: true, description: "FeedbackPreparedDraft payload." },
-      { name: "title", type: "string", required: true },
-      { name: "body", type: "string", required: true },
-      { name: "labels", type: "string-array", required: true },
-    ],
   },
 
   // ---------------------------------------------------------------------------

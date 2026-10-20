@@ -58,7 +58,11 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
 const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
 const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
-const WEB_CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
+// Every older page is one round trip over the relay, and the renderer walks a
+// long chat to its head one page at a time. The renderer asks for 256 KB, so
+// the web client sends 512 KB pages whatever it asks for: a 2.7 MB chat takes
+// 5 trips instead of 10.
+const WEB_CHAT_HISTORY_PAGE_BYTES = 512 * 1024;
 const WEB_CHAT_PROJECT_SUBSCRIPTION_LIMIT = 8;
 
 export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"agentChat"> {
@@ -676,10 +680,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         historyPageAction,
         {
           ...record,
-          maxBytes: boundedPositiveInteger(
-            record.maxBytes,
-            WEB_CHAT_HISTORY_PAGE_MAX_BYTES,
-          ),
+          maxBytes: WEB_CHAT_HISTORY_PAGE_BYTES,
         }
       );
     },

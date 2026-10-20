@@ -8,6 +8,7 @@ import {
   resolveMachineToolsRoot,
   tryResolveTool,
 } from "../services/tools";
+import { selectDemandedAgentTools } from "../../../desktop/src/main/services/tools/agentToolDemand";
 
 export class ToolsUsageError extends Error {}
 
@@ -25,6 +26,8 @@ export type ToolsCommandDeps = {
   gc?: typeof gcTools;
   resolve?: typeof tryResolveTool;
   listPinned?: typeof listPinnedTools;
+  /** Which pinned tools this machine uses; `ensure` with no names fetches only those. */
+  selectDemand?: (pinned: readonly string[], env: NodeJS.ProcessEnv) => { fetch: string[]; skip: string[] };
 };
 
 type ToolStatusRow = {
@@ -121,8 +124,10 @@ export async function runToolsCommand(
   }
 
   if (sub === "ensure") {
-    // Named tools are opt-in; with none the command means "everything this
-    // build pins", which is what the installer and the brain both want.
+    // Named tools are fetched as asked. With none, the tools this machine
+    // shows signs of using (`selectDemandedAgentTools`, the brain's own rule):
+    // every pin together is well over a gigabyte, and the rest download the
+    // first time something needs them. `--all` is the explicit "fetch it all".
     const requested = positionals.slice(1);
     for (const name of requested) {
       if (!pinned.includes(name)) {
@@ -131,7 +136,11 @@ export async function runToolsCommand(
         );
       }
     }
-    const names = requested.length > 0 ? requested : pinned;
+    const demand = requested.length > 0 || rest.includes("--all")
+      ? null
+      : (deps.selectDemand ?? ((tools, demandEnv) => selectDemandedAgentTools(tools, { env: demandEnv })))(pinned, env);
+    const names = requested.length > 0 ? requested : demand ? demand.fetch : pinned;
+    const skipped = demand?.skip ?? [];
     const startedAtMs = Date.now();
     try {
       const resolved = await ensure(names, {
@@ -145,6 +154,8 @@ export async function runToolsCommand(
         durationMs: Date.now() - startedAtMs,
         summary: summarize(names.map((name) => statusRow(name, resolved.get(name) ?? null))),
         tools: names.map((name) => statusRow(name, resolved.get(name) ?? null)),
+        // Not used on this machine yet; each downloads when first needed.
+        skipped,
       };
     } catch (error) {
       // The typed kind is the whole point of the tools module: callers and

@@ -110,6 +110,7 @@ const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: s
   grok: { ring: "ring-zinc-300/25", border: "border-zinc-300/30" },
   copilot: { ring: "ring-violet-400/25", border: "border-violet-400/30" },
   devin: { ring: "ring-purple-400/25", border: "border-purple-400/30" },
+  antigravity: { ring: "ring-blue-400/25", border: "border-blue-400/30" },
 };
 
 export function isContextCompactionChatEvent(

@@ -1,14 +1,26 @@
 import type { DetectedAuth } from "./authDetector";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
-import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
+import { cachedToolEntryPath, previousCachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { resolveActiveToolVersionOverride } from "../../../../../ade-cli/src/services/tools/overrides";
 
+/** `auth`, `path` (also the env override's label), and `common-dir` stay for callers that name them. */
 export type CodexExecutableResolution = {
   path: string;
   source: "tools-cache" | "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
+  /**
+   * Set when this is the newer, untested build ADE moved to because OpenAI
+   * refused the pin for a model (`codexFallForward.ts`). Still ADE's own,
+   * verified copy in the tools cache (`source` is `tools-cache`).
+   */
+  fallForward?: {
+    pinnedVersion: string;
+    overrideVersion: string;
+    codexVersion: string | null;
+    rejectedCodexVersion: string | null;
+    model: string | null;
+  };
 };
 
 const CODEX_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, string>>>> = {
@@ -30,15 +42,6 @@ const moduleDir =
     ? __dirname
     : path.dirname(fileURLToPath(import.meta.url));
 
-function findCodexAuthPath(auth?: DetectedAuth[]): string | null {
-  for (const entry of auth ?? []) {
-    if (entry.type !== "cli-subscription" || entry.cli !== "codex") continue;
-    const candidate = entry.path.trim();
-    if (candidate) return candidate;
-  }
-  return null;
-}
-
 function pathExists(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
   try {
     fs.accessSync(filePath, fs.constants.X_OK);
@@ -52,65 +55,6 @@ function pathExists(filePath: string, platform: NodeJS.Platform = process.platfo
       return false;
     }
   }
-}
-
-function homeDirFromEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
-  const profile = env.USERPROFILE?.trim();
-  const home = env.HOME?.trim();
-  if (platform === "win32") return profile || home || os.homedir() || null;
-  return home || os.homedir() || null;
-}
-
-/**
- * Directories used by Codex's own standalone installer
- * (`https://chatgpt.com/codex/install.ps1` / `install.sh`).
- *
- * The installer drops the release under `$CODEX_HOME/packages/standalone/current`
- * and exposes it through a "visible bin" directory that it prepends to the
- * *persisted* user PATH:
- *   - Windows: `%CODEX_INSTALL_DIR%` else `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`
- *   - macOS/Linux: `$CODEX_INSTALL_DIR` else `$HOME/.local/bin`
- *
- * A persisted PATH edit is not visible to an already-running login session, so
- * ADE must be able to find a standalone install without it. macOS already gets
- * this for free because `~/.local/bin` is in the shared known-bin-dir list; the
- * Windows equivalent is not, which left standalone Windows installs
- * indistinguishable from "Codex is not installed".
- */
-function standaloneCodexInstallDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
-  const dirs: string[] = [];
-  const installDir = env.CODEX_INSTALL_DIR?.trim();
-  if (installDir) dirs.push(installDir);
-
-  if (platform === "win32") {
-    const localAppData = env.LOCALAPPDATA?.trim();
-    if (localAppData) dirs.push(path.join(localAppData, "Programs", "OpenAI", "Codex", "bin"));
-  } else {
-    const home = homeDirFromEnv(env, platform);
-    if (home) dirs.push(path.join(home, ".local", "bin"));
-  }
-
-  const configuredHome = env.CODEX_HOME?.trim();
-  const home = homeDirFromEnv(env, platform);
-  const codexHome = configuredHome || (home ? path.join(home, ".codex") : "");
-  if (codexHome) {
-    const current = path.join(codexHome, "packages", "standalone", "current");
-    dirs.push(path.join(current, "bin"), current);
-  }
-
-  return [...new Set(dirs)];
-}
-
-function findStandaloneCodexExecutable(
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string | null {
-  const binaryName = platform === "win32" ? "codex.exe" : "codex";
-  for (const dir of standaloneCodexInstallDirs(env, platform)) {
-    const candidate = path.join(dir, binaryName);
-    if (pathExists(candidate, platform)) return candidate;
-  }
-  return null;
 }
 
 function listDirectories(rootPath: string): string[] {
@@ -149,8 +93,8 @@ function collectBundledCodexRoots(env: NodeJS.ProcessEnv): string[] {
     );
   }
 
-  roots.push(path.join(process.cwd(), "node_modules", "@openai"));
-
+  // ADE's own `node_modules`, found from this module. Never the working
+  // directory: that can be any project, with a Codex of its own.
   let current = moduleDir;
   for (;;) {
     roots.push(path.join(current, "node_modules", "@openai"));
@@ -168,8 +112,6 @@ function findBundledCodexExecutable(args: {
   platform?: NodeJS.Platform;
   arch?: NodeJS.Architecture;
 }): string | null {
-  if (args.env.ADE_DISABLE_BUNDLED_CODEX === "1") return null;
-
   const platform = args.platform ?? process.platform;
   const arch = args.arch ?? process.arch;
   const packageName = CODEX_PLATFORM_PACKAGES[platform]?.[arch];
@@ -184,6 +126,17 @@ function findBundledCodexExecutable(args: {
   return null;
 }
 
+/**
+ * ADE's own Codex: the dev/test override (`CODEX_EXECUTABLE`), the newer build
+ * ADE moved to after OpenAI refused the current pin for a model (only while
+ * that pin is still the manifest's and the build's install is complete, so an
+ * ADE update that moves the pin ends it), the current pin in the tools cache, the copy ADE's lockfile put in `node_modules` (a source
+ * checkout; `ADE_CODEX_BUNDLE_ROOT` points a test at one), then the previous
+ * pin while a new one downloads. Never a Codex the user installed.
+ *
+ * `fallback-command` means ADE has no copy on this machine; `path` is empty.
+ * `auth` is accepted for call-site compatibility and ignored.
+ */
 export function resolveCodexExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;
@@ -200,18 +153,25 @@ export function resolveCodexExecutable(args?: {
   // Codex is the one tool that cannot be reached by seeding a module search
   // path: its binary lives at `vendor/<triple>/bin/codex` and is found by the
   // probe below, never by NODE_PATH. The cache therefore has to hand over the
-  // resolved entry path explicitly. `ADE_DISABLE_BUNDLED_CODEX` means "use my
-  // own Codex, not ADE's", so it opts out of the cache for the same reason it
-  // opts out of the bundled copy.
-  if (env.ADE_DISABLE_BUNDLED_CODEX !== "1") {
-    const cachedPath = cachedToolEntryPath("codex", {
-      env,
-      platform: args?.platform,
-      arch: args?.arch,
-    });
-    if (cachedPath && pathExists(cachedPath)) {
-      return { path: cachedPath, source: "tools-cache" };
-    }
+  // resolved entry path explicitly.
+  const cacheContext = { env, platform: args?.platform, arch: args?.arch };
+  const forced = resolveActiveToolVersionOverride("codex", cacheContext);
+  if (forced && pathExists(forced.resolution.entryPath, args?.platform)) {
+    return {
+      path: forced.resolution.entryPath,
+      source: "tools-cache",
+      fallForward: {
+        pinnedVersion: forced.override.pinnedVersion,
+        overrideVersion: forced.override.overrideVersion,
+        codexVersion: forced.override.overrideToolVersion,
+        rejectedCodexVersion: forced.override.rejectedToolVersion,
+        model: forced.override.scope ?? null,
+      },
+    };
+  }
+  const cachedPath = cachedToolEntryPath("codex", cacheContext);
+  if (cachedPath && pathExists(cachedPath, args?.platform)) {
+    return { path: cachedPath, source: "tools-cache" };
   }
 
   const bundledPath = findBundledCodexExecutable({
@@ -224,23 +184,10 @@ export function resolveCodexExecutable(args?: {
     return { path: bundledPath, source: "bundled" };
   }
 
-  const authPath = findCodexAuthPath(args?.auth);
-  if (authPath) {
-    return { path: authPath, source: "auth" };
+  const previousPath = previousCachedToolEntryPath("codex", cacheContext);
+  if (previousPath && pathExists(previousPath, args?.platform)) {
+    return { path: previousPath, source: "tools-cache" };
   }
 
-  const resolved = resolveExecutableFromKnownLocations("codex", env);
-  if (resolved) {
-    return {
-      path: resolved.path,
-      source: resolved.source === "path" ? "path" : "common-dir",
-    };
-  }
-
-  const standalone = findStandaloneCodexExecutable(env, args?.platform ?? process.platform);
-  if (standalone) {
-    return { path: standalone, source: "common-dir" };
-  }
-
-  return { path: "codex", source: "fallback-command" };
+  return { path: "", source: "fallback-command" };
 }

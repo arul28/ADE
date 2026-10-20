@@ -103,6 +103,80 @@ describe("projectContextStore", () => {
     expect(store.search("", 5).map((item) => item.status)).not.toContain("archived");
   });
 
+  it.each([
+    {
+      name: "keeps different wording and tag scopes separately",
+      original: "Use pnpm for workspace commands.",
+      next: "Do not use pnpm for workspace commands.",
+      nextTags: undefined,
+      saved: true,
+      scopeText: "The installer needs a signing prompt.",
+    },
+    {
+      name: "keeps typographically negated facts separate",
+      original: "Use pnpm for workspace commands.",
+      next: "Don’t use pnpm for workspace commands.",
+      nextTags: undefined,
+      saved: true,
+      scopeText: null,
+    },
+    {
+      name: "refuses a reworded duplicate",
+      original: "Use release notes for version details.",
+      next: "Release notes contain version details.",
+      nextTags: undefined,
+      saved: false,
+      scopeText: null,
+    },
+    {
+      name: "matches a tagged panel save and a suffix-only legacy duplicate",
+      original: "The relay signs every batch. [lane:lane-7]",
+      originalTags: { lane: "lane-7" },
+      next: "The relay signs every batch. [lane:lane-7]",
+      nextTags: undefined,
+      saved: false,
+      scopeText: null,
+      expectedCount: 1,
+      legacyNearText: "The relay signs every batch reliably.",
+      notesFileFacts: new Set(["The relay signs every batch. [lane:lane-7]"]),
+    },
+  ])("$name", ({ original, originalTags, next, nextTags, saved, scopeText, expectedCount, legacyNearText, notesFileFacts }) => {
+    const store = createProjectContextStore({ adeDir: tempAdeDir() });
+    const first = store.remember({ text: original, tags: originalTags });
+    const second = store.remember({ text: next, tags: nextTags, notesFileFacts });
+
+    expect(first.saved).toBe(true);
+    expect(second.saved).toBe(saved);
+
+    if (scopeText) {
+      const laneSeven = store.remember({ text: scopeText, tags: { lane: "lane-7" } });
+      const laneEight = store.remember({ text: scopeText, tags: { lane: "lane-8" } });
+      const untagged = store.remember({ text: scopeText });
+      expect(laneSeven.saved).toBe(true);
+      expect(laneEight.saved).toBe(true);
+      expect(untagged.saved).toBe(true);
+      expect(untagged.item?.tags).toEqual({});
+      const laneSevenNearMatch = store.findNearDuplicate(
+        "The installer needs a signing prompt for Mac.",
+        { lane: "lane-7" },
+      );
+      expect(laneSevenNearMatch?.id).toBe(laneSeven.item?.id);
+    }
+    expect(store.read().items).toHaveLength(expectedCount ?? (saved ? 2 : 1) + (scopeText ? 3 : 0));
+    expect(second.item?.text).toBe(saved ? next : original);
+    if (originalTags) expect(second.item?.tags).toEqual(originalTags);
+
+    if (legacyNearText) {
+      const legacyStore = createProjectContextStore({ adeDir: tempAdeDir() });
+      legacyStore.migrateFromMemory("- The relay signs every batch. [lane:lane-7]\n");
+      const legacyFact = legacyStore.read().items[0];
+      const legacyMatch = legacyStore.findNearDuplicate(legacyNearText, { lane: "lane-7" });
+      expect(legacyMatch?.id).toBe(legacyFact.id);
+      expect(legacyStore.remember({ text: legacyNearText, tags: { lane: "lane-7" } }).saved).toBe(false);
+      expect(legacyStore.read().items).toHaveLength(1);
+    }
+  });
+
   it("stays local when the account mirror is unavailable", async () => {
     const adeDir = tempAdeDir();
     const account = fakeAccount();

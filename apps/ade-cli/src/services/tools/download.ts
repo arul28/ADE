@@ -53,10 +53,13 @@ export type ToolDownloadOptions = {
    */
   sha256?: boolean;
   /**
-   * Refuse any redirect that leaves the host of the first URL. File pins name
-   * one vendor host, and a redirect off it is not something ADE will follow.
+   * The only hosts this download may touch: the first URL and every redirect
+   * must land on one of them (`allowedDownloadHosts` in manifest.ts). GitHub
+   * release assets, for one, answer with a 302 to a signed URL on their asset
+   * CDN, so a vendor's list can be longer than its pinned URL's host. Absent
+   * means any HTTPS host, which only a caller-supplied URL outside a pin uses.
    */
-  sameHostRedirectsOnly?: boolean;
+  allowedHosts?: readonly string[];
 };
 
 export type ToolDownloader = (
@@ -89,9 +92,8 @@ export async function downloadToolTarball(
 ): Promise<ToolDownloadResult> {
   await fsp.mkdir(path.dirname(destPath), { recursive: true });
   const partPath = `${destPath}.${process.pid}.part`;
-  const originHost = options.sameHostRedirectsOnly ? hostOf(url) : null;
   try {
-    const result = await streamToFile(url, partPath, options, 0, originHost);
+    const result = await streamToFile(url, partPath, options, 0);
     await fsp.rename(partPath, destPath);
     return result;
   } catch (error) {
@@ -112,12 +114,26 @@ function hostOf(url: string): string | null {
   }
 }
 
+/**
+ * Checked on the first URL and again on every redirect, before a request is
+ * made, so a vendor host that bounces elsewhere is refused without contacting
+ * the new host at all.
+ */
+function assertAllowedHost(url: string, allowedHosts: readonly string[] | undefined): void {
+  if (allowedHosts === undefined) return;
+  const host = hostOf(url);
+  if (host === null || !allowedHosts.includes(host)) {
+    throw networkError(
+      `Refusing to download from ${host ?? url}: this download may only use ${allowedHosts.join(", ") || "no host"}.`,
+    );
+  }
+}
+
 async function streamToFile(
   url: string,
   partPath: string,
   options: ToolDownloadOptions,
   redirects: number,
-  originHost: string | null,
 ): Promise<ToolDownloadResult> {
   if (redirects > MAX_REDIRECTS) {
     throw networkError(`Too many redirects while downloading ${url}`);
@@ -125,6 +141,7 @@ async function streamToFile(
   if (!url.startsWith("https://")) {
     throw networkError(`Refusing to download ADE agent tools over a non-HTTPS URL: ${url}`);
   }
+  assertAllowedHost(url, options.allowedHosts);
 
   const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
     const request = https.get(
@@ -146,10 +163,7 @@ async function streamToFile(
     if (!redirected.startsWith("https://")) {
       throw networkError(`Refusing insecure redirect from ${url} to ${redirected}`);
     }
-    if (originHost !== null && hostOf(redirected) !== originHost) {
-      throw networkError(`Refusing redirect from ${url} to ${redirected}: this download must stay on ${originHost}.`);
-    }
-    return await streamToFile(redirected, partPath, options, redirects + 1, originHost);
+    return await streamToFile(redirected, partPath, options, redirects + 1);
   }
   if (status !== 200) {
     response.resume();

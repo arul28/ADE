@@ -134,8 +134,15 @@ function resolveShellInvocation(commandLine: string, env: NodeJS.ProcessEnv): Sp
   return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
 }
 
-/** Timeout per setup command / script, matching the Docker step's budget. */
-const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
+/**
+ * Timeout per install command and per setup command / script. A cold install of
+ * a large project (thousands of packages, native builds) can take many minutes,
+ * and a lane template is the only place a lane gets its packages, so a short
+ * budget would fail a setup that is still working. The abort path still stops
+ * a run the user cancels.
+ */
+export const LANE_ENV_COMMAND_TIMEOUT_MS = 20 * 60_000;
+const SETUP_SCRIPT_TIMEOUT_MS = LANE_ENV_COMMAND_TIMEOUT_MS;
 
 export type LaneEnvInitOptions = {
   /**
@@ -436,23 +443,22 @@ export function createLaneEnvironmentService({
     return execCommand(["docker", ...args], worktreePath, 300_000);
   }
 
-  const ALLOWED_INSTALL_COMMANDS = new Set([
-    "npm", "yarn", "pnpm", "pip", "pip3", "bundle", "cargo", "go", "composer", "poetry", "pipenv", "bun"
-  ]);
-
+  // Any command runs here, like the setup script beside it. Both come only
+  // from this machine's `.ade/local.yaml` (a lane template or the project's
+  // lane config), never from the repo, so an allowlist guarded nothing and
+  // only stopped tools it did not list (uv, pod, mise, make, …).
   async function installDependencies(
     worktreePath: string,
     deps: LaneDependencyInstallConfig[]
   ): Promise<{ failures: string[] }> {
     const failures: string[] = [];
     for (const dep of deps) {
-      const baseCommand = dep.command[0];
-      if (!ALLOWED_INSTALL_COMMANDS.has(baseCommand)) {
-        logger.warn("lane_env_init.dependency_command_not_allowed", { command: baseCommand });
+      if (!dep.command[0]?.trim()) {
+        failures.push("An install step has no command.");
         continue;
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
-      const result = await execCommand(dep.command, cwd);
+      const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
       if (result.exitCode !== 0) {
         failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
         logger.warn("lane_env_init.dependency_install_failed", {

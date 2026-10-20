@@ -1,6 +1,13 @@
 import { buildAdeCliAgentGuidance } from "../../../../shared/adeCliGuidance";
 import { adePromptAgentSkillRoots } from "../../skills/agentSkillRuntimeService";
 
+/**
+ * The opening of every coding-agent system prompt ADE builds. Session import
+ * reads it to recognise ADE's own Copilot chats that predate their
+ * `client_name` (`externalSessions/discoverCopilot.ts`), so keep it stable.
+ */
+export const ADE_AGENT_PROMPT_OPENING = "You are ADE's software engineering agent working in";
+
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 
@@ -226,7 +233,7 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
   return [
-    `You are ADE's software engineering agent working in ${args.cwd}.`,
+    `${ADE_AGENT_PROMPT_OPENING} ${args.cwd}.`,
     "This session is bound to that worktree for writes and mutations. Read-only inspection outside this path is allowed when needed, but edit files and run mutating commands only inside this path unless ADE explicitly relaunches you in a different lane.",
     ...(runtime
       ? [

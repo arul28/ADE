@@ -757,20 +757,6 @@ export type CreateLaneFromPrBranchResult = {
   pr: PrSummary;
 };
 
-export type DraftPrDescriptionArgs = {
-  laneId: string;
-  model?: string;
-  reasoningEffort?: string | null;
-  baseBranch?: string;
-  closeLinearIssueOnMerge?: boolean;
-  /**
-   * When true, surface real AI failures to the caller (throw) instead of silently
-   * returning the deterministic template. Used by explicit AI-draft callers that
-   * need a hard failure instead of a stub.
-   */
-  requireAi?: boolean;
-};
-
 export type UpdatePrDescriptionArgs = {
   prId: string;
   body: string;
@@ -1807,18 +1793,6 @@ export type RerunPrChecksArgs = PrRerunChecksTarget & {
   prId: string;
 };
 
-export type AiReviewSummaryArgs = {
-  prId: string;
-  model?: string;
-};
-
-export type AiReviewSummary = {
-  summary: string;
-  potentialIssues: string[];
-  recommendations: string[];
-  mergeReadiness: "ready" | "needs_work" | "blocked";
-};
-
 export type LaneWorktreeLockOwnerKind =
   | "conflict_resolution"
   | "integration_resolution"
@@ -2017,17 +1991,6 @@ export type PrTimelineEvent =
     });
 
 export type PrTimelineEventType = PrTimelineEvent["type"];
-
-/** AI-generated summary of a PR. Cached per (prId, headSha). */
-export type PrAiSummary = {
-  prId: string;
-  summary: string;
-  riskAreas: string[];
-  reviewerHotspots: string[];
-  unresolvedConcerns: string[];
-  generatedAt: string;
-  headSha: string;
-};
 
 export type PrReviewThreadReaction = {
   id: string;

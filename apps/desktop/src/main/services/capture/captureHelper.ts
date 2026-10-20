@@ -16,6 +16,7 @@ import {
   captureFailureFor,
   captureGestureHealth,
   evaluateCaptureChord,
+  inputMonitoringMessageFor,
   parseCaptureHelperOutput,
   resolveCaptureHelperExecutablePath,
   type CaptureHelperInput,
@@ -84,6 +85,8 @@ export class CaptureHelper {
   private captureTimer: NodeJS.Timeout | null = null;
   private stdoutBuffer = "";
   private permissionDenied = false;
+  private inputMonitoringRequired = false;
+  private monitorUnavailable = false;
   private captureInFlight = false;
   private lastCaptureAtMs: number | null = null;
   private pendingSource: CaptureGestureSource = "chord";
@@ -268,6 +271,8 @@ export class CaptureHelper {
       executableExists: this.supported && fs.existsSync(this.options.executablePath),
       running: this.child != null && this.childReady,
       permissionDenied: this.permissionDenied,
+      inputMonitoringRequired: this.inputMonitoringRequired,
+      monitorUnavailable: this.monitorUnavailable,
       exhaustedRestarts:
         this.child == null
         && this.restartAttempts >= MAX_RESTART_ATTEMPTS
@@ -279,11 +284,16 @@ export class CaptureHelper {
     if (!this.disposed) {
       this.restartAttempts = 0;
       this.permissionDenied = false;
+      // `inputMonitoringRequired` stays until the helper reports chord-ready:
+      // clearing it here would make the warning vanish before the tap exists.
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
         this.restartTimer = null;
       }
-      if (!this.child && this.enabled) this.start();
+      // A running helper can try the tap again in place; only a missing one
+      // needs a fresh process.
+      if (this.child) this.write({ type: "retry" });
+      else if (this.enabled) this.start();
     }
     return this.getHealth();
   }
@@ -402,6 +412,23 @@ export class CaptureHelper {
   private handleOutput(output: CaptureHelperOutput): void {
     switch (output.type) {
       case "ready":
+        return;
+      case "chord-ready":
+        // A retry after the user granted Input Monitoring installed the tap.
+        this.inputMonitoringRequired = false;
+        this.monitorUnavailable = false;
+        return;
+      case "input-monitoring-required":
+        // Setup health, not a failed press: no banner and no analytics. The
+        // settings card is where the missing grant is explained and retried.
+        this.inputMonitoringRequired = true;
+        this.monitorUnavailable = false;
+        this.options.logger.warn("capture.input_monitoring_required", {});
+        return;
+      case "chord-unavailable":
+        this.inputMonitoringRequired = false;
+        this.monitorUnavailable = true;
+        this.options.logger.warn("capture.chord_unavailable", {});
         return;
       case "chord": {
         const decision = evaluateCaptureChord({

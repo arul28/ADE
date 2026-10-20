@@ -38,7 +38,10 @@ intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
 Claim an unowned tab with its id and lane. `--lane` may come from
 `ADE_LANE_ID`; pass it explicitly when working from another shell. A personal
 (project-less) chat has no lane and claims with the tab id alone. Keep one
-tab per task and do not claim a tab another chat owns.
+tab per task and do not claim a tab another chat owns. A tab whose chat went
+idle for 10 minutes lists as `idle (lease lapsed)`; reuse it or close it. When
+`open` fails on the tab limit, the error lists the tabs you may close: close
+one of those yourself instead of asking the user.
 
 ```bash
 ade --socket browser tabs --text

@@ -268,14 +268,21 @@ Rules for this one, because it is the easiest place to destroy someone's work:
 
 ### 3.10 Agent CLI binary missing
 
-ADE pins exact versions of the agent CLIs into a machine-level cache (`ADE_TOOLS_ROOT`, else
-`%LOCALAPPDATA%\ADE\tools` on Windows, else `~/.ade/tools`).
+ADE runs only its own pinned copies of the agent CLIs, from a machine-level cache
+(`ADE_TOOLS_ROOT`, else `%LOCALAPPDATA%\ADE\tools` on Windows, else `~/.ade/tools`). It never
+runs a CLI from the PATH, so a `claude` or `codex` the user installed does not fix a missing
+pin; do not tell the user to install one. Logins are shared: ADE's copy reads the user's
+`~/.claude`, `~/.codex`, … sign-in.
 
 ```bash
 ade tools status --text       # (read-only) installed version + entry path per pinned tool
-ade tools ensure --text       # fetch whatever is pinned and missing (network)
+ade tools ensure --text       # fetch the pinned tools this machine uses (network)
 ade tools ensure codex --text # just one
+ade tools ensure --all --text # every pinned tool (well over 1 GB)
 ```
+
+A provider with no build for this machine (`unsupported-target`, e.g. Windows on Arm) reads
+"not available on this machine"; there is nothing to fetch.
 
 Failures come back with a typed `errorKind` — `network`, `integrity`, `disk-space`,
 `lock-timeout` — read it rather than the message. `disk-space` sends you to 3.7; `lock-timeout`

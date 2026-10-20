@@ -212,6 +212,7 @@ function renderBoard(props: Partial<ComponentProps<typeof SessionListPane>> = {}
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map()}
+        resolveSessionRuntimePin={() => null}
         {...props}
       />
     </MemoryRouter>,
@@ -326,6 +327,7 @@ function renderListWithTwoLanes(props: Partial<ComponentProps<typeof SessionList
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map([["lane-one", [one]], ["lane-two", [two]]])}
+        resolveSessionRuntimePin={() => null}
         {...props}
       />
     </MemoryRouter>,

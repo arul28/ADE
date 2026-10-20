@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 
@@ -10,6 +11,7 @@ import {
   terminateProcessTree,
 } from "../../../../desktop/src/main/services/shared/processExecution";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/shared/processExecution";
 import {
   ensurePrivateDirectory,
   securePrivatePath,
@@ -156,8 +158,12 @@ export function probeProxyHealthSync(
     "req.on('timeout', () => { req.destroy(); process.exit(1); });",
     "req.end();",
   ].join("");
+  // The standalone `ade` is a single executable that ignores Node's `-e`; it
+  // answers through its hidden probe command instead (cli.ts).
+  const embedded = isEmbeddedAdeRuntime();
+  const args = embedded ? [PROXY_HEALTH_PROBE_COMMAND, String(port), String(Math.max(1, timeoutMs))] : ["-e", script];
   try {
-    const result = nodeSpawnSync(process.execPath, ["-e", script], {
+    const result = nodeSpawnSync(process.execPath, args, {
       timeout: Math.max(1, timeoutMs),
       stdio: "ignore",
       windowsHide: true,
@@ -167,6 +173,27 @@ export function probeProxyHealthSync(
   } catch {
     return false;
   }
+}
+
+export const PROXY_HEALTH_PROBE_COMMAND = "__ade-proxy-health";
+
+/** The probe the hidden command runs: the same GET as the `-e` script above. */
+export function probeProxyHealthOnce(port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = httpRequest(
+      { host: PROXY_HOST, port, path: HEALTH_PATH, method: "GET", timeout: Math.max(1, timeoutMs) },
+      (res) => {
+        res.resume();
+        resolve((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300);
+      },
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
+  });
 }
 
 function findFreeLoopbackPort(): Promise<number> {

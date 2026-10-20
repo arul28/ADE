@@ -11,8 +11,6 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCreateTagArgs,
-  GitGenerateCommitMessageArgs,
-  GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitCommitListScope,
   GitListRecentCommitsArgs,
@@ -47,12 +45,6 @@ import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
-import {
-  adeBackgroundUtilityProviderFromToolType,
-  backgroundUtilityModelId,
-  backgroundUtilityReasoningEffort,
-} from "../../../shared/backgroundUtilityModel";
 import { isRecord, safeJsonParse } from "../shared/utils";
 
 type LaneInfo = {
@@ -65,13 +57,6 @@ type LaneInfo = {
 
 type BranchStashSummary = GitStashSummary & {
   oid: string;
-};
-
-type CommitMessagePromptContext = {
-  hasStagedChanges: boolean;
-  stagedFiles: string;
-  headFiles: string;
-  diffSnippet: string;
 };
 
 function normAbs(p: string): string {
@@ -211,23 +196,12 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
 export function createGitOperationsService({
   laneService,
   operationService,
-  aiIntegrationService,
-  sessionService,
   logger,
   onHeadChanged,
   onWorktreeChanged
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
-  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
-  sessionService?: {
-    list(args?: { laneId?: string; limit?: number | null }): Array<{
-      toolType?: string | null;
-      lastActivityAt?: string | null;
-      lastOutputPreview?: string | null;
-      resumeMetadata?: { launch?: { model?: string | null } | null } | null;
-    }>;
-  };
   logger: Logger;
   onHeadChanged?: (args: {
     laneId: string;
@@ -343,24 +317,6 @@ export function createGitOperationsService({
     return promise;
   }
 
-  function normalizeCommitMessage(rawText: string): string {
-    const firstLine = rawText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? "";
-    const cleaned = firstLine
-      .replace(/^["'`]+|["'`]+$/g, "")
-      .replace(/^commit message\s*[:\-]\s*/i, "")
-      .replace(/^subject\s*[:\-]\s*/i, "")
-      .replace(/^[-*]\s+/, "")
-      .trim()
-      .replace(/\.$/, "");
-    if (!cleaned.length) {
-      throw new Error("AI returned an empty commit message.");
-    }
-    return cleaned.slice(0, 72).trimEnd();
-  }
-
   async function listBranchStashes(lane: LaneInfo): Promise<BranchStashSummary[]> {
     const out = await runGitOrThrow(["stash", "list", "--format=%H%x1f%gd%x1f%cI%x1f%gs"], {
       cwd: lane.worktreePath,
@@ -409,102 +365,6 @@ export function createGitOperationsService({
       throw new Error(`Stash ${current.ref} changed before ADE could clear it. Refresh stashes and try again.`);
     }
     return current.ref;
-  }
-
-  function pickLastTurnedLaneSession(laneId: string): {
-    toolType?: string | null;
-    lastActivityAt?: string | null;
-    lastOutputPreview?: string | null;
-    resumeMetadata?: { launch?: { model?: string | null } | null } | null;
-  } | null {
-    const rows = sessionService?.list({ laneId, limit: 80 }) ?? [];
-    let best: (typeof rows)[number] | null = null;
-    let bestMs = Number.NEGATIVE_INFINITY;
-    for (const row of rows) {
-      const hasOutput = Boolean(row.lastActivityAt || String(row.lastOutputPreview ?? "").trim());
-      if (!hasOutput) continue;
-      const activityMs = row.lastActivityAt ? Date.parse(row.lastActivityAt) : 0;
-      const rank = Number.isFinite(activityMs) ? activityMs : 0;
-      if (!best || rank > bestMs) {
-        best = row;
-        bestMs = rank;
-      }
-    }
-    return best;
-  }
-
-  async function resolveCommitMessageModel(laneId: string): Promise<string | null> {
-    const session = pickLastTurnedLaneSession(laneId);
-    if (!session) return null;
-    const provider = adeBackgroundUtilityProviderFromToolType(session.toolType);
-    const cheap = provider ? backgroundUtilityModelId(provider) : null;
-    const sessionModel = typeof session.resumeMetadata?.launch?.model === "string"
-      ? session.resumeMetadata.launch.model.trim()
-      : "";
-    return cheap || sessionModel || null;
-  }
-
-  async function loadCommitMessagePromptContext(lane: LaneInfo): Promise<CommitMessagePromptContext> {
-    const [stagedFilesRes, headFilesRes] = await Promise.all([
-      runGit(["diff", "--cached", "--name-status", "--find-renames"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
-      runGit(["show", "--name-status", "--format=", "--find-renames", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 10_000 }),
-    ]);
-
-    const stagedFiles = stagedFilesRes.exitCode === 0 ? stagedFilesRes.stdout.trim() : "";
-    const headFiles = headFilesRes.exitCode === 0 ? headFilesRes.stdout.trim() : "";
-    const hasStagedChanges = stagedFiles.length > 0;
-
-    // Fetch a truncated diff so the model can see actual code changes, not just filenames.
-    const DIFF_CHAR_LIMIT = 8_000;
-    const diffCmd = hasStagedChanges
-      ? ["diff", "--cached", "--no-color", "-U2", "--find-renames"]
-      : ["show", "--no-color", "-U2", "--find-renames", "--format=", "HEAD"];
-    const diffRes = await runGit(diffCmd, { cwd: lane.worktreePath, timeoutMs: 10_000 });
-    let diffSnippet = diffRes.exitCode === 0 ? diffRes.stdout.trim() : "";
-    if (diffSnippet.length > DIFF_CHAR_LIMIT) {
-      diffSnippet = diffSnippet.slice(0, DIFF_CHAR_LIMIT) + "\n... (diff truncated)";
-    }
-
-    return {
-      hasStagedChanges,
-      stagedFiles,
-      headFiles,
-      diffSnippet,
-    };
-  }
-
-  function buildCommitMessagePrompt(_lane: LaneInfo, args: GitGenerateCommitMessageArgs, context: CommitMessagePromptContext): string {
-    const changedFiles = context.hasStagedChanges ? context.stagedFiles : context.headFiles;
-    const parts = [
-      "Write a single git commit subject based on the diff below.",
-      "Return plain text only.",
-      "Rules:",
-      "- one line only",
-      "- imperative mood",
-      "- concise and specific",
-      "- fewer than 10 words",
-      "- 72 characters or fewer",
-      "- no quotes",
-      "- no trailing period",
-      "- base the message on the actual code changes, not just filenames",
-      "",
-      `Amend mode: ${args.amend ? "yes" : "no"}`,
-      "",
-      "Changed files:",
-      changedFiles || "(none)",
-    ];
-    if (context.diffSnippet) {
-      parts.push("", "Diff:", context.diffSnippet);
-    }
-    return parts.join("\n");
-  }
-
-  function toCommitMessageGenerationError(error: unknown): Error {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/No AI provider is available/i.test(message)) {
-      return new Error("No AI provider is available to suggest a commit message. Type one, then commit.");
-    }
-    return error instanceof Error ? error : new Error(message);
   }
 
   function isMissingWorktreeError(error: unknown): boolean {
@@ -856,37 +716,6 @@ export function createGitOperationsService({
         }
       });
       return action;
-    },
-
-    async generateCommitMessage(args: GitGenerateCommitMessageArgs): Promise<GitGenerateCommitMessageResult> {
-      const lane = laneService.getLaneBaseAndBranch(args.laneId);
-      await assertLaneWorktreeRoot(lane);
-      const model = await resolveCommitMessageModel(args.laneId);
-      if (!model) {
-        return { message: "", model: null };
-      }
-      const promptContext = await loadCommitMessagePromptContext(lane);
-      if (!promptContext.hasStagedChanges && !args.amend) {
-        throw new Error("Stage changes before generating a commit message.");
-      }
-      const prompt = buildCommitMessagePrompt(lane, args, promptContext);
-      const reasoningEffort = backgroundUtilityReasoningEffort(model);
-
-      try {
-        const result = await aiIntegrationService.generateCommitMessage({
-          cwd: lane.worktreePath,
-          prompt,
-          model,
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        });
-        const normalized = normalizeCommitMessage(result.text);
-        return {
-          message: lane.linearIssue ? ensureLinearCommitReference(normalized, lane.linearIssue) : normalized,
-          model: result.model ?? model
-        };
-      } catch (error) {
-        throw toCommitMessageGenerationError(error);
-      }
     },
 
     async listRecentCommits(args: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> {

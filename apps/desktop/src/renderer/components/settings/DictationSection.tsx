@@ -18,7 +18,7 @@ function formatMb(bytes: number): string {
 }
 
 /**
- * Voice input settings (lives under Settings → General; the chat mic deep-links
+ * Voice input settings (lives under Settings → Chat; the chat mic deep-links
  * here via #voice-input). The "Enable voice input in chat" toggle persists via
  * the Zustand user-preferences store and gates the mic in every composer.
  */

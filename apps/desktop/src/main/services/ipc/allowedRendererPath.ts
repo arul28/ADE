@@ -1,9 +1,4 @@
-import {
-  escapesAllRootsWhenMissingAllowed,
-  isLexicallyWithinRoot,
-  isPathEscapeError,
-  resolvePathWithinRoot,
-} from "../shared/utils";
+import { resolveWithinAllowedRoots } from "../shared/utils";
 
 /**
  * The message for a path that really is outside every allowed directory.
@@ -15,63 +10,13 @@ export const PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE = "Path is outside allowed direct
 
 /**
  * Resolve a renderer-supplied path against the allowed directories, accepting
- * it only when one of them contains it.
- *
- * The allowlist is a list of candidate roots, so a path has to be tried
- * against each one. What must NOT happen is collapsing every failure into
- * "outside the allowlist": `resolvePathWithinRoot` throws
- * `PATH_ESCAPES_ROOT_MESSAGE` only for the containment rule, and separately
- * surfaces a missing file, a dangling symlink, a permission error and a link
- * loop. A path the user can see is simply gone then reads as a path they are
- * not allowed to name, and they are told to fix the wrong thing.
- *
- * So the verdict is decided by what the attempts actually said:
- * - any attempt failed the containment rule and none accepted the path: the
- *   path is outside every allowed directory, and the caller gets that message
- *   exactly as before. This is the security answer, and it is never softened
- *   into a "missing file" one.
- * - a failure from a root that lexically contains the candidate is the real
- *   cause (for a missing file, the resolver's own `Path does not exist: <path>`),
- *   unless the candidate would leave that root through a symlink and land
- *   outside every allowed directory. A missing name under an in-root symlink that
- *   points outside fails on that name before the containment rule runs, so such
- *   a failure is checked again with missing names allowed, and a landing spot
- *   outside every allowed directory counts as an escape. A landing spot inside
- *   another allowed directory (a link into a second root) keeps the real cause.
- *   Otherwise it is rethrown.
- * - a non-containment failure from a root the candidate is not lexically inside
- *   says nothing about the candidate. The resolver reports a missing component
- *   before it checks containment, so for a path outside every root that failure
- *   has to be ignored, or a probe for `/outside/<name>` would tell the renderer
- *   whether that file exists.
- *
- * Rejection behavior is unchanged: a path is accepted under exactly the same
- * conditions as before, so this narrows nothing and widens nothing. Only the
- * diagnosis changes.
+ * it only when one of them contains it. Refusals follow `resolveWithinAllowedRoots`:
+ * anything that really lands outside every directory gets this one message, with
+ * the same filesystem calls and the same text whether the target exists, is missing or dangles.
  */
 export function resolveWithinAllowedDirs(
   allowedDirs: readonly string[],
   candidate: string,
 ): string {
-  let ownRootFailure: unknown = null;
-  let sawEscape = false;
-  for (const dir of allowedDirs) {
-    try {
-      return resolvePathWithinRoot(dir, candidate);
-    } catch (error) {
-      if (isPathEscapeError(error)) {
-        sawEscape = true;
-      } else if (isLexicallyWithinRoot(dir, candidate)) {
-        if (escapesAllRootsWhenMissingAllowed(allowedDirs, dir, candidate)) {
-          sawEscape = true;
-        } else if (ownRootFailure === null) {
-          ownRootFailure = error;
-        }
-      }
-    }
-  }
-  if (sawEscape || ownRootFailure === null) {
-    throw new Error(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
-  }
-  throw ownRootFailure;
+  return resolveWithinAllowedRoots(allowedDirs, candidate, PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
 }

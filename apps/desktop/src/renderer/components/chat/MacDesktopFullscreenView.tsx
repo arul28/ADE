@@ -20,6 +20,7 @@ export function MacDesktopFullscreenView({
   renderPicture,
   renderCaptureOverlay,
   renderVideoOverlay,
+  renderTakeoverHint,
 }: {
   controller: MacDesktopPanelController;
   stripMessage: MacDesktopStripMessage | null;
@@ -29,6 +30,7 @@ export function MacDesktopFullscreenView({
   renderPicture: (scope: MacDesktopChromeScope) => ReactNode;
   renderCaptureOverlay: (scope: MacDesktopChromeScope) => ReactNode;
   renderVideoOverlay: (scope: MacDesktopChromeScope) => ReactNode;
+  renderTakeoverHint: (scope: MacDesktopChromeScope) => ReactNode;
 }) {
   const { expanded, confirmStop, missingPermissions } = controller;
   if (!expanded || typeof document === "undefined") return null;
@@ -63,6 +65,7 @@ export function MacDesktopFullscreenView({
         {renderPicture("fullscreen")}
         {renderCaptureOverlay("fullscreen")}
         {renderVideoOverlay("fullscreen")}
+        {renderTakeoverHint("fullscreen")}
       </div>
     </div>
     </ViewportOverlayHost>,

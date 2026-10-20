@@ -124,6 +124,12 @@ const BOOLEAN_PROPERTIES = new Set([
 // are still meaningful product facts. Kept here rather than in the usage-stats
 // MEANINGFUL_ACTIONS set because they never correspond to a persisted mutation.
 const ANALYTICS_ONLY_ACTIONS = new Set([
+  // ADE MCP decisions (feature "ade_mcp"): switched on or off (outcome
+  // enabled | disabled), an app connected, a token made, a connection removed.
+  "server_toggled",
+  "app_connected",
+  "token_created",
+  "connection_removed",
   "maintenance_run",
   "header_opened",
   "preferences_changed",
@@ -133,9 +139,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // (Start fresh, Use this copy). completed | failed.
   "project_data_restore",
   "project_data_start_fresh",
-  // Settings → General → Project location → Move…: whether people move a
+  // Settings → Location → Move…: whether people move a
   // project at all, and how often a move fails. completed | failed.
   "project_move",
+  // Settings → Location / Lanes → a project health fix (Update paths, Relink
+  // lanes, …): whether people use them and how often one fails. completed | failed.
+  "project_health_fix",
   // Settings → Background service → "Stop and quit ADE": whether people turn
   // the always-on service off at all. completed | rejected (a guard refused) | failed.
   "background_service_stop",
@@ -262,8 +271,6 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // A person started a safe or live test of an automation. Never the rule or event.
   "safe_test_started",
   "live_test_started",
-  // ADE's one-click update of a user-installed provider CLI. Never the version.
-  "provider_cli_updated",
   // A custom notification (`ade notify`, an agent, an automation's "Send
   // notification to mobile app" step): sent, refused by the hourly cap, or
   // failed. Never the title, the body, the link, or which phones got it.
@@ -279,6 +286,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.
   "find_opened",
+  // Lane setup choices made in the renderer: template setup, hiding its prompt,
+  // and starting package updates. Never the lane, package details, or errors.
+  "template_setup_started",
+  "template_suggestion_hidden",
+  "deps_update_started",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -393,6 +405,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "find",
     // Settings › MCP servers: a browser sign-in to a registry server.
     "mcp_servers",
+    // ADE MCP: this computer as an MCP server for outside AI apps.
+    "ade_mcp",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -485,6 +499,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // diff. Prefixed like the other renderer surfaces so none can be confused
     // with another action's outcome. A fifth spelling is dropped, not widened.
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
+    // Where a lane-template setup chat was opened.
+    "from_banner", "from_settings",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

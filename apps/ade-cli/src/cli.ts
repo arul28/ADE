@@ -42,6 +42,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
+import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
+import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
 import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
@@ -118,7 +121,6 @@ import {
 import { prBriefHints } from "../../desktop/src/shared/prBrief";
 import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
 import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
-import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import {
@@ -139,6 +141,11 @@ import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
+import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
+import { resolveDroidExecutable } from "../../desktop/src/main/services/ai/droidExecutable";
+import { resolvePinnedCursorAgentCli } from "../../desktop/src/main/services/ai/pinnedProviderTools";
+import { resolveOpenCodeBinaryPath } from "../../desktop/src/main/services/opencode/openCodeBinaryManager";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -327,6 +334,7 @@ import {
   normalizeLaunchArgs,
   readAgentSpawnLineage,
   requireLaunchProfile,
+  requireChatProvider,
   spawnLineageLaunchArgs,
   DROID_PERMISSION_MODE_ENUM_MESSAGE,
   PERMISSION_MODE_ENUM_MESSAGE,
@@ -353,6 +361,11 @@ import {
   macDesktopRecordingDurationMs,
   recordingStopLeftNoFile,
 } from "./cliMacDesktopFormat";
+import {
+  REMOTE_MCP_HELP,
+  buildRemoteMcpPlan,
+  formatRemoteMcpResult,
+} from "./cliRemoteMcp";
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
@@ -385,12 +398,14 @@ import {
   type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types/sync";
 import {
+  defaultRuntimeCompileCacheDir,
   isCurrentProcessDescendantOfPid,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
@@ -677,6 +692,8 @@ export type FormatterId =
   | "storage-snapshot"
   | "storage-compress"
   | "storage-maintenance"
+  | "project-health"
+  | "project-health-fix"
   | "sync-status"
   | "sync-web"
   | "sync-pin"
@@ -689,7 +706,8 @@ export type FormatterId =
   | "router-efficiency"
   | "router-shadow"
   | "update-status"
-  | "notify";
+  | "notify"
+  | "remote-mcp";
 
 type ChatWaitTarget =
   | "idle"
@@ -849,6 +867,7 @@ export type CliPlan =
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
+  | { kind: "sdk-worker"; worker: SdkWorkerName }
   | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
@@ -1175,6 +1194,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
+    $ ade mcp status | on | off | token create | activity
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1413,6 +1434,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     the brain must stay running for the machine to remain reachable.
     Undo with "ade logout" and "ade runtime uninstall-service".
 `,
+  mcp: `${ADE_BANNER}${REMOTE_MCP_HELP}`,
   notify: `${ADE_BANNER}
   Send a notification to your phone
 
@@ -1807,21 +1829,25 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tools: `${ADE_BANNER}
   ADE Agent Tools
 
-  Inspect and populate the pinned agent-CLI cache. ADE pins exact versions of
-  Codex, Claude Code, and OpenCode and fetches them from the npm registry into a
-  machine-level cache shared by the desktop app, the brain, and every channel,
-  rather than bundling ~650 MB of binaries into each one.
+  Inspect and populate the pinned agent-CLI cache. ADE pins exact,
+  checksum-verified versions of every agent it runs (Claude Code, Codex,
+  OpenCode, Copilot, Droid, Grok, Qwen Code, Kimi, Devin, Pi, Muse, ...) and
+  downloads them into a machine-level cache shared by the desktop app, the
+  brain, and every channel. ADE never runs an agent CLI you installed yourself.
 
     $ ade tools status --text
     $ ade tools ensure --text
     $ ade tools ensure codex --text
+    $ ade tools ensure --all --text
     $ ade tools gc --dry-run --text
 
   Notes:
-    "ensure" with no tool names fetches everything this build pins, and is a
-    no-op for tools already cached. The brain also runs it in the background on
-    every "ade serve", so this is only needed to fetch on demand or to see why a
-    background fetch failed.
+    "ensure" with no tool names fetches the tools this machine shows signs of
+    using (a sign-in, a token, the provider's own CLI), the same rule the brain
+    applies on every "ade serve"; the rest download the first time a chat or
+    task needs them. Name tools to fetch just those, or pass --all for
+    everything this build pins (well over a gigabyte). It is a no-op for
+    tools already cached.
     Failures return ok:false with a typed "errorKind" (network, integrity,
     disk-space, lock-timeout, ...) rather than a message to scrape.
     "gc" drops cached versions this build no longer pins, keeping the most
@@ -1930,7 +1956,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
-    --provider <name>      claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot. CLI mode also accepts shell.
+    --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -2000,6 +2027,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Re-point the lane (and its name) at the live HEAD branch
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes create --name <name> --template <id> Set up the new lane with a template
+    $ ade lanes create --name <name> --no-template  Create the worktree without environment setup
+    $ ade lanes templates list --text                List this machine's lane templates
+    $ ade lanes templates show <id>                  Show one lane template
+    $ ade lanes templates save --json '<...>'        Save a LaneTemplate JSON object
+    $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
+    $ ade lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
+    $ ade lanes templates delete <id>                Delete a lane template
+    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies
+    $ ade lanes templates list --machine "<name>" --text
+                                                    Templates are stored per machine; --machine targets that computer
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
     $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
@@ -2053,7 +2091,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git stage --lane <lane> src/file.ts       Stage one file
     $ ade git stage-all --lane <lane>               Stage all current changes
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
-    $ ade git commit --lane <lane> [-m <message>]   Commit, adding Refs <issue-id> on linked Linear lanes
+    $ ade git commit --lane <lane> -m <message>     Commit, adding Refs <issue-id> on linked Linear lanes
     $ ade git push --lane <lane> --set-upstream     Push through ADE
     $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
@@ -2123,8 +2161,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   for — quote that one, since most shells treat '#' as a comment.
   Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
   branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
-  The exceptions need one: create and link take a lane by definition, and threads,
-  deployments and ai-review-summary still resolve through ADE's own row.
+  The exceptions need one: create and link take a lane by definition, and threads
+  and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
@@ -2441,7 +2479,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -2503,7 +2541,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
-    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
@@ -3572,6 +3610,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   any item failed. Deleting is yours alone: do it in Settings → Archive on the
   desktop, the web client, or the phone. Agents and automations can't delete.
 `,
+  health: `${ADE_BANNER}
+  Project health
+
+  What is wrong with this project and how to fix it: stored paths that name an
+  old folder after a move, lanes whose folder or git link is broken, missing
+  dependencies, virtualenvs made for another folder, agents that don't trust the
+  folder yet, history filed under an old path, the drive. The same list as
+  Settings → Overview. Reading is safe; a fix changes data or files, so it is
+  CTO-only (agents read the report and offer fixes to the person).
+
+    $ ade health --text                              Issues, each with its fix id
+    $ ade health --refresh --text                    Check again instead of the 30 s cache
+    $ ade --role cto health --fix update-paths --text   Run one fix and show the new report
+`,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
 
@@ -3660,7 +3712,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Check one pairing with a one-token request (records the verdict for routing):
     $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
 
-  Run a custom provider in your own terminal (the env is printed, never saved):
+  Run a custom provider in your own terminal (the env is printed, never saved;
+  the harness command it defines runs ADE's pinned copy, never one on your PATH):
     $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
     PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
@@ -5692,6 +5745,134 @@ function buildActionRunStep(
     : actionStep("result", domain, action, objectArgs);
 }
 
+function laneTemplateIdFromValue(value: unknown): string | null {
+  const unwrapped = unwrapActionEnvelope(value);
+  if (typeof unwrapped === "string") return unwrapped.trim() || null;
+  return isRecord(unwrapped) ? asString(unwrapped.templateId) : null;
+}
+
+function formatLaneTemplatesText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const templates = Array.isArray(result.templates)
+    ? result.templates.filter(isRecord)
+    : [];
+  const defaultTemplateId = asString(result.defaultTemplateId);
+  return renderTable(
+    ["id", "name", "default", "dependencies", "copy paths", "env files", "setup script"],
+    templates.map((template) => {
+      const id = asString(template.id) ?? "";
+      return [
+        id,
+        asString(template.name) ?? id,
+        id && id === defaultTemplateId ? "default" : "",
+        Array.isArray(template.dependencies) ? template.dependencies.length : 0,
+        Array.isArray(template.copyPaths) ? template.copyPaths.length : 0,
+        Array.isArray(template.envFiles) ? template.envFiles.length : 0,
+        template.setupScript ? "yes" : "no",
+      ];
+    }),
+    "No lane templates are saved for this project.",
+  );
+}
+
+function formatLaneDependencyStatusText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const folders = Array.isArray(result.folders)
+    ? result.folders.filter(isRecord)
+    : [];
+  const table = renderTable(
+    ["lockfile", "manager", "installed", "out of date"],
+    folders.map((folder) => {
+      const reason = asString(folder.outOfDateReason);
+      return [
+        asString(folder.lockfile) ?? "",
+        asString(folder.manager) ?? "unknown",
+        folder.installed === true ? "yes" : folder.installed === false ? "no" : "unknown",
+        folder.outOfDate === true
+          ? `yes${reason ? ` — ${reason}` : ""}`
+          : "no",
+      ];
+    }),
+    "No lockfiles found.",
+  );
+  const lines = [table];
+  const updateCommand = asString(result.updateCommand);
+  if (updateCommand) lines.push(`Update command: ${updateCommand}`);
+  lines.push(`Default template: ${asString(result.defaultTemplateId) ?? "none"}`);
+  return lines.join("\n\n");
+}
+
+/** A new lane's setup runs inside `create_lane`; the request waits for it. */
+function newLaneSetupTimeoutMs(): number | null {
+  return longRunningLocalRuntimeActionTimeoutMs("lane.applyTemplate");
+}
+
+function newLaneSetupFailed(result: unknown): boolean {
+  if (!isRecord(result) || !isRecord(result.setup)) return false;
+  const setup = result.setup;
+  if (asString(setup.error)) return true;
+  return isRecord(setup.progress) && asString(setup.progress.overallStatus)?.toLowerCase() === "failed";
+}
+
+function formatLaneCreateResultText(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const lane = isRecord(result.lane) ? result.lane : {};
+  const laneName = asString(lane.name) ?? asString(lane.id) ?? "lane";
+  const lines = [`Created lane ${laneName}.`];
+  // Agents read the id and path from this text to keep working in the lane.
+  for (const [label, field] of [["id", lane.id], ["branch", lane.branchRef], ["worktree", lane.worktreePath]] as const) {
+    const text = asString(field);
+    if (text) lines.push(`${label}: ${text}`);
+  }
+  const warning = asString(result.warning);
+  if (warning) lines.push(`Warning: ${warning}`);
+  const setup = isRecord(result.setup) ? result.setup : null;
+  if (!setup) {
+    lines.push("Setup: skipped. The lane is a plain git worktree.");
+    return lines.join("\n");
+  }
+  const templateId = asString(setup.templateId);
+  const setupError = asString(setup.error);
+  if (setupError) {
+    lines.push(`Setup failed${templateId ? ` (template ${templateId})` : ""}: ${setupError}`);
+    return lines.join("\n");
+  }
+  const progress = isRecord(setup.progress) ? setup.progress : {};
+  const steps = Array.isArray(progress.steps) ? progress.steps.filter(isRecord) : [];
+  if (!templateId && steps.length === 0) {
+    lines.push("Setup: nothing to do. No default lane template is set (see `ade lanes templates`).");
+    return lines.join("\n");
+  }
+  lines.push(`Setup${templateId ? ` (template ${templateId})` : ""}: ${asString(progress.overallStatus) ?? "unknown"}.`);
+  for (const step of steps) {
+    const error = asString(step.error);
+    if (error) lines.push(`Failed ${asString(step.label) ?? asString(step.kind) ?? "step"}: ${error}`);
+  }
+  return lines.join("\n");
+}
+
+function readLaneTemplatePayload(args: string[]): JsonObject {
+  // `--json` is also the CLI-wide output switch. The global parser removes it
+  // before this builder runs, leaving the JSON value as the positional input;
+  // consume it here too so direct plan-building callers can use the documented
+  // `save --json '<object>'` spelling.
+  readFlag(args, ["--json"]);
+  const fromFile = readJsonFileOption(args, ["--file"], "--file");
+  const inputJson = readValue(args, ["--input-json", "--template-json"]);
+  const positionalJson = inputJson == null ? firstPositional(args) : null;
+  const parsed = fromFile ?? (inputJson != null
+    ? parseJson(inputJson, "--input-json")
+    : positionalJson != null
+      ? parseJson(positionalJson, "--json")
+      : undefined);
+  if (!isRecord(parsed)) {
+    throw new CliUsageError(
+      "lanes templates save requires a LaneTemplate JSON object with --json or --file.",
+    );
+  }
+  return parsed;
+}
+
 function buildLanePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions") {
@@ -5706,6 +5887,113 @@ function buildLanePlan(args: string[]): CliPlan {
       kind: "execute",
       label: "lane action",
       steps: [buildActionRunStep(["lane", ...args])],
+    };
+  }
+  if (sub === "templates") {
+    const operation = firstPositional(args) ?? "list";
+    if (operation === "list") {
+      return {
+        kind: "execute",
+        label: "lane templates list",
+        formatText: formatLaneTemplatesText,
+        shapeResult: (values) => {
+          const rawTemplates = unwrapActionEnvelope(values.templates);
+          const templates = Array.isArray(rawTemplates)
+            ? rawTemplates.filter(isRecord)
+            : firstArray(rawTemplates, ["templates"]);
+          return {
+            templates,
+            defaultTemplateId: laneTemplateIdFromValue(values.defaultTemplate),
+          };
+        },
+        steps: [
+          actionStep("templates", "lane", "listTemplates"),
+          actionStep("defaultTemplate", "lane", "getDefaultTemplate"),
+        ],
+      };
+    }
+    if (operation === "show") {
+      const templateId = requireValue(
+        readValue(args, ["--id"]) ?? firstPositional(args),
+        "templateId",
+      );
+      return {
+        kind: "execute",
+        label: "lane template show",
+        steps: [actionStep("result", "lane", "getTemplate", { templateId })],
+      };
+    }
+    if (operation === "save") {
+      const template = readLaneTemplatePayload(args);
+      return {
+        kind: "execute",
+        label: "lane template save",
+        shapeResult: (values) => ({
+          saved: true,
+          templateId: asString(template.id),
+          result: unwrapActionEnvelope(values.result),
+        }),
+        steps: [actionStep("result", "lane", "saveTemplate", { template })],
+      };
+    }
+    if (operation === "default") {
+      const clear = readFlag(args, ["--clear"]);
+      const templateId = readValue(args, ["--id"]) ?? firstPositional(args);
+      if (clear && templateId) {
+        throw new CliUsageError("lanes templates default accepts either <id> or --clear, not both.");
+      }
+      if (clear || templateId) {
+        const nextTemplateId = clear ? null : requireValue(templateId, "templateId");
+        return {
+          kind: "execute",
+          label: "lane template default",
+          shapeResult: () => ({ defaultTemplateId: nextTemplateId }),
+          steps: [actionStep("result", "lane", "setDefaultTemplate", { templateId: nextTemplateId })],
+        };
+      }
+      return {
+        kind: "execute",
+        label: "lane template default",
+        steps: [actionStep("result", "lane", "getDefaultTemplate")],
+      };
+    }
+    if (operation === "apply") {
+      // Read the flags first: `firstPositional` would otherwise take the
+      // value of `--lane` as the template id (`apply --lane L1 web`).
+      const templateFlag = readValue(args, ["--template"]);
+      const laneFlag = readLaneId(args);
+      const templateId = requireValue(templateFlag ?? firstPositional(args), "templateId");
+      const laneId = requireValue(laneFlag ?? firstPositional(args), "laneId");
+      const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("lane.applyTemplate");
+      return {
+        kind: "execute",
+        label: "lane template apply",
+        ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+        steps: [actionStep("result", "lane", "applyTemplate", { laneId, templateId })],
+      };
+    }
+    if (operation === "delete") {
+      const templateId = requireValue(
+        readValue(args, ["--id"]) ?? firstPositional(args),
+        "templateId",
+      );
+      return {
+        kind: "execute",
+        label: "lane template delete",
+        steps: [actionStep("result", "lane", "deleteTemplate", { templateId })],
+      };
+    }
+    throw new CliUsageError(
+      `Unknown lanes templates command '${operation}'. Use list, show, save, default, apply, or delete.`,
+    );
+  }
+  if (sub === "deps") {
+    const refresh = readFlag(args, ["--refresh"]);
+    return {
+      kind: "execute",
+      label: "lane dependencies",
+      formatText: formatLaneDependencyStatusText,
+      steps: [actionStep("result", "lane", "getDependencyStatus", refresh ? { refresh: true } : {})],
     };
   }
   if (sub === "list" || sub === "ls") {
@@ -5841,6 +6129,14 @@ function buildLanePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "create" || sub === "child") {
+    const requestedTemplateId = readValue(args, ["--template"]);
+    const noTemplate = readFlag(args, ["--no-template"]);
+    if (requestedTemplateId != null && noTemplate) {
+      throw new CliUsageError("lanes create accepts either --template <id> or --no-template, not both.");
+    }
+    if (requestedTemplateId != null && !requestedTemplateId.trim()) {
+      throw new CliUsageError("--template requires a non-empty template id.");
+    }
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     const input: JsonObject = {};
     input.name = requireValue(name, "name");
@@ -5875,20 +6171,23 @@ function buildLanePlan(args: string[]): CliPlan {
       throw new CliUsageError(
         "parent lane is required. Use --lane <parent> or --parent <parent>.",
       );
+    if (requestedTemplateId != null) input.templateId = requestedTemplateId.trim();
+    if (noTemplate) input.skipSetup = true;
     const createArgs = collectGenericObjectArgs(args, input);
+    const minTimeoutMs = noTemplate ? null : newLaneSetupTimeoutMs();
     return {
       kind: "execute",
       label: "lane create",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      formatText: formatLaneCreateResultText,
+      // `create_lane` runs the lane's setup itself and returns
+      // `{ lane, warning?, setup? }`; scripts read `.lane.id` from `--json`.
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      exitCodeFromResult: (result) => (newLaneSetupFailed(result) ? 1 : 0),
       ...(!createArgs.parentLaneId && !createArgs.baseBranch && typeof createArgs.name === "string" && createArgs.name.trim()
         ? { laneCreationNudge: { newLaneName: createArgs.name.trim() } }
         : {}),
-      steps: [
-        actionCallStep(
-          "result",
-          "create_lane",
-          createArgs,
-        ),
-      ],
+      steps: [actionCallStep("result", "create_lane", createArgs)],
     };
   }
   if (sub === "children") {
@@ -6589,7 +6888,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
-  const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
+  const provider = (mode === "chat" ? requireChatProvider(providerRaw) : requireLaunchProfile(providerRaw, launchOpts)) ?? "codex";
   const copilotFlags = readCopilotLaunchFlags(args, provider);
   if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
     throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
@@ -6641,7 +6940,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         ...(credentialId ? { credentialId } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
-      }, launchOptions)
+      }, { ...launchOptions, allowChatProviders: true })
     : collectLaunchArgs(args, {
         provider,
         permissionMode,
@@ -6712,6 +7011,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   if (lane.autoCreateLane) {
     steps.push(actionCallStep("lane", "create_lane", lane.createLaneArgs ?? {}));
   }
+  // The new lane's template setup runs inside `create_lane`.
+  const laneSetupTimeoutMs = lane.autoCreateLane ? newLaneSetupTimeoutMs() : null;
+  const laneSetupTimeout = laneSetupTimeoutMs != null ? { minTimeoutMs: laneSetupTimeoutMs } : {};
 
   if (mode === "cli") {
     steps.push({
@@ -6731,6 +7033,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       label: "new chat cli",
       formatter: "pty-create",
       steps,
+      ...laneSetupTimeout,
       ...(laneCreationNudge ? { laneCreationNudge } : {}),
     };
   }
@@ -6782,6 +7085,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     kind: "execute",
     label: "new chat",
     steps,
+    ...laneSetupTimeout,
     ...(laneCreationNudge ? { laneCreationNudge } : {}),
   };
 }
@@ -7064,7 +7368,7 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
   // a bag it built itself rather than collecting one: on THIS command
   // `--arg`/`--input-json` fill the lane-create payload below, not the chat.
   const launchConfig = startChat
-    ? normalizeLaunchArgs({ ...chatLaunchFlags, ...lineageArgs }, launchOptions)
+    ? normalizeLaunchArgs({ ...chatLaunchFlags, ...lineageArgs }, { ...launchOptions, allowChatProviders: true })
     : {};
 
   const steps: InvocationStep[] = [
@@ -7135,9 +7439,12 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
     });
   }
 
+  const setupTimeoutMs = newLaneSetupTimeoutMs();
   return {
     kind: "execute",
     label: startChat ? "lane create-from-linear + chat" : "lane create-from-linear",
+    // `create_lane` waits for the lane template's setup.
+    ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}),
     steps,
   };
 }
@@ -7177,9 +7484,12 @@ function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[
       optional: true,
     };
   });
+  const setupTimeoutMs = newLaneSetupTimeoutMs();
   return {
     kind: "execute",
     label: `lane batch-create-from-linear (${issues.length})`,
+    // Each `create_lane` waits for its lane template's setup.
+    ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}),
     steps,
   };
 }
@@ -7355,19 +7665,6 @@ function buildGitPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "git commit",
       steps: [actionCallStep("result", "commit_changes", withLane(input))],
-    };
-  }
-  if (sub === "generate-message") {
-    return {
-      kind: "execute",
-      label: "git commit message",
-      steps: [
-        actionCallStep(
-          "result",
-          "generate_commit_message",
-          withLane({ amend: readFlag(args, ["--amend"]) }),
-        ),
-      ],
     };
   }
   if (sub === "branches" || sub === "branch")
@@ -7635,29 +7932,19 @@ function buildGitPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "message" || sub === "commit-message" || sub === "show-message") {
-    const commitSha =
-      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args);
-    if (commitSha)
-      return {
-        kind: "execute",
-        label: "git commit message",
-        steps: [
-          actionStep(
-            "result",
-            "git",
-            "getCommitMessage",
-            withLane({ commitSha }),
-          ),
-        ],
-      };
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
     return {
       kind: "execute",
       label: "git commit message",
       steps: [
-        actionCallStep(
+        actionStep(
           "result",
-          "generate_commit_message",
-          withLane({ amend: readFlag(args, ["--amend"]) }),
+          "git",
+          "getCommitMessage",
+          withLane({ commitSha }),
         ),
       ],
     };
@@ -8279,21 +8566,6 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
       steps: [actionArgsListStep("result", "pr", scalarPrActions[sub]!, [id])],
     };
   }
-  if (sub === "draft-description")
-    return {
-      kind: "execute",
-      label: "PR draft description",
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          "draftDescription",
-          collectGenericObjectArgs(args, {
-            laneId: readLaneId(args) ?? firstPositional(args),
-          }),
-        ),
-      ],
-    };
   if (sub === "update-description")
     return {
       kind: "execute",
@@ -8569,19 +8841,6 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
       ],
     };
   }
-  if (sub === "ai-review-summary")
-    return {
-      kind: "execute",
-      label: "PR AI review summary",
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          "aiReviewSummary",
-          withPr({ prId: prId ?? firstPositional(args) }),
-        ),
-      ],
-    };
   if (sub === "mobile-snapshot")
     return {
       kind: "execute",
@@ -9509,7 +9768,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
-  const provider = requireLaunchProfile(readValue(args, ["--provider"]), { allowShell: false }) ?? "codex";
+  const provider = requireChatProvider(readValue(args, ["--provider"])) ?? "codex";
   const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
     provider,
     model: modelArg,
@@ -9547,6 +9806,9 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
   for (const [key, value] of Object.entries(input)) {
     if (key === "chat" && isRecord(value)) {
+      if ("create" in value && !isRecord(value.create)) {
+        throw new CliUsageError("chat launch needs chat.create to be an object.");
+      }
       const chat = launchArgs.chat as JsonObject;
       if (isRecord(value.create)) Object.assign(chat.create as JsonObject, value.create);
       if (isRecord(value.message)) Object.assign(chat.message as JsonObject, value.message);
@@ -9554,6 +9816,27 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     }
     launchArgs[key] = value;
   }
+  // The escape hatch can replace `chat` or `provider` wholesale, so check the
+  // merged plan: the launch record and the chat it creates must name one
+  // known provider.
+  const mergedChat = launchArgs.chat;
+  if (!isRecord(mergedChat) || !isRecord(mergedChat.create)) {
+    throw new CliUsageError("chat launch needs chat.create to be an object.");
+  }
+  // An override wins over the --provider flag; two overrides must agree.
+  const inputChat = isRecord(input.chat) ? input.chat : null;
+  const topLevelOverride = "provider" in input ? requireChatProvider(input.provider) : null;
+  const nestedOverride = inputChat && isRecord(inputChat.create) && "provider" in inputChat.create
+    ? requireChatProvider(inputChat.create.provider)
+    : null;
+  if (topLevelOverride && nestedOverride && topLevelOverride !== nestedOverride) {
+    throw new CliUsageError(
+      `provider (${topLevelOverride}) and chat.create.provider (${nestedOverride}) disagree; set one of them.`,
+    );
+  }
+  const effectiveProvider = nestedOverride ?? topLevelOverride ?? provider;
+  launchArgs.provider = effectiveProvider;
+  mergedChat.create.provider = effectiveProvider;
 
   if (printConfig) {
     return {
@@ -10234,7 +10517,7 @@ function buildChatPlan(args: string[]): CliPlan {
     // use it. A chat is never a shell session, so `shell` is rejected here the
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
-    const provider = requireLaunchProfile(readValue(args, ["--provider"]), launchOpts);
+    const provider = requireChatProvider(readValue(args, ["--provider"]));
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const actionArgs = collectLaunchArgs(args, {
@@ -10265,7 +10548,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
-    }, launchOptions);
+    }, { ...launchOptions, allowChatProviders: true });
     const createStep = actionStep("result", "chat", "createSession", actionArgs);
     const kickoffText =
       explicitKickoff ??
@@ -17444,6 +17727,62 @@ function buildStoragePlan(args: string[]): CliPlan {
   );
 }
 
+function buildHealthPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.health ?? topLevelHelpText() };
+  }
+  const fixIndex = args.indexOf("--fix");
+  if (fixIndex >= 0) {
+    const fixId = requireValue(args[fixIndex + 1], "fix id");
+    return {
+      kind: "execute",
+      label: "project health fix",
+      formatter: "project-health-fix",
+      steps: [actionStep("result", "project_health", "fix", { fixId })],
+      exitCodeFromResult: (result) => (isRecord(result) && result.ok === true ? 0 : 1),
+    };
+  }
+  const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
+  return {
+    kind: "execute",
+    label: "project health",
+    formatter: "project-health",
+    steps: [actionStep("result", "project_health", "getReport", forceRefresh ? { forceRefresh: true } : {})],
+  };
+}
+
+function formatProjectHealth(value: unknown): string {
+  const report = value as { projectRoot?: string; previousRoots?: string[]; issues?: Array<{ id: string; severity: string; title: string; detail: string; items?: string[]; fix?: { id: string; label: string; description: string } }>; checks?: Array<{ label: string; ok: boolean }> } | null;
+  if (!report || !Array.isArray(report.issues)) return JSON.stringify(value, null, 2);
+  const lines = [`Project health: ${report.projectRoot ?? ""}`];
+  if (report.previousRoots?.length) lines.push(`Moved from: ${report.previousRoots.join(" ← ")}`);
+  const lanes = (report as { lanes?: Array<{ name: string; stale: string | null; safeToArchive: boolean; laneType: string }> }).lanes ?? [];
+  if (lanes.length) {
+    const stale = lanes.filter((lane) => lane.stale);
+    lines.push(`Lanes: ${lanes.filter((lane) => lane.laneType !== "primary").length} active, ${stale.length} stale (${stale.filter((lane) => lane.safeToArchive).length} safe to archive with \`ade lanes archive-and-reclaim <lane> --confirm RECLAIM\`)`);
+  }
+  if (!report.issues.length) lines.push("", `Everything looks good (${report.checks?.length ?? 0} checks).`);
+  for (const issue of report.issues) {
+    lines.push("", `[${issue.severity}] ${issue.title}`, `  ${issue.detail}`);
+    for (const item of (issue.items ?? []).slice(0, 12)) lines.push(`  - ${item}`);
+    if ((issue.items?.length ?? 0) > 12) lines.push(`  - … ${issue.items!.length - 12} more`);
+    if (issue.fix) lines.push(`  fix: ${issue.fix.id} (${issue.fix.label}): ${issue.fix.description}`);
+  }
+  return lines.join("\n");
+}
+
+function formatProjectHealthFix(value: unknown): string {
+  const result = value as { ok?: boolean; done?: string[]; problems?: string[]; report?: unknown } | null;
+  if (!result || !Array.isArray(result.done)) return JSON.stringify(value, null, 2);
+  return [
+    result.ok ? "Fixed." : "The fix didn't fully work.",
+    ...result.done.map((line) => `  done: ${line}`),
+    ...(result.problems ?? []).map((line) => `  problem: ${line}`),
+    "",
+    formatProjectHealth(result.report),
+  ].join("\n");
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -19845,6 +20184,11 @@ function buildCliPlan(
   if (primary === "__ade-usage-ledger-worker") {
     return { kind: "usage-ledger-worker" };
   }
+  // The standalone runtime is one executable with no <name>SdkWorker.cjs
+  // beside it, and fork() from it re-enters this CLI, so the SDK pools start
+  // their workers through these commands instead (chat/sdkWorkerProcess.ts).
+  const sdkWorker = (Object.keys(SDK_WORKER_COMMANDS) as SdkWorkerName[]).find((name) => SDK_WORKER_COMMANDS[name] === primary);
+  if (sdkWorker) return { kind: "sdk-worker", worker: sdkWorker };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
     return {
@@ -19943,6 +20287,9 @@ function buildCliPlan(
   }
   if (primary === "sync") {
     return buildSyncPlan(args);
+  }
+  if (primary === "mcp") {
+    return buildRemoteMcpPlan(args);
   }
   if (primary === "notify") {
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
@@ -20201,6 +20548,7 @@ function buildCliPlan(
   if (primary === "router") return buildRouterPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
+  if (primary === "health") return buildHealthPlan(args);
   if (primary === "archive" || primary === "archived")
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
@@ -20667,12 +21015,14 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
   const ai = isRecord(effective.ai) ? effective.ai : {};
   const defaultProvider = asString(ai.defaultProvider) ?? asString(ai.mode);
   const apiKeys = isRecord(ai.apiKeys) ? ai.apiKeys : {};
+  // ADE's own pinned copies on this machine; a CLI the user installed is
+  // never what ADE runs, so it does not count.
   const cliProviders = {
-    claude: commandExists("claude"),
-    codex: commandExists("codex"),
-    opencode: commandExists("opencode"),
-    cursor: CURSOR_CLI_EXECUTABLES.launchCandidates.some((command) => commandExists(command)),
-    droid: commandExists("droid"),
+    claude: resolveClaudeCodeExecutable().source !== "fallback-command",
+    codex: resolveCodexExecutable().source !== "fallback-command",
+    opencode: resolveOpenCodeBinaryPath() != null,
+    cursor: resolvePinnedCursorAgentCli() != null,
+    droid: resolveDroidExecutable().source !== "fallback-command",
   };
   const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
     Boolean(asString(apiKeys[key])),
@@ -20686,11 +21036,11 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     ready,
     status: ready ? "ready" : "warning",
     message: ready
-      ? "AI provider configuration or provider CLI availability was detected locally."
-      : "No AI provider configuration or provider CLI was detected locally.",
+      ? "AI provider configuration or one of ADE's provider runtimes was detected locally."
+      : "No AI provider configuration or ADE provider runtime was detected locally.",
     nextAction: ready
       ? undefined
-      : "Configure AI providers in ADE desktop or install/sign in to a provider CLI.",
+      : "Configure AI providers in ADE desktop or sign in to a provider; ADE downloads each agent the first time this machine uses it.",
     details: {
       defaultProvider,
       apiKeyProviders,
@@ -21965,6 +22315,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "runtime/info" ||
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
+    method === "remoteMcp.call" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -23884,7 +24235,11 @@ async function runSetupCli(
       env: process.env,
       ensureAgentTools: async (onProgress) => {
         const { ensureTools, listPinnedTools } = await import("./services/tools/install");
-        const names = listPinnedTools();
+        // Only what this machine uses, by the brain's own demand rule; the
+        // rest download the first time something needs them.
+        const { selectDemandedAgentTools } = await import("../../desktop/src/main/services/tools/agentToolDemand");
+        const names = selectDemandedAgentTools(listPinnedTools()).fetch;
+        if (!names.length) return { ok: true, detail: "none needed yet; each agent downloads the first time it is used" };
         await ensureTools(names, {
           onProgress: (progress) => {
             onProgress({
@@ -24814,6 +25169,24 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  const keepAwakeServiceModule = !embedded && servesMachineEndpoint
+    ? await import("./services/power/brainKeepAwakeService")
+    : null;
+  const keepAwakeService = keepAwakeServiceModule
+    ? keepAwakeServiceModule.createBrainKeepAwakeService({
+        statePath: path.join(layout.adeDir, "keep-awake.json"),
+        readActiveAgentWork: async () => {
+          const activity = await readMachineRuntimeActivitySummary({
+            projectRegistry,
+            scopeRegistry,
+            personalChatScope,
+          });
+          return activity.activeAgentTurns + (activity.activeAgentCliSessions ?? 0);
+        },
+        logger: headlessProjectLogger,
+        productAnalyticsService: brainProductAnalytics,
+      })
+    : null;
   const createHeadlessProjectScaffoldService = () => {
     const githubService = createHeadlessGitHubService(
       process.cwd(),
@@ -25441,6 +25814,7 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    ...(keepAwakeService ? { keepAwakeService } : {}),
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
@@ -25475,6 +25849,7 @@ async function runServe(
       personalChatScope,
     },
   });
+  keepAwakeService?.start();
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
@@ -25862,6 +26237,7 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
+    keepAwakeService?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -25875,6 +26251,13 @@ async function runServe(
     brainSyncTunnelClient = null;
     brainSyncHostLease?.dispose();
     brainSyncHostLease = null;
+    try {
+      // Commands remote AI apps started run in their own process groups.
+      const { stopAllRemoteRuns } = await import("./services/remoteMcp/remoteMcpRunner");
+      stopAllRemoteRuns();
+    } catch {
+      // Shutdown must never fail on remote-command cleanup.
+    }
     // Before scopes detach (which clears the run map): best-effort Live
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
@@ -26475,6 +26858,12 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  // Compile caches of earlier builds go once the brain is listening. Only the brain's
+  // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
+  scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
+    expectedRoot: defaultRuntimeCompileCacheDir(),
+    onPruned: (removed) => headlessProjectLogger.info("brain.compile_cache_pruned", { removed }),
+  });
   if (droppedCallerIdentity.length > 0) {
     headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });
   }
@@ -26538,28 +26927,37 @@ async function runServe(
   // hosting is still coming up (or still retrying).
   void startSyncHostInBackground();
 
-  // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
-  // three of them. A source checkout still resolves all three out of the repo's
-  // own node_modules, so firing the fetch there downloads that much on every
-  // `ade serve` in a dev loop and on every CI job, for bytes nothing will read.
-  // Packaged installs have no node_modules to fall back on and do need it. The
-  // desktop app draws the same line (`app.isPackaged` in main.ts).
+  // Pinned agent tools are fetched, not bundled. A source checkout resolves the
+  // lockfile-pinned ones (codex, claude-code, opencode, copilot) out of the
+  // repo's own node_modules, so the startup pass is skipped there: it would
+  // download hundreds of MB on every `ade serve` in a dev loop and every CI job
+  // for bytes nothing reads. The tools that exist only as a download (droid,
+  // grok, qwen, kimi, devin, antigravity, pi, muse) still download on demand in
+  // a checkout, when a chat or a status refresh needs one. The desktop app
+  // draws the same line (`app.isPackaged` in main.ts).
   //
-  // ADE_FORCE_TOOLS_FETCH=1 opts a checkout back in (exercising the real fetch
-  // path locally); ADE_DISABLE_TOOLS_FETCH=1 still wins over it, and is handled
-  // inside startBackgroundAgentToolsFetch so the skip is logged there.
+  // ADE_FORCE_TOOLS_FETCH=1 makes a checkout behave like a packaged install
+  // (exercising the real fetch path locally); ADE_DISABLE_TOOLS_FETCH=1 still
+  // wins over it, and is handled inside startBackgroundAgentToolsFetch so the
+  // skip is logged there.
   const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
   const skipToolsFetchForSourceCheckout =
     !toolsFetchDisabled
     && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
     && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
   if (skipToolsFetchForSourceCheckout) {
+    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: true });
     headlessProjectLogger.info("tools.fetch_skipped", {
       reason:
-        "Running from a source checkout, where the pinned agent tools resolve from the repo's node_modules. "
-        + "Set ADE_FORCE_TOOLS_FETCH=1 to fetch them anyway.",
+        "Running from a source checkout, where the lockfile-pinned agent tools resolve from the repo's node_modules; "
+        + "download-only tools still download on demand. Set ADE_FORCE_TOOLS_FETCH=1 to run the startup fetch anyway.",
     });
   } else {
+    if (!toolsFetchDisabled) {
+      const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+      enablePinnedToolFetch(headlessProjectLogger);
+    }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
@@ -26590,13 +26988,18 @@ async function runServe(
     // Hoisted so the freshness monitor and the memory mitigation restart this
     // brain the same way. Two spellings of "restart the service" would be two
     // things to keep in step.
-    const isBrainIdle = async (): Promise<boolean> => (
-      await readMachineRuntimeActivitySummary({
-        projectRegistry,
-        scopeRegistry,
-        personalChatScope,
-      })
-    ).idle;
+    // A command an ADE MCP app is running is work too: a restart would kill it.
+    const isBrainIdle = async (): Promise<boolean> => {
+      const { activeRemoteRunCount } = await import("./services/remoteMcp/remoteMcpRunner");
+      if (activeRemoteRunCount() > 0) return false;
+      return (
+        await readMachineRuntimeActivitySummary({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+        })
+      ).idle;
+    };
     // Single-flighted: the freshness monitor and the memory guard each
     // serialize only their own attempts, so without a shared latch both can
     // request a restart of this service at the same time. The second caller
@@ -30526,13 +30929,18 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
-  // `claimable` marks a tab the human opened that no chat owns. It is visible
+  // `claimable` marks a tab with no owner or an expired lease. It is visible
   // so an agent can discover it instead of starting a duplicate tab, but every
   // action on it still fails until the caller claims it — so the owner column
   // says exactly that, with the command that fixes it.
   const ownerForTab = (tab: Record<string, unknown>): string => {
     if (tab.claimable === true) {
-      return `not yours — ade browser claim --tab ${asString(tab.id) ?? "<id>"}`;
+      const id = asString(tab.id) ?? "<id>";
+      // A claimable tab that still names an owner is one whose chat went idle
+      // and let its lease lapse: free to reuse, or to close to free a slot.
+      return asString(tab.ownerChatSessionId) || asString(tab.ownerLaneId)
+        ? `idle (lease lapsed) — ade browser claim --tab ${id}, or close it`
+        : `not yours — ade browser claim --tab ${id}`;
     }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
@@ -32186,6 +32594,10 @@ function formatTextOutput(
       return formatStorageCompression(value);
     case "storage-maintenance":
       return formatStorageMaintenance(value);
+    case "project-health":
+      return formatProjectHealth(value);
+    case "project-health-fix":
+      return formatProjectHealthFix(value);
     case "usage-snapshot":
       return formatUsageSnapshot(value);
     case "usage-stats":
@@ -32204,6 +32616,8 @@ function formatTextOutput(
       return formatUpdateStatus(value);
     case "github-app-auth":
       return formatGithubAppUserAuth(value);
+    case "remote-mcp":
+      return formatRemoteMcpResult(value);
     case "notify": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       if (!isRecord(result)) return "Notification sent.";
@@ -34249,6 +34663,18 @@ async function runParsedCli(
       });
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "sdk-worker") {
+      // Each worker module serves its IPC channel as soon as it loads.
+      await SDK_WORKER_MODULES[plan.worker]();
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
+      return { output: "", exitCode: 0 };
+    }
     if (plan.kind === "usage-ledger-worker") {
       const { runUsageLedgerWorkerEntrypoint } = await import(
         "../../desktop/src/main/services/usage/usageLedgerWorker"
@@ -34531,6 +34957,14 @@ async function writeProcessOutput(
   });
 }
 
+/** The module each hidden `__ade-*-sdk-worker` command loads (`SDK_WORKER_COMMANDS`). */
+const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
+  copilot: () => import("../../desktop/src/main/services/chat/copilotSdkWorker"),
+  cursor: () => import("../../desktop/src/main/services/chat/cursorSdkWorker"),
+  droid: () => import("../../desktop/src/main/services/chat/droidSdkWorker"),
+  pi: () => import("../../desktop/src/main/services/chat/piSdkWorker"),
+};
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -34541,6 +34975,22 @@ async function main(): Promise<void> {
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
   try {
+    // Cursor's hook wrapper runs ADE's hook scripts through this on the
+    // standalone runtime (cursorSdkHooks.ts), before any argument parsing: the
+    // hook's own `--socket <path>` is not an `ade` flag.
+    if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
+      await runCursorHookScript(process.argv[3]);
+      return;
+    }
+    // The proxy supervisor's synchronous health probe on the standalone runtime.
+    if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
+      const port = Number(process.argv[3]);
+      const timeoutMs = Number(process.argv[4]);
+      const healthy = Number.isInteger(port) && port > 0 && port < 65_536
+        && await probeProxyHealthOnce(port, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1_500);
+      process.exitCode = healthy ? 0 : 1;
+      return;
+    }
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

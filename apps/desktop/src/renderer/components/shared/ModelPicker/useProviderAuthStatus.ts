@@ -29,6 +29,7 @@ type ProviderStatusSnapshot = {
     grok?: unknown;
     copilot?: unknown;
     devin?: unknown;
+    antigravity?: unknown;
   };
   providerConnections?: {
     pi?: ProviderConnectionFlags;
@@ -38,6 +39,7 @@ type ProviderStatusSnapshot = {
     grok?: ProviderConnectionFlags;
     copilot?: ProviderConnectionFlags;
     devin?: ProviderConnectionFlags;
+    antigravity?: ProviderConnectionFlags;
   };
   piInstallation?: { sdkAvailable?: boolean; cliAvailable?: boolean; availableModelIds?: string[] };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
@@ -59,6 +61,7 @@ const ACP_PICKER_FAMILIES = [
   { provider: "grok", family: "xai" },
   { provider: "copilot", family: "github-copilot" },
   { provider: "devin", family: "devin" },
+  { provider: "antigravity", family: "antigravity" },
 ] as const satisfies readonly { provider: string; family: ProviderFamily }[];
 
 const EMPTY_AUTH_STATUS: AuthStatusMap = {};
@@ -156,7 +159,7 @@ export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstal
 
 /**
  * Cheap synchronous-ish IPC call that only resolves whether the OpenCode
- * binary exists on PATH/known dirs. Returns in milliseconds — no server boot,
+ * binary (ADE's pinned copy) is on the machine. Returns in milliseconds — no server boot,
  * no probe. Used to flip the OpenCode-gated empty state without waiting on
  * the slow getStatus() roundtrip.
  */

@@ -124,6 +124,44 @@ async function assertSeaCapableNodeBinary(binaryPath) {
 }
 
 /**
+ * The oldest Node the runtime may embed. The headless runtime runs Pi's SDK
+ * worker on its own Node, and Pi refuses anything older (`PI_SDK_MIN_NODE` in
+ * apps/desktop/src/main/services/chat/piSdkProtocol.ts). Keep the two equal.
+ */
+const MIN_EMBEDDED_NODE = "22.19.0";
+
+function compareNodeVersions(left, right) {
+  const a = left.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < 3; index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
+}
+
+/**
+ * Refuse to embed a Node older than {@link MIN_EMBEDDED_NODE}. A binary built
+ * for another target cannot run on this machine, so its version is not checked.
+ */
+async function assertEmbeddedNodeVersion(binaryPath, target) {
+  let version = null;
+  if (binaryPath === process.execPath) {
+    version = process.version;
+  } else if (target === currentTarget()) {
+    version = (await execFileAsync(binaryPath, ["--version"], { cwd: packageRoot })).stdout.trim();
+  }
+  if (version === null) {
+    process.stdout.write(`Not checking the Node version of ${binaryPath}: it is built for ${target}, not this machine.\n`);
+    return;
+  }
+  if (compareNodeVersions(version, MIN_EMBEDDED_NODE) >= 0) return;
+  throw new Error([
+    `The headless runtime needs Node ${MIN_EMBEDDED_NODE} or newer, and ${binaryPath} is ${version}.`,
+    "Run build:static with a newer Node, or set ADE_STATIC_NODE_BINARY to one.",
+  ].join(" "));
+}
+
+/**
  * Locate signtool.exe. It ships with the Windows SDK and is normally absent
  * from PATH, so fall back to scanning the SDK's versioned bin directories and
  * take the newest. Returns null when no SDK is installed.
@@ -383,6 +421,8 @@ if (!/(^|[/\\\\])cli\\.(?:ts|js|cjs)$/.test(__adeSeaArgv1)) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   await assertHostOrExplicitBinary(args.target);
+  // Before the bundle build, so a too-old Node fails in seconds, not minutes.
+  await assertEmbeddedNodeVersion(process.env.ADE_STATIC_NODE_BINARY || process.execPath, args.target);
   await fs.mkdir(args.outDir, { recursive: true });
   const runtimeVersion = await resolveRuntimeVersion();
   process.env.ADE_CLI_VERSION = runtimeVersion;

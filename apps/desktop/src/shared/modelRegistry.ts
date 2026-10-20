@@ -45,6 +45,7 @@ export type ProviderFamily =
   | "moonshot"
   | "github-copilot"
   | "devin"
+  | "antigravity"
   | "muse";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
@@ -193,7 +194,8 @@ export type ModelProviderGroup =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 /** Every provider group, in the order surfaces list them. */
 export const MODEL_PROVIDER_GROUPS = [
@@ -209,6 +211,7 @@ export const MODEL_PROVIDER_GROUPS = [
   "kimi",
   "qwen",
   "devin",
+  "antigravity",
 ] as const satisfies readonly ModelProviderGroup[];
 
 /** Select a valid reasoning tier without duplicating fallback policy in each UI. */
@@ -2263,9 +2266,9 @@ export function getDynamicOpenCodeModelDescriptors(): ModelDescriptor[] {
 // ---------------------------------------------------------------------------
 
 /** Provider groups whose models can arrive from a live ACP session. */
-export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "devin";
+export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "devin" | "antigravity";
 
-const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "devin"] as const;
+const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "devin", "antigravity"] as const;
 
 /**
  * Provider groups whose catalog is curated rows plus a live list the runtime
@@ -2296,6 +2299,16 @@ const ACP_GROUP_METADATA: Record<
     providerRoute: "devin-acp",
     cliCommand: "devin",
     color: "#2563EB",
+    previewTier: true,
+  },
+  // Antigravity has no curated rows: every model comes from the signed-in
+  // account through ACP. Its own family keeps the ids (`antigravity/<id>`)
+  // apart from the Gemini rows OpenCode and Cursor carry under `google`.
+  antigravity: {
+    family: "antigravity",
+    providerRoute: "antigravity-acp",
+    cliCommand: "antigravity",
+    color: ACP_PROVIDER_MODEL_COLORS.antigravity,
     previewTier: true,
   },
 };
@@ -3173,6 +3186,7 @@ export function getAvailableModels(
     xai: "grok",
     "github-copilot": "copilot",
     devin: "devin",
+    antigravity: "antigravity",
     muse: "muse",
   };
 
@@ -3351,7 +3365,7 @@ export function resolveModelIdForProvider(
  */
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "muse" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | null {
+): "claude" | "codex" | "muse" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity" | null {
   if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (descriptor.providerRoute === "copilot-sdk") return "copilot";
   if (!descriptor.isCliWrapped) return null;
@@ -3363,6 +3377,7 @@ export function resolveCliProviderForModel(
   if (descriptor.family === "xai") return "grok";
   if (descriptor.family === "github-copilot") return "copilot";
   if (descriptor.family === "devin") return "devin";
+  if (descriptor.family === "antigravity") return "antigravity";
   if (descriptor.family === "anthropic") return "claude";
   if (descriptor.family === "openai") return "codex";
   return null;
@@ -3404,6 +3419,7 @@ const PROVIDER_MODEL_ID_IS_RUNTIME_REF: ReadonlySet<ModelProviderGroup> = new Se
   "grok",
   "copilot",
   "devin",
+  "antigravity",
 ]);
 
 export function getRuntimeModelRefForDescriptor(
@@ -3440,6 +3456,7 @@ const CLI_WRAPPED_FAMILY_BY_PROVIDER: Partial<Record<ModelProviderGroup, Provide
   grok: "xai",
   copilot: "github-copilot",
   devin: "devin",
+  antigravity: "antigravity",
 };
 
 /** Providers whose picker keeps the registry's own order instead of hoisting the default. */
@@ -3598,7 +3615,7 @@ function pickDefaultModelForProvider(
     return models[0];
   }
   if (provider === "copilot") return models.find((model) => model.providerModelId === "auto") ?? models[0];
-  if (provider === "kimi" || provider === "grok" || provider === "devin") {
+  if (provider === "kimi" || provider === "grok" || provider === "devin" || provider === "antigravity") {
     return models[0];
   }
   return pickDefaultOpenCodeModel(models);

@@ -18,10 +18,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import type { MuseBinaryStatus } from "../../../../desktop/src/shared/museBinary";
-import { cachedToolEntryPath, pinnedToolFetchPending } from "./cacheLookup";
+import { cachedToolEntryPath, pinnedToolFetchPending, previousCachedToolEntryPath } from "./cacheLookup";
 import { ToolError, isToolError, type ToolErrorKind } from "./errors";
 import { ensureTools, type ToolProgress } from "./install";
 import { findToolTargetPin, loadToolsManifest } from "./manifest";
+import { resolveActiveToolVersionOverride } from "./overrides";
 import { detectToolTarget } from "./paths";
 
 export const MUSE_TOOL_NAME = "muse";
@@ -48,6 +49,21 @@ export type MuseExecutableResolution = {
    * and an unsupported host.
    */
   fetchPending: boolean;
+  /**
+   * True when `path` is the previous pinned build the cache keeps while the
+   * current one downloads (just after an ADE update).
+   */
+  previous?: boolean;
+  /**
+   * Set when this is the newer, untested build ADE moved to because Meta's
+   * channel published a floor above the pin (desktop `museFallForward.ts`).
+   * Still ADE's own sha256-verified copy (`source` is `tools-cache`).
+   */
+  fallForward?: {
+    pinnedVersion: string;
+    overrideVersion: string;
+    requiredVersion: string | null;
+  };
 };
 
 export type MuseResolveOptions = {
@@ -113,9 +129,38 @@ export function resolveMuseExecutable(options: MuseResolveOptions = {}): MuseExe
 
   if (!pinnedVersion) return { path: null, source: "unsupported", pinnedVersion: null, fetchPending: false };
 
-  const cached = cachedToolEntryPath(MUSE_TOOL_NAME, { env, platform, arch: options.arch });
+  const cacheContext = { env, platform, arch: options.arch };
+  // Meta's floor moved past the pin and ADE switched to a newer pairing build;
+  // only while that pin is still the manifest's and the build is installed.
+  const forced = resolveActiveToolVersionOverride(MUSE_TOOL_NAME, cacheContext);
+  if (forced && isExecutableFile(forced.resolution.entryPath, platform)) {
+    return {
+      path: forced.resolution.entryPath,
+      source: "tools-cache",
+      pinnedVersion,
+      fetchPending: false,
+      fallForward: {
+        pinnedVersion: forced.override.pinnedVersion,
+        overrideVersion: forced.override.overrideVersion,
+        requiredVersion: forced.override.requiredVersion,
+      },
+    };
+  }
+  const cached = cachedToolEntryPath(MUSE_TOOL_NAME, cacheContext);
   if (cached && isExecutableFile(cached, platform)) {
     return { path: cached, source: "tools-cache", pinnedVersion, fetchPending: false };
+  }
+  // Just after an ADE update the new pin can still be downloading; ADE's
+  // previous build, which the cache keeps for this, runs meanwhile.
+  const previous = previousCachedToolEntryPath(MUSE_TOOL_NAME, cacheContext);
+  if (previous && isExecutableFile(previous, platform)) {
+    return {
+      path: previous,
+      source: "tools-cache",
+      pinnedVersion,
+      fetchPending: pinnedToolFetchPending(MUSE_TOOL_NAME, cacheContext),
+      previous: true,
+    };
   }
   return {
     path: null,
@@ -147,7 +192,18 @@ function fetchErrorKind(error: unknown): ToolErrorKind {
  */
 export async function ensureMuseBinary(options: EnsureMuseOptions = {}): Promise<string> {
   const existing = resolveMuseExecutable(options);
-  if (existing.path) return existing.path;
+  if (existing.path && !existing.previous) return existing.path;
+  // The previous build runs now; the current pin downloads behind it, and its
+  // failure is recorded for getMuseBinaryStatus like any other.
+  if (existing.path) {
+    void fetchCurrentMuse(options).catch(() => undefined);
+    return existing.path;
+  }
+  return await fetchCurrentMuse(options);
+}
+
+/** Download the current pin (joining a running download) and return its path. */
+async function fetchCurrentMuse(options: EnsureMuseOptions): Promise<string> {
   const listener = options.onProgress;
   if (listener) progressListeners.add(listener);
   try {

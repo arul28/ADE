@@ -81,8 +81,6 @@ import type {
   SettingsProviderId,
 } from "./providers/types";
 
-export { openCodeInstallCommands } from "./providers/cliTools";
-
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
 // also reports them, and listing them again under OpenCode read as a second,
@@ -129,7 +127,7 @@ const API_KEY_PROVIDERS: Array<{
  * The whole card is the open button, so its accessible name ("Open Claude Code
  * settings") covers the status tag and the message — a screen reader that lands
  * on it hears the same facts a sighted reader sees. The one quick action
- * (Sign in, Install, Review) is a sibling button laid over the card's corner,
+ * (Sign in, Download, Review) is a sibling button laid over the card's corner,
  * never nested inside it.
  */
 function ProviderCard({
@@ -168,6 +166,14 @@ function ProviderCard({
   ];
 
   const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
+  // A provider that is not set up is one whose pinned copy is not on this
+  // machine yet: start (or retry) its download there and open the page,
+  // which shows the progress.
+  const { pin } = useSettingsMachineScope();
+  const startDownload = () => {
+    void window.ade?.ai?.pinnedToolDownload?.({ provider: descriptor.id }, pin).catch(() => undefined);
+    onOpen();
+  };
   const action = status.state === "sign-in"
     ? {
       label: "Sign in",
@@ -175,7 +181,7 @@ function ProviderCard({
       run: () => (signInCommand ? ctx.actions.openSignInTerminal(descriptor.id) : onOpen()),
     }
     : status.state === "not-installed"
-      ? { label: "Install", aria: `Install ${descriptor.label}`, run: onOpen }
+      ? { label: "Download", aria: `Download ${descriptor.label} for this machine`, run: startDownload }
       : status.state === "attention"
         ? { label: "Review", aria: `Review ${descriptor.label}`, run: onOpen }
         : null;
@@ -397,7 +403,6 @@ export function ProvidersSection({
   const [acpDiagnostics, setAcpDiagnostics] = useState<Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>>({});
   const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
-  const [acpUpdateBusy, setAcpUpdateBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
   const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
@@ -1052,43 +1057,6 @@ export function ProvidersSection({
     }
   }, [pin]);
 
-  const updateAcpProvider = useCallback(async (provider: AcpSettingsProviderId) => {
-    const run = window.ade.ai.acpProviderUpdate;
-    if (!run) {
-      setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot update providers." }));
-      return;
-    }
-    setAcpUpdateBusy(provider);
-    setAcpDiagnosticsError((prev) => {
-      const next = { ...prev };
-      delete next[provider];
-      return next;
-    });
-    try {
-      const result = await run({ provider }, pin);
-      if (!result.ok) throw new Error(result.message);
-      setNotice(result.message);
-      // Re-read the diagnostics so the advisory reflects the version the
-      // updater just wrote, not the pre-update snapshot.
-      const read = window.ade.ai.acpProviderDiagnostics;
-      if (read) {
-        try {
-          const diagnostics = await read({ provider }, pin);
-          setAcpDiagnostics((prev) => ({ ...prev, [provider]: diagnostics }));
-        } catch {
-          // The update succeeded; a failed re-read does not undo it.
-        }
-      }
-    } catch (err) {
-      setAcpDiagnosticsError((prev) => ({
-        ...prev,
-        [provider]: err instanceof Error ? err.message : String(err),
-      }));
-    } finally {
-      setAcpUpdateBusy((current) => (current === provider ? null : current));
-    }
-  }, [pin]);
-
   const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
     if (!providerSignIn(provider)) return;
     setSignInProvider(provider);
@@ -1127,7 +1095,6 @@ export function ProvidersSection({
     acpDiagnostics,
     acpDiagnosticsBusy,
     acpDoctorBusy,
-    acpUpdateBusy,
     acpDiagnosticsError,
     actions: {
       refreshStatus,
@@ -1151,7 +1118,6 @@ export function ProvidersSection({
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
-      updateAcpProvider,
       openSignInTerminal,
     },
   }), [
@@ -1167,8 +1133,7 @@ export function ProvidersSection({
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
-    acpDoctorBusy, acpUpdateBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor,
-    updateAcpProvider, openSignInTerminal,
+    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
   ]);
 
   const descriptors = useMemo(() => availableProviderDescriptors(), []);

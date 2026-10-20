@@ -7,6 +7,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
@@ -414,9 +415,9 @@ export function isLexicallyWithinRoot(root: string, candidate: string): boolean 
 }
 
 function realpathExisting(filePath: string): string {
-  return typeof fs.realpathSync.native === "function"
-    ? fs.realpathSync.native(filePath)
-    : fs.realpathSync(filePath);
+  return typeof nonAsarFs.realpathSync.native === "function"
+    ? nonAsarFs.realpathSync.native(filePath)
+    : nonAsarFs.realpathSync(filePath);
 }
 
 function candidateExpressionFromRoot(root: string, candidate: string): string {
@@ -439,7 +440,7 @@ function splitPathSegments(filePath: string): { root: string; segments: string[]
 
 function pathEntryExists(filePath: string): boolean {
   try {
-    fs.lstatSync(filePath);
+    nonAsarFs.lstatSync(filePath);
     return true;
   } catch (error) {
     const code = error && typeof error === "object"
@@ -512,50 +513,182 @@ export function resolvePathWithinRoot(
   return candidateReal;
 }
 
-/**
- * Whether `candidate`, resolved from `root` with names it does not find allowed,
- * lands outside every root in `roots`.
- *
- * A missing name under an in-root symlink that points outside fails on that
- * name before containment is checked, so the plain resolve reports "does not
- * exist" for a path that is really outside the root. Resolving again with
- * missing names allowed shows where the path really lands. That spot still
- * counts as allowed when another root contains it: a link under `A` that points
- * into `B` leaves `A`, but a missing name under it is a missing file in `B`.
- */
-export function escapesAllRootsWhenMissingAllowed(
-  roots: readonly string[],
-  root: string,
-  candidate: string,
-): boolean {
-  let landed: string;
+function readLinkOrNull(filePath: string): string | null {
   try {
-    landed = resolveCandidatePath(root, candidate, { allowMissing: true });
+    return nonAsarFs.readlinkSync(filePath);
   } catch {
-    return false;
+    return null;
   }
-  return !roots.some((other) => {
+}
+
+function isMissingEntryError(error: unknown): boolean {
+  const code = error && typeof error === "object"
+    ? ("code" in error ? (error as NodeJS.ErrnoException).code : undefined)
+    : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Link hops one walk follows before it stops. Linux allows 40 nested links and
+ * macOS 32. Past the bound the walk keeps the lexical location. The kernel
+ * refuses a chain that long too, so a present one and a dangling one still end
+ * up the same.
+ */
+const MAX_SYMLINK_HOPS = 40;
+
+interface WalkState {
+  hops: number;
+  /**
+   * Where each spelled name landed. A name reached twice, such as a link target
+   * under the candidate's own folder, is walked once. Which names hit this cache
+   * depends on the spelling alone, never on whether they exist.
+   */
+  landings: Map<string, string>;
+  /** The first name on the walk that did not resolve. Its error is what a verdict reports. */
+  failure: { error: unknown; missing: boolean } | null;
+}
+
+interface RootWalk {
+  /**
+   * Where the walk ended. For a name that resolves, this is its canonical path.
+   * For one that does not, it is where its link chain points, or the lexical
+   * location when the chain ends at a missing name.
+   */
+  landed: string;
+  failure: WalkState["failure"];
+}
+
+/**
+ * Walk `candidate` from `root` one name at a time, following symbolic links one
+ * hop at a time. Each name makes the same two calls whether it resolves, is
+ * missing or dangles: `realpath` and `readlink`. A link is followed through its
+ * target whether or not the target exists, so a chain that dangles lands where
+ * the same chain would if it resolved. The walk never stops early on a failure,
+ * so the work done does not depend on what sits at the end of the chain. The
+ * caller reads the outcome afterwards. Nothing throws.
+ */
+function walkWithinRoot(root: string, candidate: string): RootWalk {
+  const { root: start, segments } = splitPathSegments(candidateExpressionFromRoot(root, candidate));
+  const state: WalkState = { hops: 0, landings: new Map(), failure: null };
+  const landed = walkSegments(start, segments, state);
+  return { landed, failure: state.failure };
+}
+
+function walkSegments(start: string, segments: readonly string[], state: WalkState): string {
+  let cursor = start;
+  for (const segment of segments) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") {
+      cursor = path.dirname(cursor);
+      continue;
+    }
+    cursor = walkName(cursor, segment, state);
+  }
+  return cursor;
+}
+
+/** Where `name`, directly inside the canonical directory `dir`, lands. */
+function walkName(dir: string, name: string, state: WalkState): string {
+  const entry = path.join(dir, name);
+  const known = state.landings.get(entry);
+  if (known !== undefined) return known;
+  let resolved: string | null = null;
+  let resolveError: unknown = null;
+  try {
+    resolved = realpathExisting(entry);
+  } catch (error) {
+    resolveError = error;
+  }
+  if (resolved === null && state.failure === null) {
+    state.failure = { error: resolveError, missing: isMissingEntryError(resolveError) };
+  }
+  let landed = entry;
+  const linkTarget = readLinkOrNull(entry);
+  if (linkTarget !== null && state.hops < MAX_SYMLINK_HOPS) {
+    state.hops += 1;
+    // Not `path.resolve`, which would collapse a `..` before the link in front of it is followed.
+    const target = splitPathSegments(candidateExpressionFromRoot(dir, linkTarget));
+    landed = walkSegments(target.root, target.segments, state);
+  }
+  const landing = resolved ?? landed;
+  state.landings.set(entry, landing);
+  return landing;
+}
+
+/**
+ * Resolve `candidate` against a list of allowed roots. The first root that
+ * contains where the candidate really lands accepts it, with the canonical path.
+ * Otherwise the candidate is refused in one of two ways, kept apart so that an
+ * outside target reveals nothing:
+ *
+ * - The candidate lands outside every root: directly, through a link chain, or as
+ *   a missing or dangling name under one. The caller gets `refusalMessage`, the
+ *   same text for all of these, with no path in it. Whether the outside target
+ *   exists, is a link, or cannot be read gives the same message, and names of the
+ *   same kind make the same filesystem calls.
+ * - The candidate is spelled inside a root and does not resolve there: the
+ *   resolver's own `Path does not exist: <candidate>`, or the underlying error
+ *   for an unreadable entry. That path is inside the root, so nothing outside is
+ *   named. A root that is not on disk reports its own realpath error.
+ *
+ * A failure from a root the candidate is not spelled inside says nothing about
+ * the candidate, so it is ignored. Reporting it would tell the renderer whether
+ * a name outside that root exists.
+ */
+export function resolveWithinAllowedRoots(
+  roots: readonly string[],
+  candidate: string,
+  refusalMessage: string,
+): string {
+  const rootReals: Array<{ real: string | null; error: unknown }> = roots.map((root) => {
     try {
-      resolvePathWithinRoot(other, landed, { allowMissing: true });
-      return true;
-    } catch {
-      return false;
+      return { real: realpathExisting(path.resolve(root)), error: null };
+    } catch (error) {
+      return { real: null, error };
     }
   });
+  const landsInsideAnyRoot = (filePath: string): boolean =>
+    rootReals.some(({ real }) => real !== null && isWithinDir(real, filePath));
+  let sawEscape = false;
+  let ownRootFailure: unknown = null;
+  for (const [index, root] of roots.entries()) {
+    const { real, error: rootError } = rootReals[index];
+    const walk = walkWithinRoot(root, candidate);
+    if (walk.failure === null) {
+      if (real !== null && isWithinDir(real, walk.landed)) return walk.landed;
+      // Resolved in full, but not inside this root. A root that is not on disk contains nothing.
+      if (real !== null) sawEscape = true;
+      continue;
+    }
+    if (!isLexicallyWithinRoot(root, candidate)) continue;
+    if (!landsInsideAnyRoot(walk.landed)) {
+      sawEscape = true;
+    } else if (ownRootFailure === null) {
+      ownRootFailure = real === null
+        ? rootError
+        : walk.failure.missing
+          ? new Error(`Path does not exist: ${candidate}`)
+          : walk.failure.error;
+    }
+  }
+  if (sawEscape || ownRootFailure === null) {
+    throw new Error(refusalMessage);
+  }
+  throw ownRootFailure;
 }
 
 function openReadOnlyNoFollow(filePath: string): number {
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
-    ? fs.constants.O_NOFOLLOW
+  const noFollowFlag = typeof nonAsarFs.constants.O_NOFOLLOW === "number"
+    ? nonAsarFs.constants.O_NOFOLLOW
     : 0;
-  return fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag);
+  return nonAsarFs.openSync(filePath, nonAsarFs.constants.O_RDONLY | noFollowFlag);
 }
 
 function openWriteNoFollow(filePath: string, flags: number, mode: number): number {
-  const noFollowFlag = typeof fs.constants.O_NOFOLLOW === "number"
-    ? fs.constants.O_NOFOLLOW
+  const noFollowFlag = typeof nonAsarFs.constants.O_NOFOLLOW === "number"
+    ? nonAsarFs.constants.O_NOFOLLOW
     : 0;
-  return fs.openSync(filePath, flags | noFollowFlag, mode);
+  return nonAsarFs.openSync(filePath, flags | noFollowFlag, mode);
 }
 
 function isPathAlignedWithRoot(rootReal: string, candidatePath: string): boolean {
@@ -586,12 +719,12 @@ function ensureDirectoryChainWithinRoot(
 
     const nextPath = path.join(cursor, segment);
     try {
-      fs.lstatSync(nextPath);
+      nonAsarFs.lstatSync(nextPath);
       const resolvedPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, resolvedPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
-      if (!fs.statSync(resolvedPath).isDirectory()) {
+      if (!nonAsarFs.statSync(resolvedPath).isDirectory()) {
         throw new Error(`Path is not a directory: ${nextPath}`);
       }
       cursor = resolvedPath;
@@ -605,7 +738,7 @@ function ensureDirectoryChainWithinRoot(
       if (!isPathAlignedWithRoot(rootReal, nextPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
-      fs.mkdirSync(nextPath);
+      nonAsarFs.mkdirSync(nextPath);
       const createdPath = realpathExisting(nextPath);
       if (!isPathAlignedWithRoot(rootReal, createdPath)) {
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
@@ -640,11 +773,11 @@ function writeFileByDescriptor(
   const mode = typeof options === "object" && options != null && typeof options.mode === "number"
     ? options.mode
     : 0o666;
-  const fd = openWriteNoFollow(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, mode);
+  const fd = openWriteNoFollow(filePath, nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC, mode);
   try {
-    fs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
+    nonAsarFs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
   } finally {
-    fs.closeSync(fd);
+    nonAsarFs.closeSync(fd);
   }
 }
 
@@ -705,7 +838,7 @@ export function readFileWithinRootSecure(
   }
   const fd = openReadOnlyNoFollow(expectedPath);
   try {
-    const openStat = fs.fstatSync(fd);
+    const openStat = nonAsarFs.fstatSync(fd);
     if (!openStat.isFile()) {
       throw new Error("Path is not a regular file");
     }
@@ -713,7 +846,7 @@ export function readFileWithinRootSecure(
       throw new Error(`File is too large (${openStat.size} bytes)`);
     }
     const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
-    const currentStat = fs.statSync(currentPath);
+    const currentStat = nonAsarFs.statSync(currentPath);
     // Node 22.13 on Windows reports `dev` as 0 from statSync but the volume
     // serial from fstatSync, so a zero `dev` on either side proves nothing;
     // the file index (`ino`) still has to match.
@@ -721,9 +854,9 @@ export function readFileWithinRootSecure(
     if (!sameDevice || openStat.ino !== currentStat.ino) {
       throw new Error("Path changed during open");
     }
-    return fs.readFileSync(fd);
+    return nonAsarFs.readFileSync(fd);
   } finally {
-    fs.closeSync(fd);
+    nonAsarFs.closeSync(fd);
   }
 }
 
@@ -753,11 +886,11 @@ export function secureWriteTextAtomicWithinRoot(root: string, candidate: string,
   writeFileByDescriptor(tmpPath, text, "utf8");
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
-    fs.renameSync(tmpPath, targetPath);
+    nonAsarFs.renameSync(tmpPath, targetPath);
     return targetPath;
   } catch (error) {
     try {
-      fs.unlinkSync(tmpPath);
+      nonAsarFs.unlinkSync(tmpPath);
     } catch {
       // ignore cleanup errors
     }
@@ -771,14 +904,14 @@ export function secureCopyFileIntoRoot(root: string, candidate: string, sourcePa
     initialTarget.parentPath,
     `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
   );
-  fs.copyFileSync(sourcePath, tmpPath);
+  nonAsarFs.copyFileSync(sourcePath, tmpPath);
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
-    fs.renameSync(tmpPath, targetPath);
+    nonAsarFs.renameSync(tmpPath, targetPath);
     return targetPath;
   } catch (error) {
     try {
-      fs.unlinkSync(tmpPath);
+      nonAsarFs.unlinkSync(tmpPath);
     } catch {
       // ignore cleanup errors
     }
@@ -787,10 +920,10 @@ export function secureCopyFileIntoRoot(root: string, candidate: string, sourcePa
 }
 
 export function secureCopyPathIntoRoot(root: string, candidate: string, sourcePath: string): string {
-  const stat = fs.statSync(sourcePath);
+  const stat = nonAsarFs.statSync(sourcePath);
   if (stat.isDirectory()) {
     const targetPath = secureMkdirWithinRoot(root, candidate);
-    for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+    for (const entry of nonAsarFs.readdirSync(sourcePath, { withFileTypes: true })) {
       secureCopyPathIntoRoot(root, path.join(candidate, entry.name), path.join(sourcePath, entry.name));
     }
     return targetPath;
@@ -804,7 +937,7 @@ export function secureRenameWithinRoot(root: string, sourceCandidate: string, ta
 } {
   const sourcePath = resolvePathWithinRoot(root, sourceCandidate, { allowMissing: false });
   const { targetPath } = prepareMutationTargetWithinRoot(root, targetCandidate);
-  fs.renameSync(sourcePath, targetPath);
+  nonAsarFs.renameSync(sourcePath, targetPath);
   return { sourcePath, targetPath };
 }
 

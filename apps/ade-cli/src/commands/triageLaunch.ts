@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 
-import {
-  resolveExecutableFromKnownLocations,
-  type ResolvedExecutable,
-} from "../../../desktop/src/main/services/ai/cliExecutableResolver";
-import { resolveMuseExecutable } from "../services/tools/muse";
 import { resolveCliSpawnInvocation } from "../../../desktop/src/main/services/shared/processExecution";
+import {
+  pinnedProviderCliStateSentence,
+  resolvePinnedProviderCli,
+  type PinnedCliProvider,
+} from "../../../desktop/src/main/services/pty/pinnedProviderCli";
 import type { TriageBundle } from "./triageContext";
 import { TriageCommandError, TriageUsageError } from "./triageErrors";
 
@@ -66,30 +66,43 @@ export const TRIAGE_PROVIDERS: readonly TriageProviderSpec[] = [
 export type DetectedTriageProvider = TriageProviderSpec & {
   /** Absolute path to the executable, as spelled on disk. */
   path: string;
+  /** Arguments the executable needs before the CLI's own (a script, a self-update switch). */
+  pinnedArgs?: readonly string[];
+  /** Variables the CLI runs with (its self-update switches). */
+  env?: Readonly<Record<string, string>>;
+};
+
+/** How to run one agent CLI: an executable, plus what it needs before the CLI's own arguments. */
+export type TriageExecutable = {
+  path: string;
+  args?: readonly string[];
+  env?: Readonly<Record<string, string>>;
 };
 
 type TriageExecutableResolver = (
   command: string,
   env: NodeJS.ProcessEnv,
-) => ResolvedExecutable | null;
+) => TriageExecutable | null;
+
+const TRIAGE_PINNED_PROVIDER: Readonly<Record<string, PinnedCliProvider>> = {
+  claude: "claude",
+  codex: "codex",
+  "cursor-agent": "cursor",
+  opencode: "opencode",
+  droid: "droid",
+  muse: "muse",
+};
 
 /**
- * The shared resolver, not a bare `fs.existsSync(path.join(dir, name))`.
- *
- * On Windows an extension-less file is not launchable at all: `npm i -g codex`
- * drops `codex` (an sh script), `codex.cmd` and `codex.ps1` side by side, and
- * only the latter two can run. `resolveExecutableFromKnownLocations` resolves
- * the way Windows does — PATHEXT, then the known install directories — and
- * reports the on-disk casing.
+ * ADE's own pinned copy of each agent CLI, already on this machine. Never one
+ * from the PATH or an install directory: ADE runs only the versions it pins,
+ * with their self-update off. Triage downloads nothing, so a CLI this machine
+ * has not used through ADE yet is simply not offered.
  */
-export const defaultTriageExecutableResolver: TriageExecutableResolver = (command, env) => {
-  // `muse` runs only as ADE's pinned build, never a user's own install: its
-  // version must match the protocol ADE ships against, and it self-updates.
-  if (command === "muse") {
-    const pinned = resolveMuseExecutable({ env }).path;
-    return pinned ? { path: pinned, source: "path" } : null;
-  }
-  return resolveExecutableFromKnownLocations(command, env);
+export const defaultTriageExecutableResolver: TriageExecutableResolver = (command) => {
+  const provider = TRIAGE_PINNED_PROVIDER[command];
+  const cli = provider ? resolvePinnedProviderCli(provider) : null;
+  return cli ? { path: cli.command, args: cli.leadingArgs, env: cli.env } : null;
 };
 
 export function detectTriageProviders(
@@ -103,7 +116,7 @@ export function detectTriageProviders(
   const resolve = options.resolve ?? defaultTriageExecutableResolver;
   const detected: DetectedTriageProvider[] = [];
   for (const spec of options.providers ?? TRIAGE_PROVIDERS) {
-    let resolved: ResolvedExecutable | null = null;
+    let resolved: TriageExecutable | null = null;
     try {
       resolved = resolve(spec.command, env);
     } catch {
@@ -111,9 +124,21 @@ export function detectTriageProviders(
       // the whole command down; that provider is simply not available.
       resolved = null;
     }
-    if (resolved?.path) detected.push({ ...spec, path: resolved.path });
+    if (resolved?.path) {
+      detected.push({ ...spec, path: resolved.path, pinnedArgs: resolved.args ?? [], env: resolved.env ?? {} });
+    }
   }
   return detected;
+}
+
+/**
+ * Why a provider is not offered: its pinned copy is downloading, not
+ * downloaded yet, or not available on this machine. ADE never falls back to
+ * a CLI the user installed.
+ */
+export function triageProviderUnavailableSentence(name: TriageProviderName): string {
+  return pinnedProviderCliStateSentence(TRIAGE_PINNED_PROVIDER[name]!)
+    ?? `ADE could not start its copy of ${TRIAGE_PROVIDERS.find((spec) => spec.name === name)?.label ?? name} on this machine.`;
 }
 
 export function parseTriageProviderName(value: string): TriageProviderName {
@@ -153,6 +178,8 @@ export type TriageLaunchPlan = {
   windowsVerbatimArguments: boolean;
   /** False for OpenCode, whose positional argument is a directory, not a prompt. */
   promptDelivered: boolean;
+  /** Added to this process's environment for the agent. */
+  env: Readonly<Record<string, string>>;
 };
 
 export function buildTriageLaunchPlan(
@@ -162,7 +189,8 @@ export function buildTriageLaunchPlan(
   platform: NodeJS.Platform = process.platform,
 ): TriageLaunchPlan {
   const wanted = provider.promptDelivery === "positional";
-  const leadingArgs = [...(provider.leadingArgs ?? [])];
+  const leadingArgs = [...(provider.pinnedArgs ?? []), ...(provider.leadingArgs ?? [])];
+  const agentEnv = provider.env ?? {};
   const invocation = resolveCliSpawnInvocation(
     provider.path,
     wanted ? [...leadingArgs, prompt] : leadingArgs,
@@ -186,6 +214,7 @@ export function buildTriageLaunchPlan(
       args: bare.args,
       windowsVerbatimArguments: bare.windowsVerbatimArguments === true,
       promptDelivered: false,
+      env: agentEnv,
     };
   }
   return {
@@ -195,6 +224,7 @@ export function buildTriageLaunchPlan(
     args: invocation.args,
     windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
     promptDelivered: wanted,
+    env: agentEnv,
   };
 }
 
@@ -208,6 +238,7 @@ export const spawnTriageAgent: TriageAgentSpawner = (plan) =>
   new Promise<number>((resolve, reject) => {
     const child = spawn(plan.command, plan.args, {
       stdio: "inherit",
+      env: { ...process.env, ...plan.env },
       windowsVerbatimArguments: plan.windowsVerbatimArguments,
       // A `.cmd` shim is launched through `cmd.exe`, which pops its own console
       // window on Windows. stdio is inherited, so the agent is already talking

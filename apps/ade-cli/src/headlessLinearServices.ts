@@ -3,7 +3,6 @@ import { createGithubIssueOps } from "../../desktop/src/main/services/github/git
 import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../desktop/src/main/services/state/kvDb";
@@ -102,6 +101,7 @@ import { createFileService as createFileServiceImpl } from "../../desktop/src/ma
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { ghConfigDir } from "./services/credentials/ghConfigDir";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import { knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
 import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/src/main/services/git/gitRepoCache";
@@ -387,10 +387,8 @@ class HeadlessGitHubTokenValidationError extends Error {
  * `users:<login>:oauth_token:`.
  */
 function readGhHostsFileToken(): string | null {
-  const configDir = process.env.GH_CONFIG_DIR?.trim()
-    || path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
   try {
-    const raw = fs.readFileSync(path.join(configDir, "hosts.yml"), "utf8");
+    const raw = fs.readFileSync(path.join(ghConfigDir(), "hosts.yml"), "utf8");
     let inGithubHost = false;
     for (const line of raw.split(/\r?\n/)) {
       if (/^\S/.test(line)) {
@@ -411,10 +409,8 @@ function readGhHostsFileToken(): string | null {
 }
 
 async function readGhHostsFileTokenAsync(): Promise<string | null> {
-  const configDir = process.env.GH_CONFIG_DIR?.trim()
-    || path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
   try {
-    const raw = await fs.promises.readFile(path.join(configDir, "hosts.yml"), "utf8");
+    const raw = await fs.promises.readFile(path.join(ghConfigDir(), "hosts.yml"), "utf8");
     let inGithubHost = false;
     for (const line of raw.split(/\r?\n/)) {
       if (/^\S/.test(line)) {

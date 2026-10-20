@@ -4879,56 +4879,6 @@ describe("laneService createChild", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
-  it("createChild links existing app dependency installs into the worktree", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-child-deps-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-child-deps", repoRoot });
-    fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "node_modules"), { recursive: true });
-
-    const parentWorktreePath = path.join(repoRoot, "parent");
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd === parentWorktreePath) return "sha-parent-head";
-      return "sha-generic";
-    });
-
-    let createdWorktreePath = "";
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "worktree" && args[1] === "add") {
-        createdWorktreePath = args[4] ?? "";
-        fs.mkdirSync(path.join(createdWorktreePath, "apps", "desktop"), { recursive: true });
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "push" && args[1] === "-u") return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") return { exitCode: 1, stdout: "", stderr: "" };
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") return { exitCode: 1, stdout: "", stderr: "" };
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-child-deps",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await service.createChild({
-      parentLaneId: "lane-parent",
-      name: "Worker lane",
-    });
-
-    expect(createdWorktreePath).toBeTruthy();
-    const linked = fs.lstatSync(path.join(createdWorktreePath, "apps", "desktop", "node_modules"));
-    expect(linked.isSymbolicLink()).toBe(true);
-  });
-
   it("createChild from primary anchors the new lane to the project default base", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-child-primary-default-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -6288,7 +6238,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     );
     db.run("insert into pr_groups(id, project_id, group_type, name, created_at) values (?, ?, ?, ?, ?)", ["group-child", projectId, "queue", "Queue", now]);
     db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
-    db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-child", "abc123", "{}", now]);
     db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
     db.run(
       `
@@ -6963,7 +6912,6 @@ describe("laneService - branchSwitch", () => {
             "stale", "open", "main", "feature/a", 0, 0, BSW_NOW, BSW_NOW,
           ],
         );
-        db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-stale", "abc123", "{}", BSW_NOW]);
         db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-stale", BSW_NOW]);
 
         vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" } as any));

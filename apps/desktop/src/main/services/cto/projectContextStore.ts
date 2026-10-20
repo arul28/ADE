@@ -30,13 +30,26 @@ const MAX_THREADS = 40;
 const BRIEF_INJECT_MAX_CHARS = 1_200;
 const ITEMS_INJECT_MAX_CHARS = 1_800;
 const THREADS_INJECT_MAX_CHARS = 800;
+// The CTO's rolling thread state rides the account mirror so a second machine
+// (or a new CTO home) opens on where the work is, not on its own stale copy.
+const MAX_THREAD_STATE_CHARS = 4_000;
+// Two facts whose word sets overlap this much say the same thing. Deterministic
+// and model-free: it is what stops the nightly gardener and the automatic
+// capture from filing "the API is v2" six slightly different ways.
+const NEAR_DUPLICATE_SIMILARITY = 0.8;
 
 const KEY_BRIEF = "ctx.brief";
 const KEY_META = "ctx.meta";
+const KEY_THREAD_STATE = "ctx.state";
 const ITEM_KEY_PREFIX = "ctx.item.";
 const THREAD_KEY_PREFIX = "ctx.thread.";
 
 export const PROJECT_CONTEXT_TAG_KEYS = ["lane", "pr", "path", "topic"] as const;
+
+/** A fact's trailing `[lane:x pr:123 path:a/b topic:t]` suffix, and nothing looser ("[WIP]" is text). */
+export const FACT_TAG_SUFFIX_PATTERN = new RegExp(
+  `\\[((?:${PROJECT_CONTEXT_TAG_KEYS.join("|")}):[^\\]\\s]+(?:\\s+(?:${PROJECT_CONTEXT_TAG_KEYS.join("|")}):[^\\]\\s]+)*)\\]\\s*$`,
+);
 
 export type ProjectContextKind = "fact" | "decision" | "convention" | "trap" | "environment" | "pointer";
 export type ProjectContextStatus = "active" | "pinned" | "archived";
@@ -75,6 +88,13 @@ export type ProjectContextThread = {
   accountSyncedAt?: string;
 };
 
+export type ProjectContextThreadState = {
+  text: string;
+  reason: string | null;
+  updatedAt: string;
+  accountSyncedAt?: string;
+};
+
 type ContextTombstone = {
   key: string;
   /** The `updatedAt` (or thread `createdAt`) at the moment the row was dropped. */
@@ -89,6 +109,7 @@ type StoreFile = {
   brief: ProjectContextBrief | null;
   items: ProjectContextItem[];
   threads: ProjectContextThread[];
+  threadState: ProjectContextThreadState | null;
   /**
    * Account keys this machine dropped because of the cap. A reconcile must not
    * pull those rows back, and the next push deletes them so the other machine
@@ -132,6 +153,7 @@ function emptyStore(): StoreFile {
     brief: null,
     items: [],
     threads: [],
+    threadState: null,
     tombstones: [],
   };
 }
@@ -143,6 +165,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function clip(value: string, max: number): string {
   const text = redactSecrets(value.replace(/\s+/g, " ").trim());
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+// Template lines older ADE builds wrote into MEMORY.md before anything was
+// known. The one-time import copied them in as facts, and the account mirror
+// carried them to every machine, where they ranked alongside real memory.
+const LEGACY_PLACEHOLDER_FACTS = [
+  /^project summary: no cto brief saved yet\b/i,
+  /^critical conventions: none captured yet\.?$/i,
+  /^no promoted durable memories yet\b/i,
+];
+
+function isLegacyPlaceholderFact(text: string): boolean {
+  const trimmed = text.trim();
+  return LEGACY_PLACEHOLDER_FACTS.some((pattern) => pattern.test(trimmed));
 }
 
 function clipBlock(value: string, max: number): string {
@@ -159,6 +195,21 @@ function asTags(value: unknown): ProjectContextItem["tags"] {
     else if (typeof raw === "number" && Number.isFinite(raw)) tags[key] = String(raw);
   }
   return tags;
+}
+
+function tagsFromFactText(text: string): ProjectContextItem["tags"] {
+  const match = FACT_TAG_SUFFIX_PATTERN.exec(text);
+  if (!match) return {};
+  const parsed: Record<string, string> = {};
+  for (const part of match[1].split(/\s+/)) {
+    const separator = part.indexOf(":");
+    if (separator > 0) parsed[part.slice(0, separator)] = part.slice(separator + 1);
+  }
+  return asTags(parsed);
+}
+
+function hasTags(tags: ProjectContextItem["tags"]): boolean {
+  return PROJECT_CONTEXT_TAG_KEYS.some((key) => Boolean(tags[key]));
 }
 
 function decodeItem(value: unknown): ProjectContextItem | null {
@@ -219,6 +270,19 @@ function decodeThread(value: unknown): ProjectContextThread | null {
   };
 }
 
+function decodeThreadState(value: unknown): ProjectContextThreadState | null {
+  if (!isRecord(value)) return null;
+  const text = typeof value.text === "string" ? value.text.trim() : "";
+  const updatedAt = typeof value.updatedAt === "string" ? value.updatedAt : "";
+  if (!text || !updatedAt) return null;
+  return {
+    text: text.slice(0, MAX_THREAD_STATE_CHARS),
+    reason: typeof value.reason === "string" && value.reason.trim() ? value.reason.trim() : null,
+    updatedAt,
+    ...(typeof value.accountSyncedAt === "string" ? { accountSyncedAt: value.accountSyncedAt } : {}),
+  };
+}
+
 function decodeStore(value: unknown): StoreFile | null {
   if (!isRecord(value) || value.version !== STORE_VERSION) return null;
   const items = Array.isArray(value.items) ? value.items.map(decodeItem).filter((item): item is ProjectContextItem => item !== null) : [];
@@ -230,6 +294,7 @@ function decodeStore(value: unknown): StoreFile | null {
     brief: decodeBrief(value.brief),
     items,
     threads,
+    threadState: decodeThreadState(value.threadState),
     tombstones: decodeTombstones(value.tombstones),
   };
 }
@@ -288,6 +353,51 @@ export function contextQueryTerms(query: string): string[] {
     terms.push(part);
   }
   return terms.slice(0, 24);
+}
+
+// Only words that never change what a fact says. Negations and modals ("not",
+// "never", "must", "only", "use") stay: "Use pnpm" and "Do not use pnpm" are
+// opposite facts, and dropping those words made them read as one.
+const SIMILARITY_STOPWORDS = new Set([
+  "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "its", "has", "have",
+]);
+
+const NEGATION_WORDS = new Set(["not", "no", "never", "don't", "dont", "doesn't", "isn't", "can't", "cannot", "won't", "avoid", "without", "stop"]);
+
+function isNegated(text: string): boolean {
+  return text.replace(FACT_TAG_SUFFIX_PATTERN, "").replace(/[\u2018\u2019\u02bc]/g, "'")
+    .toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
+}
+
+function similarityTerms(text: string): Set<string> {
+  // Structured tags are compared separately; markdown is noise.
+  const body = text.replace(FACT_TAG_SUFFIX_PATTERN, "").toLowerCase();
+  const terms = new Set<string>();
+  for (const part of body.split(/[^a-z0-9]+/)) {
+    // Numbers always count, however short: "Node 22" and "Node 20", or PR
+    // #12 and #13, are different facts that share every other word.
+    const numeric = /\d/.test(part);
+    if (!part || (!numeric && (part.length < 3 || SIMILARITY_STOPWORDS.has(part)))) continue;
+    terms.add(part);
+  }
+  return terms;
+}
+
+/**
+ * Overlap of two facts' content words, 0..1. Dice coefficient rather than
+ * Jaccard so a fact that restates another with one extra clause still reads
+ * as the same fact.
+ */
+export function factSimilarity(a: string, b: string): number {
+  // One fact negated and the other not are opposites, however many words
+  // they share: "Use pnpm" against "Do not use pnpm".
+  if (isNegated(a) !== isNegated(b)) return 0;
+  const left = similarityTerms(a);
+  const right = similarityTerms(b);
+  if (!left.size || !right.size) return a.trim().toLowerCase() === b.trim().toLowerCase() ? 1 : 0;
+  let shared = 0;
+  for (const term of left) if (right.has(term)) shared += 1;
+  return (2 * shared) / (left.size + right.size);
 }
 
 function statusPrior(status: ProjectContextStatus): number {
@@ -371,6 +481,36 @@ export function projectContextAccountPort(args: {
     remove: (key) => args.store.remove(scope, key),
     sync: () => args.store.sync(),
   };
+}
+
+/** A live fact that already says what `text` says, or null. */
+function sameTags(left: ProjectContextItem["tags"], right: ProjectContextItem["tags"]): boolean {
+  return PROJECT_CONTEXT_TAG_KEYS.every((key) => (left[key] ?? "").toLowerCase() === (right[key] ?? "").toLowerCase());
+}
+
+function effectiveFactTags(text: string, tags?: ProjectContextItem["tags"]): ProjectContextItem["tags"] {
+  const structured = asTags(tags);
+  return hasTags(structured) ? structured : tagsFromFactText(text);
+}
+
+/**
+ * A live fact that says what `text` says, about the same thing. `tags`, when
+ * given, must match too: a caller can pass them apart from the text, and the
+ * same sentence about another lane is another fact.
+ */
+function findNearDuplicate(
+  items: ProjectContextItem[],
+  text: string,
+  tags: ProjectContextItem["tags"] = {},
+): ProjectContextItem | null {
+  let best: { item: ProjectContextItem; score: number } | null = null;
+  for (const item of items) {
+    if (item.status === "archived") continue;
+    if (!sameTags(effectiveFactTags(item.text, item.tags), tags)) continue;
+    const score = factSimilarity(item.text, text);
+    if (score >= NEAR_DUPLICATE_SIMILARITY && (!best || score > best.score)) best = { item, score };
+  }
+  return best?.item ?? null;
 }
 
 export function createProjectContextStore(args: ProjectContextStoreArgs) {
@@ -469,6 +609,7 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
 
   const stampSynced = (store: StoreFile, key: string, updatedAt: string): void => {
     if (key === KEY_BRIEF && store.brief) store.brief = { ...store.brief, accountSyncedAt: updatedAt };
+    if (key === KEY_THREAD_STATE && store.threadState) store.threadState = { ...store.threadState, accountSyncedAt: updatedAt };
     if (key === KEY_META) return;
     if (key.startsWith(ITEM_KEY_PREFIX)) {
       const id = key.slice(ITEM_KEY_PREFIX.length);
@@ -489,6 +630,9 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       if (account.set(key, value)) stampSynced(next, key, updatedAt);
     };
     if (next.brief) push(KEY_BRIEF, next.brief, next.brief.updatedAt, next.brief.accountSyncedAt);
+    if (next.threadState) {
+      push(KEY_THREAD_STATE, next.threadState, next.threadState.updatedAt, next.threadState.accountSyncedAt);
+    }
     if (next.migratedFromMemoryAt && next.metaSyncedAt !== next.migratedFromMemoryAt) {
       if (account.set(KEY_META, { migratedFromMemoryAt: next.migratedFromMemoryAt })) {
         next.metaSyncedAt = next.migratedFromMemoryAt;
@@ -525,6 +669,13 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
         const brief = decodeBrief(row.value);
         if (brief && (!next.brief || brief.updatedAt > next.brief.updatedAt)) {
           next.brief = { ...brief, accountSyncedAt: brief.updatedAt };
+        }
+        continue;
+      }
+      if (row.key === KEY_THREAD_STATE) {
+        const state = decodeThreadState(row.value);
+        if (state && (!next.threadState || state.updatedAt > next.threadState.updatedAt)) {
+          next.threadState = { ...state, accountSyncedAt: state.updatedAt };
         }
         continue;
       }
@@ -613,7 +764,7 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
         const trimmed = line.trim();
         if (!trimmed.startsWith("- ")) continue;
         const text = clip(trimmed.slice(2), MAX_ITEM_CHARS);
-        if (!text || imported.some((item) => item.text === text)) continue;
+        if (!text || isLegacyPlaceholderFact(text) || imported.some((item) => item.text === text)) continue;
         imported.push({
           id: randomUUID(),
           text,
@@ -657,6 +808,24 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       migrateFromMemoryFile(memoryMarkdown);
     },
 
+    /**
+     * Archive template lines an earlier import stored as facts. Archived, not
+     * deleted, with a new `updatedAt`, so the account mirror carries the
+     * change to every other machine instead of pulling the line back.
+     */
+    retireLegacyPlaceholders(): number {
+      const current = readFromDisk();
+      const stamp = now();
+      let retired = 0;
+      const items = current.items.map((item) => {
+        if (item.status === "archived" || !isLegacyPlaceholderFact(item.text)) return item;
+        retired += 1;
+        return { ...item, status: "archived" as const, updatedAt: stamp };
+      });
+      if (retired) write({ ...current, items });
+      return retired;
+    },
+
     setBrief(input: Omit<ProjectContextBrief, "updatedAt" | "accountSyncedAt">): ProjectContextBrief {
       const current = readFromDisk();
       const brief: ProjectContextBrief = {
@@ -677,12 +846,32 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       trust?: ProjectContextTrust;
       status?: ProjectContextStatus;
       tags?: ProjectContextItem["tags"];
+      /**
+       * Every fact the person's notes file holds right now. A near-duplicate
+       * whose wording is no longer among them was edited into this one, so
+       * the stored row takes the new wording; one still in the file is a
+       * second line, and stays as it is.
+       */
+      notesFileFacts?: ReadonlySet<string>;
     }): { saved: boolean; item: ProjectContextItem | null } {
       const text = clip(input.text, MAX_ITEM_CHARS);
-      if (!text) return { saved: false, item: null };
+      if (!text || isLegacyPlaceholderFact(text)) return { saved: false, item: null };
       const current = readFromDisk();
-      const existing = current.items.find((item) => item.text === text && item.status !== "archived");
-      if (existing) return { saved: false, item: existing };
+      const tags = effectiveFactTags(text, input.tags);
+      const exact = current.items.find((item) => (
+        item.text === text && item.status !== "archived" && sameTags(effectiveFactTags(item.text, item.tags), tags)
+      ));
+      if (exact) return { saved: false, item: exact };
+      const near = findNearDuplicate(current.items, text, tags);
+      if (near && input.notesFileFacts && !input.notesFileFacts.has(near.text)) {
+        // A line of the notes file was edited: the new wording replaces the
+        // stored one rather than being refused as its duplicate.
+        const corrected: ProjectContextItem = { ...near, text, trust: "human", updatedAt: now() };
+        delete corrected.accountSyncedAt;
+        write({ ...current, items: current.items.map((item) => item.id === near.id ? corrected : item) });
+        return { saved: true, item: corrected };
+      }
+      if (near) return { saved: false, item: near };
       const stamp = now();
       const item: ProjectContextItem = {
         id: randomUUID(),
@@ -690,12 +879,73 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
         kind: input.kind ?? "fact",
         status: input.status ?? "active",
         trust: input.trust ?? "cto",
-        tags: input.tags ?? {},
+        tags,
         createdAt: stamp,
         updatedAt: stamp,
       };
       write({ ...current, items: [...current.items, item] });
       return { saved: true, item };
+    },
+
+    /** A live fact that already says what `text` says, or null. */
+    findNearDuplicate(text: string, tags?: ProjectContextItem["tags"]): ProjectContextItem | null {
+      const clipped = clip(text, MAX_ITEM_CHARS);
+      if (!clipped) return null;
+      const scope = effectiveFactTags(clipped, tags);
+      const items = readFromDisk().items;
+      return items.find((item) => (
+        item.text === clipped && item.status !== "archived" && sameTags(effectiveFactTags(item.text, item.tags), scope)
+      )) ?? findNearDuplicate(items, clipped, scope);
+    },
+
+    /**
+     * Retire a fact by id, or by its exact text. Archived rather than deleted,
+     * with a new `updatedAt`, so the account mirror carries the retirement to
+     * every machine and the line stays searchable.
+     */
+    archive(ref: { id?: string | null; text?: string | null }): ProjectContextItem | null {
+      const current = readFromDisk();
+      const id = ref.id?.trim() ?? "";
+      const text = ref.text ? clip(ref.text, MAX_ITEM_CHARS) : "";
+      const target = current.items.find((item) => item.status !== "archived" && (
+        (id && item.id === id) || (text && item.text === text)
+      ));
+      if (!target) return null;
+      const archived: ProjectContextItem = { ...target, status: "archived", updatedAt: now() };
+      delete archived.accountSyncedAt;
+      // Archived rows go to the end so the cap keeps the newest retirements.
+      write({ ...current, items: [...current.items.filter((item) => item.id !== target.id), archived] });
+      return archived;
+    },
+
+    /** Pin or unpin a live fact. Pinned facts rank first in every injection. */
+    setPinned(id: string, pinned: boolean): ProjectContextItem | null {
+      const current = readFromDisk();
+      const target = current.items.find((item) => item.id === id && item.status !== "archived");
+      if (!target) return null;
+      const status: ProjectContextStatus = pinned ? "pinned" : "active";
+      if (target.status === status) return target;
+      const updated: ProjectContextItem = { ...target, status, updatedAt: now() };
+      delete updated.accountSyncedAt;
+      write({ ...current, items: current.items.map((item) => item.id === id ? updated : item) });
+      return updated;
+    },
+
+    threadState(): ProjectContextThreadState | null {
+      return readFromDisk().threadState;
+    },
+
+    setThreadState(text: string, reason: string | null): ProjectContextThreadState | null {
+      const body = redactSecrets(text.trim());
+      if (!body) return null;
+      const current = readFromDisk();
+      const threadState: ProjectContextThreadState = {
+        text: clipBlock(body, MAX_THREAD_STATE_CHARS),
+        reason: reason?.trim() || null,
+        updatedAt: now(),
+      };
+      write({ ...current, threadState });
+      return threadState;
     },
 
     recordThread(input: { title: string; sessionId: string; laneId: string; objective: string }): ProjectContextThread {
@@ -735,14 +985,21 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       return renderThreads(threads);
     },
 
-    injectionSections(query: string): Array<{ title: string; body: string }> {
+    injectionSections(
+      query: string,
+      options: { exclude?: (text: string) => boolean } = {},
+    ): Array<{ title: string; body: string }> {
       const store = readFromDisk();
       const sections: Array<{ title: string; body: string }> = [];
       if (store.brief) {
         const body = clipBlock(renderBrief(store.brief), BRIEF_INJECT_MAX_CHARS);
         if (body) sections.push({ title: "Project brief (the CTO owns this)", body });
       }
-      const items = rankContextItems(store.items, query, 8);
+      // Facts the caller already injects another way (the notes file) would be
+      // said twice; the slot goes to the next-best fact instead.
+      const exclude = options.exclude;
+      const candidates = exclude ? store.items.filter((item) => !exclude(item.text)) : store.items;
+      const items = rankContextItems(candidates, query, 8);
       if (items.length) {
         sections.push({
           title: "Project memory",

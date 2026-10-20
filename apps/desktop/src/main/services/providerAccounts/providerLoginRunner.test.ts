@@ -101,13 +101,21 @@ function spawnArgs(index: number): string[] {
 }
 
 describe("providerLoginRunner", () => {
+  const originalClaudeExecutable = process.env.CLAUDE_CODE_EXECUTABLE_PATH;
+
   beforeEach(() => {
     ptyState.spawn.mockReset();
+    // Login behavior is exercised through the fake PTY. Give the strict CLI
+    // resolver an explicit executable so this suite never depends on the
+    // host's ADE tools cache.
+    process.env.CLAUDE_CODE_EXECUTABLE_PATH = "/ade-test/tools/claude";
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    if (originalClaudeExecutable === undefined) delete process.env.CLAUDE_CODE_EXECUTABLE_PATH;
+    else process.env.CLAUDE_CODE_EXECUTABLE_PATH = originalClaudeExecutable;
   });
 
   it("replaces a live sign-in when the same account is started again", () => {

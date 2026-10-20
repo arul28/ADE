@@ -11,6 +11,7 @@ import { deeplinkToNavigationTarget, handleDeeplinkUrl, registerAdeProtocolHandl
 const electronMock = vi.hoisted(() => ({
   lockAcquired: true,
   quit: vi.fn(),
+  exit: vi.fn(),
   on: vi.fn(),
   whenReady: vi.fn(async () => {}),
   setAsDefaultProtocolClient: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("electron", () => ({
     on: electronMock.on,
     whenReady: electronMock.whenReady,
     quit: electronMock.quit,
+    exit: electronMock.exit,
   },
   BrowserWindow: { getAllWindows: electronMock.getAllWindows },
 }));
@@ -381,6 +383,7 @@ describe("registerAdeProtocolHandler single-instance lock", () => {
     process.argv = originalArgv;
     electronMock.lockAcquired = true;
     electronMock.quit.mockClear();
+    electronMock.exit.mockClear();
     electronMock.on.mockClear();
     electronMock.whenReady.mockClear();
     electronMock.setAsDefaultProtocolClient.mockClear();
@@ -408,7 +411,8 @@ describe("registerAdeProtocolHandler single-instance lock", () => {
       flushLog: vi.fn(),
       onLockLostWithoutForward,
     });
-    expect(electronMock.quit).toHaveBeenCalledTimes(1);
+    expect(electronMock.exit).toHaveBeenCalledWith(0);
+    expect(electronMock.quit).not.toHaveBeenCalled();
     expect(onLockLostWithoutForward).not.toHaveBeenCalled();
   });
 
@@ -418,5 +422,16 @@ describe("registerAdeProtocolHandler single-instance lock", () => {
     const onLockLostWithoutForward = vi.fn();
     registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
     expect(onLockLostWithoutForward).not.toHaveBeenCalled();
+  });
+
+  // A second copy that loses the lock exits before boot, so no window or service starts.
+  it("exits a second copy that loses the lock before boot", () => {
+    electronMock.lockAcquired = false;
+    process.argv = ["/path/electron", "/path/app"];
+    const dispatch = vi.fn();
+    registerAdeProtocolHandler({ dispatch });
+    expect(electronMock.exit).toHaveBeenCalledWith(0);
+    expect(electronMock.whenReady).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

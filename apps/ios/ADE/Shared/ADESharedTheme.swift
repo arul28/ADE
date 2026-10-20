@@ -81,6 +81,7 @@ public enum ADESharedTheme {
         if raw.hasPrefix("qwen") { return "qwen" }
         if raw == "moonshot" || raw == "moonshotai" || raw.hasPrefix("kimi") { return "kimi" }
         if raw.hasPrefix("grok") { return "grok" }
+        if raw.hasPrefix("antigravity") { return "antigravity" }
         return raw
     }
 
@@ -105,6 +106,8 @@ public enum ADESharedTheme {
         case "qwen":                return brandQwen
         case "kimi":                return brandKimi
         case "copilot":             return brandCopilot
+        // Google's agent: Google's blue until it has a mark of its own here.
+        case "antigravity":         return brandGoogle
         default:                    return neutralAccent
         }
     }
@@ -164,6 +167,8 @@ public enum ADESharedTheme {
         case "qwen":                return "Qwen"
         case "kimi":                return "Kimi"
         case "copilot":             return "GitHub Copilot"
+        case "devin":               return "Devin"
+        case "antigravity":         return "Antigravity"
         case "ade":                 return "ADE"
         default:
             let value = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,6 +186,8 @@ public enum ADESharedTheme {
         // `github-copilot/...` ids name the upstream vendor after the slash, so
         // the vendor checks below would otherwise claim them.
         if value.hasPrefix("github-copilot/") { return "copilot" }
+        // An Antigravity account lists Claude and GPT-OSS models under its own prefix.
+        if value.hasPrefix("antigravity/") { return "antigravity" }
         if value.hasPrefix("qwen/") || value.contains("qwen") { return "qwen" }
         if value.hasPrefix("moonshot/") || value.contains("kimi") { return "kimi" }
         if value.hasPrefix("xai/") || value.contains("grok") { return "grok" }

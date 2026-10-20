@@ -193,6 +193,31 @@ recorded?), or missed:
 Raise one finding per missed surface, severity by reachability: a reachable
 crash or dead control is High; a missing deliberate-exclusion record is Low.
 
+## 12. ADE MCP command classification
+
+**Class:** A new `ade` command (or alias) that nobody classified for ADE MCP.
+Connected AI apps run the real CLI, and both access levels fail closed, so an
+unclassified command is refused remotely. That is safe, but it means the
+command silently never reaches ADE MCP.
+
+**Check:** When the diff adds a top-level command or alias in
+`apps/ade-cli/src/cli.ts`, or a subcommand that only reads under a command in
+`READ_ONLY_COMMANDS`, require a decision in
+`apps/ade-cli/src/services/remoteMcp/remoteMcpCommandPolicy.ts`:
+
+- **Full access** — add it to `FULL_ACCESS_COMMANDS`;
+- **Read only too** — also add it (or the subcommand) to `READ_ONLY_COMMANDS`;
+- **Never remote** — add it to `BLOCKED_COMMANDS` with the reason. Use this for
+  anything that outlives revoking the connection (credentials, sign-in, account
+  machines, ADE MCP itself), needs a terminal, or would stop the brain.
+
+A new subcommand of an existing full-access command that mints credentials,
+signs in or out, or acts on another machine needs an explicit refusal in
+`checkRemoteAdeCommand`, like the `machines` and `actions` checks. Missing
+classification is Low; a credential- or machine-reaching subcommand left
+runnable is High. `remoteMcpCommandPolicy.test.ts` fails for any command in
+`HELP_BY_COMMAND` that is in neither list.
+
 ---
 
 ## Output

@@ -35,6 +35,7 @@ import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
 import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
 import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
+import { compactHarnessPresetLogo } from "../../../lib/harnessLogoCompaction";
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
 import { buildTerminalLauncher } from "./harnessLauncher";
 import {
@@ -155,6 +156,7 @@ export function CustomProviderDialog({
   const [logoError, setLogoError] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [compactingLogo, setCompactingLogo] = useState(false);
   /**
    * The local write has happened.
    *
@@ -165,18 +167,26 @@ export function CustomProviderDialog({
    */
   const [written, setWritten] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const logoCompactionGenerationRef = useRef(0);
   const objectUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Accent follows the harness until the person picks one of their own.
   const accentTouchedRef = useRef(initialDraft.accentColor !== normalizeHex(providerColor(initialDraft.harness)));
 
   useEffect(() => {
+    logoCompactionGenerationRef.current += 1;
+    setCompactingLogo(false);
+    if (!open) {
+      setCropSrc(null);
+      return;
+    }
     setDraft(initialDraft);
     setQuery("");
     setBrowsedSourceKey(null);
-  }, [initialDraft]);
+  }, [initialDraft, open]);
 
   useEffect(() => () => {
+    logoCompactionGenerationRef.current += 1;
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, []);
 
@@ -201,6 +211,12 @@ export function CustomProviderDialog({
   const patch = useCallback((next: Partial<HarnessPresetDraft>) => {
     setDraft((prev) => ({ ...prev, ...next }));
   }, []);
+
+  const selectLogo = useCallback((logo: HarnessPresetLogo) => {
+    logoCompactionGenerationRef.current += 1;
+    setCompactingLogo(false);
+    patch({ logo });
+  }, [patch]);
 
   const chooseHarness = useCallback((harness: HarnessPresetBody) => {
     setDraft((prev) => {
@@ -309,7 +325,7 @@ export function CustomProviderDialog({
     setLogoError(null);
     try {
       const result = await generate({ name: draft.name, harness: draft.harness, accentColor: draft.accentColor });
-      if (result?.dataUrl) patch({ logo: { kind: "generated", dataUrl: result.dataUrl } });
+      if (result?.dataUrl) patch({ logo: await compactHarnessPresetLogo({ kind: "generated", dataUrl: result.dataUrl }) });
     } catch (error) {
       setLogoError(error instanceof Error ? error.message : "The logo could not be generated.");
     } finally {
@@ -321,7 +337,7 @@ export function CustomProviderDialog({
   const fallbackName = draft.model ? defaultPresetName(modelLabel, draft.harness) : "";
   const finalDraft: HarnessPresetDraft = { ...draft, name: draft.name.trim() || fallbackName };
   const errors = validateHarnessPreset(finalDraft);
-  const canSave = Object.keys(errors).length === 0;
+  const canSave = Object.keys(errors).length === 0 && !compactingLogo;
 
   // The launcher starts the SAVED preset (the CLI resolves it by id), so it is
   // built from what is saved, not from unsaved edits in this dialog.
@@ -363,8 +379,8 @@ export function CustomProviderDialog({
   const orphaned = Boolean(draft.model) && !selected && !reach.loading;
 
   const tiles: Array<{ id: HarnessPresetLogo["kind"]; label: string; onSelect: () => void }> = [
-    { id: "ade", label: "Default", onSelect: () => patch({ logo: { kind: "ade" } }) },
-    { id: "provider", label: "Harness mark", onSelect: () => patch({ logo: { kind: "provider", providerId: draft.harness } }) },
+    { id: "ade", label: "Default", onSelect: () => selectLogo({ kind: "ade" }) },
+    { id: "provider", label: "Harness mark", onSelect: () => selectLogo({ kind: "provider", providerId: draft.harness }) },
     { id: "upload", label: "Upload", onSelect: () => fileInputRef.current?.click() },
     ...(typeof generate === "function"
       ? [{ id: "generated" as const, label: generating ? "Generating…" : "Generate", onSelect: () => void handleGenerate() }]
@@ -428,9 +444,9 @@ export function CustomProviderDialog({
               : {
                   label: editingPresetId ? "Save" : "Create",
                   variant: "solid",
-                  disabled: !canSave || saving,
+                  disabled: !canSave || saving || generating,
                   onClick: () => {
-                    if (!canSave || saving) return;
+                    if (!canSave || saving || generating) return;
                     setSaving(true);
                     setWritten(true);
                     void onSave(finalDraft)
@@ -467,7 +483,7 @@ export function CustomProviderDialog({
                 id: "custom-provider-account-sync",
                 tone: "warning",
                 title: "Saved on this computer, but not on your ADE account yet",
-                detail: `${accountError} Until it reaches the account, a chat launched on it now falls back to the harness's own sign-in. Retry to send it again.`,
+                detail: `${accountError} Until it reaches the account, another computer may not have it. Retry to send it again.`,
               }}
             />
           ) : null}
@@ -755,6 +771,9 @@ export function CustomProviderDialog({
                 event.target.value = "";
               }}
             />
+            {compactingLogo ? (
+              <p style={{ margin: 0, fontSize: 11, color: COLORS.textMuted }}>Preparing logo…</p>
+            ) : null}
             {logoError ? <FieldError>{logoError}</FieldError> : null}
           </section>
         </fieldset>
@@ -774,8 +793,26 @@ export function CustomProviderDialog({
             imageSrc={cropSrc}
             onCancel={() => setCropSrc(null)}
             onConfirm={(dataUrl) => {
-              patch({ logo: { kind: "upload", dataUrl } });
               setCropSrc(null);
+              const generation = ++logoCompactionGenerationRef.current;
+              setCompactingLogo(true);
+              setLogoError(null);
+              // Shrunk to an icon before it is kept: the preset list syncs as
+              // one small setting, and a full-size image keeps it off the account.
+              void compactHarnessPresetLogo({ kind: "upload", dataUrl })
+                .then((logo) => {
+                  if (generation !== logoCompactionGenerationRef.current) return;
+                  if (logo.kind === "upload") patch({ logo });
+                  else setLogoError("This image could not be shrunk to a logo. Try another one.");
+                })
+                .catch((error: unknown) => {
+                  if (generation === logoCompactionGenerationRef.current) {
+                    setLogoError(error instanceof Error ? error.message : "This image could not be shrunk to a logo. Try another one.");
+                  }
+                })
+                .finally(() => {
+                  if (generation === logoCompactionGenerationRef.current) setCompactingLogo(false);
+                });
             }}
           />
         </Dialog>

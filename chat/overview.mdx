@@ -34,14 +34,14 @@ ADE runs five coding agents against the same lane. Pick the provider and model t
 
 | Provider | Runtime |
 |----------|---------|
-| **Claude Code** | The bundled Claude Agent SDK — no separate install needed. |
-| **Codex** | The `codex` app-server, resolved from PATH, the app bundle, or a configured install. |
+| **Claude Code** | The Claude Agent SDK with ADE's own copy of Claude Code — no separate install needed. |
+| **Codex** | The `codex` app-server, from ADE's own copy of Codex. |
 | **Cursor** | The official `@cursor/sdk`, authenticated through the SDK. |
-| **Factory Droid** | The official `@factory/droid-sdk`, resolved from PATH, the app bundle, or a configured install. |
+| **Factory Droid** | The official `@factory/droid-sdk`, driving ADE's own copy of the `droid` CLI. |
 | **OpenCode** | The OpenCode server runtime, routing your provider API keys, OpenRouter, or a local model (Ollama, LM Studio). |
 
 <Note>
-Add a provider key or subscription in **Settings** before its models appear in the picker. Claude, Codex, Cursor, and Droid can also be installed and signed in from an inline card in the chat when their CLI is missing or unauthenticated.
+Add a provider key or subscription in **Settings** before its models appear in the picker. ADE downloads its own copy of each agent for the machine that runs the chat, the first time it is needed; it never runs a CLI from your PATH. When an agent is not downloaded yet or not signed in, an inline card in the chat offers Download / Retry or a sign-in, on the chat's machine.
 </Note>
 
 ## Set a Codex goal

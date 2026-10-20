@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 /**
  * Generate `src/services/tools/toolsManifest.generated.json` from
- * `package-lock.json` and `scripts/muse-release.json`.
+ * `package-lock.json`, `../desktop/package-lock.json` (the Copilot runtime) and
+ * `scripts/muse-release.json`.
  *
  * The manifest pins the agent CLI platform packages ADE no longer vendors, so
  * that a fresh install can fetch them from the npm registry instead of shipping
  * ~650 MB of binaries inside the app and the brain runtime tarball. Versions,
  * tarball URLs, and sha512 integrity all come from the lockfile — nothing here
  * is invented, and nothing talks to the network.
+ *
+ * Tools that are in no ADE lockfile (droid, grok, qwen, kimi, devin,
+ * antigravity, pi) are pinned from `scripts/pins/<tool>.json`, which
+ * `npm run tools:pin -- <tool> [version]` writes from the vendor's metadata.
+ * The generator only validates and copies those files.
  *
  * Meta's `muse` binary is not on npm. Its pins (url + sha256 + size per target)
  * come from the checked-in `scripts/muse-release.json`, which
@@ -22,12 +28,18 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { FILE_PIN_HOST } from "./file-pin-host.mjs";
+import { FILE_PIN_HOST, NPM_REGISTRY_HOST, VENDOR_DOWNLOAD_HOSTS } from "./file-pin-host.mjs";
 
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const lockPath = path.join(packageRoot, "package-lock.json");
+// The Copilot SDK is a desktop dependency (its worker is bundled from desktop
+// source), so its runtime is pinned from the lockfile that actually installs it.
+// Reading it there rather than mirroring the dependency here means a bumped SDK
+// fails `tools:manifest:check` until the runtime pin moves with it.
+const desktopLockPath = path.join(packageRoot, "..", "desktop", "package-lock.json");
 const outputPath = path.join(packageRoot, "src", "services", "tools", "toolsManifest.generated.json");
 const museReleasePath = path.join(packageRoot, "scripts", "muse-release.json");
+const pinsDir = path.join(packageRoot, "scripts", "pins");
 
 const SCHEMA_VERSION = 1;
 const TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
@@ -91,6 +103,19 @@ const TOOLS = [
       "win32-x64": "@opencode/cli-windows-x64-baseline",
     },
   },
+  {
+    name: "copilot",
+    description: "GitHub Copilot runtime that the Copilot SDK worker spawns (`--headless --stdio`).",
+    entry: { kind: "binary", path: "prebuilds/*/copilot-runtime", windowsPath: "prebuilds/*/copilot-runtime.exe" },
+    lockPath: desktopLockPath,
+    packages: {
+      "darwin-arm64": "@github/copilot-sdk-darwin-arm64",
+      "darwin-x64": "@github/copilot-sdk-darwin-x64",
+      "linux-arm64": "@github/copilot-sdk-linux-arm64",
+      "linux-x64": "@github/copilot-sdk-linux-x64",
+      "win32-x64": "@github/copilot-sdk-win32-x64",
+    },
+  },
 ];
 
 /**
@@ -109,20 +134,102 @@ const FILE_TOOLS = [
   },
 ];
 
+/**
+ * Tools pinned from the vendor rather than a lockfile, in manifest order, and
+ * where their entry lives once unpacked. The per-target URLs and checksums
+ * come from `scripts/pins/<name>.json` (`npm run tools:pin`).
+ */
+const VENDOR_PINNED_TOOLS = [
+  {
+    name: "droid",
+    description: "Factory Droid CLI native binary, which the Droid SDK worker spawns (`droid exec`).",
+    entry: { kind: "binary", path: "bin/droid", windowsPath: "bin/droid.exe" },
+  },
+  {
+    name: "grok",
+    description: "xAI Grok CLI native binary, spawned as `grok stdio` (shipped brotli-compressed, inflated on install).",
+    entry: { kind: "binary", path: "bin/grok", windowsPath: "bin/grok.exe" },
+  },
+  {
+    name: "qwen",
+    description: "Qwen Code standalone bundle: its own Node runs `lib/cli-entry.js --acp`.",
+    entry: {
+      kind: "binary",
+      path: "node/bin/node",
+      windowsPath: "node/node.exe",
+      files: { script: { path: "lib/cli-entry.js" } },
+    },
+  },
+  {
+    name: "kimi",
+    description: "Kimi Code CLI native binary, spawned as `kimi acp`.",
+    entry: { kind: "binary", path: "kimi", windowsPath: "kimi.exe" },
+  },
+  {
+    name: "devin",
+    description: "Devin CLI native binary, spawned as `devin acp`.",
+    entry: { kind: "binary", path: "bin/devin", windowsPath: "bin/devin.exe" },
+  },
+  {
+    name: "antigravity",
+    description: "Google Antigravity ACP server; its local harness must sit beside it.",
+    entry: {
+      kind: "binary",
+      path: "agy_acp_server.par",
+      windowsPath: "agy_acp_server.exe",
+      files: { harness: { path: "localharness_external", windowsPath: "localharness_external.exe", executable: true } },
+    },
+  },
+  {
+    name: "pi",
+    description: "Pi coding agent SDK and its dependency tree, imported by the Pi SDK worker.",
+    entry: {
+      kind: "directory",
+      path: "node_modules/@earendil-works/pi-coding-agent",
+      files: {
+        module: { path: "node_modules/@earendil-works/pi-coding-agent/dist/index.js" },
+        // The package's `bin.pi`, which a terminal runs under the pinned `node`.
+        // Re-check on a Pi bump: 1.x moved it to dist/bundle/cli.js.
+        cli: { path: "node_modules/@earendil-works/pi-coding-agent/dist/cli.js" },
+      },
+    },
+  },
+  {
+    name: "copilot-cli",
+    description: "GitHub Copilot CLI native binary that ADE terminals run (the SDK runtime is the `copilot` tool).",
+    entry: { kind: "binary", path: "copilot", windowsPath: "copilot.exe" },
+  },
+  {
+    name: "cursor-cli",
+    description: "Cursor agent CLI: its bundled Node runs `index.js`, which is all the vendor launchers do.",
+    entry: {
+      kind: "binary",
+      path: "node",
+      windowsPath: "node.exe",
+      files: { script: { path: "index.js" } },
+    },
+  },
+  {
+    name: "node",
+    description: "Official Node.js runtime for JS-only CLIs ADE runs in terminals (Pi's `dist/bundle/cli.js`).",
+    entry: { kind: "binary", path: "bin/node", windowsPath: "node.exe" },
+  },
+];
+
 function fail(message) {
   process.stderr.write(`generate-tools-manifest: ${message}\n`);
   process.exit(1);
 }
 
-function readLockPackages() {
+function readLockPackages(file = lockPath) {
   let lock;
   try {
-    lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    fail(`could not read ${lockPath}: ${error.message}`);
+    fail(`could not read ${file}: ${error.message}`);
   }
   if (!lock.packages || typeof lock.packages !== "object") {
-    fail(`${lockPath} has no "packages" map; lockfileVersion 2+ is required.`);
+    fail(`${file} has no "packages" map; lockfileVersion 2+ is required.`);
   }
   return lock.packages;
 }
@@ -196,27 +303,140 @@ function readFileToolRelease(packages, tool) {
   return { name: tool.name, description: tool.description, entry: tool.entry, targets };
 }
 
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const SRI_PATTERN = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
+
+function requireUrlOn(url, host, label) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    fail(`${label} is not a URL.`);
+  }
+  if (parsed.protocol !== "https:" || parsed.host !== host) fail(`${label} must be an https URL on ${host}, got ${url}.`);
+  return url;
+}
+
+function requirePositive(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) fail(`${label} must be a positive integer.`);
+  return value;
+}
+
+function copyDecompress(steps, label) {
+  if (steps === undefined) return {};
+  if (!Array.isArray(steps) || !steps.length) fail(`${label}.decompress must be a non-empty array.`);
+  return {
+    decompress: steps.map((step) => {
+      if (step?.algorithm !== "brotli" || typeof step.from !== "string" || typeof step.to !== "string") {
+        fail(`${label}.decompress entries must be { algorithm: "brotli", from, to }.`);
+      }
+      return { algorithm: "brotli", from: step.from, to: step.to };
+    }),
+  };
+}
+
+/**
+ * One target of a vendor pin file, re-validated and rebuilt with a fixed key
+ * order, so a hand-edited or stale pin file fails here rather than at
+ * `parseToolsManifest` on a user's machine.
+ */
+function copyVendorTargetPin(toolName, pin, label, version) {
+  if (pin?.version !== version) fail(`${label} pins ${String(pin?.version)}, but the file pins ${version}.`);
+  if (typeof pin.package !== "string" || !pin.package) fail(`${label} has no package.`);
+  const base = { format: pin.format, package: pin.package, version: pin.version };
+  if (pin.format === "npm-tarball") {
+    if (!SRI_PATTERN.test(pin.integrity ?? "")) fail(`${label} has no sha512 integrity.`);
+    return {
+      ...base,
+      tarball: requireUrlOn(pin.tarball, NPM_REGISTRY_HOST, `${label}.tarball`),
+      integrity: pin.integrity,
+      ...copyDecompress(pin.decompress, label),
+    };
+  }
+  if (pin.format === "archive") {
+    const hosts = VENDOR_DOWNLOAD_HOSTS[toolName];
+    if (!hosts) fail(`${toolName} has no vendor download host in file-pin-host.mjs.`);
+    if (pin.archive !== "tar.gz" && pin.archive !== "zip") fail(`${label}.archive must be tar.gz or zip.`);
+    if (!Number.isInteger(pin.stripComponents) || pin.stripComponents < 0) fail(`${label}.stripComponents must be >= 0.`);
+    if (!SHA256_PATTERN.test(pin.sha256 ?? "")) fail(`${label} has no lowercase hex sha256.`);
+    return {
+      ...base,
+      url: requireUrlOn(pin.url, hosts[0], `${label}.url`),
+      archive: pin.archive,
+      stripComponents: pin.stripComponents,
+      sha256: pin.sha256,
+      size: requirePositive(pin.size, `${label}.size`),
+      ...copyDecompress(pin.decompress, label),
+    };
+  }
+  if (pin.format === "npm-tree") {
+    if (!Array.isArray(pin.packages) || !pin.packages.length) fail(`${label}.packages must be a non-empty array.`);
+    return {
+      ...base,
+      packages: pin.packages.map((entry, index) => {
+        const entryLabel = `${label}.packages[${index}]`;
+        if (typeof entry?.path !== "string" || !entry.path.startsWith("node_modules/")) fail(`${entryLabel}.path is not a lockfile path.`);
+        if (!SRI_PATTERN.test(entry.integrity ?? "")) fail(`${entryLabel} has no sha512 integrity.`);
+        return {
+          path: entry.path,
+          tarball: requireUrlOn(entry.tarball, NPM_REGISTRY_HOST, `${entryLabel}.tarball`),
+          integrity: entry.integrity,
+          size: requirePositive(entry.size, `${entryLabel}.size`),
+        };
+      }),
+      unpackedSize: requirePositive(pin.unpackedSize, `${label}.unpackedSize`),
+    };
+  }
+  fail(`${label}.format ${String(pin.format)} is not a vendor pin format.`);
+}
+
+function readVendorPin(tool) {
+  const pinPath = path.join(pinsDir, `${tool.name}.json`);
+  const relative = path.relative(packageRoot, pinPath);
+  let pinFile;
+  try {
+    pinFile = JSON.parse(readFileSync(pinPath, "utf8"));
+  } catch (error) {
+    fail(`could not read ${relative}: ${error.message}. Run: npm run tools:pin -- ${tool.name}`);
+  }
+  if (pinFile.tool !== tool.name || typeof pinFile.version !== "string") {
+    fail(`${relative} is not a ${tool.name} pin.`);
+  }
+  const targets = {};
+  for (const target of TARGETS) {
+    const pin = pinFile.targets?.[target];
+    if (!pin) fail(`${relative} has no ${tool.name} build for supported target ${target}.`);
+    targets[target] = copyVendorTargetPin(tool.name, pin, `${relative} ${target}`, pinFile.version);
+  }
+  return { name: tool.name, description: tool.description, entry: tool.entry, targets };
+}
+
 function buildManifest() {
   const packages = readLockPackages();
+  const desktopPackages = readLockPackages(desktopLockPath);
   const tools = TOOLS.map((tool) => {
+    const lockPackages = tool.lockPath === desktopLockPath ? desktopPackages : packages;
     const targets = {};
     for (const target of TARGETS) {
       const packageName = tool.packages[target];
       if (!packageName) {
         fail(`${tool.name} has no package mapped for supported target ${target}.`);
       }
-      targets[target] = pinFor(packages, tool.name, target, packageName);
+      targets[target] = pinFor(lockPackages, tool.name, target, packageName);
     }
     const entry = tool.entry.windowsPath
       ? { kind: tool.entry.kind, path: tool.entry.path, windowsPath: tool.entry.windowsPath }
       : { kind: tool.entry.kind, path: tool.entry.path };
-    return { name: tool.name, description: tool.description, entry, targets };
+    // Locked in a package-lock.json, so a source checkout has it in node_modules.
+    return { name: tool.name, description: tool.description, entry, checkoutCopy: true, targets };
   });
   for (const tool of FILE_TOOLS) tools.push(readFileToolRelease(packages, tool));
+  for (const tool of VENDOR_PINNED_TOOLS) tools.push(readVendorPin(tool));
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    generatedFrom: "apps/ade-cli/package-lock.json + apps/ade-cli/scripts/muse-release.json",
+    generatedFrom:
+      "apps/ade-cli/package-lock.json + apps/desktop/package-lock.json + apps/ade-cli/scripts/muse-release.json + apps/ade-cli/scripts/pins/*.json",
     tools,
   };
 }
@@ -233,7 +453,7 @@ if (process.argv.includes("--check")) {
     fail(`${outputPath} is missing. Run: npm run tools:manifest`);
   }
   if (current !== serialized) {
-    fail(`${outputPath} is out of date with package-lock.json or muse-release.json. Run: npm run tools:manifest`);
+    fail(`${outputPath} is out of date with package-lock.json, muse-release.json or scripts/pins/*.json. Run: npm run tools:manifest`);
   }
   process.stdout.write("tools manifest is up to date\n");
 } else {

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +122,50 @@ function buildStash(
   };
 }
 
+const CHANGE_LIST_VIEWPORT_PX = 600;
+const CHANGE_LIST_ROW_PX = 28;
+
+/**
+ * jsdom has no layout, and the Files list virtualizes against its viewport
+ * height and each row's height (both read from offsetHeight). Give the list a
+ * fixed viewport and fixed rows so the window mounts the way it does in the app.
+ */
+function stubChangeListLayout(): () => void {
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  const inChangeList = (element: HTMLElement) =>
+    element.closest("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const testId = this.getAttribute("data-testid");
+      if (testId === "git-pane-branch" || testId === "git-pane-uncommitted") return CHANGE_LIST_VIEWPORT_PX;
+      if (this.hasAttribute("data-index") && inChangeList(this)) return CHANGE_LIST_ROW_PX;
+      return original?.get?.call(this) ?? 0;
+    },
+  });
+  return () => {
+    if (original) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+  };
+}
+
+function changeListScroller(): HTMLElement {
+  const scroller = document.querySelector<HTMLElement>("[data-testid='git-pane-branch'], [data-testid='git-pane-uncommitted']");
+  if (!scroller) throw new Error("Files list is not mounted");
+  return scroller;
+}
+
+/** Scrolls the Files list from the top, half a viewport at a time, until a row's text is mounted. */
+async function scrollChangeListTo(text: string): Promise<HTMLElement> {
+  const scroller = changeListScroller();
+  fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+  for (let step = 1; step <= 400; step += 1) {
+    const match = screen.queryByText(text);
+    if (match) return match;
+    fireEvent.scroll(scroller, { target: { scrollTop: step * (CHANGE_LIST_VIEWPORT_PX / 2) } });
+  }
+  throw new Error(`"${text}" never scrolled into the Files list`);
+}
+
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
   let mockChangesByLaneId: Record<string, DiffChanges>;
@@ -129,6 +173,7 @@ describe("LaneGitActionsPane rescue action", () => {
   let mockConflictState: GitConflictState;
   let mockSyncStatus: GitUpstreamSyncStatus;
   let failDiffRefresh: boolean;
+  let restoreChangeListLayout: () => void = () => undefined;
 
   beforeEach(() => {
     mockStoreState = {
@@ -211,7 +256,6 @@ describe("LaneGitActionsPane rescue action", () => {
         unstageFile: vi.fn(async () => ({ operationId: "unstage-file", preHeadSha: "abc", postHeadSha: "abc" })),
         discardFile: vi.fn(async () => ({ operationId: "discard-file", preHeadSha: "abc", postHeadSha: "abc" })),
         restoreStagedFile: vi.fn(async () => ({ operationId: "restore-staged-file", preHeadSha: "abc", postHeadSha: "abc" })),
-        generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
         stashList: vi.fn(async ({ laneId }: { laneId: string }) => mockStashesByLaneId[laneId] ?? []),
         stashPush: vi.fn(async () => ({ operationId: "stash-push", preHeadSha: "abc", postHeadSha: "abc" })),
         stashApply: vi.fn(async () => ({ operationId: "stash-apply", preHeadSha: "abc", postHeadSha: "abc" })),
@@ -229,10 +273,12 @@ describe("LaneGitActionsPane rescue action", () => {
         createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
     } as any;
+    restoreChangeListLayout = stubChangeListLayout();
   });
 
   afterEach(() => {
     cleanup();
+    restoreChangeListLayout();
     __resetLaneGitActionRuntimeForTests();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
@@ -654,11 +700,13 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Unstaged (305)")).toBeTruthy();
     expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
+    // The notice closes the list, so reaching it means scrolling there.
+    await scrollChangeListTo("Showing first 300 of 305 unstaged files.");
     expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/generated/file-300.ts");
     expect(screen.getByText("src/generated/file-300.ts")).toBeTruthy();
   });
 
@@ -676,11 +724,12 @@ describe("LaneGitActionsPane rescue action", () => {
 
     expect(await screen.findByText("Staged (305)")).toBeTruthy();
     expect(screen.getByText("src/staged/file-0.ts")).toBeTruthy();
-    expect(screen.getByText("Showing first 300 of 305 staged files.")).toBeTruthy();
+    await scrollChangeListTo("Showing first 300 of 305 staged files.");
     expect(screen.queryByText("src/staged/file-300.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
+    await scrollChangeListTo("src/staged/file-300.ts");
     expect(screen.getByText("src/staged/file-300.ts")).toBeTruthy();
   });
 
@@ -953,122 +1002,20 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.getByText("keep me")).toBeTruthy();
   });
 
-  it("keeps the generating commit state when leaving and returning to the lane", async () => {
-    const user = userEvent.setup();
-    let resolveGeneratedMessage: ((value: { message: string; model: string | null }) => void) | undefined;
-    const generatedMessagePromise = new Promise<{ message: string; model: string | null }>((resolve) => {
-      resolveGeneratedMessage = resolve;
-    });
-    mockChangesByLaneId["lane-1"] = {
-      staged: [{ path: "src/file.ts", kind: "modified" }],
-      unstaged: [],
-    };
-    (window.ade.git.generateCommitMessage as any).mockImplementation(() => generatedMessagePromise);
-
-    const { rerender } = render(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await user.click(await screen.findByTestId("git-pane-commit"));
-    await waitFor(() => {
-      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
-    });
-    expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-2"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("git-pane-commit")).toBeTruthy();
-    });
-    expect(screen.queryByText("GENERATING COMMIT MESSAGE...")).toBeNull();
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
-    });
-
-    rerender(
-      <MemoryRouter>
-        <LaneGitActionsPane
-          laneId="lane-2"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
-          onSelectFile={vi.fn()}
-          onSelectCommit={vi.fn()}
-          selectedPath={null}
-          selectedMode={null}
-          selectedCommit={null}
-          selectedCommitSha={null}
-        />
-      </MemoryRouter>,
-    );
-
-    resolveGeneratedMessage!({ message: "feat: auto", model: "openai/gpt-5.4-mini" });
-    await waitFor(() => {
-      expect(window.ade.git.commit).toHaveBeenCalledWith({ laneId: "lane-1", message: "feat: auto", amend: false }, null);
-    });
-
-    const commitInput = screen.getByPlaceholderText(/commit message/i) as HTMLInputElement;
-    expect(commitInput.value).toBe("");
-  });
-
-  it("does not commit when generated message is empty", async () => {
+  it("does not commit when the commit message is empty", async () => {
     const user = userEvent.setup();
     mockChangesByLaneId["lane-1"] = {
       staged: [{ path: "src/file.ts", kind: "modified" }],
       unstaged: [],
     };
-    (window.ade.git.generateCommitMessage as any).mockResolvedValueOnce({ message: "", model: null });
 
     renderPane();
     await user.click(await screen.findByTestId("git-pane-commit"));
 
     await waitFor(() => {
-      expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
+      expect(screen.getByText(/Type a commit message, then commit/)).toBeTruthy();
     });
     expect(window.ade.git.commit).not.toHaveBeenCalled();
-    expect(screen.getByText(/No turned chat on this lane to suggest a commit message/)).toBeTruthy();
   });
 });
 

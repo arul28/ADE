@@ -1,4 +1,6 @@
 import type {
+  AutoModeSwitchResponse,
+  ElicitationResult,
   ExitPlanModeRequest,
   ExitPlanModeResult,
   PermissionRequest,
@@ -50,6 +52,8 @@ export type CopilotSdkWorkerRequest =
   | { type: "respond_exit_plan"; requestId: string; payload: { waiterId: string; result: ExitPlanModeResult } }
   | { type: "respond_user_input"; requestId: string; payload: { waiterId: string; response: { answer: string; wasFreeform: boolean } } }
   | { type: "respond_mcp_auth"; requestId: string; payload: { waiterId: string; result: { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number } } }
+  | { type: "respond_auto_mode_switch"; requestId: string; payload: { waiterId: string; result: AutoModeSwitchResponse } }
+  | { type: "respond_elicitation"; requestId: string; payload: { waiterId: string; result: ElicitationResult } }
   | { type: "utility"; requestId: string; payload: { cwd: string; prompt: string; model?: string; systemMessage?: string } };
 
 export type CopilotSdkWorkerResponse =
@@ -60,9 +64,11 @@ export type CopilotSdkWorkerResponse =
   | { type: "exit_plan_request"; chatId: string; waiterId: string; request: ExitPlanModeRequest }
   | { type: "user_input_request"; chatId: string; waiterId: string; request: unknown }
   | { type: "mcp_auth_request"; chatId: string; waiterId: string; request: unknown }
+  | { type: "auto_mode_switch_request"; chatId: string; waiterId: string; request: unknown }
+  | { type: "elicitation_request"; chatId: string; waiterId: string; request: unknown }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };
 
-export type CopilotSdkWaiterType = "permission_request" | "exit_plan_request" | "user_input_request" | "mcp_auth_request";
+export type CopilotSdkWaiterType = "permission_request" | "exit_plan_request" | "user_input_request" | "mcp_auth_request" | "auto_mode_switch_request" | "elicitation_request";
 
 /**
  * Per waiter: the request that carries ADE's answer back to the worker, and the
@@ -74,6 +80,8 @@ export const COPILOT_SDK_WAITERS = {
   exit_plan_request: { respondType: "respond_exit_plan", payloadKey: "result", fallback: { approved: false, feedback: "ADE could not review this plan; the chat was interrupted or closed." } },
   user_input_request: { respondType: "respond_user_input", payloadKey: "response", fallback: { answer: "", wasFreeform: true } },
   mcp_auth_request: { respondType: "respond_mcp_auth", payloadKey: "result", fallback: { kind: "cancelled" } },
+  auto_mode_switch_request: { respondType: "respond_auto_mode_switch", payloadKey: "result", fallback: "no" },
+  elicitation_request: { respondType: "respond_elicitation", payloadKey: "result", fallback: { action: "cancel" } },
 } as const satisfies Record<
   CopilotSdkWaiterType,
   { respondType: CopilotSdkWorkerRequest["type"]; payloadKey: "result" | "response"; fallback: unknown }

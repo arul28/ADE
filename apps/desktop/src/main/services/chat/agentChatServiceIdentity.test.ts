@@ -25,7 +25,18 @@ import {
   waitForCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
-import { beforeEach, describe, expect, it, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
+
+const originalCodexExecutable = process.env.CODEX_EXECUTABLE;
+beforeEach(() => {
+  // Chat launch tests use the fake app-server transport; pin the CLI resolver
+  // to a stable test executable instead of inheriting the host's tools cache.
+  process.env.CODEX_EXECUTABLE = "/ade-test/tools/codex";
+});
+afterEach(() => {
+  if (originalCodexExecutable === undefined) delete process.env.CODEX_EXECUTABLE;
+  else process.env.CODEX_EXECUTABLE = originalCodexExecutable;
+});
 
 describe("createAgentChatService", () => {
   describe("lane launch directives", () => {
@@ -208,7 +219,11 @@ describe("createAgentChatService", () => {
       // never the process: `-c` is the highest config layer (above the user's
       // ~/.codex/config.toml and their per-project .codex/config.toml) and a
       // spawn arg would apply to every thread on this app-server.
-      expect(spawn).toHaveBeenCalledWith("codex", ["app-server"], expect.any(Object));
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        ["app-server", "-c", "check_for_update_on_startup=false"],
+        expect.any(Object),
+      );
       const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
       expect(spawnArgs?.join(" ")).not.toContain("model_reasoning_effort");
 
@@ -335,7 +350,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server"],
+        ["app-server", "-c", "check_for_update_on_startup=false"],
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -1011,10 +1026,12 @@ describe("createAgentChatService", () => {
       // work — and it did.
       expect(result.handoff).toMatchObject({ written: true, source: "deterministic" });
 
-      // The note is durable, dated, and names the thread it came from.
-      const memory = ctoMemoryService.readMemory();
-      expect(memory).toContain("hand-off from retired CTO thread");
-      expect(memory).toContain(first.id);
+      // The note is journaled, names the thread it came from, and is not filed
+      // as a durable fact.
+      const daily = ctoMemoryService.getSnapshot().dailyLog;
+      expect(daily).toContain(`Thread retired (${first.id})`);
+      expect(daily).toContain("Hand-off:");
+      expect(ctoMemoryService.readMemory()).not.toContain(first.id);
 
       // And the rolling working summary the next thread reads first was
       // refreshed from the same text.
@@ -1053,13 +1070,13 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
       });
 
-      // OpenCode stages every mid-turn message, which is the one thing a CTO
+      // Droid can only stage a mid-turn message, which is the one thing a CTO
       // thread cannot live with. The write is normalized away rather than kept,
       // so the surface falls back to its picker instead of silently running on
       // a model that would hold every child report until the turn ends.
       await service.updateSession({
         sessionId: session.id,
-        modelId: "opencode/openai/gpt-5.2",
+        modelId: "droid/gpt-6-luna",
       });
 
       expect(ctoStateService.getIdentity().modelPreferences).toBeNull();
@@ -2319,7 +2336,7 @@ describe("createAgentChatService", () => {
       });
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
       expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
-      expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
+      expect(persisted.continuitySummary).toContain("CTO: Partial answer");
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
       expect(recoverySend).not.toHaveBeenCalled();
     });

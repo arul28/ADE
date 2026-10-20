@@ -258,7 +258,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
     delete: (args: unknown) => call("prs.delete", args, { ok: false, error: "unsupported" }, false),
-    draftDescription: (args: unknown) => call("prs.draftDescription", args, { title: "", body: "" }),
     land: (args: unknown) => call("prs.land", args, null, false),
     updateBranch: (args: unknown) => call("prs.updateBranch", args, null, false),
     openInGitHub: async (prId: string) => {
@@ -458,12 +457,9 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     rerunChecks: async (args: unknown) => {
       await call("prs.rerunChecks", args, undefined, false);
     },
-    aiReviewSummary: (args: unknown) => call("prs.aiReviewSummary", args, null),
     dismissIntegrationCleanup: (args: unknown) => call("prs.dismissIntegrationCleanup", args, null, false),
     cleanupIntegrationWorkflow: (args: unknown) => call("prs.cleanupIntegrationWorkflow", args, null, false),
     getDeployments: (prId: string) => call("prs.getDeployments", { prId }, []),
-    getAiSummary: (prId: string) => call("prs.getAiSummary", { prId }, null),
-    regenerateAiSummary: (prId: string) => call("prs.regenerateAiSummary", { prId }, null, false),
     postReviewComment: (args: unknown) => call("prs.postReviewComment", args, null, false),
     setReviewThreadResolved: (args: unknown) => call("prs.setReviewThreadResolved", args, null, false),
     reactToComment: async (args: unknown) => {

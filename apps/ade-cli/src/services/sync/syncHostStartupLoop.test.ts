@@ -117,6 +117,56 @@ describe("runSyncHostStartupLoop", () => {
     expect(logs.some((line) => line.includes("taking over mobile sync"))).toBe(true);
   });
 
+  // On Windows `kill(pid, "SIGTERM")` is TerminateProcess, so the stale brain never flushes. The
+  // takeover asks it to leave over RPC first and force-kills only when that request is refused.
+  it.each([
+    ["accepted", true, ["rpc 4242"]],
+    ["refused", false, ["rpc 4242", "force 4242"]],
+  ])("takes over a win32 stale owner over RPC and force-kills only when refused (%s)", async (_, accepted, expected) => {
+    const events: string[] = [];
+    let ownerAlive = true;
+    let attempts = 0;
+    await runSyncHostStartupLoop({
+      startSyncHost: () => {
+        attempts += 1;
+        return ownerAlive ? Promise.reject(conflictError(makeOwner())) : Promise.resolve();
+      },
+      isDone: () => false,
+      log: () => {},
+      getServiceMainPid: () => process.pid,
+      platform: "win32",
+      // A real SIGTERM would end the stale brain: keeps a regression from looping.
+      kill: (pid, signal) => { events.push(`kill ${pid} ${String(signal)}`); ownerAlive = false; },
+      pidAlive: () => ownerAlive,
+      sleep: instantSleep,
+      env: betaEnv,
+      terminatePidDeps: {
+        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-beta-0123456789abcdef",
+        // The lock owner is proven to still be this process, so a refusal is the
+        // only reason the force-kill below can run.
+        isExpectedProcess: () => true,
+        requestRuntimeShutdown: async ({ pid }) => {
+          events.push(`rpc ${pid}`);
+          if (accepted) ownerAlive = false;
+          return accepted ? { requested: true } : { requested: false, reason: "wedged" };
+        },
+        // The identity read finds a live process; the verified kill of that exact
+        // process is the force-kill. Nothing real is signalled.
+        runWindowsPowerShell: (args) => {
+          if ((args.at(-1) ?? "").includes("GetProcessById(4242)")) {
+            events.push("force 4242");
+            ownerAlive = false;
+            return { status: 0, stdout: "", stderr: "" };
+          }
+          const facts = { pid: 4242, startTime: "2026-10-18T22:00:00.0000000Z", commandLine: "ade.exe serve", executablePath: null, parentPid: 1 };
+          return { status: 0, stdout: JSON.stringify(facts), stderr: "" };
+        },
+      },
+    });
+    expect(attempts).toBe(2);
+    expect(events).toEqual(expected);
+  });
+
   it("never takes over when it is not the service child", async () => {
     const killed: number[] = [];
     let attempts = 0;

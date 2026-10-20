@@ -79,14 +79,6 @@ import {
   normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
 } from "../newLaneForm";
-import { useShimmerTick } from "../spinTick";
-import {
-  FEEDBACK_TYPES,
-  feedbackFormCanSubmit,
-  serializeContextFooter,
-  type FeedbackFormState,
-  type FeedbackType,
-} from "../feedbackForm";
 import { ActivityPaneView } from "./ActivityPaneView";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
@@ -1915,144 +1907,6 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
 
 type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;
 type LaneDeleteFormContent = FormPaneContent & { command: "lane-delete" };
-type FeedbackFormContent = FormPaneContent & { command: "feedback" };
-
-// Rebuild the framework-free FeedbackFormState (from feedbackForm.ts) out of the
-// FeedbackContextMeta carried on the form content. app.tsx seeds + edits that
-// meta; this keeps the render in lock-step with the reducer/serializer that
-// validation + submission go through.
-export function feedbackStateFromContent(content: FeedbackFormContent): FeedbackFormState {
-  const meta = content.feedback ?? {};
-  const rawType = (meta.type ?? "bug") as FeedbackType;
-  const type = FEEDBACK_TYPES.includes(rawType) ? rawType : "bug";
-  return {
-    type,
-    text: meta.body ?? "",
-    showContext: meta.showContext !== false,
-    context: {
-      provider: meta.provider ?? null,
-      model: meta.model ?? null,
-      lane: meta.lane ?? null,
-      lastError: meta.lastError ?? null,
-    },
-  };
-}
-
-function FeedbackTypeSelector({ type }: { type: FeedbackType }) {
-  // ‹ bug · idea · praise › — violet is the only selection accent; the rest is
-  // neutral idle chrome.
-  return (
-    <Text>
-      <Text color={theme.color.t4}>‹ </Text>
-      {FEEDBACK_TYPES.map((option, index) => (
-        <React.Fragment key={option}>
-          {index > 0 ? <Text color={theme.color.t5}> · </Text> : null}
-          <Text
-            color={option === type ? theme.color.violet : theme.color.t4}
-            bold={option === type}
-          >
-            {option === type ? `[${option}]` : option}
-          </Text>
-        </React.Fragment>
-      ))}
-      <Text color={theme.color.t4}> ›</Text>
-    </Text>
-  );
-}
-
-function FeedbackFormPane({
-  content,
-  focused,
-  width,
-}: {
-  content: FeedbackFormContent;
-  focused: boolean;
-  width: number;
-}) {
-  const hoveredId = useHoveredHitId();
-  const tick = useShimmerTick();
-  const inner = Math.max(12, width - 4);
-  const state = feedbackStateFromContent(content);
-  const submitted = content.feedback?.feedback === "submitted";
-  const canSubmit = feedbackFormCanSubmit(state);
-
-  if (submitted) {
-    // The single sanctioned green (#22C55E === theme.color.done) for a success
-    // ✓, faded in via the shared spin tick (no bare setInterval). Dim for the
-    // first ~200ms so it reads as a gentle confirm rather than a flash.
-    const settled = (tick ?? 0) % 1000 >= 2;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={theme.color.done} bold dimColor={!settled}>
-          ✓ Feedback sent
-        </Text>
-        <Text color={theme.color.t4} dimColor>Closing…</Text>
-      </Box>
-    );
-  }
-
-  const bodyLines = state.text.length ? state.text.split("\n") : [];
-  const bodyHover = hoveredId === "right:feedback:body";
-  const footer = state.showContext ? serializeContextFooter(state.context) : "";
-
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        <Text color={focused ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
-        <Text color={theme.color.t3}> Type  </Text>
-        <FeedbackTypeSelector type={state.type} />
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={bodyHover ? theme.color.violet : theme.color.t3}>{bodyHover ? theme.rail : " "} Body</Text>
-        <Box flexDirection="column">
-          {bodyLines.length ? (
-            bodyLines.map((line, index) => (
-              <Text key={index} color={theme.color.t1} wrap="truncate-end">
-                {endTruncate(line.length ? line : " ", inner)}
-                {index === bodyLines.length - 1 ? <Text color={theme.color.violet}>▏</Text> : null}
-              </Text>
-            ))
-          ) : (
-            <Text color={theme.color.t4} dimColor>
-              Describe it…<Text color={theme.color.violet}>▏</Text>
-            </Text>
-          )}
-        </Box>
-      </Box>
-
-      {state.showContext && footer ? (
-        <Box flexDirection="column" marginTop={1}>
-          {footer.split("\n").map((line, index) => (
-            <Text
-              key={index}
-              color={index === 0 ? theme.color.t3 : theme.color.t4}
-              dimColor={index !== 0}
-              wrap="truncate-end"
-            >
-              {endTruncate(line, inner)}
-            </Text>
-          ))}
-        </Box>
-      ) : (
-        <Box marginTop={1}>
-          <Text color={theme.color.t4} dimColor>
-            --- Context --- (hidden · Ctrl+T)
-          </Text>
-        </Box>
-      )}
-
-      <Box marginTop={1} flexDirection="row" justifyContent="space-between">
-        <Text color={canSubmit ? theme.color.t3 : theme.color.t4} dimColor={!canSubmit}>
-          ⏎ newline · Ctrl+S send · esc cancel
-        </Text>
-        <Text color={hoveredId === "right:feedback:send" && canSubmit ? theme.color.violet : theme.color.t5}>
-          {canSubmit ? "[send]" : ""}
-        </Text>
-      </Box>
-    </Box>
-  );
-}
 
 function twoStepConfirmHint(armed: boolean, idle: string): string {
   return armed ? "enter again to confirm" : idle;
@@ -2703,14 +2557,6 @@ function RightPaneComponent({
         />
       ) : null}
 
-      {content.kind === "form" && content.command === "feedback" ? (
-        <FeedbackFormPane
-          content={content as FeedbackFormContent}
-          focused={focused}
-          width={paneWidth}
-        />
-      ) : null}
-
       {content.kind === "form" && content.command === "new-lane" ? (
         <NewLaneFormPane
           content={content as NewLaneFormContent}
@@ -2720,7 +2566,7 @@ function RightPaneComponent({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "chat-delete" && content.command !== "feedback" && content.command !== "new-lane" ? (
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "chat-delete" && content.command !== "new-lane" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>

@@ -11,13 +11,18 @@ import {
   decodePiRegistryId,
   encodePiRegistryId,
 } from "../../../shared/modelRegistry";
-import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import type { AiPiProviderAuthSource, AiPiProviderStatus } from "../../../shared/types/config";
+import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
+import { pinnedToolBlocker } from "./pinnedProviderTools";
 
 export { PI_SDK_MIN_NODE } from "../chat/piSdkProtocol";
 export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent" as const;
 
 export type PiInstallation = {
+  /**
+   * ADE's pinned Pi CLI script (`dist/cli.js`). A JavaScript file: run it with
+   * a Node >= PI_SDK_MIN_NODE, never directly.
+   */
   cliPath: string | null;
   packageRoot: string | null;
   packageEntry: string | null;
@@ -31,6 +36,8 @@ export type PiInstallation = {
   modelsPath: string;
   modelsStorePath: string;
   blocker: string | null;
+  /** Where the package came from: the dev/test override or ADE's pinned download. Null when missing. */
+  source?: "env" | "tools-cache" | null;
 };
 
 
@@ -110,35 +117,6 @@ function packageLocationFromRoot(root: string | null): { root: string | null; en
   }
 }
 
-function candidatePackageRoots(env: NodeJS.ProcessEnv, cliPath: string | null): string[] {
-  const home = homeDir(env);
-  const roots = [
-    nonEmpty(env.ADE_PI_PACKAGE_ROOT),
-    nonEmpty(env.PI_CODING_AGENT_PACKAGE_ROOT),
-    cliPath,
-    path.join(home, ".pi", "agent", "node_modules", PI_PACKAGE_NAME),
-    path.join(home, ".npm-global", "lib", "node_modules", PI_PACKAGE_NAME),
-    path.join(home, ".local", "lib", "node_modules", PI_PACKAGE_NAME),
-    path.join(home, ".volta", "tools", "image", "packages", "node", "lib", "node_modules", PI_PACKAGE_NAME),
-    ...(process.platform === "win32" ? [
-      path.join(nonEmpty(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "npm", "node_modules", PI_PACKAGE_NAME),
-      path.join(nonEmpty(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "npm", "node_modules", PI_PACKAGE_NAME),
-      path.join(home, "AppData", "Roaming", "npm", "node_modules", PI_PACKAGE_NAME),
-      path.join(home, "AppData", "Local", "npm", "node_modules", PI_PACKAGE_NAME),
-    ] : []),
-    path.join("/opt", "homebrew", "lib", "node_modules", PI_PACKAGE_NAME),
-    path.join("/usr", "local", "lib", "node_modules", PI_PACKAGE_NAME),
-    path.join("/usr", "lib", "node_modules", PI_PACKAGE_NAME),
-  ];
-  return roots.filter((value): value is string => Boolean(value)).map((value) => {
-    try {
-      return fs.realpathSync(value);
-    } catch {
-      return value;
-    }
-  });
-}
-
 function nodeVersionAtLeast(actual: string, minimum = PI_SDK_MIN_NODE): boolean {
   const parse = (value: string): [number, number, number] => {
     const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
@@ -157,47 +135,80 @@ function safeJson<T>(filePath: string): T | null {
   }
 }
 
-/** Resolve the user's Pi installation without importing or installing Pi. */
-export function resolvePiInstallation(env: NodeJS.ProcessEnv = process.env): PiInstallation {
-  const cli = resolveExecutableFromKnownLocations("pi", env)?.path ?? null;
-  let location: { root: string | null; entry: string | null; version: string | null } = {
-    root: null,
-    entry: null,
-    version: null,
-  };
-  for (const candidate of candidatePackageRoots(env, cli)) {
-    const root = packageRootFrom(candidate) ?? (fs.existsSync(path.join(candidate, "package.json")) ? candidate : null);
-    const next = packageLocationFromRoot(root);
-    if (next.root && next.entry) {
-      location = next;
-      break;
-    }
+type PiPackageLocation = {
+  root: string | null;
+  entry: string | null;
+  version: string | null;
+  cli: string | null;
+  source: "env" | "tools-cache" | null;
+};
+
+/** The dev/test override (`ADE_PI_PACKAGE_ROOT`), a package directory or a file inside one. */
+function overridePackageLocation(env: NodeJS.ProcessEnv): PiPackageLocation | null {
+  const configured = nonEmpty(env.ADE_PI_PACKAGE_ROOT) ?? nonEmpty(env.PI_CODING_AGENT_PACKAGE_ROOT);
+  if (!configured) return null;
+  let candidate = configured;
+  try {
+    candidate = fs.realpathSync(configured);
+  } catch {
+    // Reported as missing below.
   }
+  const root = packageRootFrom(candidate) ?? (fs.existsSync(path.join(candidate, "package.json")) ? candidate : null);
+  const location = packageLocationFromRoot(root);
+  const cli = location.root ? path.join(location.root, "dist", "cli.js") : null;
+  return { ...location, cli: cli && fs.existsSync(cli) ? cli : null, source: "env" };
+}
+
+/** ADE's pinned Pi package tree: the current pin, else the previous one while a new one downloads. */
+function pinnedPackageLocation(env: NodeJS.ProcessEnv): PiPackageLocation | null {
+  const pinned = resolvePinnedTool("pi", { env });
+  const entry = pinned?.files.module;
+  if (!pinned || !entry) return null;
+  return {
+    root: pinned.entryPath,
+    entry,
+    version: pinned.version,
+    cli: pinned.files.cli ?? null,
+    source: "tools-cache",
+  };
+}
+
+/**
+ * Resolve ADE's own Pi package without importing it: the dev/test override,
+ * else ADE's pinned download. Never a Pi the user installed (PATH, npm global
+ * roots, Volta, Homebrew). The Pi SDK runs inside ADE's Node, which must be
+ * at least PI_SDK_MIN_NODE.
+ */
+export function resolvePiInstallation(env: NodeJS.ProcessEnv = process.env): PiInstallation {
+  const location: PiPackageLocation = overridePackageLocation(env)
+    ?? pinnedPackageLocation(env)
+    ?? { root: null, entry: null, version: null, cli: null, source: null };
   const agentDir = path.resolve(nonEmpty(env.PI_CODING_AGENT_DIR) ?? path.join(homeDir(env), ".pi", "agent"));
   const nodeVersion = process.versions.node;
   const sdkAvailable = Boolean(location.root && location.entry && nodeVersionAtLeast(nodeVersion));
   let blocker: string | null = null;
   if (!location.root || !location.entry) {
-    blocker = cli
-      ? "Pi CLI was found, but its SDK package could not be located. Set ADE_PI_PACKAGE_ROOT to the installed @earendil-works/pi-coding-agent directory."
-      : "Pi is not installed. Install @earendil-works/pi-coding-agent or add the Pi CLI to PATH.";
+    blocker = location.source === "env"
+      ? "ADE_PI_PACKAGE_ROOT does not name an @earendil-works/pi-coding-agent package directory."
+      : pinnedToolBlocker("Pi", getPinnedToolStatus("pi", { env }));
   } else if (!nodeVersionAtLeast(nodeVersion)) {
-    blocker = `Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ADE is running Node ${nodeVersion}. Pi CLI remains available.`;
+    blocker = `Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ADE is running Node ${nodeVersion}.`;
   }
   return {
-    cliPath: cli,
+    cliPath: location.root && location.entry ? location.cli : null,
     packageRoot: location.root,
     packageEntry: location.entry,
     version: location.version,
     nodeVersion,
     sdkAvailable,
-    cliAvailable: Boolean(cli),
+    cliAvailable: Boolean(location.root && location.entry && location.cli),
     agentDir,
     settingsPath: path.join(agentDir, "settings.json"),
     authPath: path.join(agentDir, "auth.json"),
     modelsPath: path.join(agentDir, "models.json"),
     modelsStorePath: path.join(agentDir, "models-store.json"),
     blocker,
+    source: location.root && location.entry ? location.source : null,
   };
 }
 
@@ -373,8 +384,8 @@ export async function probePiProfileInventory(
   const poolKey = `pi-inventory:${installation.agentDir}:${randomUUID()}`;
   try {
     // Inventory is deliberately served by the same isolated worker boundary
-    // as chat. The Electron main process must never import user-installed Pi
-    // code because package top-level code can execute arbitrary extensions.
+    // as chat. The Electron main process must never import Pi's code: its
+    // top-level code loads the user's Pi extensions, which can run anything.
     acquired = await acquirePiSdkConnection({
       poolKey,
       packageRoot: installation.packageRoot,

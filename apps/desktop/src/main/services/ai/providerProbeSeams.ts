@@ -91,13 +91,6 @@ export type FsLike = {
 export type ResolvedProviderBinary = {
   /** The path the runtime would use, exactly as the resolver produced it. */
   path: string | null;
-  /**
-   * The resolver only produced a bare command name and is hoping PATH has it.
-   * `findOnPath` decides; without a hit the provider is not installed.
-   */
-  requiresPathConfirmation?: boolean;
-  /** Bare command to look up when `requiresPathConfirmation` is set. */
-  command?: string;
   /** Reported as-is when the resolver already knows the version (Pi reads package.json). */
   version?: string | null;
   /** Set when spawning `--version` is wrong for this provider. */

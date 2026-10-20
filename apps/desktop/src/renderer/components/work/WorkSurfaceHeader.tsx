@@ -11,6 +11,7 @@ import { cn } from "../ui/cn";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { NamingPendingLabel } from "../terminals/LaneNamingLabel";
+import { toLayoutPx } from "../../lib/webZoom";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -324,8 +325,8 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     if (!row || !cluster || typeof ResizeObserver === "undefined") return;
     const update = () => {
       const next = {
-        row: Math.floor(row.getBoundingClientRect().width),
-        cluster: Math.ceil(cluster.getBoundingClientRect().width),
+        row: Math.floor(toLayoutPx(row.getBoundingClientRect().width)),
+        cluster: Math.ceil(toLayoutPx(cluster.getBoundingClientRect().width)),
       };
       setWidths((previous) => (previous.row === next.row && previous.cluster === next.cluster ? previous : next));
     };

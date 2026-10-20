@@ -12,9 +12,33 @@ type CopilotModel = {
   capabilities?: { supports?: { vision?: unknown; reasoningEffort?: unknown }; limits?: { max_context_window_tokens?: unknown; max_output_tokens?: unknown; max_prompt_tokens?: unknown } };
   supportedReasoningEfforts?: unknown;
   defaultReasoningEffort?: unknown;
-  billing?: { multiplier?: unknown; tokenPrices?: { longContext?: { contextMax?: unknown } } };
+  billing?: { multiplier?: unknown; tokenPrices?: CopilotTierPrices & { longContext?: CopilotTierPrices } };
   supportedContextTiers?: unknown;
 };
+
+/** One context tier's prompt budget. `contextMax` is the deprecated name for `maxPromptTokens`. */
+type CopilotTierPrices = { maxPromptTokens?: unknown; contextMax?: unknown };
+
+function positiveTokens(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function tierPromptBudget(tier: CopilotTierPrices | undefined): number | undefined {
+  return positiveTokens(tier?.maxPromptTokens) ?? positiveTokens(tier?.contextMax);
+}
+
+/**
+ * Copilot's own models carry their context tiers in `billing.tokenPrices`: a
+ * model with a `longContext` price offers the long tier. `supportedContextTiers`
+ * is only filled by providers with no pricing to publish, so both are read.
+ */
+function copilotContextTiers(model: CopilotModel): string[] {
+  const listed = Array.isArray(model.supportedContextTiers)
+    ? model.supportedContextTiers.filter((tier): tier is string => typeof tier === "string")
+    : [];
+  const priced = model.billing?.tokenPrices?.longContext ? ["default", "long_context"] : [];
+  return [...new Set([...priced, ...listed])];
+}
 
 /** What an account with no model list (the Auto-only plan) is offered. */
 const COPILOT_AUTO_ONLY: readonly CopilotModel[] = [
@@ -22,9 +46,16 @@ const COPILOT_AUTO_ONLY: readonly CopilotModel[] = [
 ];
 
 function copilotModelDescriptor(model: CopilotModel, id: string): ModelDescriptor {
-  const context = model.capabilities?.limits?.max_context_window_tokens;
-  const output = model.capabilities?.limits?.max_output_tokens;
-  const longContextWindow = model.billing?.tokenPrices?.longContext?.contextMax;
+  const limits = model.capabilities?.limits;
+  const output = limits?.max_output_tokens;
+  // Windows are prompt budgets per tier, as the Copilot CLI's picker shows them.
+  // `max_context_window_tokens` is the largest tier's whole window, so it is
+  // only the last fallback.
+  const context = tierPromptBudget(model.billing?.tokenPrices)
+    ?? positiveTokens(limits?.max_prompt_tokens)
+    ?? positiveTokens(limits?.max_context_window_tokens);
+  const longContextWindow = tierPromptBudget(model.billing?.tokenPrices?.longContext);
+  const contextTiers = copilotContextTiers(model);
   const efforts = Array.isArray(model.supportedReasoningEfforts)
     ? model.supportedReasoningEfforts.filter((effort): effort is string => typeof effort === "string")
     : [];
@@ -34,15 +65,13 @@ function copilotModelDescriptor(model: CopilotModel, id: string): ModelDescripto
     displayName: typeof model.name === "string" && model.name.trim() ? model.name.trim() : id,
     family: "github-copilot",
     authTypes: ["cli-subscription"],
-    contextWindow: typeof context === "number" && context > 0 ? context : 128_000,
+    contextWindow: context ?? 128_000,
     maxOutputTokens: typeof output === "number" && output > 0 ? output : 32_000,
     capabilities: { tools: true, vision: model.capabilities?.supports?.vision === true, reasoning: efforts.length > 0, streaming: true },
     ...(efforts.length ? { reasoningTiers: efforts } : {}),
     ...(typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
-    ...(Array.isArray(model.supportedContextTiers)
-      ? { supportedContextTiers: model.supportedContextTiers.filter((tier): tier is string => typeof tier === "string") }
-      : {}),
-    ...(typeof longContextWindow === "number" && Number.isFinite(longContextWindow) && longContextWindow > 0 ? { longContextWindow } : {}),
+    ...(contextTiers.length ? { supportedContextTiers: contextTiers } : {}),
+    ...(longContextWindow ? { longContextWindow } : {}),
     ...(typeof model.billing?.multiplier === "number" ? { billingMultiplier: model.billing.multiplier } : {}),
     color: "#8250df",
     providerRoute: "copilot-sdk",
@@ -92,7 +121,8 @@ export async function refreshCopilotModelCatalog(args: {
 
 /** A saved list younger than this is served without asking Copilot again. */
 export const COPILOT_MODELS_TTL_MS = 6 * 60 * 60_000;
-const COPILOT_MODELS_CACHE_VERSION = 1;
+// 2: context tiers and windows read from `billing.tokenPrices`.
+const COPILOT_MODELS_CACHE_VERSION = 2;
 const COPILOT_MODELS_CACHE_FILE = "copilot-model-catalog-cache.json";
 
 export type CopilotModelCatalogCache = { savedAt: number; descriptors: ModelDescriptor[] };

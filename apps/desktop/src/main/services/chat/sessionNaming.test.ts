@@ -76,15 +76,20 @@ describe("buildNamingModelCandidates", () => {
 });
 
 describe("buildSessionIntelligenceModelCandidates", () => {
-  // Cheap ADE-provider helper first, then the session model; non-ADE providers
-  // skip the helper, and toolType only counts when no provider is set.
+  // Exactly one model per chat provider: the cheap helper for Claude, Codex,
+  // and Cursor, the chat's own model for everyone else. Never a second
+  // candidate, so a chat's content never reaches another vendor. toolType
+  // only counts when no provider is set.
   it.each<[string, Parameters<typeof buildSessionIntelligenceModelCandidates>[0], string[]]>([
-    ["claude: helper then session model",
-      { availableModels: ALL_MODELS, provider: "claude", sessionModelId: OPENAI_MODELS[0]!.id },
-      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]!.id]],
-    ["codex: helper then session model",
+    ["claude: Haiku only, never the session model",
+      { availableModels: ALL_MODELS, provider: "claude", sessionModelId: OPENAI_MODELS[0]!.id, sessionModel: "sonnet" },
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID]],
+    ["codex: Luna only, never the session model",
       { availableModels: ALL_MODELS, provider: "codex", sessionModelId: ANTHROPIC_MODELS[0]!.id },
-      [BACKGROUND_UTILITY_CODEX_MODEL_ID, ANTHROPIC_MODELS[0]!.id]],
+      [BACKGROUND_UTILITY_CODEX_MODEL_ID]],
+    ["cursor: Composer only, with no Cursor inventory",
+      { availableModels: [], provider: "cursor", sessionModelId: "cursor/grok-4-5" },
+      [BACKGROUND_UTILITY_CURSOR_MODEL_ID]],
     ["OpenCode-wrapped Anthropic gets no Claude helper",
       { availableModels: ALL_MODELS, provider: "opencode", sessionModelId: ANTHROPIC_MODELS[0]!.id },
       [ANTHROPIC_MODELS[0]!.id]],
@@ -93,10 +98,25 @@ describe("buildSessionIntelligenceModelCandidates", () => {
       [ANTHROPIC_MODELS[0]!.id]],
     ["toolType picks the helper when provider is absent",
       { availableModels: ALL_MODELS, toolType: "claude-chat", sessionModelId: OPENAI_MODELS[0]!.id },
-      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]!.id]],
-    ["Cursor injects Composer with no Cursor inventory",
-      { availableModels: [], provider: "cursor", sessionModelId: "cursor/grok-4-5" },
-      [BACKGROUND_UTILITY_CURSOR_MODEL_ID, "cursor/grok-4-5"]],
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID]],
+    ["devin: the chat's own model",
+      { availableModels: [], provider: "devin", sessionModelId: "devin/swe" },
+      ["devin/swe"]],
+    ["qwen: the chat's own model",
+      { availableModels: [], provider: "qwen", sessionModelId: "qwen/qwen3-coder-plus" },
+      ["qwen/qwen3-coder-plus"]],
+    ["grok: the chat's own model",
+      { availableModels: [], provider: "grok", sessionModelId: "xai/grok-4-6" },
+      ["xai/grok-4-6"]],
+    ["copilot: the chat's own model",
+      { availableModels: [], provider: "copilot", sessionModelId: "github-copilot/auto" },
+      ["github-copilot/auto"]],
+    ["muse: the chat's own model",
+      { availableModels: [], provider: "muse", sessionModelId: "muse/muse-spark-1.3" },
+      ["muse/muse-spark-1.3"]],
+    ["a session id and a different session model still give one candidate",
+      { availableModels: ALL_MODELS, provider: "opencode", sessionModelId: ANTHROPIC_MODELS[0]!.id, sessionModel: OPENAI_MODELS[0]!.id },
+      [ANTHROPIC_MODELS[0]!.id]],
     ["the session model survives an empty auth snapshot",
       { availableModels: [], sessionModelId: OPENAI_MODELS[0]!.id },
       [OPENAI_MODELS[0]!.id]],
@@ -106,9 +126,6 @@ describe("buildSessionIntelligenceModelCandidates", () => {
     ["an alias resolves with an empty auth snapshot",
       { availableModels: [], sessionModel: "sonnet" },
       ["anthropic/claude-sonnet-5-5"]],
-    ["an alias follows the provider helper",
-      { availableModels: ALL_MODELS, provider: "claude", sessionModel: "sonnet" },
-      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5-5"]],
   ])("%s", (_label, args, expected) => {
     expect(buildSessionIntelligenceModelCandidates(args)).toEqual(expected);
   });

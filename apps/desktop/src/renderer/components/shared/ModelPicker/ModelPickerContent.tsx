@@ -82,6 +82,7 @@ const PICKER_FAMILY_BY_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
   kimi: "moonshot",
   qwen: "qwen",
   devin: "devin",
+  antigravity: "antigravity",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };
@@ -116,7 +117,8 @@ function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boole
     || provider === "qwen"
     || provider === "kimi"
     || provider === "grok"
-    || provider === "copilot";
+    || provider === "copilot"
+    || provider === "antigravity";
 }
 
 // The runtime catalog flags a model as requiring configuration when it is
@@ -180,6 +182,7 @@ export type ModelPickerContentProps = {
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   refreshErrorProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
+  hideSignInFamilies?: readonly ProviderFamily[];
   allowCliOnlyModels?: boolean;
   /**
    * Whether this picker offers the Custom rail entry at all.
@@ -244,6 +247,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   refreshingProvider,
   refreshErrorProvider,
   onOpenSignIn,
+  hideSignInFamilies,
   hidePermissionRail = false,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
@@ -296,7 +300,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // The cheap binary probe answers "is OpenCode installed?" in ms (separate
   // from the slow full getStatus probe). Until that lands we don't render
   // the OpenCode-required empty state — we just show an empty list so we
-  // don't make a false "Install OpenCode" claim during the brief unknown
+  // don't make a false "OpenCode needed" claim during the brief unknown
   // window.
   const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
   const opencodeBinaryKnown = internalAuth.binaryProbed;
@@ -420,9 +424,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     (m: ModelDescriptor): boolean => {
       // Models for opencode/ollama/lmstudio require the OpenCode CLI runtime.
       // When the cheap binary check has completed AND OpenCode isn't installed,
-      // hide them so the panes surface the "Install OpenCode" empty state.
+      // hide them so the panes surface the "OpenCode needed" empty state.
       // While the probe is still in-flight (binaryKnown === false) we don't
-      // hide anything — the alternative would flash "Install OpenCode" briefly
+      // hide anything — the alternative would flash "OpenCode needed" briefly
       // for users who do have it.
       if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(pickerFamilyForModel(m))) {
         return false;
@@ -757,7 +761,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         const target = visibleModels[focusedIndex];
         if (!target) return;
         if (!isAvailableForUse(target)) {
-          onOpenSignIn?.(pickerFamilyForModel(target), target.authTypes);
+          const family = pickerFamilyForModel(target);
+          if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, target.authTypes);
           return;
         }
         handleRowSelect(target.id);
@@ -770,6 +775,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       isAvailableForUse,
       modelListVirtualizer,
       onOpenSignIn,
+      hideSignInFamilies,
       onRequestClose,
       visibleModels,
       harnessesActive,
@@ -816,7 +822,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
@@ -824,7 +831,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // controlled consumers from rebuilding two patches from the same render.
       onSelect(modelId, { fastMode: true });
     },
-    [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   /**
@@ -840,13 +847,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
       onSelect(modelId, { fastMode: false, copilotContextTier: next });
     },
-    [expandedModels, isAvailableForUse, onCopilotContextTierChange, onOpenSignIn, onSelect, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onCopilotContextTierChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   const handleServiceTierChange = useCallback(
@@ -856,7 +864,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (next === "fast" && !modelSupportsServiceTier(model, "fast")) return;
       if (next === "standard" && !modelSupportsServiceTier(model, "standard")) return;
       if (!isAvailableForUse(model)) {
-        onOpenSignIn?.(pickerFamilyForModel(model), model.authTypes);
+        const family = pickerFamilyForModel(model);
+        if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
       recordUsage(modelId);
@@ -866,7 +875,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         onSelect(modelId, { fastMode: next === "fast", serviceTier: next });
       }
     },
-    [expandedModels, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
   );
 
   const handleCopyId = useCallback((modelId: string) => {
@@ -911,7 +920,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   //
   // Suppress the per-provider banner for opencode/ollama/lmstudio when the
   // OpenCode binary itself is missing — those families render a unified
-  // "Install OpenCode" empty state instead.
+  // "OpenCode needed" empty state instead.
   const activeFamilyNeedsOpencode =
     activeProviderFamily != null
     && isOpencodeRequiredFamily(activeProviderFamily)
@@ -921,6 +930,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     activeProviderFamily != null
     && onOpenSignIn != null
     && effectiveAuth[activeProviderFamily] === "unauthed"
+    && !hideSignInFamilies?.includes(activeProviderFamily)
     && !activeFamilyNeedsOpencode
     && !activeProviderRefreshFailed
     && !activeProviderRefreshing;
@@ -1161,7 +1171,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 providerAuthStatus={effectiveAuth}
                 getProviderLabel={refreshProviderLabel}
                 isProviderReady={providerIsReady}
-                {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                {...(onOpenSignIn
+                  && (!activeProviderFamily || !hideSignInFamilies?.includes(activeProviderFamily))
+                  ? { onOpenSignIn }
+                  : {})}
               />
             ) : (
               <div
@@ -1216,7 +1229,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                           onCopilotContextTierChange: handleCopilotContextTierChange,
                         } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
-                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) } : {})}
+                        {...(onOpenSignIn && !hideSignInFamilies?.includes(pickerFamilyForModel(m))
+                          ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) }
+                          : {})}
                       />
                     </div>
                   );

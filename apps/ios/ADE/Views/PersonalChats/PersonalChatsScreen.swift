@@ -2,19 +2,50 @@ import SwiftUI
 
 struct PersonalChatsScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @State private var searchText = ""
   @State private var loading = false
   @State private var errorMessage: String?
   @State private var newChatPresented = false
   @State private var showsArchived = false
+  @State private var sessionsByMachine: [String: [AgentChatSessionSummary]] = [:]
+  /// Fleet machines whose last list read failed, by machine key, with their names.
+  @State private var failedMachineNames: [String: String] = [:]
+
+  private var primaryMachineKey: String { syncService.focusedMachineKey ?? "primary" }
+  private var rows: [PersonalChatRowEntry] {
+    var result = (sessionsByMachine[primaryMachineKey] ?? syncService.personalChatSessions).map {
+      PersonalChatRowEntry(summary: $0, machineKey: syncService.focusedMachineKey, machineName: syncService.focusedMachineDisplayName)
+    }
+    for machine in machineFleet.machines {
+      result += (sessionsByMachine[machine.machineKey] ?? []).map {
+        PersonalChatRowEntry(summary: $0, machineKey: machine.machineKey, machineName: machine.name)
+      }
+    }
+    return result.sorted { lhs, rhs in
+      let lhsArchived = lhs.summary.archivedAt != nil
+      let rhsArchived = rhs.summary.archivedAt != nil
+      if lhsArchived != rhsArchived { return !lhsArchived }
+      let lhsAttention = lhs.summary.awaitingInput == true || lhs.summary.status == "awaiting-input"
+      let rhsAttention = rhs.summary.awaitingInput == true || rhs.summary.status == "awaiting-input"
+      if lhsAttention != rhsAttention { return lhsAttention }
+      if lhs.summary.lastActivityAt != rhs.summary.lastActivityAt {
+        return lhs.summary.lastActivityAt > rhs.summary.lastActivityAt
+      }
+      return lhs.id < rhs.id
+    }
+  }
+  private var showsMachineBadges: Bool { Set(visibleSessions.map { $0.machineKey ?? primaryMachineKey }).count > 1 }
 
   private var canCreateChat: Bool {
     syncService.canInvokeRemoteAction("personalChats.create")
+      || machineFleet.liveMachineKeys.contains { machineFleet.connection(for: $0)?.supportsAction("personalChats.create") == true }
   }
 
-  private var visibleSessions: [AgentChatSessionSummary] {
+  private var visibleSessions: [PersonalChatRowEntry] {
     let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return syncService.personalChatSessions.filter { session in
+    return rows.filter { entry in
+      let session = entry.summary
       guard showsArchived || session.archivedAt == nil else { return false }
       guard !needle.isEmpty else { return true }
       return (session.title ?? "").lowercased().contains(needle)
@@ -27,10 +58,21 @@ struct PersonalChatsScreen: View {
   var body: some View {
     ZStack {
       ADEColor.pageBackground.ignoresSafeArea()
-      if loading && syncService.personalChatSessions.isEmpty {
+      if loading && rows.isEmpty {
         ProgressView("Loading chats…")
           .tint(ADEColor.accent)
           .foregroundStyle(ADEColor.textSecondary)
+      } else if visibleSessions.isEmpty && searchText.isEmpty && !failedMachineNames.isEmpty && errorMessage == nil {
+        // A machine that did not answer is not "no chats".
+        ADENoticeCard(
+          title: "Chats unavailable",
+          message: failedMachinesMessage,
+          icon: "exclamationmark.triangle.fill",
+          tint: ADEColor.warning,
+          actionTitle: "Retry",
+          action: { Task { await refresh() } }
+        )
+        .padding(16)
       } else if visibleSessions.isEmpty {
         emptyState
       } else {
@@ -75,6 +117,13 @@ struct PersonalChatsScreen: View {
           .frame(maxWidth: .infinity)
           .padding(.vertical, 7)
           .background(ADEColor.warning.opacity(0.08))
+      } else if !failedMachineNames.isEmpty && !visibleSessions.isEmpty {
+        Label(failedMachinesMessage, systemImage: "exclamationmark.triangle")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 7)
+          .background(ADEColor.warning.opacity(0.08))
       }
     }
     .overlay(alignment: .bottom) {
@@ -92,15 +141,12 @@ struct PersonalChatsScreen: View {
       }
     }
     .task(id: syncService.connectionState) {
-      await refresh()
+      await refresh(quietly: !rows.isEmpty)
       while !Task.isCancelled && !syncService.connectionState.isHostUnreachable {
         try? await Task.sleep(nanoseconds: 5_000_000_000)
         guard !Task.isCancelled else { return }
         await refresh(quietly: true)
       }
-    }
-    .onAppear {
-      Task { await refresh(quietly: !syncService.personalChatSessions.isEmpty) }
     }
   }
 
@@ -108,38 +154,39 @@ struct PersonalChatsScreen: View {
     ScrollView {
       // One kit panel, hairlines between rows.
       LazyVStack(spacing: 0) {
-        ForEach(Array(visibleSessions.enumerated()), id: \.element.id) { index, summary in
+        ForEach(Array(visibleSessions.enumerated()), id: \.element.id) { index, entry in
+          let summary = entry.summary
           if index > 0 {
             Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 70)
           }
           NavigationLink {
-            PersonalChatDestination(summary: summary)
+            PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
           } label: {
-            PersonalChatRow(summary: summary)
+            PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
           }
           .buttonStyle(ADEKitRowButtonStyle())
           .contextMenu {
             if summary.archivedAt == nil {
               Button {
-                Task { await perform(.archive, on: summary) }
+                Task { await perform(.archive, on: entry) }
               } label: {
                 Label("Archive", systemImage: "archivebox")
               }
-              .disabled(!canPerform(.archive))
+              .disabled(!canPerform(.archive, on: entry.machineKey))
             } else {
               Button {
-                Task { await perform(.unarchive, on: summary) }
+                Task { await perform(.unarchive, on: entry) }
               } label: {
                 Label("Unarchive", systemImage: "arrow.up.bin")
               }
-              .disabled(!canPerform(.unarchive))
+              .disabled(!canPerform(.unarchive, on: entry.machineKey))
             }
             Button(role: .destructive) {
-              Task { await perform(.delete, on: summary) }
+              Task { await perform(.delete, on: entry) }
             } label: {
               Label("Delete", systemImage: "trash")
             }
-            .disabled(!canPerform(.delete))
+            .disabled(!canPerform(.delete, on: entry.machineKey))
           }
         }
       }
@@ -191,44 +238,121 @@ struct PersonalChatsScreen: View {
 
   @MainActor
   private func refresh(quietly: Bool = false) async {
-    guard syncService.supportsPersonalChats,
-          syncService.canInvokeRemoteAction("personalChats.list")
-    else { return }
+    guard syncService.supportsPersonalChats || !machineFleet.liveMachineKeys.isEmpty else { return }
+    for machine in machineFleet.machines where sessionsByMachine[machine.machineKey] == nil {
+      if let data = ADESharedContainer.defaults.data(forKey: Self.cacheKey(machine.machineKey)),
+         let cached = try? JSONDecoder().decode([AgentChatSessionSummary].self, from: data) {
+        sessionsByMachine[machine.machineKey] = cached
+      }
+    }
     if !quietly { loading = true }
     defer { loading = false }
+    let timeout: UInt64 = 5_000_000_000
+    async let focusedRefresh: Void = refreshFocused(timeoutNanoseconds: timeout)
+    // A machine whose ADE has no personal chats has nothing to list; it is not a failure.
+    let liveMachines = machineFleet.machines.filter {
+      machineFleet.isLive($0.machineKey)
+        && machineFleet.connection(for: $0.machineKey)?.supportsAction("personalChats.list") == true
+    }
+    await withTaskGroup(of: (String, String, [AgentChatSessionSummary]?).self) { group in
+      for machine in liveMachines {
+        group.addTask { @MainActor in
+          // A failed read keeps the machine's cached rows; the failure is shown below.
+          let summaries = try? await syncService.refreshPersonalChats(
+            includeArchived: true,
+            timeoutNanoseconds: timeout,
+            machineKey: machine.machineKey
+          )
+          return (machine.machineKey, machine.name, summaries)
+        }
+      }
+      for await (machineKey, name, summaries) in group {
+        guard let summaries else {
+          failedMachineNames[machineKey] = name
+          continue
+        }
+        failedMachineNames.removeValue(forKey: machineKey)
+        sessionsByMachine[machineKey] = summaries
+        if let data = try? JSONEncoder().encode(summaries) {
+          ADESharedContainer.defaults.set(data, forKey: Self.cacheKey(machineKey))
+        }
+      }
+    }
+    // A machine that went offline or left the fleet is no longer a failure.
+    let liveKeys = Set(liveMachines.map(\.machineKey))
+    failedMachineNames = failedMachineNames.filter { liveKeys.contains($0.key) }
+    await focusedRefresh
+  }
+
+  @MainActor
+  private func refreshFocused(timeoutNanoseconds: UInt64) async {
+    guard syncService.supportsPersonalChats,
+          syncService.canInvokeRemoteAction("personalChats.list") else { return }
+    if sessionsByMachine[primaryMachineKey] == nil {
+      sessionsByMachine[primaryMachineKey] = syncService.personalChatSessions
+    }
     do {
-      _ = try await syncService.refreshPersonalChats(includeArchived: true)
-      errorMessage = nil
+      sessionsByMachine[primaryMachineKey] = try await syncService.refreshPersonalChats(
+        includeArchived: true,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
     } catch {
-      guard !syncService.connectionState.isHostUnreachable else { return }
-      errorMessage = error.localizedDescription
+      if rows.isEmpty && !syncService.connectionState.isHostUnreachable {
+        errorMessage = error.localizedDescription
+      }
     }
   }
 
   @MainActor
   private func perform(
     _ action: PersonalChatLifecycleAction,
-    on summary: AgentChatSessionSummary
+    on entry: PersonalChatRowEntry
   ) async {
-    guard canPerform(action) else {
+    guard canPerform(action, on: entry.machineKey) else {
       errorMessage = "This chat action requires a live connection to a compatible ADE machine."
       return
     }
     do {
-      try await syncService.performPersonalChatAction(action, sessionId: summary.sessionId)
+      try await syncService.performPersonalChatAction(
+        action,
+        sessionId: entry.summary.sessionId,
+        machineKey: entry.machineKey
+      )
+      await refresh(quietly: true)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }
   }
 
-  private func canPerform(_ action: PersonalChatLifecycleAction) -> Bool {
-    syncService.canInvokeRemoteAction("personalChats.\(action.rawValue)")
+  private func canPerform(_ action: PersonalChatLifecycleAction, on machineKey: String? = nil) -> Bool {
+    if let machineKey, machineKey != syncService.focusedMachineKey {
+      guard let connection = machineFleet.connection(for: machineKey) else { return false }
+      return connection.isLive && connection.supportsAction("personalChats.\(action.rawValue)")
+    }
+    return syncService.canInvokeRemoteAction("personalChats.\(action.rawValue)")
   }
+
+  private var failedMachinesMessage: String {
+    "Couldn’t load chats from \(failedMachineNames.values.sorted().joined(separator: ", "))."
+  }
+
+  private static func cacheKey(_ machineKey: String) -> String {
+    "ade.personalChats.fleet.cache.v1.\(Data(machineKey.utf8).base64EncodedString())"
+  }
+}
+
+private struct PersonalChatRowEntry: Identifiable {
+  let summary: AgentChatSessionSummary
+  let machineKey: String?
+  let machineName: String
+  var id: String { machineKey.map { "machine:\($0)|\(summary.sessionId)" } ?? "focused|\(summary.sessionId)" }
 }
 
 private struct PersonalChatRow: View {
   let summary: AgentChatSessionSummary
+  let machineName: String
+  let showsMachine: Bool
 
   private var status: String {
     normalizedWorkChatSessionStatus(session: nil, summary: summary)
@@ -277,6 +401,7 @@ private struct PersonalChatRow: View {
   private var accessibilityLabel: String {
     [
       title,
+      showsMachine ? machineName : nil,
       accessibilityStatus,
       summary.archivedAt == nil ? nil : "Archived",
       subtitle,
@@ -313,6 +438,16 @@ private struct PersonalChatRow: View {
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
+          if showsMachine {
+            Text(machineName)
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 3)
+              .background(ADEKit.track, in: Capsule())
+              .accessibilityLabel("On \(machineName)")
+          }
           if summary.archivedAt != nil {
             Image(systemName: "archivebox.fill")
               .font(.caption2)
@@ -349,6 +484,8 @@ private struct PersonalChatRow: View {
 
 private struct PersonalChatDestination: View {
   let summary: AgentChatSessionSummary
+  /// The machine that owns the chat; nil for the focused machine.
+  var machineKey: String? = nil
 
   var body: some View {
     WorkSessionDestinationView(
@@ -362,7 +499,8 @@ private struct PersonalChatDestination: View {
       showsLaneActions: false,
       navigationTitleOverride: summary.title,
       lanes: [],
-      personalChat: true
+      personalChat: true,
+      personalChatMachineKey: machineKey
     )
   }
 }
@@ -383,7 +521,7 @@ func makePersonalChatSessionStub(_ summary: AgentChatSessionSummary) -> Terminal
     laneName: "Personal chat",
     ptyId: nil,
     tracked: true,
-    pinned: false,
+    pinned: summary.pinned ?? false,
     manuallyNamed: nil,
     goal: summary.goal,
     toolType: toolTypeForProvider(provider),
@@ -409,6 +547,7 @@ func makePersonalChatSessionStub(_ summary: AgentChatSessionSummary) -> Terminal
 
 struct PersonalChatNewScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @State private var provider = "claude"
   @State private var modelId = "claude-sonnet-5"
   @State private var runtimeMode = "default"
@@ -422,13 +561,44 @@ struct PersonalChatNewScreen: View {
   @State private var busy = false
   @State private var errorMessage: String?
   @State private var createdSummary: AgentChatSessionSummary?
+  @State private var selectedMachineKey: String?
+
+  private var machineOptions: [WorkNewChatMachineOption] {
+    let primary = WorkNewChatMachineOption(
+      machineKey: nil,
+      name: syncService.focusedMachineDisplayName,
+      symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: syncService.focusedMachineDisplayName),
+      isLive: syncService.canInvokeRemoteAction("personalChats.create")
+    )
+    let remote = machineFleet.machines.filter { machineFleet.isLive($0.machineKey) }.map { machine in
+      WorkNewChatMachineOption(
+        machineKey: machine.machineKey,
+        name: machine.name,
+        symbol: machineSymbol(machineKey: machine.machineKey, name: machine.name),
+        isLive: machineFleet.connection(for: machine.machineKey)?.supportsAction("personalChats.create") == true
+      )
+    }
+    return [primary] + remote.filter(\.isLive)
+  }
+
+  private var selectedMachine: WorkNewChatMachineOption {
+    machineOptions.first { $0.machineKey == selectedMachineKey } ?? machineOptions[0]
+  }
 
   private var canCreateChat: Bool {
-    syncService.canInvokeRemoteAction("personalChats.create")
+    if let selectedMachineKey {
+      guard let connection = machineFleet.connection(for: selectedMachineKey) else { return false }
+      return connection.isLive && connection.supportsAction("personalChats.create")
+    }
+    return syncService.canInvokeRemoteAction("personalChats.create")
   }
 
   private var canChooseModel: Bool {
-    syncService.canInvokeRemoteAction("personalChats.modelCatalog")
+    if let selectedMachineKey {
+      guard let connection = machineFleet.connection(for: selectedMachineKey) else { return false }
+      return connection.isLive && connection.supportsAction("personalChats.modelCatalog")
+    }
+    return syncService.canInvokeRemoteAction("personalChats.modelCatalog")
   }
 
   init() {
@@ -444,7 +614,7 @@ struct PersonalChatNewScreen: View {
   var body: some View {
     Group {
       if let createdSummary {
-        PersonalChatDestination(summary: createdSummary)
+        PersonalChatDestination(summary: createdSummary, machineKey: selectedMachineKey ?? syncService.focusedMachineKey)
       } else {
         composerScreen
       }
@@ -493,6 +663,7 @@ struct PersonalChatNewScreen: View {
         cursorAvailabilityMode: .chat,
         lanes: [],
         commandScope: .personal,
+        personalMachineKey: selectedMachineKey,
         isBusy: busy,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
@@ -552,6 +723,12 @@ struct PersonalChatNewScreen: View {
         .accessibilityLabel("Composer options")
       },
       controls: {
+        WorkNewChatMachineDropdown(
+          options: machineOptions,
+          selected: selectedMachine,
+          onSelect: { selectedMachineKey = $0.machineKey }
+        )
+        .disabled(busy)
         Button { modelPickerPresented = true } label: {
           HStack(spacing: 7) {
             WorkProviderBareLogo(
@@ -619,9 +796,11 @@ struct PersonalChatNewScreen: View {
         copilotPermissionMode: wire.copilotPermissionMode,
         copilotContextTier: wire.copilotContextTier,
         copilotAutoTier: wire.copilotAutoTier,
-        cursorModeId: wire.cursorModeId
+        cursorModeId: wire.cursorModeId,
+        machineKey: selectedMachineKey
       )
       ADEHaptics.success()
+      syncService.setPersonalChatScope(sessionId: summary.sessionId, machineKey: selectedMachineKey)
       createdSummary = summary
     } catch {
       ADEHaptics.error()

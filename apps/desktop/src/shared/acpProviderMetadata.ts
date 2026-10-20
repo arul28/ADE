@@ -1,36 +1,27 @@
 /**
  * Identity facts shared by every ADE surface that presents an ACP provider.
  * Provider-specific setup prose stays in the Settings descriptor, while ids,
- * labels, login commands, install sources, and config-home names have one owner.
+ * labels, login commands, and config-home names have one owner. ADE runs its own
+ * pinned copy of every agent (see docs/features/onboarding-and-settings/agent-tools-cache.md), so there
+ * is no install source here.
  */
 
-export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "devin"] as const;
+import { ACP_CHAT_PROVIDERS } from "./types/chat";
+
+export const ACP_PROVIDER_IDS = ACP_CHAT_PROVIDERS;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
-
-/**
- * Where a provider's CLI comes from, unversioned.
- *
- * ADE runs whatever CLI the user has installed, so an install command fetches
- * the latest release rather than pinning a version. `npm` carries the bare
- * package name because the CLI registry wraps it for its own shell; `script`
- * is the vendor's own installer, already a shell command.
- */
-export type AcpProviderInstallSource =
-  | { readonly kind: "npm"; readonly packageName: string }
-  | { readonly kind: "script"; readonly command: string };
-
-/** The plain command a desktop surface shows for a provider's install source. */
-export function acpInstallDisplayCommand(source: AcpProviderInstallSource): string {
-  return source.kind === "npm" ? `npm install -g ${source.packageName}` : source.command;
-}
 
 export type AcpProviderMetadata = {
   readonly label: string;
   readonly statusLabel: string;
-  readonly loginCommand: string;
+  /**
+   * Terminal command that signs the agent in, or `null` for an agent whose
+   * only sign-in is the ACP `authenticate` request (Antigravity). ADE runs
+   * that one itself from Settings; there is no terminal to open.
+   */
+  readonly loginCommand: string | null;
   readonly loginHint: string;
   readonly configHomeEnv: string | null;
-  readonly install: AcpProviderInstallSource;
 };
 
 export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMetadata>> = {
@@ -40,7 +31,6 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "qwen --auth-type=openai",
     loginHint: "configure Qwen Code (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`, or OPENAI_API_KEY / OPENAI_BASE_URL)",
     configHomeEnv: "QWEN_HOME",
-    install: { kind: "npm", packageName: "@qwen-code/qwen-code" },
   },
   kimi: {
     label: "Kimi",
@@ -48,7 +38,6 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "kimi login",
     loginHint: "kimi login (--region global or mainland-cn)",
     configHomeEnv: "KIMI_CODE_HOME",
-    install: { kind: "script", command: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash" },
   },
   grok: {
     label: "Grok",
@@ -56,7 +45,6 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "grok login",
     loginHint: "grok login or set XAI_API_KEY",
     configHomeEnv: "GROK_HOME",
-    install: { kind: "npm", packageName: "@xai-official/grok" },
   },
   devin: {
     label: "Devin",
@@ -64,6 +52,14 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "devin auth login",
     loginHint: "devin auth login or set WINDSURF_API_KEY",
     configHomeEnv: null,
-    install: { kind: "script", command: "curl -fsSL https://cli.devin.ai/install.sh | bash" },
+  },
+  antigravity: {
+    label: "Antigravity",
+    statusLabel: "Antigravity",
+    loginCommand: null,
+    loginHint: "sign in from Settings > Providers > Antigravity (Google account, Gemini Enterprise, Gemini API key, or Agent Platform)",
+    // GEMINI_HOME names the parent of the agent's own `antigravity-acp/`
+    // directory; ADE leaves it at the default so the login is shared.
+    configHomeEnv: "GEMINI_HOME",
   },
 };

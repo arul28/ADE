@@ -536,7 +536,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.clusterState?.brainDeviceId).toBe(localDevice.deviceId);
     expect(status.clusterState?.brainEpoch).toBe(42);
     expect(status.pairingConnectInfo).toBeTruthy();
-    expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(false);
+    // The untagged draft names 127.0.0.1:1, not this cluster's brain (port 8789), so
+    // it is no longer dialed. This project does not own it, so it stays on disk.
+    expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(true);
   }, 30_000);
 
   it("reclaims a stale unreachable viewer draft when the draft target is remote", async () => {
@@ -836,9 +838,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       ["default", "fresh-remote-brain", 41, freshAt, "fresh-remote-brain"],
     );
 
+    // The untagged draft dials this machine, not the brain the cluster record names,
+    // so it is quarantined and the project follows the cluster's brain instead.
     expect(service.getHostBlocker()).toEqual({
-      reason: "saved_connection",
-      host: "127.0.0.1",
+      reason: "cluster_record",
+      host: "10.0.0.9",
       port: 8789,
     });
   }, 30_000);
@@ -895,7 +899,35 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       db.close();
     });
 
-    await service.initialize();
+    // A viewer of a fresh remote brain, so the disconnect is a viewer's. A project with
+    // no cluster record and no applicable draft is the brain itself, and the brain
+    // refuses to disconnect. No initialize(): it would dial the brain's address.
+    const freshAt = new Date().toISOString();
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "fresh-remote-brain",
+        "fresh-site",
+        "Remote host",
+        "macOS",
+        "desktop",
+        freshAt,
+        freshAt,
+        freshAt,
+        "not-local.invalid",
+        8789,
+        null,
+        JSON.stringify(["10.0.0.9"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "fresh-remote-brain", 41, freshAt, "fresh-remote-brain"],
+    );
     await service.disconnectFromBrain();
 
     // disconnectFromBrain clears the draft file, but only for a connection this

@@ -930,7 +930,8 @@ struct HubInlineComposer: View {
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
           branchName: temporaryBranch,
           targetProjectId: targetProjectId,
-          targetProjectRootPath: targetProjectRootPath
+          targetProjectRootPath: targetProjectRootPath,
+          setUpLane: true
         )
         targetLaneId = lane.id
         targetLaneName = lane.name

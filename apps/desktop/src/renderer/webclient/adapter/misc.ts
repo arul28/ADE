@@ -1,7 +1,6 @@
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
   peerToRuntimeDeviceState,
-  type AgentChatSession,
   type AiConfig,
   type CloudAgentArchiveArgs,
   type CloudAgentLaunchArgs,
@@ -40,6 +39,7 @@ import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { createBackoffPoller } from "./infra/backoffPoller";
 import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
+import { createComputerUseNamespace } from "./computerUse";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
 import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
@@ -68,7 +68,6 @@ export type MiscNamespaces = {
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
   tests: AdeNamespace<"tests">;
-  feedback: AdeNamespace<"feedback">;
   computerUse: AdeNamespace<"computerUse">;
   iosSimulator: AdeNamespace<"iosSimulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
@@ -90,6 +89,11 @@ import type {
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
   AdeUsagePriceOverrides,
+  PinnedProviderToolStatus,
+  AntigravitySignInCancelArgs,
+  AntigravitySignInCompleteArgs,
+  AntigravitySignInStartArgs,
+  AntigravitySignInState,
 } from "../../../shared/types";
 
 /** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
@@ -618,6 +622,36 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       assertWebRuntimePinRoutable("ai.ensureMuseBinary", pin, infra);
       return MUSE_BINARY_STATUS_UNAVAILABLE;
     },
+    // The brain this client is connected to owns the chat, so a provider's
+    // pinned tool status and its Download/Retry go there. Offline there is
+    // nothing to report, so the card shows no download line.
+    pinnedToolStatus: async (args: { provider: string }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.pinnedToolStatus", pin, infra);
+      return await call<PinnedProviderToolStatus | null>("ai.pinnedToolStatus", args, null);
+    },
+    pinnedToolDownload: async (args: { provider: string }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.pinnedToolDownload", pin, infra);
+      return await call<PinnedProviderToolStatus | null>("ai.pinnedToolDownload", args, null, false);
+    },
+    // Antigravity sign-in runs on the connected brain's machine; the web
+    // client is always "another computer", so it shows the URL and the
+    // paste field.
+    antigravitySignInStatus: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInStatus", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInStatus", {}, null);
+    },
+    antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInStart", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInStart", args, null, false);
+    },
+    antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInComplete", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInComplete", args, null, false);
+    },
+    antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.antigravitySignInCancel", pin, infra);
+      return await call<AntigravitySignInState | null>("ai.antigravitySignInCancel", args, null, false);
+    },
     // The Muse provider page (and its Settings host) is desktop-only, like the
     // binary download above.
     museSettings: async (_args: unknown, pin?: RuntimePinArg): Promise<never> => {
@@ -930,8 +964,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     devTools: ({ detect: async () => ({ tools: [] }) } as unknown as AdeNamespace<"devTools">),
     localhost: { probePort: async () => false } as AdeNamespace<"localhost">,
     tests: createTestStubs() as AdeNamespace<"tests">,
-    feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
-    computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
+    computerUse: createComputerUseNamespace(infra),
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
@@ -1180,15 +1213,6 @@ function createTestStubs(): Record<string, unknown> {
   };
 }
 
-function createFeedbackStubs(): Record<string, unknown> {
-  return {
-    prepareDraft: async () => null,
-    submitDraft: async () => null,
-    list: async () => [],
-    onUpdate: () => () => {},
-  };
-}
-
 /**
  * Login import reads cookie jars off a local disk with a local credential
  * store. A hosted browser tab has neither, and there is no action the sync host
@@ -1259,7 +1283,6 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
 function createNativeUnavailableNamespace(): Record<string, unknown> {
   return {
     getStatus: async () => ({ supported: false, available: false, state: "unsupported" }),
-    listArtifacts: async () => [],
     listDevices: async () => [],
     onEvent: () => () => {},
   };

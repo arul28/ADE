@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { execFile, spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
@@ -393,7 +393,12 @@ function runtimeCompileCacheEnv(env: Record<string, string>): Record<string, str
   if (process.env.NODE_DISABLE_COMPILE_CACHE !== undefined) return {};
   const explicit = process.env.NODE_COMPILE_CACHE?.trim();
   if (explicit) return { NODE_COMPILE_CACHE: explicit };
-  return { NODE_COMPILE_CACHE: path.join(resolveMachineAdeDir(env), "cache", "node-compile") };
+  return { NODE_COMPILE_CACHE: defaultRuntimeCompileCacheDir(env) };
+}
+
+/** The brain's compile-cache root when no NODE_COMPILE_CACHE overrides it. */
+export function defaultRuntimeCompileCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveMachineAdeDir(env), "cache", "node-compile");
 }
 
 function runtimeEnvironment(entry?: string): Record<string, string> | undefined {
@@ -502,6 +507,238 @@ function withRuntimeBuildHash(command: AdeServiceCommand): AdeServiceCommand {
   };
 }
 
+/**
+ * One Windows process, read in a single PowerShell call. `startTime` is the
+ * creation time from `Win32_Process.CreationDate` as ISO-8601 UTC. With the
+ * command line it is the identity a kill must find unchanged: a pid can be
+ * handed to another program once its owner exits.
+ */
+export type WindowsProcessFacts = {
+  pid: number;
+  startTime: string;
+  commandLine: string;
+  executablePath: string | null;
+  parentPid: number | null;
+};
+
+export type WindowsProcessRead =
+  | { state: "found"; facts: WindowsProcessFacts }
+  | { state: "gone" }
+  | { state: "unreadable"; reason: string };
+
+/**
+ * How a stop of one pid ended. `stopped`: the process is gone, whether it exited
+ * or was already gone. `killed`: the verified kill ran and the process is gone.
+ * `not-proven`: the process is alive but was not proven to be the one the caller
+ * means to stop, so it was left running. `failed`: the proven kill did not take.
+ */
+export type PidStopOutcome = "stopped" | "killed" | "not-proven" | "failed";
+
+/**
+ * Runs `powershell.exe` with `args`. The CLI injects its sync `spawnSync`; the
+ * brain uses the async default so its event loop is never blocked on the probe.
+ */
+export type WindowsPowerShell = (
+  args: string[],
+) => ServiceManagerProcessResult | Promise<ServiceManagerProcessResult>;
+
+/** Exit codes of the identity and kill scripts. Anything else is a failed read or kill. */
+const WINDOWS_PROCESS_GONE_EXIT = 3;
+const WINDOWS_PROCESS_NOT_PROVEN_EXIT = 4;
+const WINDOWS_PROCESS_KILL_FAILED_EXIT = 5;
+const WINDOWS_PROCESS_QUERY_TIMEOUT_MS = 10_000;
+
+function windowsProcessFilter(pid: number): string {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Invalid pid for the Windows process query: ${String(pid)}`);
+  }
+  return powerShellSingleQuotedLiteral(`ProcessId = ${pid}`);
+}
+
+/**
+ * PowerShell that prints one process's facts as JSON, or exits 3 when it is gone.
+ * Read-only: it never kills anything.
+ */
+export function buildWindowsProcessReadArgs(pid: number): string[] {
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `$record = Get-CimInstance Win32_Process -Filter ${windowsProcessFilter(pid)} -ErrorAction SilentlyContinue`,
+    `if ($null -eq $record) { exit ${WINDOWS_PROCESS_GONE_EXIT} }`,
+    "$startTime = ([datetime]$record.CreationDate).ToUniversalTime().ToString('o')",
+    // Command lines carry user paths, which may hold non-ASCII; the JSON must
+    // reach the caller byte-for-byte, not through the console code page.
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+    "[Console]::Out.Write((@{ pid = [int]$record.ProcessId; startTime = $startTime; commandLine = [string]$record.CommandLine; executablePath = [string]$record.ExecutablePath; parentPid = [int]$record.ParentProcessId } | ConvertTo-Json -Compress))",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+/**
+ * PowerShell that kills the process `expected` names, and nothing else.
+ *
+ * The process is opened first, and the handle is held for the rest of the
+ * script. The CIM record for the pid is then read and must match the expected
+ * birth time and command line exactly. Only then does `Kill()` run, on the held
+ * handle, so a pid reused between the read and the kill cannot be the target.
+ * Exit 0 means the process is gone; 3 gone before the check; 4 not proven; 5 the
+ * kill failed or the process did not exit in time.
+ */
+export function buildWindowsVerifiedKillArgs(
+  expected: Pick<WindowsProcessFacts, "pid" | "startTime" | "commandLine">,
+): string[] {
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    "$process = $null",
+    `try { $process = [System.Diagnostics.Process]::GetProcessById(${Math.floor(expected.pid)}); $null = $process.Handle } catch { $process = $null }`,
+    `$record = Get-CimInstance Win32_Process -Filter ${windowsProcessFilter(expected.pid)} -ErrorAction SilentlyContinue`,
+    `if ($null -eq $record) { exit ${WINDOWS_PROCESS_GONE_EXIT} }`,
+    `if ($null -eq $process) { exit ${WINDOWS_PROCESS_NOT_PROVEN_EXIT} }`,
+    `if ((([datetime]$record.CreationDate).ToUniversalTime().ToString('o')) -cne ${powerShellSingleQuotedLiteral(expected.startTime)}) { exit ${WINDOWS_PROCESS_NOT_PROVEN_EXIT} }`,
+    `if (([string]$record.CommandLine) -cne ${powerShellSingleQuotedLiteral(expected.commandLine)}) { exit ${WINDOWS_PROCESS_NOT_PROVEN_EXIT} }`,
+    `try { $process.Kill() } catch { if ($process.HasExited) { exit 0 }; exit ${WINDOWS_PROCESS_KILL_FAILED_EXIT} }`,
+    `if (-not $process.WaitForExit(5000)) { exit ${WINDOWS_PROCESS_KILL_FAILED_EXIT} }`,
+    "exit 0",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+function nonEmptyText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+/** Reads a process record. A missing or empty start time or command line is never identity. */
+export function parseWindowsProcessRead(
+  result: ServiceManagerProcessResult,
+  pid: number,
+): WindowsProcessRead {
+  if (result.status === WINDOWS_PROCESS_GONE_EXIT) return { state: "gone" };
+  if (result.status !== 0) {
+    return {
+      state: "unreadable",
+      reason: serviceManagerResultText(result) || `the process query exited with status ${String(result.status)}`,
+    };
+  }
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = JSON.parse(processOutputText(result)) as Record<string, unknown> | null;
+  } catch {
+    return { state: "unreadable", reason: "the process query returned an unreadable record" };
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { state: "unreadable", reason: "the process query returned an unreadable record" };
+  }
+  const startTime = nonEmptyText(parsed.startTime);
+  const commandLine = nonEmptyText(parsed.commandLine);
+  if (Number(parsed.pid) !== pid || !startTime || !commandLine) {
+    return { state: "unreadable", reason: `the command line or start time of pid ${pid} is not readable` };
+  }
+  const parentPid = Number(parsed.parentPid);
+  return {
+    state: "found",
+    facts: {
+      pid,
+      startTime,
+      commandLine,
+      executablePath: nonEmptyText(parsed.executablePath),
+      parentPid: Number.isInteger(parentPid) && parentPid > 0 ? parentPid : null,
+    },
+  };
+}
+
+function verifiedKillOutcome(result: ServiceManagerProcessResult): PidStopOutcome {
+  switch (result.status) {
+    case 0: return "killed";
+    case WINDOWS_PROCESS_GONE_EXIT: return "stopped";
+    case WINDOWS_PROCESS_NOT_PROVEN_EXIT: return "not-proven";
+    default: return "failed";
+  }
+}
+
+/** The default `WindowsPowerShell`: `powershell.exe`, run asynchronously so the caller's event loop keeps turning. */
+function runWindowsPowerShellAsync(args: string[]): Promise<ServiceManagerProcessResult> {
+  return new Promise((resolve) => {
+    let command: string;
+    try {
+      command = resolveTrustedWindowsTool("powershell");
+    } catch (error) {
+      resolve({ status: null, error: error instanceof Error ? error : new Error(String(error)) });
+      return;
+    }
+    execFile(
+      command,
+      args,
+      { encoding: "utf8", timeout: WINDOWS_PROCESS_QUERY_TIMEOUT_MS, maxBuffer: 1024 * 1024, windowsHide: true },
+      (error, stdout, stderr) => {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        resolve({
+          status: error ? (typeof code === "number" ? code : null) : 0,
+          stdout,
+          stderr,
+          error: error ?? undefined,
+        });
+      },
+    );
+  });
+}
+
+/** Reads the facts of `pid` in one PowerShell call. */
+export async function readWindowsProcessFacts(
+  pid: number,
+  run: WindowsPowerShell = runWindowsPowerShellAsync,
+): Promise<WindowsProcessRead> {
+  let result: ServiceManagerProcessResult;
+  try {
+    result = await run(buildWindowsProcessReadArgs(pid));
+  } catch (error) {
+    return { state: "unreadable", reason: error instanceof Error ? error.message : String(error) };
+  }
+  return parseWindowsProcessRead(result, pid);
+}
+
+/** Kills exactly the process `expected` describes, or nothing. See `buildWindowsVerifiedKillArgs`. */
+export async function killVerifiedWindowsProcess(
+  expected: Pick<WindowsProcessFacts, "pid" | "startTime" | "commandLine">,
+  run: WindowsPowerShell = runWindowsPowerShellAsync,
+): Promise<PidStopOutcome> {
+  let result: ServiceManagerProcessResult;
+  try {
+    result = await run(buildWindowsVerifiedKillArgs(expected));
+  } catch {
+    return "failed";
+  }
+  return verifiedKillOutcome(result);
+}
+
+/**
+ * Reads `pid`, asks `isExpected` about what it finds, and kills that exact
+ * process only when the answer is yes. A pid that cannot be read, or that is
+ * not expected, is left running and reported as `not-proven`.
+ */
+export async function killIdentifiedWindowsProcess(
+  pid: number,
+  isExpected: (facts: WindowsProcessFacts) => boolean,
+  run: WindowsPowerShell = runWindowsPowerShellAsync,
+): Promise<PidStopOutcome> {
+  const read = await readWindowsProcessFacts(pid, run);
+  if (read.state === "gone") return "stopped";
+  if (read.state === "unreadable") return "not-proven";
+  let expected: boolean;
+  try {
+    expected = isExpected(read.facts) === true;
+  } catch {
+    expected = false;
+  }
+  if (!expected) return "not-proven";
+  return killVerifiedWindowsProcess(read.facts, run);
+}
+
+/** Two reads describe the same process: same pid, birth time and command line. */
+export function sameWindowsProcess(live: WindowsProcessFacts, expected: WindowsProcessFacts): boolean {
+  return live.pid === expected.pid
+    && live.startTime === expected.startTime
+    && live.commandLine === expected.commandLine;
+}
+
 export type TerminatePidDeps = {
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
@@ -534,8 +771,21 @@ export type TerminatePidDeps = {
     socketPath: string;
     timeoutMs: number;
   }) => Promise<{ requested: boolean; reason?: string }>;
-  /** Injectable last-resort kill; on win32 this is `taskkill /PID n /F`. */
-  forceKill?: (pid: number) => void;
+  /**
+   * win32 only: whether the process read from `pid` is the one this caller means
+   * to stop, decided from the facts PowerShell reads off the live process. It is
+   * asked only on the non-cooperative escalation, never on a cooperative stop.
+   * `answered` is true when the process accepted the shutdown request on this
+   * endpoint, and false when nothing did. With no check supplied nothing is
+   * force-killed: a PID record or a port scan can name a pid that Windows has
+   * since handed to another program.
+   */
+  isExpectedProcess?: (facts: WindowsProcessFacts, answered: boolean) => boolean;
+  /**
+   * win32 only: the PowerShell boundary the identity read and the verified kill
+   * run through. Defaults to `powershell.exe`, run off the event loop.
+   */
+  runWindowsPowerShell?: WindowsPowerShell;
 };
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
@@ -547,7 +797,7 @@ function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
  * shutdown request. The POSIX grace window is 1.5s, but there the brain's own
  * SIGTERM handler arms a 10s force-exit as a second line of defence; on Windows
  * this loop is the only line of defence, so a bare 1.5s would frequently
- * escalate to `taskkill /F` on a brain that was midway through an orderly flush
+ * escalate to a force-kill on a brain that was midway through an orderly flush
  * -- the exact corruption this whole path exists to avoid.
  *
  * The window is measured from the moment the brain ACCEPTS the request, so the
@@ -564,33 +814,6 @@ const WINDOWS_COOPERATIVE_GRACE_MS = 5_000;
  * longer only delays the escalation.
  */
 const WINDOWS_SHUTDOWN_REQUEST_TIMEOUT_MS = 2_000;
-
-/**
- * `taskkill /PID n /F` -- the honest Windows equivalent of SIGKILL.
- *
- * `process.kill(pid, "SIGKILL")` would work too (libuv maps it to
- * `TerminateProcess` like every other signal), but naming the tool makes the
- * escalation legible in a process trace and matches how the rest of the Windows
- * service manager reaches for system tools. Resolution is lazy so a host where
- * the trusted-tool lookup fails still gets the libuv fallback rather than a
- * throw.
- */
-function defaultWindowsForceKill(pid: number): void {
-  try {
-    spawnSync(resolveTrustedWindowsTool("taskkill"), ["/PID", String(pid), "/F"], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    return;
-  } catch {
-    // fall through to libuv's TerminateProcess
-  }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    // best effort
-  }
-}
 
 /**
  * Whether `pid` still names a live process.
@@ -615,37 +838,53 @@ export function sleepSync(ms: number): void {
 }
 
 /**
+ * Whether the facts read off a live process are the process the caller means to
+ * stop. Fails closed: a check that is not supplied, or that throws, is no proof.
+ */
+function provablyExpectedProcess(
+  facts: WindowsProcessFacts,
+  answered: boolean,
+  deps: TerminatePidDeps,
+): boolean {
+  if (!deps.isExpectedProcess) return false;
+  try {
+    return deps.isExpectedProcess(facts, answered) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Synchronous SIGTERM-then-SIGKILL teardown. POSIX only.
  *
  * The cooperative Windows path needs a socket round trip, which cannot be done
  * synchronously from this process, so a win32 caller MUST use
- * `terminatePidGracefullyAsync`. Reaching here on win32 means there is no grace
- * available at all, so say so rather than pretending: `kill(pid, "SIGTERM")`
- * would be `TerminateProcess` and the loop below would never observe a
- * handler-driven exit.
+ * `terminatePidGracefullyAsync`. This path makes no PowerShell call, so it cannot
+ * prove a win32 pid is the process it means to stop, and it never force-kills
+ * one: a live pid comes back `not-proven`.
  */
-export function terminatePidGracefully(pid: number | null, deps: TerminatePidDeps = {}): void {
-  if (!pid || pid <= 0 || pid === process.pid) return;
+export function terminatePidGracefully(pid: number | null, deps: TerminatePidDeps = {}): PidStopOutcome {
+  if (!pid || pid <= 0 || pid === process.pid) return "stopped";
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? isPidAlive;
   if ((deps.platform ?? process.platform) === "win32") {
-    (deps.forceKill ?? defaultWindowsForceKill)(pid);
-    return;
+    return pidAlive(pid) ? "not-proven" : "stopped";
   }
   try {
     kill(pid, "SIGTERM");
   } catch {
-    return;
+    return "stopped";
   }
   const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
   while (Date.now() < deadline) {
-    if (!pidAlive(pid)) return;
+    if (!pidAlive(pid)) return "stopped";
     sleepSync(50);
   }
   try {
     kill(pid, "SIGKILL");
+    return "killed";
   } catch {
-    // best effort
+    return "stopped";
   }
 }
 
@@ -673,9 +912,8 @@ function sleepAsync(ms: number): Promise<void> {
 async function terminateWindowsPidGracefullyAsync(
   pid: number,
   deps: TerminatePidDeps,
-): Promise<void> {
+): Promise<PidStopOutcome> {
   const pidAlive = deps.pidAlive ?? isPidAlive;
-  const forceKill = deps.forceKill ?? defaultWindowsForceKill;
   const requestShutdown = deps.requestRuntimeShutdown ?? requestAdeRuntimeShutdown;
   let socketPath = deps.runtimeSocketPath ?? null;
   if (socketPath === null) {
@@ -699,43 +937,72 @@ async function terminateWindowsPidGracefullyAsync(
   }
   if (!cooperative) {
     // Nothing answered for this pid on this endpoint: either it is not an ADE
-    // brain, or it is too wedged to answer. Neither can be talked down.
-    forceKill(pid);
-    return;
+    // brain, or it is too wedged to answer. A wedged brain can only be force-killed,
+    // and only once its identity is proven. A stale record can name a pid that
+    // another program now owns; that one stays alive, and the caller is told so.
+    if (!pidAlive(pid)) return "stopped";
+    return escalateWindowsPid(pid, false, deps);
   }
   const deadline = Date.now() + (deps.graceTimeoutMs ?? WINDOWS_COOPERATIVE_GRACE_MS);
   while (Date.now() < deadline) {
-    if (!pidAlive(pid)) return;
+    if (!pidAlive(pid)) return "stopped";
     await sleepAsync(50);
   }
-  forceKill(pid);
+  // The brain may have exited right at the deadline. Re-check before escalating.
+  if (!pidAlive(pid)) return "stopped";
+  // It accepted the request on this endpoint a moment ago, so the pid named the
+  // brain that answered. The kill still binds to what is read now, never to the pid.
+  return escalateWindowsPid(pid, true, deps);
 }
 
+/**
+ * The last-resort kill of a win32 pid: read its identity, let the caller's check
+ * decide, then kill that exact process. No check, or a check that says no, is
+ * `not-proven`, and the process is left running.
+ */
+async function escalateWindowsPid(
+  pid: number,
+  answered: boolean,
+  deps: TerminatePidDeps,
+): Promise<PidStopOutcome> {
+  if (!deps.isExpectedProcess) return "not-proven";
+  return killIdentifiedWindowsProcess(
+    pid,
+    (facts) => provablyExpectedProcess(facts, answered, deps),
+    deps.runWindowsPowerShell ?? runWindowsPowerShellAsync,
+  );
+}
+
+/**
+ * Stops `pid` the way its platform allows, and reports how it ended. On win32 a
+ * cooperative stop is a shutdown request over the endpoint and never reads the
+ * process identity; only the escalation does.
+ */
 export async function terminatePidGracefullyAsync(
   pid: number | null,
   deps: TerminatePidDeps = {},
-): Promise<void> {
-  if (!pid || pid <= 0 || pid === process.pid) return;
+): Promise<PidStopOutcome> {
+  if (!pid || pid <= 0 || pid === process.pid) return "stopped";
   if ((deps.platform ?? process.platform) === "win32") {
-    await terminateWindowsPidGracefullyAsync(pid, deps);
-    return;
+    return terminateWindowsPidGracefullyAsync(pid, deps);
   }
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? isPidAlive;
   try {
     kill(pid, "SIGTERM");
   } catch {
-    return;
+    return "stopped";
   }
   const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
   while (Date.now() < deadline) {
-    if (!pidAlive(pid)) return;
+    if (!pidAlive(pid)) return "stopped";
     await sleepAsync(50);
   }
   try {
     kill(pid, "SIGKILL");
+    return "killed";
   } catch {
-    // best effort
+    return "stopped";
   }
 }
 
@@ -767,6 +1034,11 @@ function isSameServeSocketPath(left: string, right: string): boolean {
   return path.resolve(left) === path.resolve(right);
 }
 
+/** The `--socket` a serve command line names, or null when it names none. */
+function serveSocketArgument(commandLine: string): string | null {
+  return commandLine.match(/--socket"?(?:=|\s+)"?([^"\s]+)/)?.[1] ?? null;
+}
+
 // A ps/CIM command line counts as a stale channel brain when it runs this
 // channel's packaged CLI in `serve` mode against the channel's primary
 // socket. Isolated (--no-sync), installer, and foreign-socket runtimes are
@@ -787,9 +1059,9 @@ export function isStaleChannelServeCommandLine(
 ): boolean {
   const line = commandLine.trim();
   if (!line || !opts.cliScriptPath) return false;
-  const socketMatch = line.match(/--socket"?(?:=|\s+)"?([^"\s]+)/);
-  const explicitPrimarySocket = socketMatch
-    ? isSameServeSocketPath(socketMatch[1], opts.primarySocketPath)
+  const socketArgument = serveSocketArgument(line);
+  const explicitPrimarySocket = socketArgument !== null
+    ? isSameServeSocketPath(socketArgument, opts.primarySocketPath)
     : false;
   const cliIndex = line.indexOf(opts.cliScriptPath);
   const alternateCliMatch = line.match(
@@ -802,7 +1074,7 @@ export function isStaleChannelServeCommandLine(
       : "";
   if (!/^"?\s+"?serve"?(?:\s|$)/.test(tail)) return false;
   if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
-  if (socketMatch && !explicitPrimarySocket) {
+  if (socketArgument !== null && !explicitPrimarySocket) {
     return false;
   }
   if (cliIndex < 0 && !explicitPrimarySocket) return false;
@@ -906,6 +1178,26 @@ export function listStaleChannelServePids(
     ok: true,
     pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\s+(.+)$/, opts),
   };
+}
+
+/** The channel brain a stop means to reach: this channel's CLI serving its primary socket. */
+export type ChannelServeMatch = { cliScriptPath: string; primarySocketPath: string };
+
+/**
+ * The identity a force-kill of a channel brain needs, for `terminatePidGracefullyAsync`.
+ *
+ * A brain that accepted the shutdown request on the channel endpoint (`answered`)
+ * is held to the stale-scan predicate. A pid that answered nothing must also name
+ * the channel socket on its command line. Without `--socket` the endpoint comes
+ * from the process environment, which this command line cannot show, so such a
+ * process is left running rather than killed on a guess.
+ */
+export function channelServeIdentity(
+  match: ChannelServeMatch,
+): (facts: WindowsProcessFacts, answered: boolean) => boolean {
+  return (facts, answered) =>
+    isStaleChannelServeCommandLine(facts.commandLine, match)
+    && (answered || serveSocketArgument(facts.commandLine) !== null);
 }
 
 export function shellQuote(value: string): string {

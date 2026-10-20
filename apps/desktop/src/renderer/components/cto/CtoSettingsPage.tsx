@@ -556,7 +556,7 @@ export function CtoSettingsPage({
               border: "1px solid color-mix(in srgb, var(--color-warning) 26%, transparent)",
             }}
           >
-            No model is set up yet. Sign in to Claude, Codex, or Cursor under Settings → AI → Providers.
+            No model is set up yet. Sign in to Claude, Codex, Cursor, or OpenCode under Settings → AI → Providers.
           </p>
         ) : switchingModel ? (
           <p style={{ margin: "12px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>

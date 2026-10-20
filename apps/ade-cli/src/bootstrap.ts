@@ -81,10 +81,12 @@ import { createRebaseSuggestionService } from "../../desktop/src/main/services/l
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
+import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
+import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import {
   emitPrCardsForChange,
@@ -95,7 +97,6 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
-import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
@@ -132,7 +133,6 @@ import type { createGithubService } from "../../desktop/src/main/services/github
 import { createJiraCredentialService } from "../../desktop/src/main/services/jira/jiraCredentialService";
 import { createJiraService } from "../../desktop/src/main/services/jira/jiraService";
 import { createIssueTrackerService } from "../../desktop/src/main/services/issueTrackers/issueTrackerService";
-import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
@@ -248,6 +248,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
@@ -256,6 +257,11 @@ import type { AccountSettingsStore } from "./services/account/accountSettingsSto
 import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
 import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
+import {
+  HARNESS_PRESETS_SETTING_KEY,
+  HARNESS_PRESETS_SYNC_MAX_CHARS,
+  mergeHarnessPresetSnapshot,
+} from "../../desktop/src/shared/harnessPresets";
 import {
   APPLE_DEVICE_SETTING_KEYS,
   DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
@@ -439,6 +445,10 @@ export type AdeRuntime = {
   accountSettingsStore?: AccountSettingsStore | null;
   /** Machine-scoped, so null on a `--no-sync` brain. */
   accountVaultStore?: AccountVaultStore | null;
+  /** Shared by every project scope in the brain; the desktop owns the GUI prompt. */
+  keepAwakeService?: BrainKeepAwakeService | null;
+  /** Machine-level ADE MCP (MCP over ADE Relay); shared by every scope. */
+  remoteMcpService?: import("./services/remoteMcp/remoteMcpService").RemoteMcpService | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -450,7 +460,6 @@ export type AdeRuntime = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   cloudAgentsService?: CloudAgentsService | null;
   prService?: ReturnType<typeof createPrService>;
-  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
@@ -497,11 +506,11 @@ export type AdeRuntime = {
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
-  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: UsageTrackingHost | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   usageProductAnalyticsExporter?: UsageProductAnalyticsExporter | null;
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
+  projectHealthService?: ReturnType<typeof createProjectHealthService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   searchService?: SearchService | null;
@@ -853,6 +862,8 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** Machine-scoped power service shared by every project runtime in a brain. */
+  keepAwakeService?: BrainKeepAwakeService | null;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -878,7 +889,18 @@ export async function createAdeRuntime(args: {
 
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
-  const baseRef = await detectDefaultBaseRef(projectRoot);
+  // On Windows each project's credential store is sealed with its own DPAPI
+  // key, decrypted in a PowerShell child on first read. Linear's status checks
+  // below read it synchronously, blocking the brain's event loop 440-690 ms
+  // for every project runtime it starts. Decrypt it off the loop here, beside
+  // the base-ref lookup; the key is cached, so those reads find it ready. Only an
+  // existing key is read (never created): a project without one is left as before.
+  const [baseRef] = await Promise.all([
+    detectDefaultBaseRef(projectRoot),
+    process.platform === "win32"
+      ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
+      : null,
+  ]);
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
@@ -1282,6 +1304,7 @@ export async function createAdeRuntime(args: {
       accountSettingsStore,
       accountVaultStore,
     } = accountRuntimeLifecycle;
+    const keepAwakeService = resolvedArgs.keepAwakeService ?? null;
     initApiKeyStore(projectRoot, {
       credentialStore: new EncryptedFileCredentialStore(),
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
@@ -1452,8 +1475,6 @@ export async function createAdeRuntime(args: {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      aiIntegrationService,
-      sessionService,
       logger
     });
 
@@ -2250,15 +2271,6 @@ export async function createAdeRuntime(args: {
       void linearOAuthService.dispose().catch(() => {});
     });
 
-    const feedbackReporterService = createFeedbackReporterService({
-      db,
-      logger,
-      projectRoot,
-      aiIntegrationService,
-      githubService: headlessLinearServices.githubService,
-      onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
-    });
-
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
     // Built after the chat service; smart balance and the usage-limit account
     // switch read it through this late binding.
@@ -2319,6 +2331,21 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
+        adoptHarnessPreset: (preset) => {
+          if (!accountSettingsStore) return null;
+          const next = mergeHarnessPresetSnapshot(
+            accountSettingsStore.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY),
+            preset,
+          );
+          if (!next) return null;
+          const chars = JSON.stringify(next).length;
+          if (chars > HARNESS_PRESETS_SYNC_MAX_CHARS) {
+            logger.warn("harness_presets_adoption_too_large", { chars });
+            return "This custom provider could not be copied here because your account's provider list is too large to sync. Remove a logo or provider in Settings, then try again.";
+          }
+          accountSettingsStore.set(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY, next);
+          return null;
+        },
         resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
           adeHome: resolveMachineAdeLayout().adeDir,
           readSecret: (key) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, key) ?? null,
@@ -2951,7 +2978,7 @@ export async function createAdeRuntime(args: {
       })
       : null;
 
-    // PR event fan-out and AI-summary services.
+    // PR event fan-out.
     // Fan-out for the push publisher: PR lifecycle/status notifications are
     // bridged here so the publisher never has to poll GitHub itself. Populated
     // by pushPublisherService.start() (declared below), so it stays empty and inert
@@ -2985,13 +3012,6 @@ export async function createAdeRuntime(args: {
         }
       }
     };
-    const prSummaryService = createPrSummaryService({
-      db,
-      logger,
-      projectRoot,
-      prService: headlessLinearServices.prService,
-      aiIntegrationService,
-    });
     const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
       db,
       projectId,
@@ -3294,6 +3314,23 @@ export async function createAdeRuntime(args: {
       },
     });
     teardown.push(() => storageInsightsService.dispose());
+    const projectHealthService = createProjectHealthService({
+      projectRoot,
+      db,
+      logger,
+      listLanes: () => laneService.list({ includeArchived: false }),
+      openTerminal: async (request) => {
+        await ptyService.create({
+          laneId: request.laneId,
+          cwd: request.cwd,
+          cols: 120,
+          rows: 32,
+          title: request.title,
+          tracked: true,
+          startupCommand: request.command,
+        });
+      },
+    });
     const budgetCapService = createBudgetCapService({
       db,
       logger,
@@ -3327,6 +3364,8 @@ export async function createAdeRuntime(args: {
     // subscription, or a disposed scope could later stop the shared tunnel on a
     // lease transition it no longer has any business observing.
     teardown.push(() => relayTunnelGate.dispose());
+    const { getSharedRemoteMcpService } = await import("./services/remoteMcp/remoteMcpShared");
+    const remoteMcpService = getSharedRemoteMcpService(logger);
     // Registered before the sync service exists: the closure reads the variable
     // at drain time, so a throw inside the initialization below still stops it.
     teardown.push(() => syncService?.dispose());
@@ -3360,7 +3399,6 @@ export async function createAdeRuntime(args: {
         conflictService,
         operationService,
         prService: headlessLinearServices.prService,
-        prSummaryService,
         sessionService,
         sessionDeltaService,
         ptyService,
@@ -3537,6 +3575,8 @@ export async function createAdeRuntime(args: {
       projectSecretService,
       accountSettingsStore,
       accountVaultStore,
+      keepAwakeService,
+      remoteMcpService,
       conflictService,
       gitService,
       diffService,
@@ -3564,14 +3604,13 @@ export async function createAdeRuntime(args: {
       linearOAuthService,
       linearAgentRuntime,
       prService: headlessLinearServices.prService,
-      prSummaryService,
       fileService: headlessLinearServices.fileService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
-      feedbackReporterService,
       usageTrackingService,
       productAnalyticsService,
       usageProductAnalyticsExporter,
       storageInsightsService,
+      projectHealthService,
       budgetCapService,
       automationService,
       automationIngressService,

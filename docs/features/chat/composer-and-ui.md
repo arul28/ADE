@@ -656,6 +656,14 @@ chat pane mount, which happens either way.
   rather than the old `ResizeObserver`-based 28 %-of-height formula;
   that eliminated the observer churn without changing the visible
   ceiling for normal tile sizes.
+- **A paste into the rich editor is plain text.** Text pasted into the
+  contenteditable prompt box enters at the caret as the clipboard's
+  `text/plain`, so it takes the prompt box's own font and colour instead of
+  the source's HTML — a copy from a web page or a chat transcript used to
+  carry its size, weight and white background along. Chip payloads, images
+  and files, large pastes folded into a `Pasted · N lines` attachment, and
+  the plain-textarea path (before a completed URL promotes the box) are
+  unchanged; a pasted URL is still tokenized into a chip.
 - **Drafts and scheduled send.** Cmd/Ctrl+S stores the current prompt text
   in the project runtime and clears the composer only after the runtime confirms
   the write. The bookmark control immediately left of the context-usage meter
@@ -2067,9 +2075,14 @@ render unwindowed. Key rules:
   affordance without adding a second bright rail at the window edge.
 - The left tick rail (`ChatUserMinimap`) mounts as a direct child of the
   list root, because its `left-0` gutter maths assume the offset parent
-  is the element measured as `listWidthPx`. It shows the resident prompts
-  only and has no load-earlier control: older history arrives on its own
-  (backfill above), so the rail grows as earlier prompts land.
+  is the element measured as `listWidthPx`. It marks messages typed by the
+  reader; automated user-message events do not get ticks. The rail draws up to
+  50 resident prompts at once, newest first, with earlier/later controls to
+  page through the rest. Its window stays attached to an entry when older
+  history backfills or new prompts arrive, and follows the message being read
+  when that message moves outside the window. Backfill still happens on its own
+  (above); the rail controls page through resident prompts and do not request
+  history from the host.
 - Pull requests open in the lane's PR Work tool, not as a floating overlay on the transcript. The minimap stays anchored to the list root.
 - iOS uses the same healthy-path contract: a fixed-height head sentinel
   automatically reveals the next local window and requests a 256 KiB host

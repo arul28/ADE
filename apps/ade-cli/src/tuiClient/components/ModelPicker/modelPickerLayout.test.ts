@@ -42,6 +42,7 @@ describe("buildModelPickerLayout", () => {
         "muse",
         "cursor",
         "devin",
+      "antigravity",
         "opencode",
         "pi",
         "copilot",

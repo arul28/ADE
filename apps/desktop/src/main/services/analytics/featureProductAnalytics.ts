@@ -20,10 +20,10 @@ export type FeatureAnalyticsName =
   | "chat"
   | "work"
   | "automations"
-  | "updates"
   | "attention"
   | "home"
-  | "mcp_servers";
+  | "mcp_servers"
+  | "ade_mcp";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -57,10 +57,13 @@ export type FeatureAnalyticsAction =
   | "safe_test_started"
   | "live_test_started"
   | "secret_requested"
-  | "provider_cli_updated"
   | "notification_sent"
   | "music_connected"
-  | "spotify_connected";
+  | "spotify_connected"
+  | "server_toggled"
+  | "app_connected"
+  | "token_created"
+  | "connection_removed";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -265,20 +268,6 @@ export function capturePendingInputDismissedAnalytics(args: {
 }
 
 /**
- * The user ran ADE's one-click update of a user-installed provider CLI (Grok,
- * Copilot, Qwen...), from Settings or a chat warning. Never the version, the
- * install path, or the command's output.
- */
-export function captureProviderCliUpdateAnalytics(args: {
-  analytics: FeatureAnalytics | null | undefined;
-  surface: ProductAnalyticsSurface;
-  provider: unknown;
-  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
-}): void {
-  captureFeatureUsedAnalytics({ ...args, feature: "updates", action: "provider_cli_updated" });
-}
-
-/**
  * How a browser sign-in to an MCP server ended. Never the server's name, its
  * URL, the authorization server, or the token.
  */
@@ -428,4 +417,18 @@ export function captureProviderAccountSettingsChange(
   if (Object.hasOwn(settings, "onExtraUsage")) {
     capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);
   }
+}
+
+/**
+ * A decision about ADE MCP on this computer: switched on or off, an app
+ * connected, a token made, a connection removed. Recorded by the brain once
+ * the change is stored; nothing about the app, the token or its access.
+ */
+export function captureAdeMcpAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "server_toggled" | "app_connected" | "token_created" | "connection_removed";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "enabled" | "disabled">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "ade_mcp" });
 }
