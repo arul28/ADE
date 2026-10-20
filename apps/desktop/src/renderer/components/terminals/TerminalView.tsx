@@ -146,6 +146,12 @@ type CachedRuntime = {
   hydrationCompleted: boolean;
   hydrationGeneration: number;
   hasAppliedTerminalContent: boolean;
+  /**
+   * Set when a parked runtime resumes its stream: the buffer still holds the
+   * output from before it was parked, and the hydration about to land carries
+   * that same history again. The next hydration write erases the old copy first.
+   */
+  staleContentBeforeHydration: boolean;
   displayedLiveDataBeforeHydration: boolean;
   pendingHydrationChunks: string[];
   pendingHydrationBytes: number;
@@ -498,16 +504,35 @@ function consumePendingTerminalOffsetAnchor(runtime: CachedRuntime): void {
   scheduleReplayOffsetScroll(runtime, offset);
 }
 
-function terminalDomHasRenderableText(runtime: CachedRuntime): boolean {
+/**
+ * Whether the visible pane shows any text. The DOM renderer paints rows as
+ * elements; WebGL paints a canvas and leaves `.xterm-rows` empty, so for it the
+ * viewport rows of the buffer are the truth. Reading the DOM there called every
+ * WebGL pane blank and refetched its history on top of what it already showed.
+ */
+function terminalShowsRenderableText(runtime: CachedRuntime): boolean {
+  if (runtime.renderer !== "dom") return terminalViewportHasText(runtime);
   const rows = runtime.term.element?.querySelector<HTMLElement>(".xterm-rows")
     ?? runtime.host.querySelector<HTMLElement>(".xterm-rows");
   return Boolean(rows?.innerText?.trim() || rows?.textContent?.trim());
 }
 
+function terminalViewportHasText(runtime: CachedRuntime): boolean {
+  try {
+    const buffer = runtime.term.buffer.active;
+    for (let y = 0; y < runtime.term.rows; y += 1) {
+      if (buffer.getLine(buffer.viewportY + y)?.translateToString(true).trim()) return true;
+    }
+  } catch {
+    // a disposed terminal has nothing to show
+  }
+  return false;
+}
+
 function needsHydrationBackfill(runtime: CachedRuntime): boolean {
   if (runtime.disposed || runtime.exitCode != null) return false;
   if (!runtime.hasAppliedTerminalContent && !runtime.displayedLiveDataBeforeHydration) return true;
-  return Boolean(runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime));
+  return Boolean(runtime.visible && runtime.active && !terminalShowsRenderableText(runtime));
 }
 
 function ansiRgbParts(value: number | null | undefined): [number, number, number] | null {
@@ -601,6 +626,20 @@ function serializeSnapshotVisibleRows(snapshot: TerminalSerializedSnapshot): str
   const cursorX = Math.max(0, Math.min(Math.max(0, snapshot.cols - 1), snapshot.cursorX));
   parts.push(`\x1b[${cursorY + 1};${cursorX + 1}H`, "\x1b[?7h", "\x1b[?25h");
   return parts.join("");
+}
+
+/**
+ * Clears the screen and scrollback without `term.reset()`, which would also drop
+ * the input modes (bracketed paste, application cursor keys) the shell set.
+ */
+const ERASE_SCREEN_AND_SCROLLBACK = "\x1b[0m\x1b[H\x1b[2J\x1b[3J";
+
+function terminalOnNormalBuffer(runtime: CachedRuntime): boolean {
+  try {
+    return runtime.term.buffer.active.type === "normal";
+  } catch {
+    return false;
+  }
 }
 
 function serializeSnapshotForHydration(snapshot: TerminalSerializedSnapshot): string | null {
@@ -1180,6 +1219,7 @@ function resumeRuntimePtyStream(runtime: CachedRuntime): void {
   if (!runtime.liveStreamPaused || !shouldRuntimeReceivePtyData(runtime)) return;
   runtime.liveStreamPaused = false;
   runtime.hydrationGeneration += 1;
+  runtime.staleContentBeforeHydration = runtime.hasAppliedTerminalContent;
   runtime.displayedLiveDataBeforeHydration = false;
   runtime.hydrationStarted = false;
   runtime.hydrationCompleted = false;
@@ -2012,7 +2052,7 @@ function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
     }
     if (hasRenderableTerminalText(ev.data)) {
       runtime.displayedLiveDataBeforeHydration = true;
-      if (runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime)) {
+      if (runtime.visible && runtime.active && !terminalShowsRenderableText(runtime)) {
         scheduleHydrationBackfill(runtime, {
           delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
           replaceExistingTimer: true,
@@ -2167,7 +2207,7 @@ function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
 function flushHydrationData(
   runtime: CachedRuntime,
   tail: string,
-  options: { appendPending?: boolean; replay?: boolean; scrollToBottom?: boolean } = {},
+  options: { appendPending?: boolean; replay?: boolean; scrollToBottom?: boolean; eraseStale?: boolean } = {},
 ) {
   // Replay mode already stripped alt-screen/clear-screen sequences before this
   // point, so the entire transcript should be written verbatim. Trimming to a
@@ -2191,7 +2231,7 @@ function flushHydrationData(
   if (merged.length) {
     updateTerminalInputModes(runtime, merged);
     try {
-      runtime.term.write(merged);
+      runtime.term.write(options.eraseStale ? `${ERASE_SCREEN_AND_SCROLLBACK}${merged}` : merged);
       if (hasRenderableTerminalText(merged)) {
         runtime.hasAppliedTerminalContent = true;
       }
@@ -2636,6 +2676,12 @@ function startHydration(runtime: CachedRuntime) {
 
   const finalizeHydration = (data: InitialHydrationData) => {
     if (runtime.disposed || runtime.hydrationGeneration !== hydrationGeneration) return;
+    // A resumed runtime still shows its pre-park output, and this payload is
+    // that history again. Erase it in the same write, or every park/reveal
+    // stacks another copy into scrollback. Only the normal buffer accumulates:
+    // an alternate-screen payload repaints its viewport in place.
+    const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime);
+    runtime.staleContentBeforeHydration = false;
     if (data.source === "replay") {
       // Replay mode: enlarge scrollback so the full transcript stays
       // scrollable, then write the stripped bytes in one pass. There is no
@@ -2656,6 +2702,7 @@ function startHydration(runtime: CachedRuntime) {
         appendPending: false,
         replay: true,
         scrollToBottom: !shouldApplyOffsetAnchor,
+        eraseStale,
       });
       if (shouldApplyOffsetAnchor) scheduleReplayOffsetScroll(runtime, offsetAnchor);
       runtime.hydrationCompleted = true;
@@ -2679,7 +2726,7 @@ function startHydration(runtime: CachedRuntime) {
       flushPendingFrameWrites(runtime);
     } else {
       discardScheduledFrameWrites(runtime);
-      flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot" });
+      flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot", eraseStale });
     }
     runtime.hydrationCompleted = true;
     // Arm the re-hydration: these bytes were wrapped to 80 columns and spilled
@@ -2916,6 +2963,7 @@ function createRuntime(args: {
     hydrationCompleted: false,
     hydrationGeneration: 0,
     hasAppliedTerminalContent: false,
+    staleContentBeforeHydration: false,
     displayedLiveDataBeforeHydration: false,
     pendingHydrationChunks: [],
     pendingHydrationBytes: 0,
@@ -3632,7 +3680,7 @@ export function TerminalView({
       };
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
-      if (runtime.active && runtime.displayedLiveDataBeforeHydration && !terminalDomHasRenderableText(runtime)) {
+      if (runtime.active && runtime.displayedLiveDataBeforeHydration && !terminalShowsRenderableText(runtime)) {
         scheduleHydrationBackfill(runtime, {
           delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
           replaceExistingTimer: true,
