@@ -510,23 +510,49 @@ describe("runProviderTask", () => {
     })).rejects.toThrow(message);
   });
 
-  it.each([true, false])("pins Codex to standard speed only for a background utility call (%s)", async (backgroundUtility) => {
+  it.each([true, false])("pins Codex to standard speed and starts none of the user's MCP servers only for a background utility call (%s)", async (backgroundUtility) => {
     spawnMock.mockImplementationOnce(() => createMockProcess());
+    // The account's config.toml and the project's own `.codex/config.toml`.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-mcp-off-"));
+    const codexHome = path.join(root, "codex-home");
+    const project = path.join(root, "project");
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(path.join(project, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(codexHome, "config.toml"), [
+      "[mcp_servers.playwright]",
+      'command = "npx"',
+      'args = ["@playwright/mcp@latest"]',
+      "",
+      '[mcp_servers."docs.search"]',
+      'url = "https://docs.example/mcp"',
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(project, ".codex", "config.toml"), '[mcp_servers.repo_tools]\ncommand = "repo-mcp"\n');
 
-    await runProviderTask({
-      cwd: process.cwd(),
-      descriptor: { family: "openai", isCliWrapped: true, providerModelId: "gpt-6-luna" } as any,
-      prompt: "Name this chat.",
-      feature: "unit-test",
-      backgroundUtility,
-      projectConfig: {} as any,
-    });
+    try {
+      await runProviderTask({
+        cwd: project,
+        descriptor: { family: "openai", isCliWrapped: true, providerModelId: "gpt-6-luna" } as any,
+        prompt: "Name this chat.",
+        feature: "unit-test",
+        backgroundUtility,
+        accountEnv: { CODEX_HOME: codexHome },
+        projectConfig: {} as any,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, argv] = spawnMock.mock.calls[0]!;
     expect(launchArgvContains(argv, "exec")).toBe(true);
     // Unpinned, the account's config.toml service tier (Fast) applies.
     expect(launchArgvContainsRun(argv, ["-c", "service_tier=default"])).toBe(backgroundUtility);
+    // An empty `mcp_servers={}` override is merged and starts them all, so
+    // each configured server is switched off by name, from both config files.
+    expect(launchArgvContainsRun(argv, ["-c", "mcp_servers.playwright.enabled=false"])).toBe(backgroundUtility);
+    expect(launchArgvContainsRun(argv, ["-c", 'mcp_servers."docs.search".enabled=false'])).toBe(backgroundUtility);
+    expect(launchArgvContainsRun(argv, ["-c", "mcp_servers.repo_tools.enabled=false"])).toBe(backgroundUtility);
   });
 
   it("runs Copilot metadata prompts on a tool-less SDK utility session and releases the worker", async () => {

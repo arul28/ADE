@@ -351,6 +351,7 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the five provider configs, including the Codex TOML tables. |
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
+| `apps/desktop/src/main/services/mcp/chatUserMcp.ts` | The seam the chat service calls at each launch step: registry servers minus double copies, the user's own servers per provider, the Codex overlay and the two Claude halves. |
 | `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on an ADE account, and `npx` servers re-pointed. |
 | `apps/desktop/src/main/services/mcp/trackedCliUserMcp.ts` | The same servers for a tracked Claude or Codex CLI, without secret-bearing ones; `trackedCliUserMcpFlags` in `shared/cliLaunch.ts` renders them. |
 | `apps/desktop/src/main/services/mcp/codexMcpOff.ts` | Switches every config.toml server off by name for Codex runs that need none. |
