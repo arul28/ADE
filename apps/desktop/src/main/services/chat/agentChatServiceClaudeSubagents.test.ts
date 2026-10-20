@@ -3885,7 +3885,7 @@ describe("createAgentChatService", () => {
 
     /**
      * The background-task exemption is what keeps a query alive past the
-     * 5-minute idle window "until the work actually ends". These three cases pin
+     * 3-minute idle window "until the work actually ends". These three cases pin
      * the second half of that promise, which nothing used to enforce:
      * `liveBackgroundTaskIds` was cleared only by teardown, and the flag itself
      * blocked teardown, so one task whose completion edge never arrived pinned

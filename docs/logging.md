@@ -197,6 +197,15 @@ precedent cuts the same way: the settle-with-residue event exists because a
 human pressed Settle and the stop could not be confirmed. If a future change
 ever makes this reclaim user-initiated, revisit the decision then.
 
+A fresh Codex process's first turn waits up to 1.5 s for its skill list
+(`settleCodexSkillCatalog`). When the list stays short it writes
+`agent_chat.codex_skill_catalog_settle_timeout` (info, `sessionId`, `expected`,
+`seen`); when `skills/list` fails it writes
+`agent_chat.codex_skill_catalog_settle_failed` (warn, `sessionId`, error
+message). Each fires at most once per Codex process start. Neither is a PostHog
+event: the wait is runtime mechanics with no user action behind it, the same
+reason the idle sweep and the archive teardown capture nothing.
+
 The Claude subprocess reaper writes its own local lines around process
 teardown: `agent_chat.claude_subprocess_terminate` (with `pid`, `sessionId`,
 `reason`, and on POSIX a `groupLeader` flag recording whether the whole process

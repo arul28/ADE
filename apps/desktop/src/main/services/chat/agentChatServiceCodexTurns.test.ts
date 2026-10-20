@@ -7,16 +7,163 @@ import {
   path,
   query,
   readPersistedChatState,
+  spawn,
   startup,
   tmpRoot,
   waitFor,
   waitForEvent,
+  waitForFakeTimers,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
+function codexTurnStartText(payload: Record<string, unknown> | undefined): string {
+  const params = payload?.params as { input?: Array<{ text?: unknown }> } | undefined;
+  return params?.input?.map((item) => typeof item.text === "string" ? item.text : "").join("\n") ?? "";
+}
+
+function codexAppServerSpawnIndexes(): number[] {
+  return vi.mocked(spawn).mock.calls.flatMap((call, index) => {
+    const args = call[1] as unknown;
+    return Array.isArray(args) && args.includes("app-server") ? [index] : [];
+  });
+}
+
 describe("createAgentChatService", () => {
   describe("Codex turns and streams", () => {
+    it("does not resend the ADE launch directive when a Codex chat resumes after idle teardown", async () => {
+      vi.useFakeTimers();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const priorAppServerSpawnCount = codexAppServerSpawnIndexes().length;
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "Start the first task." }, { awaitDispatch: true });
+
+        const firstTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        const firstThreadId = (firstTurnStart?.params as { threadId?: string } | undefined)?.threadId;
+        expect(firstThreadId).toEqual(expect.any(String));
+        expect(codexTurnStartText(firstTurnStart)).toContain("[ADE launch directive]");
+        expect(codexAppServerSpawnIndexes().length - priorAppServerSpawnCount).toBe(1);
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-1",
+        );
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        const appServerSpawnIndexes = codexAppServerSpawnIndexes();
+        expect(appServerSpawnIndexes.length - priorAppServerSpawnCount).toBe(1);
+        const firstProcess = vi.mocked(spawn).mock.results[appServerSpawnIndexes[priorAppServerSpawnCount]!]!.value as {
+          kill: (...args: unknown[]) => unknown;
+        };
+        expect(firstProcess.kill).toHaveBeenCalled();
+
+        await service.sendMessage({ sessionId: session.id, text: "Continue the second task." }, { awaitDispatch: true });
+
+        const turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        const resumeRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/resume");
+        expect(codexAppServerSpawnIndexes().length - priorAppServerSpawnCount).toBe(2);
+        expect(resumeRequests).toEqual(expect.arrayContaining([
+          expect.objectContaining({ params: expect.objectContaining({ threadId: firstThreadId }) }),
+        ]));
+        expect(turnStarts).toHaveLength(2);
+        expect(codexTurnStartText(turnStarts[1])).toContain("Continue the second task.");
+        expect(codexTurnStartText(turnStarts[1])).not.toContain("[ADE launch directive]");
+
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: "turn-2", status: "completed" } },
+        });
+      } finally {
+        service.forceDisposeAll();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not let a second Codex send overtake the first during a fresh process skill-list wait", async () => {
+      vi.useFakeTimers();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      let laggingSkillCatalog = false;
+      mockState.codexResponseOverrides.set("skills/list", () => ({
+        skills: laggingSkillCatalog ? [{ name: "one-skill" }] : [{ name: "one-skill" }, { name: "two-skill" }],
+      }));
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "Record the skill catalog." }, { awaitDispatch: true });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed" } },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "completed" && event.event.turnId === "turn-1",
+        );
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+        laggingSkillCatalog = true;
+        mockState.delayedCodexMethods.add("skills/list");
+        const firstSend = service.sendMessage({ sessionId: session.id, text: "Message A must go first." }, { awaitDispatch: true });
+        await waitForFakeTimers(
+          () => expect(mockState.pendingCodexResponses.length).toBeGreaterThanOrEqual(2),
+          { steps: 100, realYield: true },
+        );
+        const startsBeforePair = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        const secondSend = service.sendMessage(
+          { sessionId: session.id, text: "Message B must not overtake." },
+          { awaitDispatch: true },
+        ).then(
+          () => null,
+          (error: unknown) => error instanceof Error ? error : new Error(String(error)),
+        );
+
+        expect(startsBeforePair).toHaveLength(1);
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+
+        laggingSkillCatalog = false;
+        mockState.delayedCodexMethods.delete("skills/list");
+        mockState.flushCodexResponses();
+        await vi.advanceTimersByTimeAsync(5_000);
+        await firstSend;
+        const secondSendError = await secondSend;
+        expect(secondSendError).toBeInstanceOf(Error);
+        expect(secondSendError?.message).toMatch(/turn is already active/i);
+
+        const turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+        expect(turnStarts).toHaveLength(2);
+        expect(codexTurnStartText(turnStarts[1])).toContain("Message A must go first.");
+        expect(codexTurnStartText(turnStarts[1])).not.toContain("Message B must not overtake.");
+      } finally {
+        mockState.delayedCodexMethods.delete("skills/list");
+        mockState.flushCodexResponses();
+        mockState.codexResponseOverrides.delete("skills/list");
+        service.forceDisposeAll();
+        vi.useRealTimers();
+      }
+    });
+
     it("deduplicates Codex compatibility item notifications", async () => {
       const events: Array<{ type: string; tool?: string; itemId?: string }> = [];
       const { service } = createService({
