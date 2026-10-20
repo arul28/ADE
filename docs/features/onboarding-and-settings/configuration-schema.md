@@ -161,7 +161,6 @@ type LaneOverlayPolicy = {
     testSuiteIds?: string[];
     portRange?: { start: number; end: number };
     proxyHostname?: string;
-    computeBackend?: "local" | "vps" | "daytona";
     envInit?: LaneEnvInitConfig;
   };
 };

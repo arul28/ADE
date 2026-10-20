@@ -231,7 +231,6 @@ describe("projectConfigService - lane env init", () => {
             overrides: {
               portRange: { start: 4100, end: 4199 },
               proxyHostname: "backend.localhost",
-              computeBackend: "vps",
               envInit: {
                 dependencies: [{ command: ["npm", "install"] }],
                 docker: { composePath: "docker-compose.yml" },
@@ -256,7 +255,6 @@ describe("projectConfigService - lane env init", () => {
 
     expect(policy?.overrides.portRange).toEqual({ start: 4100, end: 4199 });
     expect(policy?.overrides.proxyHostname).toBe("backend.localhost");
-    expect(policy?.overrides.computeBackend).toBe("vps");
     expect(policy?.overrides.envInit).toEqual({
       dependencies: [{ command: ["npm", "install"] }],
       docker: { composePath: "docker-compose.yml" },

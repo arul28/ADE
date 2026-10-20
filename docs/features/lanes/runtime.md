@@ -405,7 +405,6 @@ type LaneOverlayOverrides = {
   testSuiteIds?: string[];
   portRange?: { start: number; end: number };
   proxyHostname?: string;
-  computeBackend?: "local" | "vps" | "daytona";  // legacy; see note
   envInit?: LaneEnvInitConfig;
 };
 ```
@@ -413,15 +412,12 @@ type LaneOverlayOverrides = {
 The matcher in `src/main/services/config/laneOverlayMatcher.ts` evaluates policies
 at lane creation:
 
-- `portRange`, `proxyHostname`, `computeBackend`: last-wins merge
+- `portRange`, `proxyHostname`: last-wins merge
 - `envInit`: deep-merged through `laneEnvInitMerge.ts` — env files,
   dependencies, mount points, and copy paths concatenate across
   policies; docker configs shallow-merge (a later `services` list
   replaces an earlier one); `setupScript` is last-wins, because a lane
   runs exactly one setup script
-
-`computeBackend` is retained for back-compat with older configs but
-is no longer part of the active lane runtime direction.
 
 ## Port allocation (W3)
 

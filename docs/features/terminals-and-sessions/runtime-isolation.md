@@ -143,9 +143,8 @@ inside the lane worktree, but hostname-based isolation is off.
   secret in the host shell and Electron inherits it, the lane can see
   it too.
 
-If you need stronger isolation (containers, VPS, Daytona), use the
-compute-backend hooks in `LaneOverlayOverrides.computeBackend`. That
-is out of scope for `ptyService` itself.
+ADE has no stronger isolation (containers, VMs) for lanes. That is
+out of scope for `ptyService` itself.
 
 ## Cross-links
 
