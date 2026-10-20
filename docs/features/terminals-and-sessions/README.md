@@ -2816,6 +2816,22 @@ so explicitly rather than asserting a tier ADE never set.
 
 ## Gotchas
 
+- **No whole-buffer work per PTY chunk in the brain.** A flood delivers
+  thousands of chunks a second. The live tail (`recentOutputTail`) may
+  overshoot its 2M-character cap by 500K and is cut back only then; read it
+  through `readRecentOutputTail`. The resume-command scan runs at most every
+  250 ms, with a trailing scan and a final scan on close. Re-copying the tail
+  per chunk once pinned the brain at 100% CPU and timed out every other
+  request while one terminal printed (`docs/perf/macos-baseline.md`,
+  "Terminals").
+- **A resumed terminal erases its old output before rehydrating.** A parked
+  runtime pauses its stream; on reveal the hydration payload carries the
+  history again, so `finalizeHydration` clears screen and scrollback with
+  escape codes in the same write (not `term.reset()`, which would drop
+  bracketed paste and cursor-key modes). Alternate-screen content repaints in
+  place and is left alone. The blank-pane check reads xterm's buffer for
+  WebGL terminals: WebGL leaves `.xterm-rows` empty, and the DOM check made
+  every WebGL pane look blank and fetch its history a second time.
 - **Open in is SSH-or-local, never paired.** `resolveOpenInTarget` returns
   null for `transport: "paired"` and for a missing worktree path. Do not
   spawn a local editor against a remote path, and do not add **Open in**

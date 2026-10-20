@@ -291,6 +291,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
+| `terminal-flood.mjs <laneId> seq\|yes [secs]` | Starts a shell in the lane and floods it (16 MB `seq` or 200 MB colored `yes`) while the renderer calls `sessions.get` every 100 ms: time to finish, that round trip (p50, p95, max), frame gaps, long tasks, and the brain's CPU (`ADE_RUNTIME_SOCKET`) |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
 | `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
@@ -680,6 +681,40 @@ server, headless Chrome, site data cleared before each run, interleaved):
 | Script per streamed event | 5.6 ms | 3.4 ms | 4.5 ms |
 | Main-thread task time per event | 6.7 ms | 4.4 ms | 5.8 ms |
 | Renderer CPU while streaming (30 events/s) | 23.7% | 16.8% | 22% |
+
+### Terminals: output floods and switching (2026-10-20)
+
+Same Mac Studio, dev build with its own socket, the ADE repository open, a
+dozen chats in the Work list. Before is main at `45458b44e`; baseline is the
+ademark-terminals branch. One terminal floods while the renderer calls
+`sessions.get` every 100 ms (`terminal-flood.mjs`).
+
+| Metric | Script | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| `seq 1 2000000` (16 MB): time to finish | `terminal-flood.mjs <lane> seq` | not done in 120 s | 6.3-11.2 s | 15 s |
+| Same: brain CPU | same | 85-107 s (still going) | 4.6-7.1 s | 10 s |
+| Same: `sessions.get` p50 / max | same | 4 ms / 30 s timeout | 2-4 ms / 2.2-6.4 s | 10 ms / 8 s |
+| 200 MB colored `yes`: `sessions.get` p95 over the first 120 s | `terminal-flood.mjs <lane> yes` | 23.4 s | 3 ms-6.6 s | 8 s |
+| Brain's longest single task during a flood | CPU profile through the brain's inspector | 809 ms | 342 ms | 500 ms |
+
+Before, the brain re-copied a 2M-character live tail and re-ran the resume
+scan on every PTY chunk, so one flooding terminal pinned it and every other
+request (opening a terminal, a chat action) timed out. What is left is
+transport: replies share the brain-to-desktop socket with terminal output and
+wait behind it, which is the multi-second max above (the brain's event loop
+lag stayed under 110 ms).
+
+Terminal switching, 16 shells each holding 12,000 colored lines, every one
+shown, then every one shown again, Work to Files to Work between
+measurements (a dev-only probe read xterm's buffers):
+
+| Metric | Before | Baseline |
+|---|---:|---:|
+| Copies of a terminal's history in its scrollback after two visits | 2-5 | 1 |
+| xterm buffer lines across the 16 terminals | 103,398 | 32,528 |
+| Renderer JS heap after the second pass | 133.9 MB | 126.5 MB |
+| First reveal: text on screen, median / max | 172 / 243 ms | 175 / 267 ms |
+| Revisit: text on screen, median / max | 23 / 43 ms | 26 / 59 ms |
 
 ### Brain: file watchers
 

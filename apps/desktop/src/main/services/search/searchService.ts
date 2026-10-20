@@ -55,7 +55,10 @@ import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking
 const DELEGATED_FILE_LIMIT = 30;
 const DELEGATED_ARTIFACT_LIMIT = 200;
 const MAX_DOC_BODY_CHARS = 32_000;
-const MAX_READ_BYTES_PER_PASS = 4 * 1024 * 1024;
+// One pass indexes this much transcript in a single synchronous transaction.
+// 4 MB passes held the brain for 1.5-2 s at a time while a terminal flooded
+// output; the queue re-enqueues the remainder and yields between passes.
+const MAX_READ_BYTES_PER_PASS = 512 * 1024;
 const COMMITS_PER_LANE = 100;
 const DEFAULT_QUERY_LIMIT = 50;
 const BACKFILL_RETRY_MS = 60_000;
