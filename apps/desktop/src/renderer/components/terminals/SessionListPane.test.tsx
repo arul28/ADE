@@ -781,6 +781,8 @@ describe("SessionListPane", () => {
       title: "Broken helper",
       spawnKind: "subagent",
       orchestrationParentSessionId: parent.id,
+      // A failed turn is a RESTING chat; a live runtime would outrank the marker.
+      runtimeState: "idle",
       lastTurnFailedAt: "2026-04-22T22:00:00.000Z",
     });
     renderPane({
