@@ -194,16 +194,19 @@ export function buildGardeningPrompt(args: {
   recentLog: string;
   discoveries: string;
 }): { prompt: string; shown: GardeningFact[] } {
-  const lines: string[] = [];
+  // The newest facts that fit, shown oldest first: new captures are where
+  // duplicates pile up, so a long memory must not hide them past the budget.
   const shown: GardeningFact[] = [];
   let total = 0;
-  for (const fact of args.facts) {
-    const line = `${gardeningRef(shown.length)} [${fact.kind}${fact.pinned ? ", pinned" : ""}] ${flatClip(fact.text, GARDENING_FACT_MAX_CHARS)}`;
-    if (total + line.length + 1 > GARDENING_FACTS_MAX_CHARS) break;
-    lines.push(line);
-    shown.push(fact);
-    total += line.length + 1;
+  for (let index = args.facts.length - 1; index >= 0; index -= 1) {
+    const fact = args.facts[index];
+    const size = flatClip(fact.text, GARDENING_FACT_MAX_CHARS).length + fact.kind.length + 20;
+    if (total + size > GARDENING_FACTS_MAX_CHARS) break;
+    shown.unshift(fact);
+    total += size;
   }
+  const lines = shown.map((fact, index) =>
+    `${gardeningRef(index)} [${fact.kind}${fact.pinned ? ", pinned" : ""}] ${flatClip(fact.text, GARDENING_FACT_MAX_CHARS)}`);
   const prompt = [
     "You tidy the long-term notes of a project coordinator (the CTO). Below are its saved facts, its recent work log, and notes from worker agents. Answer with action lines only, one per line, in exactly these shapes:",
     "",
@@ -258,10 +261,13 @@ export function parseGardeningPlan(raw: string, facts: GardeningFact[]): Gardeni
     if (match) {
       const text = sentence(match[3]);
       if (text.length < 12 || plan.merge.length >= GARDENING_MAX_MERGES) continue;
-      const refs = [...new Set(match[1].match(/F\d+/gi) ?? [])].map((ref) => ref.toUpperCase());
-      const resolved = refs.map(resolve);
-      if (resolved.length < 2 || resolved.some((fact) => !fact)) continue;
-      const ids = (resolved as GardeningFact[]).map((fact) => fact.id);
+      const refs = [...new Set((match[1].match(/F\d+/gi) ?? []).map((ref) => ref.toUpperCase()))];
+      const ids: string[] = [];
+      for (const ref of refs) {
+        const fact = resolve(ref);
+        if (fact) ids.push(fact.id);
+      }
+      if (ids.length < 2 || ids.length !== refs.length) continue;
       ids.forEach((id) => touched.add(id));
       plan.merge.push({ ids, kind: match[2].toLowerCase() as CtoMemoryFactKind, text });
       continue;

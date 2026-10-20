@@ -508,13 +508,16 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     let merged = 0;
     let retired = 0;
     for (const entry of plan.merge) {
-      const sources = entry.ids.map((id) => items.get(id)).filter((item) => item && item.status !== "archived");
-      if (sources.length < 2) continue;
-      const tagSets = new Set(sources.map((item) => JSON.stringify(item?.tags ?? {})));
-      for (const id of entry.ids) forgetFact({ id }, "merged by nightly memory gardening");
-      const tags = tagSets.size === 1 ? (sources[0]?.tags ?? null) : null;
+      const sources = entry.ids
+        .map((id) => items.get(id))
+        .filter((item): item is ProjectContextItem => item !== undefined && item.status !== "archived");
       // The sources were shown with their tag suffix; it is re-added from `tags`.
-      appendMemoryFact(entry.text.replace(MEMORY_TAG_SUFFIX_PATTERN, "").trim(), tags, { kind: entry.kind, trust: "agent" });
+      const text = entry.text.replace(MEMORY_TAG_SUFFIX_PATTERN, "").trim();
+      if (sources.length < 2 || text.length < 12) continue;
+      const tagSets = new Set(sources.map((item) => JSON.stringify(item.tags)));
+      for (const item of sources) forgetFact({ id: item.id }, "merged by nightly memory gardening");
+      // A refusal means the same sentence, or a near-duplicate of it, is already filed.
+      appendMemoryFact(text, tagSets.size === 1 ? sources[0].tags : null, { kind: entry.kind, trust: "agent" });
       merged += 1;
     }
     for (const entry of plan.retire) {

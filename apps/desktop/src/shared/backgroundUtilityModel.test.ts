@@ -33,6 +33,7 @@ describe("backgroundUtilityModel", () => {
   it.each([
     ["Haiku and Luna list low first", ["low", "medium", "high", "xhigh", "max"], "low"],
     ["a model that can switch thinking off", ["none", "minimal", "low", "medium", "high"], "none"],
+    ["a Pi model, whose lowest level is off", ["off", "minimal", "low", "medium"], "off"],
     ["OpenCode variants out of order, with non-effort keys", ["xhigh", "free", "medium", "budget"], "medium"],
     ["Composer, which lists no tiers", undefined, null],
     ["a model whose variants are not efforts", ["free", "budget"], null],

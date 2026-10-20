@@ -15733,6 +15733,47 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * One prompt to the session-intelligence helper model of an identity
+   * thread's vendor (the same model that names chats). Null when there is no
+   * helper or every attempt failed; each failure is logged under `failureEvent`.
+   */
+  const runIdentityHelperPrompt = async (
+    managed: ManagedChatSession,
+    args: { prompt: string; failureEvent: string; meta?: Record<string, unknown> },
+  ): Promise<string | null> => {
+    const auth = await detectAuth().catch(() => []);
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels: await getAvailableRegistryModels(auth),
+      provider: managed.session.provider,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    });
+    if (!candidateModelIds.length) return null;
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt: args.prompt,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+        const text = response.text.trim();
+        return text.length ? text : null;
+      },
+      onFailure: (failure) => {
+        logger.warn(args.failureEvent, {
+          sessionId: managed.session.id,
+          ...args.meta,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    return result;
+  };
+
+  /**
    * ADE's memory pass over an identity thread: one call to the cheap helper
    * model on the vendor the chat already uses, reading ADE's own transcript.
    * Returns the rolling summary, and files any durable facts it found into the
@@ -15745,42 +15786,16 @@ export function createAgentChatService(args: {
   ): Promise<string | null> => {
     const entries = collectCaptureEntries(managed);
     if (!entries.length) return null;
-    const auth = await detectAuth().catch(() => []);
-    const availableModels = await getAvailableRegistryModels(auth);
-    const candidateModelIds = buildSessionIntelligenceModelCandidates({
-      availableModels,
-      provider: managed.session.provider,
-      sessionModelId: managed.session.modelId,
-      sessionModel: managed.session.model,
-    });
-    if (!candidateModelIds.length) return null;
     const memory = managed.session.identityKey === "cto" ? ctoMemoryService : null;
-    const prompt = buildContinuityCapturePrompt({
-      reason,
-      entries,
-      knownFacts: memory?.listKnownFacts(CAPTURE_KNOWN_FACTS) ?? [],
-      previousSummary: managed.continuitySummary,
-    });
-    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-      run: async (descriptor) => {
-        const response = await runSessionIntelligencePrompt({
-          cwd: managed.laneWorktreePath,
-          modelId: descriptor.id,
-          prompt,
-          taskType: "continuity_summary",
-          providerAccount: sessionProviderAccount(managed),
-        });
-        const text = response.text.trim();
-        return text.length ? text : null;
-      },
-      onFailure: (failure) => {
-        logger.warn("agent_chat.identity_continuity_summary_failed", {
-          sessionId: managed.session.id,
-          reason,
-          modelId: failure.descriptor.id,
-          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
-        });
-      },
+    const result = await runIdentityHelperPrompt(managed, {
+      prompt: buildContinuityCapturePrompt({
+        reason,
+        entries,
+        knownFacts: memory?.listKnownFacts(CAPTURE_KNOWN_FACTS) ?? [],
+        previousSummary: managed.continuitySummary,
+      }),
+      failureEvent: "agent_chat.identity_continuity_summary_failed",
+      meta: { reason },
     });
     if (!result) return null;
     const capture = parseContinuityCapture(result);
@@ -15805,9 +15820,6 @@ export function createAgentChatService(args: {
     return capture.summary;
   };
 
-  const isCtoMemoryGardenerSchedule = (schedule: { id: string }): boolean =>
-    schedule.id.startsWith(CTO_MEMORY_GARDENER_ID_PREFIX);
-
   /**
    * The nightly memory gardening, run by ADE on the cheap helper model.
    *
@@ -15824,38 +15836,14 @@ export function createAgentChatService(args: {
     // Nothing was journaled lately, so nothing new to distill: skip the call.
     if (!memory.hasRecentDailyEntries(2)) return;
     const managed = managedSessions.get(sessionId) ?? ensureManagedSession(sessionId);
-    const auth = await detectAuth().catch(() => []);
-    const candidateModelIds = buildSessionIntelligenceModelCandidates({
-      availableModels: await getAvailableRegistryModels(auth),
-      provider: managed.session.provider,
-      sessionModelId: managed.session.modelId,
-      sessionModel: managed.session.model,
-    });
-    if (!candidateModelIds.length) return;
     const { prompt, shown } = buildGardeningPrompt({
       facts: memory.listGardeningFacts(),
       recentLog: memory.readRecentDailyEntries(2, 8_000),
       discoveries: memory.readNewDiscoveries({ maxChars: 4_000, advance: false }).text,
     });
-    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
-      run: async (descriptor) => {
-        const response = await runSessionIntelligencePrompt({
-          cwd: managed.laneWorktreePath,
-          modelId: descriptor.id,
-          prompt,
-          taskType: "continuity_summary",
-          providerAccount: sessionProviderAccount(managed),
-        });
-        const text = response.text.trim();
-        return text.length ? text : null;
-      },
-      onFailure: (failure) => {
-        logger.warn("agent_chat.cto_memory_gardening_failed", {
-          sessionId,
-          modelId: failure.descriptor.id,
-          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
-        });
-      },
+    const result = await runIdentityHelperPrompt(managed, {
+      prompt,
+      failureEvent: "agent_chat.cto_memory_gardening_failed",
     });
     if (!result) return;
     const applied = memory.applyGardeningPlan(parseGardeningPlan(result, shown));
@@ -70123,7 +70111,7 @@ export function createAgentChatService(args: {
         }
         return { complete: true };
       }
-      if (isCtoMemoryGardenerSchedule(schedule)) {
+      if (schedule.id.startsWith(CTO_MEMORY_GARDENER_ID_PREFIX)) {
         try {
           await runCtoMemoryGardening(schedule.sessionId);
         } catch (error) {
