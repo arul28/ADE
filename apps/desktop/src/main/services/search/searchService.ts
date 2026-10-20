@@ -707,15 +707,16 @@ export function createSearchService(deps: SearchServiceDeps) {
       return range;
     };
     let readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
-    let buf = await readRange(source.cursor, readEnd);
+    const ranges = [await readRange(source.cursor, readEnd)];
     // One record longer than the pass: read on to its newline, so it is indexed
-    // whole instead of being split across passes and lost.
-    while (buf.lastIndexOf(0x0a) < 0 && readEnd < fileSize) {
+    // whole instead of being split across passes and lost. The file's size
+    // bounds it; the ranges are joined once.
+    while (ranges[ranges.length - 1].lastIndexOf(0x0a) < 0 && readEnd < fileSize) {
       const nextEnd = Math.min(fileSize, readEnd + MAX_READ_BYTES_PER_PASS);
-      const more = await readRange(readEnd, nextEnd);
-      buf = Buffer.concat([buf, more]);
+      ranges.push(await readRange(readEnd, nextEnd));
       readEnd = nextEnd;
     }
+    const buf = ranges.length === 1 ? ranges[0] : Buffer.concat(ranges);
     const lastNewline = buf.lastIndexOf(0x0a);
     // Never consume an unterminated tail: the writer appends whole
     // `JSON.stringify(envelope) + "\n"` lines, so a missing trailing newline

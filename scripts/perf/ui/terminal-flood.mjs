@@ -84,10 +84,11 @@ try {
         try {
           // A reply that never comes must not hold the run past its timeout.
           const left = Math.max(1, ${timeoutMs} - (performance.now() - t0));
+          let deadline;
           const reply = await Promise.race([
             window.ade.sessions.get(${JSON.stringify(session)}),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), left)),
-          ]);
+            new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("timeout")), left); }),
+          ]).finally(() => clearTimeout(deadline));
           status = reply?.status ?? null;
           calls.push(performance.now() - a);
         } catch {

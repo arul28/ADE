@@ -654,6 +654,10 @@ class SupervisedPtyHost {
       // Other terminals may share this host, so killing the host is not the
       // escalation it is for a host of one: the host kills this PTY instead.
       this.disposeInHost(ptyId);
+      // Killing a Windows host does not end its PTY's process tree, and once
+      // detached the host's exit handler no longer covers it. No exit was
+      // reported for this PID, so it still names the PTY's process.
+      if (remote) this.killWindowsPtyTree(ptyId, remote.pid);
       this.detachPtyFromChild(ptyId, "SIGKILL");
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
@@ -682,6 +686,19 @@ class SupervisedPtyHost {
     } catch (error) {
       report(error);
     }
+  }
+
+  private killWindowsPtyTree(ptyId: string, pid: number): void {
+    if (process.platform !== "win32" || !(pid > 0)) return;
+    killWindowsProcessTree(pid, (detail) => {
+      this.logger.warn("pty.host_orphan_tree_cleanup_failed", {
+        ptyId,
+        pid: detail.pid,
+        status: detail.status,
+        stderr: detail.stderr,
+        error: detail.error instanceof Error ? detail.error.message : String(detail.error ?? ""),
+      });
+    });
   }
 
   private clearKillTimer(ptyId: string): void {
