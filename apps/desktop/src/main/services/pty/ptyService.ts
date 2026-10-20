@@ -9,6 +9,7 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
+import type { JevService } from "../jev/jevService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -103,6 +104,7 @@ import {
   backgroundUtilityModelId,
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import type { JevAnswer, JevQuestions } from "../../../shared/types/jev";
 import {
   claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
@@ -200,6 +202,28 @@ const xtermSerializeModule = ((XtermSerialize as unknown as { default?: XtermSer
   ?? XtermSerialize) as XtermSerializeModule;
 const { Terminal: HeadlessTerminal } = headlessXtermModule;
 const { SerializeAddon } = xtermSerializeModule;
+
+const CLI_STATUS_CONFIDENCE_FLOOR = 0.85;
+const CLI_STATUS_VISIBLE_LINES = 40;
+const CLI_STATUS_QUESTIONS = {
+  status: {
+    type: "choice",
+    instructions: "Classify the current terminal screen. Choose waiting_for_input only when it clearly asks the user to answer, confirm, approve, enter a password, choose a menu item, or press a key. Choose working for visible ongoing work or progress, finished for a completed result with no pending request, errored for a clear failure or crash, and shell_prompt only for a plain shell prompt with no command running.",
+    criteria: {
+      working: "The program is still doing work, streaming, or visibly progressing; it is not asking the user and has not returned to a shell prompt.",
+      waiting_for_input: "The screen clearly needs a user response: a question, yes/no confirmation, permission or approval, password, menu choice, or instruction to press a key or Enter.",
+      finished: "The command or task printed its result and is done; there is no unresolved question, approval, or input request.",
+      errored: "The command clearly failed, crashed, or printed a fatal error; there is no unresolved request the user can answer to continue it.",
+      shell_prompt: "A plain interactive shell prompt is visible and no command is running.",
+    },
+  },
+} satisfies JevQuestions;
+
+function isRecognizedShellPromptLine(line: string): boolean {
+  const text = line.trim();
+  if (!text) return false;
+  return /^(?:[$#%❯›➜>]|-?[A-Za-z_][\w.-]*[$#%]|[A-Za-z_][\w.-]*@[\w.-]+(?:\s+.*)?\s*[$#%]|[A-Za-z_][\w.-]*\s+.*\s*[$#%]|PS\s+.+>|[A-Za-z]:\\[^>]*>)$/u.test(text);
+}
 
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
@@ -791,6 +815,8 @@ type PtyEntry = {
   agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
+  shellPromptVisible: boolean;
+  cliStatusLastTailHash: string | null;
   runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
@@ -2441,6 +2467,7 @@ export function createPtyService({
   processRegistry,
   aiIntegrationService,
   projectConfigService,
+  jevService,
   getLaneRuntimeEnv,
   getSessionLinearEnv,
   getAdeCliAgentEnv,
@@ -2451,7 +2478,8 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
-  onSessionUserInput,
+  onSessionAttentionRequested,
+  onSessionAttentionResolved,
   diskPressureMonitor,
   releaseChatBrowser,
   loadPty,
@@ -2464,6 +2492,7 @@ export function createPtyService({
   processRegistry?: ProcessRegistryService | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  jevService?: JevService | null;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   /**
    * Per-session Linear context env (`ADE_LINEAR_ISSUE_IDS`,
@@ -2488,7 +2517,8 @@ export function createPtyService({
     lastOutputPreview: string | null;
     at: string;
   }) => void;
-  onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
+  onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
+  onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
    * A tracked agent CLI with no owning chat ended: let go of anything it held
@@ -2624,6 +2654,94 @@ export function createPtyService({
     }
     return rows;
   };
+
+  async function inspectIdleTerminal(entry: PtyEntry): Promise<void> {
+    if (!jevService || entry.disposed || entry.shellPromptVisible) return;
+    if (runtimeStates.get(entry.sessionId)?.state !== "idle") return;
+
+    const session = sessionService.get(entry.sessionId);
+    if (!session || session.status !== "running" || session.attentionRequestedAt) return;
+    const isTrackedCli = entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint);
+    const screenText = entry.terminalSnapshot
+      ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
+        .map((row) => stripAnsi(row.text))
+        .join("\n")
+      : stripAnsi(readRecentOutputTail(entry)).replace(/\r\n?/gu, "\n");
+    const lines = screenText.replace(/\r\n?/gu, "\n").split("\n").slice(-CLI_STATUS_VISIBLE_LINES);
+    const tail = lines.join("\n").trim();
+    if (!tail) return;
+    const lastLine = lines.map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+    if (!isTrackedCli && isRecognizedShellPromptLine(lastLine)) return;
+
+    const tailHash = createHash("sha256").update(tail).digest("hex");
+    if (entry.cliStatusLastTailHash === tailHash) return;
+    // Remember even null/low-confidence answers. An unchanged screen gets one
+    // Jev attempt per session, including when the optional service is down.
+    entry.cliStatusLastTailHash = tailHash;
+
+    const rawCommand = entry.resumeCommand?.trim() ?? "";
+    const commandToken = rawCommand.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/u);
+    const command = (commandToken?.[1] ?? commandToken?.[2] ?? commandToken?.[3] ?? "")
+      .split(/[\\/]/u)
+      .at(-1);
+    const sessionKind = isTrackedCli
+      ? `tracked provider CLI (${entry.toolTypeHint})`
+      : `plain shell or terminal (${entry.toolTypeHint ?? "unknown"})`;
+    const state = [
+      `Session kind: ${sessionKind}`,
+      ...(command ? [`Command: ${command}`] : []),
+      "Last visible terminal lines:",
+      tail,
+    ].join("\n");
+
+    let answer: JevAnswer | null = null;
+    try {
+      const answers = await jevService.decide({
+        feature: "cli_status",
+        priority: "background",
+        state,
+        questions: CLI_STATUS_QUESTIONS,
+      });
+      answer = answers?.status ?? null;
+    } catch {
+      // Jev is optional. A failure is exactly the old idle behavior.
+      return;
+    }
+
+    if (answer?.type !== "choice" || !(answer.confidence >= CLI_STATUS_CONFIDENCE_FLOOR)) return;
+    if (
+      entry.disposed
+      || entry.cliStatusLastTailHash !== tailHash
+      || runtimeStates.get(entry.sessionId)?.state !== "idle"
+    ) return;
+
+    const currentSession = sessionService.get(entry.sessionId);
+    if (!currentSession || currentSession.attentionRequestedAt) return;
+    if (answer.choice === "errored") {
+      // The CLI row has no inferred-failure state while its PTY is still live.
+      // Record the bounded classification without copying terminal text.
+      logger.info("pty.cli_status_error_detected", {
+        sessionId: entry.sessionId,
+        toolType: entry.toolTypeHint ?? "shell",
+        confidence: answer.confidence,
+      });
+      return;
+    }
+    if (answer.choice !== "waiting_for_input") return;
+
+    const promptLine = lastLine ? tailString(lastLine, 160) : "Terminal input is required";
+    const message = `Waiting for input: ${promptLine}`;
+    const raised = onSessionAttentionRequested
+      ? onSessionAttentionRequested({ sessionId: entry.sessionId, message, source: "cli_prompt" })
+      : sessionService.requestAttention(entry.sessionId, message, "cli_prompt");
+    if (!raised) return;
+
+    if (!entry.attentionRequested) entry.attentionRequested = true;
+    if (runtimeStates.get(entry.sessionId)?.state !== "waiting-input") {
+      setRuntimeState(entry.sessionId, "waiting-input");
+      emitRuntimeSignalThrottled(entry, "waiting-input");
+    }
+  }
 
   const createTerminalSnapshotMirror = (cols: number, rows: number): TerminalSnapshotMirror | null => {
     try {
@@ -3116,6 +3234,7 @@ export function createPtyService({
           // ignore callback failures
         }
       }
+      if (live) void inspectIdleTerminal(live).catch(() => {});
     }, 12_500);
   };
 
@@ -6043,12 +6162,13 @@ export function createPtyService({
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       clearTrackedCliTurnStartMarkers(entry.sessionId);
       entry.attentionRequested = false;
-      onSessionUserInput?.({ laneId: entry.laneId, sessionId: entry.sessionId });
+      onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
       return;
     }
     if (entry.attentionRequested) {
       entry.attentionRequested = false;
       sessionService.clearAttentionRequest(entry.sessionId);
+      onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
     }
   };
 
@@ -7119,6 +7239,8 @@ export function createPtyService({
         agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
+        shellPromptVisible: false,
+        cliStatusLastTailHash: null,
         runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
         sessionHandleCaptureTimer: null,
@@ -7283,10 +7405,23 @@ export function createPtyService({
         enqueuePtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
-        const markerState = runtimeStateFromOsc133Chunk(data, prevState);
-        const runtimeState = markerState === prevState && prevState === "idle" && data.length > 0
+        const attentionAtStart = prevState === "waiting-input" ? sessionService.get(sessionId) : null;
+        const markerState = runtimeStateFromOsc133Chunk(data, prevState, (marker) => {
+          if (marker === "A") entry.shellPromptVisible = true;
+          else if (marker === "B" || marker === "C") entry.shellPromptVisible = false;
+        });
+        const runtimeState = markerState === prevState
+          && (prevState === "idle" || attentionAtStart?.attentionSource === "cli_prompt")
+          && data.length > 0
           ? "running"
           : markerState;
+        if (prevState === "waiting-input" && runtimeState === "running") {
+          if (attentionAtStart?.attentionSource === "cli_prompt") {
+            sessionService.clearAttentionRequest(sessionId, "cli_prompt");
+            entry.attentionRequested = false;
+            onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId });
+          }
+        }
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);

@@ -63,6 +63,12 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
+When the optional CLI-status decision classifies an idle terminal as errored
+with high confidence, `pty.cli_status_error_detected` records only the session
+id, tool type, and confidence. It does not copy terminal text. The live CLI row
+has no separate inferred-failure state, so this line is diagnostic only and is
+not a product-analytics event.
+
 The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics.
 
 `brain.jsonl` carries the brain process's own machine events. Everything a **project runtime** inside the brain logs goes to that project's `<project>/.ade/transcripts/logs/ade-cli.jsonl` (the `logger` `createAdeRuntime` builds in `apps/ade-cli/src/bootstrap.ts`, rotating to `ade-cli.1.jsonl`), not to the desktop's `main.jsonl`. That includes every chat-service event (`agent_chat.*`, among them the `agent_chat.turn_end_question_*` lines) and the Jev helper's `jev.*` events, because chats run in the brain. Look there first when a chat-side event seems missing.
