@@ -14,6 +14,7 @@ import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
+import { laneEmojiForDisplay } from "../../../../shared/laneEmoji";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   LANE_SIDEBAR_INDENT_PX,
@@ -312,7 +313,9 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           style={{ color: toneText(accent) }}
           title={depth > indentLevel ? `${lane.name} (stack level ${depth + 1})` : lane.name}
         >
-          <LaneIcon size={12} />
+          {laneEmojiForDisplay(lane.emoji, lane.icon)
+            ? <span className="shrink-0 text-[11px] leading-none">{laneEmojiForDisplay(lane.emoji, lane.icon)}</span>
+            : <LaneIcon size={12} />}
           <span className="min-w-0 truncate">{lane.name}</span>
         </span>
         {deleting || creating ? (

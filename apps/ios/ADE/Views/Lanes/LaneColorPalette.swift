@@ -152,11 +152,14 @@ func laneIconSystemName(_ icon: LaneIcon) -> String {
 struct WorkLaneLogoMark: View {
   let color: Color
   var laneIcon: LaneIcon? = nil
+  var emoji: String? = nil
   var size: CGFloat = 11
 
   var body: some View {
     Group {
-      if let laneIcon {
+      if let emoji, !emoji.isEmpty {
+        Text(emoji)
+      } else if let laneIcon {
         Image(systemName: laneIconSystemName(laneIcon))
       } else {
         Image(systemName: "arrow.branch")

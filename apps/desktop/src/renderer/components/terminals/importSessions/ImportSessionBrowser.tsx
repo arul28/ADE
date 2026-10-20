@@ -338,7 +338,7 @@ export function ImportSessionBrowser({
     for (const lane of availableLanes) {
       if (!scanLaneKeys.has(lane.id) && lane.id !== laneFilter) continue;
       seen.add(lane.id);
-      options.push({ id: lane.id, name: lane.name, color: lane.color, branchRef: lane.branchRef, detail: detailOf(lane.id) });
+      options.push({ id: lane.id, name: lane.name, color: lane.color, emoji: lane.emoji, branchRef: lane.branchRef, detail: detailOf(lane.id) });
     }
     // A home lane this source's list does not carry still gets a row.
     for (const summary of sessions) {

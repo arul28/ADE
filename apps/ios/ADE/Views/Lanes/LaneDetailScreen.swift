@@ -256,6 +256,7 @@ struct LaneDetailScreen: View {
         WorkLaneLogoMark(
           color: laneSurfaceTint(forHex: currentSnapshot.lane.color).text ?? ADEColor.accent,
           laneIcon: currentSnapshot.lane.icon,
+          emoji: currentSnapshot.lane.emoji,
           size: 14
         )
         Text(currentSnapshot.lane.name)

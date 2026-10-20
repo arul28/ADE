@@ -607,6 +607,7 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var status: LaneStatus
   var color: String?
   var icon: LaneIcon?
+  var emoji: String? = nil
   var tags: [String]
   var folder: String?
   var linearIssue: LaneLinearIssue?

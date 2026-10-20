@@ -11,6 +11,7 @@ import {
   selectDefaultNewLaneBaseRef,
 } from "./newLaneBaseSource";
 import { resolveCreateLaneRequest } from "./lanePageModel";
+import { LANE_EMOJI_OPTIONS } from "./LaneEmojiPicker";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -22,6 +23,8 @@ import type { LaneBranchOption } from "./laneUtils";
 import type {
   BranchPullRequest,
   ChatLaunchLaneConfig,
+  JevChoiceQuestion,
+  JevDecideRequest,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
   LaneLinearIssue,
@@ -30,6 +33,7 @@ import type {
   NewLaneBaseSource,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { normalizeLaneEmoji } from "../../../shared/laneEmoji";
 
 type CreateSetupPhase =
   | "creating"
@@ -83,6 +87,37 @@ type DetachedSetupParams = {
  */
 function pinArg(pin: OpenProjectBinding | null): [] | [OpenProjectBinding] {
   return pin ? [pin] : [];
+}
+
+async function requestLaneEmojiSuggestion(
+  name: string,
+  pin: OpenProjectBinding | null,
+): Promise<string | null> {
+  const criteria = Object.fromEntries(LANE_EMOJI_OPTIONS.map(({ emoji, meaning }) => [emoji, meaning]));
+  const request: JevDecideRequest<{ emoji: JevChoiceQuestion }> = {
+    feature: "lane_emoji",
+    state: name,
+    questions: {
+      emoji: {
+        type: "choice",
+        instructions: "Choose the single emoji that best represents this software lane.",
+        criteria,
+      },
+    },
+    priority: "interactive",
+  };
+  try {
+    const answer = (await window.ade.ai.jevDecide(request, pin))?.emoji;
+    if (!answer || answer.type !== "choice" || answer.confidence < 0.5) {
+      return null;
+    }
+    const emoji = normalizeLaneEmoji(answer.choice);
+    return emoji && LANE_EMOJI_OPTIONS.some((option) => option.emoji === emoji) ? emoji : null;
+  } catch {
+    // Jev is optional. A missing helper, rate limit, transport error, or bad
+    // response leaves manual lane creation on its ordinary path.
+    return null;
+  }
 }
 
 async function applyLaneEnvSetup(
@@ -223,6 +258,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
+  const [createSelectedEmoji, setCreateSelectedEmoji] = useState<string | null>(null);
+  const [suggestedEmoji, setSuggestedEmoji] = useState<string | null>(null);
+  const createEmojiUserPickedRef = useRef(false);
+  const emojiSuggestionSequenceRef = useRef(0);
+  const emojiSuggestionCacheRef = useRef(new Map<string, string | null>());
   const [createSelectedLinearIssue, setCreateSelectedLinearIssue] = useState<LaneLinearIssue | null>(null);
   const createLinearIssueAutoNameRef = useRef<string | null>(null);
 
@@ -280,6 +320,45 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   }, [boundLanes, pinnedLanes, selectedTarget, targetPin]);
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
+  useEffect(() => {
+    const sequence = ++emojiSuggestionSequenceRef.current;
+    const name = createLaneName.trim();
+    setSuggestedEmoji(null);
+    if (
+      !open
+      || behavior === "configure-for-chat"
+      || createBusy
+      || laneCreated
+      || Array.from(name).length < 3
+      || createSelectedEmoji
+      || createEmojiUserPickedRef.current
+    ) return;
+
+    if (emojiSuggestionCacheRef.current.has(name)) {
+      setSuggestedEmoji(emojiSuggestionCacheRef.current.get(name) ?? null);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void requestLaneEmojiSuggestion(name, targetPin).then((emoji) => {
+        emojiSuggestionCacheRef.current.set(name, emoji);
+        if (
+          sequence !== emojiSuggestionSequenceRef.current
+          || createEmojiUserPickedRef.current
+          || createSelectedEmoji
+        ) return;
+        if (emoji) {
+          setSuggestedEmoji(emoji);
+        }
+      });
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+    // Pin identity is carried by targetPinKey so rebuilt pin objects don't
+    // restart a pending stateless suggestion for the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, behavior, createBusy, laneCreated, createLaneName, createSelectedEmoji, targetPinKey]);
+
   // Mirror busy so callers can block a forced close mid-create (parity with the
   // old `handleCreateDialogOpenChange` guard).
   const busyRef = useRef(false);
@@ -318,17 +397,41 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateSetupPhase(null);
     setSelectedTemplateId("");
     setCreateSelectedColor(null);
+    setCreateSelectedEmoji(null);
+    setSuggestedEmoji(null);
+    createEmojiUserPickedRef.current = false;
+    emojiSuggestionSequenceRef.current += 1;
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
     setPickedMachineId("");
     setPinnedLanes(null);
   }, [setPickedMachineId]);
 
+  const handleSetCreateLaneName = useCallback((value: string) => {
+    setCreateLaneName(value);
+    setSuggestedEmoji(null);
+    if (!createEmojiUserPickedRef.current) setCreateSelectedEmoji(null);
+  }, []);
+
+  const handleSetCreateEmoji = useCallback((emoji: string | null) => {
+    createEmojiUserPickedRef.current = true;
+    setCreateSelectedEmoji(emoji);
+    setSuggestedEmoji(null);
+  }, []);
+
+  const handleAcceptSuggestedEmoji = useCallback(() => {
+    if (!suggestedEmoji) return;
+    setCreateSelectedEmoji(suggestedEmoji);
+    setSuggestedEmoji(null);
+  }, [suggestedEmoji]);
+
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
     if (!issue) return;
 
     const nextName = linearIssueLaneName(issue);
+    setSuggestedEmoji(null);
+    if (!createEmojiUserPickedRef.current) setCreateSelectedEmoji(null);
     setCreateLaneName((current) => {
       const trimmed = current.trim();
       const previousAutoName = createLinearIssueAutoNameRef.current;
@@ -433,6 +536,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateLaneName("");
     setCreateMode("primary");
     setCreateSelectedColor(null);
+    setCreateSelectedEmoji(null);
+    setSuggestedEmoji(null);
+    createEmojiUserPickedRef.current = false;
+    emojiSuggestionSequenceRef.current += 1;
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
     setCreateBusy(false);
@@ -786,12 +893,16 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       createdLaneMachineRef.current = { machineId, pin };
       setLaneCreated(true);
 
-      if (createSelectedColor) {
+      if (createSelectedColor || createSelectedEmoji) {
         try {
           setCreateSetupPhase("appearance");
-          await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor }, ...pinArg(pin));
+          await window.ade.lanes.updateAppearance({
+            laneId: lane.id,
+            ...(createSelectedColor ? { color: createSelectedColor } : {}),
+            ...(createSelectedEmoji ? { emoji: createSelectedEmoji } : {}),
+          }, ...pinArg(pin));
         } catch {
-          // Color collisions or transient errors shouldn't block lane creation.
+          // Appearance is optional and must not block lane creation.
         }
       }
 
@@ -849,6 +960,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     runSetupForCreatedLane,
     selectedTemplateId,
     createSelectedColor,
+    createSelectedEmoji,
     createSelectedLinearIssue,
     activeProjectRoot,
     validateLaneFormExtras,
@@ -906,7 +1018,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       open={open}
       onOpenChange={handleDialogOpenChange}
       createLaneName={createLaneName}
-      setCreateLaneName={setCreateLaneName}
+      setCreateLaneName={handleSetCreateLaneName}
       createMode={createMode}
       setCreateMode={setCreateMode}
       createParentLaneId={createParentLaneId}
@@ -932,6 +1044,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setSelectedTemplateId={setSelectedTemplateId}
       selectedColor={createSelectedColor}
       setSelectedColor={setCreateSelectedColor}
+      selectedEmoji={createSelectedEmoji}
+      setSelectedEmoji={handleSetCreateEmoji}
+      suggestedEmoji={suggestedEmoji}
+      onAcceptSuggestedEmoji={handleAcceptSuggestedEmoji}
+      showEmojiControl={!configureForChat}
       selectedLinearIssue={createSelectedLinearIssue}
       setSelectedLinearIssue={handleSetCreateLinearIssue}
       branchPullRequests={createBranchPullRequests}

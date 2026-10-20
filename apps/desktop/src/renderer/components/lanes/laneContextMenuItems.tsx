@@ -13,6 +13,7 @@ import {
   Path,
   PushPin,
   PushPinSlash,
+  Smiley,
   Stack,
   X,
   type Icon,
@@ -24,8 +25,11 @@ import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
+import { Z_LAYERS } from "../ui/zLayers";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -405,6 +409,22 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         ),
       }],
     });
+    groups.push({
+      key: "emoji",
+      label: "Emoji",
+      icon: Smiley,
+      entries: [{
+        kind: "custom",
+        key: "picker",
+        node: (
+          <LaneEmojiRow
+            lane={lane}
+            runtimePin={runtimePin}
+            onChanged={onAppearanceChanged}
+          />
+        ),
+      }],
+    });
   }
 
   // ── Manage: last, because both entries open a surface that can delete.
@@ -618,6 +638,45 @@ function SwatchGroup({
         })}
         {trailing}
       </div>
+    </div>
+  );
+}
+
+function LaneEmojiRow({
+  lane,
+  runtimePin,
+  onChanged,
+}: {
+  lane: LaneSummary;
+  runtimePin: OpenProjectBinding | null;
+  onChanged?: () => void | Promise<void>;
+}) {
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const apply = async (next: string | null) => {
+    setError(null);
+    setBusy(true);
+    try {
+      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, runtimePin);
+      await onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set emoji");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5">
+      <LaneEmojiPicker
+        value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+        onChange={(next) => { void apply(next); }}
+        disabled={busy}
+        overlayLayer={Z_LAYERS.contextMenu}
+      />
+      <span className="text-[11px] text-muted-fg">{laneEmojiForDisplay(lane.emoji, lane.icon) ?? "No emoji"}</span>
+      {error ? <span className="text-[10px] text-red-300">{error}</span> : null}
     </div>
   );
 }
