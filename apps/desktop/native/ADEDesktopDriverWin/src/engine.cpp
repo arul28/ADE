@@ -815,7 +815,9 @@ Json Engine::windowCommand(const std::string& op, const Json& req, std::unique_l
     ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
     out["minimized"] = IsIconic(hwnd) != FALSE;
     if (!out["minimized"].asBool()) {
-      failIfElevatedWindow(hwnd);
+      // Minimizing does not depend on the foreground, so only the target can
+      // be the cause; on the shared seat the foreground is the user's window.
+      failIfElevatedWindow(hwnd, false);
       fail(code::kWindowActionFailed, "Windows did not minimize window " + std::to_string(windowId) + ".");
     }
   } else {

@@ -321,6 +321,8 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
     int duration = static_cast<int>(payload["durationMs"].asInt(300));
     if (priv) {
       failIfElevatedWindow(WindowFromPoint(from), false);
+      // A drop on an admin window would block the button-up and leave it held.
+      failIfElevatedWindow(WindowFromPoint(to), false);
       ok = sendDrag(from.x, from.y, to.x, to.y, duration);
     } else {
       HWND w = windowAt(from);
