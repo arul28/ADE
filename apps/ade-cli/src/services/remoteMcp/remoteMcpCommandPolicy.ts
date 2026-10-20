@@ -6,11 +6,16 @@ import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remote
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
  *
  * `write` is full access: the app can do what the person could do in a
- * terminal. The only commands refused are the ones that would outlive or get
+ * terminal. The commands refused are the ones that would outlive or get
  * around the switch that grants the access (managing remote access itself,
  * minting account tokens, signing the machine in or out), or that cannot work
  * without a terminal and would cut the connection (the brain's own lifecycle,
  * interactive setup, `ade code`, a hard reset).
+ *
+ * Both scopes fail closed. Every top-level command is either in
+ * FULL_ACCESS_COMMANDS or in BLOCKED_COMMANDS; a command in neither is refused,
+ * so a new `ade` command is unavailable remotely until someone decides which
+ * list it belongs in (and, if it only reads, adds it to READ_ONLY_COMMANDS).
  *
  * `read` is an allowlist of commands that only read. Anything not on the list
  * is refused, so a new command is read-only-unavailable until someone adds it.
@@ -35,6 +40,24 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["code", "`ade code` needs a terminal."],
   ["desktop", "Opening the desktop app is done on the computer itself."],
   ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
+]);
+
+/**
+ * Every other top-level command, with the spellings the CLI accepts. Full
+ * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
+ */
+const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
+  "action", "actions", "ade-browser", "agent", "agents", "app", "app-control", "apple", "apps", "archive",
+  "archived", "artifact", "artifacts", "ask", "auth", "auto-update", "automation", "automations", "browser",
+  "built-in-browser", "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "coord",
+  "coordinator", "create", "cursor", "desk", "diff", "diffs", "disk", "doctor", "drafts", "electron", "file",
+  "files", "gh", "git", "github", "harness", "harnesses", "health", "help", "history", "init", "ios", "ios-sim",
+  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "new",
+  "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider", "providers",
+  "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen", "search",
+  "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill", "skills",
+  "status", "storage", "sync", "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui",
+  "update", "updates", "usage", "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
 /**
@@ -139,6 +162,12 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
   const command = COMMAND_ALIASES.get(args[0]!) ?? args[0]!;
   const blocked = BLOCKED_COMMANDS.get(command);
   if (blocked) return { ok: false, reason: `\`ade ${command}\` is not available remotely. ${blocked}` };
+  if (!FULL_ACCESS_COMMANDS.has(args[0]!)) {
+    return {
+      ok: false,
+      reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
+    };
+  }
   // ADE MCP is switched on per computer. Forwarding to another machine would
   // reach one whose owner may have it off.
   if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {

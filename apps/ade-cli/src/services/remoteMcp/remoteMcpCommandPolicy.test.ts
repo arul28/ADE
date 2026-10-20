@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HELP_BY_COMMAND } from "../../cli";
 import { checkRemoteAdeCommand } from "./remoteMcpCommandPolicy";
 
 /**
@@ -19,6 +20,7 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "the raw RPC tool door", ["actions", "call", "run_ade_action"]],
     ["write", "forwarding to another machine", ["chat", "send", "x", "--machine", "desktop"]],
     ["write", "removing a machine from the account, through the `machine` alias", ["machine", "remove", "key"]],
+    ["write", "a command nobody has enabled for ADE MCP", ["not-a-real-command", "run"]],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
@@ -46,4 +48,14 @@ describe("checkRemoteAdeCommand", () => {
     expect(verdict.ok ? verdict.args : []).toEqual(expected);
     expect(verdict.ok ? verdict.args[0] : "").not.toBe("ade");
   });
+
+  // Full access fails closed, so a new command is unreachable until someone
+  // decides whether ADE MCP may run it. This catches the deciding being skipped.
+  it.each([...new Set(Object.keys(HELP_BY_COMMAND).map((key) => key.split(" ")[0]!))])(
+    "`ade %s` is classified for ADE MCP",
+    (command) => {
+      const verdict = checkRemoteAdeCommand([command, "--help"], "write");
+      expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for ADE MCP/);
+    },
+  );
 });
