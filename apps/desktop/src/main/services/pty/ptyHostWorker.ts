@@ -68,6 +68,12 @@ type FlowState = {
 const ptys = new Map<string, IPty>();
 const flow = new Map<string, FlowState>();
 
+/** node-pty on Windows throws for any signal; ConPTY ends the process itself. */
+function killPty(pty: IPty, signal?: string): void {
+  if (process.platform === "win32") pty.kill();
+  else pty.kill(signal);
+}
+
 /** A paused PTY is never read to EOF, so its exit would not be reported. */
 function resumeForExit(ptyId: string, pty: IPty): void {
   const state = flow.get(ptyId);
@@ -127,7 +133,7 @@ function disposePty(ptyId: string, signal?: string): void {
   ptys.delete(ptyId);
   flow.delete(ptyId);
   try {
-    pty.kill(signal);
+    killPty(pty, signal);
   } catch {
     // Best effort; the parent will mark the session dead if the host exits.
   }
@@ -195,7 +201,7 @@ function handleMessage(message: HostMessage): void {
       pty.resize(message.cols, message.rows);
     } else if (message.type === "kill") {
       resumeForExit(message.ptyId, pty);
-      pty.kill(message.signal);
+      killPty(pty, message.signal);
     } else if (message.type === "pause" || message.type === "resume") {
       const state = flow.get(message.ptyId);
       if (state) {

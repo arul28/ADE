@@ -4,13 +4,16 @@
 // tracked shell in <laneId>, shows it, and floods it:
 //   seq  `seq 1 2000000` (about 16 MB), then exits: reports the time to finish
 //   yes  200 MB of colored `yes` lines, then exits
-// Meanwhile the renderer calls `sessions.get` every 100 ms and the script
-// reports that round trip (p50, p95, max, and how many calls finished), the
-// renderer's frame gaps and long tasks, and the brain's CPU seconds.
+// Meanwhile the renderer calls `sessions.get` again 100 ms after each reply
+// and the script reports that round trip (p50, p95, max over the calls that
+// answered, plus how many failed), the renderer's frame gaps and long tasks,
+// and the brain's CPU seconds.
 // Run against a dev app with its own socket (docs/perf/macos-baseline.md), and
-// set `ADE_RUNTIME_SOCKET` to that socket for the brain CPU number. The shell
-// it starts stays in the lane as an ended session.
-import { execSync } from "node:child_process";
+// set `ADE_RUNTIME_SOCKET` to that socket for the brain CPU number. The lane
+// must be on this machine: the calls carry no runtime pin. The shell it starts
+// stays in the lane as an ended session; one still running at the timeout is
+// closed.
+import { execFileSync } from "node:child_process";
 import { findPage, positionalArgs } from "./target.mjs";
 
 const [laneId, mode = "seq", timeoutArg] = positionalArgs();
@@ -41,23 +44,31 @@ const evaluate = (expression) => new Promise((resolve, reject) => {
   ws.send(JSON.stringify({ id: i, method: "Runtime.evaluate", params: { expression, returnByValue: true, awaitPromise: true } }));
 });
 
-const brainPid = socket
-  ? execSync(`pgrep -f "serve --socket ${socket}" || true`).toString().trim().split("\n")[0]
-  : "";
+const findBrainPid = () => {
+  try {
+    const pid = execFileSync("pgrep", ["-f", `serve --socket ${socket}`]).toString().trim().split("\n")[0];
+    return /^\d+$/.test(pid) ? pid : "";
+  } catch {
+    return "";
+  }
+};
+const brainPid = socket ? findBrainPid() : "";
 const cpuSeconds = () => {
   if (!brainPid) return null;
-  const t = execSync(`ps -o time= -p ${brainPid}`).toString().trim();
+  const t = execFileSync("ps", ["-o", "time=", "-p", brainPid]).toString().trim();
   return t.replace("-", ":").split(":").reduce((a, x) => a * 60 + Number(x), 0);
 };
 
-const session = await evaluate(`window.ade.pty.create({
+const created = await evaluate(`window.ade.pty.create({
   laneId: ${JSON.stringify(laneId)}, cols: 120, rows: 36, title: "terminal-flood ${mode}",
   tracked: true, toolType: "shell", startupCommand: ${JSON.stringify(`sleep 2; ${flood}; exit`)},
-}).then((r) => r.sessionId)`);
+}).then((r) => ({ ptyId: r.ptyId, sessionId: r.sessionId }))`);
+const { ptyId, sessionId: session } = created;
 await evaluate(`window.dispatchEvent(new CustomEvent("ade:work:select-session", { detail: { sessionId: ${JSON.stringify(session)}, laneId: ${JSON.stringify(laneId)} } })); 1`);
 const cpuBefore = cpuSeconds();
 const result = await evaluate(`new Promise((resolve) => {
   const frames = [], longTasks = [], calls = [];
+  let failedCalls = 0;
   let done = false, finished = false, last = performance.now();
   const t0 = performance.now();
   const observer = new PerformanceObserver((l) => { for (const e of l.getEntries()) longTasks.push(e.duration); });
@@ -68,8 +79,12 @@ const result = await evaluate(`new Promise((resolve) => {
     while (!done) {
       const a = performance.now();
       let status = null;
-      try { status = (await window.ade.sessions.get(${JSON.stringify(session)}))?.status ?? null; } catch {}
-      calls.push(performance.now() - a);
+      try {
+        status = (await window.ade.sessions.get(${JSON.stringify(session)}))?.status ?? null;
+        calls.push(performance.now() - a);
+      } catch {
+        failedCalls += 1;
+      }
       if (status && status !== "running") { finished = true; break; }
       if (performance.now() - t0 > ${timeoutMs}) break;
       await new Promise((r) => setTimeout(r, 100));
@@ -79,13 +94,17 @@ const result = await evaluate(`new Promise((resolve) => {
     const q = (xs, p) => { const s = [...xs].sort((x, y) => x - y); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0); };
     resolve({
       finished, wallMs: Math.round(performance.now() - t0),
-      ipcP50: q(calls, 0.5), ipcP95: q(calls, 0.95), ipcMax: q(calls, 1), ipcCalls: calls.length,
+      ipcP50: q(calls, 0.5), ipcP95: q(calls, 0.95), ipcMax: q(calls, 1), ipcCalls: calls.length, ipcFailed: failedCalls,
       frameP95: q(frames, 0.95), frameMax: q(frames, 1),
       longTaskMs: Math.round(longTasks.reduce((a, b) => a + b, 0)),
     });
   })();
 })`);
 const cpuAfter = cpuSeconds();
+if (!result.finished) {
+  // Do not leave the flood running into the next measurement.
+  await evaluate(`window.ade.pty.dispose({ ptyId: ${JSON.stringify(ptyId)}, sessionId: ${JSON.stringify(session)} }).then(() => 1)`).catch(() => {});
+}
 console.log(JSON.stringify({
   mode,
   ...result,

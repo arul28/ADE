@@ -320,6 +320,9 @@ class SupervisedPtyHost {
       const error = new Error("PTY host spawn timed out.");
       this.logger.warn("pty.host_spawn_timeout", { ptyId });
       this.ptys.delete(ptyId);
+      // A shared host outlives this PTY, so a spawn that completes late must
+      // still be ended there; IPC order puts this after the spawn request.
+      this.disposeInHost(ptyId);
       this.detachPtyFromChild(ptyId, "SIGKILL");
       pending.reject(error);
     }, HOST_SPAWN_TIMEOUT_MS);
@@ -648,23 +651,28 @@ class SupervisedPtyHost {
       });
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
-      if (childState.ptyIds.size > 1) {
-        // Other terminals share this host, so killing the host is not the
-        // escalation it is for a host of one: kill this PTY's process instead.
-        try {
-          childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" });
-        } catch {
-          // The host may be gone; its exit handler covers what remains.
-        }
-        if (process.platform === "win32" && remote && remote.pid > 0) {
-          killWindowsProcessTree(remote.pid, () => {});
-        }
-      }
+      // Other terminals may share this host, so killing the host is not the
+      // escalation it is for a host of one: the host kills this PTY instead.
+      this.disposeInHost(ptyId);
       this.detachPtyFromChild(ptyId, "SIGKILL");
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);
     timer.unref?.();
     this.killTimers.set(ptyId, timer);
+  }
+
+  /** Ask the PTY's host to kill and forget it, through the host's live handle. */
+  private disposeInHost(ptyId: string): void {
+    const childState = this.childrenByPty.get(ptyId);
+    if (!childState || !childState.child.connected) return;
+    try {
+      childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" });
+    } catch (error) {
+      this.logger.warn("pty.host_dispose_send_failed", {
+        ptyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private clearKillTimer(ptyId: string): void {

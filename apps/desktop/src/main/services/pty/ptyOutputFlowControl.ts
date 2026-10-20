@@ -1,3 +1,5 @@
+import { captureError } from "../../../shared/sentry/capture";
+
 /**
  * Terminal output flow control for the brain's client connections.
  *
@@ -43,8 +45,9 @@ function setHolding(holder: object, holding: boolean): void {
   for (const listener of listeners) {
     try {
       listener(held);
-    } catch {
-      // A listener failure must not leave the other PTYs paused.
+    } catch (error) {
+      // Keep going, so one failure cannot leave the other PTYs paused.
+      captureError(error, { fingerprint: ["pty-output-flow-control", "hold-listener"] });
     }
   }
 }

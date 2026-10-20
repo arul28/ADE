@@ -2877,6 +2877,8 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     runtime.renderer = mode;
     webglRuntimes.add(runtime);
     syncCursorBlinkClock(runtime);
+    // Unmounted while the addon loaded: the unmount found no WebGL to release.
+    if (runtime.refs === 0 && !runtime.webglReleaseTimer) scheduleParkedWebglRelease(runtime);
 
     if (mode === "webgl") {
       const maybeOnContextLoss = (addon as { onContextLoss?: (cb: () => void) => void }).onContextLoss;

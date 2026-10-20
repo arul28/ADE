@@ -55,10 +55,14 @@ import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking
 const DELEGATED_FILE_LIMIT = 30;
 const DELEGATED_ARTIFACT_LIMIT = 200;
 const MAX_DOC_BODY_CHARS = 32_000;
-// One pass indexes this much transcript in a single synchronous transaction.
-// 4 MB passes held the brain for 1.5-2 s at a time while a terminal flooded
-// output; the queue re-enqueues the remainder and yields between passes.
-const MAX_READ_BYTES_PER_PASS = 512 * 1024;
+// A chat pass needs room for its largest JSONL line: a window with no newline
+// is skipped as one oversized record.
+const MAX_CHAT_READ_BYTES_PER_PASS = 4 * 1024 * 1024;
+// One terminal pass indexes this much transcript in a single synchronous
+// transaction. 4 MB passes held the brain for 1.5-2 s at a time while a
+// terminal flooded output; the queue re-enqueues the remainder and yields
+// between passes. Terminal chunks are cut at 8 KB, so no record outgrows it.
+const MAX_TERMINAL_READ_BYTES_PER_PASS = 512 * 1024;
 const COMMITS_PER_LANE = 100;
 const DEFAULT_QUERY_LIMIT = 50;
 const BACKFILL_RETRY_MS = 60_000;
@@ -694,7 +698,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       return;
     }
 
-    const readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    const readEnd = Math.min(fileSize, source.cursor + MAX_CHAT_READ_BYTES_PER_PASS);
     let buf: Buffer;
     if (compressed) {
       buf = compressed.subarray(source.cursor, readEnd);
@@ -819,7 +823,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
     if (fileSize === source.cursor) return;
 
-    const readEnd = Math.min(fileSize, source.cursor + MAX_READ_BYTES_PER_PASS);
+    const readEnd = Math.min(fileSize, source.cursor + MAX_TERMINAL_READ_BYTES_PER_PASS);
     let buf: Buffer;
     if (compressed) {
       buf = compressed.subarray(source.cursor, readEnd);

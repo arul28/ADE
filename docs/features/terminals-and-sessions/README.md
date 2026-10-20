@@ -2839,9 +2839,10 @@ so explicitly rather than asserting a tier ADE never set.
 - **A PTY host serves up to 8 terminals.** Each host is a whole Node process
   (about 18-25 MB), so one per terminal made every agent CLI pay for its own.
   A host crash ends every terminal it serves (they show as failed); new
-  terminals start a new host. A terminal that ignores kill is SIGKILLed on
-  its own (`scheduleForcedDetach`), never by killing a host others still
-  use. Every spawn must pass its own `env` and `cwd`: a shared host's own
+  terminals start a new host. A terminal that ignores kill, or whose spawn
+  timed out, is killed on its own through its host's live handle
+  (`disposeInHost`), never by killing a host others still use. On Windows
+  the worker calls node-pty `kill()` with no signal, which it rejects. Every spawn must pass its own `env` and `cwd`: a shared host's own
   environment is from whenever it started.
 - **Parked terminals give their WebGL context back after 30 s**
   (`PARKED_WEBGL_RELEASE_MS`) and take one again on the next mount

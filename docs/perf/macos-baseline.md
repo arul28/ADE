@@ -291,7 +291,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
-| `terminal-flood.mjs <laneId> seq\|yes [secs]` | Starts a shell in the lane and floods it (16 MB `seq` or 200 MB colored `yes`) while the renderer calls `sessions.get` every 100 ms: time to finish, that round trip (p50, p95, max), frame gaps, long tasks, and the brain's CPU (`ADE_RUNTIME_SOCKET`) |
+| `terminal-flood.mjs <laneId> seq\|yes [secs]` | Starts a shell in the lane and floods it (16 MB `seq` or 200 MB colored `yes`) while the renderer calls `sessions.get` again 100 ms after each reply: time to finish, that round trip (p50, p95, max over answered calls, plus failures), frame gaps, long tasks, and the brain's CPU (`ADE_RUNTIME_SOCKET`) |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |
 | `music-host.sh <secs>` | CPU %, RSS and physical footprint of the macOS Apple Music host and the WebKit processes it started |
@@ -687,7 +687,7 @@ server, headless Chrome, site data cleared before each run, interleaved):
 Same Mac Studio, dev build with its own socket, the ADE repository open, a
 dozen chats in the Work list. Before is main at `45458b44e`; baseline is the
 ademark-terminals branch. One terminal floods while the renderer calls
-`sessions.get` every 100 ms (`terminal-flood.mjs`).
+`sessions.get` again 100 ms after each reply (`terminal-flood.mjs`).
 
 | Metric | Script | Before | Baseline | Ceiling |
 |---|---|---:|---:|---:|
