@@ -263,7 +263,7 @@
       ]
     },
     "gemini-4-argon": {
-      "summary": "Google's frontier model: at or near the top for code review, small edits, debugging and refactors, with very few made-up facts; slow per task.",
+      "summary": "Google's frontier model: at or near the top for code review, debugging and refactors, with very few made-up facts; slow and premium per task.",
       "strengths": [
         "Code review and debugging",
         "Refactors and feature work",
@@ -283,14 +283,18 @@
           "why": "Terminal-Bench 0.57"
         },
         {
-          "kind": "small_edit",
-          "why": "top small-edit score"
+          "kind": "refactor",
+          "why": "ties the best refactor score you can run"
         }
       ],
       "avoidFor": [
         {
           "kind": "question",
           "why": "slow for a quick answer"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill: top score, but a cheaper, faster model does a small edit as well"
         }
       ],
       "notes": [

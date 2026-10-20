@@ -1582,7 +1582,8 @@ Renderer — settings:
   `routerEfficiency` replays every ledger thread at its free switch points and
   sums the shadow log's subagents for `ade router efficiency`; `modelCatalog`
   joins the runnable models with their full registry profiles for
-  `ade models catalog`. The wire contract is
+  `ade models catalog`; `modelSheet` scores those models per task kind and
+  adds curated words for `ade models sheet`. The wire contract is
   `apps/desktop/src/shared/routerRegistry.ts`.
 - `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
   ledger row after the turn, from Cursor's dashboard events and Factory
