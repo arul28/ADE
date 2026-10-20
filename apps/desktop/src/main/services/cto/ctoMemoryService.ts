@@ -681,12 +681,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   const readRecentDailyEntries = (days = 2, maxChars = DAILY_INJECT_MAX_CHARS): string => {
-    const now = new Date();
-    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const oldestStamp = todayStamp(cutoff);
-    const newestStamp = todayStamp(now);
-    const stamps = listDailyStampsNewestFirst()
-      .filter((stamp) => stamp >= oldestStamp && stamp <= newestStamp);
+    const stamps = listDailyStampsNewestFirst().slice(0, Math.max(1, days));
     if (!stamps.length) return "";
     // Oldest first so the newest content sits at the tail and survives truncation.
     const chronological = [...stamps].reverse();

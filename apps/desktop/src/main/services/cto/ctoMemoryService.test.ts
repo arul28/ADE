@@ -131,7 +131,7 @@ describe("ctoMemoryService", () => {
     expect(service.readMemory()).not.toContain("Merged from a newly pinned source.");
   });
 
-  it("uses only recent user entries to trigger gardening or enter its context", () => {
+  it("uses recent user entries to trigger gardening and excludes gardener summaries from context", () => {
     const { ctoDir, service } = createFixture();
     const now = new Date();
     const stamp = (date: Date): string => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
@@ -150,7 +150,6 @@ describe("ctoMemoryService", () => {
     expect(service.hasRecentDailyEntries(2, now)).toBe(true);
     expect(service.readRecentDailyEntries(2)).toContain("user request");
     expect(service.readRecentDailyEntries(2)).not.toContain("Nightly memory gardening:");
-    expect(service.readRecentDailyEntries(2)).not.toContain("Old user activity.");
 
     fs.writeFileSync(
       path.join(dailyDir, `${stamp(recent)}.md`),
