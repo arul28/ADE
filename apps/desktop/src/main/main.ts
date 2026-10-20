@@ -1,4 +1,4 @@
-import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
+import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
@@ -777,6 +777,9 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 // The same holds for every other marker of a parent Claude session: a `claude`
 // in an ADE terminal would inherit them and stop saving its transcript.
 stripParentClaudeSessionEnv(process.env);
+// An app started from an agent's shell must not read that agent's provider
+// account as the machine's default one, nor hand it to the brain it spawns.
+stripInheritedProviderHomeEnv(process.env);
 
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.

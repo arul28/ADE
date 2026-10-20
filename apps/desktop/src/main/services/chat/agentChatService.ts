@@ -11408,14 +11408,21 @@ export function createAgentChatService(args: {
       return pinned;
     }
     if (resolved.fellBack) {
+      // The account may be missing only from THIS brain's home. While another
+      // live brain runs the chat, its pointers are that brain's to keep: a
+      // title or summary call here must not rewrite them.
+      const foreignOwner = liveForeignChatRuntimeOwner(managed.session.id);
       logger.info("agent_chat.provider_instance_fell_back", {
         sessionId: managed.session.id,
         provider,
         requestedId,
         instanceId: resolved.instance.id,
+        ...(foreignOwner ? { keptForOwnerPid: foreignOwner.pid } : {}),
       });
-      delete managed.session.instanceId;
-      forgetProviderThreadPointer(managed);
+      if (!foreignOwner) {
+        delete managed.session.instanceId;
+        forgetProviderThreadPointer(managed);
+      }
     }
     return resolved.instance;
   };
@@ -11751,6 +11758,14 @@ export function createAgentChatService(args: {
   const forgetProviderThreadPointer = (managed: ManagedChatSession): void => {
     delete managed.session.threadId;
     managed.claudeBackgroundResumeSessionId = null;
+    // A live Claude runtime holds its own copy, read right after the launch
+    // env resolves the account: left set, the launch that fell back still
+    // resumed the old account's thread ("No conversation found", 2026-10-20)
+    // and persisted the id back.
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.sdkSessionId = null;
+      managed.runtime.forkFromSdkSessionId = null;
+    }
     try {
       const persisted = readPersistedState(managed.session.id);
       if (!persisted) return;
@@ -19675,9 +19690,8 @@ export function createAgentChatService(args: {
      */
     options?: { quiet?: boolean },
   ): boolean => {
-    const owner = persisted === undefined
-      ? readPersistedState(sessionId)?.runtimeOwner ?? null
-      : persisted?.runtimeOwner ?? null;
+    const state = persisted === undefined ? readPersistedState(sessionId) : persisted;
+    const owner = state?.runtimeOwner ?? null;
     const decision = chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
@@ -19687,7 +19701,37 @@ export function createAgentChatService(args: {
         verdict: decision.verdict,
       });
     }
+    if (decision.adoptable && accountUnknownFromOtherHome(state)) {
+      if (options?.quiet !== true) {
+        logger.warn("agent_chat.runtime_account_unknown_here", {
+          sessionId,
+          instanceId: state?.instanceId ?? null,
+          ownerAdeHome: owner?.adeHome ?? null,
+        });
+      }
+      return false;
+    }
     return decision.adoptable;
+  };
+
+  /**
+   * A chat last run under another ADE home on an account this brain's home
+   * does not have. Its provider thread lives in that account's config home, so
+   * this brain could only resume it on a different account, which fails ("No
+   * conversation found") and drops the chat's account pointer on the way. Left
+   * to a brain whose home knows the account. A missing account under THIS
+   * brain's home is a real removal and keeps the fallback.
+   */
+  const accountUnknownFromOtherHome = (state: PersistedChatState | null | undefined): boolean => {
+    const instanceId = state?.instanceId?.trim();
+    const ownerHome = state?.runtimeOwner?.adeHome;
+    if (!instanceId || !ownerHome || !isProviderInstanceProvider(state.provider)) return false;
+    if (pathsEqual(ownerHome, brainAdeHome)) return false;
+    try {
+      return getMachineProviderInstanceStore().get(instanceId) === null;
+    } catch {
+      return false;
+    }
   };
 
   /** The persisted owner stamp when it names another live brain process. */

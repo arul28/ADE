@@ -122,7 +122,7 @@ import { prBriefHints } from "../../desktop/src/shared/prBrief";
 import { PR_THREAD_CLOSEOUT_RULE } from "../../desktop/src/shared/prWatch";
 import { prBodyProofIds } from "../../desktop/src/shared/prBodyProof";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
-import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
+import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -293,6 +293,7 @@ import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime
 import {
   describeBrainRoleCeiling,
   describeDroppedCallerIdentity,
+  dropInheritedAgentLocation,
   dropInheritedCallerIdentity,
 } from "./services/runtime/brainInheritedIdentity";
 import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
@@ -24955,7 +24956,12 @@ async function runServe(
   }
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
-  const droppedCallerIdentity = dropInheritedCallerIdentity(process.env);
+  const droppedIdentityKeys = dropInheritedCallerIdentity(process.env);
+  const droppedCallerIdentity = [
+    ...droppedIdentityKeys,
+    ...dropInheritedAgentLocation(process.env, droppedIdentityKeys),
+    ...stripInheritedProviderHomeEnv(process.env),
+  ];
   // `--profile embedded` marks this runtime as a guest inside an external
   // embedder's process (the ADE SDK). Read here, before the identity notes, so
   // an embedded runtime stays quiet about a role ceiling that is correct for
