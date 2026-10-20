@@ -1608,10 +1608,13 @@ allowing a cross-provider fork.
   has no extension or the wrong one (a clipboard `image`, a `diagram.bin` that
   is really `image/svg+xml`) is renamed by `normalizeImageAttachmentFilename`
   on both staging paths, so the stored file and `inferAttachmentType` agree.
-- **Thumbnails for formats Chromium cannot draw.** `getImageDataUrl` sniffs
-  TIFF and HEIC/HEIF and returns a JPEG converted with `sips` on macOS; on
-  Windows and Linux it returns a clean unsupported error and the tray keeps
-  the file chip.
+- **Thumbnails for formats Chromium cannot draw.** Every `getImageDataUrl`
+  route (desktop IPC, the runtime action, sync and personal chats) reads
+  through `readImageFileAsDataUrl` in `imageAttachmentConverter.ts`: the type
+  comes from the bytes (`shared/imageSniff.ts`), and TIFF or HEIC/HEIF becomes
+  a JPEG through `sips` on a macOS host. A Windows or Linux host has no decoder
+  and returns the original bytes: iOS draws them natively, and the desktop tray
+  falls back to its placeholder when the picture does not load.
 - **The attachment cap and the provider inline caps are different numbers.**
   `shared/chatAttachmentLimits.ts` single-sources them:
   `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) is what may be staged on disk;

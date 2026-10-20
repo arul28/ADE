@@ -244,13 +244,25 @@ Renderer:
   OOXML readers behind those two viewers: `ooxmlZip.ts` (lazy fflate,
   entry-scoped reads, a streaming byte cap), `ooxmlXml.ts` (namespace-aware
   lookups, entity decoding, event-loop yields), `xlsx.ts`, `pptx.ts` and `docx.ts`
-  (the display models), and `ooxmlError.ts` (a typed failure reason each
+  (the display models), `ooxmlMedia.ts` (the one media extension → MIME map), and `ooxmlError.ts` (a typed failure reason each
   viewer turns into copy). See [Office previews](#office-previews).
 - `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
   — the shell both office viewers share: size pre-check, capped byte stream,
   parse through a dynamic import, cancellation, and the one failure card (with
   a retry only where retrying can help). `load` is held in a ref, so a caller
   passing an inline arrow cannot restart the read on a re-render.
+- `apps/desktop/src/renderer/components/files/v2/viewers/WordViewer.tsx` and
+  `WordBlocks.tsx` — the `.docx` page, outline rail and zoom (the viewer) and
+  the block renderers (paragraphs, lists, tables, pictures, links). Element ids
+  are scoped per viewer, so two open documents never share an anchor.
+- `apps/desktop/src/renderer/components/files/v2/viewers/FontViewer.tsx` and
+  `fontInfo.ts` — the font specimen and its bounded sfnt/WOFF metadata reader.
+- `apps/desktop/src/renderer/components/files/v2/viewers/MermaidViewer.tsx` —
+  `.mmd`/`.mermaid` Diagram↔Source over the shared `MermaidDiagram`
+  (`keepLastGood`).
+- `apps/desktop/src/renderer/components/files/v2/viewers/usePanZoom.ts` and
+  `ZoomControls.tsx` — the pan/zoom state and toolbar the image, Mermaid and
+  Word viewers share.
 - `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
   — the one "no in-app preview" card (icon, name, mime · size, an honest
   notice, Copy full path, Open externally). `DocumentViewer` renders it for

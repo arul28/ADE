@@ -6,6 +6,7 @@ import { OoxmlError, ooxmlFailureMessage } from "./ooxmlError";
 import { openOoxmlZip } from "./ooxmlZip";
 import { classifyFormatCode, formatExcelSerial, openXlsx, scanSheetXml, SPREADSHEET_PREVIEW_MAX_ROWS } from "./xlsx";
 import { openPptx } from "./pptx";
+import { openDocx, type WordBlock, type WordParagraph } from "./docx";
 
 /**
  * The OOXML readers' validation tool. Both readers are pure parsers over
@@ -546,6 +547,56 @@ describe("openPptx", () => {
 });
 
 /* ── Failure copy ──────────────────────────────────────────────────────── */
+
+describe("openDocx", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const PIC_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+  const LINK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+  const drawing = (rid: string) => `<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="914400" cy="914400"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:blipFill><a:blip r:embed="${rid}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+  const link = (rid: string, text: string) => `<w:hyperlink r:id="${rid}"><w:r><w:t>${text}</w:t></w:r></w:hyperlink>`;
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
+  function docxZip(): Uint8Array {
+    return zipSync({
+      "[Content_Types].xml": strToU8(CONTENT_TYPES),
+      "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>
+  <w:p>${link("rSafe", "safe")}${link("rScript", "script")}</w:p>
+  <w:p>${drawing("rLocal")}</w:p>
+  <w:p>${drawing("rTracker")}</w:p>
+</w:body></w:document>`),
+      "word/_rels/document.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rSafe" Type="${LINK_REL}" Target="https://example.com/spec" TargetMode="External"/>
+  <Relationship Id="rScript" Type="${LINK_REL}" Target="javascript:alert(1)" TargetMode="External"/>
+  <Relationship Id="rLocal" Type="${PIC_REL}" Target="media/image1.png"/>
+  <Relationship Id="rTracker" Type="${PIC_REL}" Target="https://tracker.example/pixel.png" TargetMode="External"/>
+</Relationships>`),
+      "word/media/image1.png": PNG,
+    });
+  }
+
+  const paragraphs = (blocks: WordBlock[]) => blocks.filter((block): block is WordParagraph => block.kind === "paragraph");
+
+  // A document is untrusted: opening it must never reach the network, and a
+  // link it carries must never become something the viewer would execute.
+  it("never resolves an external picture and keeps only web and mail links", async () => {
+    const doc = await openDocx(docxZip());
+    const runs = paragraphs(doc.blocks).flatMap((paragraph) => paragraph.runs);
+    expect(runs.find((run) => run.text === "safe")?.href).toBe("https://example.com/spec");
+    expect(runs.find((run) => run.text === "script")?.href ?? null).toBeNull();
+
+    const images = doc.blocks.filter((block) => block.kind === "image");
+    expect(images).toHaveLength(2);
+    const [local, tracker] = images as Array<Extract<WordBlock, { kind: "image" }>>;
+    expect(tracker.path).toBeNull();
+    expect(local.path).toBe("word/media/image1.png");
+    const media = await doc.loadMedia(local.path!);
+    expect(media?.mimeType).toBe("image/png");
+    expect(Array.from(media?.bytes ?? [])).toEqual(Array.from(PNG));
+  });
+});
 
 describe("ooxmlFailureMessage", () => {
   it("shows a parser's own message and never leaks an unexpected error's text", () => {
