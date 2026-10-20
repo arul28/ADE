@@ -872,6 +872,57 @@ describe("createAgentChatService", () => {
       expect(service.residentChatEventHistorySessionCount()).toBe(0);
     });
 
+    it("releases a quiet chat's event ring only once every event is on disk", async () => {
+      vi.useFakeTimers();
+      let service: ReturnType<typeof createService>["service"] | undefined;
+      try {
+        ({ service } = createService());
+        const chatA = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const chatB = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const durablePathA = path.join(tmpRoot, ".ade", "transcripts", "chat", `${chatA.id}.jsonl`);
+        const originalAppend = fs.promises.appendFile.bind(fs.promises);
+        const appendFault = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (candidate, data, options) => {
+          if (path.resolve(String(candidate)) === path.resolve(durablePathA)) {
+            throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+          }
+          return await originalAppend(candidate, data, options);
+        });
+
+        try {
+          await expect(service.emitAdeCard({
+            sessionId: chatA.id,
+            card: { cardId: "lost-a", variant: "proof_artifact", state: "live", title: "Lost A", fallbackText: "Lost A" },
+          })).rejects.toThrow(/no space left/i);
+        } finally {
+          appendFault.mockRestore();
+        }
+
+        await expect(service.emitAdeCard({
+          sessionId: chatA.id,
+          card: { cardId: "landed-a", variant: "proof_artifact", state: "live", title: "Landed A", fallbackText: "Landed A" },
+        })).resolves.toBeUndefined();
+        await expect(service.emitAdeCard({
+          sessionId: chatB.id,
+          card: { cardId: "landed-b", variant: "proof_artifact", state: "live", title: "Landed B", fallbackText: "Landed B" },
+        })).resolves.toBeUndefined();
+        expect(service.residentChatEventHistorySessionCount()).toBe(2);
+
+        installRealTranscriptParser();
+        await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
+
+        expect(service.residentChatEventHistorySessionCount()).toBe(1);
+        const historyA = await service.getChatEventHistory(chatA.id);
+        const historyB = await service.getChatEventHistory(chatB.id);
+        const cardIdsA = historyA.events.flatMap((entry) => entry.event.type === "ade_card" ? [entry.event.cardId] : []);
+        const cardIdsB = historyB.events.flatMap((entry) => entry.event.type === "ade_card" ? [entry.event.cardId] : []);
+        expect(cardIdsA).toEqual(expect.arrayContaining(["lost-a", "landed-a"]));
+        expect(cardIdsB).toContain("landed-b");
+      } finally {
+        vi.useRealTimers();
+        service?.forceDisposeAll();
+      }
+    });
+
     it("hydrates through the async path without synchronous realpath or transcript flushing", async () => {
       const { service } = createService();
       const session = await service.createSession({

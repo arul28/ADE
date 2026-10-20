@@ -3921,8 +3921,16 @@ declares no kinds.
   process death — that is the ~1 GB heap that stalled the brain event loop
   for 30 s (`idle` / GC). History snapshots read the transcript (already
   LRU-cached, 32 sessions) and must not copy it into the ring. Live emits
-  still touch the ring; idle sessions fall off the LRU. See
-  `CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS`.
+  still touch the ring. See `CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS`.
+- **Quiet chats give their history back (`releaseIdleChatHistory`, on the
+  15 s cleanup tick).** The count caps bound these caches per project, not
+  over time. A chat quiet for 10 minutes drops its ring once every event in it
+  is on disk; after any failed transcript append the ring is the only copy of
+  those events and stays for the life of the process. Parsed transcript
+  windows are dropped when no history read (`readTranscriptEnvelopesForSessionIdAsync`)
+  used them for 10 minutes. Picking a transcript path also parses a window,
+  and the stale-run sweep does that for every chat every 10 minutes, so path
+  resolution alone must not count as use.
 - **Chat-event compaction is one policy with two consumers, and it must be
   idempotent.** `shared/chatEventCompaction.ts` serves both the stored
   transcript and the sync wire. Adding a heavy field to `AgentChatEvent` means
