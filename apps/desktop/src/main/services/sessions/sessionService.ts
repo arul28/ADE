@@ -203,6 +203,7 @@ function normalizeAttentionSource(value: unknown): SessionAttentionSource | null
     || value === "user"
     || value === "linear"
     || value === "turn_end_question"
+    || value === "cli_prompt"
     ? value
     : null;
 }

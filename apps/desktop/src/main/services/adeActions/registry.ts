@@ -1583,7 +1583,7 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
 
 /**
  * Raise a session's hand: the one path behind `ade chat ask`. Writes the
- * attention marker, flips a live tracked CLI to waiting-input, and pushes the
+ * attention marker, flips a live terminal to waiting-input, and pushes the
  * question to paired phones. ADE's own turn-end question check
  * (`turn_end_question`) comes through here too, so its hand reads and
  * notifies exactly like one the agent raised. False when the session is gone.
@@ -1604,14 +1604,15 @@ export function requestSessionAttentionForRuntime(
   if (!sessionService.requestAttention(sessionId, message, args.source)) return false;
   const session = sessionService.get(sessionId);
   const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
-  if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
+  const hasLivePty = runtime.ptyService?.hasLivePty(sessionId) ?? false;
+  if (hasLivePty) {
     runtime.ptyService.markSessionAttentionRequested(sessionId);
     runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
   }
   try {
     runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
       sessionId,
-      kind: isTrackedCli ? "cli" : "chat",
+      kind: isTrackedCli || hasLivePty ? "cli" : "chat",
       title: session?.title ?? "ADE session",
       message,
       laneId: session?.laneId ?? null,

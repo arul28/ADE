@@ -526,8 +526,10 @@ export type TerminalSessionSummary = {
  * `turn_end_question`: ADE read a question at the end of a turn the agent closed
  * while background work kept running, and raised the hand the agent did not
  * (`main/services/chat/turnEndAsk.ts`). It behaves exactly like `agent_explicit`.
+ * `cli_prompt`: Jev identified a high-confidence input prompt in an idle CLI
+ * terminal screen.
  */
-export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question";
+export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question" | "cli_prompt";
 
 /**
  * Result of a Work-board drag.

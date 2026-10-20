@@ -92,10 +92,17 @@ and in tests.
   boundary: ended tracked CLIs are resumable, while live CLIs require a
   provider-specific visible composer marker plus the short quiet window before
   a durable prompt may be submitted. CLI card status comes from host lifecycle
-  and explicit ADE attention requests: PTY output and OSC 133 can establish
-  liveness, and output silence can establish idle, but painted TUI text is not
-  parsed into Planning or Needs you. An agent's `ade chat ask` still marks a
-  tracked CLI as waiting for the user through ADE's explicit attention path.
+  and explicit ADE attention requests. When Jev is enabled and available, a
+  running-to-idle transition can send up to 40 visible terminal lines plus the
+  session kind and known command name for one `cli_status` decision. Only a
+  `waiting_for_input` answer at confidence 0.85 or higher raises attention;
+  null, failed, low-confidence, working, finished, and shell-prompt answers
+  keep the existing idle behavior. OSC 133 prompt markers and recognized plain
+  shell prompts skip the decision. The inferred `cli_prompt` hand uses the same
+  session and phone notification path as `ade chat ask`, and clears when input
+  is written or output resumes. Jev failures never reach the user. Painted TUI
+  text still does not create Planning activity, and terminal output is not
+  copied into local logs.
   The service also owns a `previewCursor` threaded through
   `derivePreviewFromChunk`. The runtime-state entry gains `runningSince`, which
   is stamped only on a non-running → running *transition* and cleared on every
@@ -107,7 +114,8 @@ and in tests.
   session-row projection —
   the one chokepoint desktop, lane snapshots, web, and iOS all read — then
   emits `currentTurnStartedAt` for non-chat rows. `runtimeState: "waiting-input"`
-  comes from explicit ADE attention requests; it is not inferred from TUI text.
+  comes from explicit ADE attention requests or a high-confidence `cli_prompt`
+  decision on an idle terminal screen.
 - `apps/desktop/src/main/utils/terminalPreview.ts` — the one-line session
   preview builder. It is a real column-cursor model (`PreviewCursorState`,
   `createPreviewCursorState`, `derivePreviewFromChunk`) over a mutable cell
@@ -2498,8 +2506,9 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    a clear ask and skip a progress note, and an unsure ending goes to the
    provider's cheap model (Claude, Codex, Cursor) with a staleness guard on
    the turn id. Subagents are skipped, and nothing runs on replay. Provider
-   structured input carries its own pending item id. OSC markers and
-   prompt-looking output never create `Needs you`. `ade chat note ""` clears
+   structured input carries its own pending item id. OSC markers do not create
+   `Needs you`; an available Jev decision may do so only for a high-confidence
+   input prompt after the terminal becomes idle. `ade chat note ""` clears
    only the status line. Status notes are trimmed to at
    most 72 characters at the session-service boundary so the sidebar remains
    glanceable; blocking detail belongs in the separate `ade chat ask` question.
@@ -2895,11 +2904,13 @@ so explicitly rather than asserting a tier ADE never set.
   that is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
-- **PTY text does not create semantic card states.** Painted prompt text is not
-  sufficient evidence that a CLI is blocked on the user, and plan-looking text
-  is not a reliable mode event, so the PTY service does not regex-scan it.
-  Tracked CLI `Needs you` comes from an explicit ADE request such as
-  `ade chat ask`; liveness and idle come from the PTY host. Structured provider
+- **PTY text only creates a hand through the optional idle classifier.** A
+  prompt-looking screen alone is not enough evidence, and plan-looking text is
+  not a reliable mode event. When Jev is enabled and available, the PTY service
+  sends up to 40 visible lines after an idle transition and raises `cli_prompt`
+  only for a waiting-for-input answer at confidence 0.85 or higher. Failures,
+  null, low confidence, and all other answers preserve idle. Plain shell
+  prompts and OSC 133 prompt markers skip classification. Structured provider
   input remains a separate adapter event with its own provenance.
 - **Never stamp `provider_structured` without an item id.** Because
   `canonicalSessionState` treats that source as a needs-you trigger in its own

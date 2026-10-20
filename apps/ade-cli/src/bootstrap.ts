@@ -1535,6 +1535,7 @@ export async function createAdeRuntime(args: {
       processRegistry,
       aiIntegrationService,
       projectConfigService,
+      jevService,
       logger,
       broadcastData: (event) => {
         pushEvent("pty", { type: "pty_data", event });
@@ -1554,7 +1555,10 @@ export async function createAdeRuntime(args: {
           runtimeState: signal.runtimeState,
         });
       },
-      onSessionUserInput: ({ sessionId }) => {
+      onSessionAttentionRequested: (request) => runtimeForCtoActions
+        ? requestSessionAttentionForRuntime(runtimeForCtoActions, request)
+        : sessionService.requestAttention(request.sessionId, request.message, request.source),
+      onSessionAttentionResolved: ({ sessionId }) => {
         pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
       },
       diskPressureMonitor,

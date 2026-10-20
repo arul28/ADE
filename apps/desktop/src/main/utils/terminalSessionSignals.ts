@@ -717,12 +717,14 @@ export function extractResumeCommandFromOutput(
 
 export function runtimeStateFromOsc133Chunk(
   chunk: string,
-  previous: TerminalRuntimeState
+  previous: TerminalRuntimeState,
+  onMarker?: (marker: "A" | "B" | "C" | "D") => void,
 ): TerminalRuntimeState {
   let next = previous;
   if (!chunk) return next;
   for (const match of chunk.matchAll(OSC_133_REGEX)) {
     const marker = (match[1] ?? "").toUpperCase();
+    onMarker?.(marker as "A" | "B" | "C" | "D");
     if (marker === "B" || marker === "C") {
       next = "running";
     }
