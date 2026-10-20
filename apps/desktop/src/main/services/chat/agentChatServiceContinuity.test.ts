@@ -1033,6 +1033,25 @@ describe("explicit provider-thread continuity recovery", () => {
     });
     expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)?.pointer).toBe("thread-1");
     expect(sessionService.get(session.id)?.resumeCommand).toBe(originalResumeCommand);
+
+    mockState.codexResponseOverrides.delete("turn/start");
+    mockState.codexRequestPayloads = [];
+    await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
+      .resolves.toMatchObject({ ok: true, mode: "retry_original", threadId: "thread-1" });
+    mockState.codexRequestPayloads = [];
+    await service.sendMessage({ sessionId: session.id, text: "Continue after recovery failed." }, { awaitDispatch: true });
+    const ordinaryTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+    const ordinaryParams = ordinaryTurnStart?.params as {
+      threadId?: string;
+      input?: Array<{ text?: unknown }>;
+    } | undefined;
+    const ordinaryInputText = ordinaryParams?.input
+      ?.map((item) => typeof item.text === "string" ? item.text : "")
+      .join("\n") ?? "";
+    expect(ordinaryParams?.threadId).toBe("thread-1");
+    expect(ordinaryInputText).toContain("Continue after recovery failed.");
+    expect(ordinaryInputText).not.toContain("[ADE launch directive]");
+    service.forceDisposeAll();
   });
 
   it("reconstructs a bounded hidden history capsule in the same chat", async () => {
