@@ -3,6 +3,7 @@ import { IPC } from "../../../shared/ipc";
 import type { AppBundleOwnershipStatus } from "../../../shared/types/appBundleOwnership";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import { createAppBundleOwnershipService } from "./appBundleOwnership";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 
 type Logger = { info(event: string, data?: Record<string, unknown>): void; warn(event: string, data?: Record<string, unknown>): void };
 
@@ -13,7 +14,17 @@ type Logger = { info(event: string, data?: Record<string, unknown>): void; warn(
  * the window runs from. Another machine's bundle is updated by that machine's
  * own ADE, so there is nothing to route.
  */
-export function registerAppBundleOwnershipIpc(args: { logger?: Logger } = {}): void {
+/** The fix's outcome as analytics records it; nothing to fix records nothing. */
+const FIX_ANALYTICS_OUTCOME = {
+  fixed: "completed",
+  still_root_owned: "partial",
+  cancelled: "cancelled",
+  failed: "failed",
+} as const;
+
+export function registerAppBundleOwnershipIpc(
+  args: { logger?: Logger; analytics?: Pick<ProductAnalyticsService, "captureInternal"> | null } = {},
+): void {
   const service = createAppBundleOwnershipService({
     isPackaged: app.isPackaged,
     appVersion: app.getVersion(),
@@ -59,6 +70,17 @@ export function registerAppBundleOwnershipIpc(args: { logger?: Logger } = {}): v
     };
     if (result.outcome === "failed") logger.warn("app_bundle_ownership.fix", meta);
     else args.logger?.info("app_bundle_ownership.fix", meta);
+    if (result.outcome !== "not_applicable") {
+      const outcome = FIX_ANALYTICS_OUTCOME[result.outcome];
+      // One press of a rare button; the dedupe holds a retry loop to one an hour per outcome.
+      args.analytics?.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "updates", action: "bundle_ownership_fix", outcome },
+        dedupeKey: `bundle_ownership_fix:${outcome}`,
+        minimumIntervalMs: 60 * 60_000,
+      });
+    }
     logStatus(result.status);
     return result;
   });

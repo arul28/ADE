@@ -4,6 +4,7 @@ import {
   decodeCrossMachineDestinationPreflightResult,
   decodeRemoteRuntimeHandoffStoragePreflightResult,
   normalizeGitRemoteIdentity,
+  pickLiveCheckout,
   sanitizePortableGitRemote,
 } from "./crossMachineHandoff";
 
@@ -79,5 +80,33 @@ describe("cross-machine handoff boundaries", () => {
       ...base,
       forkHandoffSupport: { supported: "yes" },
     })).toThrow(/fork handoff supported flag is invalid/i);
+  });
+
+  it.each([
+    {
+      label: "a moved project: the folder still on disk beats a newer stale copy",
+      checkouts: [
+        { id: "old", lastOpenedAt: 900, exists: false },
+        { id: "moved", lastOpenedAt: 100, exists: true },
+      ],
+      picked: "moved",
+    },
+    {
+      label: "a folder the person opened beats one something ran ADE in",
+      checkouts: [
+        { id: "ran-in", lastOpenedAt: 900, catalogVisibility: "system" as const },
+        { id: "opened", lastOpenedAt: 100, catalogVisibility: "recent" as const },
+      ],
+      picked: "opened",
+    },
+    {
+      label: "an older brain that sends no folder check: the most recent wins",
+      checkouts: [{ id: "a", lastOpenedAt: 100 }, { id: "b", lastOpenedAt: 900 }],
+      picked: "b",
+    },
+  ])("works on the live checkout of a project another machine has — $label", ({ checkouts, picked }) => {
+    expect(pickLiveCheckout(checkouts)?.id).toBe(picked);
+    expect(pickLiveCheckout([...checkouts].reverse())?.id).toBe(picked);
+    expect(pickLiveCheckout([])).toBeNull();
   });
 });

@@ -148,6 +148,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Settings → Background service → "Stop and quit ADE": whether people turn
   // the always-on service off at all. completed | rejected (a guard refused) | failed.
   "background_service_stop",
+  // The "ADE will ask for your password on every update" banner's Fix it
+  // (feature "updates"): how many installations have a root-owned app at all,
+  // and whether the fix works. completed | partial (ran, some files still not
+  // theirs) | cancelled (password prompt dismissed) | failed.
+  "bundle_ownership_fix",
   "machine_reconnect",
   "mention_expanded",
   "hooks_ignored",

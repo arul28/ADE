@@ -1808,7 +1808,8 @@ describe("multi-project RPC server", () => {
     });
     // Both projects.add and projects.list stamp the host-resolved icon; the
     // temp project root has no icon file, so each yields the same all-null icon.
-    expect(listed).toEqual([added]);
+    // The list also says whether each project's folder is on this machine.
+    expect(listed).toEqual([{ ...(added as Record<string, unknown>), exists: true }]);
 
     const projectId = (added as { projectId: string }).projectId;
     const touched = await handler({

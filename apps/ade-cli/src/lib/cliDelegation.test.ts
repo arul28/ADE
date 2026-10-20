@@ -243,5 +243,10 @@ describe("cliArgvOwnsRuntime", () => {
     expect(cliArgvOwnsRuntime(["rpc", "stdio"])).toBe(true);
     expect(cliArgvOwnsRuntime(["apple", "status"])).toBe(false);
     expect(cliArgvOwnsRuntime(["chat", "send", "serve"])).toBe(false);
+    // The update helper is the downloaded release: handed to the old app's CLI
+    // (ADE_CLI_PATH in an ADE terminal), the old code would apply the update.
+    expect(cliArgvOwnsRuntime(["brain", "update", "--apply-staged", "/tmp/update/manifest.json"])).toBe(true);
+    expect(cliArgvOwnsRuntime(["--socket", "/tmp/a.sock", "brain", "update", "--apply-staged=/tmp/m.json"])).toBe(true);
+    expect(cliArgvOwnsRuntime(["brain", "update", "--version", "1.2.113"])).toBe(false);
   });
 });

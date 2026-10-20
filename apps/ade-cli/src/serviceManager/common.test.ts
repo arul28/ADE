@@ -176,6 +176,36 @@ describe("resolveAdeServeCommand", () => {
     });
   });
 
+  it("names the app's packaged CLI script when called from Electron's main process", () => {
+    // Main's argv names no script. Describing an `ADE serve` brain here made
+    // every Windows update refuse the real brain and abort (1.2.112, 1.2.113).
+    const resources = makeTempHome("ade-service-electron-main-");
+    const packagedCli = path.join(resources, "ade-cli", "cli.cjs");
+    fs.mkdirSync(path.dirname(packagedCli), { recursive: true });
+    fs.writeFileSync(packagedCli, "// packaged cli\n", "utf8");
+    const electronProcess = process as NodeJS.Process & { type?: string; resourcesPath?: string };
+    const originalCliJs = process.env.ADE_CLI_JS;
+    process.argv.splice(1, process.argv.length - 1);
+    electronProcess.type = "browser";
+    electronProcess.resourcesPath = resources;
+    delete process.env.ADE_CLI_JS;
+    try {
+      expect(resolveAdeServeCommand()).toMatchObject({
+        command: process.execPath,
+        args: [packagedCli, "serve"],
+        env: { ADE_RUNTIME_BUILD_HASH: fileSha256(packagedCli) },
+      });
+      // The override the desktop's own brain spawn honors comes first here too.
+      process.env.ADE_CLI_JS = path.join(resources, "override", "cli.cjs");
+      expect(resolveAdeServeCommand().args).toEqual([path.join(resources, "override", "cli.cjs"), "serve"]);
+    } finally {
+      delete electronProcess.type;
+      delete electronProcess.resourcesPath;
+      if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalCliJs;
+    }
+  });
+
   it("uses the executable directly when SEA argv contains the synthetic CLI script name", () => {
     process.argv[1] = path.resolve("definitely-not-real-cli.cjs");
 

@@ -9524,7 +9524,7 @@ app.whenReady().then(async () => {
   });
 
   // Whether this Mac's ADE.app is root-owned (a password on every update).
-  registerAppBundleOwnershipIpc({ logger: getMachineMainLogger() });
+  registerAppBundleOwnershipIpc({ logger: getMachineMainLogger(), analytics: productAnalyticsService });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),
