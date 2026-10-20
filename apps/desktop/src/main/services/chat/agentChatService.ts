@@ -4835,7 +4835,13 @@ type EpochDirective =
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
   | "appleDevice"
   /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
-  | "laneScreen";
+  | "laneScreen"
+  /**
+   * ADE's lane guidance for a provider with no instruction channel, keyed by
+   * the provider's own thread id and the text, so a new thread or changed
+   * text is told again and a resumed thread is not.
+   */
+  | "laneGuidance";
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 type ManagedChatSession = {
@@ -17510,17 +17516,22 @@ export function createAgentChatService(args: {
       });
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
+    // The system prompt is Pi's persistent instruction channel, so the
+    // session lineage rides here too and no turn repeats ADE's guidance.
     const systemPrompt = isPersonalSession(managed.session)
       ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, piActivityGuidance)
-      : buildCodingAgentSystemPrompt({
-          cwd: managed.laneWorktreePath,
-          mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
-          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-          interactive: true,
-          runtime: "pi-sdk",
-          adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-          sessionActivityGuidance: piActivityGuidance,
-        });
+      : [
+          buildCodingAgentSystemPrompt({
+            cwd: managed.laneWorktreePath,
+            mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
+            permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+            interactive: true,
+            runtime: "pi-sdk",
+            adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+            sessionActivityGuidance: piActivityGuidance,
+          }),
+          buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
+        ].filter(Boolean).join("\n\n");
     // Pi's built-in tool registry only contains read, bash, edit, and write.
     // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
     //
@@ -27203,6 +27214,39 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * ADE's lane guidance (the `## ADE` block, a provider's own framing) for a
+   * provider whose only instruction channel is the user turn: Cursor, Droid
+   * and the ACP agents. It used to ride every turn — about 1k tokens per turn,
+   * and Droid's whole harness prompt — although each of these keeps its own
+   * conversation. It is now sent on the first turn of each provider thread
+   * and again only when the thread or the text changes.
+   */
+  const laneGuidanceKey = (threadId: string | null | undefined, text: string): string =>
+    `${threadId?.trim() || "pending"}::${computerUseDirectiveFingerprint(text.trim())}`;
+
+  const undeliveredLaneGuidance = (
+    managed: ManagedChatSession,
+    threadId: string | null | undefined,
+    text: string | null | undefined,
+  ): string | null => {
+    const trimmed = text?.trim() ?? "";
+    if (!trimmed) return null;
+    return managed.deliveredDirectiveKeys.laneGuidance === laneGuidanceKey(threadId, trimmed) ? null : trimmed;
+  };
+
+  /** Call after the turn was handed to the provider, with the thread id it now has. */
+  const markLaneGuidanceDelivered = (
+    managed: ManagedChatSession,
+    threadId: string | null | undefined,
+    text: string,
+  ): void => {
+    const key = laneGuidanceKey(threadId, text);
+    if (managed.deliveredDirectiveKeys.laneGuidance === key) return;
+    managed.deliveredDirectiveKeys.laneGuidance = key;
+    persistChatState(managed);
+  };
+
+  /**
    * Forget what this session's provider threads have been told, so a
    * replacement runtime (model switch, thread recycle, resume) is re-announced
    * to. The lane, computer-use and Apple-device directives are epoch-scoped
@@ -33749,6 +33793,7 @@ export function createAgentChatService(args: {
     captureTurnBeforeSha(managed);
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
 
+    let acpLaneGuidance: string | null = null;
     try {
       const slashRoute = await resolveAcpSlashRoute(managed, runtime, args);
       let prompt = slashRoute.body;
@@ -33763,17 +33808,19 @@ export function createAgentChatService(args: {
           firstTurn: devinCloudFirstTurn,
         });
         if (pin) prompt = `${pin}\n\n${prompt}`;
-      } else if (
-        !slashRoute.agentCommand
-        && !isPersonalSession(managed.session)
-        && managed.lastLaneDirectiveKey !== args.laneDirectiveKey
-      ) {
-        const guidance = buildAdeGuidanceForLane(
-          managed.laneWorktreePath,
-          managed.session,
-          spawnSelfReportOpts(managed.session),
+      } else if (!slashRoute.agentCommand && !isPersonalSession(managed.session)) {
+        // The one place an ACP agent hears ADE's guidance, normal sends and
+        // queued steers alike: once per ACP session (see laneGuidanceKey).
+        acpLaneGuidance = undeliveredLaneGuidance(
+          managed,
+          runtime.session.sessionId,
+          buildAdeGuidanceForLane(
+            managed.laneWorktreePath,
+            managed.session,
+            spawnSelfReportOpts(managed.session),
+          ),
         );
-        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
+        if (acpLaneGuidance) prompt = `${acpLaneGuidance}\n\n${prompt}`;
       }
 
       const imagePrompt = runtime.dialect.imagePrompts.declared
@@ -33802,6 +33849,7 @@ export function createAgentChatService(args: {
       for (const event of outcome.events) emitChatEvent(managed, event);
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (acpLaneGuidance) markLaneGuidanceDelivered(managed, runtime.session.sessionId, acpLaneGuidance);
       markSessionIdleWithFreshCache(managed);
       // Client-side cancel accounting, taken when the agent answered. Copilot
       // reports a stopped turn as `end_turn`, so the agent's stopReason is
@@ -35371,14 +35419,8 @@ export function createAgentChatService(args: {
       if (pendingContext) {
         prompt = `${pendingContext}\n\n${prompt}`;
       }
-      if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
-        const guidance = buildAdeGuidanceForLane(
-          managed.laneWorktreePath,
-          managed.session,
-          spawnSelfReportOpts(managed.session),
-        );
-        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
-      }
+      // No lane guidance here: Pi's system prompt carries the harness, the
+      // `## ADE` block and the session lineage (see the Pi runtime launch).
       const { promptText, images } = await buildPiWorkerPrompt(
         prompt,
         args.resolvedAttachments ?? [],
@@ -51288,23 +51330,25 @@ export function createAgentChatService(args: {
     const personalSession = isPersonalSession(managed.session);
     const laneDirectiveKey = personalSession ? null : executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
-    // Guidance injection is capability-based, not session-state-based:
-    // Claude sessions receive lane-scoped ADE guidance in their persistent system
-    // prompt, and native Codex app-server sessions receive ADE guidance through
-    // developerInstructions/collaborationMode settings. Providers without a
-    // trusted instruction channel still need the guidance in the user prompt,
-    // including on resumed sessions where `shouldInjectLaneDirective` is false.
-    // Muse keeps the whole conversation in its own session, so the Muse runner
-    // delivers the guidance once per session (`runMuseTurn`), not per turn.
-    const providerHasPersistentGuidance = managed.session.provider === "claude"
-      || managed.session.provider === "codex"
-      || managed.session.provider === "opencode"
-      || managed.session.provider === "muse";
-    const shouldInjectGuidance = !personalSession && !providerHasPersistentGuidance;
-    // Droid's SDK takes no system prompt, so ADE prepends the whole harness
-    // prompt to every `sendPrompt`. That harness already carries the shared
-    // `## ADE` block, which is why the lane guidance must not repeat it here.
-    const providerRepeatsHarnessEveryTurn = managed.session.provider === "droid";
+    // Every provider ADE runs delivers its own guidance, and none of them on
+    // every turn. Claude, Codex, OpenCode, Pi and Copilot carry it in a system
+    // prompt or developer instructions. Muse, Cursor, Droid and the ACP agents
+    // have only the user turn, so their runners send it once per provider
+    // thread (`runMuseTurn`, `undeliveredLaneGuidance`). This send-path copy
+    // used to ride every turn on those providers — ~1k tokens a turn, and a
+    // second copy where the runner added its own. It remains only as a
+    // fallback for a provider no runner covers.
+    const provider = managed.session.provider;
+    const providerDeliversOwnGuidance = provider === "claude"
+      || provider === "codex"
+      || provider === "opencode"
+      || provider === "muse"
+      || provider === "pi"
+      || provider === "copilot"
+      || provider === "cursor"
+      || provider === "droid"
+      || isAcpChatProvider(provider);
+    const shouldInjectGuidance = !personalSession && !providerDeliversOwnGuidance;
     // The computer-use directive is ~2KB of static prose that used to ride
     // EVERY turn on EVERY provider, gated only on "not a personal chat" — never
     // on whether the capability set had changed since the agent was last told.
@@ -51396,17 +51440,11 @@ export function createAgentChatService(args: {
           personalSession ? null : buildExecutionModeDirective(executionMode, managed.session.provider),
           personalSession ? null : buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           shouldInjectGuidance
-            ? (providerRepeatsHarnessEveryTurn
-              // Droid's harness prompt already ends with the shared `## ADE`
-              // block and is re-sent whole on every turn, so the lane guidance
-              // delivered a second copy of it per turn. Only the session
-              // lineage lines are absent from the harness.
-              ? buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) || null
-              : buildAdeGuidanceForLane(
-                managed.laneWorktreePath,
-                managed.session,
-                spawnSelfReportOpts(managed.session),
-              ))
+            ? buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            )
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
           // Exactly one line, and only for a lane that has a screen. A lane
@@ -54083,6 +54121,7 @@ export function createAgentChatService(args: {
     // Kept so a thread recycle can restage each consumed bucket on the rotated
     // agent instead of flattening replay + continuity into one string.
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
+    let cursorLaneGuidance: string | null = null;
     try {
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
@@ -54099,20 +54138,37 @@ export function createAgentChatService(args: {
         composed = `${modeDirective}\n\n${composed}`;
       }
       const personalSession = isPersonalSession(managed.session);
-      const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
-      if (personalSession || isFirstSendForLane) {
-        const injected = personalSession
-          ? resolvePersonalPromptFor(
-            managed.session,
-            managed.laneWorktreePath,
-            buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
-          )
-          : await buildCursorSdkInjectedSystemPrompt({
-              runtime: "local",
-              laneWorktreePath: managed.laneWorktreePath,
-            });
+      if (personalSession) {
+        const injected = resolvePersonalPromptFor(
+          managed.session,
+          managed.laneWorktreePath,
+          buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
+        );
         if (injected.length) {
           composed = `${injected}\n\n${composed}`;
+        }
+      } else {
+        // Cursor's framing and ADE's `## ADE` block, once per Cursor agent
+        // (see laneGuidanceKey). The old "first send for this lane" check
+        // compared against the send's lane key, which is null on every later
+        // turn, so both rode every turn.
+        cursorLaneGuidance = undeliveredLaneGuidance(
+          managed,
+          runtime.sdkAgentId,
+          [
+            await buildCursorSdkInjectedSystemPrompt({
+              runtime: "local",
+              laneWorktreePath: managed.laneWorktreePath,
+            }),
+            buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            ),
+          ].filter((part) => part.trim().length > 0).join("\n\n"),
+        );
+        if (cursorLaneGuidance) {
+          composed = `${cursorLaneGuidance}\n\n${composed}`;
         }
       }
 
@@ -54264,6 +54320,9 @@ export function createAgentChatService(args: {
       }
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      // Here, not when the send resolves: a stale-token or transport recovery
+      // above re-sends this same prompt, framing included.
+      if (cursorLaneGuidance) markLaneGuidanceDelivered(managed, runtime.sdkAgentId, cursorLaneGuidance);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       const resultRecord = asRecord(result);
@@ -56255,16 +56314,21 @@ export function createAgentChatService(args: {
         permissionMode: managed.session.copilotPermissionMode ?? "ask",
         mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
         skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        // The system message is Copilot's persistent instruction channel, so
+        // the session lineage rides here too and no turn repeats the guidance.
         systemMessage: isPersonalSession(managed.session)
           ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath)
-          : buildCodingAgentSystemPrompt({
-              cwd: managed.laneWorktreePath,
-              mode: "coding",
-              permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-              interactive: true,
-              runtime: "copilot-sdk",
-              adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-            }),
+          : [
+              buildCodingAgentSystemPrompt({
+                cwd: managed.laneWorktreePath,
+                mode: "coding",
+                permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+                interactive: true,
+                runtime: "copilot-sdk",
+                adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+              }),
+              buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
+            ].filter(Boolean).join("\n\n"),
       };
       const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
       const opened = persistedSessionId
@@ -57089,13 +57153,20 @@ export function createAgentChatService(args: {
       const droidSkillListing = isPersonalSession(managed.session)
         ? []
         : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
-      const sdkInput = [
+      // Droid's SDK takes no system prompt, so ADE's framing rides the user
+      // turn — once per Droid session (see laneGuidanceKey), not every turn:
+      // it was the whole harness prompt plus the skill listing on each send.
+      const droidFraming = [
         droidHarnessPrompt,
         ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
-        "",
-        "## User Request",
-        composed,
+        ...(isPersonalSession(managed.session)
+          ? []
+          : ["", buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? ""]),
       ].join("\n");
+      const droidLaneGuidance = undeliveredLaneGuidance(managed, runtime.sdkSessionId, droidFraming);
+      const sdkInput = droidLaneGuidance
+        ? [droidLaneGuidance, "", "## User Request", composed].join("\n")
+        : composed;
       const { promptText: sdkPromptText, images } = await buildDroidWorkerPrompt(
         sdkInput,
         args.resolvedAttachments,
@@ -57112,6 +57183,7 @@ export function createAgentChatService(args: {
         pendingDispatchAck.resolve();
       }
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      if (droidLaneGuidance) markLaneGuidanceDelivered(managed, runtime.sdkSessionId, droidLaneGuidance);
 
       const descriptor = resolveSessionModelDescriptor(managed.session);
       const doneEvent = mapDroidSdkRunResultToDoneEvent(result, {

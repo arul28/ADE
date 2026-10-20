@@ -195,6 +195,23 @@ bodies, captured through a local pass-through proxy (`ANTHROPIC_BASE_URL`).
 | Codex chat, first turn (`hi`) | 27,716 | 32,324 (+4,608) | 30,258 (+2,542) | proposed, needs approval: +3,200 over bare |
 | Computer-use block in the first message (Mac host, lane screen available) | — | 9,775 chars with the lane directive | 2,629 chars with the lane directive | — |
 
+Per-turn cost on the providers that have no instruction channel but the user
+turn, or that got ADE's guidance in both places: growth in input tokens from
+turn 1 (`hi`) to turn 2 (`ok`), read from ADE's own `done` usage. Before:
+this repo's lane on the shared home (2026-10-20). After: a throwaway
+`ADE_HOME` and scratch project (the isolation rule forbids the real one); the
+growth does not depend on the repo, and Grok's own history shows turn 2 is the
+bare `ok`. Droid (no API key here), Cursor (rate-limited), Kimi, Qwen and Muse
+(not signed in) could not be measured.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---|---|---|
+| Antigravity, turn 2 growth | +5,254 | +670 | proposed, needs approval: +1,000 |
+| Grok, turn 2 growth (Grok's own per-turn reminders are ~900 of it) | +2,733 | +1,020 | proposed, needs approval: +1,300 |
+| Pi, turn 2 growth | +1,593 | +56 | proposed, needs approval: +200 |
+| Copilot, turn 2 growth | +818 | +44 | proposed, needs approval: +200 |
+| Claude, a second new chat in the same lane: tokens written to cache | 26,384 | 0 (40,916 read) | — |
+
 Most of the Claude gap was `ENABLE_TOOL_SEARCH=auto`, which ADE forced on
 every query: "auto" only defers tool schemas once they pass a share of the
 context window, so every schema went inline. The bare CLI measured 30,624 with
