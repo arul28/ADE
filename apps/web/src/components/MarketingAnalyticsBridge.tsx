@@ -10,7 +10,9 @@ import {
   captureUnhandledRejection,
   captureWindowError,
   installMarketingAnalyticsPreferenceApi,
+  onMarketingAnalyticsPreferenceChange,
 } from "../lib/marketingAnalyticsBrowser";
+import { isDownloadClick, loadFreebuffPixel, reportFreebuffDownload } from "../lib/freebuffPixel";
 
 export function MarketingAnalyticsBridge() {
   const location = useLocation();
@@ -18,6 +20,10 @@ export function MarketingAnalyticsBridge() {
   useEffect(() => {
     installMarketingAnalyticsPreferenceApi();
     captureMarketingAppOpened();
+    loadFreebuffPixel();
+    const offPreference = onMarketingAnalyticsPreferenceChange((enabled) => {
+      if (enabled) loadFreebuffPixel();
+    });
 
     const onClick = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
@@ -25,6 +31,7 @@ export function MarketingAnalyticsBridge() {
         captureCta: captureMarketingCta,
         captureFeature: captureMarketingFeature,
       });
+      if (isDownloadClick(event.target)) reportFreebuffDownload();
     };
     const onError = () => captureWindowError();
     const onUnhandledRejection = () => captureUnhandledRejection();
@@ -33,6 +40,7 @@ export function MarketingAnalyticsBridge() {
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
     return () => {
+      offPreference();
       document.removeEventListener("click", onClick, { capture: true });
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
