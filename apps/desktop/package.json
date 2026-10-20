@@ -93,6 +93,7 @@
     "@factory/droid-sdk": "0.9.1",
     "@github/copilot-sdk": "1.0.22",
     "@linear/sdk": "^84.0.0",
+    "@lobehub/emojilib": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "0.162.1",
     "@opencode/cli": "2.0.29",

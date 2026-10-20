@@ -6,6 +6,7 @@ import {
   CheckCircle,
   Circle,
   GitBranch,
+  Palette,
   SpinnerGap,
   StackSimple,
   X,
@@ -458,43 +459,34 @@ export function CreateLaneDialog({
           }
         }}
       >
-        {/* Name, with the lane colour as a dot inside the field */}
+        {/* Emoji slot and lane colour control sit inside the name field. */}
         <div
           className="cl-name"
           data-colored={selectedColor ? "true" : undefined}
           style={selectedColor ? ({ "--cl-lane": selectedColor } as React.CSSProperties) : undefined}
         >
-          <ComposerPopover
-            {...chipProps("color")}
-            fit="content"
-            trigger={(
-              <button
-                type="button"
-                className="cl-dot"
-                disabled={locked}
-                aria-label={selectedColor ? `Lane colour: ${laneColorName(selectedColor) ?? selectedColor}` : "Lane colour: none"}
-                title="Lane colour"
-              >
-                <i
-                  data-empty={selectedColor ? undefined : "true"}
-                  style={selectedColor ? { background: selectedColor } : undefined}
-                />
-              </button>
-            )}
-          >
-            <div className="cl-colors">
-              <LaneColorPicker
-                value={selectedColor}
-                onChange={(color) => {
-                  setSelectedColor(color);
-                  setOpenChip(null);
-                }}
-                usedColors={usedColors}
-                usedColorOwners={usedColorOwners}
-                swatchSize={18}
-              />
-            </div>
-          </ComposerPopover>
+          {showEmojiControl ? (
+            <LaneEmojiPicker
+              value={selectedEmoji}
+              onChange={setSelectedEmoji}
+              disabled={locked}
+              label="Lane emoji"
+              trigger={(
+                <button
+                  type="button"
+                  className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-base transition hover:bg-fg/[0.08] focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-45 ${suggestedEmoji && !selectedEmoji ? "text-fg/40" : "text-fg"}`}
+                  aria-label={selectedEmoji ? `Change lane emoji, current ${selectedEmoji}` : suggestedEmoji ? `Accept Jev's suggested emoji ${suggestedEmoji} and open picker` : "Choose lane emoji"}
+                  title={suggestedEmoji && !selectedEmoji ? "Suggested by Jev · click to accept and choose" : "Choose lane emoji"}
+                  disabled={locked}
+                  onClick={() => {
+                    if (suggestedEmoji && !selectedEmoji) onAcceptSuggestedEmoji?.();
+                  }}
+                >
+                  {selectedEmoji || suggestedEmoji || <span className="text-sm text-muted-fg">＋</span>}
+                </button>
+              )}
+            />
+          ) : null}
           <input
             value={createLaneName}
             onChange={(e) => handleSetCreateLaneName(e.target.value)}
@@ -516,29 +508,37 @@ export function CreateLaneDialog({
             disabled={locked}
             data-tour="lanes.createDialog.name"
           />
-        </div>
-        {showEmojiControl ? (
-          <div className="flex min-h-8 items-center gap-2">
-            <LaneEmojiPicker
-              value={selectedEmoji}
-              onChange={setSelectedEmoji}
-              disabled={locked}
-              label="Lane emoji"
-            />
-            {suggestedEmoji && !selectedEmoji ? (
+          <ComposerPopover
+            {...chipProps("color")}
+            fit="content"
+            trigger={(
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-full border border-fg/[0.12] border-dashed bg-fg/[0.025] px-2.5 py-1 text-[11px] text-muted-fg hover:border-accent/40 hover:text-fg"
-                aria-label={`Accept Jev's suggested emoji ${suggestedEmoji}; press Tab in the lane name field to accept`}
-                title="Click to accept · Tab in the lane name field to accept"
-                onClick={onAcceptSuggestedEmoji}
+                className="cl-dot"
+                disabled={locked}
+                aria-label={selectedColor ? `Lane colour: ${laneColorName(selectedColor) ?? selectedColor}` : "Lane colour: none"}
+                title="Lane colour"
               >
-                {suggestedEmoji}<span>suggested</span>
+                {selectedColor
+                  ? <i style={{ background: selectedColor }} />
+                  : <Palette size={15} className="text-muted-fg" />}
               </button>
-            ) : null}
-            <span className="ml-auto text-[10px] text-muted-fg/55">Optional</span>
-          </div>
-        ) : null}
+            )}
+          >
+            <div className="cl-colors">
+              <LaneColorPicker
+                value={selectedColor}
+                onChange={(color) => {
+                  setSelectedColor(color);
+                  setOpenChip(null);
+                }}
+                usedColors={usedColors}
+                usedColorOwners={usedColorOwners}
+                swatchSize={18}
+              />
+            </div>
+          </ComposerPopover>
+        </div>
 
         {/* How the lane starts */}
         <div className="cl-modes" role="radiogroup" aria-label="Start from" data-tour="lanes.createDialog.tabs">

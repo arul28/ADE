@@ -11,7 +11,6 @@ import {
   selectDefaultNewLaneBaseRef,
 } from "./newLaneBaseSource";
 import { resolveCreateLaneRequest } from "./lanePageModel";
-import { LANE_EMOJI_OPTIONS } from "./LaneEmojiPicker";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -33,7 +32,7 @@ import type {
   NewLaneBaseSource,
   OpenProjectBinding,
 } from "../../../shared/types";
-import { normalizeLaneEmoji } from "../../../shared/laneEmoji";
+import { LANE_EMOJI_OPTIONS, normalizeLaneEmoji } from "../../../shared/laneEmoji";
 
 type CreateSetupPhase =
   | "creating"
@@ -100,7 +99,7 @@ async function requestLaneEmojiSuggestion(
     questions: {
       emoji: {
         type: "choice",
-        instructions: "Choose the single emoji that best represents this software lane.",
+        instructions: "Choose the emoji for the lane's main outcome. When the name describes fixing a crash, bug, error, regression, race, or broken behavior, choose 🐛 even if it also names a system such as sync, cache, or retry. Use ♻️ for refactors and 🔄 for normal sync or retry work that is not a bug fix.",
         criteria,
       },
     },

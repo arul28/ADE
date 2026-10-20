@@ -128,6 +128,22 @@ function ManageLaneRenameControls({
   const canSave = Boolean(trimmedDraft) && !unchanged && !duplicateLane && !renameBusy;
   const canRename = lane.laneType !== "primary";
 
+  const setLaneEmoji = async (emoji: string | null) => {
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      const args = { laneId: lane.id, emoji };
+      await (runtimePin
+        ? window.ade.lanes.updateAppearance(args, runtimePin)
+        : window.ade.lanes.updateAppearance(args));
+      await onRenamed?.();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : "Failed to update lane emoji");
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const cancelEdit = () => {
     setEditing(false);
     setDraftName(lane.name);
@@ -179,24 +195,45 @@ function ManageLaneRenameControls({
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <input
-          type="text"
-          value={draftName}
-          autoFocus
-          aria-label="Lane name"
-          className={`${INPUT_CLASS_NAME} min-w-[12rem] flex-1 text-sm`}
-          onChange={(event) => setDraftName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void saveRename();
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              cancelEdit();
-            }
-          }}
-        />
+        <div className="mt-2 flex h-11 min-w-[12rem] flex-1 items-center gap-1 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-2 transition-colors focus-within:border-accent/40">
+          <LaneEmojiPicker
+            value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+            onChange={(emoji) => { void setLaneEmoji(emoji); }}
+            disabled={renameBusy}
+            label="Lane emoji"
+            trigger={(
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base text-fg transition hover:bg-fg/[0.08] focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-45"
+                aria-label={laneEmojiForDisplay(lane.emoji, lane.icon)
+                  ? `Change lane emoji, current ${laneEmojiForDisplay(lane.emoji, lane.icon)}`
+                  : "Choose lane emoji"}
+                title="Lane emoji"
+                disabled={renameBusy}
+              >
+                {laneEmojiForDisplay(lane.emoji, lane.icon) || <span className="text-sm text-muted-fg">＋</span>}
+              </button>
+            )}
+          />
+          <input
+            type="text"
+            value={draftName}
+            autoFocus
+            aria-label="Lane name"
+            className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-fg outline-none"
+            onChange={(event) => setDraftName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void saveRename();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelEdit();
+              }
+            }}
+          />
+        </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
             type="button"
