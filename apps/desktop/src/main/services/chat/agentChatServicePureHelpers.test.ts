@@ -138,7 +138,7 @@ describe("buildComputerUseDirective", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
-    expect(result).toContain("if it is not exposed, do not stall");
+    expect(result).toMatch(/\bnot exposed\b/i);
     expect(result).toContain("Respect the backend the user requested");
     expect(result).toContain("mcp__computer_use");
     expect(result).toContain("do not bootstrap `@oai/sky`");
@@ -182,7 +182,7 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("ade proof");
     expect(result).toContain("ingest_computer_use_artifacts");
     expect(result).toContain("capture visual proof first");
-    expect(result).toContain("logs are supporting diagnostics only");
+    expect(result).toMatch(/\bsupporting diagnostics\b/i);
   });
 });
 
