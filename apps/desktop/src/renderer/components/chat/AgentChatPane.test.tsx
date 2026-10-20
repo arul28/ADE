@@ -10490,6 +10490,12 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByText("Continue primary work")).toBeTruthy();
       expect(screen.queryByText("Continue background work")).toBeNull();
     });
+
+    // Typing hides it; deleting back to an empty box offers it again.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "C" } });
+    await waitFor(() => expect(screen.queryByText("Continue primary work")).toBeNull());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("Continue primary work")).toBeTruthy());
   });
 
   it("persists the first view without showing historical scheduled wakes as away activity", async () => {
