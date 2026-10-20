@@ -163,6 +163,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   /// a lane icon changed from the manage sheet leaves every row of that lane
   /// wearing the old mark until some unrelated field moves.
   let laneIcon: LaneIcon?
+  let laneEmoji: String?
   // Lane git state is captured ONLY on a `showsLaneIdentity` row — the one shape
   // that still draws it, because there is no lane header above it to own it
   // (a headerless singleton lane, or a cross-lane status/time section where each
@@ -266,6 +267,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.laneName = session.laneName
     self.laneColor = lane?.color
     self.laneIcon = lane?.icon
+    self.laneEmoji = lane?.emoji
     // Under a lane header the header states the lane's git state once; capturing
     // it here too would put it back on every row and re-invalidate them all.
     //
@@ -801,7 +803,7 @@ struct WorkSessionRow: View, Equatable {
   /// reason: a coloured dot on a row that also carries state reads as state.
   private var laneChip: some View {
     HStack(spacing: 3) {
-      WorkLaneLogoMark(color: laneTint, laneIcon: renderSignature.laneIcon, size: 11)
+      WorkLaneLogoMark(color: laneTint, laneIcon: renderSignature.laneIcon, emoji: renderSignature.laneEmoji, size: 11)
       Text(renderSignature.laneName)
         .font(.caption2.weight(.semibold))
         .foregroundStyle(laneTint)

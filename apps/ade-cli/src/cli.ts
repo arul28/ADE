@@ -2076,6 +2076,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
+    $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
@@ -6414,6 +6415,7 @@ function buildLanePlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, {
             laneId,
             color: readValue(args, ["--color"]),
+            emoji: readValue(args, ["--emoji"]),
             icon: readValue(args, ["--icon"]),
           }),
         ),
@@ -19877,6 +19879,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--droid-permission-mode",
   "--duration-sec",
   "--enabled",
+  "--emoji",
   "--event",
   "--end-x",
   "--end-y",

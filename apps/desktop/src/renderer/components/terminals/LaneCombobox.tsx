@@ -12,6 +12,8 @@ import { cn } from "../ui/cn";
 import { usePortalContainer } from "../ui/portalContainer";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import type { LaneIcon as LaneIconValue } from "../../../shared/types";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 
 /**
  * Synthetic lane id for the draft-composer “auto-create lane” row.
@@ -71,6 +73,7 @@ export type LaneComboboxLane = {
   id: string;
   name: string;
   color?: string | null;
+  emoji?: string | null;
   branchRef?: string | null;
   /** Machine the lane lives on. Unset means the default (first) machine. */
   machineId?: string | null;
@@ -90,6 +93,7 @@ type LaneListItem = {
   id: string;
   name: string;
   color: string | null;
+  emoji?: string | null;
   /** Short display branch (e.g. from refs/heads/foo); `null` for the "all" row. */
   branchLabel: string | null;
   detail?: string | null;
@@ -132,6 +136,7 @@ export function laneMatchesSearch(
 }
 
 function laneListIcon(item: LaneListItem) {
+  if (item.emoji) return <span className="inline-flex shrink-0 items-center justify-center text-[12px] leading-none">{item.emoji}</span>;
   if (item.icon) return item.icon;
   const color = item.color ? laneDisplayColor(item.color) : "var(--color-muted-fg)";
   return item.color ? (
@@ -149,6 +154,10 @@ function laneListItemFromLane(
     id: optionId,
     name: lane.name,
     color: lane.color ?? null,
+    emoji: laneEmojiForDisplay(
+      lane.emoji,
+      typeof lane.icon === "string" ? lane.icon as LaneIconValue : null,
+    ),
     branchLabel: resolveBranchLabel(lane.branchRef),
     detail: lane.detail ?? null,
     icon: lane.icon,
@@ -566,9 +575,11 @@ export function LaneCombobox({
         data-open={open ? "true" : "false"}
         onClick={() => setOpen(!open)}
       >
-        {value !== "all" && selectedLane?.icon
-          ? selectedLane.icon
-          : displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
+        {value !== "all" && selectedLane?.emoji
+          ? <span className="inline-flex shrink-0 items-center justify-center text-[12px] leading-none">{selectedLane.emoji}</span>
+          : value !== "all" && selectedLane?.icon
+            ? selectedLane.icon
+            : displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
         <span className="min-w-0 shrink truncate">{displayLabel}</span>
         {selectedBranchLabel ? (
           // Shrink factor puts every pixel of squeeze on the branch first: the

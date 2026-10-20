@@ -23,6 +23,7 @@ import { refOnlyBranch, stripRemotePrefix, type LaneBranchOption } from "./laneU
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
+import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { colorsInUse, laneColorName, nextAvailableColor } from "./laneColorPalette";
 import { LaneBranchList, type LaneBranchListItem } from "./LaneBranchList";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -124,6 +125,11 @@ export function CreateLaneDialog({
   importBranchWarning,
   selectedColor,
   setSelectedColor,
+  selectedEmoji,
+  setSelectedEmoji,
+  suggestedEmoji,
+  onAcceptSuggestedEmoji,
+  showEmojiControl = true,
   selectedLinearIssue,
   setSelectedLinearIssue,
   branchPullRequests,
@@ -174,6 +180,11 @@ export function CreateLaneDialog({
   importBranchWarning?: string | null;
   selectedColor: string | null;
   setSelectedColor: (c: string | null) => void;
+  selectedEmoji: string | null;
+  setSelectedEmoji: (emoji: string | null) => void;
+  suggestedEmoji?: string | null;
+  onAcceptSuggestedEmoji?: () => void;
+  showEmojiControl?: boolean;
   selectedLinearIssue: LaneLinearIssue | null;
   setSelectedLinearIssue: (issue: LaneLinearIssue | null) => void;
   /** Open PRs in the project's GitHub repo, keyed by head branch. */
@@ -488,6 +499,11 @@ export function CreateLaneDialog({
             value={createLaneName}
             onChange={(e) => handleSetCreateLaneName(e.target.value)}
             onKeyDown={(event) => {
+              if (event.key === "Tab" && suggestedEmoji && !selectedEmoji) {
+                event.preventDefault();
+                onAcceptSuggestedEmoji?.();
+                return;
+              }
               if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 submit();
@@ -501,6 +517,28 @@ export function CreateLaneDialog({
             data-tour="lanes.createDialog.name"
           />
         </div>
+        {showEmojiControl ? (
+          <div className="flex min-h-8 items-center gap-2">
+            <LaneEmojiPicker
+              value={selectedEmoji}
+              onChange={setSelectedEmoji}
+              disabled={locked}
+              label="Lane emoji"
+            />
+            {suggestedEmoji && !selectedEmoji ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-full border border-fg/[0.12] border-dashed bg-fg/[0.025] px-2.5 py-1 text-[11px] text-muted-fg hover:border-accent/40 hover:text-fg"
+                aria-label={`Accept Jev's suggested emoji ${suggestedEmoji}; press Tab in the lane name field to accept`}
+                title="Click to accept · Tab in the lane name field to accept"
+                onClick={onAcceptSuggestedEmoji}
+              >
+                {suggestedEmoji}<span>suggested</span>
+              </button>
+            ) : null}
+            <span className="ml-auto text-[10px] text-muted-fg/55">Optional</span>
+          </div>
+        ) : null}
 
         {/* How the lane starts */}
         <div className="cl-modes" role="radiogroup" aria-label="Start from" data-tour="lanes.createDialog.tabs">

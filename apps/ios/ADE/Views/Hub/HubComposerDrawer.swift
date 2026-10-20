@@ -212,6 +212,10 @@ struct HubInlineComposer: View {
     return LaneColorPalette.displayColor(forHex: lane.color)
   }
 
+  private var selectedLaneEmoji: String? {
+    lanesForPickedProject.first(where: { $0.id == selectedLaneId })?.emoji
+  }
+
   /// Fast mode only applies to in-app chat sessions on fast-tier models. The
   /// picker owns the control, but launch still gates the submitted value on the
   /// resolved session interface and model support.
@@ -444,7 +448,12 @@ struct HubInlineComposer: View {
       .foregroundStyle(ADEColor.textSecondary)
     } else {
       HStack(spacing: 5) {
-        Circle().fill(selectedLaneTint).frame(width: 7, height: 7)
+        if let selectedLaneEmoji, !selectedLaneEmoji.isEmpty {
+          Text(selectedLaneEmoji)
+            .font(.system(size: 11))
+        } else {
+          Circle().fill(selectedLaneTint).frame(width: 7, height: 7)
+        }
         Text(selectedLaneName)
           .font(.system(size: 12.5, weight: .medium))
           .foregroundStyle(ADEColor.textSecondary)
@@ -601,8 +610,14 @@ struct HubInlineComposer: View {
     } label: {
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 8) {
-          Circle().fill(tint).frame(width: 8, height: 8)
-            .frame(width: 22)
+          if let emoji = lane.emoji, !emoji.isEmpty {
+            Text(emoji)
+              .font(.system(size: 14))
+              .frame(width: 22)
+          } else {
+            Circle().fill(tint).frame(width: 8, height: 8)
+              .frame(width: 22)
+          }
           Text(lane.name)
             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)

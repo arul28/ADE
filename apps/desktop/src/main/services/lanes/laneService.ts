@@ -100,6 +100,7 @@ import type {
   StackChainItem,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
+import { legacyLaneEmojiIcon, legacyLaneIconEmoji, normalizeLaneEmoji } from "../../../shared/laneEmoji";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
@@ -697,6 +698,18 @@ function parseLaneIcon(value: string | null): LaneIcon {
   return null;
 }
 
+function parseLaneEmoji(storedIcon: string | null): string | null {
+  const legacyEmoji = legacyLaneIconEmoji(storedIcon);
+  if (legacyEmoji) return legacyEmoji;
+  if (!storedIcon) return null;
+  try {
+    return normalizeLaneEmoji(storedIcon);
+  } catch {
+    // A malformed value from a peer should not make lane lists unreadable.
+    return null;
+  }
+}
+
 function parseLaneTags(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -930,6 +943,7 @@ function toLaneSummary(args: {
       kind: status.branchDriftKind,
     }),
     color: row.color,
+    emoji: parseLaneEmoji(row.icon),
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
@@ -8165,7 +8179,7 @@ export function createLaneService({
       });
     },
 
-    updateAppearance({ laneId, color, icon, tags }: UpdateLaneAppearanceArgs): void {
+    updateAppearance({ laneId, color, emoji, icon, tags }: UpdateLaneAppearanceArgs): void {
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       const normalizedTags = tags == null
@@ -8180,7 +8194,18 @@ export function createLaneService({
       const normalizedColor = lane.lane_type === "primary"
         ? PRIMARY_LANE_COLOR
         : color === undefined ? lane.color : color;
-      const normalizedIcon = icon === undefined ? parseLaneIcon(lane.icon) : icon;
+      const appearanceEmoji = emoji === undefined
+        ? icon === undefined
+          ? parseLaneEmoji(lane.icon)
+          : legacyLaneIconEmoji(icon)
+        : normalizeLaneEmoji(emoji);
+      const storedIcon = emoji === undefined
+        ? icon === undefined
+          ? lane.icon
+          : icon ?? null
+        : appearanceEmoji == null
+          ? null
+          : legacyLaneEmojiIcon(appearanceEmoji) ?? appearanceEmoji;
 
       if (lane.lane_type !== "primary" && normalizedColor && normalizedColor !== lane.color) {
         const conflict = db.get<{ name: string }>(
@@ -8205,7 +8230,7 @@ export function createLaneService({
         `,
         [
           normalizedColor ?? null,
-          normalizedIcon ?? null,
+          storedIcon,
           JSON.stringify(normalizedTags),
           laneId,
           projectId

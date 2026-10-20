@@ -1965,6 +1965,9 @@ function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLa
   if ("color" in value) {
     parsed.color = value.color == null ? null : asTrimmedString(value.color) ?? null;
   }
+  if ("emoji" in value) {
+    parsed.emoji = value.emoji == null ? null : asTrimmedString(value.emoji) ?? null;
+  }
   if ("icon" in value) {
     parsed.icon = value.icon == null ? null : (asTrimmedString(value.icon) as UpdateLaneAppearanceArgs["icon"]);
   }

@@ -226,7 +226,7 @@ struct WorkImportActionBar: View {
       fallback: ADEColor.textSecondary
     )
     return HStack(spacing: 6) {
-      WorkLaneLogoMark(color: color, laneIcon: lockedLane?.icon, size: 12)
+      WorkLaneLogoMark(color: color, laneIcon: lockedLane?.icon, emoji: lockedLane?.emoji, size: 12)
       Text(name)
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)

@@ -8,6 +8,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { WORK_TOOL_CHROME_FOCUS } from "../terminals/workToolChrome";
 import { getLaneAccent } from "../lanes/laneColorPalette";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { normalizeBranchName } from "./commitRowModel";
 
 export type HistoryLanePickerGroup = {
@@ -68,7 +69,11 @@ export function HistoryLanePicker({
             )}
             data-testid="history-lane-picker"
           >
-            {current ? <LaneIcon size={14} style={{ color: current.color }} /> : null}
+            {current
+              ? laneEmojiForDisplay(current.lane.emoji, current.lane.icon)
+                ? <span className="text-[12px] leading-none">{laneEmojiForDisplay(current.lane.emoji, current.lane.icon)}</span>
+                : <LaneIcon size={14} style={{ color: current.color }} />
+              : null}
             <span className="min-w-0 truncate">{current ? current.lane.name : "Choose a lane"}</span>
             <CaretDown size={11} className="shrink-0 text-muted-fg" aria-hidden />
           </button>
@@ -119,7 +124,9 @@ export function HistoryLanePicker({
                       "data-[highlighted]:bg-fg/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
                     )}
                   >
-                    <LaneIcon size={13} style={{ color: colorFor(group, option.lane) }} />
+                    {laneEmojiForDisplay(option.lane.emoji, option.lane.icon)
+                      ? <span className="text-[12px] leading-none">{laneEmojiForDisplay(option.lane.emoji, option.lane.icon)}</span>
+                      : <LaneIcon size={13} style={{ color: colorFor(group, option.lane) }} />}
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-[12.5px] text-fg">{option.lane.name}</span>
                       {optionBranch && optionBranch !== option.lane.name ? (

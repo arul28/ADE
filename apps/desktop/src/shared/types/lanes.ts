@@ -143,6 +143,9 @@ export type LaneSummary = {
   /** Non-null when the worktree HEAD has drifted off `branchRef`. */
   branchDrift?: LaneBranchDrift | null;
   color: string | null;
+  /** User-selected emoji identity. Older hosts omit this field. */
+  emoji?: string | null;
+  /** Legacy icon value retained for older clients and peers. */
   icon: LaneIcon | null;
   tags: string[];
   folder?: string | null;
@@ -529,6 +532,8 @@ export type ReparentLaneResult = {
 export type UpdateLaneAppearanceArgs = {
   laneId: string;
   color?: string | null;
+  emoji?: string | null;
+  /** @deprecated Kept for calls from older agents and peers. */
   icon?: LaneIcon;
   tags?: string[] | null;
 };

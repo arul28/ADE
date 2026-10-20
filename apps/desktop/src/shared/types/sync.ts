@@ -1176,6 +1176,7 @@ export type SyncRosterLane = {
   name: string;
   color?: string | null;
   icon?: string | null;
+  emoji?: string | null;
   laneType?: string | null;
   branchRef?: string | null;
   /**

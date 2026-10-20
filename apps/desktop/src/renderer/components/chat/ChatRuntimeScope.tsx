@@ -163,6 +163,7 @@ export type ChatScopeLaneOption = {
   id: string;
   name: string;
   color?: string | null;
+  emoji?: string | null;
   branchRef?: string | null;
   laneType?: string | null;
 };

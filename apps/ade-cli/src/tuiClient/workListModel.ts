@@ -265,7 +265,7 @@ function decorateShelfRows(
       showLaneIdentity: headerless,
       laneName: lane?.name ?? row.laneName,
       laneColor: lane?.color ?? row.laneColor,
-      laneIcon: lane?.icon ?? row.laneIcon,
+      laneIcon: lane?.emoji ?? lane?.icon ?? row.laneIcon,
     }));
     if (!headerless && lane) {
       out.push({
@@ -274,7 +274,7 @@ function decorateShelfRows(
         laneId,
         label: lane.name,
         color: lane.color ?? null,
-        icon: lane.icon ?? null,
+        icon: lane.emoji ?? lane.icon ?? null,
         tier: "quiet",
         machine: null,
         sessionCount: list.length,
@@ -669,7 +669,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       laneId,
       label: lane.name,
       color: lane.color ?? null,
-      icon: lane.icon ?? null,
+      icon: lane.emoji ?? lane.icon ?? null,
       tier: workLaneTier(orderInput),
       machine: null,
       sessionCount: laneRows.length,
@@ -683,7 +683,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       ...row,
       showLaneIdentity: headerless,
       laneColor: lane.color ?? null,
-      laneIcon: lane.icon ?? null,
+      laneIcon: lane.emoji ?? lane.icon ?? null,
     })));
     const sessions = laneEntries.filter((row): row is WorkListSessionRow => row.kind === "session");
     groups.push({ header, sessions, newChat: null });

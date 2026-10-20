@@ -43,6 +43,8 @@ import {
 } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -238,7 +240,9 @@ function ManageLaneHeaderDetails({
         <div className="max-h-[min(28vh,160px)] space-y-1.5 overflow-y-auto pr-1">
           {lanes.map((lane) => (
             <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <LaneIcon size={11} className="shrink-0 text-muted-fg/60" />
+              {laneEmojiForDisplay(lane.emoji, lane.icon)
+                ? <span className="shrink-0 text-[11px] leading-none">{laneEmojiForDisplay(lane.emoji, lane.icon)}</span>
+                : <LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
               <span className="font-semibold text-fg">{lane.name}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>
@@ -1277,6 +1281,22 @@ function AppearanceSection({
     }
   };
 
+  const applyEmoji = async (next: string | null) => {
+    setError(null);
+    setBusy(true);
+    try {
+      const args = { laneId: lane.id, emoji: next };
+      await (runtimePin
+        ? window.ade.lanes.updateAppearance(args, runtimePin)
+        : window.ade.lanes.updateAppearance(args));
+      await onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set emoji");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       <div className="flex items-center justify-between gap-3">
@@ -1294,6 +1314,18 @@ function AppearanceSection({
           usedColors={used}
           usedColorOwners={usedOwners}
         />
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <LaneEmojiPicker
+          value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+          label="Lane emoji"
+          disabled={disabled || busy}
+          onChange={(next) => { void applyEmoji(next); }}
+        />
+        <div>
+          <div className="text-xs font-medium text-fg/80">Lane emoji</div>
+          <div className="text-[11px] text-muted-fg/65">Shown beside the lane name.</div>
+        </div>
       </div>
       {error ? (
         <div className="mt-2 text-xs text-red-300">{error}</div>

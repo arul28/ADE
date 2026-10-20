@@ -414,7 +414,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
   const laneOptions = useMemo<LaneComboboxLane[]>(
     () => (storeLanes ?? [])
       .filter((lane) => lane.id !== session.laneId)
-      .map((lane) => ({ id: lane.id, name: lane.name, color: lane.color, branchRef: lane.branchRef })),
+      .map((lane) => ({ id: lane.id, name: lane.name, color: lane.color, emoji: lane.emoji, branchRef: lane.branchRef })),
     [storeLanes, session.laneId],
   );
   const laneSentence = useMemo(() => {

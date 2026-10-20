@@ -59,6 +59,10 @@ struct LaneStackGraphSheet: View {
                   }
                   VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
+                      if let emoji = snapshot.lane.emoji, !emoji.isEmpty {
+                        Text(emoji)
+                          .font(.system(size: 13))
+                      }
                       Text(snapshot.lane.name)
                         .font(.subheadline.weight(snapshot.lane.id == selectedLaneId ? .semibold : .regular))
                         .foregroundStyle(ADEColor.textPrimary)
