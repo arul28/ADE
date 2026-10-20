@@ -734,6 +734,14 @@ measurements (a dev-only probe read xterm's buffers):
 | First reveal: text on screen, median / max | 172 / 243 ms | 175 / 267 ms |
 | Revisit: text on screen, median / max | 23 / 43 ms | 26 / 59 ms |
 
+PTY host processes (isolated dev brain, `footprint` of each `ptyHostWorker`
+child of the brain):
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| PTY host memory with 8 terminals open | 8 hosts, ~144 MB (18 MB each) | 1 host, 18 MB | 40 MB |
+| Echo in a terminal while another in the same host floods, median / max | 27-32 ms / 0.7-1.1 s (separate hosts) | 2 ms / 562 ms | 100 ms / 2 s |
+
 WebGL contexts of parked terminals, measured directly with ADE's xterm and
 WebGL addon in the dev renderer (8 terminals, 3,000 colored lines each). The
 Work tab could not be driven: an isolated dev home stops at the sign-in gate.

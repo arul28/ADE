@@ -26,7 +26,7 @@ type ChildRequest =
   | { type: "pause"; ptyId: string }
   | { type: "resume"; ptyId: string }
   | { type: "ack"; ptyId: string; chars: number }
-  | { type: "dispose"; ptyId: string };
+  | { type: "dispose"; ptyId: string; signal?: string };
 
 type HostErrorPayload = {
   message?: string;
@@ -69,6 +69,13 @@ type HostChildState = {
 const HOST_KILL_GRACE_MS = 3_000;
 const HOST_SIGKILL_GRACE_MS = 500;
 const HOST_SPAWN_TIMEOUT_MS = 15_000;
+/**
+ * Terminals one host process serves. Each host is a whole Node process
+ * (about 25 MB), so one per terminal made every agent CLI pay for its own.
+ * A host crash ends only the terminals it serves; per-PTY output flow control
+ * keeps one flooding terminal from starving the others in its host.
+ */
+const MAX_PTYS_PER_HOST = 8;
 /** Output characters processed between acknowledgements to the PTY host. */
 const PTY_HOST_ACK_BATCH_CHARS = 32 * 1024;
 const INTERNAL_PTY_HOST_WORKER_ARG = "__ade-pty-host-worker";
@@ -323,7 +330,7 @@ class SupervisedPtyHost {
       resolve: () => {},
       reject: (error) => remote.markSpawnFailed(error),
     });
-    const childState = this.startChildForPty(ptyId);
+    const childState = this.childForNewPty(ptyId);
     this.sendToChild(childState, {
       type: "spawn",
       requestId,
@@ -337,7 +344,7 @@ class SupervisedPtyHost {
 
   send(request: ChildRequest): void {
     if (request.type === "spawn") {
-      const childState = this.childrenByPty.get(request.ptyId) ?? this.startChildForPty(request.ptyId);
+      const childState = this.childrenByPty.get(request.ptyId) ?? this.childForNewPty(request.ptyId);
       this.sendToChild(childState, request);
       return;
     }
@@ -424,6 +431,19 @@ class SupervisedPtyHost {
     for (const childState of childStates) {
       this.stopChild(childState, "SIGTERM");
     }
+  }
+
+  /** A live host with room, or a new one. A host being stopped is never reused. */
+  private childForNewPty(ptyId: string): HostChildState {
+    for (const candidate of new Set(this.childrenByPty.values())) {
+      const { child } = candidate;
+      if (child.killed || !child.connected || child.exitCode != null || child.signalCode != null) continue;
+      if (candidate.ptyIds.size >= MAX_PTYS_PER_HOST) continue;
+      candidate.ptyIds.add(ptyId);
+      this.childrenByPty.set(ptyId, candidate);
+      return candidate;
+    }
+    return this.startChildForPty(ptyId);
   }
 
   private startChildForPty(ptyId: string): HostChildState {
@@ -628,6 +648,18 @@ class SupervisedPtyHost {
       });
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
+      if (childState.ptyIds.size > 1) {
+        // Other terminals share this host, so killing the host is not the
+        // escalation it is for a host of one: kill this PTY's process instead.
+        try {
+          childState.child.send({ type: "dispose", ptyId, signal: "SIGKILL" });
+        } catch {
+          // The host may be gone; its exit handler covers what remains.
+        }
+        if (process.platform === "win32" && remote && remote.pid > 0) {
+          killWindowsProcessTree(remote.pid, () => {});
+        }
+      }
       this.detachPtyFromChild(ptyId, "SIGKILL");
       remote?.markHostExited(1);
     }, signal === "SIGKILL" ? HOST_SIGKILL_GRACE_MS : HOST_KILL_GRACE_MS);

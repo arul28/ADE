@@ -43,6 +43,7 @@ type AckMessage = {
 type DisposeMessage = {
   type: "dispose";
   ptyId: string;
+  signal?: string;
 };
 
 type HostMessage = SpawnMessage | WriteMessage | ResizeMessage | KillMessage | FlowMessage | AckMessage | DisposeMessage;
@@ -204,7 +205,7 @@ function handleMessage(message: HostMessage): void {
         }
       }
     } else if (message.type === "dispose") {
-      disposePty(message.ptyId);
+      disposePty(message.ptyId, message.signal);
     }
   } catch (error) {
     send({
