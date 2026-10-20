@@ -191,11 +191,13 @@ export function logModelRegistryRefresh(args: {
   bytes: number;
   models: number;
   agents: number;
+  media: number;
   artificialAnalysisError?: string;
   modelsDevError?: string;
+  mediaError?: string;
   durationMs: number;
 }): void {
-  const failed = !args.stored || args.artificialAnalysisError || args.modelsDevError;
+  const failed = !args.stored || args.artificialAnalysisError || args.modelsDevError || args.mediaError;
   (failed ? console.error : console.log)(JSON.stringify({
     ts: new Date().toISOString(),
     svc: SERVICE,
@@ -205,8 +207,10 @@ export function logModelRegistryRefresh(args: {
     bytes: args.bytes,
     models: args.models,
     agents: args.agents,
+    media: args.media,
     ...(args.artificialAnalysisError ? { artificialAnalysisError: args.artificialAnalysisError } : {}),
     ...(args.modelsDevError ? { modelsDevError: args.modelsDevError } : {}),
+    ...(args.mediaError ? { mediaError: args.mediaError } : {}),
     durationMs: Math.max(0, Math.round(args.durationMs)),
   }));
 }

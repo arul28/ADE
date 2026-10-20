@@ -557,33 +557,92 @@ ADE machines. ADE's model router reads it to rate every route (harness × model
 
 **What a snapshot holds**
 
-- `models`: every Artificial Analysis model variant (684 on 2026-09-29), one
-  per effort level: Intelligence Index and its main evals, cost and seconds per
-  index task, output tokens per second, time to first token, list prices.
-  `timeToFirstTokenSeconds` is Artificial Analysis's median time to the first
-  streamed chunk on its long-prompt workload, in seconds. For a reasoning model
-  that does not stream its thinking it includes the hidden reasoning, so it
-  reads as "seconds until the user sees output" (Claude Opus 5.5 at max effort
-  is about 692 s; Sonnet 5.5 at low is about 1 s).
+- `models`: every Artificial Analysis model variant it lists (706 on
+  2026-10-20), one per effort level: Intelligence Index and its main evals,
+  cost and seconds per index task, output tokens per second, time to first
+  token, list prices, and the optional profile below (`evals`, `domains`,
+  `personality`, `modalities`, license, size, knowledge cutoff, answer
+  latency). `profile` says where the variant's data came from: `record` (a
+  full model record), `leaderboard` (a leaderboard row; fields only a record
+  has stay from an earlier record of the same slug), or `carried` (no current
+  page lists it, so the last data seen is kept; these are the deprecated
+  models). `timeToFirstTokenSeconds` is Artificial Analysis's median time to
+  the first streamed chunk on its long-prompt workload, in seconds. For a
+  reasoning model that does not stream its thinking it includes the hidden
+  reasoning, so it reads as "seconds until the user sees output" (Claude Opus
+  5.5 at max effort is about 573 s; Sonnet 5.5 at low is about 1 s).
 - `agents`: every Coding Agent Index row (harness × model), with its score,
   per-eval scores, cost, minutes, steps, cache hit rate and tokens per task.
   `modelSlug` names the variant the row ran only when the names match exactly
   (after dropping `(with fallback)` and the `{'reasoning_effort': ...}` suffix)
   or the row's own `hostModelSlug` is a variant's slug. Pairs (Devin Fusion's
   lead + sidekick) and unknown names are `null`, never guessed.
+- `media`: every row of the three speech leaderboards (text to speech, speech
+  to text, speech to speech), one per host + model, with the scores in
+  `MODEL_REGISTRY_MEDIA_SCORES`. Speech models are mostly not LLMs, so a row
+  stands on its own; `modelSlug` names an LLM variant only when its name or
+  short name is exactly the row's model name (4 of 218 rows on 2026-10-20).
 - `prices`: models.dev per-token prices for each channel in
   `MODEL_REGISTRY_PRICE_CHANNELS`, keyed by the channel's own model id, with
   context tiers where models.dev lists them.
-- `sources`: for each source, when its data was last read and whether the last
-  read worked.
+- `sources`: for each source (`artificialAnalysis`, `modelsDev`, `media`),
+  when its data was last read and whether the last read worked.
+
+**Compatibility.** Every field added on 2026-10-20 is optional and left out
+when there is no figure, and `schemaVersion` stays 1, so an older desktop
+reads a newer snapshot (it ignores what it does not know) and a newer desktop
+reads an older one. Bump `MODEL_REGISTRY_SCHEMA_VERSION` only for a change an
+older desktop would misread: it refuses any other version.
+
+**Inventory of Artificial Analysis data** (live pages read on 2026-10-20).
+Coverage is over the 273 current variants unless it says otherwise.
+
+| Field | Source page | Coverage | Units |
+|---|---|---|---|
+| Variant → family, release date, deprecated | `/leaderboards/models` (`modelsAndReleases` index) | 706 variants, 512 releases | slugs, ISO date |
+| `intelligenceIndex` | leaderboard row, model record | 268 | 0 to 100 |
+| `humanitysLastExam`, `longContextReasoning`, `gpqa`, `ifBench`, `sciCode`, `terminalBench40` | leaderboard row, model record | 267, 258, 220, 154, 142, 135 | fraction |
+| `evals.critPt`, `omniscienceIndex`, `omniscienceAccuracy`, `omniscienceHallucinationRate` | leaderboard row, model record | 262 to 264 | fraction; Omniscience index -100 to 100; hallucination lower is better |
+| `evals.gdpval`, `tau2Bench`, `terminalBenchHard`, `terminalBench21`, `mmmuPro`, `tauBanking` | leaderboard row, model record | 171, 152, 151, 128, 123, 103 | fraction |
+| `evals.analystAgent`, `itBenchSre`, `apexAgents` | leaderboard row, model record | 27, 18, 11 | fraction |
+| `evals.automationBench`, `gdpPdf`, `gdpvalElo`, `briefcaseElo`, `briefcaseRubricPassRate`, `frontierCode`, `terminalBenchScience`, `aa3dElo`, `mlcr`, `harveyLab`, `opennessIndex`, `enterpriseOpsGym` | model record only | 27 down to 7 | fraction; `…Elo` Elo; openness 0 to 100 |
+| `domains` (GDPval-AA by occupation: economics, engineering, finance and accounting, healthcare and medical, legal, strategy and ops) | model record only | 27 | 0 to 100 |
+| `personality` (PersonalityBench: conviction, expressiveness, imagination, informativeness, organization, slop, transparency, warmth) | model record only | 26 | 0 to 100 |
+| `modalities` (text, image, speech, video, in and out) | model record only | 27 (7 take speech, 6 video in) | lists |
+| `license`, `licenseCategory`, `parametersBillions`, `activeParametersBillions`, `knowledgeCutoff` | model record only | 12, 27, 13, 12, 1 | text; billions |
+| `sizeClass` | leaderboard row (`paramClass`), model record | 198 | `tiny`…`large` |
+| `outputTokensPerSecond`, `timeToFirstTokenSeconds`, `timeToFirstAnswerTokenSeconds`, `endToEndSeconds` | leaderboard row, model record | 167 | tokens/s, seconds |
+| `costPerIndexTaskUsd`, `secondsPerIndexTask`, `outputTokensPerIndexTask` | row and record; time and tokens record only | 120, 110, 27 | USD, seconds, tokens |
+| `price` | leaderboard row, model record | 174 | USD per 1M tokens |
+| Coding Agent Index (`agents`) | `/agents/coding-agents` | 42 rows | fraction, USD, minutes |
+| Text to speech (`media`) | `/text-to-speech/models` | 109 host rows | Elo, USD per 1M characters, characters/s |
+| Speech to text (`media`) | `/speech-to-text/non-streaming` | 62 host rows | word error rate (lower is better), USD per 1,000 min, speed factor |
+| Speech to speech (`media`) | `/speech-to-speech` | 47 host rows | quality index 0 to 100; Big Bench Audio, Full-Duplex-Bench, τ-Voice fractions; seconds to first audio; USD per hour |
+
+Published but not kept: the model records' raw PersonalityBench trait Elos
+and writing-style means, per-eval token and cost breakdowns, and speed
+percentiles (size, little routing value); the leaderboard's price and size
+classes. Not reachable within the fetch budget: `/leaderboards/providers`
+(518 provider endpoints with speed, price and function-calling / JSON-mode
+flags, a 4 MB page) and the per-model `/models/<slug>/providers` pages (one
+fetch per model is a crawl). The image and video arenas (`/image/arena`,
+`/video/arena`) render in the browser and carry no data in the page. The
+coding, agentic and math sub-indices the site once showed are not in any
+payload today; the Coding Agent Index rows stand in for coding.
 
 **Sources and attribution.** Artificial Analysis
-(`https://artificialanalysis.ai`) has no API for this data. Every
-`/models/<slug>` page embeds all model records in its React Server Components
-payload, so the refresh reads one model page and `/agents/coding-agents`: two
-page fetches on a successful refresh, retried with a bounded backoff only
-after a failure, with the user agent `ADE model registry
-(+https://ade-app.dev)`. Anything that shows the data carries
+(`https://artificialanalysis.ai`) has no API for this data. Until October 2026
+every `/models/<slug>` page embedded all model records; it now embeds only the
+featured models' full records (27), so the refresh reads
+`/leaderboards/models` (a row per current variant and the variant → family
+index), one model page (full records), `/agents/coding-agents`, and the three
+speech leaderboards: six page fetches on a successful refresh, retried with a
+bounded backoff only after a failure, with the user agent `ADE model registry
+(+https://ade-app.dev)`. The speech pages are skipped when neither model page
+answered. A leaderboard row names no effort: it comes from the previous
+snapshot's same slug, else from the name (`… (High, Default Fallback)`), which
+agreed with the records on 676 of 691 variants on 2026-10-20 and otherwise
+gives none, never a wrong level. Anything that shows the data carries
 `MODEL_REGISTRY_AA_ATTRIBUTION` ("Source: Artificial Analysis
 (artificialanalysis.ai)"). Prices come from `https://models.dev/api.json`.
 
@@ -601,29 +660,37 @@ interval — so a source that refuses the Worker is not refetched every ten
 minutes for as long as the failure lasts. A refresh that stores a snapshot
 releases the claim and resets the failure count (`failures`).
 
-**Failure isolation.** A source that fails (an HTTP error, a model page that
-parses fewer than 100 records, no agent rows, JSON that does not parse, no
-listed channel) keeps the previous snapshot's data for that source, and the
-snapshot says `ok: false` with the reason. When only the agents page fails,
-the new models are kept with the previous agent rows. Nothing is stored when
-both sources fail, or when there would be no models at all. Every refresh
-logs one `model_registry_refresh` line; a site redesign that breaks the parser
-shows up there as `artificialAnalysisError`, while the route keeps serving the
+**Failure isolation.** A source that fails (an HTTP error, model pages that
+together parse fewer than 100 variants, no agent rows, JSON that does not
+parse, no listed channel) keeps the previous snapshot's data for that source,
+and the snapshot says `ok: false` with the reason. Within Artificial Analysis
+the parts fail apart: when only the model page fails, the leaderboard rows
+are kept (with the previous records' extra fields); when only the agents page
+fails, the new models are kept with the previous agent rows; each speech
+leaderboard that fails keeps its previous rows (`sources.media`). The status
+error lists every page that failed (`leaderboard: http_503; agents: ...`).
+Nothing is stored when both Artificial Analysis and models.dev fail, or when
+there would be no models at all. Every refresh logs one
+`model_registry_refresh` line with `models`, `agents` and `media` counts; a
+site redesign that breaks the parser shows up there as
+`artificialAnalysisError` or `mediaError`, while the route keeps serving the
 previous data. A partly failed refresh still counts as the day's refresh, so
 the failed source is next retried a day later.
 
-**Size and CPU.** Measured on the live pages of 2026-09-29: the model page is
-3.9 MB of HTML (606 KB on the wire), the agents page 0.7 MB, models.dev 5.2 MB.
-The stored snapshot is 522,807 bytes of compact JSON (models 480 KB, agents
-16 KB, prices 27 KB), under D1's 2 MB row cap; the Worker refuses to store one
-over 1.9 MB. Seven are kept, about 3.7 MB. Parsing all three takes about
-65 ms of CPU under Node on an Apple Silicon Mac (payload decode 12 ms, model
-records 30 ms, agent rows 4 ms, models.dev 18 ms), far inside the Workers Paid
-default of 30 s CPU per invocation, so `limits.cpu_ms` stays unset.
+**Size and CPU.** Measured on the live pages of 2026-10-20: the leaderboard
+page is 1.9 MB of HTML, the model page 1.6 MB, the agents page 1.0 MB, the
+speech pages 1.0 MB, 1.7 MB and 1.2 MB, models.dev 5.9 MB. The stored snapshot
+is 737,779 bytes of compact JSON (models 618 KB, media 69 KB, prices 28 KB,
+agents 22 KB), up from 529,320 bytes before the profile was added, under D1's
+2 MB row cap; the Worker refuses to store one over 1.9 MB. Seven are kept,
+about 5.2 MB. A whole refresh parse (every page and models.dev) takes about
+200 ms under Node on an Apple Silicon Mac, far inside the Workers Paid default
+of 30 s CPU per invocation, so `limits.cpu_ms` stays unset.
 
 **Deploying it.** `migrations/0013_model_registry.sql` creates both tables;
 apply it before the deploy, the same way as the usage research migration
-above. Until the first refresh lands (at most a minute after a deploy with
+above. The October 2026 profile and speech rows need no migration: they live
+inside the stored snapshot body. Until the first refresh lands (at most a minute after a deploy with
 `MODEL_REGISTRY_REFRESH` on), the route answers `503`. To look at what is
 stored:
 
