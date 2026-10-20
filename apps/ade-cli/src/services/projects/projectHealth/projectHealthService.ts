@@ -137,21 +137,24 @@ function laneLinkProblem(projectRoot: string, laneRoot: string): string | null {
 
 /**
  * A folder whose install produces packages. A package.json that lists no
- * dependencies or workspaces (a monorepo root that only holds scripts) installs nothing and
- * leaves no `node_modules`, so it would read as needing an install forever.
+ * dependencies or workspaces (a monorepo root that only holds scripts)
+ * installs nothing and leaves no `node_modules`, so it would read as needing
+ * an install forever.
  */
 function hasPackageInstall(root: string): boolean {
   if (lockfileKind(root) === null) return false;
-  try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Record<string, unknown>;
-    // Workspaces install their members' packages into the root.
-    return ["dependencies", "devDependencies", "optionalDependencies", "workspaces"].some((field) => {
-      const deps = manifest[field];
-      return Boolean(deps) && typeof deps === "object" && Object.keys(deps as object).length > 0;
-    });
-  } catch {
-    return false;
+  const manifestPath = path.join(root, "package.json");
+  if (!exists(manifestPath)) return false;
+  const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`The package manifest at ${manifestPath} must contain a JSON object.`);
   }
+  const manifest = parsed as Record<string, unknown>;
+  // Workspaces install their members' packages into the root.
+  return ["dependencies", "devDependencies", "optionalDependencies", "workspaces"].some((field) => {
+    const deps = manifest[field];
+    return Boolean(deps) && typeof deps === "object" && Object.keys(deps as object).length > 0;
+  });
 }
 
 /** A virtualenv whose scripts name a folder other than its own was copied or moved, and its scripts break. */

@@ -86,7 +86,7 @@ export async function filesMentioningPath(checkouts: string[], sourceRoot: strin
   // already lists is the same finding once per lane, and listing it would crowd
   // the lanes' own files out of the list.
   const ordered = [...checkouts].sort((a, b) => Number(path.resolve(b) === path.resolve(sourceRoot)) - Number(path.resolve(a) === path.resolve(sourceRoot)));
-  const mainTracked = new Set<string>();
+  const mainMentioned = new Set<string>();
   for (const checkout of ordered) {
     if (found.size >= MAX_MENTIONS) break;
     const isMain = path.resolve(checkout) === path.resolve(sourceRoot);
@@ -99,21 +99,25 @@ export async function filesMentioningPath(checkouts: string[], sourceRoot: strin
       for (const line of stdout.split("\n")) {
         const file = line.trim();
         if (!file) continue;
-        if (isMain) mainTracked.add(file);
-        else if (mainTracked.has(file)) continue;
+        if (isMain) mainMentioned.add(file);
+        else if (mainMentioned.has(file)) continue;
         found.add(path.relative(sourceRoot, path.join(checkout, file)));
       }
     } catch {
       // exit 1: no match; anything else: not a git checkout or git busy
     }
     for (const name of UNTRACKED_CONFIG_FILES) {
-      if (!isMain && mainTracked.has(name)) continue;
+      const gitName = name.split(path.sep).join("/");
+      if (!isMain && mainMentioned.has(gitName)) continue;
       const file = path.join(checkout, name);
       try {
         const stat = fs.statSync(file);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
         const text = fs.readFileSync(file, "utf8");
-        if (oldSpellings.some((spelling) => text.includes(spelling))) found.add(path.relative(sourceRoot, file));
+        if (oldSpellings.some((spelling) => text.includes(spelling))) {
+          if (isMain) mainMentioned.add(gitName);
+          found.add(path.relative(sourceRoot, file));
+        }
       } catch {
         // missing
       }

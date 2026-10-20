@@ -74,11 +74,15 @@ for (const target of targets) {
 // Electron downloads its binary in a postinstall that can exit 0 without
 // finishing; `path.txt` is the last thing it writes.
 const electronDir = path.join(repoRoot, "apps", "desktop", "node_modules", "electron");
-if (fs.existsSync(electronDir) && !fs.existsSync(path.join(electronDir, "path.txt"))) {
+const electronPath = path.join(electronDir, "path.txt");
+if (!fs.existsSync(electronPath)) {
+  const repair = fs.existsSync(electronDir)
+    ? `run \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
+    : "run `npm install` again in apps/desktop";
   throw new Error(
-    `[install:apps] Electron's binary didn't finish installing (no ${path.relative(repoRoot, path.join(electronDir, "path.txt"))}).` +
+    `[install:apps] Electron's binary didn't finish installing (no ${path.relative(repoRoot, electronPath)}).` +
       (nodeMismatch ? ` Switch to Node ${pinnedNode} and` : "") +
-      ` run \`node install.js\` in ${path.relative(repoRoot, electronDir)}.`,
+      ` ${repair}.`,
   );
 }
 

@@ -661,6 +661,12 @@ export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<v
  */
 async function removeKeepingMarkerLast(root: string): Promise<void> {
   const marker = movedMarkerPath(root);
+  for (const directory of [root, path.dirname(marker)]) {
+    const stat = await nonAsarFs.promises.lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`ADE won't delete ${root} because ${directory} isn't a directory it can safely remove.`);
+    }
+  }
   const keep = new Set([root, path.dirname(marker), marker]);
   const removeAllBut = async (dir: string) => {
     for (const name of await nonAsarFs.promises.readdir(dir)) {
