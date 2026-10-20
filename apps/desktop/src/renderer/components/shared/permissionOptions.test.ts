@@ -5,7 +5,6 @@ import {
   resolvePersistentIdentityGuardedPermissionMode,
   safetyBadgeLabel,
   safetyColorHex,
-  safetyColors,
   familyToPermissionKey,
   permissionFamilyLabel,
   type SafetyLevel,

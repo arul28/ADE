@@ -319,11 +319,15 @@ function PermissionModeMenu<Value extends string>({
   onClippedAbove?: (menuHeight: number) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The caller passes a fresh arrow on every render. Holding it in a ref keeps
+  // the effect below at once per open instead of once per parent render.
+  const reportClippedAbove = useRef(onClippedAbove);
   useLayoutEffect(() => {
-    if (!onClippedAbove) return;
+    const report = reportClippedAbove.current;
+    if (!report) return;
     const rect = rootRef.current?.getBoundingClientRect();
-    if (rect && rect.top < 0) onClippedAbove(rect.height);
-  }, [onClippedAbove]);
+    if (rect && rect.top < 0) report(rect.height);
+  }, []);
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === selectedValue));
   const [pointedIndex, setPointedIndex] = useState<number | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);

@@ -410,7 +410,7 @@ const noAdhocPermissionPicker = {
     schema: [],
     messages: {
       select: "A raw `<select>` for permission modes is a second permission control. Render `PermissionModePicker` (components/shared/PermissionModePicker.tsx) with rows from `modelPermissionPickerOptions` (lib/modelPermissionOptions.ts); the modes themselves live in shared/modelPermissions.ts.",
-      listbox: "A hand-rolled `role=\"listbox\"` for permission modes is a lookalike of the composer's menu, and a dialog's scroll container can clip it. Render `PermissionModePicker` (components/shared/PermissionModePicker.tsx) with rows from `modelPermissionPickerOptions` (lib/modelPermissionOptions.ts).",
+      listbox: "A hand-rolled `role=\"listbox\"` for permission modes is a second permission control: a dialog's scroll container can clip it, and its tones and names drift from the composer's. Render `PermissionModePicker` (components/shared/PermissionModePicker.tsx) with rows from `modelPermissionPickerOptions` (lib/modelPermissionOptions.ts) — unless the control is genuinely a different one, which the baseline entry should then say.",
     },
   },
   create(context) {

@@ -65,17 +65,28 @@ export function normalizePermissionModeForProfile(opts: {
 }
 
 /**
- * Claude's and Codex's generic options say what the composer says: the native
- * mode's name, and its sentence as the one-line description every permission
- * menu shows. The long `detail` keeps the flag-level explanation.
+ * A Claude or Codex row before its wording is attached. These two providers'
+ * names and one-line descriptions come from `shared/modelPermissions.ts`, so a
+ * copy written here would be dead — it would look like the label and never be
+ * the one that ships.
  */
-function withNativeWording(provider: "claude" | "codex", options: PermissionOption[]): PermissionOption[] {
-  const native = modelPermissionOptions(provider);
+type NativeWordingSeed = Omit<PermissionOption, "label" | "shortDesc">;
+
+/**
+ * Attach the owner's wording to Claude's and Codex's generic options: the
+ * native mode's name, and its sentence as the one-line description every
+ * permission menu shows. The long `detail` keeps the flag-level explanation.
+ */
+function withNativeWording(
+  provider: "claude" | "codex",
+  options: NativeWordingSeed[],
+): PermissionOption[] {
+  const wording = new Map(modelPermissionOptions(provider).map((mode) => [mode.value, mode]));
   return options.map((option) => {
-    const value = legacyPermissionToNative(provider, option.value);
-    const mode = native.find((entry) => entry.value === value);
-    if (!mode) return option;
-    return { ...option, label: mode.label, shortDesc: mode.detail };
+    const mode = wording.get(legacyPermissionToNative(provider, option.value) ?? "");
+    // Every generic word has a native twin for these two providers; the generic
+    // word is the last resort so a row can never render nameless.
+    return { ...option, label: mode?.label ?? option.value, shortDesc: mode?.detail ?? "" };
   });
 }
 
@@ -119,8 +130,6 @@ export function getPermissionOptions(opts: {
     return withNativeWording("claude", [
       {
         value: "default",
-        label: "Manual",
-        shortDesc: "Prompts before each tool type on first use",
         detail: "Standard behavior. Read operations are free; writes, edits, and Bash commands require your approval on first use per session.",
         allows: ["File reads", "Grep / Glob / LS", "Plan generation"],
         gates: ["File writes & edits", "Bash commands", "WebFetch / WebSearch", "Subagent (Task) spawning"],
@@ -128,8 +137,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "auto",
-        label: "Auto",
-        shortDesc: "Claude judges each tool call",
         detail: "Claude judges each tool call. Uses a model classifier instead of asking you.",
         allows: ["Claude-classified safe tool calls"],
         gates: ["Tool calls Claude classifies as needing review"],
@@ -137,8 +144,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "edit",
-        label: "Accept Edits",
-        shortDesc: "File ops auto-approved; shell still gates",
         detail: "Read, Write, Edit, and MultiEdit are auto-approved for the session. Bash, WebFetch, and Task spawning still require manual approval on first invocation.",
         allows: ["File reads", "File writes & edits", "Grep / Glob / LS"],
         gates: ["Bash commands", "WebFetch / WebSearch", "Subagent (Task) spawning"],
@@ -146,8 +151,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "plan",
-        label: "Plan",
-        shortDesc: "Read-only - no file edits",
         detail: "Analysis-only mode. Claude can read files, search the codebase, run exploratory commands with normal approvals, and produce an implementation plan - but cannot write or edit files.",
         allows: ["Read", "Grep", "Glob", "LS", "Exploratory Bash with approval"],
         blocks: ["Write", "Edit", "MultiEdit"],
@@ -155,8 +158,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "full-auto",
-        label: "Bypass",
-        shortDesc: "All permission checks disabled",
         detail: "Every tool across all 16 Claude Code tools runs without prompting. No interruptions. Designed for containerized or fully sandboxed CI environments.",
         allows: ["All 16 tools \u2014 unrestricted"],
         warning: "\u26a0 Only safe in containers, VMs, or sandboxed environments where actions can be reverted.",
@@ -170,8 +171,6 @@ export function getPermissionOptions(opts: {
     return withNativeWording("codex", [
       {
         value: "default",
-        label: "Default permissions",
-        shortDesc: "Codex's default permission preset",
         detail: "Workspace-write sandbox with approval policy set to on-request. Codex can read, edit, and run commands in the workspace; it asks before editing outside the workspace or accessing network.",
         allows: ["File reads", "File writes & patches inside the workspace", "Shell commands in workspace-write sandbox"],
         gates: ["Edits outside the workspace", "Network access"],
@@ -179,8 +178,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "edit",
-        label: "Edit mode",
-        shortDesc: "Auto-approve trusted workspace changes",
         detail: "Workspace-write sandbox with approval policy set to untrusted. Codex can read, edit, and run trusted workspace commands; untrusted operations still ask before running.",
         allows: ["File reads", "Trusted file writes & patches inside the workspace", "Trusted shell commands in workspace-write sandbox"],
         gates: ["Untrusted operations", "Edits outside the workspace", "Network access"],
@@ -188,8 +185,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "plan",
-        label: "Plan mode",
-        shortDesc: "Safe read-only browsing",
         detail: "Read-only sandbox with approval policy set to on-request. Codex can read files and answer questions, but needs approval to make edits, run commands, or access network.",
         allows: ["File exploration", "Code search", "Plan generation"],
         gates: ["File writes & patches", "Shell commands", "Network access"],
@@ -197,8 +192,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "full-auto",
-        label: "Full access",
-        shortDesc: "Unrestricted \u2014 skips all approval prompts",
         detail: "No sandbox and no approvals. Codex runs shell commands and applies patches without interruption. Use only in an externally sandboxed environment.",
         allows: ["shell \u2014 unrestricted", "apply_patch \u2014 unrestricted", "Network access"],
         warning: "\u26a0 Removes all sandboxing. Only safe in trusted, isolated environments.",
@@ -206,8 +199,6 @@ export function getPermissionOptions(opts: {
       },
       {
         value: "config-toml",
-        label: "Custom (config.toml)",
-        shortDesc: "No flags passed - uses config.toml",
         detail: "No --ask-for-approval or --sandbox flags are passed to the Codex runtime. Runtime behavior is controlled by Codex config files (for example, ~/.codex/config.toml).",
         allows: ["Determined by config.toml"],
         gates: [],
@@ -535,42 +526,6 @@ export function safetyColorHex(safety: SafetyLevel): string {
     case "full-auto":
     case "danger": return "#EF4444";
     case "custom": return "#8B5CF6";
-  }
-}
-
-/** Tailwind-based color classes — used by chat composer hover pane. */
-export function safetyColors(safety: SafetyLevel) {
-  switch (safety) {
-    case "safe":
-      return {
-        border: "border-l-emerald-500/60",
-        badge: "text-emerald-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
-    case "semi-auto":
-      return {
-        border: "border-l-amber-400/60",
-        badge: "text-amber-400/70",
-        activeBg: "bg-amber-500/10 ring-1 ring-amber-400/20",
-      };
-    case "full-auto":
-      return {
-        border: "border-l-red-400/60",
-        badge: "text-red-400/70",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "danger":
-      return {
-        border: "border-l-red-500/70",
-        badge: "text-red-400/80",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "custom":
-      return {
-        border: "border-l-violet-500/60",
-        badge: "text-violet-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
   }
 }
 

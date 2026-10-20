@@ -24,7 +24,11 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCat
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { PermissionModePicker, type PermissionModePickerOption } from "./PermissionModePicker";
-import { COPILOT_PERMISSION_PICKER_OPTIONS, modelPermissionPickerOptions } from "../../lib/modelPermissionOptions";
+import {
+  CODEX_CUSTOM_PICKER_OPTION,
+  COPILOT_PERMISSION_PICKER_OPTIONS,
+  modelPermissionPickerOptions,
+} from "../../lib/modelPermissionOptions";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
@@ -35,10 +39,8 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 type CodexPermissionPreset = ReturnType<typeof codexPresetFromControls>;
 
 /** Codex's launch presets; config.toml joins only when it is already the state. */
-const CODEX_LAUNCH_PRESETS = CODEX_PERMISSION_MODES.filter(
-  (mode): mode is (typeof mode) & { value: Exclude<CodexPermissionPreset, "custom" | "config-toml"> } => mode.value !== "config-toml",
-);
-const CODEX_CONFIG_TOML_MODE = CODEX_PERMISSION_MODES.find((mode) => mode.value === "config-toml")!;
+const CODEX_LAUNCH_PRESETS = CODEX_PERMISSION_MODES.filter((mode) => mode.value !== "config-toml");
+const CODEX_CONFIG_TOML_MODES = CODEX_PERMISSION_MODES.filter((mode) => mode.value === "config-toml");
 
 const CURSOR_PICKER_OPTIONS = modelPermissionPickerOptions("cursor", CURSOR_PERMISSION_MODES);
 const DROID_PICKER_OPTIONS = modelPermissionPickerOptions("droid", DROID_PERMISSION_MODES);
@@ -127,15 +129,9 @@ function LaunchNativePermissionControls({
     // never claims to be on a preset the person did not choose. Picking that row
     // is a no-op; it is there to describe the current state.
     if (preset === "config-toml") {
-      options.push(...modelPermissionPickerOptions("codex", [CODEX_CONFIG_TOML_MODE]));
+      options.push(...modelPermissionPickerOptions("codex", CODEX_CONFIG_TOML_MODES));
     } else if (preset === "custom") {
-      options.push({
-        value: "custom",
-        label: "Custom",
-        detail: "A custom Codex approval and sandbox combination.",
-        tone: "slate",
-        icon: "config",
-      });
+      options.push(CODEX_CUSTOM_PICKER_OPTION);
     }
     return (
       <PermissionModePicker

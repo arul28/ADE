@@ -272,6 +272,7 @@ import {
   OPENCODE_PERMISSION_MODES,
 } from "../../../shared/modelPermissions";
 import {
+  CODEX_CUSTOM_PICKER_OPTION,
   COPILOT_PERMISSION_PICKER_OPTIONS,
   cursorModePickerOptions,
   modelPermissionPickerOptions,
@@ -5933,12 +5934,11 @@ function AgentChatComposerImpl({
 
     if (sp === "codex") {
       const codexModeOptions: Array<PermissionModePickerOption<CodexPermissionPreset>> = CODEX_MODE_OPTIONS;
+      // The shared row, with this composer's live summary of the current
+      // approval/sandbox combination where it has one.
       const codexCustomOption: PermissionModePickerOption<CodexPermissionPreset> = {
-        value: "custom",
-        label: "Custom",
-        detail: codexCustomSummary ?? "Custom Codex approval/sandbox combination.",
-        tone: "slate",
-        icon: "config",
+        ...CODEX_CUSTOM_PICKER_OPTION,
+        detail: codexCustomSummary ?? CODEX_CUSTOM_PICKER_OPTION.detail,
       };
       const pickerOptions: Array<PermissionModePickerOption<CodexPermissionPreset>> = codexPreset === "custom"
         ? [...codexModeOptions, codexCustomOption]

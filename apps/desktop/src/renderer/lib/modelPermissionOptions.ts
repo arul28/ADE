@@ -1,15 +1,24 @@
 // The one presentation table for permission modes: the tone and glyph every
 // `PermissionModePicker` (the composer footer, the launch controls, the PR
 // resolver, the automation forms, the handoff tab) and the model chip show for
-// a provider's mode. A mode shows one name everywhere, the pill included.
+// a provider's mode.
 //
 // Values, labels and details are owned by `shared/modelPermissions.ts`; this
 // module only attaches the desktop presentation. Build picker rows with
 // `modelPermissionPickerOptions` rather than writing a list by hand.
+//
+// A provider shows one name for a mode on every surface that reads its native
+// vocabulary. The PR resolver and the automation forms store ADE's generic word
+// instead, so they read the generic ladder; Copilot's models reach them through
+// `familyToPermissionKey`'s `acp` key, so those two surfaces still say
+// "Accept edits" / "Full access" where the composer says "Auto-edit" /
+// "Full-auto". Unifying that needs a mapping for the modes Copilot has and the
+// generic ladder does not (`assisted`, and an `auto` with no Copilot twin).
 
 import {
   COPILOT_PERMISSION_MODES,
   cursorModeDetail,
+  hasNativePermissionVocabulary,
   legacyPermissionToNative,
   modelPermissionOptions,
   MUSE_PERMISSION_MODES,
@@ -92,25 +101,25 @@ const COPILOT_PRESENTATION: Record<string, ModelPermissionPresentation> = {
 
 const FALLBACK: ModelPermissionPresentation = { tone: "green", icon: "manual" };
 
+/** Each provider's table. `factory` is Droid's other name. */
+const TABLE_BY_PROVIDER: Record<string, Record<string, ModelPermissionPresentation>> = {
+  claude: CLAUDE_PRESENTATION,
+  codex: CODEX_PRESENTATION,
+  cursor: CURSOR_PRESENTATION,
+  droid: DROID_PRESENTATION,
+  factory: DROID_PRESENTATION,
+  muse: MUSE_PRESENTATION,
+  copilot: COPILOT_PRESENTATION,
+  opencode: OPENCODE_PRESENTATION,
+};
+
 /** The tone and glyph the footer shows for a provider's native permission mode. */
 export function modelPermissionPresentation(
   provider: string | null | undefined,
   value: string,
 ): ModelPermissionPresentation {
   const p = String(provider ?? "").trim().toLowerCase();
-  const table = p === "claude"
-    ? CLAUDE_PRESENTATION
-    : p === "codex"
-      ? CODEX_PRESENTATION
-      : p === "cursor"
-        ? CURSOR_PRESENTATION
-        : p === "droid" || p === "factory"
-          ? DROID_PRESENTATION
-          : p === "muse"
-            ? MUSE_PRESENTATION
-            : p === "copilot"
-              ? COPILOT_PRESENTATION
-              : OPENCODE_PRESENTATION;
+  const table = Object.hasOwn(TABLE_BY_PROVIDER, p) ? TABLE_BY_PROVIDER[p]! : OPENCODE_PRESENTATION;
   return Object.hasOwn(table, value) ? table[value]! : FALLBACK;
 }
 
@@ -182,6 +191,19 @@ export const MUSE_PERMISSION_PICKER_OPTIONS: Array<PermissionModePickerOption<Ag
 export const COPILOT_PERMISSION_PICKER_OPTIONS = modelPermissionPickerOptions("copilot", COPILOT_PERMISSION_MODES);
 
 /**
+ * The row that names a Codex approval/sandbox combination ADE has no preset
+ * for. It only ever describes the current state — picking it does nothing —
+ * so the three surfaces that show it share this one sentence.
+ */
+export const CODEX_CUSTOM_PICKER_OPTION: PermissionModePickerOption<"custom"> = {
+  value: "custom",
+  label: "Custom",
+  detail: "A Codex approval and sandbox combination ADE has no preset for. Picking a mode replaces it.",
+  tone: "slate",
+  icon: "config",
+};
+
+/**
  * ADE's generic words (`AgentChatPermissionMode`) by meaning, for providers
  * that have no native vocabulary of their own (the ACP agents, Antigravity).
  */
@@ -194,10 +216,10 @@ const GENERIC_PRESENTATION: Record<string, ModelPermissionPresentation> = {
   "config-toml": { tone: "slate", icon: "config" },
 };
 
-/** Providers whose generic words map onto a native vocabulary (`legacyPermissionToNative`). */
-const NATIVE_VOCABULARY_PROVIDERS: ReadonlySet<string> = new Set([
-  "claude", "codex", "cursor", "droid", "factory", "muse", "copilot", "opencode",
-]);
+/** The tone and glyph for one of ADE's generic words, by what it means. */
+function genericPresentation(value: string): ModelPermissionPresentation {
+  return Object.hasOwn(GENERIC_PRESENTATION, value) ? GENERIC_PRESENTATION[value]! : FALLBACK;
+}
 
 /**
  * Rows for surfaces that store ADE's generic word rather than the provider's
@@ -205,6 +227,16 @@ const NATIVE_VOCABULARY_PROVIDERS: ReadonlySet<string> = new Set([
  * glyph of the native mode its word launches, so Plan reads purple and Bypass
  * red here exactly as in the composer. `provider` is a provider group or an
  * automation permission key (`acp` has no native vocabulary).
+ *
+ * Two generic words can land on one native mode — OpenCode's `default` and
+ * `edit` both mean its `edit`, Cursor's `default` and `edit` both mean its
+ * `agent` — so those two rows share a glyph and colour. Their labels still
+ * differ, and the tone they share is the right one for both, which is why they
+ * are left alone: demoting either to its by-meaning tone would read as a
+ * stronger claim than the row makes. Cursor's `edit` is labelled "Ask" and is a
+ * read-only mode, so an amber edit glyph on it would say the opposite. Fixing
+ * this properly means resolving the Cursor ladder's own generic-to-native
+ * mapping, which changes what an automation launches.
  */
 export function genericPermissionPickerOptions<Value extends string>(
   provider: string | null | undefined,
@@ -212,10 +244,8 @@ export function genericPermissionPickerOptions<Value extends string>(
 ): Array<PermissionModePickerOption<Value>> {
   const p = String(provider ?? "").trim().toLowerCase();
   return options.map((option) => {
-    const native = NATIVE_VOCABULARY_PROVIDERS.has(p) ? legacyPermissionToNative(p, option.value) : null;
-    const presentation = native
-      ? modelPermissionPresentation(p, native)
-      : Object.hasOwn(GENERIC_PRESENTATION, option.value) ? GENERIC_PRESENTATION[option.value]! : FALLBACK;
+    const mode = hasNativePermissionVocabulary(p) ? legacyPermissionToNative(p, option.value) : null;
+    const presentation = mode ? modelPermissionPresentation(p, mode) : genericPresentation(option.value);
     return pickerOption({ value: option.value, label: option.label, detail: option.shortDesc }, presentation);
   });
 }

@@ -152,16 +152,35 @@ function isDroidProvider(provider: string): boolean {
   return provider === "droid" || provider === "factory";
 }
 
+/**
+ * The providers that have a mode list of their own, and the list. One record,
+ * so `hasNativePermissionVocabulary` cannot disagree with what
+ * `modelPermissionOptions` actually answers.
+ */
+const MODES_BY_PROVIDER: Record<string, ReadonlyArray<ModelPermissionOption>> = {
+  claude: CLAUDE_PERMISSION_MODES,
+  codex: CODEX_PERMISSION_MODES,
+  cursor: CURSOR_PERMISSION_MODES,
+  droid: DROID_PERMISSION_MODES,
+  factory: DROID_PERMISSION_MODES,
+  muse: MUSE_PERMISSION_MODES,
+  copilot: COPILOT_PERMISSION_MODES,
+  opencode: OPENCODE_PERMISSION_MODES,
+};
+
+/**
+ * True when a provider's generic words map onto a native mode list of its own.
+ * The ACP agents and Antigravity speak ADE's generic ladder directly, so their
+ * rows wear the by-meaning tones instead.
+ */
+export function hasNativePermissionVocabulary(provider: string | null | undefined): boolean {
+  return Object.hasOwn(MODES_BY_PROVIDER, String(provider ?? "").trim().toLowerCase());
+}
+
 /** The native option list for a chat provider. Unknown providers speak OpenCode. */
 export function modelPermissionOptions(provider: string | null | undefined): ReadonlyArray<ModelPermissionOption> {
   const p = String(provider ?? "").trim().toLowerCase();
-  if (p === "claude") return CLAUDE_PERMISSION_MODES;
-  if (p === "codex") return CODEX_PERMISSION_MODES;
-  if (p === "cursor") return CURSOR_PERMISSION_MODES;
-  if (isDroidProvider(p)) return DROID_PERMISSION_MODES;
-  if (p === "muse") return MUSE_PERMISSION_MODES;
-  if (p === "copilot") return COPILOT_PERMISSION_MODES;
-  return OPENCODE_PERMISSION_MODES;
+  return Object.hasOwn(MODES_BY_PROVIDER, p) ? MODES_BY_PROVIDER[p]! : OPENCODE_PERMISSION_MODES;
 }
 
 /** The mode a fresh chip starts on, matching the footer's default for the provider. */

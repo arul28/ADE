@@ -51,6 +51,11 @@ export function ModelChipSegmentMenu({
     ? permissionModeToneRgb(active.tone ?? "green")
     : reasoningEffortToneRgb(active.value, tiers);
   return (
+    // ade-ui/no-adhoc-permission-picker records this line on purpose: it is the
+    // model chip's own 188px segmented menu, shared by its permission and
+    // thinking tracks, not a permission picker. It reuses PermissionModePicker's
+    // glyph and tone helpers but keeps its own shape, so swapping it would
+    // change the chip rather than unify anything.
     <AnchoredMenu
       open
       anchorRef={anchorRef}

@@ -1790,7 +1790,8 @@ for context insertions. Contains:
 - lane selector (`LaneCombobox`) on the launch shelf under the composer,
   synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
-  permission controls (`getPermissionOptions`, `safetyColors`). The
+  permission controls (`getPermissionOptions`, rendered through
+  `PermissionModePicker`). The
   ADE wordmark and optically lifted composer stay in the original
   stack; the chat canvas is transparent so the mesh behind
   `WorkViewArea` shows through. The usage card sits below the launch
