@@ -82,8 +82,14 @@ const MAX_MENTIONS = 40;
  */
 export async function filesMentioningPath(checkouts: string[], sourceRoot: string, oldSpellings: string[]): Promise<string[]> {
   const found = new Set<string>();
-  for (const checkout of checkouts) {
+  // The main checkout first: a lane's tracked copy of a file the main checkout
+  // already lists is the same finding once per lane, and listing it would crowd
+  // the lanes' own files out of the list.
+  const ordered = [...checkouts].sort((a, b) => Number(path.resolve(b) === path.resolve(sourceRoot)) - Number(path.resolve(a) === path.resolve(sourceRoot)));
+  const mainTracked = new Set<string>();
+  for (const checkout of ordered) {
     if (found.size >= MAX_MENTIONS) break;
+    const isMain = path.resolve(checkout) === path.resolve(sourceRoot);
     try {
       const { stdout } = await execFileAsync(
         "git",
@@ -91,12 +97,17 @@ export async function filesMentioningPath(checkouts: string[], sourceRoot: strin
         { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
       );
       for (const line of stdout.split("\n")) {
-        if (line.trim()) found.add(path.relative(sourceRoot, path.join(checkout, line.trim())));
+        const file = line.trim();
+        if (!file) continue;
+        if (isMain) mainTracked.add(file);
+        else if (mainTracked.has(file)) continue;
+        found.add(path.relative(sourceRoot, path.join(checkout, file)));
       }
     } catch {
       // exit 1: no match; anything else: not a git checkout or git busy
     }
     for (const name of UNTRACKED_CONFIG_FILES) {
+      if (!isMain && mainTracked.has(name)) continue;
       const file = path.join(checkout, name);
       try {
         const stat = fs.statSync(file);

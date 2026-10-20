@@ -41,6 +41,20 @@ const targets = [
   ...PACKAGES.map((pkg) => ({ label: `packages/${pkg}`, cwd: path.join(repoRoot, "packages", pkg) })),
 ];
 
+// .nvmrc pins the Node CI uses. A newer Node can install "successfully" and
+// still leave packages broken (Electron's unzip stops partway on Node 26).
+const pinnedNode = (() => {
+  try {
+    return fs.readFileSync(path.join(repoRoot, ".nvmrc"), "utf8").trim().replace(/^v/, "");
+  } catch {
+    return null;
+  }
+})();
+const nodeMismatch = Boolean(pinnedNode) && pinnedNode.split(".")[0] !== process.versions.node.split(".")[0];
+if (nodeMismatch) {
+  console.warn(`[install:apps] warning: this is Node ${process.versions.node}, but .nvmrc pins ${pinnedNode}. Run \`nvm use\` (or put Node ${pinnedNode.split(".")[0]} first on PATH) if an install fails.`);
+}
+
 for (const target of targets) {
   if (!fs.existsSync(path.join(target.cwd, "package.json"))) {
     throw new Error(`[install:apps] ${target.label} has no package.json`);
@@ -55,6 +69,17 @@ for (const target of targets) {
   if (result.status !== 0) {
     throw new Error(`[install:apps] ${target.label} install failed with exit code ${result.status}`);
   }
+}
+
+// Electron downloads its binary in a postinstall that can exit 0 without
+// finishing; `path.txt` is the last thing it writes.
+const electronDir = path.join(repoRoot, "apps", "desktop", "node_modules", "electron");
+if (fs.existsSync(electronDir) && !fs.existsSync(path.join(electronDir, "path.txt"))) {
+  throw new Error(
+    `[install:apps] Electron's binary didn't finish installing (no ${path.relative(repoRoot, path.join(electronDir, "path.txt"))}).` +
+      (nodeMismatch ? ` Switch to Node ${pinnedNode} and` : "") +
+      ` run \`node install.js\` in ${path.relative(repoRoot, electronDir)}.`,
+  );
 }
 
 console.log(`[install:apps] installed ${targets.length} package(s)`);

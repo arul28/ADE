@@ -135,8 +135,23 @@ function laneLinkProblem(projectRoot: string, laneRoot: string): string | null {
   return null;
 }
 
+/**
+ * A folder whose install produces packages. A package.json that lists no
+ * dependencies or workspaces (a monorepo root that only holds scripts) installs nothing and
+ * leaves no `node_modules`, so it would read as needing an install forever.
+ */
 function hasPackageInstall(root: string): boolean {
-  return exists(path.join(root, "package.json")) && lockfileKind(root) !== null;
+  if (lockfileKind(root) === null) return false;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Record<string, unknown>;
+    // Workspaces install their members' packages into the root.
+    return ["dependencies", "devDependencies", "optionalDependencies", "workspaces"].some((field) => {
+      const deps = manifest[field];
+      return Boolean(deps) && typeof deps === "object" && Object.keys(deps as object).length > 0;
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** A virtualenv whose scripts name a folder other than its own was copied or moved, and its scripts break. */
@@ -223,7 +238,8 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
       }
       const targetRoot = target ? path.dirname(target) : "";
       if (primary && targetRoot && isWithinPath(primary.root, targetRoot, true) && !isWithinPath(path.join(primary.root, ".ade"), targetRoot, true)) {
-        mark(primary, targetRoot);
+        // A link to a folder that installs nothing has nothing to resolve.
+        if (hasPackageInstall(targetRoot)) mark(primary, targetRoot);
       } else {
         brokenLinks.push(nodeModules);
       }

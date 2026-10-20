@@ -9,6 +9,7 @@ import type {
   ProjectMoveRecord,
   ProjectMoveStepId,
 } from "../../../../../desktop/src/shared/types/projectMove";
+import { nonAsarFs } from "../../../../../desktop/src/main/services/shared/nonAsarFs";
 import { listAppleDeviceMarkers, writeAppleDeviceMarker } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import { ProjectRegistry } from "../projectRegistry";
 import { readGitDirPointer } from "../projectRoots";
@@ -39,6 +40,7 @@ import {
   isMoveProcessAlive,
   listMoveRecords,
   markMoveActive,
+  movedMarkerPath,
   ownsLeftoverCopy,
   recordOriginalBytes,
   readMovedMarker,
@@ -552,7 +554,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
           // meets it; the slow removal happens after ADE opens.
           const removing = `${copyRoot}.removing-${record.moveId}`;
           fs.renameSync(copyRoot, removing);
-          slowWork.push(() => fs.promises.rm(removing, { recursive: true, force: true }));
+          slowWork.push(() => nonAsarFs.promises.rm(removing, { recursive: true, force: true }));
         }
         record.state = "failed";
         record.error = "ADE stopped during the move. Your project wasn't changed.";
@@ -569,7 +571,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
   for (const record of listMoveRecords()) {
     if (record.state !== "failed" || !record.copyCreated) continue;
     const removing = `${copyLocation(record.destinationRoot)}.removing-${record.moveId}`;
-    if (fs.existsSync(removing)) slowWork.push(() => fs.promises.rm(removing, { recursive: true, force: true }));
+    if (fs.existsSync(removing)) slowWork.push(() => nonAsarFs.promises.rm(removing, { recursive: true, force: true }));
   }
   const tidyUp = (async () => {
     for (const work of slowWork) await work();
@@ -628,6 +630,13 @@ async function verifyGit(args: {
 export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<void> {
   const parked = record.originalParkedAt;
   if (!parked) throw new Error("ADE has no record of where the original was kept.");
+  if (!fs.existsSync(parked)) {
+    // Gone already (removed by hand, or by an earlier delete that ADE stopped
+    // waiting for). Only when its parent is there: a missing parent is a
+    // drive that isn't connected, not a deleted folder.
+    if (fs.existsSync(path.dirname(parked))) return;
+    throw new Error(`The drive that holds ${parked} isn't connected, so ADE can't delete it now.`);
+  }
   if (readMovedMarker(parked)?.moveId !== record.moveId) {
     throw new Error(`The folder at ${parked} isn't the original ADE kept, so ADE won't delete it.`);
   }
@@ -641,5 +650,27 @@ export async function deleteParkedOriginal(record: ProjectMoveRecord): Promise<v
       throw new Error(`The lane at ${lane.lanePath} still keeps its git data in the old copy, so ADE won't delete it yet.`);
     }
   }
-  await fs.promises.rm(parked, { recursive: true, force: false, maxRetries: 2 });
+  await removeKeepingMarkerLast(parked);
+}
+
+/**
+ * Removes `root` with the moved marker last, so a delete that stops partway
+ * still carries the marker and can be retried. Unpatched `fs`: ADE runs in
+ * Electron, whose `fs` reads a lane's `default_app.asar` as a folder, and a
+ * recursive remove then reports success and leaves the archive behind.
+ */
+async function removeKeepingMarkerLast(root: string): Promise<void> {
+  const marker = movedMarkerPath(root);
+  const keep = new Set([root, path.dirname(marker), marker]);
+  const removeAllBut = async (dir: string) => {
+    for (const name of await nonAsarFs.promises.readdir(dir)) {
+      const entry = path.join(dir, name);
+      if (keep.has(entry)) continue;
+      await nonAsarFs.promises.rm(entry, { recursive: true, force: true, maxRetries: 2 });
+    }
+  };
+  await removeAllBut(root);
+  if (fs.existsSync(path.dirname(marker))) await removeAllBut(path.dirname(marker));
+  await nonAsarFs.promises.rm(root, { recursive: true, force: false, maxRetries: 2 });
+  if (fs.existsSync(root)) throw new Error(`ADE couldn't remove everything in ${root}. Try again, or delete what's left in Finder.`);
 }
