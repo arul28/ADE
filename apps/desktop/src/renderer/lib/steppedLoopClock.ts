@@ -34,6 +34,8 @@ const SEEK_EPSILON_MS = 0.5;
 
 type SteppedLoop = {
   animation: CSSAnimation;
+  /** The timing the loop was adopted with; see `timingKey`. */
+  timing: string;
   durationMs: number;
   delayMs: number;
   /** Fractions of one iteration where the loop's value changes, ascending. */
@@ -86,16 +88,11 @@ function stepChangeFractions(animation: CSSAnimation): number[] | null {
     if (keyframeValues(from) === keyframeValues(to)) continue;
     const timing = parseStepTiming(from.easing ?? "linear");
     if (!timing) return null;
-    // Every timing that jumps at the segment's ends lands on the same grid of
-    // `steps` (or `steps ± 1`) intervals; listing both ends covers the jump
-    // into the segment and the hand-over to the next one.
-    const intervals = timing.position === "jump-both"
-      ? timing.steps + 1
-      : timing.position === "jump-none"
-        ? Math.max(1, timing.steps - 1)
-        : timing.steps;
-    for (let step = 0; step <= intervals; step += 1) {
-      fractions.add(roundFraction((start + ((end - start) * step) / intervals) % 1));
+    // Every step position splits the segment into `steps` equal intervals and
+    // only jumps on their edges; listing both ends covers the jump into the
+    // segment and the hand-over to the next one.
+    for (let step = 0; step <= timing.steps; step += 1) {
+      fractions.add(roundFraction((start + ((end - start) * step) / timing.steps) % 1));
     }
   }
   if (fractions.size === 0) return null;
@@ -122,10 +119,49 @@ function seek(loop: SteppedLoop, nowMs: number): void {
   loop.animation.currentTime = nowMs + SEEK_EPSILON_MS;
 }
 
-function isLive(animation: CSSAnimation): boolean {
-  if (animation.playState === "idle" || animation.playState === "finished") return false;
-  const target = (animation.effect as KeyframeEffect | null)?.target;
-  return Boolean(target?.isConnected);
+// CSS can change a loop's timing after it was adopted: Settings → Reduce
+// motion turns every animation into one 0.01 ms iteration, and a rule can
+// swap a duration. Such a loop goes back to CSS.
+function timingKey(timing: ComputedEffectTiming | EffectTiming): string {
+  return [timing.duration, timing.delay, timing.iterations, timing.direction, timing.easing, timing.iterationStart].join("|");
+}
+
+function release(animation: CSSAnimation): void {
+  animation.playbackRate = 1;
+  if (animation.playState === "running") animation.startTime = 0;
+}
+
+/**
+ * Brings one loop to `nowMs` and finds its next step. "gone" when its element
+ * or animation is gone; "retimed" when CSS changed its timing, in which case
+ * it is already handed back to CSS.
+ */
+function catchUp(loop: SteppedLoop, nowMs: number): "kept" | "gone" | "retimed" {
+  const { animation } = loop;
+  const effect = animation.effect as KeyframeEffect | null;
+  if (animation.playState === "idle" || !effect?.target?.isConnected) return "gone";
+  if (timingKey(effect.getTiming()) !== loop.timing) {
+    release(animation);
+    return "retimed";
+  }
+  // A loop CSS has paused (`animation-play-state: paused`) holds still.
+  if (animation.playState === "running") seek(loop, nowMs);
+  loop.nextAtMs = nextChangeAt(loop, nowMs + SEEK_EPSILON_MS);
+  return "kept";
+}
+
+function catchUpAll(nowMs: number, dueOnly: boolean): void {
+  const retimed: CSSAnimation[] = [];
+  for (const [animation, loop] of loops) {
+    if (dueOnly && loop.nextAtMs > nowMs + BATCH_WINDOW_MS) continue;
+    const outcome = catchUp(loop, nowMs);
+    if (outcome === "kept") continue;
+    loops.delete(animation);
+    if (outcome === "retimed") retimed.push(animation);
+  }
+  // A retimed loop that still qualifies under its new timing comes back.
+  for (const animation of retimed) adoptSteppedLoop(animation);
+  schedule();
 }
 
 function schedule(): void {
@@ -141,37 +177,14 @@ function schedule(): void {
 
 function tick(): void {
   timer = null;
-  const now = performance.now();
-  for (const [animation, loop] of loops) {
-    if (!isLive(animation)) {
-      loops.delete(animation);
-      continue;
-    }
-    if (loop.nextAtMs > now + BATCH_WINDOW_MS) continue;
-    // A loop CSS has paused (`animation-play-state: paused`) holds still.
-    if (animation.playState !== "paused") seek(loop, now);
-    loop.nextAtMs = nextChangeAt(loop, now + SEEK_EPSILON_MS);
-  }
-  schedule();
+  catchUpAll(performance.now(), true);
 }
 
 // A hidden window draws nothing, so the clock stops with it and catches every
 // loop up to the current step when the window shows again.
 function onVisibilityChange(): void {
-  if (document.visibilityState === "hidden") {
-    schedule();
-    return;
-  }
-  const now = performance.now();
-  for (const [animation, loop] of loops) {
-    if (!isLive(animation)) {
-      loops.delete(animation);
-      continue;
-    }
-    if (animation.playState !== "paused") seek(loop, now);
-    loop.nextAtMs = nextChangeAt(loop, now + SEEK_EPSILON_MS);
-  }
-  schedule();
+  if (document.visibilityState === "hidden") schedule();
+  else catchUpAll(performance.now(), false);
 }
 
 /**
@@ -192,7 +205,14 @@ export function adoptSteppedLoop(animation: CSSAnimation): void {
   if (!changes) return;
   if ((changes.length * 1000) / durationMs > MAX_CHANGES_PER_SECOND) return;
 
-  const loop: SteppedLoop = { animation, durationMs, delayMs: timing.delay ?? 0, changes, nextAtMs: 0 };
+  const loop: SteppedLoop = {
+    animation,
+    timing: timingKey(timing),
+    durationMs,
+    delayMs: timing.delay ?? 0,
+    changes,
+    nextAtMs: 0,
+  };
   const now = performance.now();
   animation.playbackRate = 0;
   seek(loop, now);

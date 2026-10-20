@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { connect } from "./cdp-client.mjs";
 import { findPage, positionalArgs } from "./target.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,22 +44,10 @@ const CASES = {
 };
 const AS_CSS = "<style>#ade-loop-cost *, #ade-loop-cost *::before, #ade-loop-cost *::after { animation-iteration-count: 10000000 !important; }</style>";
 
-async function connect(url) {
-  const ws = new WebSocket(url);
-  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-  let id = 1; const pending = new Map(); const events = []; let traceDone = null;
-  ws.onmessage = (e) => {
-    const m = JSON.parse(String(e.data));
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m.result ?? {}); pending.delete(m.id); }
-    else if (m.method === "Tracing.dataCollected") events.push(...(m.params.value ?? []));
-    else if (m.method === "Tracing.tracingComplete") traceDone?.();
-  };
-  const send = (method, params = {}) => new Promise((r) => { const i = id++; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
-  return { ws, send, events, onTraceDone: () => new Promise((r) => { traceDone = r; }) };
-}
-
 const page = await connect(findPage(await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).webSocketDebuggerUrl);
 const browser = await connect((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()).webSocketDebuggerUrl);
+const events = [];
+browser.on("Tracing.dataCollected", ({ value = [] }) => events.push(...value));
 const evaluate = async (expression) => (await page.send("Runtime.evaluate", { expression, returnByValue: true })).result?.value;
 
 const COUNTED = {
@@ -75,7 +64,9 @@ async function measure(name, mode) {
     d.innerHTML = ${JSON.stringify(html)}; document.body.appendChild(d); return 1 })()`);
   await sleep(3000);
   const adopted = await evaluate(`document.getAnimations().filter((a) => a.effect?.target?.closest?.("#ade-loop-cost") && a.playbackRate === 0).length`);
-  browser.events.length = 0;
+  events.length = 0;
+  let offTraceComplete;
+  const done = new Promise((resolve) => { offTraceComplete = browser.on("Tracing.tracingComplete", resolve); });
   await browser.send("Tracing.start", { transferMode: "ReportEvents", traceConfig: { includedCategories: ["devtools.timeline", "disabled-by-default-devtools.timeline.frame", "blink", "cc", "viz"] } });
   const cpu = socket
     ? new Promise((resolve) => {
@@ -90,10 +81,10 @@ async function measure(name, mode) {
     })
     : Promise.resolve("");
   await sleep(secs * 1000);
-  const done = browser.onTraceDone();
   await browser.send("Tracing.end");
   await done;
-  const counts = Object.fromEntries(Object.entries(COUNTED).map(([key, event]) => [key, Math.round(browser.events.filter((e) => e.name === event && (e.ph === "X" || e.ph === "x")).length / secs)]));
+  offTraceComplete();
+  const counts = Object.fromEntries(Object.entries(COUNTED).map(([key, event]) => [key, Math.round(events.filter((e) => e.name === event && (e.ph === "X" || e.ph === "x")).length / secs)]));
   await evaluate(`document.getElementById("ade-loop-cost")?.remove(), 1`);
   console.log(`${name.padEnd(12)} ${mode.padEnd(5)} adopted ${adopted}  ticks ${counts.ticks}/s  draws ${counts.draws}/s  style ${counts.style}/s  timers ${counts.timers}/s  ${await cpu}`);
 }
@@ -103,5 +94,5 @@ for (const name of casesArg.split(",")) {
   await measure(name, "css");
   await measure(name, "clock");
 }
-page.ws.close();
-browser.ws.close();
+page.close();
+browser.close();
