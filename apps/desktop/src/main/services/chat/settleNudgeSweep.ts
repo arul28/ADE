@@ -38,6 +38,8 @@ type CompletedTurn = {
   key: string;
   userText: string;
   assistantText: string;
+  /** When the reply landed. Read from the transcript, so a brain restart does not move it. */
+  endedAt: string;
 };
 
 function completedTurn(entries: AgentChatTranscriptEntry[]): CompletedTurn | null {
@@ -65,7 +67,7 @@ function completedTurn(entries: AgentChatTranscriptEntry[]): CompletedTurn | nul
     || assistant.messageId?.trim()
     || `${user.timestamp}/${assistant.timestamp}`;
   if (!key) return null;
-  return { key, userText: user.text, assistantText: assistant.text };
+  return { key, userText: user.text, assistantText: assistant.text, endedAt: assistant.timestamp };
 }
 
 function clipped(text: string, limit: number, fromEnd = false): string {
@@ -74,9 +76,17 @@ function clipped(text: string, limit: number, fromEnd = false): string {
   return fromEnd ? `…${normalized.slice(-(limit - 1))}` : `${normalized.slice(0, limit - 1)}…`;
 }
 
+/** A turn that printed nothing leaves `last_output_at` empty; the row's own start or end stands in. */
+function rowIdleSince(session: TerminalSessionSummary): string | null {
+  return session.lastActivityAt ?? session.endedAt ?? session.startedAt ?? null;
+}
+
+function idleLongEnough(at: string | null | undefined, nowMs: number): boolean {
+  const atMs = at ? Date.parse(at) : Number.NaN;
+  return Number.isFinite(atMs) && nowMs - atMs >= SETTLE_NUDGE_IDLE_THRESHOLD_MS;
+}
+
 function rowCanBeJudged(session: TerminalSessionSummary, nowMs: number): boolean {
-  const lastActivityAt = session.lastActivityAt;
-  const lastActivityMs = lastActivityAt ? Date.parse(lastActivityAt) : Number.NaN;
   // A chat's row stays `running` between turns, so the row status says nothing
   // about whether it is busy; `chatCanBeJudged` reads that from the chat itself.
   return isChatToolType(session.toolType)
@@ -87,12 +97,15 @@ function rowCanBeJudged(session: TerminalSessionSummary, nowMs: number): boolean
     && !session.pendingInputItemId
     && !session.lastTurnFailedAt
     && !(session.snoozedUntil && Date.parse(session.snoozedUntil) > nowMs)
-    && Number.isFinite(lastActivityMs)
-    && nowMs - lastActivityMs >= SETTLE_NUDGE_IDLE_THRESHOLD_MS;
+    && idleLongEnough(rowIdleSince(session), nowMs);
 }
 
-function chatCanBeJudged(chat: AgentChatSessionSummary, nowMs: number): boolean {
-  const lastActivityMs = Date.parse(chat.lastActivityAt);
+/**
+ * Whether the chat is quiet. How long it has been quiet comes from the turn
+ * itself (`CompletedTurn.endedAt`): the summary's `lastActivityAt` is rewritten
+ * when a brain restarts, which would push every nudge back by the threshold.
+ */
+function chatCanBeJudged(chat: AgentChatSessionSummary): boolean {
   return (chat.status === "idle" || chat.status === "ended")
     && !chat.archivedAt
     && !chat.identityKey
@@ -106,9 +119,7 @@ function chatCanBeJudged(chat: AgentChatSessionSummary, nowMs: number): boolean 
     && (chat.turnOpenWorkCount ?? 0) <= 0
     && (chat.activeBackgroundTaskCount ?? 0) <= 0
     && totalBackgroundWork(chat.backgroundWork) === 0
-    && chat.runtimeOwnedElsewhere == null
-    && Number.isFinite(lastActivityMs)
-    && nowMs - lastActivityMs >= SETTLE_NUDGE_IDLE_THRESHOLD_MS;
+    && chat.runtimeOwnedElsewhere == null;
 }
 
 export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
@@ -124,7 +135,7 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
       const nowMs = Date.now();
       const candidates = deps.sessionService.list({ limit: null })
         .filter((session) => rowCanBeJudged(session, nowMs))
-        .sort((a, b) => Date.parse(a.lastActivityAt ?? "") - Date.parse(b.lastActivityAt ?? ""));
+        .sort((a, b) => Date.parse(rowIdleSince(a) ?? "") - Date.parse(rowIdleSince(b) ?? ""));
       let attempted = 0;
 
       for (const candidate of candidates) {
@@ -135,9 +146,10 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
             deps.agentChatService.getSessionSummary(candidate.id),
             deps.agentChatService.readTranscript(candidate.id, SETTLE_NUDGE_TRANSCRIPT_LIMIT),
           ]);
-          if (!chat || !chatCanBeJudged(chat, Date.now())) continue;
+          if (!chat || !chatCanBeJudged(chat)) continue;
           const turn = completedTurn(transcript);
-          if (!turn || candidate.settleNudgeTurnId === turn.key) continue;
+          if (!turn || !idleLongEnough(turn.endedAt, Date.now())) continue;
+          if (candidate.settleNudgeTurnId === turn.key) continue;
           if (candidate.settleNudgeDismissedTurnId === turn.key) continue;
 
           const userText = clipped(turn.userText, SETTLE_NUDGE_TEXT_LIMIT);
@@ -168,7 +180,7 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
             !latestSession
             || !rowCanBeJudged(latestSession, Date.now())
             || !latestChat
-            || !chatCanBeJudged(latestChat, Date.now())
+            || !chatCanBeJudged(latestChat)
             || latestChat.lastActivityAt !== chat.lastActivityAt
             || completedTurn(latestTranscript)?.key !== turn.key
           ) continue;
@@ -178,7 +190,8 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
             turnId: turn.key,
             doneProbability: probability,
             expectedTurnMarker: candidate.settleNudgeTurnId ?? null,
-            expectedLastActivityAt: chat.lastActivityAt,
+            // The row's own `last_output_at`, which the write compares against.
+            expectedLastActivityAt: candidate.lastActivityAt ?? null,
           });
         } catch {
           // This is a best-effort hint. A failed read or Jev call leaves the

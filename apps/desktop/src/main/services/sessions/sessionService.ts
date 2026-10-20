@@ -2603,7 +2603,12 @@ export function createSessionService({
       return writeSessionActivity(sessionId, value);
     },
 
-    /** Persist one successful Jev answer only while its source turn is still current. */
+    /**
+     * Persist one successful Jev answer only while its source turn is still current.
+     * No row-status check: a chat row stays `running` between turns, so the
+     * caller reads busy-ness from the chat; the turn marker and
+     * `last_output_at` catch a turn that started meanwhile.
+     */
     setSettleNudgeVerdict(args: {
       sessionId: string;
       turnId: string;
@@ -2631,7 +2636,6 @@ export function createSessionService({
           where id = ?
             and settle_nudge_turn_id is ?
             and last_output_at is ?
-            and status != 'running'
             and archived_at is null
             and settled_at is null
             and settle_override is null
