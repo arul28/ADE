@@ -69,7 +69,8 @@ function buildEmojiOptions(): EmojiOption[] {
     emoji,
     name: meaning,
     category: "Developer" as const,
-    searchText: `${emoji} ${meaning}`.toLowerCase(),
+    // The dataset's name too, so "rocket" finds 🚀 as well as "deploy" does.
+    searchText: `${emoji} ${meaning} ${(emojiNames as Record<string, string>)[emoji]?.replace(/-/g, " ") ?? ""}`.toLowerCase(),
   }));
   const curatedEmoji = new Set(curated.map((option) => option.emoji));
   const rest = Object.entries(emojiNames)
@@ -168,7 +169,7 @@ export default function LaneEmojiPickerContent({
           onChange={(event) => setSearch(event.target.value)}
         />
         <select
-          className="h-7 min-w-0 rounded-md border border-fg/[0.1] bg-background px-1.5 text-[10px] text-fg outline-none focus:border-accent/50"
+          className="h-7 min-w-0 rounded-md border border-fg/[0.1] bg-surface px-1.5 text-[10px] text-fg outline-none focus:border-accent/50"
           aria-label="Emoji category"
           value={category}
           disabled={disabled}

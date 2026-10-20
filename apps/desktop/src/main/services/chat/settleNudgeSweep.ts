@@ -77,8 +77,9 @@ function clipped(text: string, limit: number, fromEnd = false): string {
 function rowCanBeJudged(session: TerminalSessionSummary, nowMs: number): boolean {
   const lastActivityAt = session.lastActivityAt;
   const lastActivityMs = lastActivityAt ? Date.parse(lastActivityAt) : Number.NaN;
+  // A chat's row stays `running` between turns, so the row status says nothing
+  // about whether it is busy; `chatCanBeJudged` reads that from the chat itself.
   return isChatToolType(session.toolType)
-    && session.status !== "running"
     && !session.archivedAt
     && !session.settledAt
     && session.settleOverride == null

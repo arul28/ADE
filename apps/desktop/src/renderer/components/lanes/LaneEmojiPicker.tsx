@@ -46,7 +46,7 @@ export function LaneEmojiPicker({
             align="start"
             sideOffset={5}
             collisionPadding={10}
-            className="w-72 rounded-xl border border-fg/[0.12] bg-background p-2 shadow-xl"
+            className="w-72 rounded-xl border border-fg/[0.12] bg-surface-overlay p-2 shadow-xl"
             style={{ zIndex: overlayLayer }}
             onOpenAutoFocus={(event) => event.preventDefault()}
             onKeyDown={(event) => {

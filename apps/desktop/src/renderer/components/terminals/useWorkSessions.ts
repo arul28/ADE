@@ -1730,6 +1730,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const bindingKey = activeChatLaunchBindingKeyRef.current;
       const awaitingHostRow = chatLaunchAwaitingHostRowOn(bindingKey);
       const readStartedAtMs = Date.now();
+      // `sessions.list` leaves archived rows to the caller. Work shows live work
+      // only: a lane's archive archives its shells and CLIs too.
       const rows = (
         await listSessionsCached(
           { limit: 500 },
@@ -1737,7 +1739,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             ? { force: true }
             : undefined,
         )
-      );
+      ).filter((session) => !session.archivedAt);
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }

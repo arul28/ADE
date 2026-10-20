@@ -247,6 +247,19 @@ const KIND_LABEL: Record<HintKind, string> = {
 };
 const BILLING_PHRASE = { plan: "is on your plan", free: "is free", metered: "is metered" } as const;
 
+/**
+ * Whether a task of this difficulty may be told to go UP (more effort or a
+ * stronger model). A trivial task never is: a small model can clear the
+ * benchmark bar only at its top level ("Haiku at max" for a typo fix), and
+ * nobody wants that advice. It can still be told to go down.
+ */
+const RAISES_ALLOWED: Record<HintDifficulty, boolean> = {
+  trivial: false,
+  routine: true,
+  substantial: true,
+  hard: true,
+};
+
 /** Keep the current pick when it clears the bar at no more than this times the cheapest cost. */
 const KEEP_CURRENT_COST_RATIO = 1.5;
 
@@ -270,6 +283,7 @@ function unratedEffortHint(model: UserCatalogModel, currentEffort: string | null
     || effortRank(a) - effortRank(b))[0]!;
   if (effort === currentEffort) return null;
   const direction = effortRank(effort) > effortRank(currentEffort) ? "up" : "down";
+  if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return null;
   return {
     modelId: model.modelId,
     displayName: model.displayName,
@@ -329,6 +343,7 @@ export function pickModelHint(args: {
 
   const effortOnly = best.model.modelId === current.model.modelId;
   const direction = best.quality > current.quality ? "up" : "down";
+  if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return null;
   const task = `${DIFFICULTY_LABEL[read.difficulty]} ${KIND_LABEL[read.kind]}`;
   const billing = BILLING_PHRASE[best.model.billing.kind];
   let why: string;
