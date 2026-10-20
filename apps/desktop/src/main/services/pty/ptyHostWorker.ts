@@ -91,8 +91,15 @@ function applyFlow(ptyId: string): void {
   const paused = state.ackPaused || state.parentPaused;
   if (paused === state.paused) return;
   state.paused = paused;
-  if (paused) pty.pause();
-  else pty.resume();
+  // Runs from a PTY's data callback, outside handleMessage's try: an uncaught
+  // throw here would end the host and every terminal it serves.
+  try {
+    if (paused) pty.pause();
+    else pty.resume();
+  } catch (error) {
+    state.paused = !paused;
+    send({ type: "operationError", ptyId, operation: paused ? "pause" : "resume", error: errorPayload(error) });
+  }
 }
 
 function send(message: Record<string, unknown>): void {
