@@ -145,6 +145,50 @@ describe("distilIdentityHandoff", () => {
 });
 
 describe("startFreshIdentitySession", () => {
+  it("shares one rotation and resumes only its failed person message", async () => {
+    let finishSummary!: (summary: string | null) => void;
+    const pendingSummary = new Promise<string | null>((resolve) => { finishSummary = resolve; });
+    let finishResend!: () => void;
+    const resent = new Promise<void>((resolve) => { finishResend = resolve; });
+    const personMessage = { text: "Did the release workflow pass?", displayText: "Check the release workflow." };
+    const listIdentitySessions = vi.fn(async () => [{ sessionId: "session-old" }]);
+    const { deps, session } = makeDeps({
+      listIdentitySessions,
+      summarizeForHandoff: vi.fn(() => pendingSummary),
+    });
+    const deferredRun: { current?: () => void } = {};
+    deps.rollover.defer = (run) => { deferredRun.current = run; };
+    const readInputs = vi.fn(() => ({ personMessageCount: 5, failedMessage: personMessage }));
+    deps.rollover.readInputs = readInputs;
+    deps.rollover.resend = vi.fn(async () => { finishResend(); });
+    const rotation = createIdentityThreadRotation(deps);
+
+    const pendingRotation = rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+    const concurrentRotation = rotation.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+    expect(concurrentRotation).toBe(pendingRotation);
+    expect(rotation.maybeAutoRollover({ id: "session-old" }, "failed-turn")).toBe(false);
+    expect(readInputs).not.toHaveBeenCalled();
+
+    finishSummary("Keep the project moving.");
+    const [rotationResult, concurrentResult] = await Promise.all([pendingRotation, concurrentRotation]);
+    expect(listIdentitySessions).toHaveBeenCalledTimes(1);
+    expect(deps.dispose).toHaveBeenCalledTimes(1);
+    expect(deps.ensureIdentitySession).toHaveBeenCalledTimes(1);
+    expect(rotationResult).toBe(concurrentResult);
+    expect(rotationResult.session).toBe(session);
+
+    expect(rotation.maybeAutoRollover({ id: "session-old" }, "failed-turn")).toBe(true);
+    expect(readInputs).toHaveBeenCalledWith({ id: "session-old" }, "failed-turn");
+    expect(deferredRun.current).toBeDefined();
+
+    deferredRun.current?.();
+    await resent;
+
+    expect(deps.rollover.announce).toHaveBeenCalledWith("session-new", true);
+    expect(deps.rollover.resend).toHaveBeenCalledTimes(1);
+    expect(deps.rollover.resend).toHaveBeenCalledWith("session-new", personMessage);
+  });
+
   it("distils, flushes and retires the old thread before opening a clean one", async () => {
     const { deps, session } = makeDeps();
     const rotation = createIdentityThreadRotation(deps);

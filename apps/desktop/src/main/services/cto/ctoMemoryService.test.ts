@@ -243,6 +243,12 @@ describe("ctoMemoryService", () => {
   it("includes a lane-tagged store fact that is not in MEMORY.md", () => {
     const { adeDir, service } = createFixture();
     service.appendMemoryFact("Installer signing needs a GUI Always-Allow.", { lane: "lane-7" });
+    const duplicate = service.appendMemoryFact(
+      "Installer signing needs a GUI Always-Allow for local installs.",
+      { lane: "lane-7" },
+    );
+    expect(duplicate.saved).toBe(false);
+    expect(duplicate.duplicateOf).toContain("Installer signing needs a GUI Always-Allow.");
     createProjectContextStore({ adeDir }).remember({
       text: "The account mirror already knew the signing prompt.",
       tags: { lane: "lane-7" },

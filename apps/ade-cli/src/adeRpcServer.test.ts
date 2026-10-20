@@ -2207,11 +2207,11 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "cto-1", role: "cto" });
 
     const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
-    // `appendMemoryFact` takes optional tags; an untagged save passes an
-    // explicit null rather than omitting the argument.
+    // An untagged save passes null tags and the default kind/pin options.
     expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith(
       "Prefer sentence case.",
       null,
+      { kind: null, pin: false },
     );
     expect(saved.structuredContent).toEqual(
       expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),

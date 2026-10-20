@@ -354,7 +354,7 @@ function isNegated(text: string): boolean {
 }
 
 function similarityTerms(text: string): Set<string> {
-  // The tag suffix is compared separately; markdown is noise.
+  // Structured tags are compared separately; markdown is noise.
   const body = text.replace(FACT_TAG_SUFFIX_PATTERN, "").toLowerCase();
   const terms = new Set<string>();
   for (const part of body.split(/[^a-z0-9]+/)) {
@@ -373,10 +373,6 @@ function similarityTerms(text: string): Set<string> {
  * as the same fact.
  */
 export function factSimilarity(a: string, b: string): number {
-  // The same sentence about a different lane, PR or path is a different fact:
-  // lane-scoped injection only finds the copy that carries its own tag.
-  const tagsOf = (text: string): string => (FACT_TAG_SUFFIX_PATTERN.exec(text.trim())?.[0] ?? "").trim().toLowerCase();
-  if (tagsOf(a) !== tagsOf(b)) return 0;
   // One fact negated and the other not are opposites, however many words
   // they share: "Use pnpm" against "Do not use pnpm".
   if (isNegated(a) !== isNegated(b)) return 0;
@@ -484,12 +480,12 @@ function sameTags(left: ProjectContextItem["tags"], right: ProjectContextItem["t
 function findNearDuplicate(
   items: ProjectContextItem[],
   text: string,
-  tags?: ProjectContextItem["tags"],
+  tags: ProjectContextItem["tags"] = {},
 ): ProjectContextItem | null {
   let best: { item: ProjectContextItem; score: number } | null = null;
   for (const item of items) {
     if (item.status === "archived") continue;
-    if (tags && !sameTags(item.tags, tags)) continue;
+    if (!sameTags(item.tags, tags)) continue;
     const score = factSimilarity(item.text, text);
     if (score >= NEAR_DUPLICATE_SIMILARITY && (!best || score > best.score)) best = { item, score };
   }
@@ -841,7 +837,7 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       if (!text || isLegacyPlaceholderFact(text)) return { saved: false, item: null };
       const current = readFromDisk();
       const exact = current.items.find((item) => (
-        item.text === text && item.status !== "archived" && (!input.tags || sameTags(item.tags, input.tags))
+        item.text === text && item.status !== "archived" && sameTags(item.tags, input.tags ?? {})
       ));
       if (exact) return { saved: false, item: exact };
       const near = findNearDuplicate(current.items, text, input.tags);
@@ -870,12 +866,14 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
     },
 
     /** A live fact that already says what `text` says, or null. */
-    findNearDuplicate(text: string): ProjectContextItem | null {
+    findNearDuplicate(text: string, tags?: ProjectContextItem["tags"]): ProjectContextItem | null {
       const clipped = clip(text, MAX_ITEM_CHARS);
       if (!clipped) return null;
+      const scope = tags ?? {};
       const items = readFromDisk().items;
-      return items.find((item) => item.text === clipped && item.status !== "archived")
-        ?? findNearDuplicate(items, clipped);
+      return items.find((item) => (
+        item.text === clipped && item.status !== "archived" && sameTags(item.tags, scope)
+      )) ?? findNearDuplicate(items, clipped, scope);
     },
 
     /**

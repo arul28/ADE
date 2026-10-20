@@ -364,7 +364,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     // Model-free near-duplicate check against the store: the same fact said a
     // second way is not a second fact. The caller gets the existing wording so
     // it can retire it with `replaces` if the new one is better.
-    const nearDuplicate = context.findNearDuplicate(tagged);
+    const nearDuplicate = context.findNearDuplicate(tagged, parseMemoryTags(tagged));
     if (nearDuplicate) {
       return { saved: false, fact: tagged, id: nearDuplicate.id, duplicateOf: nearDuplicate.text };
     }

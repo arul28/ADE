@@ -103,6 +103,49 @@ describe("projectContextStore", () => {
     expect(store.search("", 5).map((item) => item.status)).not.toContain("archived");
   });
 
+  it.each([
+    {
+      name: "keeps different wording and tag scopes separately",
+      original: "Use pnpm for workspace commands.",
+      next: "Do not use pnpm for workspace commands.",
+      nextTags: undefined,
+      saved: true,
+      scopeText: "The installer needs a signing prompt.",
+    },
+    {
+      name: "refuses a reworded duplicate",
+      original: "Use release notes for version details.",
+      next: "Release notes contain version details.",
+      nextTags: undefined,
+      saved: false,
+      scopeText: null,
+    },
+  ])("$name", ({ original, next, nextTags, saved, scopeText }) => {
+    const store = createProjectContextStore({ adeDir: tempAdeDir() });
+    const first = store.remember({ text: original });
+    const second = store.remember({ text: next, tags: nextTags });
+
+    expect(first.saved).toBe(true);
+    expect(second.saved).toBe(saved);
+
+    if (scopeText) {
+      const laneSeven = store.remember({ text: scopeText, tags: { lane: "lane-7" } });
+      const laneEight = store.remember({ text: scopeText, tags: { lane: "lane-8" } });
+      const untagged = store.remember({ text: scopeText });
+      expect(laneSeven.saved).toBe(true);
+      expect(laneEight.saved).toBe(true);
+      expect(untagged.saved).toBe(true);
+      expect(untagged.item?.tags).toEqual({});
+      const laneSevenNearMatch = store.findNearDuplicate(
+        "The installer needs a signing prompt for Mac.",
+        { lane: "lane-7" },
+      );
+      expect(laneSevenNearMatch?.id).toBe(laneSeven.item?.id);
+    }
+    expect(store.read().items).toHaveLength((saved ? 2 : 1) + (scopeText ? 3 : 0));
+    expect(second.item?.text).toBe(saved ? next : original);
+  });
+
   it("stays local when the account mirror is unavailable", async () => {
     const adeDir = tempAdeDir();
     const account = fakeAccount();
