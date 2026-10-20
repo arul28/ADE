@@ -290,28 +290,34 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
   };
 
+  const memoryBullets = (memory: string): string[] => memory.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).replace(/\s+/g, " ").trim());
+
   const writeMemory = (content: string): void => {
+    const previous = readMemory();
+    const previousBullets = memoryBullets(previous);
     const next = content.trim().length ? redactSecrets(content.trim()) : MEMORY_HEADER;
     // A full rewrite that clears existing content preserves what it replaces in
     // the append-only archive — durable memory is never silently destroyed.
     if (next === MEMORY_HEADER) {
-      const previous = readMemory().trim();
-      if (previous.length && previous !== MEMORY_HEADER) {
-        archiveMemoryContent(previous, "cleared by updateMemory");
+      const previousContent = previous.trim();
+      if (previousContent.length && previousContent !== MEMORY_HEADER) {
+        archiveMemoryContent(previousContent, "cleared by updateMemory");
       }
     }
     writeTextAtomic(memoryPath, `${next}\n`);
-    if (next === MEMORY_HEADER) return;
     try {
       // The notes file is still the notes file. Only its bullets become facts,
       // and exact text is ignored, so a second save does not store the document.
-      const bullets = next.split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith("- "))
-        .map((line) => line.slice(2).replace(/\s+/g, " ").trim());
+      const bullets = next === MEMORY_HEADER ? [] : memoryBullets(next);
       const notesFileFacts = new Set(bullets);
       for (const text of bullets) {
         context.remember({ text, trust: "human", kind: "pointer", notesFileFacts });
+      }
+      for (const text of previousBullets) {
+        if (!notesFileFacts.has(text)) context.archive({ text });
       }
       void context.reconcile();
     } catch (error) {

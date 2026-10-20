@@ -152,9 +152,17 @@ describe("startFreshIdentitySession", () => {
     const resent = new Promise<void>((resolve) => { finishResend = resolve; });
     const personMessage = { text: "Did the release workflow pass?", displayText: "Check the release workflow." };
     const listIdentitySessions = vi.fn(async () => [{ sessionId: "session-old" }]);
+    const appendDailyEntry = vi.fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error("daily journal unavailable"); });
     const { deps, session } = makeDeps({
       listIdentitySessions,
       summarizeForHandoff: vi.fn(() => pendingSummary),
+      memory: { appendDailyEntry },
+      scheduledWork: {
+        take: vi.fn(() => ["cron 09:00 — check CI"]),
+        restore: vi.fn(async () => ({ restored: 0, failed: ["cron 09:00 — check CI"] })),
+      },
     });
     const deferredRun: { current?: () => void } = {};
     deps.rollover.defer = (run) => { deferredRun.current = run; };
@@ -187,6 +195,10 @@ describe("startFreshIdentitySession", () => {
     expect(deps.rollover.announce).toHaveBeenCalledWith("session-new", true);
     expect(deps.rollover.resend).toHaveBeenCalledTimes(1);
     expect(deps.rollover.resend).toHaveBeenCalledWith("session-new", personMessage);
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "agent_chat.identity_rotation_daily_entry_failed",
+      expect.objectContaining({ error: "daily journal unavailable" }),
+    );
   });
 
   it("distils, flushes and retires the old thread before opening a clean one", async () => {
@@ -228,8 +240,14 @@ describe("startFreshIdentitySession", () => {
    * on disk; only the note is lost, and the result says so.
    */
   it("still rotates when the hand-off write fails", async () => {
+    const appendDailyEntry = vi.fn(() => { throw new Error("daily journal unavailable"); });
     const { deps } = makeDeps({
       writeContinuitySummary: vi.fn(() => { throw new Error("disk full"); }),
+      memory: { appendDailyEntry },
+      scheduledWork: {
+        take: vi.fn(() => { throw new Error("snapshot failed"); }),
+        restore: vi.fn(async () => ({ restored: 0, failed: [] })),
+      },
     });
     const rotation = createIdentityThreadRotation(deps);
 
@@ -238,6 +256,10 @@ describe("startFreshIdentitySession", () => {
     expect(result.handoff).toEqual({ written: false, thin: false, source: "none" });
     expect(deps.dispose).toHaveBeenCalledWith({ sessionId: "session-old" });
     expect(deps.ensureIdentitySession).toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "agent_chat.identity_rotation_daily_entry_failed",
+      expect.objectContaining({ error: "daily journal unavailable" }),
+    );
   });
 
   /** Nothing to retire is not an error: the first thread rotates from nothing. */

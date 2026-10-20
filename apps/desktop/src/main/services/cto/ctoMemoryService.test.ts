@@ -232,12 +232,19 @@ describe("ctoMemoryService", () => {
     expect(cleared.goal).toBe("Ship the coordinator");
   });
 
-  it("copies notes-file bullets into the store and ignores the rest of the file", () => {
+  it("tracks notes-file bullets and archives removed or cleared facts", () => {
     const { adeDir, service } = createFixture();
     service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n\nA paragraph that is not a bullet.");
-    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- One bullet\n- Two bullet\n");
-    const texts = createProjectContextStore({ adeDir }).read().items.map((item) => item.text);
-    expect(texts).toEqual(["One bullet", "Two bullet"]);
+    service.writeMemory("# CTO Durable Memory\n\n## Facts\n\n- Two bullet\n");
+    const store = createProjectContextStore({ adeDir });
+    const items = store.read().items;
+    expect(items).toHaveLength(2);
+    expect(items.find((item) => item.text === "One bullet")?.status).toBe("archived");
+    expect(items.find((item) => item.text === "Two bullet")?.status).toBe("active");
+
+    service.writeMemory("");
+    const cleared = store.read().items;
+    expect(cleared.find((item) => item.text === "Two bullet")?.status).toBe("archived");
   });
 
   it("includes a lane-tagged store fact that is not in MEMORY.md", () => {

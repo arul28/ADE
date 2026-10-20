@@ -365,7 +365,8 @@ const SIMILARITY_STOPWORDS = new Set([
 const NEGATION_WORDS = new Set(["not", "no", "never", "don't", "dont", "doesn't", "isn't", "can't", "cannot", "won't", "avoid", "without", "stop"]);
 
 function isNegated(text: string): boolean {
-  return text.replace(FACT_TAG_SUFFIX_PATTERN, "").toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
+  return text.replace(FACT_TAG_SUFFIX_PATTERN, "").replace(/[\u2018\u2019\u02bc]/g, "'")
+    .toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
 }
 
 function similarityTerms(text: string): Set<string> {

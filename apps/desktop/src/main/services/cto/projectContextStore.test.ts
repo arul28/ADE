@@ -113,6 +113,14 @@ describe("projectContextStore", () => {
       scopeText: "The installer needs a signing prompt.",
     },
     {
+      name: "keeps typographically negated facts separate",
+      original: "Use pnpm for workspace commands.",
+      next: "Don’t use pnpm for workspace commands.",
+      nextTags: undefined,
+      saved: true,
+      scopeText: null,
+    },
+    {
       name: "refuses a reworded duplicate",
       original: "Use release notes for version details.",
       next: "Release notes contain version details.",

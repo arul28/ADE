@@ -329,6 +329,16 @@ export function createIdentityThreadRotation<TManaged, TScheduled = unknown>(
     return { text: sections.join("\n\n"), source: "deterministic", thin };
   };
 
+  const appendDailyEntrySafely = (line: string): void => {
+    try {
+      deps.memory?.appendDailyEntry(line);
+    } catch (error) {
+      deps.logger.warn("agent_chat.identity_rotation_daily_entry_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /**
    * Retire the current identity thread and start a clean one.
    *
@@ -439,7 +449,7 @@ export function createIdentityThreadRotation<TManaged, TScheduled = unknown>(
         });
         // The disposal below cancels them; say so where the CTO will read it.
         // The hand-off already named the scheduled work by title.
-        deps.memory?.appendDailyEntry(
+        appendDailyEntrySafely(
           `Scheduled work on retired thread ${existing.sessionId} could not be moved to the new thread; re-create it from the hand-off.`,
         );
       }
@@ -473,7 +483,7 @@ export function createIdentityThreadRotation<TManaged, TScheduled = unknown>(
         failed = [`all ${carriedScheduledWork.length} scheduled job(s)`];
       }
       if (failed.length) {
-        deps.memory?.appendDailyEntry(
+        appendDailyEntrySafely(
           `Scheduled work that could not move to the new CTO thread (re-create it): ${failed.map((line) => clipHandoffLine(line, 120)).join("; ")}`,
         );
       }
