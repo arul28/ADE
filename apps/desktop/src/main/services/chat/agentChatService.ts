@@ -12558,8 +12558,8 @@ export function createAgentChatService(args: {
       sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
   });
   // ADE's next-prompt suggestion for providers without a native one. Runs on
-  // the same single model that names the chat (the vendor's cheap helper, or
-  // the chat's own model), at that model's lowest effort.
+  // the same single model that names the chat: the vendor's cheap helper
+  // (Luna, Composer), or the chat's own model, at that model's lowest effort.
   const nextPromptSuggestion = createNextPromptSuggestion({
     logger,
     hasPendingInput: (sessionId) => hasLivePendingInput(managedSessions.get(sessionId)),
@@ -21951,7 +21951,8 @@ export function createAgentChatService(args: {
         completed: event.status === "completed",
         isSubagentWithParent: managed.session.spawnKind === "subagent"
           && Boolean(managed.session.orchestrationParentSessionId?.trim()),
-        enabled: projectConfigService.get().effective.ai?.chat?.promptSuggestionsEnabled === true,
+        isEnabled: () => projectConfigService.get().effective.ai?.chat?.promptSuggestionsEnabled === true,
+        backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
         nativeSuggestions: managed.session.provider === "claude",
         entries: managed.recentConversationEntries,
         isStillCurrent: () => !managed.deleted && managedSessions.get(managed.session.id) === managed,

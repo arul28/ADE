@@ -414,6 +414,12 @@ is private to Claude Code. The mods' hooks
 run in the Claude process either way, so this controls the drawing only. See
 [Chat › Claude mod UI](../chat/README.md#claude-mod-ui).
 
+`AiChatConfig.promptSuggestionsEnabled?: boolean` suggests the next prompt in
+the empty composer for providers that do not send one natively (Claude Code
+always does). It **defaults to false**: each completed turn costs one short
+call on the chat's helper model. See
+[Chat › Next prompt suggestions](../chat/README.md#next-prompt-suggestions).
+
 `sessionIntelligence` controls background session naming and
 end-of-session summaries:
 

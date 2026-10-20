@@ -3344,6 +3344,10 @@ function AgentChatComposerImpl({
   const composerInputLocked = (Boolean(pendingInput?.blocking) && !askQuestionActive)
     || Boolean(externalInputLockMessage);
   const composerInputLockMessage = externalInputLockMessage || getComposerInputLockMessage(pendingInput);
+  /** The next-prompt suggestion, while the empty composer would show it. */
+  const offeredPromptSuggestion = !turnActive && !composerInputLockMessage && !draft.length
+    ? promptSuggestion?.trim() || null
+    : null;
   const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
   const composerInputAccessibleLabel = composerInputLockMessage
     ? `Chat input locked: ${composerInputLockMessage}`
@@ -6295,11 +6299,6 @@ function AgentChatComposerImpl({
   }, [applyPromptHistoryEntry, cancelPromptHistorySequence, getRichCursorTextOffset, promptHistory, restorePromptHistoryDraft, serializeRichEditor, stashDraftBeforeHistory]);
 
   /* ── Keyboard handler for composer input ── */
-  /** The next-prompt suggestion, while the empty composer would show it. */
-  const offeredPromptSuggestion = !turnActive && !composerInputLockMessage && !draft.length
-    ? promptSuggestion?.trim() || null
-    : null;
-
   /**
    * Tab fills the suggestion in with the caret after it, so typing continues
    * the text. Replacing the editor's text alone leaves the caret at the start.
@@ -8946,7 +8945,7 @@ function AgentChatComposerImpl({
               </div>
             ) : (
               <div className="relative">
-                {offeredPromptSuggestion && !plainOverlayContent ? (
+                {offeredPromptSuggestion ? (
                   <PromptSuggestionHint text={offeredPromptSuggestion} />
                 ) : null}
                 {plainOverlayContent ? (

@@ -4543,6 +4543,29 @@ config service):
 - `ai.chat.claudePluginUiEnabled` -- draw what Claude Code mods show (status
   lines, toasts, a band above the prompt, panes) in ADE chat. Defaults to
   **false**. The mods' hooks run either way. See [Claude mod UI](#claude-mod-ui).
+- `ai.chat.promptSuggestionsEnabled` -- suggest the next prompt for providers
+  without a native suggestion (Settings › Chat › Next prompt). Defaults to
+  **false**. Per project and per machine, read on the machine that runs the
+  chat. See [Next prompt suggestions](#next-prompt-suggestions).
+
+### Next prompt suggestions
+
+The empty prompt box shows a one-line guess at the next message after a turn,
+cut short with an ellipsis so it never makes the box taller. **Tab** fills it
+in with the caret at the end; **Esc** hides it until the next turn.
+
+- **Claude Code** sends its own (`promptSuggestions` on the SDK query). Claude
+  holds it back on a chat's first turn, in plan mode, and near plan usage
+  limits. ADE never adds one for a Claude chat.
+- **Every other provider** gets one from ADE when
+  `ai.chat.promptSuggestionsEnabled` is on (`chat/nextPromptSuggestion.ts`):
+  after a completed turn with no open card, no subagent parent and no running
+  background work, one call on the model that names the chat (Luna for Codex,
+  Composer for Cursor, otherwise the chat's own model) at its lowest effort,
+  from a scratch folder, capped at 120 characters.
+- Both go out as the live-only `prompt_suggestion` event and are never saved
+  to the transcript. A user message or a new turn before ADE's answer arrives
+  drops it.
 
 ## Related docs
 

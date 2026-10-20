@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { isWebClientMode } from "../../lib/webClientMode";
-import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { useChatConfigToggle } from "./useChatConfigToggle";
 import "./ChatSection.css";
 
 /** A picture of the dock: where mods draw, on top of the prompt box. Not live data. */
@@ -44,49 +42,8 @@ function ClaudeModsArt() {
  * either way; this only controls the drawing.
  */
 export function ClaudeModsSection() {
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [enabled, setEnabled] = useState(false);
-
-  // The setting is the host's project configuration, and the hosted client draws no mod UI.
-  const onWeb = isWebClientMode();
-
-  useEffect(() => {
-    if (onWeb) return;
-    let cancelled = false;
-    void window.ade.projectConfig.get()
-      .then((snapshot) => {
-        if (cancelled) return;
-        setEnabled(snapshot.effective.ai?.chat?.claudePluginUiEnabled === true);
-        setLoaded(true);
-      })
-      .catch(() => {
-        // The toggle stays off-limits until the configuration loads.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onWeb]);
-
-  /** Saves optimistically; a failed save puts the toggle back and says so. */
-  const save = useCallback(async (value: boolean) => {
-    if (saving) return;
-    setSaving(true);
-    setEnabled(value);
-    try {
-      await window.ade.ai.updateConfig({ chat: { claudePluginUiEnabled: value } });
-    } catch (error) {
-      setEnabled(!value);
-      showToast({
-        title: "Couldn't save the setting",
-        message: error instanceof Error ? error.message : String(error),
-        tone: "error",
-      });
-    } finally {
-      setSaving(false);
-    }
-  }, [saving]);
-
+  const { onWeb, status, saving, enabled, save } = useChatConfigToggle("claudePluginUiEnabled");
+  // The hosted client draws no mod UI.
   if (onWeb) return null;
 
   return (
@@ -95,14 +52,16 @@ export function ClaudeModsSection() {
         <ModernRow
           anchor="claude-mods"
           title="Show what Claude mods draw"
-          hint={loaded
-            ? "What your Claude Code mods draw, on top of the prompt box. Early access in Claude Code, so it can change."
-            : "Loading…"}
+          hint={status === "loading"
+            ? "Loading…"
+            : status === "failed"
+              ? "Couldn't load the configuration. The switch stays off until it loads."
+              : "What your Claude Code mods draw, on top of the prompt box. Early access in Claude Code, so it can change."}
           control={(
             <SettingsToggle
               label="Show what Claude mods draw"
               checked={enabled}
-              disabled={!loaded || saving}
+              disabled={status !== "loaded" || saving}
               onChange={(value) => void save(value)}
             />
           )}

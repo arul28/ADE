@@ -7,13 +7,11 @@ import type { Logger } from "../logging/logger";
  * ADE's own "next prompt" suggestion, for providers that do not send one.
  *
  * Claude Code suggests the next prompt natively (`promptSuggestions` on the
- * SDK query, forwarded as a `prompt_suggestion` event). Every other provider
- * gets one from ADE when the project turns it on for this machine
- * (`ai.chat.promptSuggestionsEnabled` in `.ade/local.yaml`): after a turn
- * completes, one call to the same model ADE names chats with — the cheap
- * helper for Codex and Cursor, the chat's own model for everything else, at
- * the lowest effort the model offers. The answer goes out as the same
- * live-only `prompt_suggestion` event, so every client shows it the same way.
+ * SDK query). Every other provider gets one from ADE when the project turns
+ * it on for this machine (`ai.chat.promptSuggestionsEnabled`): one helper
+ * call after a completed turn, whose answer goes out as the same live-only
+ * `prompt_suggestion` event, so every client shows both the same way. Which
+ * model runs it is the chat service's choice (`runPrompt`).
  */
 
 /** A suggestion is a convenience: past this, the user is already typing. */
@@ -67,17 +65,22 @@ export function buildPromptSuggestionPrompt(input: {
   ].join("\n");
 }
 
+/** A quote pair that wraps the whole text, and nothing else. */
+const WRAPPING_QUOTES = /^"([^"]*)"$|^'([^']*)'$|^`([^`]*)`$|^“([^“”]*)”$/;
+
 /**
- * One line, no wrapping quotes. `maxChars` caps a generated suggestion so it
- * fits the composer as one line; a native one keeps its full text (Tab fills
- * it in whole) and the composer only draws it on one line.
+ * One line, without quotes that wrap the whole text. `maxChars` caps a
+ * generated suggestion so it fits the composer as one line; a native one
+ * keeps all its words (Tab fills them in) and the composer draws it on one
+ * line.
  */
 export function sanitizePromptSuggestion(
   raw: string | null | undefined,
   maxChars: number = Number.POSITIVE_INFINITY,
 ): string {
-  const firstLine = String(raw ?? "").trim().split(/\r?\n/)[0] ?? "";
-  const unquoted = firstLine.trim().replace(/^["'`“”]+|["'`“”]+$/g, "").replace(/\s+/g, " ").trim();
+  const oneLine = String(raw ?? "").replace(/\s+/g, " ").trim();
+  const quoted = oneLine.match(WRAPPING_QUOTES);
+  const unquoted = (quoted ? quoted.slice(1).find((group) => group !== undefined) ?? "" : oneLine).trim();
   if (unquoted.length <= maxChars) return unquoted;
   // Cut at a word, without an ellipsis: Tab puts this text in the draft.
   const cut = unquoted.slice(0, maxChars);
@@ -85,20 +88,35 @@ export function sanitizePromptSuggestion(
   return (atWord > maxChars / 2 ? cut.slice(0, atWord) : cut).replace(/[\s,;:–—-]+$/, "");
 }
 
+/**
+ * The suggestion from a helper reply: the schema's object, or the same JSON
+ * in the text. A model that ignored the schema and answered in prose gets its
+ * first line that is not a code fence or a `Label:` heading.
+ */
 export function parsePromptSuggestion(structured: unknown, text: string | null | undefined): string {
-  if (structured && typeof structured === "object") {
-    const value = (structured as { suggestion?: unknown }).suggestion;
-    if (typeof value === "string") return sanitizePromptSuggestion(value, MAX_PROMPT_SUGGESTION_CHARS);
-  }
+  const fromObject = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") return null;
+    const suggestion = (value as { suggestion?: unknown }).suggestion;
+    return typeof suggestion === "string" ? sanitizePromptSuggestion(suggestion, MAX_PROMPT_SUGGESTION_CHARS) : "";
+  };
+  const direct = fromObject(structured);
+  if (direct !== null) return direct;
   const raw = String(text ?? "").trim();
   if (!raw) return "";
-  try {
-    const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw) as { suggestion?: unknown };
-    if (typeof parsed?.suggestion === "string") return sanitizePromptSuggestion(parsed.suggestion, MAX_PROMPT_SUGGESTION_CHARS);
-  } catch {
-    // Not JSON: a model that ignored the schema answered in plain text.
+  const json = raw.match(/\{[\s\S]*\}/)?.[0];
+  if (json) {
+    try {
+      // JSON without the key is a refusal to suggest, not prose to show.
+      return fromObject(JSON.parse(json)) ?? "";
+    } catch {
+      // Braces in prose: fall through to the plain-text reading.
+    }
   }
-  return raw.startsWith("{") ? "" : sanitizePromptSuggestion(raw, MAX_PROMPT_SUGGESTION_CHARS);
+  const line = raw
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry && !entry.startsWith("```") && !/^[\w ]{1,24}:$/.test(entry));
+  return sanitizePromptSuggestion(line, MAX_PROMPT_SUGGESTION_CHARS);
 }
 
 /** What the chat service knows about a turn when its `done` arrives. */
@@ -108,8 +126,10 @@ export type PromptSuggestionTurnFacts = {
   completed: boolean;
   /** A subagent's next message comes from the agent that spawned it. */
   isSubagentWithParent: boolean;
-  /** Read per turn, so flipping the setting applies to the next turn. */
-  enabled: boolean;
+  /** Read per turn, and only when a suggestion could follow, so flipping the setting applies to the next turn. */
+  isEnabled: () => boolean;
+  /** Background work still running: the agent is not done, so neither is the turn. */
+  backgroundWorkCount: number;
   /** The provider sends its own suggestion (Claude Code). */
   nativeSuggestions: boolean;
   /** Oldest first; the last entry is the reply that just settled. */
@@ -176,7 +196,17 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      if (cwd) fs.rmSync(cwd, { recursive: true, force: true });
+      if (cwd) {
+        try {
+          // Windows refuses while a killed helper still holds the folder.
+          fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        } catch (error) {
+          logger.warn("agent_chat.prompt_suggestion_tmp_cleanup_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
     // Shown only if nothing happened since the turn ended: no user message or
     // new turn (either clears the pending entry), same live chat, no card.
@@ -204,9 +234,9 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
       const { sessionId } = facts;
       pendingTurnBySession.delete(sessionId);
       const turnId = facts.turnId?.trim();
-      if (!facts.enabled || facts.nativeSuggestions) return;
-      if (!facts.completed || !turnId || facts.isSubagentWithParent) return;
-      if (deps.hasPendingInput(sessionId)) return;
+      if (facts.nativeSuggestions || !facts.completed || !turnId) return;
+      if (facts.isSubagentWithParent || facts.backgroundWorkCount > 0) return;
+      if (deps.hasPendingInput(sessionId) || !facts.isEnabled()) return;
       const last = facts.entries[facts.entries.length - 1];
       if (!last || last.role !== "assistant" || (last.turnId && last.turnId !== turnId)) return;
       const reply = last.text.trim();
@@ -217,7 +247,14 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
         .filter(Boolean)
         .slice(-RECENT_USER_MESSAGES);
       pendingTurnBySession.set(sessionId, turnId);
-      void run(facts, turnId, buildPromptSuggestionPrompt({ recentUserMessages, lastAssistantMessage: reply }));
+      void run(facts, turnId, buildPromptSuggestionPrompt({ recentUserMessages, lastAssistantMessage: reply }))
+        .catch((error) => {
+          logger.warn("agent_chat.prompt_suggestion_failed", {
+            sessionId,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     },
 
     forget(sessionId) {
