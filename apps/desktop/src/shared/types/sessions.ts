@@ -440,6 +440,8 @@ export type TerminalSessionSummary = {
   chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** The chat's `awaitingOwnWorkAt`: its last reply said it waits on its own work. */
+  awaitingOwnWorkAt?: string | null;
   /**
    * Deprecated mirror of `usageLimitResume.fireAt`, published only for the
    * `armed` and `resuming` states. Old iOS builds read it; new clients read

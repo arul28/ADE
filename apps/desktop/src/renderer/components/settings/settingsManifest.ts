@@ -922,6 +922,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Scheduled work",
   },
   {
+    id: "agents.smart-decisions",
+    label: "Smart decisions (OpenCode Jev)",
+    keywords: ["jev", "opencode", "zen", "turn end", "question", "classifier"],
+    tab: "notifications",
+    anchor: "smart-decisions",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
     id: "agents.budget",
     label: "Spend cap",
     keywords: ["budget", "cost", "limit", "dollars", "spend"],

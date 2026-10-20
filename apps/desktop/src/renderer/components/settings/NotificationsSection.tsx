@@ -30,7 +30,7 @@ import {
   ActivityPrivacySection,
   useActivitySettings,
 } from "./ActivitySettingsControls";
-import { AiFeaturesSection } from "./AiFeaturesSection";
+import { AiFeaturesSection, SmartDecisionsSection } from "./AiFeaturesSection";
 import "./NotificationsSection.css";
 
 /**
@@ -316,6 +316,7 @@ export function NotificationsSection() {
             />
             <ActivityPrivacySection model={model} />
             <AiFeaturesSection />
+            <SmartDecisionsSection />
           </div>
         </div>
       </ModernPage>
