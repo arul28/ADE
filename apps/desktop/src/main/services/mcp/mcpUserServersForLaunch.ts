@@ -27,7 +27,7 @@ import path from "node:path";
 
 import { pathsEqual } from "../shared/pathCompare";
 import { isRecord, parseCodexMcpServers, readJson, readText } from "./mcpProviderConfigScan";
-import { withDirectLaunchEnv, type NpxDirectCommand, type NpxDirectLauncher } from "./npxDirectLaunch";
+import { serverLaunchEnv, withDirectLaunchEnv, type NpxDirectCommand, type NpxDirectLauncher } from "./npxDirectLaunch";
 
 type StdioCandidate = { command: string; args: string[] };
 
@@ -127,13 +127,13 @@ export async function resolveCodexUserServers(
   // Only the process changes: Codex merges this into the server's own table,
   // so its env, tool approvals and timeouts stay; `env` adds npx's PATH.
   for (const { name, stdio, env } of plan.own) {
-    const resolved = direct(launcher, stdio, args.cwd, { ...args.env, ...env });
+    const resolved = direct(launcher, stdio, args.cwd, serverLaunchEnv(args.env, env));
     if (resolved) overlay[name] = { command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(env, resolved) };
   }
   for (const { name, entry } of plan.inherited) {
     const stdio = codexStdio(entry);
     const env = stringRecord(entry.env);
-    const resolved = stdio ? direct(launcher, stdio, args.cwd, { ...args.env, ...env }) : null;
+    const resolved = stdio ? direct(launcher, stdio, args.cwd, serverLaunchEnv(args.env, env)) : null;
     overlay[name] = resolved
       ? { ...entry, command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(env, resolved) }
       : { ...entry };
@@ -293,7 +293,7 @@ function renderClaudePlan(launcher: NpxDirectLauncher, plan: ClaudePlan, args: C
   }
   for (const { name, server } of plan.inherited) {
     const resolved = server.type === "stdio"
-      ? direct(launcher, server, args.cwd, { ...args.env, ...(server.env ?? {}) })
+      ? direct(launcher, server, args.cwd, serverLaunchEnv(args.env, server.env))
       : null;
     servers[name] = resolved && server.type === "stdio"
       ? { ...server, command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(server.env, resolved) }

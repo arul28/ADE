@@ -17,7 +17,7 @@ import {
   providerUserNpxDirectServers,
   resolveCodexUserServers,
 } from "./mcpUserServersForLaunch";
-import { sharedNpxDirectLauncher, withDirectLaunchEnv } from "./npxDirectLaunch";
+import { serverLaunchEnv, sharedNpxDirectLauncher, withDirectLaunchEnv } from "./npxDirectLaunch";
 
 type Logger = { info: (event: string, data: Record<string, unknown>) => void; warn: (event: string, data: Record<string, unknown>) => void };
 
@@ -69,7 +69,7 @@ export function createChatUserMcp(args: { projectRoot: string; logger?: Logger |
           command: server.command,
           args: server.args ?? [],
           cwd: target.cwd,
-          env: { ...process.env, ...(server.env ?? {}) },
+          env: serverLaunchEnv(process.env, server.env),
         });
         servers[name] = resolved
           ? { ...server, command: resolved.command, args: resolved.args, env: withDirectLaunchEnv(server.env, resolved) }
@@ -102,7 +102,8 @@ export function createChatUserMcp(args: { projectRoot: string; logger?: Logger |
      * options are built (for the superset of setting sources), so nothing is
      * awaited between building them and starting the query.
      */
-    prepareClaude(target: Pick<ChatMcpLaunchTarget, "cwd" | "env">): Promise<void> {
+    prepareClaude(target: Pick<ChatMcpLaunchTarget, "cwd" | "env" | "ignoresUserMcp">): Promise<void> {
+      if (target.ignoresUserMcp) return Promise.resolve();
       return prepareClaudeUserServers(launcher, {
         env: target.env,
         cwd: target.cwd,

@@ -43786,7 +43786,11 @@ export function createAgentChatService(args: {
       await claudeDownload;
       assertCurrentStart();
     }
-    await chatUserMcp.prepareClaude(chatMcpTarget(managed));
+    await chatUserMcp.prepareClaude({
+      ...chatMcpTarget(managed),
+      // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
+      ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
+    });
     assertCurrentStart();
     const options = buildClaudeQueryOptions(managed, runtime);
     chatUserMcp.applyClaude(options);
@@ -44195,7 +44199,11 @@ export function createAgentChatService(args: {
       try {
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
-        await chatUserMcp.prepareClaude(chatMcpTarget(managed));
+        await chatUserMcp.prepareClaude({
+      ...chatMcpTarget(managed),
+      // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
+      ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
+    });
         const options = buildClaudeQueryOptions(managed, runtime);
         chatUserMcp.applyClaude(options);
         if (runtime.forkFromSdkSessionId) {

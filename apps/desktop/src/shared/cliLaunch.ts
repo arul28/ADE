@@ -113,10 +113,11 @@ export function trackedCliUserMcpFlags(provider: string, userMcp: TrackedCliUser
   if (provider === "codex" && userMcp?.codex) {
     const flags: string[] = [];
     for (const [name, entry] of Object.entries(userMcp.codex)) {
-      if (!TOML_BARE_KEY.test(name)) continue;
+      // A name TOML cannot take bare is a basic-string key, as Codex writes it.
+      const tomlName = TOML_BARE_KEY.test(name) ? name : JSON.stringify(name);
       for (const [key, value] of Object.entries(entry)) {
         const toml = TOML_BARE_KEY.test(key) ? tomlValue(value) : null;
-        if (toml != null) flags.push("-c", `mcp_servers.${name}.${key}=${toml}`);
+        if (toml != null) flags.push("-c", `mcp_servers.${tomlName}.${key}=${toml}`);
       }
     }
     return flags;

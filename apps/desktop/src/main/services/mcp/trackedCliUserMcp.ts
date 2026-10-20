@@ -44,15 +44,31 @@ function mainCheckoutOf(cwd: string): string | null {
   return path.dirname(path.dirname(worktrees));
 }
 
-/** Env keys a re-pointed server carries that are not secrets. */
-const NON_SECRET_ENV_KEYS = new Set(["PATH"]);
+/** A flag whose value is a credential by its name (`--token`, `--api-key`, `--cookie`, …). */
+const CREDENTIAL_FLAG = /^--?[\w-]*(token|key|secret|pass|cookie|session|auth|bearer|cred|sig)[\w-]*(=|$)/i;
 
-/** True when a Codex overlay entry could put a secret on the command line. */
+/**
+ * True unless a Codex overlay entry is known to carry nothing secret onto the
+ * command line. Conservative on purpose: a server it refuses starts as the
+ * user configured it (or, on an ADE account, not at all), never with its
+ * secret in the terminal.
+ */
 function codexEntryCarriesSecret(entry: Record<string, unknown>): boolean {
-  const env = isRecord(entry.env) ? Object.keys(entry.env).filter((key) => !NON_SECRET_ENV_KEYS.has(key.toUpperCase())) : [];
-  if (env.length || (isRecord(entry.http_headers) && Object.keys(entry.http_headers).length)) return true;
+  // The only env a re-pointed server may carry is the PATH ADE built.
+  const isPathKey = (key: string) => (process.platform === "win32" ? key.toUpperCase() === "PATH" : key === "PATH");
+  if (isRecord(entry.env) && Object.keys(entry.env).some((key) => !isPathKey(key))) return true;
+  if (isRecord(entry.http_headers) && Object.keys(entry.http_headers).length) return true;
   const args = Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === "string") : [];
+  if (args.some((arg) => CREDENTIAL_FLAG.test(arg))) return true;
   const url = typeof entry.url === "string" ? entry.url : undefined;
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.username || parsed.password || parsed.search) return true;
+    } catch {
+      return true;
+    }
+  }
   return mcpPlainTextSecretFindings({ args, url }).some((finding) => finding.kind === "value");
 }
 
@@ -73,7 +89,14 @@ function writeClaudeMcpConfigFile(servers: Record<string, unknown>): string {
   ensurePrivateDirectory(dir);
   writePrivateFile(file, contents);
   const cutoff = Date.now() - CLAUDE_MCP_CONFIG_KEEP_MS;
-  for (const name of fs.readdirSync(dir)) {
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (error) {
+    // Pruning is best-effort; the config this launch needs is written.
+    captureError(error, { fingerprint: ["mcp", "tracked_cli_config_prune"], tags: { provider: "claude" } });
+  }
+  for (const name of names) {
     if (!/^claude-[0-9a-f]+\.json$/.test(name)) continue;
     const other = path.join(dir, name);
     if (other === file) continue;

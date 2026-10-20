@@ -102,14 +102,18 @@ function fileExists(filePath: string): boolean {
   }
 }
 
-/** `key=value` lines of an `.npmrc`, comments dropped. */
-function readNpmrc(filePath: string): Map<string, string> {
+/**
+ * `key=value` lines of an `.npmrc`, comments dropped; empty when the file
+ * does not exist, null when it exists but cannot be read (its settings are
+ * then unknown, so the launch stays on npx).
+ */
+function readNpmrc(filePath: string): Map<string, string> | null {
   const values = new Map<string, string>();
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return values;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? values : null;
   }
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -127,23 +131,34 @@ type NpmSetup = {
   customRegistryScopes: Set<string> | "all";
 };
 
-function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath: string): NpmSetup {
-  const userRc = readNpmrc(env.NPM_CONFIG_USERCONFIG?.trim() || env.npm_config_userconfig?.trim() || path.join(homeDir, ".npmrc"));
-  const projectRcs: Map<string, string>[] = [];
+/** npm's settings for this launch, or null when one of its config files cannot be read. */
+function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath: string): NpmSetup | null {
+  const isWindows = process.platform === "win32";
+  // npm's built-in prefix: the folder above `bin/npx` on POSIX, the folder of
+  // `npx.cmd` on Windows. Its global config is `<prefix>/etc/npmrc`.
+  const npxDir = path.dirname(npxPath);
+  const builtinPrefix = isWindows ? npxDir : path.dirname(npxDir);
+  const projectRcs: Array<Map<string, string> | null> = [];
   for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
     const rc = path.join(dir, ".npmrc");
     if (fileExists(rc)) projectRcs.push(readNpmrc(rc));
     if (path.dirname(dir) === dir) break;
   }
+  const userRc = readNpmrc(env.NPM_CONFIG_USERCONFIG?.trim() || env.npm_config_userconfig?.trim() || path.join(homeDir, ".npmrc"));
+  const globalRc = readNpmrc(env.NPM_CONFIG_GLOBALCONFIG?.trim() || env.npm_config_globalconfig?.trim() || path.join(builtinPrefix, "etc", "npmrc"));
+  // npm's precedence: env, project, user, global.
+  const rcs = [...projectRcs, userRc, globalRc];
+  if (rcs.some((rc) => rc == null)) return null;
+  const files = rcs as Array<Map<string, string>>;
   const lookup = (key: string): string | undefined =>
     env[`npm_config_${key}`]?.trim() || env[`NPM_CONFIG_${key.toUpperCase()}`]?.trim()
-    || projectRcs.find((rc) => rc.has(key))?.get(key) || userRc.get(key);
+    || files.find((rc) => rc.has(key))?.get(key);
 
   let customRegistryScopes: NpmSetup["customRegistryScopes"] = new Set();
   const registry = lookup("registry");
   if (registry && registry.replace(/\/?$/, "/") !== DEFAULT_REGISTRY) customRegistryScopes = "all";
   else {
-    for (const rc of [userRc, ...projectRcs]) {
+    for (const rc of files) {
       for (const key of rc.keys()) {
         const scoped = key.match(/^(@[^:]+):registry$/);
         if (scoped) customRegistryScopes.add(scoped[1]!.toLowerCase());
@@ -151,7 +166,6 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
     }
   }
 
-  const isWindows = process.platform === "win32";
   const cacheDir = lookup("cache")
     || (isWindows
       ? path.join(env.LOCALAPPDATA?.trim() || path.join(homeDir, "AppData", "Local"), "npm-cache")
@@ -159,10 +173,8 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
   const prefixes = new Set<string>();
   const configuredPrefix = lookup("prefix");
   if (configuredPrefix) prefixes.add(configuredPrefix);
-  // npm's default prefix: the folder above `bin/npx` on POSIX, the folder of
-  // `npx.cmd` on Windows, plus `%APPDATA%\npm` where `npm i -g` lands there.
-  const npxDir = path.dirname(npxPath);
-  prefixes.add(isWindows ? npxDir : path.dirname(npxDir));
+  // The built-in prefix, plus `%APPDATA%\npm` where `npm i -g` lands on Windows.
+  prefixes.add(builtinPrefix);
   if (isWindows && env.APPDATA?.trim()) prefixes.add(path.join(env.APPDATA.trim(), "npm"));
   return {
     cacheDir,
@@ -216,8 +228,9 @@ function commandFileExists(dir: string, command: string): boolean {
 
 /**
  * True when npx would run something other than its own cache: the package in
- * the project tree or the global prefix, or a command of the same name there
- * (npx tries `node_modules/.bin` and the global bin folder first).
+ * the project tree or the global prefix, or a command named like npx's first
+ * argument there (npx tries `node_modules/.bin` and the global bin folder
+ * first, with the argument as written, version and all).
  */
 function installedOutsideNpxCache(name: string, commands: readonly string[], cwd: string, setup: NpmSetup): boolean {
   for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
@@ -241,6 +254,22 @@ function pathWithFirst(env: NodeJS.ProcessEnv, dir: string): Record<string, stri
  * already starts from the server's own. On Windows every case variant of the
  * key is dropped first, because env keys are case-insensitive there.
  */
+/**
+ * The env to resolve a server's launch with: the server's own env over the
+ * launch env. On Windows a server key replaces every case variant of it,
+ * because env keys are case-insensitive there.
+ */
+export function serverLaunchEnv(
+  launchEnv: NodeJS.ProcessEnv,
+  serverEnv: Record<string, string> | undefined,
+): NodeJS.ProcessEnv {
+  if (!serverEnv) return launchEnv;
+  if (process.platform !== "win32") return { ...launchEnv, ...serverEnv };
+  const serverKeys = new Set(Object.keys(serverEnv).map((key) => key.toUpperCase()));
+  const kept = Object.entries(launchEnv).filter(([key]) => !serverKeys.has(key.toUpperCase()));
+  return { ...Object.fromEntries(kept), ...serverEnv };
+}
+
 export function withDirectLaunchEnv(
   serverEnv: Record<string, string> | undefined,
   direct: NpxDirectCommand,
@@ -254,7 +283,8 @@ export function withDirectLaunchEnv(
 
 /**
  * The registry's answer for one tag: the version and when it was fetched, and
- * when the last attempt ran (a failed attempt keeps the previous answer).
+ * when the last attempt ran. A failed attempt keeps the previous answer, which
+ * is then used only while it is still fresh.
  */
 type LatestEntry = { version: string | null; checkedAt: number; attemptedAt: number };
 
@@ -335,7 +365,11 @@ export function createNpxDirectLauncher(options: {
     const age = entry ? now() - entry.checkedAt : Infinity;
     const sinceAttempt = entry ? now() - entry.attemptedAt : Infinity;
     if (age >= LATEST_FRESH_MS && sinceAttempt >= LATEST_FRESH_MS) void refreshLatest(name, tag);
-    return age < LATEST_USABLE_MS ? entry! : null;
+    if (!entry || age >= LATEST_USABLE_MS) return null;
+    // The last check failed and this answer is no longer fresh: the tag may
+    // have moved, so the launch stays on npx until a check succeeds.
+    if (age >= LATEST_FRESH_MS && entry.attemptedAt > entry.checkedAt) return null;
+    return entry;
   };
 
   /** Everything `resolve` checks before the version: null when the launch must stay on npx. */
@@ -345,6 +379,7 @@ export function createNpxDirectLauncher(options: {
     const npx = path.isAbsolute(command) ? { path: command } : resolveExecutableFromKnownLocations(command, env);
     if (!npx) return null;
     const setup = npmSetup(env, homeDir, cwd, npx.path);
+    if (!setup) return null;
     const scope = invocation.name.startsWith("@") ? invocation.name.split("/")[0]!.toLowerCase() : null;
     if (setup.customRegistryScopes === "all" || (scope && setup.customRegistryScopes.has(scope))) return null;
     const installDir = npxCacheInstallDir(setup.cacheDir, invocation.spec);
@@ -355,8 +390,9 @@ export function createNpxDirectLauncher(options: {
     if (!manifest || manifest.name !== invocation.name || typeof manifest.version !== "string") return null;
     const bin = binEntry(packageDir, manifest, invocation.name);
     if (!bin || !isPlainNodeScript(bin.script)) return null;
-    const unscoped = invocation.name.split("/").pop()!;
-    if (installedOutsideNpxCache(invocation.name, [...new Set([unscoped, bin.name])], cwd, setup)) return null;
+    // npx looks for its first argument, exactly as written, as a command in
+    // the local `.bin` folders and the global bin folder before its cache.
+    if (installedOutsideNpxCache(invocation.name, [invocation.spec], cwd, setup)) return null;
     return { invocation, npxPath: npx.path, installDir, version: manifest.version, script: bin.script };
   };
 
