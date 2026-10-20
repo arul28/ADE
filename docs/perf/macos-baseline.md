@@ -676,7 +676,7 @@ The event ring and the transcript windows were bounded by count per project
 (64 and 32 chats), never by time, so a long-lived brain kept every recent
 chat's history until it restarted, once per open project. A chat quiet for
 10 minutes now gives both back; its transcript already holds every event, and
-a ring whose last append failed is kept until an append lands.
+a chat whose transcript had a failed append keeps its ring.
 
 The events are the same as the poller's: `tree-watcher-parity.mts` runs both
 on one temp tree through 18 kinds of file operation (create, change, delete,

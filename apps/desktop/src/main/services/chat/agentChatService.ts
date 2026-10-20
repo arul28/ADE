@@ -5507,9 +5507,9 @@ const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
 const transcriptWriteFlushInFlight = new Map<string, Promise<void>>();
 const checkedTranscriptTails = new Set<string>();
 /**
- * Transcripts whose last append threw (ENOSPC, a removed folder). The event
- * ring is then the only copy of those events, so it must not be released
- * until an append to the same file lands again.
+ * Transcripts with an append that threw (ENOSPC, a removed folder). That
+ * batch is gone, so the event ring is the only copy of its events for as long
+ * as the process runs; a later append that lands does not bring it back.
  */
 const failedTranscriptAppends = new Set<string>();
 
@@ -5574,7 +5574,6 @@ function flushQueuedTranscriptWrite(
       // append that threw (e.g. ENOSPC) can leave the file without a trailing
       // newline, so the next flush must re-check and heal it.
       checkedTranscriptTails.add(normalizedPath);
-      failedTranscriptAppends.delete(normalizedPath);
     } catch (error) {
       failedTranscriptAppends.add(normalizedPath);
       // Transcript persistence is best effort; callers still receive live events.
@@ -65886,7 +65885,7 @@ export function createAgentChatService(args: {
       if (now - touchedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
       const managed = managedSessions.get(sessionId);
       if (managed?.session.status === "active") continue;
-      // Until an append lands, the ring is the only copy of its events.
+      // After a failed append, the ring is the only copy of those events.
       if (!transcriptWritesSettled(path.join(chatTranscriptsDir, `${sessionId}.jsonl`))) continue;
       if (managed && !transcriptWritesSettled(managed.transcriptPath)) continue;
       eventHistoryBySession.delete(sessionId);
