@@ -2142,6 +2142,19 @@ describe("sessionService snooze overlay", () => {
     service.clearLastTurnFailed("session-snooze");
     expect(service.get("session-snooze")?.wokeReason).toBeNull();
     expect(service.wakeSessionIfSnoozed("session-snooze", "turn_complete")).toBeNull();
+
+    // A turn START clears the failure marker without waking the row: starting
+    // work is not the completion a snoozed row is waiting for.
+    service.snoozeSession("session-snooze", "2026-03-17T08:00:00.000Z", {
+      snoozedAt: "2026-03-17T04:00:00.000Z",
+    });
+    service.markLastTurnFailed("session-snooze", "2026-03-17T03:30:00.000Z");
+    service.clearLastTurnFailed("session-snooze", { wakeSnoozed: false });
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      lastTurnFailedAt: null,
+      snoozedUntil: "2026-03-17T08:00:00.000Z",
+      wokeReason: null,
+    }));
   });
 
   it("supports the bulk snooze/wake variants", async () => {

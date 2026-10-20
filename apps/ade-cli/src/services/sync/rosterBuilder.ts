@@ -7,7 +7,11 @@ import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/cross
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
-import { isSessionSnoozed, lanePrWaitingReason } from "../../../../desktop/src/shared/sessionCanonicalState";
+import {
+  isPersistedTurnFailureCurrent,
+  isSessionSnoozed,
+  lanePrWaitingReason,
+} from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
   AgentChatLogState,
   SyncRosterChat,
@@ -493,11 +497,28 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
 // Activity island claiming live agents on a machine that has none.
 function diskChatStatus(row: TerminalSessionRow, sidecarAwaiting: boolean): SyncRosterChatStatus {
   if (row.attention_requested_at || sidecarAwaiting) return "awaiting";
-  if (row.last_turn_failed_at) return "failed";
+  if (rosterFailureIsCurrent(row)) return "failed";
   if (row.settled_at) return "ended";
   const status = (row.status ?? "").trim();
   if (status !== "running" && row.exit_code != null && row.exit_code !== 0) return "failed";
   return status === "running" ? "idle" : "ended";
+}
+
+/**
+ * A persisted failure marker describes this row only until something newer
+ * happens. `last_output_at` is written by real output, not by the `done` event
+ * that carries the failure, so output after the failure proves the chat ran
+ * again. Without the check, a chat that recovered through a route that never
+ * completed a turn (restart recovery, a peer message, a runtime that kept
+ * going) stayed "failed" in the account Activity feed and the phone roster —
+ * and the push publisher counted it into "N chats failed" — while it was
+ * demonstrably working.
+ */
+function rosterFailureIsCurrent(row: TerminalSessionRow): boolean {
+  return isPersistedTurnFailureCurrent({
+    lastTurnFailedAt: row.last_turn_failed_at,
+    lastActivityAt: row.last_output_at,
+  });
 }
 
 // Live status from a booted scope's agentChatService — true running/awaiting.
@@ -651,13 +672,30 @@ async function buildRosterProject(
       : hasLivePty
         ? "running" as const
         : null;
+    /**
+     * A live FOREGROUND turn, not merely a row that reports `running`.
+     * `liveChatStatus` also returns "running" for an idle chat that still owns
+     * background tasks, and the desktop canonical rule is explicit that an
+     * orphaned monitor must not mask a failed turn — so only `active` gets the
+     * override. A live PTY has no chat summary and is always a live run.
+     */
+    const liveTurnRunning = live
+      ? live.status === "active" && live.awaitingInput !== true
+      : hasLivePty;
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
+      // Settled is checked against a RUNNING row first, exactly as before:
+      // background work keeps a settled chat's published status "running".
       : row.settled_at && liveStatus !== "running"
         ? "ended"
-        : row.last_turn_failed_at
-          ? "failed"
-          : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
+        // A live turn outranks every persisted verdict. A chat that is working
+        // right now can never be published as failed/ended because a previous
+        // turn died — the desktop `canonicalSessionState` applies the same rule.
+        : liveTurnRunning
+          ? "running"
+          : rosterFailureIsCurrent(row)
+            ? "failed"
+            : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
     const snoozed = isSessionSnoozed({
       snoozedUntil: row.snoozed_until,

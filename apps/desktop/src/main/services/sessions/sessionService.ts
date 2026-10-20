@@ -2594,14 +2594,22 @@ export function createSessionService({
     },
 
     /**
-     * A completed turn supersedes an earlier failure; never touches
-     * settle/attention. It is also the "running turn completed" early-wake
-     * trigger, so a snoozed row comes back as soon as its work is done.
+     * A later turn supersedes an earlier failure; never touches
+     * settle/attention. Its `done` event is also the "running turn completed"
+     * early-wake trigger, so a snoozed row comes back as soon as its work is
+     * done.
+     *
+     * `wakeSnoozed: false` is for the other caller — a turn START. Starting
+     * work is not the completion a snoozed row is waiting for, and the
+     * `turn_complete` copy would be a lie. That path exists because the
+     * documented contract is "cleared when the next turn starts", and a turn
+     * can be started by a scheduled wake, an auto-resume, a peer message, or
+     * restart recovery — not only by the user typing.
      */
-    clearLastTurnFailed(sessionId: string): boolean {
+    clearLastTurnFailed(sessionId: string, options: { wakeSnoozed?: boolean } = {}): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run("update terminal_sessions set last_turn_failed_at = null where id = ?", [id]);
-        wakeSnoozedRow(id, "turn_complete");
+        if (options.wakeSnoozed !== false) wakeSnoozedRow(id, "turn_complete");
       });
     },
 

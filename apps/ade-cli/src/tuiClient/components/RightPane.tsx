@@ -226,7 +226,10 @@ export function computeLaneChatCounts(
       settled += 1;
       continue;
     }
-    if (lifecycle.lastTurnFailedAt) {
+    // A live turn outranks the persisted failure marker: chats keep
+    // `lastTurnFailedAt` until a later turn supersedes it, and a chat that is
+    // working right now is not a failed row (mirrors canonicalSessionState).
+    if (lifecycle.lastTurnFailedAt && session.status !== "active") {
       failed += 1;
       continue;
     }

@@ -1,8 +1,14 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
-import type { LinearIssueCreateInput, SessionAttentionSource } from "../../../../desktop/src/shared/types";
+import type {
+  LinearIssueCreateInput,
+  SessionAttentionSource,
+  TerminalRuntimeState,
+  TerminalSessionStatus,
+} from "../../../../desktop/src/shared/types";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import {
@@ -30,6 +36,7 @@ import {
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { sessionStatusBucket } from "../../../../desktop/src/shared/sessionCanonicalState";
 import {
   CTO_HOME_SETTING_KEY,
   isCtoHomeMachineRecord,
@@ -2342,14 +2349,27 @@ async function getRemoteWorkSession(
     ...session,
     runtimeState: args.ptyService.getRuntimeState(session.id, session.status),
   };
+  // Runtime fields are projected for running rows only; a closed row must not
+  // borrow a live `runtimeState` (or a leftover pending input) from its summary.
+  let projected = false;
   if (enriched.status === "running" && isChatToolType(enriched.toolType)) {
     try {
       const chat = await args.agentChatService?.getSessionSummary(enriched.id);
-      if (chat) enriched = projectChatOntoSession(enriched, chat);
+      if (chat) {
+        enriched = projectChatOntoSession(enriched, chat);
+        projected = true;
+      }
     } catch {
       // Detail reads should still return the persisted session if chat state
       // hydration fails during runtime restart/recovery.
     }
+  }
+  // A chat row's stored `status: "running"` is not turn liveness. With no
+  // summary to project, a row that carries a failure marker is read as resting
+  // so the marker is not outranked by a runtime state nobody measured; a row
+  // with no marker keeps the caller-supplied runtime state.
+  if (!projected && isChatToolType(enriched.toolType) && enriched.lastTurnFailedAt) {
+    enriched = fallbackUnprojectedChatSession(enriched);
   }
   return enriched;
 }
@@ -2907,12 +2927,20 @@ async function listRemoteWorkSessions(
   const chatSummaryBySessionId = new Map(
     allChats.filter((chat) => !chat.identityKey).map((chat) => [chat.sessionId, chat] as const),
   );
-  if (chatSummaryBySessionId.size === 0) return visibleSessions;
+  if (chatSummaryBySessionId.size === 0) {
+    return visibleSessions.map((session) =>
+      isChatToolType(session.toolType) && session.lastTurnFailedAt
+        ? fallbackUnprojectedChatSession(session)
+        : session,
+    );
+  }
 
   return visibleSessions.map((session) => {
     if (!isChatToolType(session.toolType)) return session;
     const chat = chatSummaryBySessionId.get(session.id);
-    if (!chat) return session;
+    if (!chat) {
+      return session.lastTurnFailedAt ? fallbackUnprojectedChatSession(session) : session;
+    }
     // Runtime fields are projected for running rows only; lineage for all chat rows.
     if (session.status !== "running") return projectChatLineage(session, chat);
     return projectChatOntoSession(session, chat);
@@ -4223,38 +4251,6 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   };
 }
 
-function sessionStatusBucket(argsIn: {
-  status: string;
-  runtimeState?: string | null;
-  settledAt?: string | null;
-  settleOverride?: "settled" | "active" | null;
-  attentionRequestedAt?: string | null;
-  pendingInputItemId?: string | null;
-  attentionSource?: SessionAttentionSource | null;
-  lastTurnFailedAt?: string | null;
-}): "running" | "awaiting-input" | "ended" {
-  // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
-  // an escalated ask outranks everything; a declared settle is the quiet
-  // bucket but only AT REST (background wakes count as running); a dead chat
-  // turn is not running. The tri-state override is consulted at that same
-  // declared-settle tier: "active" is an explicit keep-active pin that
-  // suppresses settle, "settled" behaves like a declared settle.
-  if (
-    argsIn.attentionRequestedAt
-    || argsIn.pendingInputItemId
-    || argsIn.attentionSource === "provider_structured"
-  ) return "awaiting-input";
-  const effectiveSettled = argsIn.settleOverride === "active"
-    ? false
-    : argsIn.settleOverride === "settled" || Boolean(argsIn.settledAt);
-  if (effectiveSettled && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
-  if (argsIn.lastTurnFailedAt) return "ended";
-  if (argsIn.status === "running") {
-    return "running";
-  }
-  return "ended";
-}
-
 function summarizeLaneRuntime(
   laneId: string,
   // Declares every field sessionStatusBucket actually reads. These arrive on the
@@ -4262,12 +4258,14 @@ function summarizeLaneRuntime(
   // settled tier looked dead here even though it was being evaluated.
   sessions: Array<{
     laneId: string;
-    status: string;
+    status: TerminalSessionStatus;
     lastOutputPreview: string | null;
-    runtimeState?: string | null;
+    runtimeState?: TerminalRuntimeState | null;
     settledAt?: string | null;
-    settleOverride?: "settled" | "active" | null;
+    settleOverride?: SessionSettleOverride | null;
     attentionRequestedAt?: string | null;
+    pendingInputItemId?: string | null;
+    attentionSource?: SessionAttentionSource | null;
     lastTurnFailedAt?: string | null;
   }>,
 ): LaneListSnapshot["runtime"] {
@@ -4322,7 +4320,10 @@ async function buildLaneListSnapshots(
   const chatBySessionId = new Map(chatSessions.map((chat) => [chat.sessionId, chat] as const));
   const sessions = rawSessions.map((session) => {
     const chat = chatBySessionId.get(session.id);
-    return chat ? projectChatOntoSession(session, chat) : session;
+    if (chat) return projectChatOntoSession(session, chat);
+    // Only a failed row needs the resting projection: its stored `running`
+    // status would otherwise outrank the marker nobody projected away.
+    return session.lastTurnFailedAt ? fallbackUnprojectedChatSession(session) : session;
   });
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
@@ -4404,7 +4405,8 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
       laneId,
       sessions.map((session) => {
         const chat = chatSessions.find((candidate) => candidate.sessionId === session.id);
-        return chat ? projectChatOntoSession(session, chat) : session;
+        if (chat) return projectChatOntoSession(session, chat);
+        return session.lastTurnFailedAt ? fallbackUnprojectedChatSession(session) : session;
       }),
     ),
     stackChain,

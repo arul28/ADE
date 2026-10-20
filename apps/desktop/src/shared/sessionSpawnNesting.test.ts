@@ -269,7 +269,9 @@ describe("isTopLevelWorkSession", () => {
 
 describe("nestedDrawerStatus", () => {
   const needsYou = sess({ id: "ask", attentionRequestedAt: NOW_ISO });
-  const failed = sess({ id: "fail", lastTurnFailedAt: NOW_ISO });
+  // A failed chat is resting: `runtimeState` is the live projection, and a
+  // live turn would outrank the marker (see canonicalSessionState).
+  const failed = sess({ id: "fail", lastTurnFailedAt: NOW_ISO, runtimeState: "idle" });
   const running = sess({ id: "busy" });
   const ended = sess({ id: "done", status: "completed", runtimeState: "exited", exitCode: 0, toolType: "shell" });
 
@@ -286,6 +288,7 @@ describe("nestedDrawerStatus", () => {
     const parked = sess({
       id: "parked",
       lastTurnFailedAt: NOW_ISO,
+      runtimeState: "idle",
       usageLimitResume: {
         state: "armed",
         provider: "claude",
