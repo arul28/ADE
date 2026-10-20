@@ -243,16 +243,20 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  * timestamp.
  *
  * `last_output_at` is written by preview-producing activity (assistant text,
- * tool results), never by the `done` event that carries the failure. So a
- * failure timestamp at or after the last output is the newest fact, while
- * output strictly after it proves the chat ran again and the marker is stale.
+ * command output, an error, a completion report), never by the `done` event
+ * that carries the failure. So a failure timestamp at or after the last output
+ * is the newest fact, while output strictly after it proves the chat ran again
+ * and the marker is stale. That ordering is load-bearing: an error lands just
+ * before a failed `done`, and every `done: failed` writer leaves it there.
  * The live writers also clear the marker (a turn start, any non-failed `done`,
  * and the first real work after the failed turn — see `agentChatService`), so
  * this check is the disk-only backstop for a row whose brain was not there to
  * witness the recovery.
  *
- * Fail closed on unparseable or missing timestamps: an unknown age is not
- * evidence of recovery.
+ * A missing or unparseable failure marker means there is no failure to show:
+ * there is no trustworthy instant to compare. An unparseable activity stamp
+ * keeps the marker current, because an unknown age is not evidence of
+ * recovery.
  */
 export function isPersistedTurnFailureCurrent(args: {
   lastTurnFailedAt?: string | null;
@@ -610,6 +614,57 @@ export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalSt
     default:
       return "ended";
   }
+}
+
+/** The lane-rollup bucket: three states, because a lane badge does not show "settled". */
+export type SessionStatusBucket = Exclude<CanonicalStatusBucket, "settled">;
+
+/**
+ * The lane-rollup bucket for ONE session row, shared by the desktop lane
+ * snapshot and the CLI-hosted remote lane snapshot.
+ *
+ * This used to exist twice, hand-copied, and the copies drifted: the desktop
+ * one taught a live turn to outrank a persisted failure marker while the CLI
+ * one kept letting a stale marker read `ended`. The rule now has one owner.
+ *
+ * `runtimeState` must be the LIVE projection (`projectChatOntoSession` /
+ * `fallbackUnprojectedChatSession`), never a raw chat row's stored
+ * `status: "running"` — chats keep that status between turns, which is exactly
+ * the ambiguity this bucket exists to resolve.
+ */
+export function sessionStatusBucket(args: {
+  status: TerminalSessionStatus;
+  runtimeState?: TerminalRuntimeState | null;
+  settledAt?: string | null;
+  settleOverride?: SessionSettleOverride | null;
+  attentionRequestedAt?: string | null;
+  pendingInputItemId?: string | null;
+  attentionSource?: SessionAttentionSource | null;
+  pendingInputWaiting?: boolean;
+  lastTurnFailedAt?: string | null;
+}): SessionStatusBucket {
+  // `ade chat ask` escalation outranks everything; a declared settle maps to
+  // the quiet bucket for lane rollups (badges/counters) but only AT REST so a
+  // background wake still counts as running; a dead chat turn is not running.
+  // The tri-state override is consulted at the same declared-settle tier:
+  // "active" is an explicit keep-active pin, "settled" acts like a declared
+  // settle. Mirrors canonicalSessionState above.
+  if (
+    args.attentionRequestedAt
+    || args.pendingInputItemId
+    || args.attentionSource === "provider_structured"
+    || args.pendingInputWaiting === true
+  ) return "awaiting-input";
+  const effectiveSettled = args.settleOverride === "active"
+    ? false
+    : args.settleOverride === "settled" || Boolean(args.settledAt);
+  if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
+  // A live turn outranks a persisted failure marker: chats keep their row
+  // "running" between turns, so `runtimeState` is the live signal that says a
+  // turn is actually in flight.
+  if (args.lastTurnFailedAt && args.runtimeState !== "running") return "ended";
+  if (args.status === "running") return "running";
+  return "ended";
 }
 
 /**

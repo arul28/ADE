@@ -469,6 +469,19 @@ describe("buildRosterSnapshot", () => {
     const fromLive = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
     const liveById = new Map(fromLive[0]!.chats.map((chat) => [chat.id, chat]));
     expect(liveById.get("chat-failed")!.status).toBe("running");
+
+    // Background-only work does NOT outrank the marker: an idle chat whose
+    // orphaned monitor kept running still reads Failed, as it does on desktop.
+    const backgroundRegistry = bootedScopes([
+      { sessionId: "chat-failed", status: "idle", activeBackgroundTaskCount: 2 },
+    ]);
+    const fromBackground = await buildRosterSnapshot({
+      projectRegistry,
+      scopeRegistry: backgroundRegistry,
+      hostProjectId: PROJECT_ID,
+    });
+    const backgroundById = new Map(fromBackground[0]!.chats.map((chat) => [chat.id, chat]));
+    expect(backgroundById.get("chat-failed")!.status).toBe("failed");
   });
 
   it("leaves a live chat at rest when it has no background tasks", async () => {

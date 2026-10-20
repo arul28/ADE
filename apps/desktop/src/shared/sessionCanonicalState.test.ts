@@ -10,6 +10,7 @@ import {
   isSessionSnoozeExpired,
   isWakingSessionError,
   resolveSessionWakeReason,
+  sessionStatusBucket,
   summarizeBackgroundWork,
   SESSION_STALE_AFTER_MS,
   type CanonicalSessionInputs,
@@ -425,6 +426,25 @@ describe("classifyBackgroundWorkKind", () => {
       workingCount: 3,
       monitoringCount: 1,
     });
+  });
+});
+
+describe("sessionStatusBucket", () => {
+  const failure = "2026-07-06T11:00:00.000Z";
+
+  it.each([
+    ["an escalated ask is awaiting-input", { attentionRequestedAt: failure }, "awaiting-input"],
+    ["a waiting pending input is awaiting-input", { pendingInputWaiting: true }, "awaiting-input"],
+    ["a settled chat at rest is ended", { runtimeState: "idle" as const, settledAt: failure }, "ended"],
+    ["a settled chat mid-turn is running", { runtimeState: "running" as const, settledAt: failure }, "running"],
+    // The lane rollup applies the same live-turn rule as the row itself:
+    // a stored failure marker must not mark a working chat ended.
+    ["a failed chat at rest is ended", { runtimeState: "idle" as const, lastTurnFailedAt: failure }, "ended"],
+    ["a failed chat mid-turn is running", { runtimeState: "running" as const, lastTurnFailedAt: failure }, "running"],
+    ["a running chat is running", { runtimeState: "running" as const }, "running"],
+    ["a detached chat is ended", { status: "detached" as const, runtimeState: "exited" as const }, "ended"],
+  ])("%s", (_name, overrides, expected) => {
+    expect(sessionStatusBucket({ status: "running", runtimeState: "running", ...overrides })).toBe(expected);
   });
 });
 

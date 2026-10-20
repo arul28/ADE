@@ -2,12 +2,16 @@ import type {
   AgentChatSessionSummary,
   DeviceMarker,
   SessionAttentionSource,
+  SessionSettleOverride,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneStateSnapshotSummary,
   LaneSummary,
+  TerminalRuntimeState,
+  TerminalSessionStatus,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { sessionStatusBucket } from "../../../shared/sessionCanonicalState";
 import type { Logger } from "../logging/logger";
 import {
   fallbackUnprojectedChatSession,
@@ -102,53 +106,20 @@ export type LaneListSnapshotOptions = {
 
 export const OPTIONAL_LANE_ENRICHMENT_BUDGET_MS = 250;
 
-function sessionStatusBucket(args: {
-  status: string;
-  runtimeState?: string | null;
-  toolType?: string | null;
-  settledAt?: string | null;
-  settleOverride?: "settled" | "active" | null;
-  attentionRequestedAt?: string | null;
-  pendingInputItemId?: string | null;
-  attentionSource?: SessionAttentionSource | null;
-  pendingInputWaiting?: boolean;
-  lastTurnFailedAt?: string | null;
-}): "running" | "awaiting-input" | "ended" {
-  // `ade chat ask` escalation outranks everything; a declared settle maps to
-  // the quiet bucket for lane rollups (badges/counters) but only AT REST so a
-  // background wake still counts as running; a dead chat turn is not running.
-  // The tri-state override is consulted at the same declared-settle tier:
-  // "active" is an explicit keep-active pin, "settled" acts like a declared
-  // settle. Mirrors canonicalSessionState in shared/sessionCanonicalState.ts.
-  if (
-    args.attentionRequestedAt
-    || args.pendingInputItemId
-    || args.attentionSource === "provider_structured"
-    || args.pendingInputWaiting === true
-  ) return "awaiting-input";
-  const effectiveSettled = args.settleOverride === "active"
-    ? false
-    : args.settleOverride === "settled" || Boolean(args.settledAt);
-  if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
-  // A live turn outranks a persisted failure marker: chats keep their row
-  // "running" between turns, so `runtimeState` is the live signal that says a
-  // turn is actually in flight. Without this, a chat that resumed after a
-  // failure counted as ended in every lane rollup while it was working.
-  if (args.lastTurnFailedAt && args.runtimeState !== "running") return "ended";
-  if (args.status === "running") return "running";
-  return "ended";
-}
-
 function summarizeLaneRuntime(
   laneId: string,
   sessions: Array<{
     laneId: string;
-    status: string;
+    status: TerminalSessionStatus;
     lastOutputPreview: string | null;
-    runtimeState?: string | null;
+    runtimeState?: TerminalRuntimeState | null;
     toolType?: string | null;
     pendingInputItemId?: string | null;
     attentionSource?: SessionAttentionSource | null;
+    settleOverride?: SessionSettleOverride | null;
+    settledAt?: string | null;
+    attentionRequestedAt?: string | null;
+    lastTurnFailedAt?: string | null;
     pendingInputWaiting?: boolean;
   }>,
 ): LaneRuntimeSummary {

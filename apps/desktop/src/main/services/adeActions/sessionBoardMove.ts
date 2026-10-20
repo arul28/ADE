@@ -22,7 +22,11 @@ import {
 } from "../../../shared/sessionCanonicalState";
 import { scheduledWakeState } from "../../../shared/sessionStatusPresentation";
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
-import { isChatToolType, projectChatOntoSession } from "../sessions/chatSessionProjection";
+import {
+  fallbackUnprojectedChatSession,
+  isChatToolType,
+  projectChatOntoSession,
+} from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
 import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
@@ -601,13 +605,21 @@ function boardMoveRow(
   session: TerminalSessionSummary,
   summary: BoardMoveChatSummary | BoardMoveChatLink | null | undefined,
 ): TerminalSessionSummary {
-  if (!summary) return session;
+  // A chat row's stored `status: "running"` is not turn liveness. With no
+  // summary to project, a row that carries a failure marker is read as resting
+  // so the move's source column is the failed one; a row with no marker keeps
+  // its caller-supplied runtime state, which is the pre-existing behavior for
+  // a live, summary-less chat.
+  const base = session.lastTurnFailedAt
+    ? fallbackUnprojectedChatSession(session)
+    : session;
+  if (!summary) return base;
   if (typeof summary.status === "string") {
     return projectChatOntoSession(session, summary as AgentChatSessionSummary);
   }
   const link = summary as BoardMoveChatLink;
   return {
-    ...session,
+    ...base,
     ...(link.nextWakeAt !== undefined ? { nextWakeAt: link.nextWakeAt } : {}),
     ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
     ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),

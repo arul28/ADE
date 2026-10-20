@@ -65,7 +65,16 @@ enum RemoteRosterChatStatus: String, Codable, Equatable {
       next.runtimeState = "idle"
       return next
     case .ended, .failed:
-      return session
+      // The host says this chat is not working: its turn failed, or the row is
+      // closed. The replica's `runtime_state` defaults to "running" and is
+      // written only by a full `work.listSessions` refresh, so a row last
+      // refreshed mid-turn would otherwise claim a live turn here and hide a
+      // real failure from the shared derivation (which treats a live turn as
+      // Working). Ending states are not liveness.
+      guard session.status == "running", session.runtimeState == "running" else { return session }
+      var next = session
+      next.runtimeState = "idle"
+      return next
     }
   }
 }

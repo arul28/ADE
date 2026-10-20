@@ -672,16 +672,27 @@ async function buildRosterProject(
       : hasLivePty
         ? "running" as const
         : null;
+    /**
+     * A live FOREGROUND turn, not merely a row that reports `running`.
+     * `liveChatStatus` also returns "running" for an idle chat that still owns
+     * background tasks, and the desktop canonical rule is explicit that an
+     * orphaned monitor must not mask a failed turn — so only `active` gets the
+     * override. A live PTY has no chat summary and is always a live run.
+     */
+    const liveTurnRunning = live
+      ? live.status === "active" && live.awaitingInput !== true
+      : hasLivePty;
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
-      // A live turn outranks every persisted verdict. `liveChatStatus` reads
-      // the running provider runtime, so a chat that is working right now can
-      // never be published as failed/ended because a previous turn died — the
-      // desktop `canonicalSessionState` applies the same rule.
-      : liveStatus === "running"
-        ? "running"
-        : row.settled_at
-          ? "ended"
+      // Settled is checked against a RUNNING row first, exactly as before:
+      // background work keeps a settled chat's published status "running".
+      : row.settled_at && liveStatus !== "running"
+        ? "ended"
+        // A live turn outranks every persisted verdict. A chat that is working
+        // right now can never be published as failed/ended because a previous
+        // turn died — the desktop `canonicalSessionState` applies the same rule.
+        : liveTurnRunning
+          ? "running"
           : rosterFailureIsCurrent(row)
             ? "failed"
             : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
