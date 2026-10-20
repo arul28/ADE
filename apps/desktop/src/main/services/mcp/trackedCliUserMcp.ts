@@ -66,7 +66,8 @@ function codexEntryCarriesSecret(entry: Record<string, unknown>): boolean {
   // A flag's value can be anything (`-p hunter2`), so only standalone flags
   // (`--headless`) and bare words that follow no flag (`mcp`) may ride.
   // npx's own switches take no value.
-  const takesNoValue = (flag: string) => NPX_SWITCHES.has(flag);
+  // Including grouped short switches (`-yq`).
+  const takesNoValue = (flag: string) => NPX_SWITCHES.has(flag) || /^-[yq]+$/.test(flag);
   if (args.some((arg, index) => {
     // `-phunter2` is a short flag with its value attached.
     if (/^-[^-]./.test(arg) && !takesNoValue(arg)) return true;

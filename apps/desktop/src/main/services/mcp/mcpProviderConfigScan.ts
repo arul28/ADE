@@ -202,12 +202,15 @@ function tomlListIsOpen(value: string): boolean {
  * `mcp_servers`, which is how Codex itself writes them. A server declared only
  * through an inline `mcp_servers = { ... }` table is not read.
  */
-/** Names that would reach `Object.prototype` through a plain object's index. */
-const UNSAFE_TABLE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+/**
+ * The one name that still reaches `Object.prototype` once a record built here
+ * is spread or indexed by an ordinary object downstream.
+ */
+const UNSAFE_TABLE_KEYS = new Set(["__proto__"]);
 
 export function parseCodexMcpServers(configText: string): Record<string, Record<string, unknown>> {
   // A project's own config is read too, and that file comes with the
-  // repository: tables are prototype-free and prototype names are skipped.
+  // repository: tables are prototype-free and `__proto__` is skipped.
   const servers: Record<string, Record<string, unknown>> = Object.create(null);
   let target: Record<string, unknown> | null = null;
   const lines = configText.replace(/\r\n?/g, "\n").split("\n");

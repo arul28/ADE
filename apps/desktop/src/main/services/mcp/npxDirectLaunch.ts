@@ -151,7 +151,8 @@ function npmSetup(env: NodeJS.ProcessEnv, homeDir: string, cwd: string, npxPath:
   // The global config lives under npm's effective prefix, which the env,
   // project or user config can move; the built-in prefix is the fallback.
   // `PREFIX` is npm's own override of its built-in default prefix.
-  const defaultPrefix = env.PREFIX?.trim() || builtinPrefix;
+  const prefixKey = isWindows ? Object.keys(env).find((key) => key.toUpperCase() === "PREFIX") : "PREFIX";
+  const defaultPrefix = (prefixKey ? env[prefixKey]?.trim() : undefined) || builtinPrefix;
   const prefixBeforeGlobal = fromEnv("prefix")
     || (projectRcs as Array<Map<string, string>>).find((rc) => rc.has("prefix"))?.get("prefix")
     || userRc!.get("prefix")
