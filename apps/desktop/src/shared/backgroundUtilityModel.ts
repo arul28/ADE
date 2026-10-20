@@ -11,6 +11,8 @@
  * who turned Fast on globally does not pay Fast rates for a chat name.
  * Composer 2.5 has no effort control, only fast/standard.
  */
+import type { ModelDescriptor } from "./modelRegistry";
+
 /** The model ids the provider CLIs take (`claude --model`, `codex -m`). */
 export const BACKGROUND_UTILITY_CLAUDE_CLI_MODEL = "claude-haiku-5-5";
 export const BACKGROUND_UTILITY_CODEX_CLI_MODEL = "gpt-6-luna";
@@ -72,15 +74,21 @@ export function backgroundUtilityModelId(
   }
 }
 
-export function backgroundUtilityReasoningEffort(modelId: string | null | undefined): string | null {
-  const id = String(modelId ?? "").trim();
-  if (id === BACKGROUND_UTILITY_CODEX_MODEL_ID || id === BACKGROUND_UTILITY_CODEX_CLI_MODEL || id === "luna") {
-    return BACKGROUND_UTILITY_CODEX_REASONING_EFFORT;
-  }
-  if (id === BACKGROUND_UTILITY_CLAUDE_MODEL_ID || id === BACKGROUND_UTILITY_CLAUDE_CLI_MODEL || id === "haiku") {
-    return BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT;
-  }
-  return null;
+/** Effort names from least to most thinking. Anything else (OpenCode's `free`, `budget`) is not an effort. */
+const REASONING_TIERS_LOW_TO_HIGH = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
+
+/**
+ * The effort a background utility call runs at: the lowest tier the model
+ * itself lists, whichever model it is — the cheap helper, or the chat's own
+ * model when the provider has no cheap helper. Null when the model lists no
+ * known tier (Composer has none), so nothing is sent and the model keeps its
+ * own default rather than getting a tier it would reject.
+ */
+export function backgroundUtilityReasoningEffort(
+  descriptor: Pick<ModelDescriptor, "reasoningTiers"> | null | undefined,
+): string | null {
+  const tiers = new Set(descriptor?.reasoningTiers ?? []);
+  return REASONING_TIERS_LOW_TO_HIGH.find((tier) => tiers.has(tier)) ?? null;
 }
 
 /**

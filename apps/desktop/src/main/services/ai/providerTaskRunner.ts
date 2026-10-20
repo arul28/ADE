@@ -979,6 +979,7 @@ async function runOpenCodeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTa
       config: { projectConfig: args.projectConfig },
       directory: args.cwd,
       modelDescriptor: args.descriptor,
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
       prompt: appendStructuredOutputInstruction(args.prompt, args.jsonSchema),
       system: args.system,
       signal: controller.signal,

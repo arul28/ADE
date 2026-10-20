@@ -439,7 +439,6 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
-  backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
@@ -948,8 +947,9 @@ import {
   CTO_INTRO_ONBOARDING_STEP,
   CTO_INTRO_PROMPT,
   CTO_MEMORY_GARDENER_CRON,
+  CTO_MEMORY_GARDENER_ID_PREFIX,
   CTO_MEMORY_GARDENER_ONBOARDING_STEP,
-  CTO_MEMORY_GARDENER_PROMPT,
+  CTO_MEMORY_GARDENER_DESCRIPTION,
   CTO_MEMORY_GARDENER_TITLE,
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
@@ -1137,8 +1137,10 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import {
   buildContinuityCapturePrompt,
   buildContinuitySnapshot,
+  buildGardeningPrompt,
   CAPTURE_KNOWN_FACTS,
   parseContinuityCapture,
+  parseGardeningPlan,
   type ContinuityCaptureEntry,
 } from "../cto/ctoMemoryCapture";
 import type { IssueTracker } from "../cto/issueTracker";
@@ -12216,7 +12218,6 @@ export function createAgentChatService(args: {
     prompt: string;
     systemPrompt?: string;
     timeoutMs?: number;
-    reasoningEffort?: string | null;
     imagePaths?: string[];
     jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
@@ -12227,8 +12228,8 @@ export function createAgentChatService(args: {
      */
     providerAccount?: ProviderTaskAccount;
   }) => {
-    const reasoningEffort = args.reasoningEffort
-      ?? backgroundUtilityReasoningEffort(args.modelId);
+    // The effort is not the caller's: every background call runs at its
+    // model's lowest tier (`backgroundUtilityReasoningEffort`).
     return await aiIntegrationService.summarizeTerminal({
       ...(args.providerAccount ? { providerAccount: args.providerAccount } : {}),
       cwd: args.cwd,
@@ -12236,7 +12237,6 @@ export function createAgentChatService(args: {
       prompt: args.prompt,
       systemPrompt: args.systemPrompt,
       timeoutMs: args.timeoutMs,
-      reasoningEffort,
       imagePaths: args.imagePaths,
       jsonSchema: args.jsonSchema,
       taskType: args.taskType,
@@ -15805,6 +15805,63 @@ export function createAgentChatService(args: {
     return capture.summary;
   };
 
+  const isCtoMemoryGardenerSchedule = (schedule: { id: string }): boolean =>
+    schedule.id.startsWith(CTO_MEMORY_GARDENER_ID_PREFIX);
+
+  /**
+   * The nightly memory gardening, run by ADE on the cheap helper model.
+   *
+   * It used to be a scheduled prompt delivered to the CTO as an ordinary
+   * turn: a full turn on the CTO's own model every night, added to the
+   * thread it was meant to keep small. Now the scheduled row only marks the
+   * time. ADE hands the helper the facts and the recent log, and applies its
+   * plan within fixed caps. The row stays in Chat Info, so the person can
+   * still see, pause, or delete it.
+   */
+  const runCtoMemoryGardening = async (sessionId: string): Promise<void> => {
+    const memory = ctoMemoryService;
+    if (!memory) return;
+    // Nothing was journaled lately, so nothing new to distill: skip the call.
+    if (!memory.hasRecentDailyEntries(2)) return;
+    const managed = managedSessions.get(sessionId) ?? ensureManagedSession(sessionId);
+    const auth = await detectAuth().catch(() => []);
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels: await getAvailableRegistryModels(auth),
+      provider: managed.session.provider,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    });
+    if (!candidateModelIds.length) return;
+    const { prompt, shown } = buildGardeningPrompt({
+      facts: memory.listGardeningFacts(),
+      recentLog: memory.readRecentDailyEntries(2, 8_000),
+      discoveries: memory.readNewDiscoveries({ maxChars: 4_000, advance: false }).text,
+    });
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+        const text = response.text.trim();
+        return text.length ? text : null;
+      },
+      onFailure: (failure) => {
+        logger.warn("agent_chat.cto_memory_gardening_failed", {
+          sessionId,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    if (!result) return;
+    const applied = memory.applyGardeningPlan(parseGardeningPlan(result, shown));
+    logger.info("agent_chat.cto_memory_gardened", { sessionId, ...applied });
+  };
+
   const maybeRefreshIdentityContinuitySummary = async (
     managed: ManagedChatSession,
     reason: "compaction" | "provider_reset" | "checkpoint",
@@ -17929,7 +17986,6 @@ export function createAgentChatService(args: {
                 modelId: descriptor.id,
                 systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
                 prompt: `Opening request:\n${prompt.slice(0, 2000)}`,
-                reasoningEffort: "low",
                 imagePaths,
                 jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
                 taskType: "session_title",
@@ -63121,10 +63177,10 @@ export function createAgentChatService(args: {
       const fireAt = nextChatScheduledCronFireAt(CTO_MEMORY_GARDENER_CRON, createdAt);
       if (fireAt == null) return;
       await scheduledWorkScheduler.upsert({
-        id: `cto-memory-gardener:${managed.session.id}`,
+        id: `${CTO_MEMORY_GARDENER_ID_PREFIX}${managed.session.id}`,
         sessionId: managed.session.id,
         kind: "cron",
-        prompt: CTO_MEMORY_GARDENER_PROMPT,
+        prompt: CTO_MEMORY_GARDENER_DESCRIPTION,
         reason: CTO_MEMORY_GARDENER_TITLE,
         cron: CTO_MEMORY_GARDENER_CRON,
         fireAt,
@@ -70066,6 +70122,17 @@ export function createAgentChatService(args: {
           throw error;
         }
         return { complete: true };
+      }
+      if (isCtoMemoryGardenerSchedule(schedule)) {
+        try {
+          await runCtoMemoryGardening(schedule.sessionId);
+        } catch (error) {
+          logger.warn("agent_chat.cto_memory_gardening_failed", {
+            sessionId: schedule.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
       }
       await messageSession({
         sessionId: schedule.sessionId,

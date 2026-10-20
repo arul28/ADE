@@ -10,6 +10,7 @@ import {
   type ProjectContextItem,
   type ProjectContextKind,
 } from "./projectContextStore";
+import type { GardeningFact, GardeningPlan } from "./ctoMemoryCapture";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -486,6 +487,54 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       else skipped += 1;
     }
     return { saved, skipped };
+  };
+
+  /** Live facts for the nightly gardener, oldest first, with their ids. */
+  const listGardeningFacts = (): GardeningFact[] =>
+    context.read().items
+      .filter((item) => item.status !== "archived")
+      .map((item) => ({ id: item.id, text: item.text, kind: item.kind, pinned: item.status === "pinned" }));
+
+  /**
+   * Apply what the nightly gardener decided. Merges retire their sources
+   * first (a merged sentence would otherwise be refused as their near-
+   * duplicate) and keep the sources' tags when they all agree. Everything is
+   * filed at "agent" trust, and the run is journaled so the person can see
+   * what changed overnight.
+   */
+  const applyGardeningPlan = (plan: GardeningPlan): { added: number; merged: number; retired: number } => {
+    const items = new Map(context.read().items.map((item) => [item.id, item]));
+    let added = 0;
+    let merged = 0;
+    let retired = 0;
+    for (const entry of plan.merge) {
+      const sources = entry.ids.map((id) => items.get(id)).filter((item) => item && item.status !== "archived");
+      if (sources.length < 2) continue;
+      const tagSets = new Set(sources.map((item) => JSON.stringify(item?.tags ?? {})));
+      for (const id of entry.ids) forgetFact({ id }, "merged by nightly memory gardening");
+      const tags = tagSets.size === 1 ? (sources[0]?.tags ?? null) : null;
+      // The sources were shown with their tag suffix; it is re-added from `tags`.
+      appendMemoryFact(entry.text.replace(MEMORY_TAG_SUFFIX_PATTERN, "").trim(), tags, { kind: entry.kind, trust: "agent" });
+      merged += 1;
+    }
+    for (const entry of plan.retire) {
+      if (forgetFact({ id: entry.id }, `nightly memory gardening: ${entry.reason}`).forgotten) retired += 1;
+    }
+    for (const entry of plan.add) {
+      if (appendMemoryFact(entry.text, null, { kind: entry.kind, trust: "agent" }).saved) added += 1;
+    }
+    if (added || merged || retired) {
+      appendDailyEntry(`Nightly memory gardening: added ${added}, merged ${merged}, retired ${retired}.`);
+    }
+    return { added, merged, retired };
+  };
+
+  /** Whether anything was journaled within the last `days` days. */
+  const hasRecentDailyEntries = (days: number, now = new Date()): boolean => {
+    const newest = listDailyStampsNewestFirst()[0];
+    if (!newest) return false;
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    return newest >= todayStamp(cutoff);
   };
 
   /** Live store facts for a summarizer to check against, newest last. */
@@ -1067,6 +1116,10 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     forgetFact,
     captureFacts,
     listKnownFacts,
+    listGardeningFacts,
+    applyGardeningPlan,
+    hasRecentDailyEntries,
+    readRecentDailyEntries,
     listFactsForLane,
     writeThreadState,
     appendDailyEntry,

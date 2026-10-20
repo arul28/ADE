@@ -4,8 +4,6 @@ import {
   adeBackgroundUtilityProviderFromToolType,
   BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
   BACKGROUND_UTILITY_CODEX_MODEL_ID,
-  BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT,
-  BACKGROUND_UTILITY_CODEX_REASONING_EFFORT,
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
   backgroundUtilityModelId,
   backgroundUtilityReasoningEffort,
@@ -32,12 +30,13 @@ describe("backgroundUtilityModel", () => {
     expect(adeBackgroundUtilityProviderFromToolType("shell")).toBeNull();
   });
 
-  it("pins Codex Luna and Claude Haiku to low reasoning and leaves other cheap models unset", () => {
-    expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CODEX_MODEL_ID))
-      .toBe(BACKGROUND_UTILITY_CODEX_REASONING_EFFORT);
-    expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CLAUDE_MODEL_ID))
-      .toBe(BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT);
-    expect(backgroundUtilityReasoningEffort("claude-haiku-5-5")).toBe(BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT);
-    expect(backgroundUtilityReasoningEffort(BACKGROUND_UTILITY_CURSOR_MODEL_ID)).toBeNull();
+  it.each([
+    ["Haiku and Luna list low first", ["low", "medium", "high", "xhigh", "max"], "low"],
+    ["a model that can switch thinking off", ["none", "minimal", "low", "medium", "high"], "none"],
+    ["OpenCode variants out of order, with non-effort keys", ["xhigh", "free", "medium", "budget"], "medium"],
+    ["Composer, which lists no tiers", undefined, null],
+    ["a model whose variants are not efforts", ["free", "budget"], null],
+  ])("runs background calls at the model's lowest tier: %s", (_label, reasoningTiers, expected) => {
+    expect(backgroundUtilityReasoningEffort({ reasoningTiers })).toBe(expected);
   });
 });

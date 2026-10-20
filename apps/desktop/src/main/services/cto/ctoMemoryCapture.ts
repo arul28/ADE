@@ -158,3 +158,122 @@ export function parseContinuityCapture(raw: string): ContinuityCapture {
   }
   return { summary: summary.length ? summary : null, facts };
 }
+
+/* ── nightly gardening ── */
+
+export type GardeningFact = {
+  id: string;
+  text: string;
+  kind: string;
+  pinned: boolean;
+};
+
+export type GardeningPlan = {
+  add: Array<{ text: string; kind: CtoMemoryFactKind }>;
+  merge: Array<{ ids: string[]; text: string; kind: CtoMemoryFactKind }>;
+  retire: Array<{ id: string; reason: string }>;
+};
+
+// A cheap model rewriting memory unattended: each night may change only a
+// little, so one bad answer cannot empty the notes.
+const GARDENING_MAX_ADDS = 5;
+const GARDENING_MAX_MERGES = 5;
+const GARDENING_MAX_RETIRES = 3;
+const GARDENING_FACT_MAX_CHARS = 300;
+const GARDENING_FACTS_MAX_CHARS = 24_000;
+
+/** Short refs (F1, F2, …) a small model copies reliably, unlike UUIDs. */
+const gardeningRef = (index: number): string => `F${index + 1}`;
+
+/**
+ * The gardener's prompt, and the facts it actually shows. Parse the answer
+ * against `shown`, never the full list: a ref past the budget was not seen.
+ */
+export function buildGardeningPrompt(args: {
+  facts: GardeningFact[];
+  recentLog: string;
+  discoveries: string;
+}): { prompt: string; shown: GardeningFact[] } {
+  const lines: string[] = [];
+  const shown: GardeningFact[] = [];
+  let total = 0;
+  for (const fact of args.facts) {
+    const line = `${gardeningRef(shown.length)} [${fact.kind}${fact.pinned ? ", pinned" : ""}] ${flatClip(fact.text, GARDENING_FACT_MAX_CHARS)}`;
+    if (total + line.length + 1 > GARDENING_FACTS_MAX_CHARS) break;
+    lines.push(line);
+    shown.push(fact);
+    total += line.length + 1;
+  }
+  const prompt = [
+    "You tidy the long-term notes of a project coordinator (the CTO). Below are its saved facts, its recent work log, and notes from worker agents. Answer with action lines only, one per line, in exactly these shapes:",
+    "",
+    `ADD <kind>: <one sentence>   — something durable from the log or worker notes that no fact covers yet (at most ${GARDENING_MAX_ADDS})`,
+    `MERGE F3 F7 -> <kind>: <one sentence>   — two or more facts about the same thing, rewritten as one sentence that keeps what still matters (at most ${GARDENING_MAX_MERGES})`,
+    `RETIRE F5: <reason>   — a fact the log shows is no longer true: a reversed or replaced decision, including one your own ADD line replaces (at most ${GARDENING_MAX_RETIRES})`,
+    "NONE   — when nothing needs doing",
+    "",
+    `kind is one of ${CTO_MEMORY_FACT_KINDS.join(", ")}. Durable means worth knowing weeks from now: decisions, conventions, traps, environment facts, and how the user wants work done. Never progress or status. Never touch a pinned fact. Retire only when the log clearly contradicts the fact: losing a fact is worse than keeping a redundant one. Never include secrets, tokens, or passwords. Write nothing else.`,
+    "",
+    "FACTS:",
+    lines.join("\n") || "(none)",
+    "",
+    "RECENT LOG:",
+    args.recentLog.trim() || "(empty)",
+    "",
+    "WORKER NOTES:",
+    args.discoveries.trim() || "(none)",
+  ].join("\n");
+  return { prompt, shown };
+}
+
+const KIND_PATTERN = CTO_MEMORY_FACT_KINDS.join("|");
+const ADD_LINE = new RegExp(`^ADD\\s+(${KIND_PATTERN})\\s*:\\s*(.+)$`, "i");
+const MERGE_LINE = new RegExp(`^MERGE\\s+((?:F\\d+[\\s,]*)+)\\s*(?:->|→)\\s*(${KIND_PATTERN})\\s*:\\s*(.+)$`, "i");
+const RETIRE_LINE = /^RETIRE\s+(F\d+)\s*:\s*(.+)$/i;
+
+/**
+ * Read the gardener's answer against the facts it was shown. Strict: a line
+ * naming a ref that was not shown, or a pinned fact, is dropped; a fact is
+ * touched by at most one action; and each action type is capped.
+ */
+export function parseGardeningPlan(raw: string, facts: GardeningFact[]): GardeningPlan {
+  const plan: GardeningPlan = { add: [], merge: [], retire: [] };
+  const touched = new Set<string>();
+  const resolve = (ref: string): GardeningFact | null => {
+    const fact = facts[Number(ref.slice(1)) - 1];
+    return fact && !fact.pinned && !touched.has(fact.id) ? fact : null;
+  };
+  const sentence = (text: string): string => text.trim().replace(/^\*\*|\*\*$/g, "").trim();
+  for (const rawLine of raw.replace(/\r\n/g, "\n").split("\n")) {
+    const line = rawLine.trim().replace(/^[-*•]\s*/, "").replace(/`/g, "");
+    let match = ADD_LINE.exec(line);
+    if (match) {
+      const text = sentence(match[2]);
+      if (text.length >= 12 && plan.add.length < GARDENING_MAX_ADDS) {
+        plan.add.push({ kind: match[1].toLowerCase() as CtoMemoryFactKind, text });
+      }
+      continue;
+    }
+    match = MERGE_LINE.exec(line);
+    if (match) {
+      const text = sentence(match[3]);
+      if (text.length < 12 || plan.merge.length >= GARDENING_MAX_MERGES) continue;
+      const refs = [...new Set(match[1].match(/F\d+/gi) ?? [])].map((ref) => ref.toUpperCase());
+      const resolved = refs.map(resolve);
+      if (resolved.length < 2 || resolved.some((fact) => !fact)) continue;
+      const ids = (resolved as GardeningFact[]).map((fact) => fact.id);
+      ids.forEach((id) => touched.add(id));
+      plan.merge.push({ ids, kind: match[2].toLowerCase() as CtoMemoryFactKind, text });
+      continue;
+    }
+    match = RETIRE_LINE.exec(line);
+    if (match) {
+      const fact = resolve(match[1].toUpperCase());
+      const reason = sentence(match[2]);
+      if (!fact || !reason || plan.retire.length >= GARDENING_MAX_RETIRES) continue;
+      touched.add(fact.id);
+      plan.retire.push({ id: fact.id, reason });
+    }
+  }
+  return plan;
+}
