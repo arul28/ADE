@@ -67,7 +67,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /Invalid element selector: /,
   /\b(MAC|WINDOWS)_DESKTOP_(NO_DISPLAY|NO_WINDOW|WINDOW_NOT_FOUND|HANDLE_EXPIRED|CONSENT_REQUIRED|OUT_PATH_OUTSIDE_ROOT|INPUT_LEASE_REQUIRED|PERMISSION_REQUIRED|UNSUPPORTED_PLATFORM):/,
   // Windows host states the user resolves (set up, unlock, free the screen, sign in again).
-  /\bWINDOWS_DESKTOP_(SETUP_REQUIRED|HELD|LOCKED|NOT_CONSOLE_SESSION|WRONG_PASSWORD|CANCELLED):/,
+  /\bWINDOWS_DESKTOP_(SETUP_REQUIRED|HELD|LOCKED|NOT_CONSOLE_SESSION|WRONG_PASSWORD|CANCELLED|ELEVATED_WINDOW|WINDOW_ACTION_FAILED):/,
   /is not on this lane's display/,
   /already has an active writer/,
   /^No matching element was found\.$/,

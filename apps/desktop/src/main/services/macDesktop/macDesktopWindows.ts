@@ -14,6 +14,7 @@
 import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+  WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
   type MacDesktopWindowAction,
   type MacDesktopWindowActionArgs,
   type MacDesktopWindowActionResult,
@@ -179,6 +180,13 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       }
     }
     const reply = await seat.windowAction({ laneId, windowId, action });
+    if (action === "minimize" && reply.minimized === false) {
+      throw new MacDesktopOwnershipError(
+        WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
+        `Windows did not minimize window ${windowId}; it may still be open.`,
+        null,
+      );
+    }
     ownership.touchDisplay(laneId);
     const windows = await listInternal(laneId);
     deps.emit({ type: "windows-changed", laneId, windows });

@@ -160,6 +160,7 @@ the PC is locked, and a `next` line with the exact command or ask.
 | Private screen held by another lane (`WINDOWS_DESKTOP_HELD`) | Ask the user to **Take over** in the pane, or ask for the main desktop: `ade screen start --shared --reason "<what for>" --text`. |
 | Private unavailable (`WINDOWS_DESKTOP_NOT_CONSOLE_SESSION`, Home edition) | `ade screen start --shared --reason "<what for>" --text` |
 | PC locked (`WINDOWS_DESKTOP_LOCKED`) | Ask the user to unlock it, then retry the same command. |
+| Administrator window (`WINDOWS_DESKTOP_ELEVATED_WINDOW`) | Ask the user to close or minimize it on the lane screen, or stop the sign-in task that opens it. Never close it yourself; it may be a service they need. |
 | User said no (`WINDOWS_DESKTOP_CONSENT_REQUIRED`) | Stop and say what you could not do. Do not ask again this turn. |
 
 `start --shared` puts an Allow / Don't allow card in your chat and waits; on
@@ -175,6 +176,9 @@ you pass is stripped.
 
 ## Windows specifics
 
+- **Sign-in tasks:** the private seat is a real sign-in, so logon tasks and
+  startup apps run there too. ADE cannot control administrator windows; status
+  and window listings mark them `[admin]`.
 - **Long text:** on the private seat, and for `--real` typing, Windows types
   one character at a time, so `type` takes about 25 ms per character and
   refuses more than 4,000 characters in one call; split longer text.

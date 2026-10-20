@@ -3083,6 +3083,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     WINDOWS_DESKTOP_LOCKED           ask the user to unlock the PC
     WINDOWS_DESKTOP_NOT_CONSOLE_SESSION  private unavailable; start --shared
     WINDOWS_DESKTOP_CONSENT_REQUIRED the user did not allow the main desktop
+    WINDOWS_DESKTOP_ELEVATED_WINDOW  an admin window holds focus; ask the user to resolve it
+    WINDOWS_DESKTOP_WINDOW_ACTION_FAILED  Windows could not focus or minimize the window
     MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: ade screen lease
   Setup, takeover and shared consent belong to the user; an agent cannot
   pass --allow-prompt or --consent itself.
