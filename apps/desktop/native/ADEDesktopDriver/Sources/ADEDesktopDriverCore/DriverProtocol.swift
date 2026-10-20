@@ -232,6 +232,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `window.unpark` | `windowId,laneId?` | `{window: MacDesktopWindow?, releasedWindowIds, handedOverPid}` — refused when `laneId` is given and another lane holds the window |
 /// | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |
 /// | `app.quit` | `laneId,app?` | `{quit: [{pid,appName,bundleId,released}]}` — only apps the lane opened, released ones included |
+/// | `app.adopt` | `laneId,pid,bundleId?,launchedAt?` | `MacDesktopOpenResult` — takes back, as the lane's own instance, an app a previous driver handed off at exit; refused unless the pid still runs that bundle, launched at that moment |
 /// | `present` | `laneId,destination` | `{moved}` |
 /// | `observe` | `laneId,windowId?,limit?,map?,screenshotPath?,mapPath?,caption?` | `MacDesktopObservation` |
 /// | `input` | `laneId,command,mode,payload,lease?` | `{resolvedIndex}` |
@@ -256,6 +257,7 @@ public enum DriverOp: String, CaseIterable, Sendable {
     case unparkWindow = "window.unpark"
     case launch = "app.launch"
     case quitApp = "app.quit"
+    case adoptApp = "app.adopt"
     case present
     case observe
     case input

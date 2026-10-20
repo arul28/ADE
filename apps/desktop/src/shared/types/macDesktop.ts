@@ -1098,6 +1098,16 @@ export type MacDesktopRequestPermissionArgs = {
   which: MacDesktopPermissionKind;
 };
 
+/** One window an exiting helper took off a lane, and where it sat on it. */
+export type MacDesktopHandedOffWindow = {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  minimized: boolean;
+};
+
 export type MacDesktopStartArgs = {
   laneId: string;
   /** Falls back to the configured default. */
@@ -1574,6 +1584,20 @@ export type DesktopSeatProvider = {
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
   /** `app.quit`: apps the lane opened, released ones included. */
   quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;
+  /**
+   * `app.adopt`: takes back, as the lane's own instance, an app a previous
+   * helper handed to the main screen when it exited. Mac only.
+   */
+  adoptApp?(args: {
+    laneId: string;
+    pid: number;
+    bundleId: string | null;
+    launchedAt: number | null;
+    /** False: only `windows` are borrowed again, as a claim. */
+    launched: boolean;
+    /** Each window's frame relative to the lane display's top-left corner. */
+    windows: MacDesktopHandedOffWindow[];
+  }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {
     laneId: string;

@@ -243,6 +243,15 @@ export function createSeatProvider(
       ...(args.app ? { app: args.app } : {}),
     }),
 
+    adoptApp: (args) => request(MAC_DESKTOP_DRIVER_OPS.adoptApp, {
+      laneId: args.laneId,
+      pid: args.pid,
+      ...(args.bundleId ? { bundleId: args.bundleId } : {}),
+      ...(args.launchedAt != null ? { launchedAt: args.launchedAt } : {}),
+      launched: args.launched,
+      windows: args.windows,
+    }),
+
     present: (args) => request(MAC_DESKTOP_DRIVER_OPS.present, {
       laneId: args.laneId,
       destination: args.destination,

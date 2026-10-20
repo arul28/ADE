@@ -94,6 +94,8 @@ final class DriverRuntime: NSObject {
     /// A watched pane needs the transition quickly; 10 seconds of a stale
     /// "denied" screen after the user toggles the grant reads as broken.
     private static let watchedPermissionProbeInterval: TimeInterval = 3
+    /// Keep in sync with MAC_DESKTOP_HANDOFF_MAX_AGE_MS in macDesktopHandoff.ts.
+    private static let handoffMaxAgeMs: Double = 15 * 60_000
 
     private var signalSources: [DispatchSourceSignal] = []
     private var isShuttingDown = false
@@ -139,6 +141,12 @@ final class DriverRuntime: NSObject {
     // -----------------------------------------------------------------------
 
     func run() {
+        // The brain that reads stdout and stderr can exit before this process
+        // does: a restart sends SIGTERM and then exits. The first log line of
+        // the shutdown then raised SIGPIPE, which ended the process silently
+        // before it handed off (or quit) the lanes' apps. With the signal
+        // ignored, a write to a closed pipe fails and the shutdown goes on.
+        signal(SIGPIPE, SIG_IGN)
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         // The default is about six seconds per call, and one stalled app could
@@ -271,6 +279,11 @@ final class DriverRuntime: NSObject {
         watchdog = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
+        // A brain that restarts (an update, a service restart) names a file in
+        // `ADE_DESKTOP_DRIVER_HANDOFF_PATH`: the lanes' apps then stay running,
+        // move to the main screen, and are written there for the next brain to
+        // take back. Without it, the rule below.
+        handOffLaunchedAppsIfAsked()
         // The apps the lanes opened go with their displays, the same as on a
         // `stop`: quitting ADE is a deliberate stop of every lane. One grace
         // period for all lanes, then a force quit, so a save dialog cannot
@@ -286,6 +299,85 @@ final class DriverRuntime: NSObject {
         windows.dispose()
         displays.destroyAll()
         exit(0)
+    }
+
+    /// Merges this driver's app handoff with a concurrent brain write. Each app
+    /// expires 15 minutes after it was handed off; lanes without kept apps are dropped.
+    private func handOffLaunchedAppsIfAsked() {
+        guard let path = ProcessInfo.processInfo.environment["ADE_DESKTOP_DRIVER_HANDOFF_PATH"],
+              !path.isEmpty else { return }
+        let handed = windows.handOffLanes()
+        let handedOffAt = Date().timeIntervalSince1970 * 1000
+        var lanes = handed.lanes.map { $0.asJSON() }
+        var apps = handed.apps.map { app -> [String: Any] in
+            var entry = app.asJSON()
+            entry["handedOffAt"] = handedOffAt
+            return entry
+        }
+        do {
+            let url = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            // The brain and helper may write during the same shutdown window, so merge entries before replacing the file.
+            if FileManager.default.fileExists(atPath: path) {
+                do {
+                    let existingData = try Data(contentsOf: url)
+                    guard let existing = try JSONSerialization.jsonObject(with: existingData) as? [String: Any],
+                          let existingLanes = existing["lanes"] as? [[String: Any]],
+                          let existingApps = existing["apps"] as? [[String: Any]] else {
+                        throw NSError(domain: "ADEDesktopDriver.Handoff", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid handoff file"])
+                    }
+                    let currentPids = Set(handed.apps.map { Int($0.pid) })
+                    let currentLaneIds = Set(handed.lanes.map(\.laneId))
+                    let keptExistingApps = existingApps.filter { entry in
+                        guard let existingHandedOffAt = entry["handedOffAt"] as? NSNumber,
+                              existingHandedOffAt.doubleValue.isFinite,
+                              let pid = entry["pid"] as? NSNumber else {
+                            log("skipping existing app handoff with invalid identity or handedOffAt")
+                            return false
+                        }
+                        if handedOffAt - existingHandedOffAt.doubleValue > Self.handoffMaxAgeMs {
+                            log("expiring handed-off app pid \(pid.intValue) after 15 minutes")
+                            return false
+                        }
+                        return !currentPids.contains(pid.intValue)
+                    }
+                    var mergedLanes: [String: [String: Any]] = [:]
+                    for entry in existingLanes {
+                        guard let laneId = entry["laneId"] as? String,
+                              let width = entry["width"] as? NSNumber,
+                              let height = entry["height"] as? NSNumber,
+                              width.doubleValue.isFinite, width.doubleValue > 0,
+                              height.doubleValue.isFinite, height.doubleValue > 0 else {
+                            log("skipping existing handoff lane with invalid size")
+                            continue
+                        }
+                        if !currentLaneIds.contains(laneId) {
+                            mergedLanes[laneId] = ["laneId": laneId, "width": width, "height": height]
+                        }
+                    }
+                    for lane in handed.lanes {
+                        mergedLanes[lane.laneId] = lane.asJSON()
+                    }
+                    apps = keptExistingApps + apps
+                    lanes = Array(mergedLanes.values)
+                } catch {
+                    log("could not merge existing app handoff at \(path): \(error)")
+                }
+            }
+            let keptLaneIds = Set(apps.compactMap { $0["laneId"] as? String })
+            lanes = lanes.filter { entry in
+                guard let laneId = entry["laneId"] as? String else { return false }
+                return keptLaneIds.contains(laneId)
+            }
+            let body: [String: Any] = ["lanes": lanes, "apps": apps]
+            try JSONSerialization.data(withJSONObject: body).write(to: url, options: .atomic)
+            log("handed \(handed.apps.count) app(s) on \(handed.lanes.count) lane(s) to the main screen for the next brain")
+        } catch {
+            log("could not write the app handoff to \(path): \(error)")
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -442,6 +534,7 @@ final class DriverRuntime: NSObject {
         case .unparkWindow: return try unparkWindow(request)
         case .launch: return try launch(request)
         case .quitApp: return try quitApp(request)
+        case .adoptApp: return try adoptApp(request)
         case .present: return try present(request)
         case .observe: return try observe(request)
         case .input: return try input(request)
@@ -742,6 +835,41 @@ final class DriverRuntime: NSObject {
         ]
     }
 
+    private func adoptApp(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let pid = pid_t(try request.requireInt("pid"))
+        let recorded = (request.fields["windows"]?.arrayValue ?? []).compactMap { entry -> WindowControl.HandedOffWindow? in
+            guard let object = entry.objectValue, let id = object["id"]?.intValue else { return nil }
+            return WindowControl.HandedOffWindow(
+                id: CGWindowID(id),
+                frame: CGRect(
+                    x: object["x"]?.doubleValue ?? 0,
+                    y: object["y"]?.doubleValue ?? 0,
+                    width: object["width"]?.doubleValue ?? 0,
+                    height: object["height"]?.doubleValue ?? 0
+                ),
+                minimized: object["minimized"]?.boolValue ?? false
+            )
+        }
+        let result = try windows.adopt(
+            laneId: laneId,
+            pid: pid,
+            bundleId: request.string("bundleId"),
+            launchedAt: request.double("launchedAt"),
+            launched: request.bool("launched") ?? true,
+            windows: recorded
+        )
+        touch(laneId)
+        return [
+            "laneId": .string(laneId),
+            "pid": result.pid.map { JSONValue.int(Int($0)) } ?? .null,
+            "appName": result.appName.map(JSONValue.string) ?? .null,
+            "bundleId": result.bundleId.map(JSONValue.string) ?? .null,
+            "windows": .array(result.windows.map { .object($0.asJSON()) }),
+            "watching": .bool(result.watching),
+        ]
+    }
+
     private func present(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
         let destination = request.string("destination") ?? "main"
@@ -898,13 +1026,19 @@ final class DriverRuntime: NSObject {
             ?? Self.scratchPath(laneId: laneId, suffix: "shot", extension: "png")
         let windowId = request.int("windowId").map { CGWindowID($0) }
             ?? (handle.displayId == 0 ? windows.listWindows(laneId: laneId).first?.id : nil)
-        let size = try capture.screenshot(
-            laneId: laneId,
-            displayId: handle.displayId,
-            windowId: windowId,
-            path: path,
-            budget: CaptureEngine.explicitScreenshotBudget
-        )
+        let size: (width: Int, height: Int)
+        do {
+            size = try capture.screenshot(
+                laneId: laneId,
+                displayId: handle.displayId,
+                windowId: windowId,
+                path: path,
+                budget: CaptureEngine.explicitScreenshotBudget
+            )
+        } catch {
+            log("screenshot on lane \(laneId) captured no frame: \(error)")
+            throw error
+        }
         touch(laneId)
         return [
             "laneId": .string(laneId),
@@ -1055,7 +1189,9 @@ final class DriverRuntime: NSObject {
     }
 
     func log(_ message: String) {
-        FileHandle.standardError.write(Data("[ade-desktop-driver] \(message)\n".utf8))
+        // `write(_:)` raises an Objective-C exception on a closed pipe; this
+        // one throws, and a log line nobody can read is not worth a crash.
+        try? FileHandle.standardError.write(contentsOf: Data("[ade-desktop-driver] \(message)\n".utf8))
     }
 }
 
@@ -1078,7 +1214,7 @@ final class OutputWriter {
         defer { lock.unlock() }
         var line = data
         line.append(0x0A)
-        FileHandle.standardOutput.write(line)
+        try? FileHandle.standardOutput.write(contentsOf: line)
     }
 }
 

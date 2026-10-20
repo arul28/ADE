@@ -6,6 +6,7 @@
 
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 import ADEDesktopDriverCore
 
@@ -278,6 +279,207 @@ extension WindowControl {
         }
         emitWindowsChanged(laneId: laneId)
         return quit
+    }
+
+    /// One window a driver exit took off a lane, and where it sat: the frame
+    /// is relative to the lane display's top-left corner, so it lands in the
+    /// same spot on the next display wherever macOS places that one.
+    struct HandedOffWindow {
+        let id: CGWindowID
+        let frame: CGRect
+        let minimized: Bool
+
+        func asJSON() -> [String: Any] {
+            [
+                "id": Int(id),
+                "x": Double(frame.origin.x), "y": Double(frame.origin.y),
+                "width": Double(frame.width), "height": Double(frame.height),
+                "minimized": minimized,
+            ]
+        }
+    }
+
+    /// One app with windows on a lane when the driver exited: an instance the
+    /// lane opened (`launched`), or one of the user's apps the lane borrowed
+    /// windows from. Either way it is still running, and the next brain takes
+    /// it back.
+    struct HandedOffApp {
+        let laneId: String
+        let pid: pid_t
+        let appName: String
+        let bundleId: String?
+        /// Kernel process start time in ms since 1970: with the bundle id, what
+        /// tells this instance from a process that reused its pid.
+        let launchedAt: Double?
+        let launched: Bool
+        let windows: [HandedOffWindow]
+
+        func asJSON() -> [String: Any] {
+            var json: [String: Any] = [
+                "laneId": laneId, "pid": Int(pid), "appName": appName,
+                "launched": launched, "windows": windows.map { $0.asJSON() },
+            ]
+            if let bundleId { json["bundleId"] = bundleId }
+            if let launchedAt { json["launchedAt"] = launchedAt }
+            return json
+        }
+    }
+
+    /// A lane's display as it was, so the next one is made the same size.
+    struct HandedOffLane {
+        let laneId: String
+        let width: Int
+        let height: Int
+
+        func asJSON() -> [String: Any] { ["laneId": laneId, "width": width, "height": height] }
+    }
+
+    /// Every lane's apps leave the lanes, still running, for a driver that
+    /// exits because the brain is restarting (an update, a service restart).
+    /// The virtual displays die with this process; the apps on them, their
+    /// unsaved work, and the windows the lanes borrowed do not have to.
+    ///
+    /// What each lane held is recorded first — the display size and every
+    /// window's frame on it — so `app.adopt` can put it all back where it was.
+    /// Then an app the lane opened moves to the main screen, and a borrowed
+    /// window goes home the way a Release sends it. If no brain takes them
+    /// back, they are ordinary apps on the user's screen.
+    func handOffLanes() -> (lanes: [HandedOffLane], apps: [HandedOffApp]) {
+        let laneIds = Set(launchedApps.all.map(\.laneId)).union(ownership.all.map(\.laneId))
+        var lanes: [HandedOffLane] = []
+        var apps: [HandedOffApp] = []
+        for laneId in laneIds.sorted() {
+            guard let placement = placement(forLane: laneId) else { continue }
+            lanes.append(HandedOffLane(laneId: laneId, width: Int(placement.width), height: Int(placement.height)))
+            let held = listWindows(laneId: laneId).filter { $0.laneId == laneId }
+            var pids = Set(held.map(\.pid))
+            pids.formUnion(launchedApps.apps(forLane: laneId).map(\.pid))
+            for pid in pids.sorted() {
+                guard let running = NSRunningApplication(processIdentifier: pid), !running.isTerminated else { continue }
+                let windows = held.filter { $0.pid == pid }
+                apps.append(HandedOffApp(
+                    laneId: laneId,
+                    pid: pid,
+                    appName: running.localizedName ?? windows.first?.appName ?? "pid \(pid)",
+                    bundleId: running.bundleIdentifier,
+                    launchedAt: Self.processStartTimeMilliseconds(pid: pid),
+                    launched: launchedApps.isLaunched(pid: pid, byLane: laneId),
+                    windows: windows.map { window in
+                        HandedOffWindow(
+                            id: window.id,
+                            frame: window.frame.offsetBy(dx: -placement.origin.x, dy: -placement.origin.y),
+                            minimized: window.minimized
+                        )
+                    }
+                ))
+            }
+        }
+        for app in apps {
+            if app.launched {
+                stopWatching(pid: app.pid)
+                launchedApps.forget(pid: app.pid)
+                let moved = moveWindowsToMainScreen(pid: app.pid, laneId: app.laneId)
+                log("handed \(app.appName) (pid \(app.pid)) of lane \(app.laneId) to the main screen with \(moved.count) window(s)")
+            } else {
+                for window in app.windows { _ = release(windowId: window.id) }
+                log("sent lane \(app.laneId)'s \(app.windows.count) borrowed \(app.appName) window(s) home")
+            }
+        }
+        return (lanes, apps)
+    }
+
+    /// `app.adopt`: takes back an app a previous driver handed off.
+    ///
+    /// A `launched` app becomes the lane's own instance again: every window is
+    /// parked, new ones are watched, and the lane's stop quits it. Otherwise
+    /// only the named windows are borrowed again, as a claim would. Each
+    /// window with a recorded frame goes back to that spot on the lane's
+    /// display, minimized if it was.
+    ///
+    /// Only the same instance: the pid must still run the recorded bundle,
+    /// launched at the recorded moment, so a reused pid is never taken.
+    func adopt(
+        laneId: String,
+        pid: pid_t,
+        bundleId: String?,
+        launchedAt: Double?,
+        launched: Bool,
+        windows recorded: [HandedOffWindow]
+    ) throws -> LaunchResult {
+        if let refusal = stopGate.refusal(laneId: laneId, action: "take back an app") { throw refusal }
+        guard placement(forLane: laneId) != nil else {
+            throw DriverError(
+                code: DriverErrorCode.noDisplay,
+                message: "Lane \(laneId) has no display. Start one before taking an app back onto it."
+            )
+        }
+        guard let running = NSRunningApplication(processIdentifier: pid),
+              !running.isTerminated,
+              running.bundleIdentifier == bundleId,
+              Self.sameLaunch(Self.processStartTimeMilliseconds(pid: pid), recorded: launchedAt)
+        else {
+            throw DriverError(
+                code: DriverErrorCode.windowNotFound,
+                message: "pid \(pid) is no longer the app lane \(laneId) had."
+            )
+        }
+        let appName = running.localizedName ?? bundleId ?? "pid \(pid)"
+        if let refusal = launchedApps.refusal(pid: pid, laneId: laneId, appName: appName) { throw refusal }
+        if launched {
+            launchedApps.record(pid: pid, laneId: laneId, appName: appName, bundleId: bundleId, wasRunningBefore: false)
+            startWatching(pid: pid, laneId: laneId, launched: true)
+        }
+        let wanted = Set(recorded.map(\.id))
+        var parked: [DesktopWindow] = []
+        for window in listWindows(pid: pid) where window.laneId == nil && (launched || wanted.contains(window.id)) {
+            guard !stopGate.isStopping(laneId),
+                  !launched || launchedApps.isLaunched(pid: pid, byLane: laneId)
+            else { break }
+            do {
+                parked.append(try park(laneId: laneId, windowId: window.id, origin: launched ? "ade_launched" : "claimed"))
+            } catch {
+                // A launched app's watcher parks it once it is ready.
+                log("adopt could not park window \(window.id) yet: \(error)")
+            }
+        }
+        if let placement = placement(forLane: laneId) {
+            for index in parked.indices {
+                guard let spot = recorded.first(where: { $0.id == parked[index].id }),
+                      let element = axWindow(for: parked[index])
+                else { continue }
+                let size = CGSize(width: min(spot.frame.width, placement.width), height: min(spot.frame.height, placement.height))
+                let x = min(max(spot.frame.origin.x, 0), placement.width - size.width)
+                let y = min(max(spot.frame.origin.y, 0), placement.height - size.height)
+                let target = CGRect(origin: CGPoint(x: placement.origin.x + x, y: placement.origin.y + y), size: size)
+                if Self.setFrame(element, target) { parked[index].frame = Self.frame(of: element) ?? target }
+                if spot.minimized {
+                    AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+                    parked[index].minimized = true
+                }
+            }
+        }
+        if !parked.isEmpty { emitWindowsChanged(laneId: laneId) }
+        log("lane \(laneId) took back \(appName) (pid \(pid)) with \(parked.count) window(s)")
+        return LaunchResult(pid: pid, appName: appName, bundleId: bundleId, windows: parked, watching: launched)
+    }
+
+    /// `NSRunningApplication.launchDate` can be nil for a live app. The kernel
+    /// start time is present for every live process; nil here means sysctl failed.
+    static func processStartTimeMilliseconds(pid: pid_t) -> Double? {
+        var process = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &process, &size, nil, 0) == 0,
+              size >= MemoryLayout<kinfo_proc>.size else { return nil }
+        let start = process.kp_proc.p_starttime
+        return Double(start.tv_sec) * 1000 + Double(start.tv_usec) / 1000
+    }
+
+    /// A recorded process start time matches only when both reads succeeded
+    /// and they are within a second.
+    static func sameLaunch(_ current: Double?, recorded: Double?) -> Bool {
+        guard let current, let recorded else { return false }
+        return abs(current - recorded) < 1000
     }
 
     /// Quits an instance a launch started for a lane that is gone, and
