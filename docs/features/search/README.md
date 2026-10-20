@@ -132,6 +132,17 @@ Desktop ⌘K command palette:
   chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
   focus from snapping back when it closes into a find bar. The keyboard index
   resolves commands in their rendered (grouped) order.
+- Queries with at least three words (or two words with no direct command match)
+  ask Jev to rank up to 40 likely commands after a 250 ms pause. The
+  `Suggested` group appears above normal results when
+  the top command probability is at least 0.35 and each shown command is above
+  0.15. Suggestions use the same command rows and still require an explicit
+  click or Enter; command confirmations stay in force. The request includes
+  the current tab and focused lane/chat context, uses the palette's runtime
+  pin, and caches results per query in a small in-memory LRU. Jev errors,
+  unavailable service, or answers below the probability floor leave the normal
+  word-matched palette in place. Adding the group preserves the selected normal
+  row's keyboard target.
 - `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
   palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
   (a colored tile per command id, with Work tool marks from
