@@ -9,13 +9,14 @@ import {
   canConnectToSocket,
   devRuntimeEnv,
   ensureRuntime,
+  resolveDevAdeHome,
   resolveDevSocketPath,
   resolveProjectRoot,
   runNpm,
   repoRoot,
   shutdownRuntime,
 } from "./dev-shared.mjs";
-import { prepareLaneUserData, pruneStaleDevUserData } from "./dev-user-data.mjs";
+import { devDesktopUserDataFolder, pruneStaleDevUserData } from "./dev-user-data.mjs";
 
 function usage() {
   return [
@@ -140,7 +141,8 @@ function laneUserDataEnv() {
   }
   let folder = null;
   try {
-    folder = prepareLaneUserData(repoRoot);
+    const { home, isDefault } = resolveDevAdeHome();
+    folder = devDesktopUserDataFolder(repoRoot, { adeHome: home, isDefaultHome: isDefault });
     for (const entry of pruneStaleDevUserData({ keep: folder })) {
       process.stdout.write(`[ade] removed stale dev user data ${entry.folder} (${entry.reason})\n`);
     }

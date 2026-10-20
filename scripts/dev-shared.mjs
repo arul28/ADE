@@ -609,7 +609,7 @@ function pathCompareKey(value) {
 }
 
 /** The state root this launch will actually use, and whether it is the default. */
-function resolveDevAdeHome() {
+export function resolveDevAdeHome() {
   const fallback = defaultAdeHome();
   const home = process.env.ADE_HOME?.trim() || fallback;
   return { home, isDefault: pathCompareKey(home) === pathCompareKey(fallback) };

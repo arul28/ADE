@@ -412,6 +412,10 @@ keeps `ade-desktop-dev`. An explicit `ADE_DESKTOP_USER_DATA_PATH` still wins.
 
 - A new lane folder copies `ade-state.json` from `ade-desktop-dev` once. Other
   machine-local state (window layout, the welcome screen) starts fresh.
+- On any `ADE_HOME` other than `~/.ade`, the app gets a folder for that home
+  (`…-home-<name>-<hash>`) that copies nothing. The app registers every project
+  its folder remembers into the home it runs on, so a reused lane folder put
+  the owner's real project into a scratch home.
 - If two dev apps still share a folder, the second one prints which app holds
   it and exits.
 - Each lane folder has a `.ade-dev-lane.json` marker with its worktree.
