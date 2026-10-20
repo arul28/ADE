@@ -1730,6 +1730,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         needsYouJustChanged && "motion-safe:animate-[ade-session-needs-you_900ms_ease-out_1]",
       )}
       data-needs-you-pulse={needsYouJustChanged ? "true" : undefined}
+      data-onboarding-anchor={canonicalPhase === "needs_you" ? "needs-you" : undefined}
       // Stable row anchor. ADE Web mounts this same component and has to locate
       // the row from outside React — for its coarse-pointer styling and for the
       // long-press bridge that stands in for `contextmenu`, which iOS Safari

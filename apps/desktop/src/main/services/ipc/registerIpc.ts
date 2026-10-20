@@ -218,6 +218,7 @@ import type {
   BatchAssessmentResult,
   AppInfo,
   AppWelcomeVideoState,
+  OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   ClearLocalAdeDataArgs,
@@ -1004,7 +1005,8 @@ import {
   type BrowserLoginImportService,
 } from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
-import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
+import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, upsertRecentProject } from "../state/globalState";
+import { discoverOnboardingProjects } from "../onboarding/onboardingProjectDiscovery";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -4686,6 +4688,42 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
+  );
+
+  // First-run setup on this computer. Both run here and only here: setup is
+  // the first open of ADE on a machine, and it reads that machine's own Claude
+  // Code and Codex history. The web client and other machines never call them.
+  ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> => {
+    const knownRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
+      .filter((entry) => !entry.remote)
+      .map((entry) => entry.rootPath);
+    return discoverOnboardingProjects({ knownRoots, logger: getCtx().logger });
+  });
+
+  ipcMain.handle(
+    IPC.appAddOnboardingProjects,
+    async (_event, arg: { rootPaths?: unknown } = {}): Promise<RecentProjectSummary[]> => {
+      const roots = (Array.isArray(arg?.rootPaths) ? arg.rootPaths : [])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => path.resolve(value.trim()))
+        .slice(0, 40);
+      const before = readGlobalState(globalStatePath);
+      let next = before;
+      // Added last-first, so the first root the user saw ends up first in the tab bar.
+      for (const rootPath of [...roots].reverse()) {
+        // Only git checkouts: this adds project tabs, never arbitrary folders.
+        if (!fs.existsSync(path.join(rootPath, ".git"))) continue;
+        next = upsertRecentProject(next, { rootPath, displayName: path.basename(rootPath) });
+      }
+      // `upsertRecentProject` clears the reopen-on-launch project unless told to
+      // record one; adding tabs must not change which project reopens.
+      if (before.lastProjectRoot) next = { ...next, lastProjectRoot: before.lastProjectRoot };
+      if (next !== before) {
+        writeGlobalState(globalStatePath, next);
+        clearRecentProjectSummaryCache();
+      }
+      return listRecentProjectSummaries({ force: true });
+    },
   );
 
   ipcMain.handle(

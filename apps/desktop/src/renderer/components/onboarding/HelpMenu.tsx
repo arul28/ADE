@@ -8,11 +8,14 @@ import { cn } from "../ui/cn";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { restartOnboarding } from "../../onboarding/onboardingProgress";
+import { AdeTipsDialog } from "./tips/AdeTipsDialog";
 
 type MenuPosition = { top: number; left?: number; right?: number } | null;
 
 /**
- * The question-mark menu: docs, the welcome video, and help preferences.
+ * The question-mark menu: docs, ADE Tips, the welcome tour again, and help
+ * preferences.
  * `align` picks which edge of the button the menu lines up with; a button near
  * the left edge of the window wants "start" so the menu opens into the window.
  */
@@ -29,6 +32,7 @@ export function HelpMenu({
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
 
   const [open, setOpen] = useState(false);
+  const [tipsOpen, setTipsOpen] = useState(false);
   const [position, setPosition] = useState<MenuPosition>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -81,8 +85,16 @@ export function HelpMenu({
     openExternalUrl(docs.home);
   }, [close]);
 
-  const handleReplayWelcomeVideo = useCallback(() => {
+  const handleOpenTips = useCallback(() => {
     close();
+    setTipsOpen(true);
+  }, [close]);
+
+  // A fresh start: every first-run hint comes back, and the welcome flow
+  // (which listens for this event) shows again.
+  const handleShowAround = useCallback(() => {
+    close();
+    restartOnboarding();
     window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
   }, [close]);
 
@@ -94,7 +106,7 @@ export function HelpMenu({
         aria-label="Help menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Help · welcome video, docs, and preferences"
+        title="Help · ADE Tips, docs, and preferences"
         className={cn(
           "inline-flex items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150",
@@ -133,11 +145,12 @@ export function HelpMenu({
                 fontSize: 12.5,
               }}
             >
+              <MenuItem onClick={handleOpenTips}>ADE Tips</MenuItem>
+              <MenuItem onClick={handleShowAround}>Show me around again</MenuItem>
               <MenuItem onClick={handleOpenDocs}>
                 <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
                 <ArrowSquareOut size={11} weight="regular" />
               </MenuItem>
-              <MenuItem onClick={handleReplayWelcomeVideo}>Replay Welcome Video</MenuItem>
 
               <MenuDivider />
 
@@ -152,6 +165,7 @@ export function HelpMenu({
             document.body,
           )
         : null}
+      {tipsOpen ? <AdeTipsDialog open onOpenChange={setTipsOpen} /> : null}
     </>
   );
 }

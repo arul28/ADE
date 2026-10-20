@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { GlassSignInCard } from "./GlassSignInCard";
 import { GateBackdrop } from "./GateBackdrop";
 import { WebSignInGate } from "./WebSignInGate";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { WelcomeVideoGate } from "./WelcomeVideoGate";
+import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
+import { FirstRunProjects, FirstRunWelcome, openFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
 import "./launchGateGlass.css";
 
 type LaunchGateProps = { children: ReactNode };
@@ -30,12 +31,21 @@ function WebLaunchGate({ children }: LaunchGateProps) {
   return <WebSignInGate />;
 }
 
+type FirstRunPhase = "checking" | "welcome" | "projects" | "done";
+
+/**
+ * The desktop gate, in order: the welcome card (first run on this computer),
+ * sign-in (until signed in), "Bring your projects in" (first run), then ADE.
+ * A computer that finished or skipped setup before only ever sees sign-in.
+ */
 function DesktopLaunchGate({ children }: LaunchGateProps) {
   const { status, loading: accountLoading } = useAccountStatus();
   const [launchStateLoading, setLaunchStateLoading] = useState(true);
   const [resolved, setResolved] = useState(false);
-  const [welcomeVisible, setWelcomeVisible] = useState(false);
-  const [welcomeChecking, setWelcomeChecking] = useState(true);
+  const [firstRun, setFirstRun] = useState<FirstRunPhase>("checking");
+  const firstRunRef = useRef(firstRun);
+  firstRunRef.current = firstRun;
+  const setupResultRef = useRef<FirstRunResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +57,18 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
       .finally(() => {
         if (!cancelled) setLaunchStateLoading(false);
       });
+    // First run on this computer: the welcome state was never completed or skipped.
+    void Promise.resolve()
+      .then(() => window.ade.app.getWelcomeVideoState())
+      .then((state) => {
+        if (cancelled) return;
+        const fresh = !state.completedAt && !state.dismissedAt;
+        if (fresh) markOnboardingStarted();
+        setFirstRun(fresh ? "welcome" : "done");
+      })
+      .catch(() => {
+        if (!cancelled) setFirstRun("done");
+      });
     return () => {
       cancelled = true;
     };
@@ -55,35 +77,51 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const enterAde = useCallback(() => {
     setResolved(true);
     void window.ade.app.resolveLaunchGate().catch(() => undefined);
+    const setupResult = setupResultRef.current;
+    setupResultRef.current = null;
+    // The projects setup added become tabs; the first one opens, and each
+    // one's first open brings its chats in.
+    if (setupResult) openFirstRunProjects(setupResult);
+  }, []);
+
+  const skipSetup = useCallback(() => {
+    skipOnboarding();
+    setFirstRun("done");
+    void window.ade.app.markWelcomeVideoSeen("dismissed").catch(() => undefined);
+  }, []);
+
+  const finishSetup = useCallback((result: FirstRunResult) => {
+    setupResultRef.current = result;
+    setFirstRun("done");
+    void window.ade.app.markWelcomeVideoSeen("completed").catch(() => undefined);
   }, []);
 
   useEffect(() => {
     if (
       !resolved &&
       !launchStateLoading &&
-      !welcomeChecking &&
-      !welcomeVisible &&
+      firstRun === "done" &&
       !accountLoading &&
       status.signedIn
     ) {
       enterAde();
     }
-  }, [
-    accountLoading,
-    enterAde,
-    launchStateLoading,
-    resolved,
-    status.signedIn,
-    welcomeChecking,
-    welcomeVisible,
-  ]);
+  }, [accountLoading, enterAde, firstRun, launchStateLoading, resolved, status.signedIn]);
 
-  const checking = launchStateLoading || welcomeChecking || accountLoading;
-  const showAccountChoice = !checking && !welcomeVisible && !status.signedIn;
+  const checking = launchStateLoading || firstRun === "checking" || accountLoading;
+  const step: "welcome" | "sign-in" | "projects" | null = checking
+    ? null
+    : firstRun === "welcome"
+      ? "welcome"
+      : !status.signedIn
+        ? "sign-in"
+        : firstRun === "projects"
+          ? "projects"
+          : null;
   const gateMode = accountGateMode(status);
 
   useEffect(() => {
-    if (!showAccountChoice || resolved) return;
+    if (step !== "sign-in" || resolved) return;
     void window.ade.analytics?.capture({
       event: "ade_screen_viewed",
       properties: {
@@ -94,7 +132,7 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
       dedupeKey: "desktop_launch_account_choice",
       minimumIntervalMs: 60 * 60_000,
     }).catch(() => undefined);
-  }, [resolved, showAccountChoice]);
+  }, [resolved, step]);
 
   if (resolved) return children;
 
@@ -112,17 +150,25 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
           WebkitAppRegion: "drag",
         } as CSSProperties}
       />
-      <WelcomeVideoGate
-        onVisibilityChange={(visible, nextChecking) => {
-          setWelcomeVisible(visible);
-          setWelcomeChecking(nextChecking);
-        }}
-      />
-      {showAccountChoice ? (
-        <div className="ade-gate-stack">
+      {step === "welcome" ? (
+        <div className="ade-gate-stack" data-step="welcome" key="welcome">
+          <FirstRunWelcome onStart={() => setFirstRun("projects")} onSkip={skipSetup} />
+        </div>
+      ) : null}
+      {step === "projects" ? (
+        <div className="ade-gate-stack" data-step="projects" key="projects">
+          <FirstRunProjects onDone={finishSetup} onSkip={skipSetup} />
+        </div>
+      ) : null}
+      {step === "sign-in" ? (
+        <div className="ade-gate-stack" key="sign-in">
           <GlassSignInCard
             configured={status.configured !== false}
-            onSignedIn={enterAde}
+            // During first run, signing in moves on to "Bring your projects in";
+            // the gate opens when setup is done.
+            onSignedIn={() => {
+              if (firstRunRef.current === "done") enterAde();
+            }}
             sessionState={accountSessionState(status)}
           />
           {/*

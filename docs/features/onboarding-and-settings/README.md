@@ -579,16 +579,24 @@ Renderer — onboarding:
   ADE Code say the same thing. The shell bar, the Connections pane and the
   Machines list share the flow and both copy modules. `AccountPage` re-exports
   `describeThisComputerMissing` for existing tests.
-- `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
-  — one-time app-level welcome card backed by global app state. It
-  uses the website's canonical hero assets and the privacy-enhanced YouTube
-  player, links to GitHub and the docs site, and includes an ADE Mobile
-  TestFlight QR/download/copy panel. The Help menu can replay it
-  without resetting setup.
-- `apps/desktop/src/renderer/public/welcome/` — website-synchronized bundled
-  hero screenshots and icon assets consumed by the welcome card.
+- `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
+  `firstRun.css` — first-run setup on a computer: the welcome card (the
+  website's "Every AI coding tool" promise, one button, Skip setup) and "Bring
+  your projects in" (the git projects found on this computer, the phone QR and
+  the "another computer" line). `LaunchGate.tsx` runs it around sign-in;
+  `OnboardingBootstrap.tsx` shows it again over the app for "Show me around
+  again" or a reload during setup. See [First run on a computer](#first-run-on-a-computer).
+- `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
+  — finds the projects for that card from Claude Code and Codex history,
+  without spawning git (`app.discoverOnboardingProjects`).
+  `app.addOnboardingProjects` adds the chosen ones to recent projects.
+- `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
+  + `renderer/onboarding/pendingChatImports.ts` — the first open of each added
+  project imports its chats from the last 30 days as ADE chats.
+- `apps/desktop/src/renderer/onboarding/onboardingProgress.ts` — per-computer
+  onboarding progress (started, skipped, each first-chat hint's state).
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
-  — persistent help menu in the top bar: docs link, welcome video replay,
+  — persistent help menu in the top bar: docs link, "Show me around again",
   and one help preference (the detailed hover-tooltip toggle). Glossary,
   help chips, and did-you-know hints were removed; `SmartTooltip`
   hover detail is the single surviving help surface.
@@ -1879,6 +1887,37 @@ banner):
 ## Onboarding responsibilities
 
 Onboarding covers two layers.
+
+### First run on a computer
+
+What a person sees the first time ADE opens on a computer. It runs once per
+computer (not per project) and is stored in that computer's global app state
+(`welcomeVideo.completedAt` / `dismissedAt`, the key kept from the welcome
+video it replaced), so a computer set up before it existed never sees it.
+
+1. **Welcome.** One card on the launch gate's glass: the landing page's
+   headline, one sentence, the provider marks, **Get started** and **Skip
+   setup**. Skip marks onboarding skipped, so no hint shows later either.
+2. **Sign in**, if this computer has no ADE session (the account is required).
+3. **Bring your projects in.** `discoverOnboardingProjects` reads this
+   computer's Claude Code transcripts (one listing, plus the head of the newest
+   transcript per folder for its cwd) and Codex's thread index (one grouped
+   query), maps each folder to its git project (an ADE lane or linked worktree
+   counts toward its main checkout), drops scratch, temp, Downloads and
+   projects already in ADE, and returns them newest first. A project with at
+   least two chats in the last 30 days starts ticked. Each row shows its
+   recent chats, its worktrees (they open as lanes) and when it was last
+   active. Below the list: a QR for ADE on iPhone and a line about signing in
+   on another computer, shown to everyone.
+4. **Into ADE.** The chosen projects are added to recent projects and opened
+   as tabs, and the first one opens. Its worktrees become lanes through the
+   normal adoption on open. `useOnboardingChatImport` then imports the chats
+   from the last 30 days (up to 25, newest first) into the lane each one ran
+   in, or the main checkout's lane, the first time each added project opens;
+   a session that may still be open in its CLI is skipped.
+
+Everything here runs on, and reads, the computer ADE is opening on. The
+hosted web client has no first run; it controls other computers.
 
 ### Machine layer (one-time per machine)
 

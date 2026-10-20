@@ -174,6 +174,7 @@ import type {
   StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
+  OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
@@ -1245,6 +1246,10 @@ declare global {
         markWelcomeVideoSeen: (
           reason: "completed" | "dismissed",
         ) => Promise<AppWelcomeVideoState>;
+        /** First-run setup: git projects Claude Code and Codex used on this computer. Desktop only. */
+        discoverOnboardingProjects?: () => Promise<OnboardingProjectDiscovery>;
+        /** First-run setup: add these checkouts as project tabs without opening them. Desktop only. */
+        addOnboardingProjects?: (rootPaths: string[]) => Promise<RecentProjectSummary[]>;
         getLaunchGateState: () => Promise<{ resolved: boolean }>;
         resolveLaunchGate: () => Promise<{ resolved: true }>;
         setWindowProjectTabs: (

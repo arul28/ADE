@@ -8,7 +8,7 @@ its own folder. Do not build a one-off version in a feature folder.
 
 | Primitive | Where |
 |---|---|
-| `Banner`, `useAppBanner`, `useAppBanners`, `APP_BANNER_PRIORITY`, `AppBannerHost` | `apps/desktop/src/renderer/components/ui/notice/` |
+| `Banner`, `useAppBanner`, `useAppBanners`, `APP_BANNER_PRIORITY`, `AppBannerHost`, `AppSuggestionCard` | `apps/desktop/src/renderer/components/ui/notice/` |
 | `showToast`, `updateToast`, `dismissToast` | `components/app/toast/toastStore.ts` (rendered as `ToastCard` in `ToastViewport`) |
 | `confirmDialog`, `promptDialog`, `Dialog`, `DialogHost` | `components/ui/dialog/` |
 | `HeaderSheet` | `components/app/HeaderSheet.tsx` |
@@ -24,6 +24,7 @@ its own folder. Do not build a one-off version in a feature folder.
 |---|---|
 | An app-wide state that lasts: signed out, update stuck, relay down, integration broken | `useAppBanner(model)` (docked, the default) |
 | A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` (`updatePrompt` keeps a ready-to-install update ahead of generic prompts) |
+| A feature that would help right now, because ADE saw a signal: a lane template once a repo with packages has lanes | `useAppBanner(model, { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion })` (see [Suggestions](#suggestions)) |
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
 | A short state of the chat a composer writes to: settled, snoozed, the lane is on another branch | `<StatusChip tone ...>` inside the composer's one `<StatusStrip>` (chips sit side by side; the explanation goes in `tooltip`) |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
@@ -114,7 +115,55 @@ Within a band, the more urgent tone wins, then the banner registered first.
 | 50 | `integration` | An integration the user can fix (GitHub, AI provider, relay). |
 | 55 | `updatePrompt` | A downloaded update is ready to install and should stay ahead of generic prompts. |
 | 60 | `prompt` | Short floating prompts. |
+| 80 | `suggestion` | Situational suggestions (placement `suggestion`). |
 | 100 | `default` | Everything else. |
+
+## Suggestions
+
+A suggestion is onboarding's third tier: ADE shows a feature only when it
+sees a signal that the feature would help now. It is not a state and not an
+event, and it is never urgent, so it has its own quiet presentation:
+`Banner` with `layout="suggestion"`, registered with
+`useAppBanner(model, { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion })`.
+
+- **Where.** One small card in the bottom-right corner, rendered by the toast
+  viewport (`ToastViewport`), which owns that corner. Toasts come and go above
+  it; the live Launches panel sits below it. That corner covers no header, tab
+  or composer and pushes nothing, and it is where ADE already puts things you
+  may glance at and ignore. One suggestion shows at a time; the rest wait.
+- **What it says.** A quiet eyebrow (`eyebrow`, default "Suggestion"), a title
+  that says what the feature **is** ("Lane templates make new lanes ready to
+  work"), one "why now" line in `detail`, then two actions: the primary
+  (`variant: "solid"`) and "Not now" (`variant: "secondary"`). No ×: "Not now"
+  is the dismissal.
+- **The signal.** Show it only when the user can already understand it. The
+  lane template suggestion waits until the project has a lane besides the main
+  checkout, so "lane" means something by then.
+- **"Not now".** The owner snoozes it and files it into ADE Tips with
+  `postponeSuggestion` (`renderer/onboarding/adeTipsSuggestions.ts`, per
+  computer). ADE Tips lists it under "Suggested for you", where the user can
+  start it later (the owner registers a starter with
+  `registerSuggestionStarter` while it can run, with the same pin it would use
+  on the card) or turn it off for good ("Don't suggest again", the owner's
+  `registerSuggestionKind` handler). Add a new suggestion to `ADE_SUGGESTIONS`
+  in that file so the card and the Tips row share one title and one line.
+
+```tsx
+useAppBanner(
+  show && {
+    id: "lane-template-suggestion",
+    tone: "accent",
+    icon: <Stack size={13} weight="bold" />,
+    title: "Lane templates make new lanes ready to work",
+    detail: "This repo has packages, and new lanes start without them. A template installs or copies them each time.",
+    actions: [
+      { label: "Set one up with an agent", variant: "solid", onClick: start },
+      { label: "Not now", variant: "secondary", onClick: notNow },
+    ],
+  },
+  { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion },
+);
+```
 
 ## Dismissal
 

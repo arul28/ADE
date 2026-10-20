@@ -4,9 +4,17 @@ import type { LaneDependencyStatus, LaneSummary, OpenProjectBinding } from "../.
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice/appBannerStore";
 import { showToast } from "./toast/toastStore";
+import { useAppStore } from "../../state/appStore";
 import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
+import {
+  ADE_SUGGESTIONS,
+  forgetPostponedSuggestion,
+  postponeSuggestion,
+  registerSuggestionKind,
+  registerSuggestionStarter,
+} from "../../onboarding/adeTipsSuggestions";
 
 /**
  * Two notices about the open project's main checkout, on the tab's machine:
@@ -14,9 +22,13 @@ import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
  * - **Packages are out of date** (docked): a lockfile no longer matches the
  *   install, usually after a pull. Update opens one terminal per folder in the
  *   main checkout that runs its install; ADE never installs on its own.
- * - **Set up a lane template** (floating prompt): the project has lockfiles and
- *   no default lane template, so new lanes start with no packages. Continue
- *   puts a setup prompt in a new chat in the main checkout.
+ * - **Lane templates** (a situational suggestion, bottom-right): the user has
+ *   made a lane (so they know what one is), the main checkout has lockfiles,
+ *   and there is no default lane template, so new lanes start with no
+ *   packages. The primary action puts a setup prompt in a new chat in the main
+ *   checkout. "Not now" snoozes it for two weeks and files it into ADE Tips
+ *   ("Suggested for you"), where it can be started later or turned off for
+ *   good ("Don't suggest again").
  *
  * Both read `lane.getDependencyStatus`, which only stats files (and hashes a
  * lockfile when it changed). It runs a few seconds after the project opens, on
@@ -31,6 +43,7 @@ const UPDATE_WATCH_INTERVAL_MS = 15_000;
 const UPDATE_WATCH_MAX_MS = 30 * 60_000;
 const SUGGESTION_SNOOZE_MS = 14 * 24 * 3_600_000;
 const SUGGESTION_STORAGE_KEY = "ade.laneTemplateSuggestion.v1";
+const LANE_TEMPLATE_SUGGESTION = ADE_SUGGESTIONS["lane-template"];
 const MAX_NAMED_FOLDERS = 3;
 
 type SuggestionState = Record<string, number | "never">;
@@ -93,6 +106,9 @@ export function useLaneDependencyBanners({
   const lastCheckRef = useRef(0);
   const updatingRef = useRef(false);
   const machineName = machineNameForBinding(projectBinding);
+  const projectName = useAppStore((state) => state.project?.displayName ?? null);
+  // How the ADE Tips row names where this applies.
+  const projectContext = [projectName, projectBinding?.kind === "remote" ? machineName : null].filter(Boolean).join(" · ") || null;
   const scopeKey = projectRoot ? `${machineIdForBinding(projectBinding)}:${projectRoot}` : null;
   // The tab's own machine: unpinned calls reach it.
   const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin: null, machineName, origin: "banner" });
@@ -237,19 +253,50 @@ export function useLaneDependencyBanners({
     setSuggestionVersion((value) => value + 1);
   }, [scopeKey]);
 
+  // "Don't suggest again" from ADE Tips, for this project or any other one.
+  useEffect(() => registerSuggestionKind("lane-template", {
+    never: (key) => {
+      captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" });
+      hideSuggestion(key, "never");
+      setSuggestionVersion((value) => value + 1);
+    },
+  }), []);
+
   const suggestionSnoozed = useMemo(
     () => (scopeKey ? suggestionHidden(scopeKey) : true),
     // `suggestionVersion` re-reads storage after the user answers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scopeKey, suggestionVersion, status],
   );
-  const showSuggestion = Boolean(
+  // The signal: packages to install, no template to install them, and a lane
+  // already made, so "lane" means something to the user by now.
+  const templateWouldHelp = Boolean(
     status
       && primaryLane
       && status.folders.length > 0
-      && !status.defaultTemplateId
-      && !suggestionSnoozed,
+      && !status.defaultTemplateId,
   );
+  const hasOwnLane = lanes.some((lane) => lane.laneType !== "primary" && !lane.archivedAt);
+  const showSuggestion = templateWouldHelp && hasOwnLane && !suggestionSnoozed;
+
+  const startFromSuggestion = useCallback(() => {
+    if (!status) return;
+    snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS);
+    if (scopeKey) forgetPostponedSuggestion("lane-template", scopeKey);
+    void startTemplateChat(status);
+  }, [scopeKey, snoozeSuggestion, startTemplateChat, status]);
+
+  // ADE Tips can start a postponed suggestion while this project is open.
+  useEffect(() => {
+    if (!scopeKey || !templateWouldHelp) return;
+    return registerSuggestionStarter("lane-template", scopeKey, startFromSuggestion);
+  }, [scopeKey, startFromSuggestion, templateWouldHelp]);
+
+  // A default template now exists: nothing left to suggest from Tips.
+  const hasDefaultTemplate = Boolean(status?.defaultTemplateId);
+  useEffect(() => {
+    if (scopeKey && hasDefaultTemplate) forgetPostponedSuggestion("lane-template", scopeKey);
+  }, [hasDefaultTemplate, scopeKey]);
 
   useAppBanner(
     showSuggestion
@@ -258,29 +305,23 @@ export function useLaneDependencyBanners({
           tone: "accent",
           icon: <Stack size={13} weight="bold" />,
           busy: templateChatBusy,
-          title: "Set up a lane template",
-          detail: "New lanes start without packages. A template can install or copy them for each new lane, and an agent can set it up for you.",
+          eyebrow: "Suggestion",
+          title: LANE_TEMPLATE_SUGGESTION.title,
+          detail: LANE_TEMPLATE_SUGGESTION.why,
           actions: [
+            { label: LANE_TEMPLATE_SUGGESTION.actionLabel, variant: "solid", onClick: startFromSuggestion },
             {
-              label: "Set up with an agent",
-              variant: "primary",
+              label: "Not now",
+              variant: "secondary",
+              title: "Hide for two weeks. It stays in ADE Tips.",
               onClick: () => {
                 snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS);
-                void startTemplateChat(status);
-              },
-            },
-            {
-              label: "Don't show again",
-              variant: "link",
-              onClick: () => {
-                captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" });
-                snoozeSuggestion("never");
+                if (scopeKey) postponeSuggestion({ id: "lane-template", scopeKey, context: projectContext });
               },
             },
           ],
-          dismiss: { onDismiss: () => snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS), title: "Remind me in two weeks" },
         }
       : null,
-    { placement: "floating", priority: APP_BANNER_PRIORITY.prompt },
+    { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion },
   );
 }

@@ -4084,6 +4084,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               }}
               aria-label="Start a new chat"
               data-tour="work.newSession"
+              data-onboarding-anchor="new-chat"
             >
               <NotePencil size={13} weight="regular" />
             </button>

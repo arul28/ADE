@@ -9,18 +9,23 @@ import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTon
  * through this component, so they read as one family: a card surface, a
  * tone-tinted icon tile (or a logo), sans type, pill actions, a quiet ×.
  *
- * Three layouts, one look:
- * - `docked`   an app-level state that lasts (signed out, update stuck, relay
- *              down). In flow under the top bar; pushes content, never covers it.
- * - `floating` a short, one-line prompt you act on or wave away (a link in the
- *              clipboard). Top center, over the app.
- * - `inline`   a banner about one surface (a lane needs a rebase), placed by
- *              that surface inside its own layout.
+ * Four layouts, one look:
+ * - `docked`     an app-level state that lasts (signed out, update stuck, relay
+ *                down). In flow under the top bar; pushes content, never covers it.
+ * - `floating`   a short, one-line prompt you act on or wave away (a link in the
+ *                clipboard). Top center, over the app.
+ * - `inline`     a banner about one surface (a lane needs a rebase), placed by
+ *                that surface inside its own layout.
+ * - `suggestion` a situational suggestion: ADE saw a signal that a feature
+ *                would help now. A small card in the bottom-right corner
+ *                (`AppSuggestionStack`): a quiet eyebrow, a title that says
+ *                what the feature is, one "why now" line, one primary action
+ *                and "Not now".
  *
  * Feature code never styles a banner; it picks a tone, an icon, words, actions.
  */
 
-export type BannerLayout = "docked" | "floating" | "inline";
+export type BannerLayout = "docked" | "floating" | "inline" | "suggestion";
 
 export type BannerDismiss =
   | false
@@ -54,6 +59,8 @@ export type BannerModel = {
   extra?: ReactNode;
   /** Inline failure line under the text ("Rebase failed: …"). */
   error?: string;
+  /** The quiet label above a `suggestion` card's title. Defaults to "Suggestion". */
+  eyebrow?: string;
 };
 
 export function isDurableDismiss(
@@ -78,6 +85,7 @@ export function Banner({
   /** `data-testid` on the banner's root. */
   testId?: string;
 }): JSX.Element {
+  if (layout === "suggestion") return <SuggestionCard model={model} style={style} testId={testId} />;
   const tokens = noticeTone(model.tone);
   const floating = layout === "floating";
   // Docked banners share the inline wrapping row: in a narrow window the
@@ -200,5 +208,70 @@ export function Banner({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The `suggestion` layout. Not a state and not an alarm, so it reads quieter
+ * than a banner: the tone shows only on the small icon tile and the primary
+ * action. The owner passes exactly two actions, the primary and "Not now";
+ * "Not now" is the dismissal, so the card draws no ×.
+ */
+function SuggestionCard({
+  model,
+  style,
+  testId,
+}: {
+  model: BannerModel;
+  style?: CSSProperties;
+  testId?: string;
+}): JSX.Element {
+  const tokens = noticeTone(model.tone);
+  return (
+    <section
+      role="status"
+      aria-label={model.ariaLabel ?? (typeof model.title === "string" ? model.title : "Suggestion")}
+      data-testid={testId}
+      data-notice-tone={model.tone}
+      data-banner-id={model.id}
+      data-banner-layout="suggestion"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        minWidth: 0,
+        padding: "12px 14px 14px",
+        borderRadius: 14,
+        border: `1px solid ${tokens.edge}`,
+        fontFamily: "var(--font-sans)",
+        color: "var(--color-fg)",
+        ...NOTICE_FLOAT_SURFACE,
+        ...style,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <NoticeIcon tone={model.tone} icon={model.icon} busy={model.busy} size="sm" />
+        <span className="kit-eyebrow" style={{ color: "var(--kit-text-3, var(--color-muted-fg))" }}>
+          {model.eyebrow ?? "Suggestion"}
+        </span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35, letterSpacing: "-0.005em", overflowWrap: "anywhere" }}>
+          {model.title}
+        </span>
+        {model.detail ? (
+          <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--color-muted-fg)", overflowWrap: "anywhere" }}>
+            {model.detail}
+          </span>
+        ) : null}
+        {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+        {model.error ? (
+          <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
+            {model.error}
+          </span>
+        ) : null}
+      </div>
+      <NoticeActions actions={model.actions} tone={model.tone} size="md" style={{ marginTop: 2 }} />
+    </section>
   );
 }

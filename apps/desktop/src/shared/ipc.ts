@@ -40,6 +40,8 @@ export const IPC = {
   appGetWindowSession: "ade.app.getWindowSession",
   appGetWelcomeVideoState: "ade.app.getWelcomeVideoState",
   appMarkWelcomeVideoSeen: "ade.app.markWelcomeVideoSeen",
+  appDiscoverOnboardingProjects: "ade.app.discoverOnboardingProjects",
+  appAddOnboardingProjects: "ade.app.addOnboardingProjects",
   appGetLaunchGateState: "ade.app.getLaunchGateState",
   appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",

@@ -1,0 +1,511 @@
+/*
+ * First run: the welcome card and "Bring your projects in", on the launch
+ * gate's glass. Every colour comes from the `.ade-gate` tokens in
+ * `launchGateGlass.css` (the theme's fg/bg at fixed steps), so dark, light and
+ * custom themes all read. Motion is one-shot entrance only and yields to both
+ * reduce-motion switches.
+ */
+
+/* ── Welcome ─────────────────────────────────────────────────── */
+
+/* The first-run cards carry more text than the sign-in card, over whatever
+   picture the scene shows, so their glass is a little denser. */
+.ade-fr-welcome,
+.ade-fr-projects {
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 74%, transparent);
+}
+
+[data-theme="light"] .ade-fr-welcome,
+[data-theme="light"] .ade-fr-projects {
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 78%, transparent);
+}
+
+.ade-fr-welcome {
+  padding: 40px 44px 28px;
+}
+
+.ade-fr-headline {
+  margin: 26px 0 0;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+  text-wrap: balance;
+}
+
+.ade-fr-headline em {
+  font-style: italic;
+  color: color-mix(in srgb, var(--color-accent) 72%, var(--color-fg));
+}
+
+/* The landing page's "everywhere", held still: a gradient across the word, no shimmer. */
+.ade-fr-everywhere {
+  font-style: italic;
+  background: linear-gradient(
+    92deg,
+    color-mix(in srgb, var(--color-accent) 85%, #ff9ff3) 0%,
+    var(--color-accent) 38%,
+    color-mix(in srgb, var(--color-accent) 40%, #48dbfb) 72%,
+    color-mix(in srgb, var(--color-accent) 30%, #1dd1a1) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* Room for the italic overhang, given back so the period sits close. */
+  padding-right: 0.08em;
+  margin-right: -0.06em;
+}
+
+.ade-fr-lede {
+  margin: 16px auto 0;
+  max-width: 380px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--gate-text-2);
+  text-wrap: balance;
+}
+
+.ade-fr-providers {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.ade-fr-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+  animation: ade-fr-pop 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ade-fr-welcome-actions {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ade-glass-primary.ade-fr-cta {
+  width: auto;
+  min-width: 200px;
+  padding: 0 26px;
+}
+
+/* ── Bring your projects in ──────────────────────────────────── */
+
+.ade-glass-card.ade-fr-projects {
+  padding: 28px 28px 22px;
+  text-align: left;
+}
+
+.ade-fr-head {
+  padding: 0 4px;
+}
+
+.ade-fr-eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-title {
+  margin: 8px 0 0;
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+
+.ade-fr-sub {
+  margin: 8px 0 0;
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--gate-text-2);
+}
+
+.ade-fr-list {
+  margin-top: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--gate-rule);
+  background: color-mix(in srgb, var(--color-bg) 18%, transparent);
+  overflow: hidden;
+}
+
+.ade-fr-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--gate-rule);
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-text-btn {
+  border: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gate-text-2);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-text-btn:hover {
+  color: var(--color-fg);
+  background: var(--gate-chip-fill);
+}
+
+.ade-fr-rows {
+  max-height: min(304px, 38vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ade-fr-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+  animation: ade-fr-row-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-row:hover {
+  background: var(--gate-chip-fill);
+}
+
+.ade-fr-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: -2px;
+}
+
+.ade-fr-row--skeleton {
+  cursor: default;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-fg) 5%, transparent) 50%,
+    transparent 100%
+  ) 0 0 / 200% 100%;
+  animation: ade-fr-skeleton 1.4s ease-in-out infinite;
+}
+
+.ade-fr-check {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1.5px solid color-mix(in srgb, var(--color-fg) 28%, transparent);
+  color: var(--color-bg);
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.ade-fr-row[data-checked="true"] .ade-fr-check {
+  border-color: var(--color-fg);
+  background: var(--color-fg);
+}
+
+.ade-fr-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  color: var(--gate-text-2);
+}
+
+.ade-fr-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ade-fr-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ade-fr-name-main {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-name-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gate-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--gate-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.ade-fr-marks {
+  display: inline-flex;
+  gap: 3px;
+  opacity: 0.9;
+}
+
+.ade-fr-row:not([data-checked="true"]) .ade-fr-meta,
+.ade-fr-row:not([data-checked="true"]) .ade-fr-name-main {
+  opacity: 0.72;
+}
+
+.ade-fr-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 12px;
+  font-size: 12.5px;
+  color: var(--gate-text-2);
+}
+
+.ade-fr-add {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-top: 1px solid var(--gate-rule);
+  background: transparent;
+  color: var(--gate-text-2);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-add:hover:not(:disabled) {
+  color: var(--color-fg);
+  background: var(--gate-chip-fill);
+}
+
+/* Your other devices: two quiet cells under the list. */
+.ade-fr-devices {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.ade-fr-device {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--gate-rule);
+  background: color-mix(in srgb, var(--color-bg) 12%, transparent);
+}
+
+.ade-fr-qr {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.ade-fr-device-glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 18%, transparent);
+  color: var(--gate-text-2);
+}
+
+.ade-fr-device-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ade-fr-device-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-fr-device-sub {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--gate-text-2);
+}
+
+.ade-fr-foot {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ade-fr-summary {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A card taller than the window scrolls from its top instead of losing it. */
+.ade-gate:has(> .ade-gate-stack[data-step]) {
+  align-items: safe center;
+}
+
+/* The gate stack is sized for the sign-in card; the first-run cards are wider. */
+.ade-gate-stack[data-step="welcome"] {
+  width: min(580px, 100%);
+}
+
+.ade-gate-stack[data-step="projects"] {
+  width: min(640px, 100%);
+}
+
+/* Short windows: the list keeps its room; the device cells and padding give way. */
+@media (max-height: 760px) {
+  .ade-glass-card.ade-fr-projects {
+    padding: 22px 24px 18px;
+  }
+
+  .ade-fr-title {
+    font-size: 21px;
+  }
+
+  .ade-fr-list {
+    margin-top: 14px;
+  }
+
+  .ade-fr-rows {
+    max-height: min(240px, 34vh);
+  }
+
+  .ade-fr-row {
+    min-height: 46px;
+    padding: 6px 10px;
+  }
+
+  .ade-fr-device {
+    padding: 8px 10px;
+  }
+
+  .ade-fr-qr svg {
+    width: 44px;
+    height: 44px;
+  }
+
+  .ade-fr-device-glyph {
+    width: 50px;
+    height: 50px;
+  }
+
+  .ade-fr-foot {
+    margin-top: 14px;
+  }
+}
+
+@media (max-width: 560px) {
+  .ade-fr-devices {
+    grid-template-columns: 1fr;
+  }
+
+  .ade-fr-headline {
+    font-size: 34px;
+  }
+
+  .ade-fr-meta > span:last-child {
+    display: none;
+  }
+}
+
+@keyframes ade-fr-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-fr-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-fr-skeleton {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-fr-provider,
+  .ade-fr-row,
+  .ade-fr-row--skeleton {
+    animation: none;
+  }
+}
+
+html[data-motion="reduced"] .ade-fr-provider,
+html[data-motion="reduced"] .ade-fr-row,
+html[data-motion="reduced"] .ade-fr-row--skeleton {
+  animation: none;
+}

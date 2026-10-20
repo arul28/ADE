@@ -87,6 +87,19 @@ html[data-scene="image"][data-theme="light"] {
   overflow: hidden;
 }
 
+/* A card that floats over other UI instead of a scene (an onboarding hint
+   beside a control). Always frosted and more opaque, with a soft lift, so its
+   text reads over a busy pane. Keep it to small cards: one blur per card. */
+.kit-card[data-float="true"] {
+  background: color-mix(in srgb, var(--color-bg) 84%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: var(--shadow-float);
+}
+[data-theme="light"] .kit-card[data-float="true"] {
+  background: color-mix(in srgb, var(--color-bg) 90%, transparent);
+}
+
 /* Card header: icon · label · count ………… action. Always 40px. */
 .kit-card-head {
   flex: none;

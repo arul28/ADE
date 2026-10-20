@@ -25,6 +25,13 @@ export const Z_LAYERS = {
   chatDraftDeparture: 79,
   /** The first-message handoff animation above the departing draft chrome. */
   chatFirstMessageHandoff: 80,
+  /**
+   * First-chat onboarding hints: the ring around a control and the small card
+   * beside it. Above the page so the ring shows around controls in any pane,
+   * but under popovers, menus, sheets and dialogs: a hint never blocks, so
+   * anything the user opens covers it.
+   */
+  onboardingHint: 95,
   /** Anchored popovers and menus: the model picker, the reasoning-effort picker. */
   popover: 100,
   /** The app sidebar and anchored popovers share their existing content layer. */

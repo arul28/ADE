@@ -159,6 +159,34 @@ export type AppWelcomeVideoState = {
   dismissedAt: string | null;
 };
 
+/**
+ * A git project found on this computer during first-run setup, from the
+ * folders Claude Code and Codex sessions ran in. Its linked worktrees become
+ * lanes when the project opens.
+ */
+export type OnboardingProjectCandidate = {
+  rootPath: string;
+  name: string;
+  /** `owner/repo` from the origin remote, when there is one. */
+  repoLabel: string | null;
+  /** Claude Code and Codex sessions that ran in this project or its worktrees. */
+  chatCount: number;
+  /** Of those, the ones active in the last 30 days: what setup imports. */
+  recentChatCount: number;
+  lastActiveAt: number | null;
+  providers: Array<"claude" | "codex">;
+  /** Linked worktrees that open as lanes. */
+  laneCount: number;
+  /** Pre-selected: active recently, with a few chats. */
+  suggested: boolean;
+};
+
+export type OnboardingProjectDiscovery = {
+  /** This computer's name, for "Ready on <name>". */
+  machineName: string;
+  projects: OnboardingProjectCandidate[];
+};
+
 export type PtyProcessResourceUsageSnapshot = {
   activePtyCount: number;
   ptyProcessCount: number;

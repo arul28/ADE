@@ -66,6 +66,7 @@ import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
+import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
@@ -350,6 +351,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     lanes,
     enabled: !showWelcome,
     navigate,
+  });
+  useOnboardingChatImport({
+    projectRoot: project?.rootPath ?? null,
+    projectBinding,
+    lanes,
+    enabled: !showWelcome,
   });
   const isLanesRouteRef = useRef(isLanesRoute);
 

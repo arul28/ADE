@@ -1304,6 +1304,14 @@ function browserMockGateState(): BrowserMockGateState | null {
   }
 }
 
+function browserMockFirstRun(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("mockFirstRun");
+  } catch {
+    return false;
+  }
+}
+
 function readBrowserMockWelcomeVideoState() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(WELCOME_VIDEO_STORAGE_KEY) ?? "null") as {
@@ -5521,10 +5529,28 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getWelcomeVideoState: async () => {
         const state = readBrowserMockWelcomeVideoState();
         if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
+        // `?mockFirstRun` previews first-run setup on top of the gate.
+        if (browserMockFirstRun()) return { ...state, completedAt: null, dismissedAt: null };
         return browserMockGateState() && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
       },
+      discoverOnboardingProjects: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        const day = 24 * 3_600_000;
+        const now = Date.now();
+        return {
+          machineName: "Arul's MacBook Pro",
+          projects: [
+            { rootPath: "/Users/dev/ADE", name: "ADE", repoLabel: "arul28/ADE", chatCount: 111, recentChatCount: 18, lastActiveAt: now - 2 * 3_600_000, providers: ["claude", "codex"] as Array<"claude" | "codex">, laneCount: 16, suggested: true },
+            { rootPath: "/Users/dev/Versic", name: "Versic", repoLabel: "arul28/Versic", chatCount: 571, recentChatCount: 42, lastActiveAt: now - 2 * day, providers: ["claude", "codex"] as Array<"claude" | "codex">, laneCount: 3, suggested: true },
+            { rootPath: "/Users/dev/fleet", name: "fleet", repoLabel: "arul28/fleet", chatCount: 4, recentChatCount: 3, lastActiveAt: now - 5 * day, providers: ["claude"] as Array<"claude" | "codex">, laneCount: 0, suggested: true },
+            { rootPath: "/Users/dev/Quill", name: "Quill", repoLabel: "arul28/Quill", chatCount: 5, recentChatCount: 0, lastActiveAt: now - 160 * day, providers: ["codex"] as Array<"claude" | "codex">, laneCount: 0, suggested: false },
+            { rootPath: "/Users/dev/PROX", name: "PROX", repoLabel: null, chatCount: 2, recentChatCount: 0, lastActiveAt: now - 170 * day, providers: ["codex"] as Array<"claude" | "codex">, laneCount: 1, suggested: false },
+          ],
+        };
+      },
+      addOnboardingProjects: async () => [],
       markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
         const current = readBrowserMockWelcomeVideoState();
         const next = {

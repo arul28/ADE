@@ -1,0 +1,211 @@
+/*
+ * ADE Tips: the dialog and the home widget. Kit tokens only, so every theme
+ * (light and dark) and every scene applies. Colour appears in two places: the
+ * accent on the rail's current group, and the accent tint on suggestions the
+ * user postponed (a suggestion is the one thing ADE picked for them).
+ */
+
+/* ── dialog ─────────────────────────────────────────────────────── */
+
+.ade-tips-panel { overflow: hidden; }
+.ade-tips { display: grid; grid-template-columns: 208px minmax(0, 1fr); height: 100%; min-height: 0; }
+
+.ade-tips-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 12px 14px;
+  border-right: 1px solid var(--kit-rule);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  min-height: 0;
+}
+.ade-tips-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 8px;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  color: var(--color-fg);
+}
+.ade-tips-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.ade-tips-nav { display: flex; flex-direction: column; gap: 2px; }
+.ade-tips-nav > button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.ade-tips-nav > button > svg { flex: none; color: var(--kit-text-3); }
+.ade-tips-nav > button > span:first-of-type { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-tips-nav > button > .kit-num { flex: none; font-size: 10.5px; color: var(--kit-text-3); }
+.ade-tips-nav > button:hover { background: var(--kit-hover); color: var(--color-fg); }
+.ade-tips-nav > button[aria-current="true"] { background: var(--kit-active); color: var(--color-fg); font-weight: 600; }
+.ade-tips-nav > button[aria-current="true"] > svg { color: var(--color-accent); }
+.ade-tips-nav > button[data-suggested] > svg { color: var(--color-accent); }
+.ade-tips-nav > button:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent); outline-offset: -2px; }
+
+.ade-tips-main {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 24px 24px;
+  scrollbar-width: thin;
+}
+.ade-tips-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 0 6px;
+}
+.ade-tips-head h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.012em; color: var(--color-fg); }
+.ade-tips-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--kit-text-3); }
+.ade-tips-head .kit-icon-btn { flex: none; background: transparent; }
+
+.ade-tips-section { padding-top: 22px; }
+.ade-tips-section > .kit-eyebrow { margin: 0 0 8px 2px; }
+
+.ade-tips-panel-rows {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: var(--radius-lg);
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-tips-panel-rows[data-suggested] {
+  border-color: color-mix(in srgb, var(--color-accent) 30%, var(--kit-panel-edge));
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 60%),
+    var(--kit-panel-bg);
+}
+
+.ade-tips-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px 10px 12px;
+  transition: background-color 100ms ease;
+}
+.ade-tips-row + .ade-tips-row { border-top: 1px solid var(--kit-rule); }
+.ade-tips-row:not([data-suggested]):hover { background: var(--kit-hover); }
+.ade-tips-row[data-focused] { background: var(--kit-active); }
+.ade-tips-row[data-suggested] { align-items: flex-start; padding: 14px 14px 14px 12px; }
+
+.ade-tips-glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--kit-text-2);
+  background: var(--kit-track);
+}
+.ade-tips-row:hover .ade-tips-glyph,
+.ade-tips-row[data-focused] .ade-tips-glyph { color: var(--color-fg); }
+.ade-tips-row[data-suggested] .ade-tips-glyph {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.ade-tips-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.ade-tips-title { font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--color-fg); }
+.ade-tips-sentence { font-size: 12px; line-height: 1.45; color: var(--kit-text-3); }
+
+/* "Try it" stays quiet until the row is hovered or focused. */
+.ade-tips-try { flex: none; gap: 5px; color: var(--kit-text-3); }
+.ade-tips-row:hover .ade-tips-try,
+.ade-tips-try:focus-visible { color: var(--color-fg); background: var(--kit-active); }
+
+.ade-tips-suggested-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ade-tips-note { font-size: 11.5px; color: var(--kit-text-3); }
+.ade-tips-context { margin-left: auto; }
+
+/* ── home widget ────────────────────────────────────────────────── */
+
+.ade-tipw-body { gap: 10px; }
+/* Compact: the glyph and the group share the first line; the words run full width under them. */
+.ade-tipw-tip {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  align-content: start;
+  overflow: hidden;
+}
+.ade-tipw-text { display: contents; }
+.ade-tipw-text > .kit-eyebrow { grid-column: 2; grid-row: 1; align-self: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-tipw-title, .ade-tipw-sentence { grid-column: 1 / -1; }
+.ade-tipw-title { margin-top: 6px; }
+.ade-tipw-glyph {
+  grid-column: 1;
+  grid-row: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--color-fg);
+  background: var(--kit-track);
+}
+.ade-tipw-title { font-size: 14px; font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; color: var(--color-fg); }
+.ade-tipw-sentence {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--kit-text-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ade-tipw-foot { flex: none; display: flex; align-items: center; gap: 8px; }
+.ade-tipw-foot .kit-btn { gap: 5px; }
+.ade-tipw-nav { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.ade-tipw-nav .kit-icon-btn { width: 24px; height: 24px; background: transparent; }
+.ade-tipw-nav .kit-num { min-width: 42px; text-align: center; font-size: 10.5px; color: var(--kit-text-3); }
+
+/* Wide (Regular, two columns): a larger glyph leads, the words sit beside it. */
+@container widget (min-width: 440px) {
+  .ade-tipw-tip { display: flex; align-items: flex-start; gap: 16px; }
+  .ade-tipw-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .ade-tipw-title { margin-top: 2px; font-size: 15px; }
+  .ade-tipw-sentence { font-size: 12.5px; }
+  .ade-tipw-glyph { flex: none; width: 44px; height: 44px; border-radius: 12px; }
+}
+
+/* Short: fewer lines, then no sentence and no counter. */
+@container widget (max-height: 215px) {
+  .ade-tipw-sentence { -webkit-line-clamp: 2; }
+}
+@container widget (max-height: 175px) {
+  .ade-tipw-sentence { display: none; }
+  .ade-tipw-nav .kit-num { display: none; }
+}

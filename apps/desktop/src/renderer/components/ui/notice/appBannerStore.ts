@@ -12,7 +12,11 @@ import type { BannerModel } from "./Banner";
  * exactly as long as the state that raised it.
  */
 
-export type AppBannerPlacement = "docked" | "floating";
+/**
+ * `docked` and `floating` render in `AppBannerHost` under the top bar;
+ * `suggestion` renders in the bottom-right corner (`AppSuggestionStack`).
+ */
+export type AppBannerPlacement = "docked" | "floating" | "suggestion";
 
 /**
  * Lower sorts first. Pick the band that matches what the banner blocks; within
@@ -33,6 +37,8 @@ export const APP_BANNER_PRIORITY = {
   updatePrompt: 55,
   /** Short floating prompts. */
   prompt: 60,
+  /** Situational suggestions (placement `suggestion`): never ahead of a prompt. */
+  suggestion: 80,
   default: 100,
 } as const;
 
@@ -142,6 +148,7 @@ function sameRenderedModel(a: BannerModel, b: BannerModel): boolean {
     Boolean(a.busy) === Boolean(b.busy) &&
     a.ariaLabel === b.ariaLabel &&
     a.error === b.error &&
+    a.eyebrow === b.eyebrow &&
     sameActions(a.actions, b.actions) &&
     sameDismiss(a.dismiss, b.dismiss)
   );

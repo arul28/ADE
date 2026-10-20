@@ -7,6 +7,7 @@ import {
   FolderSimple,
   Gauge,
   GitPullRequest,
+  Lightbulb,
   MusicNotes,
   Pulse,
   RocketLaunch,
@@ -210,6 +211,18 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
     maxHeight: { compact: 480, regular: 480 },
     grow: false,
   },
+  tips: {
+    category: "everyday",
+    title: "ADE Tips",
+    description: "One thing worth knowing about ADE each day, with a way to try it.",
+    icon: Lightbulb,
+    classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
+    defaultClass: "compact",
+    minHeight: { compact: 190, regular: 160 },
+    idealHeight: { compact: 200, regular: 170 },
+    maxHeight: { compact: 320, regular: 280 },
+    grow: false,
+  },
 };
 
 export const HOME_CLASS_LABEL: Record<HomeSizeClass, { short: string; long: string }> = {
@@ -220,7 +233,7 @@ export const HOME_CLASS_LABEL: Record<HomeSizeClass, { short: string; long: stri
 
 /** Gallery order: what is new first, then the cards the page shipped with. */
 export const HOME_GALLERY_ORDER: readonly HomeWidgetType[] = [
-  "feed", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "nowPlaying",
+  "tips", "feed", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "nowPlaying",
   "projects", "running", "activity", "limits", "prs",
 ];
 
