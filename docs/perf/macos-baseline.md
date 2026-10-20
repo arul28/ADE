@@ -299,8 +299,9 @@ Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
 `search-fanout`, `chat-transcript`, `chat-backfill`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
-comparison and not a timing). They read temp copies of state and never write
-to `~/.ade`.
+comparison and not a timing), `codex-app-server` (macOS: Codex app-server
+memory and thread start, one process per chat vs one shared). They read temp
+copies of state and never write to `~/.ade`.
 `chat-transcript` is the chat renderer's own pipeline (live merge, display
 filter, row builder) run on real transcripts: one full pass as a chat opens,
 then 500 events one at a time as a turn streams.
@@ -860,6 +861,42 @@ then the mean of 2,000) on the same machine, commit `9ee2c4ae0`:
 | Metric | Before | After | Budget |
 |---|---|---|---|
 | Open-project data watch, per open project per 5 s tick | — | 10 μs | 100 μs |
+
+## Mac Studio (M4 Max), Codex chats on one app-server
+
+Same Mac Studio as above (Mac16,9, M4 Max, 36 GB, macOS 27.0), measured
+2026-10-20 on the `ade/ademark-shared-codex` branch over main at `0d9211fd1`.
+The dev brain ran on a throwaway `ADE_HOME` and a scratch project with sync
+off; Codex 0.162.1, model `gpt-6-luna`. "Before" is the same build with
+`ADE_CODEX_SHARED_APP_SERVER=0` (one app-server per chat, as on main). Main
+itself, with 5 chats idle after one turn, ran 5 app-servers at 422 MB plus
+43 MB of hosts.
+
+### Codex chats: app-server processes
+
+N Codex chats created with `ade chat create` and all mid-turn at the sample
+(each runs `sleep 90` before printing its `ADE_CHAT_SESSION_ID`); physical
+footprint (`footprint`) of the `codex app-server` processes under the brain
+plus their `codex-code-mode-host` children. Every chat printed its own id.
+Per-thread MCP servers (Lane H) and the `codex exec` side jobs (session titles)
+are not in these numbers. Standalone: `scripts/perf/service/codex-app-server.bench.mts`
+(no app, temp `CODEX_HOME`; `--turns` runs one short model turn per thread).
+
+| Metric | Before | Baseline | Ceiling |
+|---|---|---|---|
+| 1 Codex chat | 125 MB, 1 process | 112 MB, 1 process | — |
+| 5 Codex chats at once | 736 MB, 5 app-servers + 5 hosts | 240 MB, 1 app-server (168 MB on a rerun) | proposed, needs approval: 350 MB |
+| 10 Codex chats at once | 1,745 MB, 10 app-servers + 4 hosts | 394 MB, 1 app-server + 2 hosts | proposed, needs approval: 600 MB |
+| A later chat's thread ready (`thread/start` incl. process start), bench | 41 ms (new process); the first chat 375–484 ms | 7–8 ms | — |
+| Input tokens, a new chat's first turn (`hi`), from Codex's own usage | 24,211 | 24,312 (no change: a new thread lists its skills either way) | — |
+| Input tokens, a resumed chat's turn (`ok`) after Restart | 26,520 | 26,637 (+~110, unexplained) | — |
+
+Crash check: `kill -9` of the shared app-server with 3 chats mid-turn; all
+three reported `Codex app-server exited`, and each resumed its own thread on
+one new process with its next message. A model and permission switch in one
+chat, an approval, and an interrupt left the other chats on the process alone.
+Some resumed turns waited 30–50 s for the model's first output in both
+columns; that wait is not the app-server's.
 
 ## iOS app: Lanes and PRs (simulator)
 
