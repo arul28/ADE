@@ -33,7 +33,7 @@ export type AdeRuntimeKind =
  * skill (scheduling rules, drafts, MCP sign-in). The drafts-versus-wake rule
  * lives in the shared `## ADE` block, which every one of these prompts carries.
  */
-const adeScheduledWorkGuidance = "**Scheduled work:** wake yourself later with `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` (or `ade actions run chat.createScheduledWork`); it targets your own session, starts a new turn at the next turn boundary and survives brain restarts. Verify the next run time it reports. For `--at`, cron (the brain machine's local time), listing, pausing and cancelling, read **ade-cli-control-plane**.";
+const adeScheduledWorkGuidance = "**Scheduled work:** wake yourself later with `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` (or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`); it targets your own session, starts a new turn at the next turn boundary and survives brain restarts. Verify the next run time it reports. For `--at`, cron (the brain machine's local time), listing, pausing and cancelling, read **ade-cli-control-plane**.";
 
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
 

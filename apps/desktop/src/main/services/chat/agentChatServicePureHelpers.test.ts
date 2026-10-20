@@ -95,7 +95,7 @@ describe("buildComputerUseDirective", () => {
   ])("keeps $host proof capture host-specific and fences the real-screen tools", ({ options, proof, wrongHost }) => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
     expect(result).toContain(proof);
-    expect(result).not.toContain("This lane has its own");
+    expect(result).not.toMatch(/This lane (?:can start its own private|has a private) (?:macOS|Windows) screen/);
     expect(result).not.toMatch(wrongHost);
     // The manual is the skill; the block names it before the first action.
     expect(result).toContain("**ade-computer-use**");
@@ -111,7 +111,7 @@ describe("buildComputerUseDirective", () => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
       macDesktopAvailable: true,
     })!;
-    expect(result).not.toMatch(/This lane (?:can start|has) its own (?:macOS|Windows) screen/);
+    expect(result).not.toMatch(/This lane (?:can start its own private|has a private) (?:macOS|Windows) screen/);
   });
 
   it("says nothing about a lane screen on a host that cannot give one", () => {
