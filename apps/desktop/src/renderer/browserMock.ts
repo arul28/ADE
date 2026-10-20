@@ -9233,6 +9233,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     }),
+    remoteMcpCall: async () => {
+      throw new Error("Not available in the browser preview.");
+    },
     keepAwakeGet: resolved(MOCK_KEEP_AWAKE_SNAPSHOT),
     keepAwakeSetLevel: async (): Promise<KeepAwakeSnapshot> => MOCK_KEEP_AWAKE_SNAPSHOT,
     keepAwakeFixSystemSleep: resolved({

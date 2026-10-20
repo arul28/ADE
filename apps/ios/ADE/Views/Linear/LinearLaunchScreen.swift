@@ -285,7 +285,7 @@ struct LinearLaunchScreen: View {
     let sync = syncService
     let deps = LinearLaunchDeps(
       createLane: { laneIssue, name, description in
-        try await sync.createLane(name: name, description: description, linearIssue: laneIssue).id
+        try await sync.createLane(name: name, description: description, linearIssue: laneIssue, setUpLane: true).id
       },
       launchChat: { laneId, cfg in
         let wire = workRuntimeWireFields(provider: cfg.provider, mode: cfg.runtimeMode)

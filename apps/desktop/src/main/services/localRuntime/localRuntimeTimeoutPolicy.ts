@@ -248,6 +248,16 @@ export const WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS = 210_000;
 export const WINDOWS_DESKTOP_TYPE_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS + 15_000;
 export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_TIMEOUT_MS + 15_000;
 
+/**
+ * A lane's environment setup runs the template's installs and setup script one
+ * after another, each allowed `LANE_ENV_COMMAND_TIMEOUT_MS` (20 min). On the
+ * 30s default the caller reported a failure while a long install kept running
+ * to success. 45 min covers a template with a slow install and a setup script;
+ * the remote transport expires just before it, so its reason reaches the user.
+ */
+export const LANE_ENV_SETUP_TIMEOUT_MS = 45 * 60_000;
+export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT_MS - 30_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
@@ -263,6 +273,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // merged PR. The 30s default reported a failure while the merge went on.
   ["pr.land", 120_000],
   ["lane.unarchive", 120_000],
+  // See LANE_ENV_SETUP_TIMEOUT_MS.
+  ["lane.initEnv", LANE_ENV_SETUP_TIMEOUT_MS],
+  ["lane.applyTemplate", LANE_ENV_SETUP_TIMEOUT_MS],
   // Archive restore/delete walk a batch one item at a time, and a lane in the
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
   ["archive.restore", 10 * 60_000],

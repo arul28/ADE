@@ -83,6 +83,8 @@ import {
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
+import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -464,6 +466,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "runtime.updateImpact",
   "account.call",
+  "remoteMcp.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -2431,6 +2434,29 @@ export function createMultiProjectRpcRequestHandler(
         return { accepted: false, reason: outcome.reason ?? "unsupported" };
       }
       return { accepted: true };
+    }
+
+    if (method === "remoteMcp.call") {
+      // `ade mcp` in the person's own terminal. Granting an outside AI app this
+      // computer is the person's call: an agent (a chat-bound caller) never
+      // reaches it, and neither does anything below the cto role.
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "ADE MCP is managed by the person: run `ade mcp` in your own terminal, or use Settings → ADE MCP.",
+        );
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!isRemoteMcpAction(action)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown ADE MCP action "${action}".`);
+      }
+      const [{ getSharedRemoteMcpService }, { remoteMcpActionHandlers }] = await Promise.all([
+        import("./services/remoteMcp/remoteMcpShared"),
+        import("./services/remoteMcp/remoteMcpService"),
+      ]);
+      // Settings on this computer's desktop arrives here too (it needs no project).
+      const surface = isDesktopClientName(callerClientName()) ? "desktop" : "api";
+      return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
     // `ade notify`: machine-wide, so it neither needs nor registers the

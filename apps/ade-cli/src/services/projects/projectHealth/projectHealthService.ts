@@ -182,11 +182,13 @@ function installUnits(checkoutRoot: string): string[] {
 type DependencyInstall = { checkout: Checkout; command: string };
 
 /**
- * What to install where. A unit with no `node_modules` needs an install in its
- * checkout. A lane whose `node_modules` is a link into the main checkout is
- * fixed by installing the main checkout, never by installing the lane (that
- * would replace a shared link with gigabytes of copies). Links to anywhere
- * else that is gone are reported as broken.
+ * What to install where. A unit of the main checkout with no `node_modules`
+ * needs an install there. Lanes are not checked for missing installs: new
+ * lanes get no packages from ADE, only from a lane template. A lane made
+ * before that change may still link its `node_modules` into the main
+ * checkout; a dangling one is fixed by installing the main checkout, never by
+ * installing the lane (that would replace a shared link with gigabytes of
+ * copies). Links to anywhere else that is gone are reported as broken.
  */
 function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLinks: string[] } {
   const primary = ctx.checkouts.find((checkout) => checkout.primary) ?? null;
@@ -207,9 +209,9 @@ function dependencyPlan(ctx: Context): { installs: DependencyInstall[]; brokenLi
       }
       const empty = stat?.isDirectory() === true && isEmptyDir(nodeModules);
       if (!stat || empty) {
-        // A lane often installs only some of its packages, or shares them by
-        // link; only its own top-level install is expected.
-        if (checkout.primary || unit === checkout.root) mark(checkout, unit);
+        // A lane gets packages only from a lane template or its own install;
+        // ADE gives a new lane none, so a lane without them is normal.
+        if (checkout.primary) mark(checkout, unit);
         continue;
       }
       if (!stat.isSymbolicLink() || exists(nodeModules)) continue;
@@ -599,7 +601,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           title: plan.installs.length
             ? `${plural(plan.installs.length, "checkout")} need${plan.installs.length === 1 ? "s" : ""} dependencies installed`
             : `${plural(plan.brokenLinks.length, "dependency link")} point${plan.brokenLinks.length === 1 ? "s" : ""} at nothing`,
-          detail: "Builds, tests and dev servers fail until dependencies are installed. Lanes that share the main checkout's dependencies work again once it is installed, so they aren't reinstalled one by one.",
+          detail: "Builds, tests and dev servers in the main checkout fail until dependencies are installed. Older lanes that link to the main checkout's dependencies work again once it is installed.",
           items: [
             ...plan.installs.map((install) => `${install.checkout.label}: ${install.command}`),
             ...plan.brokenLinks.map((link) => `broken link: ${path.relative(projectRoot, link)}`),

@@ -8,18 +8,25 @@ import Foundation
 /// Watches for both Command keys, captures the frontmost window, and speaks
 /// NDJSON to the ADE main process:
 ///
-///   stdin   {"type":"capture"} | {"type":"settings","enabled":bool} | {"type":"quit"}
-///   stdout  {"type":"ready"} | {"type":"chord"} | {"type":"captured",...}
+///   stdin   {"type":"capture"} | {"type":"settings","enabled":bool} | {"type":"retry"} | {"type":"quit"}
+///   stdout  {"type":"ready"} | {"type":"chord-ready"} | {"type":"chord"} | {"type":"captured",...}
+///           | {"type":"input-monitoring-required"}
 ///           | {"type":"permission-denied"} | {"type":"no-window"}
 ///           | {"type":"capture-failed","message":...}
 ///
 /// Two deliberate choices worth not undoing:
 ///
-/// 1. The chord is detected by POLLING `NSEvent.modifierFlags`, not by a global
-///    event monitor or a CGEventTap. Both of those are key-event taps and macOS
-///    gates them behind Accessibility; the static flags property is a hardware
-///    state read and is not gated at all. That is the entire reason the gesture
-///    is modifier-only.
+/// 1. The chord is read from `.flagsChanged` key codes through a listen-only
+///    event tap (55 left Command, 54 right Command), and only where that tap is
+///    unavailable on an older macOS does it fall back to polling the static
+///    `NSEvent.modifierFlags` device bits.
+///
+///    Until macOS 27 the static poll was enough: it returned the device-
+///    dependent left/right masks without any permission. macOS 27 folds both
+///    keys into the generic Command bit, so the poll can never see the chord.
+///    A tap is the API that still names the physical key; macOS gates it behind
+///    Input Monitoring, and the host says so in health rather than leaving a
+///    toggle that looks on and does nothing.
 /// 2. The pixels come from `/usr/sbin/screencapture -l<windowID>`, not from
 ///    `CGWindowListCreateImage`. The CG call was deprecated in macOS 14 in
 ///    favour of ScreenCaptureKit, whose window capture is async and pulls in a
@@ -218,14 +225,33 @@ final class FlashPresenter {
 
 // MARK: - Helper
 
+/// The event tap's C callback. The app object is the `userInfo` pointer, so the
+/// callback carries no captured state and can be a plain function.
+private func captureChordTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let userInfo else { return Unmanaged.passUnretained(event) }
+    let app = Unmanaged<CaptureHelperApp>.fromOpaque(userInfo).takeUnretainedValue()
+    app.handleTapEvent(type: type, event: event)
+    return Unmanaged.passUnretained(event)
+}
+
 /// Main-queue confined. See `FlashPresenter` for why this is a plain class.
 final class CaptureHelperApp: NSObject {
     private let writer = EventWriter()
     private let capturer: WindowCapturer
     private let flash = FlashPresenter()
-    private var detector = ChordDetector()
+    /// `.flagsChanged` key codes, the route that still works on macOS 27.
+    private var detector = CommandKeyChordDetector()
+    /// The pre-macOS-27 device-bit poll, kept as the no-grant fallback there.
+    private var pollDetector = ChordDetector()
     private var enabled = true
     private var pollTimer: Timer?
+    private var eventTap: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
     private var capturing = false
 
     /// 40ms. Fast enough that a deliberate two-hand press is never missed (the
@@ -240,6 +266,82 @@ final class CaptureHelperApp: NSObject {
 
     func start() {
         readCommandsInBackground()
+        writer.emit(.ready)
+        installChordMonitor()
+    }
+
+    private func poll() {
+        let raw = NSEvent.modifierFlags.rawValue
+        guard pollDetector.consume(rawFlags: raw) else { return }
+        guard enabled else { return }
+        writer.emit(.chord)
+    }
+
+    /// Install the chord monitor, preferring the event tap and falling back to
+    /// the old poll only where the poll still carries the left/right bits.
+    private func installChordMonitor() {
+        // A reinstall can happen while a key is held, and the events that would
+        // have released it are gone. Start both detectors from a known state.
+        detector.reset()
+        pollDetector.reset()
+        stopPolling()
+        removeEventTap()
+        // Before macOS 27 the static poll still carries the device bits and
+        // costs no permission. Only the version that lost them needs the tap.
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
+            startPolling()
+            return
+        }
+        if !CGPreflightListenEventAccess() {
+            // The prompt names ADE (the responsible app), not this helper.
+            _ = CGRequestListenEventAccess()
+        }
+        if installEventTap() { return }
+        // macOS 27 has no working poll fallback here, so a missing tap means
+        // the gesture cannot fire at all. Say which remedy applies instead of
+        // reporting a healthy gesture that never will.
+        writer.emit(CGPreflightListenEventAccess() ? .chordUnavailable : .inputMonitoringRequired)
+    }
+
+    private func installEventTap() -> Bool {
+        let mask = CGEventMask(1 << CGEventType.flagsChanged.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: captureChordTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            return false
+        }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            return false
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        eventTap = tap
+        eventTapSource = source
+        writer.emit(.chordReady)
+        return true
+    }
+
+    private func removeEventTap() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let source = eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        eventTap = nil
+        eventTapSource = nil
+    }
+
+    private func startPolling() {
+        guard pollTimer == nil else { return }
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             // Already on the main thread: the timer is scheduled on the main run
             // loop, so no hop is needed (or wanted — a hop would let two polls
@@ -251,12 +353,31 @@ final class CaptureHelperApp: NSObject {
         // reaches for the gesture.
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
-        writer.emit(.ready)
+        writer.emit(.chordReady)
     }
 
-    private func poll() {
-        let raw = NSEvent.modifierFlags.rawValue
-        guard detector.consume(rawFlags: raw) else { return }
+    private func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    fileprivate func handleTapEvent(type: CGEventType, event: CGEvent) {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                // A tap disabled by secure input or a revoked grant can refuse
+                // to come back. Falling silent leaves health claiming running.
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    writer.emit(CGPreflightListenEventAccess() ? .chordUnavailable : .inputMonitoringRequired)
+                }
+            }
+            detector.reset()
+            return
+        }
+        guard type == .flagsChanged else { return }
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let commandDown = event.flags.contains(.maskCommand)
+        guard detector.consume(keyCode: keyCode, commandDown: commandDown) else { return }
         guard enabled else { return }
         writer.emit(.chord)
     }
@@ -280,13 +401,16 @@ final class CaptureHelperApp: NSObject {
     private func handle(_ command: HelperCommand) {
         switch command {
         case .quit:
-            pollTimer?.invalidate()
-            pollTimer = nil
+            stopPolling()
+            removeEventTap()
             NSApp.terminate(nil)
         case let .settings(enabled):
             self.enabled = enabled
             // Drop the latch so re-enabling does not fire on keys already held.
             detector.reset()
+            pollDetector.reset()
+        case .retry:
+            installChordMonitor()
         case .capture:
             performCapture()
         }

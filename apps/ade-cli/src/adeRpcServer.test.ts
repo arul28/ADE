@@ -7750,6 +7750,35 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("create_lane refuses an unknown template before any lane exists, and returns a failed setup with the lane", async () => {
+    const fixture = createRuntime();
+    (fixture.runtime as any).laneTemplateService = {
+      getTemplate: vi.fn((templateId: string) => (templateId === "web" ? { id: "web", name: "Web" } : null)),
+      getDefaultTemplateId: vi.fn(() => "web"),
+    };
+    (fixture.runtime as any).laneEnvironmentService = {};
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "coord-1", role: "agent" });
+
+    // A typo must not leave a lane behind: the check runs before creation.
+    const refused = await callTool(handler, "create_lane", { name: "typo", templateId: "nope" });
+    expect(refused?.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("nope");
+    expect(fixture.runtime.laneService.create).not.toHaveBeenCalled();
+
+    // The default template is used, and a setup that fails is reported next to
+    // the lane rather than thrown, so the caller still learns the lane's id.
+    const created = await callTool(handler, "create_lane", { name: "new-feature" });
+    expect(created?.isError).toBeUndefined();
+    expect(created.structuredContent.lane.id).toBe("lane-new");
+    expect(created.structuredContent.setup.templateId).toBe("web");
+    expect(typeof created.structuredContent.setup.error).toBe("string");
+
+    const plain = await callTool(handler, "create_lane", { name: "plain", templateId: "nope", skipSetup: true });
+    expect(plain?.isError).toBeUndefined();
+    expect(plain.structuredContent.setup).toBeUndefined();
+  });
+
   it("defaults a base-less create_lane to the fetched remote-tracking ref", async () => {
     const fixture = createRuntime();
     fixture.runtime.laneService.list = vi.fn(async () => [

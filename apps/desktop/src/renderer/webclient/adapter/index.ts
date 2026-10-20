@@ -164,6 +164,10 @@ export function createAdeWebAdapter(
     providerInstances: misc.providerInstances,
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
+    // ADE MCP belongs to a physical machine; the manifest hides it on web.
+    remoteMcpCall: async () => {
+      throw new Error("Manage ADE MCP on the computer itself.");
+    },
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,
     keepAwakeFixSystemSleep: webKeepAwakeMethods.keepAwakeFixSystemSleep,

@@ -279,9 +279,12 @@ The capture gesture writes its own local structured line family, and it is not
 a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
 `helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
-`helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
-records why a chord was refused or a shot never arrived and carries no window
-title, app name, or image.
+`helper_path_outside_output_dir`, `input_monitoring_required`,
+`chord_unavailable`, `chord_ignored`, `late_answer_dropped`); it records why a
+chord was refused or a shot never arrived and carries no window title, app
+name, or image. The two setup-health lines are not PostHog events: a missing
+grant or a monitor that cannot start is an environment fact, not a person
+using the gesture, and the settings health card is the user-facing surface.
 
 When an agent switches its lane to a new branch during a turn, ADE adopts
 the branch or leaves the choice to the user, and writes the local structured
@@ -397,7 +400,12 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
 | `home` | `spotify_connected` | `completed`, `cancelled`, `failed` | omitted; never the Spotify account, client ID, device, track or token |
 | `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
+| `ade_mcp` | `server_toggled` | `enabled`, `disabled` | omitted; never the machine, its server URL, or a connection |
+| `ade_mcp` | `app_connected`, `token_created`, `connection_removed` | `completed` | omitted; never the app's name, its redirect host, the access level, a token, or a command it ran |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
+| `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
+| `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -411,6 +419,15 @@ A browser sign-in to an MCP server (Settings › MCP servers) records
 it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the
 existing `ade_feature_used` ceilings.
+
+ADE MCP (Settings › Computer › ADE MCP, `ade mcp`) records its decisions in
+the brain, after the change is stored: `server_toggled` when it is switched on
+or off, `token_created` and `connection_removed` from Settings (`desktop`) or
+`ade mcp` (`api`), and `app_connected` when an app finishes signing in
+(`api`). Each is deduplicated per action and outcome for an hour, so the worst
+case is five events a day inside the existing `ade_feature_used` ceilings. The
+commands connected apps run are never captured; they are counted only in the
+local activity log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the
@@ -1323,6 +1340,17 @@ It records only the successful user action—not lane names, paths, sizes,
 blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
+
+The renderer records `template_setup_started` when the setup chat draft opens
+(`from_banner` or `from_settings`), `template_suggestion_hidden` when the prompt
+is hidden (`completed`), and `deps_update_started` when an install terminal
+starts (`completed` or `failed`). They are emitted from
+`renderer/lib/laneSetupAnalytics.ts` because the chat draft and terminal start
+are renderer decisions with no durable backend mutation. They never carry a
+lane, path, lockfile name, package manager, folder count, template id or name,
+machine, or error text. A 24-hour per-action-and-outcome key allows at most five
+accepted events per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised.
 
 Opening the account-wide Activity control (renamed from "Attention" in the UI;
 the analytics taxonomy deliberately keeps the frozen `attention` keys) records

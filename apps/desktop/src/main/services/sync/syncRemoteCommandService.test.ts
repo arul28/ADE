@@ -675,6 +675,40 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
+    it("lanes.create with setup \"default\" answers with the lane, then sets it up with the default template", async () => {
+      const sheetLane = { id: "lane-sheet", name: "Sheet lane", laneType: "feature", worktreePath: "/repo/.ade/worktrees/lane-sheet" };
+      const lane = { id: "lane-new", name: "Phone lane", laneType: "feature", worktreePath: "/repo/.ade/worktrees/lane-new" };
+      laneService.create.mockResolvedValueOnce(sheetLane).mockResolvedValueOnce(lane);
+      laneService.list.mockResolvedValue([sheetLane, lane]);
+      const envInit = { dependencies: [{ command: ["npm", "install"] }] };
+      let markStarted: (args: unknown[]) => void = () => {};
+      const started = new Promise<unknown[]>((resolve) => { markStarted = resolve; });
+      const initLaneEnvironment = vi.fn(async (...args: unknown[]) => {
+        markStarted(args);
+        return { laneId: lane.id, steps: [], startedAt: "t", completedAt: "t", overallStatus: "completed" };
+      });
+      const withSetup = createSyncRemoteCommandService({
+        laneService, prService, ptyService, sessionService, fileService, gitService, diffService, agentChatService, conflictService,
+        projectConfigService: { getEffective: vi.fn(() => ({ laneEnvInit: envInit, laneOverlayPolicies: [] })) } as any,
+        laneEnvironmentService: { resolveEnvInitConfig: vi.fn(() => envInit), initLaneEnvironment } as any,
+        laneTemplateService: {
+          getDefaultTemplateId: vi.fn(() => null),
+          getTemplate: vi.fn(() => null),
+        } as any,
+        portAllocationService: { getLease: vi.fn(() => null) } as any,
+        logger: createLogger() as any,
+      });
+
+      // Without the flag (the lane sheet, older phones) nothing is set up here.
+      await withSetup.execute(makePayload("lanes.create", { name: "Sheet lane" }));
+      expect(await withSetup.execute(makePayload("lanes.create", { name: "Phone lane", setup: "default" }))).toEqual(lane);
+      expect(laneService.create).toHaveBeenLastCalledWith(expect.not.objectContaining({ setup: expect.anything() }));
+
+      const [setUpLane] = await started;
+      expect(setUpLane).toEqual(lane);
+      expect(initLaneEnvironment).toHaveBeenCalledTimes(1);
+    });
+
     it("lanes.create throws when name is missing", async () => {
       await expect(service.execute(makePayload("lanes.create", {})))
         .rejects.toThrow("lanes.create requires name.");

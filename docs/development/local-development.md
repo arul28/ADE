@@ -380,9 +380,10 @@ The per-lane `--socket` gives the lane build an isolated runtime (and sidesteps
 the warning above — nothing else is listening there); the per-lane bridge endpoint
 avoids colliding with the installed app's `~/.ade/sock/desktop-bridge.sock`. Set
 `ADE_PROJECT_ROOT=/path/to/other-project` only if you want a different project's
-data. A fresh worktree has no `node_modules` — symlink the root and `apps/desktop`
-`node_modules` from the primary checkout, or run `npm run setup` inside the
-worktree first.
+data. A fresh worktree has no `node_modules`: ADE no longer links the primary
+checkout's packages into new lanes. Run `npm run setup` inside the worktree
+first, or give the project a default lane template that installs or copies
+them (Settings › Lane templates › Set up with an agent).
 
 When launching that same flow through ADE App Control from a running Alpha/Beta
 ADE window, also clear the packaged-channel environment variables inherited from

@@ -253,6 +253,13 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     initEnv: (args: unknown) => call("lanes.initEnv", args, null, false),
     getEnvStatus: (args: unknown) => call("lanes.getEnvStatus", args, null),
     listTemplates: () => call("lanes.listTemplates", {}, []),
+    // The hosted client has no sync command for it; the banners stay off there.
+    getDependencyStatus: async () => {
+      throw new Error("Package status is available in the desktop app.");
+    },
+    acknowledgeDependencyStatus: async () => {
+      throw new Error("Package status is available in the desktop app.");
+    },
     getDefaultTemplate: () => call("lanes.getDefaultTemplate", {}, null),
     setDefaultTemplate: async (args: unknown) => {
       await call("lanes.setDefaultTemplate", args, undefined, false);

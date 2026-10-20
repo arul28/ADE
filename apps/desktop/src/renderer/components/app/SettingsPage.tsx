@@ -17,6 +17,7 @@ import {
   Palette,
   Plugs,
   PlugsConnected,
+  ShareNetwork,
   SlidersHorizontal,
   SquaresFour,
   UserCircle,
@@ -92,6 +93,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   apple: DeviceMobile,
   appearance: Palette,
   behaviour: SlidersHorizontal,
+  "ade-mcp": ShareNetwork,
 };
 
 /** Tabs whose content sits in the centred `SettingsColumn`. */
@@ -106,6 +108,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "secrets",
   "service",
   "behaviour",
+  "ade-mcp",
   "agents",
   "lanes-git",
   "location",

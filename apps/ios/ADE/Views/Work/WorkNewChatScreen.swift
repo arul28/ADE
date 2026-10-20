@@ -1604,7 +1604,8 @@ struct WorkNewChatScreen: View {
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
           branchName: temporaryBranch,
           targetProjectId: remoteRepo?.markedProjectId,
-          targetProjectRootPath: remoteRepo?.rootPath
+          targetProjectRootPath: remoteRepo?.rootPath,
+          setUpLane: true
         )
         targetLaneId = lane.id
         targetLaneForScope = lane

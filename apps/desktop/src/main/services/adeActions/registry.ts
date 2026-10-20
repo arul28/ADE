@@ -87,6 +87,7 @@ import {
 } from "../../../shared/types/attention";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { remoteMcpActionHandlers } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpService";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -146,7 +147,10 @@ import {
 } from "../chat/draftService";
 import type {
   AiConfig,
+  AcknowledgeLaneDependencyStatusArgs,
   ApplyLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   ArchiveAndReclaimLaneArgs,
   DeleteLaneArgs,
   DeleteLaneResult,
@@ -198,6 +202,11 @@ import {
 } from "../lanes/laneRuntimeLifecycle";
 import { createArchiveService } from "../archive/archiveService";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
+import {
+  acknowledgeLaneDependencyStatus,
+  readLaneDependencyStatus,
+  type LaneDependencyStatusDeps,
+} from "../lanes/laneDependencyStatus";
 import {
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
@@ -567,6 +576,20 @@ function toService(value: unknown): OpaqueService | null {
 function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
   const proxyService = runtime.getProxyService?.() ?? runtime.proxyService;
   return proxyService ? toService(createProxyActionDomainService(proxyService)) : null;
+}
+
+/**
+ * ADE MCP for Settings. Every write is user-only (the desktop), so an
+ * agent can neither read nor grant it; `ade mcp` reaches the same service
+ * through the machine method `remoteMcp.call`.
+ */
+function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const service = runtime.remoteMcpService;
+  if (!service) return null;
+  const handlers = remoteMcpActionHandlers(service, "desktop");
+  return Object.fromEntries(
+    Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
+  );
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -1962,8 +1985,19 @@ async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: 
   );
 }
 
-/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
-function laneEnvironmentSetupDeps(
+/** Deps for `lane.getDependencyStatus` / `lane.acknowledgeDependencyStatus`: the main checkout of this runtime's project. */
+function laneDependencyStatusDeps(runtime: AdeRuntime): LaneDependencyStatusDeps {
+  return {
+    projectRoot: runtime.projectRoot,
+    cacheDir: runtime.paths.cacheDir,
+    getDefaultTemplateId: () => runtime.laneTemplateService?.getDefaultTemplateId() ?? null,
+    getTemplateCount: () => runtime.laneTemplateService?.listTemplates().length ?? 0,
+    logger: runtime.logger,
+  };
+}
+
+/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate, and `create_lane`'s setup). */
+export function laneEnvironmentSetupDeps(
   runtime: AdeRuntime,
   laneEnvironmentService: NonNullable<AdeRuntime["laneEnvironmentService"]>,
 ): LaneEnvironmentSetupDeps {
@@ -2246,6 +2280,18 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     deleteTemplate: (args?: { templateId?: string }) => {
       requireService(runtime.laneTemplateService, "Lane template service not available.").deleteTemplate(requireNonEmptyString(args?.templateId, "templateId"));
+    },
+    getDependencyStatus: (args?: GetLaneDependencyStatusArgs): Promise<LaneDependencyStatus> =>
+      readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: args?.refresh === true }),
+    acknowledgeDependencyStatus: (args?: AcknowledgeLaneDependencyStatusArgs): Promise<LaneDependencyStatus> => {
+      const lockfiles = Array.isArray(args?.lockfiles)
+        ? args.lockfiles.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        : undefined;
+      // Only an omitted list means "all"; an empty one changes nothing.
+      if (lockfiles && lockfiles.length === 0) {
+        return readLaneDependencyStatus(laneDependencyStatusDeps(runtime), { refresh: true });
+      }
+      return acknowledgeLaneDependencyStatus(laneDependencyStatusDeps(runtime), lockfiles ? { lockfiles } : {});
     },
     portGetLease: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
@@ -4135,6 +4181,7 @@ export function getAdeActionDomainServices(
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
+    remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

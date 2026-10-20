@@ -19,6 +19,7 @@ import {
   type RelaySelfProbeResult,
 } from "./syncRelaySelfProbe";
 import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
+import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpService";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -56,7 +57,18 @@ export type SyncTunnelClientStatus = {
   identityRotationCapped?: boolean;
   /** Epoch ms the current uninterrupted control outage began; null when connected. */
   controlFailingSinceMs?: number | null;
+  /**
+   * The key in this machine's ADE MCP URL. Derived from the relay secret and
+   * never equal to `machineKey`, so the URL handed to AI apps cannot open
+   * phone tunnels.
+   */
+  mcpEndpointKey?: string;
 };
+
+/** The ADE MCP endpoint key for a relay identity (see SyncTunnelClientStatus). */
+export function mcpEndpointKeyFor(identity: { machineKey: string; secret: string }): string {
+  return signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+}
 
 export type SyncTunnelClientService = {
   start(): Promise<void>;
@@ -72,6 +84,12 @@ export type SyncTunnelClientService = {
    * it wins regardless of who created the instance.
    */
   attachHostListener(listener: TunnelHostListener | null): void;
+  /**
+   * Hand this client the machine's ADE MCP service. The relay learns
+   * whether it is on from this socket (`mcp_state`), and forwards its HTTP
+   * requests here (`http` → `http_res`).
+   */
+  attachRemoteMcp(host: TunnelRemoteMcpHost | null): void;
   /** Re-probe the active shared listener without opening a Relay pipe. */
   validateCurrentBridge(): Promise<boolean>;
   /** Dial Relay exactly like a ready-v2 controller and verify bridge readiness. */
@@ -308,8 +326,58 @@ export function relayPipeLocalPath(message: { kind?: string; path?: string }): s
   return APPLE_STREAM_PIPE_PATH.test(path) ? path : "";
 }
 
-export type ControlMessage = ControlOpenMessage | {
+/**
+ * One HTTP request for this machine's ADE MCP, carried over the
+ * control socket. The relay forwards anything under `/m/<machineKey>/`; the
+ * remote MCP service decides what it means. See services/remoteMcp.
+ */
+export type ControlHttpMessage = {
+  t: "http";
+  rid: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: string | null;
+};
+
+/** An `http` frame whose request id is usable but whose request is not; it gets a 400. */
+type ControlHttpRejectedMessage = { t: "http_invalid"; rid: string };
+
+export type ControlMessage = ControlOpenMessage | ControlHttpMessage | ControlHttpRejectedMessage | {
   t: "pong";
+};
+
+const HTTP_METHODS = new Set(["GET", "POST", "DELETE", "HEAD"]);
+const MAX_HTTP_PATH_CHARS = 8_192;
+const MAX_HTTP_HEADERS = 32;
+const MAX_HTTP_BODY_CHARS = 1024 * 1024;
+/** What the relay accepts back, with room for JSON escaping of a full body. */
+const MAX_HTTP_RESPONSE_ENVELOPE_CHARS = 4 * 1024 * 1024;
+
+function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMessage | ControlHttpRejectedMessage | null {
+  const { rid, method, path, headers, body } = parsed;
+  if (typeof rid !== "string" || !/^[a-f0-9]{16,32}$/i.test(rid)) return null;
+  // The relay waits on this rid; answer it rather than leave it to time out.
+  const rejected: ControlHttpRejectedMessage = { t: "http_invalid", rid };
+  if (typeof method !== "string" || !HTTP_METHODS.has(method)) return rejected;
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > MAX_HTTP_PATH_CHARS) return rejected;
+  if (body !== null && body !== undefined && (typeof body !== "string" || body.length > MAX_HTTP_BODY_CHARS)) return rejected;
+  const cleanHeaders: Record<string, string> = {};
+  if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+    const entries = Object.entries(headers as Record<string, unknown>);
+    if (entries.length > MAX_HTTP_HEADERS) return rejected;
+    for (const [key, value] of entries) {
+      if (typeof value === "string" && value.length <= 8_192) cleanHeaders[key.toLowerCase()] = value;
+    }
+  }
+  return { t: "http", rid, method, path, headers: cleanHeaders, body: typeof body === "string" ? body : null };
+}
+
+/** The slice of the remote MCP service the relay connection drives. */
+export type TunnelRemoteMcpHost = {
+  isEnabled(): boolean;
+  onEnabledChange(listener: (enabled: boolean) => void): () => void;
+  handleHttp(request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse>;
 };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
@@ -346,6 +414,7 @@ export function parseControlMessage(raw: string): ControlMessage | null {
     };
   }
   if (t === "pong") return { t: "pong" };
+  if (t === "http") return parseControlHttpMessage(parsed as Record<string, unknown>);
   return null;
 }
 
@@ -427,6 +496,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let connected = false;
   let hostListener: TunnelHostListener | null = null;
   let detachHostListener: (() => void) | null = null;
+  let remoteMcp: TunnelRemoteMcpHost | null = null;
+  let detachRemoteMcp: (() => void) | null = null;
   let lastError: string | null = null;
   let lastControlError: string | null = null;
   let bridgeOpenFailure: {
@@ -995,6 +1066,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         controlFailingSinceMs = null;
         controlOpenedAtMs = Date.now();
         lastControlOpenAt = new Date().toISOString();
+        // A new control socket starts "off" at the relay; say what is true.
+        sendRemoteMcpState(socket);
         socketLivenessStop = armControlLiveness(
           socket,
           () => {
@@ -1116,6 +1189,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         const message = parseControlMessage(rawToText(raw));
         if (message?.t === "pong") {
           acceptJsonPong?.();
+          return;
+        }
+        if (message?.t === "http" || message?.t === "http_invalid") {
+          void answerRemoteMcpHttp(socket, message);
           return;
         }
         if (message?.t !== "open") return;
@@ -1595,6 +1672,71 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
+  /**
+   * Tell the relay whether ADE MCP is on. Said only by a client that has (or
+   * just lost) the service: a relay that never hears "on" keeps answering 404
+   * without waking this machine, and an older relay ignores the message.
+   */
+  const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
+    if (!controlSocket || (!remoteMcp && !force)) return;
+    sendControlLifecycle(controlSocket, {
+      t: "mcp_state",
+      enabled: remoteMcp?.isEnabled() === true,
+      endpointKey: mcpEndpointKeyFor(identity()),
+    });
+  };
+
+  const answerRemoteMcpHttp = async (
+    controlSocket: WebSocket,
+    message: ControlHttpMessage | ControlHttpRejectedMessage,
+  ): Promise<void> => {
+    let response: RemoteMcpHttpResponse;
+    if (message.t === "http_invalid") {
+      response = {
+        status: 400,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "bad_request", error_description: "The request was malformed." }),
+      };
+    } else if (!remoteMcp) {
+      response = {
+        status: 404,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." }),
+      };
+    } else {
+      try {
+        response = await remoteMcp.handleHttp(message);
+      } catch (error) {
+        log.warn?.("remote_mcp.request_failed", { error: error instanceof Error ? error.message : String(error) });
+        response = {
+          status: 500,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "server_error", error_description: "This computer could not answer." }),
+        };
+      }
+    }
+    // The socket the request came on is the only one the relay can match the
+    // answer to. If it has gone, the relay already failed the request.
+    if (control !== controlSocket) return;
+    let envelope = JSON.stringify({ t: "http_res", rid: message.rid, ...response });
+    if (envelope.length > MAX_HTTP_RESPONSE_ENVELOPE_CHARS) {
+      envelope = JSON.stringify({
+        t: "http_res",
+        rid: message.rid,
+        status: 502,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "response_too_large" }),
+      });
+    }
+    if (controlSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      controlSocket.send(envelope);
+    } catch (error) {
+      // The relay fails the request when the socket goes; the socket's own handlers deal with that.
+      log.warn?.("remote_mcp.response_send_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const sendControlReject = (
     controlSocket: WebSocket,
     connectionId: string,
@@ -1960,6 +2102,19 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       await refreshAccountLease();
     },
 
+    attachRemoteMcp(host: TunnelRemoteMcpHost | null): void {
+      if (remoteMcp === host) return;
+      const hadHost = remoteMcp !== null;
+      detachRemoteMcp?.();
+      detachRemoteMcp = null;
+      remoteMcp = host;
+      if (host) {
+        detachRemoteMcp = host.onEnabledChange(() => sendRemoteMcpState(control));
+      }
+      // Losing the service turns the relay's flag off too.
+      sendRemoteMcpState(control, hadHost);
+    },
+
     attachHostListener(listener: TunnelHostListener | null): void {
       if (hostListener === listener) return;
       const hadListener = hostListener != null;
@@ -2054,7 +2209,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     },
 
     getStatus(): SyncTunnelClientStatus {
-      const { machineKey } = identity();
+      const currentIdentity = identity();
+      const { machineKey } = currentIdentity;
       const currentValidationIdentity = bridgeValidationIdentity();
       const currentPort = currentValidationIdentity.port;
       const currentLoopbackNonce = currentValidationIdentity.nonce;
@@ -2069,6 +2225,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         ? selfProbeRoundTripMs
         : null;
       return {
+        mcpEndpointKey: mcpEndpointKeyFor(currentIdentity),
         accountLeaseValid: eligible,
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,

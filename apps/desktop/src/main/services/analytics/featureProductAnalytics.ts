@@ -22,7 +22,8 @@ export type FeatureAnalyticsName =
   | "automations"
   | "attention"
   | "home"
-  | "mcp_servers";
+  | "mcp_servers"
+  | "ade_mcp";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -58,7 +59,11 @@ export type FeatureAnalyticsAction =
   | "secret_requested"
   | "notification_sent"
   | "music_connected"
-  | "spotify_connected";
+  | "spotify_connected"
+  | "server_toggled"
+  | "app_connected"
+  | "token_created"
+  | "connection_removed";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -412,4 +417,18 @@ export function captureProviderAccountSettingsChange(
   if (Object.hasOwn(settings, "onExtraUsage")) {
     capture("extra_usage_stop_changed", settings.onExtraUsage === "stop" ? "enabled" : "disabled", provider);
   }
+}
+
+/**
+ * A decision about ADE MCP on this computer: switched on or off, an app
+ * connected, a token made, a connection removed. Recorded by the brain once
+ * the change is stored; nothing about the app, the token or its access.
+ */
+export function captureAdeMcpAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "server_toggled" | "app_connected" | "token_created" | "connection_removed";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "enabled" | "disabled">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "ade_mcp" });
 }

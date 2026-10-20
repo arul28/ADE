@@ -54,6 +54,7 @@ export type CaptureGestureHealthState =
   | "unsupported"
   | "missing"
   | "permission_denied"
+  | "monitor_unavailable"
   | "crash_loop";
 
 export type CaptureGestureHealth = {

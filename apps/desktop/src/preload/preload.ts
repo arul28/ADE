@@ -260,6 +260,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeLevel,
   KeepAwakeSnapshot,
+  RemoteMcpAction,
   AutoUpdateSnapshot,
   UpdateImpact,
   UpdateInstallImpact,
@@ -876,6 +877,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -7197,6 +7201,19 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "listTemplates", {}, () =>
         ipcRenderer.invoke(IPC.lanesListTemplates),
       ),
+    // Runtime-only: the brain reads the checkout of the machine that owns it.
+    getDependencyStatus: (
+      args: GetLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "getDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
+    acknowledgeDependencyStatus: (
+      args: AcknowledgeLaneDependencyStatusArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDependencyStatus> =>
+      callPinnedOrBoundRuntimeActionOr<LaneDependencyStatus>(pin, "lane", "acknowledgeDependencyStatus", { args }, () =>
+        Promise.reject(new Error("Package status needs a connected ADE runtime."))),
     getTemplate: async (
       args: GetLaneTemplateArgs,
     ): Promise<LaneTemplate | null> =>
@@ -13962,6 +13979,16 @@ const adeBridge = {
     pin
       ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
       : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
+  // ADE MCP is a "This computer" section like keep-awake: no pin means
+  // this machine's own brain (through main), a pin means that machine's brain.
+  remoteMcpCall: async <T = unknown>(
+    action: RemoteMcpAction,
+    args?: Record<string, unknown>,
+    pin?: OpenProjectBinding | null,
+  ): Promise<T> => {
+    if (pin) return await callPinnedRuntimeAction<T>(pin, "remote_mcp", action, { args: args ?? {} });
+    return await ipcRenderer.invoke(IPC.remoteMcpCall, action, args ?? {}) as T;
+  },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),

@@ -5,6 +5,8 @@ import Foundation
 public enum HelperCommand: Equatable {
     case capture
     case settings(enabled: Bool)
+    /// Try the chord monitor again, after Input Monitoring was granted.
+    case retry
     case quit
 
     /// Parse one line. Returns nil for junk and for commands this build does not
@@ -21,6 +23,7 @@ public enum HelperCommand: Equatable {
         switch type {
         case "capture": return .capture
         case "quit": return .quit
+        case "retry": return .retry
         case "settings":
             let enabled = (dictionary["enabled"] as? Bool) ?? true
             return .settings(enabled: enabled)
@@ -32,6 +35,12 @@ public enum HelperCommand: Equatable {
 /// One NDJSON line from the helper to ADE.
 public enum HelperEvent {
     case ready
+    /// The chord monitor is installed and can see both Command keys.
+    case chordReady
+    /// The host has no Input Monitoring grant, so modifier changes are invisible.
+    case inputMonitoringRequired
+    /// The grant is present, but the event tap could not be started or restored.
+    case chordUnavailable
     case chord
     case captured(
         path: String,
@@ -48,6 +57,12 @@ public enum HelperEvent {
         switch self {
         case .ready:
             return ["type": "ready"]
+        case .chordReady:
+            return ["type": "chord-ready"]
+        case .inputMonitoringRequired:
+            return ["type": "input-monitoring-required"]
+        case .chordUnavailable:
+            return ["type": "chord-unavailable"]
         case .chord:
             return ["type": "chord"]
         case .permissionDenied:

@@ -180,6 +180,7 @@ import type {
   KeepAwakeFixResult,
   KeepAwakeLevel,
   KeepAwakeSnapshot,
+  RemoteMcpAction,
   AutoUpdateSnapshot,
   UpdateImpact,
   UpdateInstallImpact,
@@ -827,6 +828,9 @@ import type {
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
+  GetLaneDependencyStatusArgs,
+  AcknowledgeLaneDependencyStatusArgs,
+  LaneDependencyStatus,
   DeleteLaneTemplateArgs,
   GetPortLeaseArgs,
   AcquirePortLeaseArgs,
@@ -2230,6 +2234,15 @@ declare global {
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
         onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
         listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
+        /** Lockfiles in the main checkout of the pinned (or tab's) machine and whether each install is current. */
+        getDependencyStatus: (
+          args?: GetLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
+        acknowledgeDependencyStatus: (
+          args?: AcknowledgeLaneDependencyStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDependencyStatus>;
         getTemplate: (
           args: GetLaneTemplateArgs,
         ) => Promise<LaneTemplate | null>;
@@ -4816,6 +4829,11 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
+      remoteMcpCall: <T = unknown>(
+        action: RemoteMcpAction,
+        args?: Record<string, unknown>,
+        pin?: OpenProjectBinding | null,
+      ) => Promise<T>;
       keepAwakeGet: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
       keepAwakeSetLevel: (level: KeepAwakeLevel, pin?: OpenProjectBinding | null) => Promise<KeepAwakeSnapshot>;
       keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeFixResult>;

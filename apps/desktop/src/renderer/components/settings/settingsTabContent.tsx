@@ -23,6 +23,7 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
+import { AdeMcpPage } from "./AdeMcpPage";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
@@ -399,6 +400,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
+  // Served by the selected machine's brain; every call carries its pin.
+  "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn><AdeMcpPage /></SettingsColumn>, machine: "routed", title: "ADE MCP" }],
   mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],

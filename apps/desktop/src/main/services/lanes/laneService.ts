@@ -1772,39 +1772,6 @@ export function createLaneService({
     }
   };
 
-  const linkExistingDependencyInstalls = (worktreePath: string): void => {
-    if (!fs.existsSync(worktreePath)) return;
-
-    const linkDirectory = (source: string, destination: string): void => {
-      try {
-        if (!fs.existsSync(source) || fs.existsSync(destination)) return;
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.symlinkSync(source, destination, process.platform === "win32" ? "junction" : "dir");
-        logger.info("laneService.dependency_install_linked", { source, destination });
-      } catch (error) {
-        logger.warn("laneService.dependency_install_link_failed", {
-          source,
-          destination,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
-
-    linkDirectory(path.join(projectRoot, "node_modules"), path.join(worktreePath, "node_modules"));
-
-    const sourceAppsDir = path.join(projectRoot, "apps");
-    const targetAppsDir = path.join(worktreePath, "apps");
-    if (!fs.existsSync(sourceAppsDir) || !fs.existsSync(targetAppsDir)) return;
-
-    for (const entry of fs.readdirSync(sourceAppsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      linkDirectory(
-        path.join(sourceAppsDir, entry.name, "node_modules"),
-        path.join(targetAppsDir, entry.name, "node_modules"),
-      );
-    }
-  };
-
   const upsertLaneStateSnapshot = (args: {
     laneId: string;
     status: LaneStatus;
@@ -4353,8 +4320,6 @@ export function createLaneService({
       // row or dependent inserts must remove the worktree, otherwise we orphan a
       // checkout that no lane row references.
       try {
-        linkExistingDependencyInstalls(worktreePath);
-
         // Absorb any row another process raced onto this path/branch while the
         // checkout ran (the path and branch embed this lane's fresh id suffix,
         // and `worktree add -b` proved the branch was free, so a matching row
@@ -6566,7 +6531,6 @@ export function createLaneService({
           })
         );
         worktreeAdded = true;
-        linkExistingDependencyInstalls(worktreePath);
 
         // Imported branches are always root lanes. No caller passes
         // parentLaneId — if a child lane is wanted, the "child" creation

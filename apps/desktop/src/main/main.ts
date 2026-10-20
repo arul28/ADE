@@ -9567,6 +9567,10 @@ app.whenReady().then(async () => {
     });
     return response.result;
   };
+  // ADE MCP is machine-level in the brain, so Settings reaches it with no
+  // project open (a fresh install) through the machine method.
+  const remoteMcpAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> =>
+    await localRuntimePool.callSync("remoteMcp.call", { action, args: args ?? {} });
   const migrateLegacyKeepAwakePreference = async (): Promise<boolean> => {
     const legacy = readGlobalState(globalStatePath).keepAwakePreferences;
     if (!legacy) {
@@ -9605,6 +9609,7 @@ app.whenReady().then(async () => {
         ctx.keepAwakeService = keepAwakeService;
       }
       if (!ctx.keepAwakeAction) ctx.keepAwakeAction = keepAwakeAction;
+      if (!ctx.remoteMcpAction) ctx.remoteMcpAction = remoteMcpAction;
       if (!ctx.keepAwakeMigrateLegacy) ctx.keepAwakeMigrateLegacy = migrateLegacyKeepAwakePreference;
       if (!ctx.agentToolsCacheService) {
         ctx.agentToolsCacheService = agentToolsCacheService;

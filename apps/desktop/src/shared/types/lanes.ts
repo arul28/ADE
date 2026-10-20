@@ -875,3 +875,72 @@ export type GetLaneEnvStatusArgs = {
 export type GetLaneOverlayArgs = {
   laneId: string;
 };
+
+// --- Main-checkout dependency status (lane.getDependencyStatus) ---
+
+/** The package tool a lockfile belongs to. */
+export type LaneDependencyManager =
+  | "npm"
+  | "pnpm"
+  | "yarn"
+  | "bun"
+  | "cocoapods"
+  | "bundler"
+  | "poetry"
+  | "uv"
+  | "pipenv"
+  | "composer"
+  | "cargo"
+  | "go"
+  | "swiftpm";
+
+/** One lockfile in the main checkout and whether its install is current. */
+export type LaneDependencyFolderStatus = {
+  manager: LaneDependencyManager;
+  /** POSIX path relative to the main checkout, e.g. `apps/desktop/package-lock.json`. */
+  lockfile: string;
+  /** POSIX directory relative to the main checkout; `.` for the root. */
+  dir: string;
+  /** The install command, run in `dir`; null when the tool installs by itself at build time (cargo, go, swiftpm). */
+  installCommand: string | null;
+  /** The project-local install folder (`node_modules`, `Pods`, `vendor`, `.venv`); null when it is not project-local. */
+  installDir: string | null;
+  /** Whether the main checkout has an install for this lockfile; null when ADE cannot tell. */
+  installed: boolean | null;
+  /** The lockfile changed after the last install. */
+  outOfDate: boolean;
+  /** One plain sentence that says why, when `outOfDate`. */
+  outOfDateReason: string | null;
+  /**
+   * ADE can see when an install finishes (the tool keeps an install record).
+   * False for tools it cannot see (bun, Bundler, Python tools): their status
+   * clears when the user acknowledges it.
+   */
+  tracksInstall: boolean;
+  /** Short content hash of the lockfile. */
+  fingerprint: string;
+};
+
+export type LaneDependencyStatus = {
+  projectRoot: string;
+  /** `process.platform` of the machine that owns the checkout. */
+  platform: string;
+  folders: LaneDependencyFolderStatus[];
+  /** More lockfiles exist than the status lists. */
+  truncated: boolean;
+  /** One terminal line that updates every out-of-date folder on that machine; null when nothing is out of date. */
+  updateCommand: string | null;
+  defaultTemplateId: string | null;
+  templateCount: number;
+  checkedAt: string;
+};
+
+export type GetLaneDependencyStatusArgs = {
+  /** Skip the short cache and read the disk again. */
+  refresh?: boolean;
+};
+
+export type AcknowledgeLaneDependencyStatusArgs = {
+  /** Lockfiles (relative paths) to mark as current; omit for every lockfile. */
+  lockfiles?: string[];
+};
