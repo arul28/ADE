@@ -1,0 +1,302 @@
+/*
+ * The guided tour (OnboardingTourHost): ADE's violet cursor, a ring around the
+ * control, a small kit card beside it with a caret, and the "Tour paused"
+ * pill. Nothing here blocks: the layer lets every pointer event through
+ * except the card's and the pill's own.
+ *
+ * Motion is transform and opacity only, and finite: one glide per step, two
+ * presses on a click step, a three-beat ring pulse, then everything is still.
+ * Reduce motion (the OS setting or `html[data-motion="reduced"]`) gets the
+ * cursor, ring and card in place without travel.
+ */
+
+.ade-tour-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The cursor is ADE's, not the system arrow: violet, a size up, with a glow
+   so it reads on dark and light pages alike. */
+.ade-tour-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 30px;
+  height: 30px;
+  opacity: 0;
+  transform-origin: 3px 3px;
+  will-change: transform, opacity;
+  filter:
+    drop-shadow(0 2px 3px rgba(17, 12, 40, 0.45))
+    drop-shadow(0 0 10px rgba(139, 92, 246, 0.45));
+}
+
+.ade-tour-cursor[data-arrived="true"] {
+  opacity: 1;
+}
+
+.ade-tour-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1.5px solid #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.16);
+  animation: ade-tour-fade-in 220ms ease-out both;
+}
+
+.ade-tour-ring::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 7px rgba(139, 92, 246, 0.3);
+  opacity: 0;
+}
+
+.ade-tour-ring[data-pulse="true"]::after {
+  animation: ade-tour-pulse 1200ms ease-in-out 3;
+}
+
+.ade-tour-card-slot {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.ade-tour-card-slot:not([data-placed]) {
+  visibility: hidden;
+}
+
+.ade-tour-card {
+  position: relative;
+  gap: 6px;
+  padding: 12px 12px 10px 14px;
+  overflow: visible;
+  pointer-events: auto;
+  animation: ade-tour-card-in 220ms 40ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* A small diamond on the edge that faces the control, in the card's own
+   fill and edge, so the card reads as pointing at it. Clipped to the half
+   outside the card, so the translucent fill never doubles up inside it. */
+.ade-tour-caret {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  background: inherit;
+  border: inherit;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.ade-tour-caret[data-side="above"] {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  top: 100%;
+  border-top-color: transparent;
+  border-left-color: transparent;
+}
+
+.ade-tour-caret[data-side="below"] {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  top: 0;
+  border-bottom-color: transparent;
+  border-right-color: transparent;
+}
+
+.ade-tour-caret[data-side="right"] {
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+  left: 0;
+  border-top-color: transparent;
+  border-right-color: transparent;
+}
+
+.ade-tour-caret[data-side="left"] {
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  left: 100%;
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+}
+
+.ade-tour-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ade-tour-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: #8b5cf6;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme="dark"] .ade-tour-count {
+  color: #c4b5fd;
+}
+
+.ade-tour-skip {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--kit-text-3);
+  cursor: pointer;
+}
+
+.ade-tour-skip:hover {
+  color: var(--color-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ade-tour-skip:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.ade-tour-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 19px;
+  letter-spacing: -0.005em;
+  color: var(--color-fg);
+}
+
+.ade-tour-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 17.5px;
+  color: var(--kit-text-2);
+}
+
+.ade-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ade-tour-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--color-fg);
+}
+
+.ade-tour-ask svg {
+  color: #8b5cf6;
+}
+
+.ade-tour-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ade-tour-buttons .kit-btn {
+  gap: 5px;
+}
+
+/* Paused: one small glass pill, bottom centre, out of the composer's way. */
+.ade-tour-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 7px 8px 7px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  animation: ade-tour-pill-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ade-tour-pill-cursor {
+  flex: none;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+}
+
+.ade-tour-pill-cursor svg {
+  width: 22px;
+  height: 22px;
+}
+
+.ade-tour-pill-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.ade-tour-pill-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--color-fg);
+}
+
+.ade-tour-pill-sub {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@keyframes ade-tour-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ade-tour-pulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+@keyframes ade-tour-card-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-tour-pill-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tour-ring,
+  .ade-tour-ring::after,
+  .ade-tour-card,
+  .ade-tour-pill {
+    animation: none;
+  }
+}
+
+html[data-motion="reduced"] .ade-tour-ring,
+html[data-motion="reduced"] .ade-tour-ring::after,
+html[data-motion="reduced"] .ade-tour-card,
+html[data-motion="reduced"] .ade-tour-pill {
+  animation: none;
+}

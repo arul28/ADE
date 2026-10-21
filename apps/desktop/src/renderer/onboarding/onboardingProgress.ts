@@ -1,6 +1,7 @@
 /**
  * Where this computer is in ADE's onboarding: whether the first-run flow ran,
- * whether the user skipped it, and how far each first-chat hint got.
+ * whether the user skipped it, how far the guided tour got, and how far each
+ * contextual hint got.
  *
  * Onboarding is per computer (it is the first open of ADE here, not of a
  * project), so it lives in this renderer's localStorage and never syncs.
@@ -8,12 +9,16 @@
  * - `startedAt`: set when the welcome flow runs (first run, or "Show me around
  *   again" from the help menu). Hints only ever show after it; a computer that
  *   was set up before the flow existed never sees them.
- * - `skippedAt`: "Skip onboarding" anywhere. Every hint stops for good.
- * - `hints[id]`: how many times a hint showed, and whether the user did the
- *   thing (`doneAt`) or closed it (`dismissedAt`). Either one ends the hint.
+ * - `skippedAt`: "Skip onboarding" anywhere. The tour and every hint stop for
+ *   good (until "Show me around again").
+ * - `tour`: the guided tour's current step, and when it finished. It waits on
+ *   a step for as long as it takes; leaving the screen pauses it, coming back
+ *   resumes it, across reloads.
+ * - `hints[id]`: how many times a contextual hint showed, and whether the user
+ *   did the thing (`doneAt`) or closed it (`dismissedAt`). Either one ends it.
  */
 
-export const ONBOARDING_HINT_IDS = ["new-chat", "composer-at", "needs-you"] as const;
+export const ONBOARDING_HINT_IDS = ["needs-you"] as const;
 export type OnboardingHintId = (typeof ONBOARDING_HINT_IDS)[number];
 
 /** A hint that showed this many times without being done stops for good. */
@@ -28,9 +33,16 @@ export type OnboardingHintProgress = {
   dismissedAt?: number;
 };
 
+export type OnboardingTourProgress = {
+  /** The step the tour is on (a `TourStepId`); unknown ids restart at the first step. */
+  step?: string;
+  completedAt?: number;
+};
+
 export type OnboardingProgress = {
   startedAt?: number;
   skippedAt?: number;
+  tour: OnboardingTourProgress;
   hints: Partial<Record<OnboardingHintId, OnboardingHintProgress>>;
 };
 
@@ -48,7 +60,7 @@ function finiteOrUndefined(value: unknown): number | undefined {
 export function readOnboardingProgress(): OnboardingProgress {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { hints: {} };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { tour: {}, hints: {} };
     const record = parsed as Record<string, unknown>;
     const hints: OnboardingProgress["hints"] = {};
     const rawHints = record.hints;
@@ -63,13 +75,20 @@ export function readOnboardingProgress(): OnboardingProgress {
         };
       }
     }
+    const rawTour = record.tour && typeof record.tour === "object" && !Array.isArray(record.tour)
+      ? record.tour as Record<string, unknown>
+      : {};
     return {
       startedAt: finiteOrUndefined(record.startedAt),
       skippedAt: finiteOrUndefined(record.skippedAt),
+      tour: {
+        step: typeof rawTour.step === "string" && rawTour.step ? rawTour.step : undefined,
+        completedAt: finiteOrUndefined(rawTour.completedAt),
+      },
       hints,
     };
   } catch {
-    return { hints: {} };
+    return { tour: {}, hints: {} };
   }
 }
 
@@ -116,9 +135,28 @@ export function skipOnboarding(): void {
   });
 }
 
-/** "Show me around again": a fresh start, every hint back. */
+/** "Show me around again": a fresh start, the tour from its first step and every hint back. */
 export function restartOnboarding(): void {
-  writeOnboardingProgress({ startedAt: Date.now(), hints: {} });
+  writeOnboardingProgress({ startedAt: Date.now(), tour: {}, hints: {} });
+}
+
+/** The tour moved to `step`. */
+export function setTourStep(step: string): void {
+  update((draft) => {
+    draft.tour = { ...draft.tour, step };
+  });
+}
+
+/** The tour's last step is done. Contextual hints carry on. */
+export function completeTour(): void {
+  update((draft) => {
+    draft.tour = { ...draft.tour, completedAt: Date.now() };
+  });
+}
+
+/** Whether the tour should show: onboarding is on and the tour is not finished. */
+export function isTourOpen(progress: OnboardingProgress = readOnboardingProgress()): boolean {
+  return isOnboardingActive(progress) && !progress.tour.completedAt;
 }
 
 export function isOnboardingActive(progress: OnboardingProgress = readOnboardingProgress()): boolean {

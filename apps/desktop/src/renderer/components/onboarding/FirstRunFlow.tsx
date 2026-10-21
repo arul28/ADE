@@ -7,7 +7,11 @@ import {
   FolderSimple,
   Plus,
 } from "@phosphor-icons/react";
-import type { OnboardingProjectCandidate } from "../../../shared/types";
+import {
+  EXTERNAL_SESSION_PROVIDER_LABELS,
+  type ExternalSessionProvider,
+  type OnboardingProjectCandidate,
+} from "../../../shared/types";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { relativeWhen } from "../../lib/format";
 import { queueChatImports } from "../../onboarding/pendingChatImports";
@@ -20,10 +24,13 @@ import "./firstRun.css";
  * ADE's first run on a computer, after (or around) sign-in:
  *
  * 1. **Welcome**: the landing page's promise in one card and one button.
- * 2. **Bring your projects in**: the git projects Claude Code and Codex have
- *    worked in on this computer, already found and mostly ticked. Adding them
- *    adds their tabs; the first open of each turns its worktrees into lanes and
- *    brings its chats from the last 30 days in as ADE chats.
+ * 2. **Bring your projects in**: the git projects any coding agent ADE can
+ *    import from (Claude Code, Codex, Cursor, OpenCode…) has worked in on this
+ *    computer, already found and mostly ticked. Adding them adds their tabs;
+ *    the first open of each turns its worktrees into lanes. Each row with
+ *    recent chats has its own "Import chats" pill (the draft page's import
+ *    pill, per project); the ones turned on bring their chats in on that
+ *    first open (`useOnboardingChatImport`).
  *
  * Both cards sit on the launch gate's glass (`.ade-gate` tokens), so they read
  * as one flow with the sign-in card between them.
@@ -96,15 +103,20 @@ function folderCandidate(rootPath: string): OnboardingProjectCandidate {
 export type FirstRunResult = { rootPaths: string[] };
 
 /**
- * Adds the chosen projects to this computer's recent projects and leaves their
- * chats queued for each one's first open.
+ * Adds the chosen projects to this computer's recent projects and queues the
+ * chats of the ones whose import pill is on for each one's first open.
  */
-export async function addFirstRunProjects(projects: OnboardingProjectCandidate[]): Promise<FirstRunResult> {
+export async function addFirstRunProjects(
+  projects: OnboardingProjectCandidate[],
+  importRoots: ReadonlySet<string>,
+): Promise<FirstRunResult> {
   const add = window.ade.app.addOnboardingProjects;
   if (!projects.length || !add) return { rootPaths: [] };
   await add(projects.map((project) => project.rootPath));
   queueChatImports(
-    projects.filter((project) => project.recentChatCount > 0).map((project) => project.rootPath),
+    projects
+      .filter((project) => project.recentChatCount > 0 && importRoots.has(project.rootPath))
+      .map((project) => project.rootPath),
     Date.now() - FIRST_RUN_CHAT_WINDOW_MS,
   );
   return { rootPaths: projects.map((project) => project.rootPath) };
@@ -136,6 +148,8 @@ export function FirstRunProjects({
 }) {
   const [discovery, setDiscovery] = useState<DiscoveryState>({ phase: "loading" });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** Projects whose import pill is on: their recent chats come in on first open. */
+  const [importing, setImporting] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,6 +190,20 @@ export function FirstRunProjects({
     });
   }, []);
 
+  // Importing a project's chats means adding the project too.
+  const toggleImport = useCallback((rootPath: string) => {
+    setImporting((current) => {
+      const next = new Set(current);
+      if (next.has(rootPath)) {
+        next.delete(rootPath);
+      } else {
+        next.add(rootPath);
+        setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
+      }
+      return next;
+    });
+  }, []);
+
   const allSelected = projects.length > 0 && chosen.length === projects.length;
   const toggleAll = useCallback(() => {
     setSelected(allSelected ? new Set() : new Set(projects.map((project) => project.rootPath)));
@@ -200,14 +228,17 @@ export function FirstRunProjects({
     setBusy(true);
     setError(null);
     try {
-      onDone(await addFirstRunProjects(chosen));
+      onDone(await addFirstRunProjects(chosen, importing));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setBusy(false);
     }
-  }, [chosen, onDone]);
+  }, [chosen, importing, onDone]);
 
-  const chatTotal = chosen.reduce((sum, project) => sum + project.recentChatCount, 0);
+  const chatTotal = chosen.reduce(
+    (sum, project) => sum + (importing.has(project.rootPath) ? project.recentChatCount : 0),
+    0,
+  );
   const laneTotal = chosen.reduce((sum, project) => sum + project.laneCount, 0);
 
   return (
@@ -216,8 +247,8 @@ export function FirstRunProjects({
         <span className="ade-fr-eyebrow">{machineName ? `Set up ${machineName}` : "Set up this computer"}</span>
         <h1 className="ade-fr-title">Bring your projects in</h1>
         <p className="ade-fr-sub">
-          Projects you've worked on with Claude Code and Codex. Their worktrees open as lanes, and chats from
-          the last 30 days come with them.
+          Projects your coding agents have worked in. Their worktrees open as lanes, and you can bring their
+          recent chats along when each one opens.
         </p>
       </header>
 
@@ -245,7 +276,9 @@ export function FirstRunProjects({
                   key={project.rootPath}
                   project={project}
                   checked={selected.has(project.rootPath)}
+                  importing={importing.has(project.rootPath)}
                   onToggle={toggle}
+                  onToggleImport={toggleImport}
                   index={index}
                 />
               ))}
@@ -276,7 +309,7 @@ export function FirstRunProjects({
             ? [
                 pluralize(chosen.length, "project", "projects"),
                 laneTotal ? pluralize(laneTotal, "lane", "lanes") : null,
-                chatTotal ? pluralize(chatTotal, "chat", "chats") : null,
+                chatTotal ? `${pluralize(chatTotal, "chat", "chats")} to import` : null,
               ].filter(Boolean).join(" · ")
             : null}
         </span>
@@ -298,52 +331,88 @@ export function FirstRunProjects({
 function ProjectRow({
   project,
   checked,
+  importing,
   onToggle,
+  onToggleImport,
   index,
 }: {
   project: OnboardingProjectCandidate;
   checked: boolean;
+  importing: boolean;
   onToggle: (rootPath: string) => void;
+  onToggleImport: (rootPath: string) => void;
   index: number;
 }) {
   const icon = useProjectIcon(project.rootPath);
   const meta = [
-    project.recentChatCount ? pluralize(project.recentChatCount, "recent chat", "recent chats") : null,
     project.laneCount ? pluralize(project.laneCount, "lane", "lanes") : null,
     project.lastActiveAt ? relativeWhen(new Date(project.lastActiveAt).toISOString()) : null,
   ].filter(Boolean);
+  const chats = project.recentChatCount;
   return (
-    <button
-      type="button"
+    <div
       className="ade-fr-row"
       data-checked={checked ? "true" : undefined}
-      aria-pressed={checked}
-      onClick={() => onToggle(project.rootPath)}
       style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
-      title={project.rootPath}
     >
-      <span className="ade-fr-check" aria-hidden="true">
-        {checked ? <Check size={11} weight="bold" /> : null}
-      </span>
-      <span className="ade-fr-icon" aria-hidden="true">
-        {icon ? <img src={icon} alt="" draggable={false} /> : <FolderSimple size={16} weight="duotone" />}
-      </span>
-      <span className="ade-fr-name">
-        <span className="ade-fr-name-main">{project.name}</span>
-        <span className="ade-fr-name-sub">{project.repoLabel ?? project.rootPath}</span>
-      </span>
-      <span className="ade-fr-meta">
-        {project.providers.length ? (
-          <span className="ade-fr-marks" aria-label={`Chats from ${project.providers.join(" and ")}`}>
-            {project.providers.map((provider) => (
+      <button
+        type="button"
+        className="ade-fr-row-main"
+        aria-pressed={checked}
+        onClick={() => onToggle(project.rootPath)}
+        title={project.rootPath}
+      >
+        <span className="ade-fr-check" aria-hidden="true">
+          {checked ? <Check size={11} weight="bold" /> : null}
+        </span>
+        <span className="ade-fr-icon" aria-hidden="true">
+          {icon ? <img src={icon} alt="" draggable={false} /> : <FolderSimple size={16} weight="duotone" />}
+        </span>
+        <span className="ade-fr-name">
+          <span className="ade-fr-name-main">{project.name}</span>
+          <span className="ade-fr-name-sub">{project.repoLabel ?? project.rootPath}</span>
+        </span>
+        {meta.length ? <span className="ade-fr-meta">{meta.join(" · ")}</span> : null}
+      </button>
+      {chats > 0 ? (
+        <button
+          type="button"
+          className="ade-fr-import-pill"
+          data-on={importing ? "true" : undefined}
+          aria-pressed={importing}
+          aria-label={`Import ${pluralize(chats, "recent chat", "recent chats")} from ${providerList(project.providers)}`}
+          title={
+            importing
+              ? "These chats come in when the project first opens. Click to leave them out."
+              : `Bring the last 30 days of chats in, each in the lane it ran in.`
+          }
+          onClick={() => onToggleImport(project.rootPath)}
+        >
+          <span className="ade-fr-import-marks" aria-hidden="true">
+            {project.providers.slice(0, MAX_ROW_MARKS).map((provider) => (
               <ProviderLogo key={provider} family={provider} size={13} />
             ))}
+            {project.providers.length > MAX_ROW_MARKS ? (
+              <span className="ade-fr-marks-more">+{project.providers.length - MAX_ROW_MARKS}</span>
+            ) : null}
           </span>
-        ) : null}
-        {meta.length ? <span>{meta.join(" · ")}</span> : null}
-      </span>
-    </button>
+          <span className="ade-fr-import-label">
+            {importing ? <Check size={11} weight="bold" aria-hidden="true" /> : null}
+            {importing ? pluralize(chats, "chat", "chats") : `Import ${pluralize(chats, "chat", "chats")}`}
+          </span>
+        </button>
+      ) : null}
+    </div>
   );
+}
+
+/** Provider marks a row shows before folding the rest into "+N". */
+const MAX_ROW_MARKS = 3;
+
+function providerList(providers: readonly ExternalSessionProvider[]): string {
+  const labels = providers.map((provider) => EXTERNAL_SESSION_PROVIDER_LABELS[provider]);
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 function useProjectIcon(rootPath: string): string | null {

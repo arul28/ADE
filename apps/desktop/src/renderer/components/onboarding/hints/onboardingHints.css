@@ -1,5 +1,5 @@
 /*
- * First-chat hints (OnboardingHintHost): a ghost cursor, a ring around the
+ * Contextual hints (OnboardingHintHost): a ghost cursor, a ring around the
  * control and a small kit card beside it. Nothing here blocks: the layer lets
  * every pointer event through except the card's own.
  *
@@ -14,23 +14,19 @@
   pointer-events: none;
 }
 
+/* The same violet ADE cursor the guided tour uses. */
 .ade-onboarding-hint-cursor {
   position: absolute;
   left: 0;
   top: 0;
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   opacity: 0;
-  transform-origin: 2px 2px;
+  transform-origin: 3px 3px;
   will-change: transform, opacity;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
-}
-
-.ade-onboarding-hint-cursor path {
-  fill: var(--color-fg);
-  stroke: var(--color-bg);
-  stroke-width: 1.4;
-  stroke-linejoin: round;
+  filter:
+    drop-shadow(0 2px 3px rgba(17, 12, 40, 0.45))
+    drop-shadow(0 0 10px rgba(139, 92, 246, 0.45));
 }
 
 .ade-onboarding-hint-ring {

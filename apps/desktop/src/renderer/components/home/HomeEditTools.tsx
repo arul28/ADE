@@ -251,7 +251,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
     }
   }, [pickerRequest]);
   return (
-    <div className="ade-home-edit-bar">
+    <div className="ade-home-edit-bar" data-onboarding-anchor="home-edit-tools">
       <div className="ade-home-look-anchor">
         <button
           type="button"

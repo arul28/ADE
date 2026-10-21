@@ -1537,6 +1537,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
          actually selects, and a keyboard path that pressed the wrapper would do
          nothing at all. */
       data-session-row-action=""
+      data-onboarding-anchor="session-row"
       /* A native <button> cannot legally host the status slot's snooze/settle
          buttons, and the swap only works with those controls in flow. t3code's
          row makes the same trade. */

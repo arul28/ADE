@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { OnboardingProjectCandidate, OnboardingProjectDiscovery } from "../../../shared/types";
+import {
+  EXTERNAL_SESSION_PROVIDERS,
+  type ExternalSessionProvider,
+  type OnboardingProjectCandidate,
+  type OnboardingProjectDiscovery,
+} from "../../../shared/types";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { gitRemoteRepoSlug } from "../../../shared/cursorCloudRepoMatch";
 import {
@@ -11,6 +16,7 @@ import {
   realpathIfExists,
 } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { claudeConfigDir } from "../externalSessions/discoverClaude";
+import { EXTERNAL_SESSION_DISCOVERERS } from "../externalSessions/discoverers";
 import {
   closeExternalSessionDb,
   isUuidLike,
@@ -24,15 +30,17 @@ import { readOriginRemoteUrlFromGitConfig } from "../projects/repoProjectResolve
 import { pathKey } from "../shared/pathCompare";
 
 /**
- * First-run setup: the git projects on this computer that Claude Code and Codex
- * have worked in, so ADE can add them (and their chats and worktrees) for the
- * user instead of asking them to find each folder.
+ * First-run setup: the git projects on this computer that coding agents have
+ * worked in (every provider ADE can import chats from), so ADE can add them,
+ * and their chats and worktrees, for the user instead of asking them to find
+ * each folder.
  *
  * Built to stay off the main thread's critical path: Codex is one aggregate
  * query on its own thread index, Claude is a directory listing plus a small
- * read of the newest transcript per project folder (for its cwd), and every
- * git question is answered from files, never by spawning git. It reads, and
- * never writes, anything outside ADE.
+ * read of the newest transcript per project folder (for its cwd), the other
+ * providers use the importer's own discoverers with a capped recent list and a
+ * time budget, and every git question is answered from files, never by
+ * spawning git. It reads, and never writes, anything outside ADE.
  */
 
 const DAY_MS = 24 * 3_600_000;
@@ -45,13 +53,17 @@ const MAX_CANDIDATES = 40;
 const CLAUDE_HEAD_BYTES = 64 * 1024;
 const MAX_CHECKOUT_WALK_DEPTH = 40;
 const CODEX_STATE_DB_BASENAME = "state_5.sqlite";
+/** Newest sessions read per other provider: enough to find its projects, not a full index. */
+const OTHER_PROVIDER_SESSION_LIMIT = 300;
+/** A provider whose store is slow to read is left out rather than holding up setup. */
+const OTHER_PROVIDER_BUDGET_MS = 2_500;
 
 type FolderActivity = {
   cwd: string;
   chats: number;
   recentChats: number;
   lastActiveAt: number;
-  providers: Set<"claude" | "codex">;
+  providers: Set<ExternalSessionProvider>;
 };
 
 type DiscoveryLogger = {
@@ -62,7 +74,7 @@ type DiscoveryLogger = {
 function addActivity(
   activity: Map<string, FolderActivity>,
   cwd: string,
-  provider: "claude" | "codex",
+  provider: ExternalSessionProvider,
   chats: number,
   recentChats: number,
   lastActiveAt: number,
@@ -194,6 +206,59 @@ function collectCodexActivity(activity: Map<string, FolderActivity>, now: number
   }
 }
 
+/**
+ * Every other provider: its importer discoverer, unscoped, newest sessions
+ * first. Sessions are grouped by their cwd the same way Claude's and Codex's
+ * are. A provider that is not installed returns nothing; one that errors or
+ * runs past the budget is skipped and logged.
+ */
+async function collectOtherProviderActivity(
+  activity: Map<string, FolderActivity>,
+  now: number,
+  logger?: DiscoveryLogger,
+): Promise<void> {
+  const providers = EXTERNAL_SESSION_PROVIDERS.filter((provider) => provider !== "claude" && provider !== "codex");
+  const results = await Promise.all(providers.map(async (provider) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), OTHER_PROVIDER_BUDGET_MS);
+    });
+    try {
+      const records = await Promise.race([
+        EXTERNAL_SESSION_DISCOVERERS[provider]({ limit: OTHER_PROVIDER_SESSION_LIMIT, scopeRoots: null, logger }),
+        budget,
+      ]);
+      if (records === null) logger?.warn?.("onboarding.provider_discovery_slow", { provider });
+      return { provider, records: records ?? [] };
+    } catch (error) {
+      logger?.warn?.("onboarding.provider_discovery_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { provider, records: [] };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }));
+  for (const { provider, records } of results) {
+    const byCwd = new Map<string, { cwd: string; chats: number; recentChats: number; lastActiveAt: number }>();
+    for (const record of records) {
+      const cwd = normalizeProviderCwd(record.cwd);
+      const at = record.updatedAt ?? record.createdAt ?? 0;
+      if (!cwd || !Number.isFinite(at) || at <= 0 || now - at > DISCOVERY_WINDOW_MS) continue;
+      const key = pathKey(cwd);
+      const entry = byCwd.get(key) ?? { cwd, chats: 0, recentChats: 0, lastActiveAt: 0 };
+      entry.chats += 1;
+      if (now - at <= ONBOARDING_RECENT_CHAT_WINDOW_MS) entry.recentChats += 1;
+      entry.lastActiveAt = Math.max(entry.lastActiveAt, at);
+      byCwd.set(key, entry);
+    }
+    for (const entry of byCwd.values()) {
+      addActivity(activity, entry.cwd, provider, entry.chats, entry.recentChats, entry.lastActiveAt);
+    }
+  }
+}
+
 /** The checkout a folder sits in: the nearest ancestor with a `.git` entry. */
 function findCheckoutRoot(start: string, stopAt: Set<string>): string | null {
   let current = path.resolve(start);
@@ -267,7 +332,10 @@ export async function discoverOnboardingProjects(args: {
 }): Promise<OnboardingProjectDiscovery> {
   const now = args.now ?? Date.now();
   const activity = new Map<string, FolderActivity>();
-  await collectClaudeActivity(activity, now);
+  await Promise.all([
+    collectClaudeActivity(activity, now),
+    collectOtherProviderActivity(activity, now, args.logger),
+  ]);
   collectCodexActivity(activity, now, args.logger);
 
   const home = realpathIfExists(os.homedir());
@@ -296,7 +364,7 @@ export async function discoverOnboardingProjects(args: {
 
   const projects: OnboardingProjectCandidate[] = [];
   for (const { rootPath, folders } of byProject.values()) {
-    const providers = new Set<"claude" | "codex">();
+    const providers = new Set<ExternalSessionProvider>();
     let chatCount = 0;
     let recentChatCount = 0;
     let lastActiveAt = 0;
@@ -313,7 +381,7 @@ export async function discoverOnboardingProjects(args: {
       chatCount,
       recentChatCount,
       lastActiveAt: lastActiveAt || null,
-      providers: (["claude", "codex"] as const).filter((provider) => providers.has(provider)),
+      providers: EXTERNAL_SESSION_PROVIDERS.filter((provider) => providers.has(provider)),
       laneCount: listLinkedLaneWorktreeRoots(rootPath).length,
       suggested: recentChatCount >= SUGGESTED_MIN_RECENT_CHATS,
     });

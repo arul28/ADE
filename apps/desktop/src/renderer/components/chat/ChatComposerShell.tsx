@@ -47,7 +47,7 @@ export function ChatComposerShell({
         ...(effortFrame?.kind === "top" ? { "--effort-frame-rgb": effortFrame.rgb } as CSSProperties : {}),
       }}
       data-chat-composer-mode={mode}
-      data-onboarding-anchor="composer-at"
+      data-onboarding-anchor="composer"
       data-effort-frame={effortFrame
         ? effortFrame.kind === "ultrathink" ? "ultrathink" : effortFrame.ultra ? "ultra" : "top"
         : undefined}

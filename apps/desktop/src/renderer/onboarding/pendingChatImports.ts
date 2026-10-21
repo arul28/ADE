@@ -1,6 +1,6 @@
 /**
- * Projects added during first-run setup whose recent Claude Code and Codex
- * chats still need to come in as ADE chats.
+ * Projects added during first-run setup whose recent coding-agent
+ * chats are still to be offered for import (a suggestion card on first open).
  *
  * Importing a chat needs the project open (its lanes, its chat service), so
  * setup records the wish here and `useOnboardingChatImport` carries it out the

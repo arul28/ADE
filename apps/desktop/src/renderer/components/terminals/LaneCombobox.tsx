@@ -333,6 +333,11 @@ type LaneComboboxProps = {
   variant?: "default" | "pill";
   fullWidth?: boolean;
   "aria-label"?: string;
+  /**
+   * Marks the trigger for the onboarding tour (`data-onboarding-anchor`); the
+   * open menu gets the same id with `-menu`.
+   */
+  onboardingAnchor?: string;
 };
 
 const LANE_COMBOBOX_TRIGGER_SIZE_CLASS = {
@@ -355,6 +360,7 @@ export function LaneCombobox({
   variant = "default",
   fullWidth = false,
   "aria-label": ariaLabel = "Select lane",
+  onboardingAnchor,
 }: LaneComboboxProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -564,6 +570,7 @@ export function LaneCombobox({
         aria-haspopup="listbox"
         aria-expanded={open}
         data-open={open ? "true" : "false"}
+        data-onboarding-anchor={onboardingAnchor}
         onClick={() => setOpen(!open)}
       >
         {value !== "all" && selectedLane?.icon
@@ -598,6 +605,7 @@ export function LaneCombobox({
               ref={popoverRef}
               tabIndex={-1}
               role="listbox"
+              data-onboarding-anchor={onboardingAnchor ? `${onboardingAnchor}-menu` : undefined}
               aria-activedescendant={
                 highlightedIndex >= 0 ? `ade-lane-option-${highlightedIndex}` : undefined
               }

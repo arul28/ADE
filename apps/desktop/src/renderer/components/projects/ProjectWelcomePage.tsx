@@ -868,6 +868,7 @@ export function ProjectWelcomePage() {
                 <button
                   type="button"
                   className="ade-home-action ade-home-customize"
+                  data-onboarding-anchor="home-customize"
                   aria-label="Customize home page"
                   title="Customize home page"
                   onClick={() => setEditingHome(true)}

@@ -587,14 +587,19 @@ Renderer — onboarding:
   `OnboardingBootstrap.tsx` shows it again over the app for "Show me around
   again" or a reload during setup. See [First run on a computer](#first-run-on-a-computer).
 - `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
-  — finds the projects for that card from Claude Code and Codex history,
-  without spawning git (`app.discoverOnboardingProjects`).
+  — finds the projects for that card from every importable provider's
+  history, without spawning git (`app.discoverOnboardingProjects`).
   `app.addOnboardingProjects` adds the chosen ones to recent projects.
 - `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
   + `renderer/onboarding/pendingChatImports.ts` — the first open of each added
-  project imports its chats from the last 30 days as ADE chats.
+  project whose import pill was on imports its chats from the last 30 days as
+  ADE chats.
+- `apps/desktop/src/renderer/components/onboarding/tour/` — the guided tour:
+  `onboardingTourSteps.ts` (the steps and the `data-onboarding-anchor` each
+  points at), `OnboardingTourHost.tsx` (cursor, ring, card, paused pill) and
+  `anchorGeometry.ts` (shared with the contextual hints).
 - `apps/desktop/src/renderer/onboarding/onboardingProgress.ts` — per-computer
-  onboarding progress (started, skipped, each first-chat hint's state).
+  onboarding progress (started, skipped, the tour's step, each hint's state).
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
   — persistent help menu in the top bar: docs link, "Show me around again",
   and one help preference (the detailed hover-tooltip toggle). Glossary,
@@ -1899,22 +1904,43 @@ video it replaced), so a computer set up before it existed never sees it.
    headline, one sentence, the provider marks, **Get started** and **Skip
    setup**. Skip marks onboarding skipped, so no hint shows later either.
 2. **Sign in**, if this computer has no ADE session (the account is required).
-3. **Bring your projects in.** `discoverOnboardingProjects` reads this
-   computer's Claude Code transcripts (one listing, plus the head of the newest
-   transcript per folder for its cwd) and Codex's thread index (one grouped
-   query), maps each folder to its git project (an ADE lane or linked worktree
-   counts toward its main checkout), drops scratch, temp, Downloads and
-   projects already in ADE, and returns them newest first. A project with at
-   least two chats in the last 30 days starts ticked. Each row shows its
-   recent chats, its worktrees (they open as lanes) and when it was last
-   active. Below the list: a QR for ADE on iPhone and a line about signing in
-   on another computer, shown to everyone.
+3. **Bring your projects in.** `discoverOnboardingProjects` reads the history
+   of every provider ADE imports chats from: Claude Code's transcripts (one
+   listing, plus the head of the newest transcript per folder for its cwd),
+   Codex's thread index (one grouped query), and the rest (Cursor, Droid,
+   OpenCode, Pi, Copilot…) through the importer's own discoverers, capped at
+   the newest 300 sessions each with a 2.5s budget per provider. It maps each
+   folder to its git project (an ADE lane or linked worktree counts toward
+   its main checkout), drops scratch, temp, Downloads and projects already in
+   ADE, and returns them newest first. A project with at least two chats in
+   the last 30 days starts ticked. Each row shows its worktrees (they open as
+   lanes) and when it was last active; a row with recent chats also has an
+   **Import N chats** pill with its providers' marks (the draft page's import
+   pill, per project), off by default. Below the list: a QR for ADE on iPhone
+   and a line about signing in on another computer, shown to everyone.
 4. **Into ADE.** The chosen projects are added to recent projects and opened
    as tabs, and the first one opens. Its worktrees become lanes through the
-   normal adoption on open. `useOnboardingChatImport` then imports the chats
-   from the last 30 days (up to 25, newest first) into the lane each one ran
-   in, or the main checkout's lane, the first time each added project opens;
-   a session that may still be open in its CLI is skipped.
+   normal adoption on open. For each project whose pill was on,
+   `useOnboardingChatImport` imports its chats from the last 30 days (up to
+   25, newest first, any provider) into the lane each one ran in, or the main
+   checkout's lane, the first time it opens; a session that may still be open
+   in its CLI is skipped.
+5. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
+   size up from the system arrow) glides to a real control, a ring settles on
+   it and a card beside it says what it is. In order: the lane chip (ADE works
+   in lanes; the checkout is the primary lane), the prompt box, its
+   permission/model/effort controls, the lane menu, importing chats, the chats
+   list, opening a chat, the Tools pane, back to a new chat, a new project
+   tab, the Home page and its edit tools, and Connections. Some steps ask for
+   the click (the card says so, and the click moves the tour on); every card
+   also has Next and Back. Nothing is dimmed or blocked. When the user goes
+   elsewhere the card steps aside and a **Tour paused** pill offers **Show
+   me**; the step comes back when its control is on screen again, across
+   reloads. A step with nothing to point at (no chats to open, the Tools pane
+   already open) is passed over. **Skip tour** ends it and every hint;
+   "Show me around again" in the help menu or the command palette starts it
+   over. Contextual hints (`hints/`, today only "This chat needs you") wait
+   until the tour is finished.
 
 Everything here runs on, and reads, the computer ADE is opening on. The
 hosted web client has no first run; it controls other computers.
@@ -1955,7 +1981,10 @@ the General settings tab via `AdeCliSection`:
    `apps/ade-cli/src/serviceManager/` (launchd / systemd / Windows per-user startup).
    The result is exposed as `LocalRuntimeStatus.serviceInstall` and
    `serviceHealth` (`unsupported | not_installed | installed | running |
-   error | unknown`).
+   error | unknown`). On macOS both launch agents (the brain and its
+   watchdog) carry `AssociatedBundleIdentifiers` naming the channel's ADE
+   app, so the system's "can run in the background" notice and Login Items
+   show ADE's name and icon instead of the signing developer's name.
 4. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop

@@ -59,6 +59,7 @@ export function WorkHeaderToolsToggle({
       aria-label={open ? "Close Tools pane" : "Open Tools pane"}
       aria-pressed={open}
       data-open={open ? "true" : undefined}
+      data-onboarding-anchor="tools-toggle"
     >
       <SidebarSimple size={16} weight="bold" className="-scale-x-100" />
     </button>

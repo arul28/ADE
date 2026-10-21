@@ -377,6 +377,7 @@ function ShellConnectionChip({
   onClick,
   trailing,
   layout = "chip",
+  onboardingAnchor,
 }: {
   label: string;
   icon: React.ReactNode;
@@ -386,6 +387,8 @@ function ShellConnectionChip({
   onClick: () => void;
   trailing?: React.ReactNode;
   layout?: "chip" | "menu-row";
+  /** Marks the control for the onboarding tour (`data-onboarding-anchor`). */
+  onboardingAnchor?: string;
 }) {
   return (
     <button
@@ -395,6 +398,7 @@ function ShellConnectionChip({
           ? HEADER_STATUS_MENU_ROW_CLASS
           : "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium text-muted-fg/75 transition-colors duration-150 hover:text-fg/90",
       )}
+      data-onboarding-anchor={onboardingAnchor}
       data-variant={layout === "chip" ? "ghost" : undefined}
       role={layout === "menu-row" ? "menuitem" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -1976,6 +1980,7 @@ export function TopBar({
     : (
       <ShellConnectionChip
         label="Connections"
+        onboardingAnchor="connections"
         connected={anyConnectionActive}
         title="Machines, mobile, and web clients"
         ariaExpanded={connectionsOpen}
@@ -2502,6 +2507,7 @@ export function TopBar({
         <button
           type="button"
           data-tour="project.addProject"
+          data-onboarding-anchor="new-tab"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
             "transition-[background-color,color,border-color,box-shadow] duration-150",

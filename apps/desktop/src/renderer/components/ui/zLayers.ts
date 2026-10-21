@@ -67,6 +67,14 @@ export const Z_LAYERS = {
   tooltip: 300,
   /** A right-click / row context menu and its click-away layer, above every app surface. */
   contextMenu: 9999,
+  /**
+   * The guided onboarding tour: its cursor, ring and card. Above menus and
+   * popovers, because a step can point into an open menu (the lane menu) and
+   * the cursor must show on it. Safe that high: everything but the small card
+   * lets pointer events through, the card sits beside its control rather than
+   * over it, and the tour hides itself while any modal dialog is open.
+   */
+  onboardingTour: 10000,
   /** A lane's private macOS screen. Above context menus so the screen covers the app. */
   macDesktop: 40000,
   /** A confirm or picker opened over that screen. */

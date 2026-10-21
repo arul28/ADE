@@ -18314,6 +18314,7 @@ export function AgentChatPane({
                                 value={draftShelfLaneValue}
                                 onChange={handleShelfLaneChange}
                                 onCreateLane={() => setNewLaneDialogOpen(true)}
+                                onboardingAnchor="lane-picker"
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
@@ -18421,6 +18422,7 @@ export function AgentChatPane({
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!importTargetLane}
                                         data-draft-import-session
+                                        data-onboarding-anchor="import-button"
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
                                       >

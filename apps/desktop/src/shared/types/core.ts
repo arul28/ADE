@@ -4,6 +4,7 @@
 
 import type { DeeplinkEnvelope, DeeplinkOwnership } from "../deeplinks";
 import type { AppPackageChannel } from "../packageChannel";
+import type { ExternalSessionProvider } from "./externalSessions";
 import type {
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
@@ -169,12 +170,13 @@ export type OnboardingProjectCandidate = {
   name: string;
   /** `owner/repo` from the origin remote, when there is one. */
   repoLabel: string | null;
-  /** Claude Code and Codex sessions that ran in this project or its worktrees. */
+  /** Coding-agent sessions (any importable provider) that ran in this project or its worktrees. */
   chatCount: number;
   /** Of those, the ones active in the last 30 days: what setup imports. */
   recentChatCount: number;
   lastActiveAt: number | null;
-  providers: Array<"claude" | "codex">;
+  /** Which providers those chats came from, in the importer's display order. */
+  providers: ExternalSessionProvider[];
   /** Linked worktrees that open as lanes. */
   laneCount: number;
   /** Pre-selected: active recently, with a few chats. */

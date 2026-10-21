@@ -209,7 +209,7 @@ Pick a named layer and never type a z-index:
 | `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
-| `onboardingHint` | 95 | First-chat onboarding hints (ghost cursor, ring, card). Under popovers, menus, sheets and dialogs, so anything the user opens covers a hint |
+| `onboardingHint` | 95 | Contextual onboarding hints after the tour (ADE cursor, ring, card). Under popovers, menus, sheets and dialogs, so anything the user opens covers a hint |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |
@@ -220,6 +220,7 @@ Pick a named layer and never type a z-index:
 | `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
 | `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |
 | `contextMenu` | 9999 | A row context menu and its click-away layer |
+| `onboardingTour` | 10000 | The guided onboarding tour (ADE cursor, ring, card). Above menus, because a step points into an open menu. Only the small card takes pointer events, it sits beside its control, and the tour hides while a modal is open |
 | `capture` | 2147483000 | The global capture gesture notice, above everything |
 
 `toast` sits above `dialog` because `ToastViewport` renders inside `<main>`,

@@ -110,6 +110,7 @@ import {
   type DraftUpdateArgs,
   type DraftEntry,
   type RemoteRuntimeActionRequest,
+  type ExternalSessionProvider,
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
@@ -5563,11 +5564,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return {
           machineName: "Arul's MacBook Pro",
           projects: [
-            { rootPath: "/Users/dev/ADE", name: "ADE", repoLabel: "arul28/ADE", chatCount: 111, recentChatCount: 18, lastActiveAt: now - 2 * 3_600_000, providers: ["claude", "codex"] as Array<"claude" | "codex">, laneCount: 16, suggested: true },
-            { rootPath: "/Users/dev/Versic", name: "Versic", repoLabel: "arul28/Versic", chatCount: 571, recentChatCount: 42, lastActiveAt: now - 2 * day, providers: ["claude", "codex"] as Array<"claude" | "codex">, laneCount: 3, suggested: true },
-            { rootPath: "/Users/dev/fleet", name: "fleet", repoLabel: "arul28/fleet", chatCount: 4, recentChatCount: 3, lastActiveAt: now - 5 * day, providers: ["claude"] as Array<"claude" | "codex">, laneCount: 0, suggested: true },
-            { rootPath: "/Users/dev/Quill", name: "Quill", repoLabel: "arul28/Quill", chatCount: 5, recentChatCount: 0, lastActiveAt: now - 160 * day, providers: ["codex"] as Array<"claude" | "codex">, laneCount: 0, suggested: false },
-            { rootPath: "/Users/dev/PROX", name: "PROX", repoLabel: null, chatCount: 2, recentChatCount: 0, lastActiveAt: now - 170 * day, providers: ["codex"] as Array<"claude" | "codex">, laneCount: 1, suggested: false },
+            { rootPath: "/Users/dev/ADE", name: "ADE", repoLabel: "arul28/ADE", chatCount: 111, recentChatCount: 18, lastActiveAt: now - 2 * 3_600_000, providers: ["claude", "codex"] as ExternalSessionProvider[], laneCount: 16, suggested: true },
+            { rootPath: "/Users/dev/Versic", name: "Versic", repoLabel: "arul28/Versic", chatCount: 571, recentChatCount: 42, lastActiveAt: now - 2 * day, providers: ["claude", "codex", "cursor", "opencode"] as ExternalSessionProvider[], laneCount: 3, suggested: true },
+            { rootPath: "/Users/dev/fleet", name: "fleet", repoLabel: "arul28/fleet", chatCount: 4, recentChatCount: 3, lastActiveAt: now - 5 * day, providers: ["claude"] as ExternalSessionProvider[], laneCount: 0, suggested: true },
+            { rootPath: "/Users/dev/Quill", name: "Quill", repoLabel: "arul28/Quill", chatCount: 5, recentChatCount: 0, lastActiveAt: now - 160 * day, providers: ["codex"] as ExternalSessionProvider[], laneCount: 0, suggested: false },
+            { rootPath: "/Users/dev/PROX", name: "PROX", repoLabel: null, chatCount: 2, recentChatCount: 0, lastActiveAt: now - 170 * day, providers: ["codex"] as ExternalSessionProvider[], laneCount: 1, suggested: false },
           ],
         };
       },

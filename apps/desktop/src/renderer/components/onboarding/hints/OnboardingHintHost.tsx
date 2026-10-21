@@ -1,12 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { ViewportOverlayPortal } from "../../ui/ViewportOverlayHost";
-import { fixedFrameOf, fixedRect, fixedViewport } from "../../../lib/webZoom";
 import {
   ONBOARDING_ANCHOR_ATTR,
   dismissHint,
   isHintOpen,
   isOnboardingActive,
+  isTourOpen,
   markHintDone,
   markHintShown,
   readOnboardingProgress,
@@ -16,11 +16,25 @@ import {
   type OnboardingProgress,
 } from "../../../onboarding/onboardingProgress";
 import { ONBOARDING_HINTS, type OnboardingHintDef } from "./onboardingHintDefs";
+import { AdeTourCursorArt } from "../tour/AdeTourCursorArt";
+import {
+  anchorRadius,
+  findVisibleAnchor,
+  hasOpenModal,
+  isAnchorVisible,
+  placeCard as placeBesideRing,
+  prefersReducedMotion,
+  readFrame,
+  sameFrame,
+  translate,
+  type Box,
+} from "../tour/anchorGeometry";
 import "./onboardingHints.css";
 
 /**
- * First-chat hints: after the welcome flow, ADE points at three real controls,
- * one at a time, without blocking anything. A ghost cursor glides once from
+ * Contextual hints: after the guided tour (`OnboardingTourHost`), ADE points at
+ * a real control when a moment calls for it (a chat that needs you), without
+ * blocking anything. A ghost cursor glides once from
  * the middle of the window to the control, then a ring settles around it with
  * a small card beside it. Pointer events pass through everything but the card.
  *
@@ -37,7 +51,6 @@ const SETTLE_MS = 900;
 const RING_PAD = 4;
 const CARD_WIDTH = 280;
 const CARD_GAP = 12;
-const VIEWPORT_MARGIN = 8;
 const GLIDE_MS = 700;
 const PRESS_MS = 480;
 
@@ -60,6 +73,8 @@ function hintStillOpen(id: OnboardingHintId, progress: OnboardingProgress): bool
 export function OnboardingHintHost() {
   const [progress, setProgress] = useState(readOnboardingProgress);
   useEffect(() => subscribeOnboardingProgress(() => setProgress(readOnboardingProgress())), []);
+  // The tour goes first; hints wait until it is finished.
+  if (isTourOpen(progress)) return null;
   const openKey = ONBOARDING_HINTS.filter((hint) => hintStillOpen(hint.id, progress))
     .map((hint) => hint.id)
     .join(",");
@@ -68,36 +83,6 @@ export function OnboardingHintHost() {
 }
 
 type ActiveHint = { def: OnboardingHintDef; anchor: HTMLElement };
-
-function hasOpenModal(): boolean {
-  return document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]') != null;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-/** On screen, not zero-sized, and not clipped or covered: its centre hit-tests to itself. */
-function isAnchorVisible(node: HTMLElement): boolean {
-  const rect = node.getBoundingClientRect();
-  if (rect.width < 1 || rect.height < 1) return false;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) return false;
-  const hit = document.elementFromPoint(
-    clamp(rect.left + rect.width / 2, 1, vw - 1),
-    clamp(rect.top + rect.height / 2, 1, vh - 1),
-  );
-  if (!hit) return false;
-  return node === hit || node.contains(hit) || hit.closest("[data-onboarding-hint-layer]") != null;
-}
-
-function findVisibleAnchor(id: OnboardingHintId): HTMLElement | null {
-  for (const node of document.querySelectorAll<HTMLElement>(`[${ONBOARDING_ANCHOR_ATTR}="${id}"]`)) {
-    if (isAnchorVisible(node)) return node;
-  }
-  return null;
-}
 
 /**
  * The hint to show now. The one already up stays while its anchor does;
@@ -136,9 +121,11 @@ function OnboardingHintScanner({ openKey }: { openKey: string }) {
     const onClick = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const id = target.closest(`[${ONBOARDING_ANCHOR_ATTR}]`)?.getAttribute(ONBOARDING_ANCHOR_ATTR);
-      const def = ONBOARDING_HINTS.find((hint) => hint.id === id);
-      if (def?.doneOnClick && openIds.includes(def.id)) markHintDone(def.id);
+      // Anchors nest (a row inside its wrapper), so ask each hint about its own.
+      for (const def of ONBOARDING_HINTS) {
+        if (!def.doneOnClick || !openIds.includes(def.id)) continue;
+        if (target.closest(`[${ONBOARDING_ANCHOR_ATTR}="${def.id}"]`)) markHintDone(def.id);
+      }
     };
     document.addEventListener("click", onClick, true);
     return () => document.removeEventListener("click", onClick, true);
@@ -192,44 +179,6 @@ function OnboardingHintScanner({ openKey }: { openKey: string }) {
   return <OnboardingHintOverlay key={active.def.id} def={active.def} anchor={active.anchor} />;
 }
 
-type Frame = { left: number; top: number; width: number; height: number; vw: number; vh: number };
-
-/**
- * The anchor's box in the overlay's own style pixels. The hosted web client
- * zooms <body>, so a screen rect is mapped into that space; in Electron the
- * frame is the identity.
- */
-function readFrame(anchor: HTMLElement): Frame {
-  const frame = fixedFrameOf(null);
-  const rect = fixedRect(frame, anchor.getBoundingClientRect());
-  const viewport = fixedViewport(frame);
-  return {
-    left: rect.left,
-    top: rect.top,
-    width: rect.width,
-    height: rect.height,
-    vw: viewport.width,
-    vh: viewport.height,
-  };
-}
-
-function sameFrame(a: Frame, b: Frame): boolean {
-  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height && a.vw === b.vw && a.vh === b.vh;
-}
-
-/** The anchor's own corner radius, so the ring is rounded like the control. */
-function anchorRadius(anchor: HTMLElement): number {
-  const parsed = Number.parseFloat(window.getComputedStyle(anchor).borderTopLeftRadius);
-  return Number.isFinite(parsed) ? parsed : 6;
-}
-
-function prefersReducedMotion(): boolean {
-  if (document.documentElement.dataset.motion === "reduced") return true;
-  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-type Box = { left: number; top: number; width: number; height: number };
-
 /**
  * Where the card goes: beside a small control or a row (right, below, left,
  * above), so a sidebar row's card sits in the open page instead of over the
@@ -237,33 +186,14 @@ type Box = { left: number; top: number; width: number; height: number };
  * above first). Clamped inside the window either way.
  */
 function placeCard(ring: Box, cardHeight: number, vw: number, vh: number): { x: number; y: number } {
-  const w = CARD_WIDTH;
-  const h = cardHeight;
-  const right = ring.left + ring.width;
-  const bottom = ring.top + ring.height;
   const wide = ring.width > CARD_WIDTH;
-  const alignX = wide ? ring.left : ring.left + ring.width / 2 - w / 2;
-  const alignY = ring.top + ring.height / 2 - h / 2;
-  const sides = {
-    right: { x: right + CARD_GAP, y: alignY, fits: right + CARD_GAP + w <= vw - VIEWPORT_MARGIN },
-    below: { x: alignX, y: bottom + CARD_GAP, fits: bottom + CARD_GAP + h <= vh - VIEWPORT_MARGIN },
-    left: { x: ring.left - CARD_GAP - w, y: alignY, fits: ring.left - CARD_GAP - w >= VIEWPORT_MARGIN },
-    above: { x: alignX, y: ring.top - CARD_GAP - h, fits: ring.top - CARD_GAP - h >= VIEWPORT_MARGIN },
-  };
   const rowLike = ring.width <= CARD_WIDTH * 2;
   const order = wide && !rowLike
-    ? [sides.above, sides.below, sides.right, sides.left]
-    : [sides.right, sides.below, sides.left, sides.above];
-  const pick = order.find((side) => side.fits) ?? order[0]!;
-  return {
-    x: clamp(pick.x, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN)),
-    y: clamp(pick.y, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN)),
-  };
+    ? (["above", "below", "right", "left"] as const)
+    : (["right", "below", "left", "above"] as const);
+  return placeBesideRing(ring, { width: CARD_WIDTH, height: cardHeight }, { vw, vh }, order, CARD_GAP);
 }
 
-function translate(x: number, y: number): string {
-  return `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
-}
 
 function OnboardingHintOverlay({ def, anchor }: { def: OnboardingHintDef; anchor: HTMLElement }) {
   const titleId = useId();
@@ -317,11 +247,11 @@ function OnboardingHintOverlay({ def, anchor }: { def: OnboardingHintDef; anchor
     }
     glidedThisSession.add(def.id);
     const start = frameRef.current;
-    // The arrow's tip sits 2px into its box.
-    const fromX = start.vw / 2 - 2;
-    const fromY = start.vh / 2 - 2;
-    const toX = start.left + start.width / 2 - 2;
-    const toY = start.top + start.height / 2 - 2;
+    // The arrow's tip sits 3px into its box.
+    const fromX = start.vw / 2 - 3;
+    const fromY = start.vh / 2 - 3;
+    const toX = start.left + start.width / 2 - 3;
+    const toY = start.top + start.height / 2 - 3;
     let cancelled = false;
     const glideAnimation = cursor.animate(
       [
@@ -379,9 +309,7 @@ function OnboardingHintOverlay({ def, anchor }: { def: OnboardingHintDef; anchor
       <div className="ade-onboarding-hint-layer" data-onboarding-hint-layer="" data-hint-id={def.id}>
         {cursorShown ? (
           <div ref={cursorRef} className="ade-onboarding-hint-cursor" aria-hidden>
-            <svg width="20" height="20" viewBox="0 0 20 20">
-              <path d="M2.5 2.2 L2.5 16.2 L6.2 12.8 L8.7 18.2 L11.1 17.1 L8.6 11.8 L13.6 11.6 Z" />
-            </svg>
+            <AdeTourCursorArt />
           </div>
         ) : null}
         {ringShown ? (

@@ -275,7 +275,6 @@ import {
   DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
   MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
 } from "../../lib/nativeLaunchControls";
-import { isOnboardingActive, markHintDone } from "../../onboarding/onboardingProgress";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -3056,11 +3055,6 @@ function AgentChatComposerImpl({
   const closeCommandMenuKeepingDismissal = useCallback(() => {
     setCommandMenuTrigger(null);
   }, []);
-  // The @ menu opening is what the "Type @ to delegate" onboarding hint asks for.
-  const atMenuOpen = commandMenuTrigger?.type === "at";
-  useEffect(() => {
-    if (atMenuOpen && isOnboardingActive()) markHintDone("composer-at");
-  }, [atMenuOpen]);
   /** Close the menu and keep it closed while the user extends this query. */
   const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
     dismissedTriggerRef.current = trigger
@@ -8219,7 +8213,10 @@ function AgentChatComposerImpl({
           ) : null}
           <div className="flex min-w-0 items-center gap-1">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div
+            data-onboarding-anchor="composer-controls"
+            data-onboarding-anchor-fit="content"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(() => {
               const showNativeControls =
                 !parallelChatMode

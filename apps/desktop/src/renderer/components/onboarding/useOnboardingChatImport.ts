@@ -7,17 +7,17 @@ import { showToast, updateToast } from "../app/toast/toastStore";
 /** Enough to pick up where the user left off, few enough not to bury Work. */
 const MAX_IMPORTED_CHATS = 25;
 /** Sessions listed per pass; the newest ones in the window are what count. */
-const LIST_LIMIT = 80;
+const LIST_LIMIT = 120;
 
 function activityAt(summary: ExternalSessionSummary): number {
   return summary.updatedAt ?? summary.createdAt ?? 0;
 }
 
 /**
- * The second half of first-run setup: the first time a project added there
- * opens, its recent Claude Code and Codex chats come in as ADE chats, each in
- * the lane its folder belongs to (worktrees are lanes by then) or the main
- * checkout's.
+ * The second half of first-run setup: the first time a project opens whose
+ * "Import chats" pill the user turned on there, its recent chats (from every
+ * provider ADE imports) come in as ADE chats, each in the lane its folder
+ * belongs to (worktrees are lanes by then) or the main checkout's.
  *
  * Runs only for a project open on this computer. Setup only queues local
  * projects, and the import reads this computer's provider history, so a
@@ -64,7 +64,7 @@ async function importRecentChats({
   let summaries: ExternalSessionSummary[];
   try {
     // Unpinned: this is the tab's own machine, which is this computer.
-    summaries = await api.list({ providers: ["claude", "codex"], scope: "project", limit: LIST_LIMIT });
+    summaries = await api.list({ scope: "project", limit: LIST_LIMIT });
   } catch {
     return;
   }
@@ -115,7 +115,7 @@ async function importRecentChats({
       : `Couldn't bring in your chats for ${projectName}`,
     message: failed
       ? "Some didn't come in. You can import them from Work."
-      : "From Claude Code and Codex, each in its own lane.",
+      : "Each one is in the lane it ran in.",
     durationMs: 8_000,
     dismissible: true,
     busy: false,

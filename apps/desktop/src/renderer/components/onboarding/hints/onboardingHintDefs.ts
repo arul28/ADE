@@ -1,13 +1,13 @@
 import type { OnboardingHintId } from "../../../onboarding/onboardingProgress";
 
 /**
- * The first-chat hints, in the order they show. A surface marks the control a
- * hint points at with `data-onboarding-anchor="<id>"`; the host finds it.
+ * Contextual hints, shown when a moment calls for them after the guided tour.
+ * A surface marks the control a hint points at with
+ * `data-onboarding-anchor="<id>"`; the host finds it.
  *
  * - `sequential` hints show one after another: a later one waits until every
  *   earlier one is done, dismissed or used up.
- * - `doneOnClick`: clicking the anchor is the thing the hint asks for. The
- *   composer hint is done by typing "@" instead (`AgentChatComposer`).
+ * - `doneOnClick`: clicking the anchor is the thing the hint asks for.
  */
 export type OnboardingHintDef = {
   id: OnboardingHintId;
@@ -18,20 +18,6 @@ export type OnboardingHintDef = {
 };
 
 export const ONBOARDING_HINTS: readonly OnboardingHintDef[] = [
-  {
-    id: "new-chat",
-    title: "Start a chat",
-    line: "ADE gives each chat its own lane, a separate copy of your repo, so agents never collide.",
-    sequential: true,
-    doneOnClick: true,
-  },
-  {
-    id: "composer-at",
-    title: "Type @ to delegate",
-    line: "Hand work to another model as a subagent, or send it to another machine.",
-    sequential: true,
-    doneOnClick: false,
-  },
   {
     // Shows whenever a chat actually needs the user and no other hint is up.
     id: "needs-you",

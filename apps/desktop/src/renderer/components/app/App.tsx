@@ -37,6 +37,7 @@ import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
+import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
@@ -1584,7 +1585,9 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
-          {/* First-chat onboarding hints; renders nothing unless onboarding is on. */}
+          {/* The guided tour after first-run setup, then contextual hints; both
+              render nothing unless onboarding is on. */}
+          <OnboardingTourHost />
           <OnboardingHintHost />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
