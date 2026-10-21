@@ -32,51 +32,65 @@ import {
 } from "@phosphor-icons/react";
 import type { SystemNoticeEvent } from "./quietNoticeLines";
 
+/**
+ * Keyed by a string off the wire, so a `Map` (not an object literal): a status
+ * such as `constructor` must miss, not resolve to `Object.prototype`.
+ */
+const ICON_BY_STATUS: ReadonlyMap<string, Icon> = new Map([
+  ["memory_recall", Brain],
+  ["classifier_context", Funnel],
+  ["goal_reached", Target],
+  ["goal_blocked", Target],
+  ["cross_machine_handoff_state", ArrowsLeftRight],
+  ["cross_machine_handoff_arrived", ArrowsLeftRight],
+  ["cross_machine_handoff_complete", ArrowsLeftRight],
+  ["cross_machine_handoff_ended", ArrowsLeftRight],
+  ["cross_machine_handoff_returned", ArrowsLeftRight],
+  ["model_refusal_fallback", ArrowsLeftRight],
+  ["waiting", Hourglass],
+  ["completed", CheckCircle],
+]);
+
+/** Kinds whose glyph is fixed, before any message pattern is consulted. */
+const ICON_BY_KIND: ReadonlyMap<string, Icon> = new Map([
+  ["file_persist", FloppyDisk],
+  ["config", Wrench],
+  ["hook", Note],
+]);
+
+/**
+ * Fallback vocabulary for transcripts that predate a `status`. Ordered: the
+ * first match wins, so the specific families sit above the general ones.
+ */
+const ICON_BY_MESSAGE: ReadonlyArray<readonly [RegExp, Icon]> = [
+  [/plan mode/i, Compass],
+  [/\bqueued\b|steer|delivering your/i, Tray],
+  [/question dismissed|duplicate check-in/i, Question],
+  [/reconnected|original thread|ai thread/i, Plugs],
+  [/compact/i, ArrowsIn],
+  [/memor/i, Brain],
+  [/goal/i, Target],
+  [/output style|permission mode/i, SlidersHorizontal],
+  [/downloading|install/i, DownloadSimple],
+  [/denied|permission/i, ShieldCheck],
+  [/warmup|restart|reconnect/i, ArrowCounterClockwise],
+  [/app-server|unsandboxed|shell/i, Terminal],
+  [/mcp|config|setting|header/i, Wrench],
+  [/handoff|another machine|moved/i, ArrowsLeftRight],
+];
+
 export function quietNoticeIcon(event: SystemNoticeEvent): Icon {
   const detail = event.detail && typeof event.detail === "object" ? event.detail : null;
   if (detail?.permissionModeTransition) return Compass;
 
-  switch (event.status) {
-    case "memory_recall":
-      return Brain;
-    case "classifier_context":
-      return Funnel;
-    case "goal_reached":
-    case "goal_blocked":
-      return Target;
-    case "cross_machine_handoff_state":
-    case "cross_machine_handoff_arrived":
-    case "cross_machine_handoff_complete":
-    case "cross_machine_handoff_ended":
-    case "cross_machine_handoff_returned":
-    case "model_refusal_fallback":
-      return ArrowsLeftRight;
-    case "waiting":
-      return Hourglass;
-    case "completed":
-      return CheckCircle;
-    default:
-      break;
+  const byStatus = event.status ? ICON_BY_STATUS.get(event.status) : undefined;
+  if (byStatus) return byStatus;
+
+  const byKind = ICON_BY_KIND.get(event.noticeKind);
+  if (byKind) return byKind;
+
+  for (const [pattern, icon] of ICON_BY_MESSAGE) {
+    if (pattern.test(event.message)) return icon;
   }
-
-  if (event.noticeKind === "file_persist") return FloppyDisk;
-  if (event.noticeKind === "config") return Wrench;
-  if (event.noticeKind === "hook") return Note;
-
-  const message = event.message;
-  if (/plan mode/i.test(message)) return Compass;
-  if (/\bqueued\b|steer|delivering your/i.test(message)) return Tray;
-  if (/question dismissed|duplicate check-in/i.test(message)) return Question;
-  if (/reconnected|original thread|ai thread/i.test(message)) return Plugs;
-  if (/compact/i.test(message)) return ArrowsIn;
-  if (/memor/i.test(message)) return Brain;
-  if (/goal/i.test(message)) return Target;
-  if (/output style|permission mode/i.test(message)) return SlidersHorizontal;
-  if (/downloading|install/i.test(message)) return DownloadSimple;
-  if (/denied|permission/i.test(message)) return ShieldCheck;
-  if (/warmup|restart|reconnect/i.test(message)) return ArrowCounterClockwise;
-  if (/app-server|unsandboxed|shell/i.test(message)) return Terminal;
-  if (/mcp|config|setting|header/i.test(message)) return Wrench;
-  if (/handoff|another machine|moved/i.test(message)) return ArrowsLeftRight;
   return Note;
 }

@@ -865,11 +865,13 @@ function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): bo
 
 function renderNoticeDetail(
   detail: string | AgentChatNoticeDetail,
-  options?: { omitTitle?: boolean; quiet?: boolean },
+  options?: { quiet?: boolean },
 ): React.ReactNode {
   // A quiet line's detail is the second level of the row, so it reads a step
   // below the message rather than above it (the card's detail is its content).
-  const textClass = options?.quiet
+  // Its title is skipped: the row's own message already names what happened.
+  const quiet = options?.quiet === true;
+  const textClass = quiet
     ? "text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/50"
     : "text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60";
   if (typeof detail === "string") {
@@ -878,7 +880,7 @@ function renderNoticeDetail(
 
   return (
     <div className={`space-y-3 ${textClass}`}>
-      {!options?.omitTitle && detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
+      {!quiet && detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
       {detail.summary?.trim() ? <div className="whitespace-pre-wrap break-words">{detail.summary.trim()}</div> : null}
       {detail.metrics?.length ? (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -1493,17 +1495,17 @@ function QuietNoticeRow({
     <div
       className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] flex-col"
       data-testid="quiet-notice"
-      data-notice-count={entries.length}
     >
       {expandable ? (
         <button
           type="button"
           aria-expanded={open}
           aria-controls={panelId}
+          aria-label={grouped ? `${event.message}, and ${extraCount} more notice${extraCount === 1 ? "" : "s"}` : undefined}
           title={grouped ? `${entries.length} notices in this turn` : undefined}
           onClick={() => setOpen((value) => !value)}
           className={cn(
-            "group -ml-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-fg/[0.03]",
+            "group -ml-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20",
             summaryClass,
           )}
         >
@@ -1530,7 +1532,7 @@ function QuietNoticeRow({
                   <span className="min-w-0 truncate">{entry.event.message}</span>
                 </div>
               ) : null}
-              {entry.event.detail ? renderNoticeDetail(entry.event.detail, { omitTitle: true, quiet: true }) : null}
+              {entry.event.detail ? renderNoticeDetail(entry.event.detail, { quiet: true }) : null}
             </div>
           ))}
         </div>
