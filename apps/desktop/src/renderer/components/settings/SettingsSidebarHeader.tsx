@@ -7,6 +7,7 @@ import { resetAppZoom, useAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZo
 import { modifierChordLabel } from "../../lib/platform";
 import { DEFAULT_ZOOM } from "../../lib/zoom";
 import { AccountAvatar } from "../account/AccountAvatar";
+import { HelpMenu } from "../onboarding/HelpMenu";
 import { settingsReturnRoute } from "../app/projectSidebar/settingsReturnRoute";
 import { useAppStore } from "../../state/appStore";
 
@@ -37,6 +38,8 @@ export function SettingsSidebarHeader({ onOpenAccount }: { onOpenAccount: () => 
           <ArrowLeft size={13} weight="bold" />
           <span>Back</span>
         </button>
+
+        <HelpMenu className="ade-settings-sidebar-tool" iconSize={13} />
 
         <div className="ade-settings-sidebar-zoom" role="group" aria-label="Zoom">
           <button
