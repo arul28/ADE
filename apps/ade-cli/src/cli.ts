@@ -12204,10 +12204,12 @@ function buildNotesPlan(args: string[]): CliPlan {
       };
     }
     case "edit": {
-      const id = requireValue(firstStandalonePositional(args), "a note id");
+      // Flags first, so `edit --section iOS <id>` cannot take the flag's value as the id.
       const section = readValue(args, ["--section"]);
       const scope = readScope();
-      const body = readValue(args, ["--body", "--note"]) ?? (standalonePositionals(args).join(" ").trim() || null);
+      const bodyFlag = readValue(args, ["--body", "--note"]);
+      const id = requireValue(firstStandalonePositional(args), "a note id");
+      const body = bodyFlag ?? (standalonePositionals(args).join(" ").trim() || null);
       if (!section && !scope && !body) {
         throw new CliUsageError("ade notes edit <id> needs new text, --section or --scope.");
       }

@@ -1525,7 +1525,7 @@ export async function createAdeRuntime(args: {
         });
     };
 
-    const projectNotesService = createProjectNotesService({ db });
+    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
       projectNotesService,

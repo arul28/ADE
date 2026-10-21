@@ -4421,7 +4421,7 @@ app.whenReady().then(async () => {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         return require("node-pty") as NodePtyType;
       });
-    const projectNotesService = createProjectNotesService({ db });
+    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
       projectNotesService,

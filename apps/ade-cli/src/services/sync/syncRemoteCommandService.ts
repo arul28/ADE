@@ -5006,7 +5006,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         permissionMode,
         sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
         // A phone-started CLI gets the same Project notes as a desktop one.
-        projectNotes: args.db ? createProjectNotesService({ db: args.db }).renderPromptBlock() : null,
+        projectNotes: args.db ? createProjectNotesService({ db: args.db, logger: args.logger }).renderPromptBlock() : null,
         ...(parsed.droidPermissionMode !== undefined ? { droidPermissionMode: parsed.droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
@@ -5447,7 +5447,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       laneService: args.laneService,
       ptyService: args.ptyService,
       sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
-      projectNotesService: args.db ? createProjectNotesService({ db: args.db }) : null,
+      projectNotesService: args.db ? createProjectNotesService({ db: args.db, logger: args.logger }) : null,
       logger: args.logger,
     }));
   // Auto-lane naming. It degrades to a deterministic name on the client, so an

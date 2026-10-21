@@ -14,6 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
 import {
   PROJECT_NOTES_LIMITS,
@@ -134,6 +135,8 @@ export type ProjectNotesService = ReturnType<typeof createProjectNotesService>;
 
 export function createProjectNotesService(args: {
   db: AdeDb;
+  /** Records the fallbacks below, which otherwise hide a broken identity or read. */
+  logger?: Pick<Logger, "warn"> | null;
   /**
    * This machine's account machine key, the identity peers file it under.
    * Defaults to the shared resolver, read once.
@@ -152,7 +155,11 @@ export function createProjectNotesService(args: {
       if (args.getLocalMachineKey) return args.getLocalMachineKey()?.trim() || null;
       cachedMachineKey ??= getOrCreateLocalAccountMachineIdentity().machineKey.trim() || null;
       return cachedMachineKey;
-    } catch {
+    } catch (error) {
+      // Without an identity this machine's own notes drop out of view.
+      args.logger?.warn("project_notes.machine_identity_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   };
@@ -319,7 +326,10 @@ export function createProjectNotesService(args: {
     renderPromptBlock(): string {
       try {
         return renderProjectNotesBlock(visibleNotes(localMachineKey()));
-      } catch {
+      } catch (error) {
+        args.logger?.warn("project_notes.prompt_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         return renderProjectNotesBlock([]);
       }
     },
