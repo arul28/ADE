@@ -46901,6 +46901,7 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
     runtimeActor,
+    rememberLaunchDefaults: rememberAsLaunchDefaults,
     launchedBySessionId: requestedLaunchedBySessionId,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
@@ -47729,8 +47730,10 @@ export function createAgentChatService(args: {
         throw new Error(claim.message);
       }
     }
-    // Only a person's choice moves the machine's defaults.
-    if (!runtimeActor) rememberLaunchDefaults(managed.session);
+    // Only a person's choice moves the machine's defaults. A launch the
+    // person did not configure (the onboarding tour's first chat on a cheap
+    // model) opts out.
+    if (!runtimeActor && rememberAsLaunchDefaults !== false) rememberLaunchDefaults(managed.session);
     return managed.session;
   };
 

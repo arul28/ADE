@@ -4090,6 +4090,12 @@ export type AgentChatPermissionPolicy = {
 export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
   runtimeActor?: AgentChatRuntimeActor;
+  /**
+   * `false`: this launch does not become the machine's remembered launch
+   * defaults (`chat-launch-defaults.json`). For launches ADE configured rather
+   * than the person, such as the onboarding tour's first chat. Absent: remember.
+   */
+  rememberLaunchDefaults?: boolean;
   laneId: string;
   provider: AgentChatProvider;
   model: string;

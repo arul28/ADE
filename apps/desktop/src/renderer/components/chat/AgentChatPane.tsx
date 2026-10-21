@@ -10491,6 +10491,8 @@ export function AgentChatPane({
     insertComposerDraft,
   ]);
 
+  /** The draft's model was set by ADE, not picked: its launch is not remembered as the machine default. */
+  const draftKeepsMachineDefaultsRef = useRef(false);
   // A draft's model, set from outside (the onboarding tour picks a cheap one
   // for the first chat). Routed through the composer's own handler, so the
   // usual checks apply; `handled` tells the sender a draft took it.
@@ -10498,9 +10500,15 @@ export function AgentChatPane({
   useEffect(() => {
     if (!forceDraft) return undefined;
     const onSetDraftModel = (event: Event) => {
-      const detail = (event as CustomEvent<{ modelId?: unknown; handled?: boolean }>).detail;
+      const detail = (event as CustomEvent<{
+        modelId?: unknown;
+        rememberLaunchDefaults?: boolean;
+        handled?: boolean;
+      }>).detail;
       if (!detail || typeof detail.modelId !== "string" || !composerModelChangeRef.current) return;
       composerModelChangeRef.current(detail.modelId);
+      // After the pick above, which clears the flag as a person's pick would.
+      draftKeepsMachineDefaultsRef.current = detail.rememberLaunchDefaults === false;
       detail.handled = true;
     };
     window.addEventListener("ade:agent-chat:set-draft-model", onSetDraftModel);
@@ -11186,6 +11194,9 @@ export function AgentChatPane({
       // machine's preset list and key store, so nothing resolved travels.
       ...draftLaunchBrainRef.current,
       ...nativeControlPayload,
+      // A draft ADE configured (the tour's first chat) leaves the machine's
+      // remembered model alone; a model the person picks clears this.
+      ...(draftKeepsMachineDefaultsRef.current ? { rememberLaunchDefaults: false } : {}),
     };
     return {
       createArgs,
@@ -17037,6 +17048,7 @@ export function AgentChatPane({
   // The composer's model pick, also reachable from outside for a draft
   // (`ade:agent-chat:set-draft-model`, the onboarding tour's first chat).
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
+    draftKeepsMachineDefaultsRef.current = false;
     // A Custom pick is validated by the picker against what its
     // harness can reach; its model is often not in this provider
     // list at all (a DeepSeek model run in Claude Code).

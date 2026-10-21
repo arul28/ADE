@@ -54,7 +54,11 @@ export function pickFirstChatModel(status: AiSettingsStatus | null): FirstChatMo
 export async function setDraftModel(modelId: string, timeoutMs = 4_000): Promise<boolean> {
   const deadline = performance.now() + timeoutMs;
   while (performance.now() < deadline) {
-    const detail: { modelId: string; handled?: boolean } = { modelId };
+    // ADE picked this model, so sending it must not become the machine's default.
+    const detail: { modelId: string; rememberLaunchDefaults: false; handled?: boolean } = {
+      modelId,
+      rememberLaunchDefaults: false,
+    };
     window.dispatchEvent(new CustomEvent("ade:agent-chat:set-draft-model", { detail }));
     if (detail.handled) return true;
     await new Promise((resolve) => window.setTimeout(resolve, 250));

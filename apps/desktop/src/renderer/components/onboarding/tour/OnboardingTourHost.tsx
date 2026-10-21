@@ -278,10 +278,21 @@ function cursorTarget(frame: Frame): Point {
   return { x: frame.left + frame.width / 2, y: frame.top + frame.height / 2 };
 }
 
+/** The tour's own first step, reused to send the user to a project when a later step needs one. */
+const OPEN_PROJECT_STEP = TOUR_STEPS.find((candidate) => candidate.id === "open-project")!;
+
 function TourRunner({ stepId }: { stepId: string | null }) {
   const finishing = stepId === TOUR_FINISH_ID;
   const index = stepIndexOf(stepId);
-  const step = TOUR_STEPS[index]!;
+  const noProjectOpen = useAppStore((state) => state.project == null);
+  const step = useMemo(() => {
+    const own = TOUR_STEPS[index]!;
+    // A step that lives inside a project, with none open (the user closed
+    // it, or the tour resumed on a fresh launch): point at the projects
+    // first, holding this step's place until one opens.
+    if (!noProjectOpen || (own.goTo !== "draft" && own.goTo !== "work")) return own;
+    return { ...OPEN_PROJECT_STEP, id: `${own.id}:open-project`, skipIf: undefined };
+  }, [index, noProjectOpen]);
   const [view, setView] = useState<View>({ kind: "hidden" });
   const viewRef = useRef<View>(view);
   const directionRef = useRef<1 | -1>(1);
