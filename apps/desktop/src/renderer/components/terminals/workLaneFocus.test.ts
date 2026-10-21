@@ -75,6 +75,19 @@ const NOW_MS = Date.parse(NOW_ISO);
 const WAKE_AHEAD_ISO = "2026-04-01T12:12:00.000Z";
 const WAKE_OVERDUE_ISO = "2026-04-01T11:50:00.000Z"; // 10 min past due, past the grace
 
+/** A non-clean exit: the one kind of finish that still asks for the user. */
+function failedSession(id: string): TerminalSessionSummary {
+  return session({
+    id,
+    status: "failed",
+    runtimeState: "exited",
+    exitCode: 1,
+    startedAt: FINISHED_ISO,
+    endedAt: FINISHED_ISO,
+    lastActivityAt: FINISHED_ISO,
+  });
+}
+
 function focus(args: {
   sessions: TerminalSessionSummary[];
   seen?: Record<string, string>;
@@ -112,20 +125,39 @@ describe("summarizeLaneFocus — the fold rule", () => {
     expect(result.folds).toBe(false);
   });
 
-  it("holds the lane out while a finished row has not been left since it finished", () => {
-    const result = focus({ sessions: [finished("done"), running("run")] });
-    // The running row is Working; the unseen finish still pins the lane open.
-    expect(result.status).toBe("working");
-    expect(result.folds).toBe(false);
+  it("folds a busy lane whose clean finish was never left", () => {
+    // Both clean-finish shapes: a CLI that exited 0 (`ended`) and a chat
+    // resting between turns (`ready`). Done is not a request either way.
+    for (const done of [finished("ended"), idleChat("idle")]) {
+      const result = focus({ sessions: [done, running("run")] });
+      expect(result.status).toBe("working");
+      expect(result.folds).toBe(true);
+    }
   });
 
-  it("lets a finished row the user has already left stop holding the lane out", () => {
-    const result = focus({
-      sessions: [finished("done"), running("run")],
-      seen: { done: SEEN_ISO },
+  it("holds the lane out for a failure until the user has left it", () => {
+    const failed = failedSession("failed");
+    const unseen = focus({ sessions: [failed, running("run")] });
+    expect(unseen.status).toBe("working");
+    expect(unseen.folds).toBe(false);
+
+    const seen = focus({ sessions: [failed, running("run")], seen: { failed: SEEN_ISO } });
+    expect(seen.status).toBe("working");
+    expect(seen.folds).toBe(true);
+
+    // The Focus grid reads the same stamp: an unacknowledged failure is a tile,
+    // an acknowledged one is not.
+    const tiles = (seenAt: Record<string, string>) => workFocusQueue({
+      sessions: [failed, running("run")],
+      filingBuckets: NO_BUCKETS,
+      foldedLaneIds: new Set(),
+      laneWaiting: () => false,
+      seenAtBySessionId: seenAt,
+      nestedSessionIds: new Set(),
+      nowMs: NOW_MS,
     });
-    expect(result.status).toBe("working");
-    expect(result.folds).toBe(true);
+    expect(tiles({})).toEqual(["failed"]);
+    expect(tiles({ failed: SEEN_ISO })).toEqual([]);
   });
 
   it("ignores a finished nested row but still honors a nested raised hand", () => {
@@ -204,7 +236,7 @@ describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
     ["an unseen parent whose subagent is busy folds with it",
       { sessions: [idleChat("parent"), idleChat("child", WAKE_AHEAD_ISO)], nested: ["child"], busyParents: ["parent"] },
       { status: "waiting", folds: true }],
-    ["the same unseen parent with no busy subagent holds the lane out",
+    ["the same unseen parent with no busy subagent never folds: nothing is busy",
       { sessions: [idleChat("parent"), idleChat("child")], nested: ["child"] }, { status: "done", folds: false }],
     ["an overdue wake holds the lane out even after the user saw it",
       { sessions: [idleChat("poller", WAKE_OVERDUE_ISO), running("run")], seen: { poller: SEEN_ISO } },
@@ -220,7 +252,7 @@ describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
     expect(focus({ ...args, nowMs: NOW_MS })).toEqual(expected);
   });
 
-  it("gives the Focus grid a tile for a missed wake but not for a parent its subagent keeps busy", () => {
+  it("gives no tile to a parent its subagent keeps busy or to a clean finish, but keeps one for a missed wake and a failure", () => {
     const sessions = [
       idleChat("busy-parent"),
       idleChat("busy-child", WAKE_AHEAD_ISO),
@@ -241,7 +273,8 @@ describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
     expect(tiles).not.toContain("busy-parent");
     expect(tiles).not.toContain("busy-child");
     expect(tiles).toContain("missed-child");
-    expect(tiles).toContain("other-parent");
+    // A clean finish is not a request, so it is not on the user's desk.
+    expect(tiles).not.toContain("other-parent");
     // A failure needs the user even while its subagent keeps working.
     expect(tiles).toContain("failed-parent");
   });
@@ -250,6 +283,7 @@ describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
 describe("launched helpers — the busy launcher owns their lane", () => {
   const busyChat = (id: string) => session({ id, toolType: "codex-chat" });
   const launched = (id: string) => ({ ...finished(id), launchedBySessionId: "launcher" });
+  const failedLaunched = (id: string) => ({ ...failedSession(id), launchedBySessionId: "launcher" });
 
   // Every row is checked through both seams: the lane's fold and the Focus grid.
   // The grid is queried over all lanes, the fold over lane-1 only, as the sidebar does.
@@ -257,20 +291,20 @@ describe("launched helpers — the busy launcher owns their lane", () => {
     ["a busy launcher folds its lane and its finished helpers get no tile",
       [busyChat("launcher"), launched("h1"), launched("h2")],
       { status: "working", folds: true, tiles: [] }],
-    ["a user-started helper with no launcher field holds the lane out and gets a tile",
+    ["user-started finished helpers fold with their busy lane and get no tile",
       [busyChat("launcher"), finished("h1"), finished("h2")],
-      { status: "working", folds: false, tiles: ["h1", "h2"] }],
-    ["a finished launcher holds the lane out, and its helpers get tiles too",
+      { status: "working", folds: true, tiles: [] }],
+    ["a finished launcher leaves the lane in the inbox, and no clean finish gets a tile",
       [idleChat("launcher"), launched("h1"), launched("h2")],
-      { status: "done", folds: false, tiles: ["launcher", "h1", "h2"] }],
+      { status: "done", folds: false, tiles: [] }],
     ["a peer that names the launcher as its orchestration parent is deferred the same way",
       [busyChat("launcher"), { ...finished("h1"), orchestrationParentSessionId: "launcher" }],
       { status: "working", folds: true, tiles: [] }],
     ["a helper that needs input still holds the lane out and gets its tile",
       [busyChat("launcher"), { ...session({ id: "h1", toolType: "codex", pendingInputItemId: "ask-1" }), launchedBySessionId: "launcher" }],
       { status: "needs_you", folds: false, tiles: ["h1"] }],
-    ["a launcher in another lane does not defer a helper in this lane",
-      [launched("h1"), { ...busyChat("launcher"), laneId: "lane-2", laneName: "lane-2" }],
+    ["a launcher in another lane does not defer a failed helper here",
+      [failedLaunched("h1"), { ...busyChat("launcher"), laneId: "lane-2", laneName: "lane-2" }],
       { status: "done", folds: false, tiles: ["h1"] }],
   ])("%s", (_label, sessions, expected) => {
     const summary = focus({

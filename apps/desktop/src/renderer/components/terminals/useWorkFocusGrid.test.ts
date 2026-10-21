@@ -201,7 +201,7 @@ describe("useWorkFocusGrid", () => {
 });
 
 describe("Focus queue for another machine's lanes", () => {
-  it("gives no tile to a parent its subagent keeps busy, but keeps one for a finished parent", () => {
+  it("gives no tile to a parent its subagent keeps busy, but keeps one for a failed parent", () => {
     const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
     const row = (overrides: Record<string, unknown>) => ({
       laneId: "lane-f",
@@ -214,14 +214,14 @@ describe("Focus queue for another machine's lanes", () => {
     }) as unknown as TerminalSessionSummary;
     const busyParent = row({ id: "busy-parent" });
     const helper = row({ id: "helper", runtimeState: "running", spawnKind: "subagent", orchestrationParentSessionId: "busy-parent" });
-    const doneParent = row({ id: "done-parent" });
+    const failedParent = row({ id: "failed-parent", status: "failed", runtimeState: "exited", exitCode: 1 });
     const binding = { kind: "remote", key: "remote:studio" } as never;
     const reported: string[][] = [];
     renderHook(() => useWorkFocusQueueReport({
       active: true,
       localSessions: [],
       localIds: [],
-      foreignRows: [{ machineId: "studio", lane: { id: "lane-f" }, binding, sessions: [busyParent, helper, doneParent] }],
+      foreignRows: [{ machineId: "studio", lane: { id: "lane-f" }, binding, sessions: [busyParent, helper, failedParent] }],
       foldedForeignLaneIds: new Set(),
       filingBucketsFor: () => new Map(),
       foreignNesting: new Map([["studio:lane-f", { excludedTopLevelIds: new Set(["helper"]) }]]),
@@ -231,7 +231,7 @@ describe("Focus queue for another machine's lanes", () => {
     }));
 
     const tiles = reported.at(-1) ?? [];
-    expect(tiles).toContain("done-parent");
+    expect(tiles).toContain("failed-parent");
     expect(tiles).not.toContain("busy-parent");
     expect(tiles).not.toContain("helper");
   });
