@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Aperture,
   ArrowsInLineVertical,
   ArrowsOut,
   Camera,
@@ -17,6 +18,7 @@ import {
   Power,
   Record,
   SlidersHorizontal,
+  Sparkle,
   SpeakerHigh,
   SpeakerLow,
   SquaresFour,
@@ -80,6 +82,10 @@ export type AppleDeviceRailProps = {
     /** The named posture this angle is nearest to, for the checked item. */
     stance: AppleDuoStanceId;
   } | undefined;
+  /** Capture both Duo displays at App Store Connect's sizes. */
+  onDuoAppStoreShots?: (() => void) | undefined;
+  /** Add Apple's app-resizability agent skill to the lane. */
+  onDuoAddSkill?: (() => void) | undefined;
   onDuoStance?: (stance: AppleDuoStanceId) => void;
   onDuoNudge?: (delta: number) => void;
   /**
@@ -92,6 +98,9 @@ export type AppleDeviceRailProps = {
   /** §V2: rotate TO a named orientation. The blind cycle is gone. */
   onOrientation: (orientation: AppleDeviceOrientation) => void;
   onScreenshot: () => void;
+  /** Open the Render sheet (3D stills and video). Absent hides it. */
+  onRender?: (() => void) | undefined;
+  rendering?: boolean;
   onToggleTools: () => void;
   onToggleInspect: () => void;
   /** §A2: ONE button. It switches to the other view and shows which is on. */
@@ -147,8 +156,12 @@ export function AppleDeviceRail({
   duo,
   onDuoStance,
   onDuoNudge,
+  onDuoAppStoreShots,
+  onDuoAddSkill,
   onOrientation,
   onScreenshot,
+  onRender,
+  rendering = false,
   onToggleTools,
   onToggleInspect,
   onMode,
@@ -268,6 +281,21 @@ export function AppleDeviceRail({
               <ArrowsInLineVertical size={14} />
               {`Open hinge ${APPLE_DUO_NUDGE_DEGREES}\u00b0`}
             </DropdownMenu.Item>
+            {onDuoAppStoreShots ? (
+              <>
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onDuoAppStoreShots()}>
+                  <Camera size={14} />
+                  App Store screenshots
+                </DropdownMenu.Item>
+                {onDuoAddSkill ? (
+                  <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onDuoAddSkill()}>
+                    <Sparkle size={14} />
+                    Add Apple's Duo skill to this lane
+                  </DropdownMenu.Item>
+                ) : null}
+              </>
+            ) : null}
           </RailMenu>
         ) : null}
         {/*
@@ -326,6 +354,15 @@ export function AppleDeviceRail({
             >
               <Camera size={16} />
             </RailButton>
+            {onRender ? (
+              <RailButton
+                label={rendering ? "Rendering" : "Render the device in 3D"}
+                disabled={rendering}
+                onClick={onRender}
+              >
+                <Aperture size={16} />
+              </RailButton>
+            ) : null}
             <RailButton
               label={recording ? "Stop recording" : "Record"}
               pressed={recording}

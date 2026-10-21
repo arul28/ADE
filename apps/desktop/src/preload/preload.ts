@@ -1009,6 +1009,20 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
+  AppleDuoModelResult,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -9652,6 +9666,38 @@ const adeBridge = {
     ): Promise<AppleDeviceCleanupResult> =>
       callIosSimulatorMutation(pin, "deviceCleanup", args, IPC.iosSimulatorDeviceCleanup),
 
+    /** Installed simulator runtimes, the one this Xcode expects, and any download in progress. */
+    runtimeList: (pin?: OpenProjectBinding | null): Promise<AppleRuntimeInventory> =>
+      callIosSimulatorActionOr<AppleRuntimeInventory>(pin, "runtimeList", {}, () => ipcRenderer.invoke(IPC.iosSimulatorRuntimeList)),
+    /** Start downloading a runtime. Returns at once; progress arrives as `apple.runtime.install` events. */
+    runtimeInstall: (
+      args: AppleRuntimeInstallArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState> =>
+      callIosSimulatorMutation(pin, "runtimeInstall", args, IPC.iosSimulatorRuntimeInstall),
+    runtimeInstallCancel: (
+      args: AppleRuntimeScope = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState | null> =>
+      callIosSimulatorMutation(pin, "runtimeInstallCancel", args, IPC.iosSimulatorRuntimeInstallCancel),
+    /** Remove one runtime, moving or erasing the simulators on it. The person confirms first. */
+    runtimeDelete: (
+      args: AppleRuntimeDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimeDelete", args, IPC.iosSimulatorRuntimeDelete),
+    /** Remove every runtime older than the newest of its platform. */
+    runtimePrune: (
+      args: AppleRuntimePruneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimePrune", args, IPC.iosSimulatorRuntimePrune),
+    xcodeRunFirstLaunch: (
+      args: AppleRuntimeScope & { confirmedByUser?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleXcodeStatus> =>
+      callIosSimulatorMutation(pin, "xcodeRunFirstLaunch", args, IPC.iosSimulatorXcodeRunFirstLaunch),
+
     /**
      * One decoded frame from the running stream.
      *
@@ -9714,6 +9760,46 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleRotateResult> =>
       callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
+    /** Fold the lane's iPhone Duo to a preset or an angle; `supported: false` on any other device. */
+    setPosture: (
+      args: AppleSetPostureArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleSetPostureResult> =>
+      callIosSimulatorMutation(pin, "setPosture", args, IPC.iosSimulatorSetPosture),
+    getPosture: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDevicePosture> =>
+      callIosSimulatorActionOr<AppleDevicePosture>(pin, "getPosture", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorGetPosture, args)),
+    /** Apple's Duo model from the owning machine's Xcode (base64), for the 3D view. */
+    /** Both Duo displays at App Store Connect's sizes, filed as proof. Folds the simulator. */
+    duoAppStoreScreenshots: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDuoAppStoreScreenshotsResult> =>
+      callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
+    /** File a 3D render (PNG or WebM) to the proof drawer on the machine that owns the lane's device. */
+    attachRenderProof: (
+      args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ proofArtifactId: string | null }> =>
+      callIosSimulatorMutation(pin, "attachRenderProof", args, IPC.iosSimulatorAttachRenderProof),
+    /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
+    addDuoSkill: (
+      args: { laneId?: string | null; chatSessionId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleAddDuoSkillResult> =>
+      callIosSimulatorMutation(pin, "addDuoSkill", args, IPC.iosSimulatorAddDuoSkill),
+    /** The Apple pane took an `ade apple render` request, or finished it. */
+    renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),
+    renderComplete: (
+      args: { requestId: string; filed: number; error: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderComplete", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderComplete, args)),
+    getDuoModel: (pin?: OpenProjectBinding | null): Promise<AppleDuoModelResult> =>
+      callIosSimulatorActionOr<AppleDuoModelResult>(pin, "getDuoModel", {}, () => ipcRenderer.invoke(IPC.iosSimulatorGetDuoModel)),
     /**
      * The helper's own scroll gesture, by viewport direction.
      *

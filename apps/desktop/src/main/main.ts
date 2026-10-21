@@ -91,6 +91,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureMacDesktopAnalytics,
+  captureAppleDeviceAnalytics,
   captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatCompactionAnalytics,
@@ -5252,6 +5253,7 @@ app.whenReady().then(async () => {
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
+      captureAnalytics: (outcome) => captureAppleDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
       // Lane-scoped calls build the lane's worktree, not the primary checkout.
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {

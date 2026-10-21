@@ -8,6 +8,7 @@ import {
 import type { ToolErrorKind } from "../../../shared/types";
 import { JEV_FEATURES } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
+import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -223,6 +224,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether agents use the user's own browser (`ade browser attach`): one
   // coarse `started` outcome. Never the browser, machine, tab, URL, or chat.
   "user_browser",
+  // Whether the Apple panel's runtime manager and iPhone Duo surface are used:
+  // a runtime installed or removed, a Duo folded, the App Store Duo set taken,
+  // a 3D render filed, Apple's Duo skill added. Never the runtime, device,
+  // lane, pose, angle, or image.
+  "apple_device",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -486,6 +492,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // being created; these two are an agent driving it and a recording filed
     // as proof. A fourth spelling is dropped, not widened.
     "agent_drove", "recorded",
+    // The Apple panel's facts (`apple_device`), closed in
+    // `APPLE_DEVICE_ANALYTICS_OUTCOMES`.
+    ...APPLE_DEVICE_ANALYTICS_OUTCOMES,
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

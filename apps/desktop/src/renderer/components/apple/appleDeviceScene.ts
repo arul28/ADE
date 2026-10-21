@@ -16,7 +16,7 @@ import type { AppleDeviceOrientation } from "../../../shared/types";
 import type { AppleDeviceModelId, AppleDeviceModelSource } from "./appleDeviceModels";
 
 /** A body that is not a bundled GLB — today only the procedural Duo. */
-export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural";
+export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural" | "duo-v68";
 
 /**
  * The 3D device's body and screen: the three.js runtime, the imported body
@@ -59,6 +59,16 @@ export type DuoBodyControls = {
    * position. Null when the point cannot be placed.
    */
   innerToWorld: (u: number, vFromBottom: number) => Vector3 | null;
+  /**
+   * Ease toward the last pose asked for, at `now` (ms). True while still
+   * moving, so the view keeps drawing. Bodies that jump straight to their
+   * pose leave it out.
+   */
+  animate?: (now: number) => boolean;
+  /** Apple's physical body only: which panel is live (it shows the stream). */
+  setActivePanel?: (screenId: number | null) => void;
+  /** Apple's physical body only: the device as held (`landscape-left`, …). */
+  setPhysicalOrientation?: (orientation: string | null) => void;
 };
 
 export type DeviceBody = {
@@ -75,6 +85,13 @@ export type DeviceBody = {
   rewriteUvs: (THREE: ThreeNS, layout: DisplayLayout) => void;
   /** Foldable bodies only; undefined for every imported GLB. */
   duo?: DuoBodyControls;
+  /**
+   * True for a body that is built as the hardware is (Apple's Duo model): each
+   * panel maps its own framebuffer, so the view neither applies the display
+   * orientation's turn nor rewrites its UVs, and taps answer in the live
+   * panel's raw framebuffer.
+   */
+  physical?: boolean;
   dispose: () => void;
 };
 

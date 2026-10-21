@@ -223,6 +223,9 @@ import {
   IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
   IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
+  APPLE_DEVICE_POSES,
+  APPLE_RENDER_ANGLE_IDS,
+  APPLE_RENDER_LIGHTINGS,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_COST_BREAKDOWN_BY,
@@ -2923,6 +2926,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
     $ ade apple button app-switcher --text       Open the App Switcher (two home presses)
     $ ade apple rotate landscape-left --text     Set orientation
+    $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
+    $ ade apple posture --text                   A foldable's hinge angle and active panel
+    $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
+    $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
+    $ ade apple render --poses closed,open --text  3D renders (needs the Apple pane open), as proof
+    $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
     $ ade apple accessibility reduce-motion on   Set one accessibility option
@@ -13484,7 +13493,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
             backendName: "ade-cli",
             toolName: "proof attach",
             ...proofCallerRootArgs(),
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             inputs: [
               {
                 kind: inferAttachedProofKind(attachedPath),
@@ -13573,7 +13582,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           "result",
           "screenshot_environment",
           collectGenericObjectArgs(args, {
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             // `ade proof capture` is the explicit proof interface; the bare
             // tool is scratch agent vision and files nothing.
             proof: true,
@@ -13610,7 +13619,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           "result",
           "record_environment",
           collectGenericObjectArgs(args, {
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             // Same rule as `capture`: the proof command files, the tool alone
             // does not.
             proof: true,
@@ -13996,7 +14005,13 @@ function buildIosSimulatorPlan(
     kind: "execute" as const,
     label,
     steps: [
-      iosStep("result", method, collectGenericObjectArgs(args, payload)),
+      // `--lane` was consumed into `claimArgs` above, so the generic flag
+      // pass cannot see it: carry it here, or `stream-stop --lane X` (and
+      // every other subcommand that does not re-add it) ran laneless.
+      iosStep("result", method, collectGenericObjectArgs(args, {
+        ...(laneId ? { laneId } : {}),
+        ...payload,
+      })),
     ],
   });
   if (sub === "actions")
@@ -15042,6 +15057,130 @@ function buildIosSimulatorPlan(
       deviceUdid: readIosSimulatorDevice(args),
       ...(laneId ? { laneId } : {}),
     });
+  }
+  if (sub === "fold" || sub === "posture-set" || sub === "set-posture") {
+    // `ade apple fold closed|open|laptop|book|tent`, `--angle 0-180`, or
+    // `--sequence closed,open,tent`: one pose after another, each with a step
+    // caption for a running recording, so an agent's demo shows every pose.
+    const poses = APPLE_DEVICE_POSES;
+    const sequence = readValue(args, ["--sequence", "--poses"]);
+    if (sequence) {
+      // Every entry is checked before any fold runs: `closed,,open` is a typo,
+      // not a request for two poses.
+      const wanted = sequence.split(",").map((value) => value.trim().toLowerCase());
+      const unknown = wanted.find((value) => !(poses as readonly string[]).includes(value));
+      if (unknown !== undefined || !wanted.length) {
+        throw new CliUsageError(`ios-sim ${sub}: --sequence takes poses from ${poses.join(", ")}, comma separated.`);
+      }
+      const deviceUdid = readIosSimulatorDevice(args);
+      // Read once: reading takes `--owner`/`--owner-id` out of `args`, so a
+      // second read would drop the owner from every later caption.
+      const owner = readProofOwnerBase(args);
+      return {
+        kind: "execute",
+        label: "Apple device fold sequence",
+        steps: wanted.flatMap((pose, index) => [
+          actionCallStep(`caption${index}`, "note_demo_step", {
+            ...owner,
+            ...proofCallerRootArgs(),
+            ...(laneId ? { laneId } : {}),
+            text: `Fold the iPhone Duo: ${pose}`,
+          }),
+          iosStep(`pose${index}`, "setPosture", {
+            pose,
+            deviceUdid,
+            ...(laneId ? { laneId } : {}),
+          }),
+        ]),
+      };
+    }
+    const angle = readNumberOption(args, ["--angle", "--degrees"]);
+    if (angle !== undefined) {
+      if (!Number.isFinite(angle) || angle < 0 || angle > 180) {
+        throw new CliUsageError(`ios-sim ${sub}: --angle must be between 0 and 180.`);
+      }
+      return iosAction("Apple device fold", "setPosture", {
+        angle,
+        deviceUdid: readIosSimulatorDevice(args),
+        ...(laneId ? { laneId } : {}),
+      });
+    }
+    const pose = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--pose"],
+      label: "pose",
+      noun: "pose",
+      valid: APPLE_DEVICE_POSES,
+    });
+    return iosAction("Apple device fold", "setPosture", {
+      pose,
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "render") {
+    // `ade apple render --angles front,three-quarter-left --poses closed,open
+    // --lighting studio --video --sheet --no-shadow`: the Apple pane open for
+    // the lane renders it and files the proof.
+    const listOf = <T extends string>(flag: string[], valid: readonly T[], fallback: T[]): T[] => {
+      const raw = readValue(args, flag);
+      if (raw == null) return fallback;
+      // An explicit empty list is a mistake, not a request for the defaults.
+      const values = raw.split(",").map((value) => value.trim());
+      if (values.every((value) => !value)) throw new CliUsageError(`ios-sim render: ${flag[0]} needs at least one value.`);
+      const bad = values.find((value) => !(valid as readonly string[]).includes(value));
+      if (bad !== undefined) throw new CliUsageError(`ios-sim render: '${bad}' is not one of ${valid.join(", ")}.`);
+      return values as T[];
+    };
+    const angles = listOf(["--angles", "--angle"], APPLE_RENDER_ANGLE_IDS, ["front", "three-quarter-left"]);
+    const poses = listOf(["--poses", "--pose"], APPLE_DEVICE_POSES, []);
+    const lighting = readValue(args, ["--lighting", "--background"]) ?? "transparent";
+    if (!(APPLE_RENDER_LIGHTINGS as readonly string[]).includes(lighting)) {
+      throw new CliUsageError(`ios-sim render: --lighting must be ${APPLE_RENDER_LIGHTINGS.join(", ")}.`);
+    }
+    return iosAction("Apple device render", "requestRender", {
+      request: {
+        angles,
+        poses,
+        lighting,
+        shadow: !readFlag(args, ["--no-shadow"]),
+        video: readFlag(args, ["--video", "--turntable"]),
+        contactSheet: readFlag(args, ["--sheet", "--contact-sheet"]),
+      },
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "app-store-shots" || sub === "app-store-screenshots") {
+    // Both iPhone Duo displays at App Store Connect's sizes, filed as proof.
+    return iosAction("Apple Duo App Store screenshots", "duoAppStoreScreenshots", {
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "duo-skill" || sub === "resizability-skill") {
+    // Apple's app-resizability agent skill, from this Mac's Xcode into the lane.
+    return iosAction("Apple Duo agent skill", "addDuoSkill", laneId ? { laneId } : {});
+  }
+  if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
+    return iosAction("Apple device posture", "getPosture", {
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "runtimes" || sub === "runtime") {
+    // `ade apple runtimes [list|install|cancel]`. Removing one is the
+    // person's call, from the Apple panel; it is not offered here.
+    const verb = firstPositional(args) ?? "list";
+    const scope = laneId ? { laneId } : {};
+    if (verb === "list" || verb === "status") return iosAction("Apple runtimes", "runtimeList", scope);
+    if (verb === "install") {
+      const version = readValue(args, ["--version", "--build-version"]);
+      return iosAction("Apple runtime install", "runtimeInstall", { ...scope, ...(version ? { version } : {}) });
+    }
+    if (verb === "cancel") return iosAction("Apple runtime install cancel", "runtimeInstallCancel", scope);
+    throw new CliUsageError(
+      `ios-sim ${sub}: unknown action '${verb}'. Use list, install or cancel. Removing a runtime is done from the Apple Development panel.`,
+    );
   }
   if (sub === "rotate" || sub === "orientation") {
     const orientation = readIosSimulatorEnum(args, {

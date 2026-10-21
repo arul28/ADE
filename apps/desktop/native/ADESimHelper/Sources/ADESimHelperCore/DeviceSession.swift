@@ -17,6 +17,18 @@ public actor DeviceSession {
 
     private let hid = HIDInjector()
     private var hidReady = false
+    /// Foldable devices only (the iPhone Duo): CoreDevice input, and the panel
+    /// capture and input follow. A yes is kept for the session; a no is asked
+    /// again after `foldableRecheckInterval`, because CoreDevice can fail the
+    /// question for a Duo that is still coming up, and that path (the legacy
+    /// Indigo inner target) can abort `backboardd` on a Duo.
+    private var foldable: FoldableInput?
+    private var foldableCheckedAt: ContinuousClock.Instant?
+    private static let foldableRecheckInterval: Duration = .seconds(10)
+    private var activeScreenID: UInt32?
+    /// Each panel's metrics, measured from its framebuffer while streaming or
+    /// read once from `simctl io enumerate` for input without a stream.
+    private var panelMetrics: [UInt32: DeviceMetrics] = [:]
     private var engine: CaptureEngine?
     private var server: FrameStreamServer?
     private var unsubscribeAVCC: (@Sendable () async -> Void)?
@@ -99,6 +111,7 @@ public actor DeviceSession {
         let engine = CaptureEngine(deviceUDID: udid)
         try await engine.start()
         self.engine = engine
+        activeScreenID = nil
 
         let server = try FrameStreamServer()
         _ = try server.start()
@@ -222,6 +235,9 @@ public actor DeviceSession {
         server = nil
         await engine?.stop()
         engine = nil
+        // The next engine starts on the largest surface; forget the panel so
+        // the next posture read applies it to that engine.
+        activeScreenID = nil
     }
 
     public var isCapturing: Bool { engine != nil }
@@ -308,9 +324,81 @@ public actor DeviceSession {
         await recording?.noteText(text)
     }
 
+    // MARK: - Foldables
+
+    /// The CoreDevice input path, for a device with a hinge; nil for every other device.
+    private func foldableInput() async -> FoldableInput? {
+        if let foldable { return foldable }
+        let now = ContinuousClock.now
+        if let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
+        foldableCheckedAt = now
+        if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
+            foldable = FoldableInput(udid: udid)
+        }
+        return foldable
+    }
+
+    public func isFoldable() async -> Bool {
+        await foldableInput() != nil
+    }
+
+    /// The panel CoreDevice reports active: capture it, route input to it, and
+    /// measure it. Returns the panel's metrics when they changed, else nil.
+    public func applyActiveScreen(_ screenID: UInt32?) async -> DeviceMetrics? {
+        guard let screenID, screenID != activeScreenID else { return nil }
+        activeScreenID = screenID
+        guard let engine else { return nil }
+        await engine.setPreferredScreen(screenID)
+        // The engine measures the panel on its next frame; the switch forces one.
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+            let size = await engine.screenSize
+            if size.width > 0, size.height > 0,
+               size.width != metrics.pixelWidth || size.height != metrics.pixelHeight {
+                metrics = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
+                panelMetrics[screenID] = metrics
+                return metrics
+            }
+        }
+        return nil
+    }
+
+    /**
+     * Input without a stream (a caller that only taps): nothing has told the
+     * session which panel is on, or measured it. Ask CoreDevice, and size the
+     * panel from the simulator's own screen list, rather than defaulting to
+     * the cover while the inner display is showing.
+     */
+    private func resolvePanelForInput() async {
+        if engine != nil, activeScreenID != nil { return }
+        let active = await DevicePosture.displays(udid: udid).first(where: \.active)?.screenID
+        guard let active else { return }
+        activeScreenID = active
+        if panelMetrics[active] == nil {
+            let udid = self.udid
+            let sizes = await Task.detached { DevicePosture.panelPixelSizes(udid: udid) }.value
+            for (screen, size) in sizes {
+                panelMetrics[screen] = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
+            }
+        }
+        if engine == nil, let measured = panelMetrics[active] { metrics = measured }
+    }
+
+    private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
+        guard let foldable = await foldableInput() else { return false }
+        if phase == .begin { await resolvePanelForInput() }
+        try await foldable.touch(
+            phase: phase,
+            screenID: activeScreenID ?? DuoScreen.cover,
+            points: points.map { metrics.normalize($0) }
+        )
+        return true
+    }
+
     // MARK: - Input
 
     public func touch(phase: TouchPhase, point: DevicePoint) async throws {
+        if try await foldableTouch(phase, [point]) { return }
         try await ensureHID()
         let normalized = metrics.normalize(point)
         await hid.sendTouch(
@@ -323,6 +411,7 @@ public actor DeviceSession {
     }
 
     public func multiTouch(phase: TouchPhase, first: DevicePoint, second: DevicePoint) async throws {
+        if try await foldableTouch(phase, [first, second]) { return }
         try await ensureHID()
         let a = metrics.normalize(first)
         let b = metrics.normalize(second)
@@ -348,6 +437,10 @@ public actor DeviceSession {
     }
 
     public func key(phase: KeyPhase, usage: Int) async throws {
+        if let foldable = await foldableInput() {
+            try await foldable.key(usage: UInt32(usage), down: phase == .down)
+            return
+        }
         try await ensureHID()
         await hid.sendKey(type: phase.rawValue, usage: UInt32(usage))
     }
@@ -358,6 +451,17 @@ public actor DeviceSession {
     /// silently: a caller that asked for an emoji needs to know it did not
     /// arrive, because the field it is typing into will look almost right.
     public func type(text: String) async throws -> [Character] {
+        if let foldable = await foldableInput() {
+            let (strokes, unsupported) = KeyboardUsage.usages(for: text)
+            for stroke in strokes {
+                if stroke.shifted { try await foldable.key(usage: KeyboardUsage.leftShift, down: true) }
+                try await foldable.key(usage: stroke.usage, down: true)
+                try await foldable.key(usage: stroke.usage, down: false)
+                if stroke.shifted { try await foldable.key(usage: KeyboardUsage.leftShift, down: false) }
+                try? await Task.sleep(nanoseconds: 12_000_000)
+            }
+            return unsupported
+        }
         try await ensureHID()
         let (strokes, unsupported) = KeyboardUsage.usages(for: text)
         for stroke in strokes {
@@ -378,6 +482,20 @@ public actor DeviceSession {
     }
 
     public func scroll(deltaX: Double, deltaY: Double, anchor: DevicePoint?) async throws {
+        if await foldableInput() != nil {
+            // CoreDevice's digitizer has no wheel: scroll is a short drag the
+            // other way, from the anchor (or the panel's centre).
+            let start = anchor ?? DevicePoint(x: metrics.pointWidth / 2, y: metrics.pointHeight / 2)
+            let steps = 6
+            _ = try await foldableTouch(.begin, [start])
+            for step in 1...steps {
+                let t = Double(step) / Double(steps)
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                _ = try await foldableTouch(.move, [DevicePoint(x: start.x - deltaX * t, y: start.y - deltaY * t)])
+            }
+            _ = try await foldableTouch(.end, [DevicePoint(x: start.x - deltaX, y: start.y - deltaY)])
+            return
+        }
         try await ensureHID()
         let normalized = anchor.map { metrics.normalize($0) }
         await hid.sendScroll(

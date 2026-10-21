@@ -10405,6 +10405,12 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeList, async () => ensureIosSimulator().runtimeList());
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstall, async (_event, arg = {}) => ensureIosSimulator().runtimeInstall(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
+  ipcMain.handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
+  ipcMain.handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
@@ -10422,6 +10428,14 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 
   ipcMain.handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
+  ipcMain.handle(IPC.iosSimulatorSetPosture, async (_event, arg) => ensureIosSimulator().setPosture(arg));
+  ipcMain.handle(IPC.iosSimulatorGetPosture, async (_event, arg = {}) => ensureIosSimulator().getPosture(arg));
+  ipcMain.handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
+  ipcMain.handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
+  ipcMain.handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
+  ipcMain.handle(IPC.iosSimulatorAttachRenderProof, async (_event, arg = {}) => ensureIosSimulator().attachRenderProof(arg));
+  ipcMain.handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
+  ipcMain.handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
   ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
 
   ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));

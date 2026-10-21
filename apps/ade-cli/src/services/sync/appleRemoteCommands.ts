@@ -345,6 +345,10 @@ export function assertAppleInputAllowed(
  * which changes the encoder settings for every viewer.
  */
 const APPLE_UNGUARDED_METHODS: ReadonlySet<string> = new Set([
+  // Machine-wide reads: the Mac's simulator runtimes and Xcode's Duo model
+  // belong to no lane.
+  "runtimeList",
+  "getDuoModel",
   "getStatus",
   "listDevices",
   "listLaunchTargets",

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1979,6 +1980,26 @@ describe("product analytics producers", () => {
       feature: "work",
       action: "mac_desktop",
       outcome: "watched",
+    })).not.toHaveProperty("outcome");
+
+    // The Apple panel's facts: six closed outcomes, and nothing about the
+    // runtime, the device, the pose, or the lane crosses with them.
+    for (const outcome of APPLE_DEVICE_ANALYTICS_OUTCOMES) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "apple_device",
+        outcome,
+        runtime: "iOS 27.1",
+        device_name: "Arul's iPhone Duo",
+        udid: "6FE1A071-D75C-46B1-9BED-DFCD5EDBBE2B",
+        angle: 135,
+        lane_id: "lane-1",
+      })).toEqual({ feature: "work", action: "apple_device", outcome });
+    }
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "apple_device",
+      outcome: "duo_unfolded_to_135",
     })).not.toHaveProperty("outcome");
 
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

@@ -49,6 +49,20 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
+  AppleDuoModelResult,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -3096,6 +3110,27 @@ declare global {
           args?: AppleDeviceCleanupArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDeviceCleanupResult>;
+        runtimeList: (pin?: OpenProjectBinding | null) => Promise<AppleRuntimeInventory>;
+        runtimeInstall: (
+          args?: AppleRuntimeInstallArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState>;
+        runtimeInstallCancel: (
+          args?: AppleRuntimeScope,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState | null>;
+        runtimeDelete: (
+          args: AppleRuntimeDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        runtimePrune: (
+          args: AppleRuntimePruneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        xcodeRunFirstLaunch: (
+          args?: AppleRuntimeScope & { confirmedByUser?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleXcodeStatus>;
         frame: (
           args?: AppleFrameArgs,
           pin?: OpenProjectBinding | null,
@@ -3139,6 +3174,32 @@ declare global {
           args: AppleRotateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRotateResult>;
+        setPosture: (
+          args: AppleSetPostureArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleSetPostureResult>;
+        getPosture: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDevicePosture>;
+        getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
+        renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        renderComplete: (
+          args: { requestId: string; filed: number; error: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
+        duoAppStoreScreenshots: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDuoAppStoreScreenshotsResult>;
+        attachRenderProof: (
+          args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ proofArtifactId: string | null }>;
+        addDuoSkill: (
+          args?: { laneId?: string | null; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleAddDuoSkillResult>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
         scroll: (
           args: AppleScrollArgs,

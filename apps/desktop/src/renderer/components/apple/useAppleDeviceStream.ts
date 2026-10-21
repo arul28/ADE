@@ -219,7 +219,7 @@ export function useAppleDeviceStream({
    * the unmount path — which runs after the props are gone — stops the stream
    * it actually started rather than whatever the last render happened to name.
    */
-  const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }) => {
+  const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }, immediate = false) => {
     const key = leaseKeyRef.current;
     if (!key) return;
     const epoch = leaseEpochRef.current ?? undefined;
@@ -228,6 +228,12 @@ export function useAppleDeviceStream({
     leaseEpochRef.current = null;
     leaseRuntimePinRef.current = null;
     if (!releaseAppleStreamLease(key, epoch).last) return;
+    if (immediate) {
+      void window.ade.iosSimulator
+        .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
+        .catch(() => {});
+      return;
+    }
     window.setTimeout(() => {
       // Somebody took the lane's stream up in the meantime, on this device or
       // another one (a swap): theirs now. The stop is lane-scoped, so it would
@@ -438,6 +444,18 @@ export function useAppleDeviceStream({
     releaseLease(scopeRef.current);
   }, [releaseLease]);
 
+  /*
+   * A reload or a closed window tears the page down before the stop's grace
+   * timer can fire, and no viewer is left to stop the capture: it ran on in
+   * the helper with nobody watching. The page going away is final, so the
+   * stop goes now. (A renderer crash still skips this.)
+   */
+  useEffect(() => {
+    const onPageHide = () => releaseLease(scopeRef.current, true);
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [releaseLease]);
+
   const noteFrame = useCallback(() => {
     lastFrameAtRef.current = Date.now();
     sawFrameRef.current = true;
@@ -482,6 +500,24 @@ export function useAppleDeviceStream({
   const applyStreamEvent = useCallback((next: IosSimulatorStreamStatus) => {
     setStreamStatus(next);
   }, []);
+
+  /*
+   * A foldable streams whichever panel is on, and each panel has its own size:
+   * folding the iPhone Duo swaps the inner display (669×951 pt) for the cover
+   * (466×678 pt) on the SAME stream. The service republishes the transport's
+   * sizes when that happens; follow them, or taps and the box keep the old
+   * panel's shape.
+   */
+  const transportPointWidth = streamStatus?.transport?.pointWidth ?? null;
+  const transportPointHeight = streamStatus?.transport?.pointHeight ?? null;
+  useEffect(() => {
+    if (!transportPointWidth || !transportPointHeight || transportPointWidth <= 0 || transportPointHeight <= 0) return;
+    setPointSize((current) => (
+      current && current.width === transportPointWidth && current.height === transportPointHeight
+        ? current
+        : { width: transportPointWidth, height: transportPointHeight }
+    ));
+  }, [transportPointHeight, transportPointWidth]);
 
   // One timer for both watchdogs. It runs only while a stream is wanted, so a
   // paused or absent device costs nothing.

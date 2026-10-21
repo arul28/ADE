@@ -39,11 +39,11 @@ describe("appleDuoPanelRotationsDeg", () => {
   });
 
   it("folds symmetrically for a tent", () => {
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("tent"))).toEqual({ upper: 55, lower: -55 });
+    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("tent"))).toEqual({ upper: 50, lower: -50 });
   });
 
   it("leaves the lower half flat for a laptop", () => {
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("laptop"))).toEqual({ upper: 75, lower: 0 });
+    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("laptop"))).toEqual({ upper: 90, lower: 0 });
   });
 
   it("treats the laptop base as flat only when the pose says so", () => {
@@ -131,7 +131,7 @@ describe("reduceAppleDuoState", () => {
 
   it("jumps to a stance, including its flat base", () => {
     const next = reduceAppleDuoState(createAppleDuoState(), { type: "stance", stance: "laptop" });
-    expect(next.pose).toEqual({ angle: 105, lowerFlat: true });
+    expect(next.pose).toEqual({ angle: 90, lowerFlat: true });
   });
 
   it("clears the flat base when a custom angle is set", () => {
@@ -143,7 +143,7 @@ describe("reduceAppleDuoState", () => {
   it("nudges the angle and keeps the flat base", () => {
     const laptop = reduceAppleDuoState(createAppleDuoState(), { type: "stance", stance: "laptop" });
     const opened = reduceAppleDuoState(laptop, { type: "nudge", delta: APPLE_DUO_NUDGE_DEGREES });
-    expect(opened.pose).toEqual({ angle: 120, lowerFlat: true });
+    expect(opened.pose).toEqual({ angle: 105, lowerFlat: true });
     const clamped = reduceAppleDuoState(opened, { type: "nudge", delta: 200 });
     expect(clamped.pose).toEqual({ angle: 180, lowerFlat: true });
   });

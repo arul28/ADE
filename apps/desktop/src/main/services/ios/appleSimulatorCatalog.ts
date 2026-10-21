@@ -7,6 +7,7 @@ import type {
   AppleSimulatorDeviceType,
 } from "../../../shared/types/iosSimulator";
 import { AppleNoInstalledSimulatorsError, AppleRuntimeNotInstalledError } from "./appleDeviceErrors";
+import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 
 /**
  * What `simctl` says this Mac has: runtimes, the device types each one runs,
@@ -32,12 +33,6 @@ export function appleDeviceFamily(input: { deviceTypeIdentifier?: string | null;
   return "iphone";
 }
 
-/** Sorts a runtime string so "iOS 26.1" beats "iOS 18.4" numerically, not lexically. */
-export function appleRuntimeScore(runtime: string): number {
-  const match = /(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(runtime);
-  if (!match) return 0;
-  return (Number(match[1]) * 1_000_000) + (Number(match[2] ?? 0) * 1_000) + Number(match[3] ?? 0);
-}
 
 /** `com.apple.CoreSimulator.SimRuntime.iOS-26-3` → `iOS 26.3`, and the same for watchOS, tvOS, xrOS. */
 function appleRuntimeName(runtimeKey: string): string {
@@ -51,6 +46,8 @@ export type SimctlListedDevice = {
   name: string;
   state: string;
   runtime: string;
+  /** The CoreSimulator runtime key it is listed under (`com.apple.CoreSimulator.SimRuntime.iOS-27-1`). */
+  runtimeIdentifier: string;
   isAvailable: boolean;
   deviceTypeIdentifier: string | null;
 };
@@ -87,6 +84,7 @@ export function parseSimctlDevices(stdout: string): Map<string, SimctlListedDevi
         name: device.name ?? device.udid,
         state: device.state ?? "Unknown",
         runtime,
+        runtimeIdentifier: runtimeKey,
         isAvailable: device.isAvailable !== false && !device.availabilityError,
         deviceTypeIdentifier: typeof device.deviceTypeIdentifier === "string" ? device.deviceTypeIdentifier : null,
       });

@@ -7,6 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleRuntimeDeleteArgs,
+  AppleDeviceAnalyticsOutcome,
+  AppleRuntimeInstallArgs,
+  AppleRuntimePruneArgs,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStatePhase,
@@ -140,7 +144,11 @@ import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessT
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry } from "./laneDeviceRegistry";
-import { appleInstalledSimulatorsFrom, appleRuntimeScore, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
+import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
+import { readAppleDeviceMarker } from "./appleDeviceMarker";
+
 import { appleAppOnDevice, appleLaneDerivedDataPath } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
 import type { LaneDeviceStore } from "./laneDeviceRows";
@@ -162,6 +170,7 @@ import {
   type SimRecordingServiceDeps,
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
+import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 
@@ -461,6 +470,8 @@ type CreateIosSimulatorServiceArgs = {
    * one, rather than a second, inert service shadowing it.
    */
   recordingDeps?: Pick<SimRecordingServiceDeps, "artifactFiler" | "readOverlaySetting" | "accentColor" | "fps">;
+  /** One closed product fact per Apple panel outcome (`APPLE_DEVICE_ANALYTICS_OUTCOMES`); deduplicated by the caller. */
+  captureAnalytics?: (outcome: AppleDeviceAnalyticsOutcome) => void;
   /**
    * Run the lane-device cleanup pass and idle power-off in the background
    * (`laneDeviceMaintenance.ts`). The hosts that own a project turn it on; a
@@ -2105,7 +2116,7 @@ const AGENT_NO_LANE_DEVICE_MESSAGE =
  */
 const AGENT_DEVICE_DRIVING_ACTIONS = [
   "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
-  "startStream", "frame", "tap", "pressButton", "rotate", "typeText", "drag", "swipe", "scroll", "selectPoint",
+  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "drag", "swipe", "scroll", "selectPoint",
   "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
@@ -2128,6 +2139,23 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
   if (!chatSessionId || !parseForeignCallerSessionId(chatSessionId)) return null;
   return { machineName: externalChatContext(chatSessionId)?.machineName ?? null };
+}
+
+/** A PNG's pixel size from its IHDR chunk, or null for anything else. */
+function readPngSize(filePath: string): { width: number; height: number } | null {
+  try {
+    const header = Buffer.alloc(24);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, header, 0, 24, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (header.readUInt32BE(0) !== 0x89504e47) return null;
+    return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
 }
 
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
@@ -2539,6 +2567,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       handleHelperExited(event);
       return;
     }
+    if (event.type === "posture-changed") {
+      handlePostureChanged(event);
+      return;
+    }
     if (event.type !== "capture-stopped") return;
     const udid = typeof event.udid === "string" ? event.udid : null;
     if (!udid) return;
@@ -2557,6 +2589,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const status = setStreamStopped(runtime, reason || "The simulator capture stopped.");
     emit({ type: "stream-error", status });
+  };
+
+  /**
+   * A foldable changed pose or active panel (the helper watches every Duo it
+   * streams). The stream now carries the other panel, at its own size, so the
+   * transport's pixel and point sizes are replaced before anyone maps a tap
+   * against them, then the pane hears the pose itself.
+   */
+  const handlePostureChanged = (event: { type: string } & Record<string, unknown>): void => {
+    const udid = typeof event.udid === "string" ? event.udid : null;
+    if (!udid) return;
+    const posture = parseHelperPosture(event);
+    const runtime = runtimeStreamingUdid(udid);
+    const transport = runtime?.streamStatus.transport;
+    if (runtime && transport) {
+      const width = typeof event.pixelWidth === "number" ? event.pixelWidth : transport.width;
+      const height = typeof event.pixelHeight === "number" ? event.pixelHeight : transport.height;
+      const pointWidth = typeof event.pointWidth === "number" ? event.pointWidth : transport.pointWidth;
+      const pointHeight = typeof event.pointHeight === "number" ? event.pointHeight : transport.pointHeight;
+      if (width !== transport.width || height !== transport.height
+        || pointWidth !== transport.pointWidth || pointHeight !== transport.pointHeight) {
+        runtime.streamStatus = { ...runtime.streamStatus, transport: { ...transport, width, height, pointWidth, pointHeight } };
+        emit({ type: "stream-status", status: runtime.streamStatus });
+      }
+    }
+    emit({ type: "apple.device.posture", laneId: runtime?.key ?? laneIdHoldingUdid(udid), udid, posture });
   };
 
   /**
@@ -2982,7 +3040,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const CONTROL_TIMEOUT_MS = 8_000;
 
-  const enqueueControl = async <T>(action: string, runControl: () => Promise<T>): Promise<T> => {
+  /**
+   * `timeoutMs` overrides the per-input budget for the few controls that are
+   * multi-step by design (App Store shots fold twice). The race does not
+   * cancel the work, so a budget that is too short would release the queue
+   * while the device is still moving.
+   */
+  const enqueueControl = async <T>(action: string, runControl: () => Promise<T>, timeoutMs = CONTROL_TIMEOUT_MS): Promise<T> => {
     const queuedAt = Date.now();
     const task = controlQueue.then(async () => {
       const startedAt = Date.now();
@@ -2994,9 +3058,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           new Promise<never>((_resolve, reject) => {
             expiry = setTimeout(() => {
               reject(new Error(
-                `The simulator did not accept ${action} within ${Math.round(CONTROL_TIMEOUT_MS / 1000)}s.`,
+                `The simulator did not accept ${action} within ${Math.round(timeoutMs / 1000)}s.`,
               ));
-            }, CONTROL_TIMEOUT_MS);
+            }, timeoutMs);
             (expiry as unknown as { unref?: () => void }).unref?.();
           }),
         ]);
@@ -4655,7 +4719,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const capturePath = path.join(os.tmpdir(), `ade-sim-shot-${randomUUID().slice(0, 8)}.png`);
     let buffer: Buffer;
     try {
-      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", capturePath], { timeoutMs: 30_000 });
+      const display = await duo.screenshotDisplayArgs(device.udid);
+      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: 30_000 });
       buffer = await fs.promises.readFile(capturePath);
     } finally {
       await fs.promises.rm(capturePath, { force: true }).catch(() => {});
@@ -4719,6 +4784,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     shot: Pick<IosSimulatorScreenshot, "deviceUdid" | "filePath" | "capturedAt" | "width" | "height">,
     arg: IosSimulatorScreenshotArgs,
     runtime: LaneRuntime,
+    /** A 3D render of the device rather than a capture of its screen. */
+    render?: { kind: "screenshot" | "video_recording"; mimeType: string },
   ): string | null => {
     const filer = args.recordingDeps?.artifactFiler;
     if (!filer) return null;
@@ -4745,17 +4812,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     ];
     try {
       const result = filer.ingest({
-        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
+        backend: { name: "apple-device", style: "local_fallback", toolName: render ? "apple_render" : "apple_screenshot" },
         ...(owners.length ? { owners } : {}),
         ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
         provenance: { source: "ade-capture" },
         inputs: [
           {
-            kind: "screenshot",
+            kind: render?.kind ?? "screenshot",
             title: caption,
-            description: `Screen of the lane's Apple device at ${shot.capturedAt}.`,
+            description: render
+              ? `3D render of the lane's Apple device at ${shot.capturedAt}.`
+              : `Screen of the lane's Apple device at ${shot.capturedAt}.`,
             path: shot.filePath,
-            mimeType: "image/png",
+            mimeType: render?.mimeType ?? "image/png",
             metadata: {
               laneId: runtime.key || null,
               udid: shot.deviceUdid,
@@ -5812,6 +5881,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /** The lane whose device this is, for an event about a device no stream is showing. */
+  const laneIdHoldingUdid = (udid: string): string | null =>
+    laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
+
+  /** The iPhone Duo's own surface: posture, panels, model, skill, renders. */
+  const duo = createAppleDuoService<LaneRuntime>({
+    assertDarwin,
+    run: (command, commandArgs, options) => run(command, commandArgs, options),
+    helperSend: (command) => helper().send(command),
+    resolveRuntime,
+    resolveControlDeviceUdid,
+    resolveScopedRootForSession,
+    enqueueControl,
+    fileScreenshotAsProof,
+    emit,
+    logger: args.logger,
+    captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
+    readPngSize,
+    nowIso,
+    screenshotSegments: SCREENSHOT_CACHE_SEGMENTS,
+  });
+
   /**
    * Set the device orientation, and then go and look.
    *
@@ -6692,6 +6783,45 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     laneMaintenance().start();
   }
 
+  /* ───────────────────────── simulator runtimes ───────────────────────── */
+
+  let runtimeManagerInstance: AppleRuntimeManager | null = null;
+  const runtimeManager = (): AppleRuntimeManager => {
+    runtimeManagerInstance ??= createAppleRuntimeManager({
+      run: (command, commandArgs, options) => run(command, commandArgs, options),
+      spawn: (command, commandArgs) => spawnProcess(command, commandArgs, { stdio: ["ignore", "pipe", "pipe"] }),
+      emit,
+      logger: args.logger,
+      freeBytes: async () => {
+        const stats = await fs.promises.statfs(os.homedir());
+        return Number(stats.bavail) * Number(stats.bsize);
+      },
+      laneHeldUdids: () => new Set(laneDevices.list().map((device) => device.udid)),
+      isAdeSimulator: (udid) => readAppleDeviceMarker(appleDeviceDataRoot(), udid) !== null,
+      powerOff: async (udid) => {
+        await lifecycle.releaseUnlanedHolds(udid);
+        await power.powerOffDevice(udid, "delete");
+      },
+      invalidate: () => {
+        invalidateDeviceList();
+        for (const runtime of runtimes.values()) invalidateStatus(runtime);
+      },
+      releasesFeed: async () => {
+        const response = await fetch(APPLE_RELEASES_FEED_URL, { signal: AbortSignal.timeout(15_000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.text();
+      },
+      store: args.laneDeviceStore ?? null,
+      captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
+    });
+    return runtimeManagerInstance;
+  };
+  /** Every runtime action is macOS-only, and runs against the machine's one manager. */
+  const darwinRuntimeManager = (): AppleRuntimeManager => {
+    assertDarwin();
+    return runtimeManager();
+  };
+
   /**
    * The one place an agent's device is decided, for every action below.
    *
@@ -6784,6 +6914,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     touch,
     pressButton,
     rotate,
+    /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
+    setPosture: duo.setPosture,
+    getPosture: duo.getPosture,
+    getDuoModel: duo.getDuoModel,
+    duoAppStoreScreenshots: duo.duoAppStoreScreenshots,
+    addDuoSkill: duo.addDuoSkill,
+    attachRenderProof: duo.attachRenderProof,
+    requestRender: duo.requestRender,
+    renderAck: duo.renderAck,
+    renderComplete: duo.renderComplete,
     typeText,
     drag,
     swipe: drag,
@@ -6805,6 +6945,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,
+
+    /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
+    runtimeList: async () => darwinRuntimeManager().runtimeList(),
+    runtimeInstall: async (installArgs: AppleRuntimeInstallArgs = {}) => darwinRuntimeManager().runtimeInstall(installArgs),
+    runtimeInstallCancel: async () => darwinRuntimeManager().runtimeInstallCancel(),
+    runtimeDelete: async (deleteArgs: AppleRuntimeDeleteArgs) => darwinRuntimeManager().runtimeDelete(deleteArgs),
+    runtimePrune: async (pruneArgs: AppleRuntimePruneArgs) => darwinRuntimeManager().runtimePrune(pruneArgs),
+    xcodeRunFirstLaunch: async (setupArgs: { confirmedByUser?: boolean } = {}) =>
+      darwinRuntimeManager().xcodeRunFirstLaunch(setupArgs),
     /** The lane is being archived or deleted: let go of its device in this process. */
     stopForLane,
 
@@ -6952,6 +7101,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     dispose: () => {
       disposed = true;
       maintenance?.stop();
+      runtimeManagerInstance?.dispose();
       for (const held of liveTouches.values()) clearTimeout(held.release);
       liveTouches.clear();
       for (const runtime of runtimes.values()) {

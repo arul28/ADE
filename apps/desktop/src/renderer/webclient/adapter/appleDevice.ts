@@ -219,6 +219,12 @@ export function createAppleDeviceNamespace(
     deviceDetach: (async (args?: unknown) => invoke("deviceDetach", args ?? {}, false)) as never,
     deviceDeleteInstalled: (async (args?: unknown) => invoke("deviceDeleteInstalled", args ?? {}, false)) as never,
     deviceCleanup: (async (args?: unknown) => invoke("deviceCleanup", args ?? {}, false)) as never,
+    runtimeList: (async () => invoke("runtimeList", {}, true)) as never,
+    runtimeInstall: (async (args?: unknown) => invoke("runtimeInstall", args ?? {}, false)) as never,
+    runtimeInstallCancel: (async (args?: unknown) => invoke("runtimeInstallCancel", args ?? {}, false)) as never,
+    runtimeDelete: (async (args?: unknown) => invoke("runtimeDelete", args ?? {}, false)) as never,
+    runtimePrune: (async (args?: unknown) => invoke("runtimePrune", args ?? {}, false)) as never,
+    xcodeRunFirstLaunch: (async (args?: unknown) => invoke("xcodeRunFirstLaunch", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(
       "apple.recordList",
@@ -321,6 +327,12 @@ export function createAppleDeviceNamespace(
     // round 5, so a web tab rendered both and neither did anything.
     pressButton: (async (args?: unknown) => invoke("pressButton", args ?? {}, false)) as never,
     rotate: (async (args?: unknown) => invoke("rotate", args ?? {}, false)) as never,
+    setPosture: (async (args?: unknown) => invoke("setPosture", args ?? {}, false)) as never,
+    getPosture: (async (args?: unknown) => invoke("getPosture", args ?? {}, true)) as never,
+    getDuoModel: (async () => invoke("getDuoModel", {}, true)) as never,
+    duoAppStoreScreenshots: (async (args?: unknown) => invoke("duoAppStoreScreenshots", args ?? {}, false)) as never,
+    addDuoSkill: (async (args?: unknown) => invoke("addDuoSkill", args ?? {}, false)) as never,
+    attachRenderProof: (async (args?: unknown) => invoke("attachRenderProof", args ?? {}, false)) as never,
     frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
     // SwiftUI preview lab. The drawer mounts these on open, so a web tab that
     // lacked them threw in an effect rather than degrading.

@@ -10,6 +10,7 @@ import Foundation
 /// Electron main process.
 public actor SimHelperRuntime {
     private var sessions: [String: DeviceSession] = [:]
+    private let postureWatchers = DevicePostureWatchers()
     private let emit: @Sendable (SimHelperEvent) -> Void
     /// How a new session learns its device's geometry. Injected so a test can
     /// build sessions without CoreSimulator; production always asks it.
@@ -48,7 +49,48 @@ public actor SimHelperRuntime {
         }
     }
 
+    /// Follow a foldable's pose: the session's capture and input track the
+    /// active panel, and ADE hears every change (with the panel's new size when
+    /// it changed) as `posture-changed`. A no-op for a device with no hinge.
+    private func watchPosture(udid: String) async -> Bool {
+        let session = sessions[udid]
+        let started = await postureWatchers.start(udid: udid) { [weak self] state in
+            guard let self else { return }
+            Task { await self.postureChanged(udid: udid, state: state) }
+        }
+        // Always apply the current pose, also when the watcher already ran: a
+        // capture that restarted (the last viewer left and one came back) has
+        // a fresh engine that knows nothing about the active panel.
+        if started, session != nil {
+            await postureChanged(udid: udid, state: await DevicePosture.read(udid: udid))
+        }
+        return started
+    }
+
+    /// A Duo can answer "no hinge" while CoreDevice is still coming up, so a
+    /// capture started then never began watching. The first posture command
+    /// that finds a hinge on a streaming device starts the watch (a watch
+    /// already running is left as it is).
+    private func watchPostureIfStreaming(udid: String) async {
+        guard sessions[udid] != nil, !(await postureWatchers.isWatching(udid: udid)) else { return }
+        _ = await watchPosture(udid: udid)
+    }
+
+    private func postureChanged(udid: String, state: DevicePosture.State) async {
+        var payload = state.payload
+        if let session = sessions[udid] {
+            _ = await session.applyActiveScreen(state.activeScreenID)
+            let metrics = await session.metrics
+            payload["pointWidth"] = metrics.pointWidth
+            payload["pointHeight"] = metrics.pointHeight
+            payload["pixelWidth"] = metrics.pixelWidth
+            payload["pixelHeight"] = metrics.pixelHeight
+        }
+        emit(.postureChanged(udid: udid, state: payload))
+    }
+
     public func shutdown() async {
+        await postureWatchers.stopAll()
         let all = Array(sessions.values)
         sessions.removeAll()
         for session in all {
@@ -68,6 +110,10 @@ public actor SimHelperRuntime {
     /// `device-reset` before it powers a device off and after it boots one,
     /// which is the same cure without taking every other device's stream down.
     public func resetDevice(_ udid: String) async -> Bool {
+        // CoreDevice's capability handles (the Duo's digitizer and keyboard
+        // services) belong to one boot too; the next session must look them up
+        // again rather than reuse a dead boot's.
+        await CoreDeviceBridge.shared.resetForNewCapture(udid: udid)
         // Removed before the teardown awaits, so anything that reaches the
         // actor in between gets a new session rather than the dying one.
         guard let session = sessions.removeValue(forKey: udid) else { return false }
@@ -131,16 +177,20 @@ public actor SimHelperRuntime {
             case let .captureStart(_, udid, fps, scale, bitrateKbps):
                 let session = try session(for: udid)
                 let started = try await session.startCapture(fps: fps, scale: scale, bitrateKbps: bitrateKbps)
+                // A foldable streams its active panel, so pick it before the
+                // first metrics go out and keep following it after.
+                if await session.isFoldable() { _ = await watchPosture(udid: udid) }
+                let metrics = await session.metrics
                 emit(.captureStarted(
                     id: id,
                     udid: udid,
                     url: started.url,
                     token: started.token,
-                    pointWidth: started.metrics.pointWidth,
-                    pointHeight: started.metrics.pointHeight,
-                    pixelWidth: started.metrics.pixelWidth,
-                    pixelHeight: started.metrics.pixelHeight,
-                    scale: started.metrics.scale
+                    pointWidth: metrics.pointWidth,
+                    pointHeight: metrics.pointHeight,
+                    pixelWidth: metrics.pixelWidth,
+                    pixelHeight: metrics.pixelHeight,
+                    scale: metrics.scale
                 ))
 
             case let .captureStop(_, udid):
@@ -186,6 +236,17 @@ public actor SimHelperRuntime {
                 // Simulator.app running, and "the device did not rotate" is a
                 // state ADE should show, not an error it should retry.
                 emit(.ok(id: id, payload: ["applied": applied]))
+
+            case let .posture(_, udid, pose, angle):
+                let applied = await DevicePosture.apply(udid: udid, pose: pose, angle: angle)
+                // Reported, not thrown: "this device has no hinge" is a state.
+                emit(.ok(id: id, payload: ["applied": applied]))
+                if applied { await watchPostureIfStreaming(udid: udid) }
+
+            case let .postureGet(_, udid):
+                let state = await DevicePosture.read(udid: udid)
+                emit(.ok(id: id, payload: state.payload))
+                if state.supported { await watchPostureIfStreaming(udid: udid) }
 
             case let .axDescribe(_, udid):
                 let json = try await offMainThread {
@@ -249,6 +310,7 @@ public actor SimHelperRuntime {
                 // best effort around every power change, usually for a device
                 // this helper has never driven.
                 let reset = await resetDevice(udid)
+                await postureWatchers.stop(udid: udid)
                 emit(.ok(id: id, payload: ["reset": reset]))
 
             case .quit:

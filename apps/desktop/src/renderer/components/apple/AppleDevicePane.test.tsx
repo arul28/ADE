@@ -153,6 +153,15 @@ function setup(options: Setup = {}) {
   }));
   const iosSimulator = {
     getStatus: vi.fn(async () => options.status ?? status()),
+    // The Runtimes section and the Duo posture read these on mount.
+    runtimeList: vi.fn(async () => ({
+      runtimes: [],
+      missing: null,
+      install: null,
+      xcode: { version: null, build: null, firstLaunchPending: false, latest: null, updateAvailable: false },
+      freeBytes: null,
+    })),
+    getPosture: vi.fn(async () => ({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null })),
     deviceList: vi.fn(async () => ({
       installed: options.installed ?? [PRO, MAX],
       lane: options.lane ?? null,

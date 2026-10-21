@@ -1109,6 +1109,39 @@ Spotify's service sets when Spotify accepts the play, not when audio starts.
 - Windows (WebView2, Widevine) is measured separately; see the Windows numbers
   in the PR.
 
+### Apple pane: iPhone Duo (2026-10-21)
+
+Measured 2026-10-21 on this Mac Studio (M4 Max), dev build at `da37d1019` in an App
+Control session (window covered, launched with
+`--disable-backgrounding-occluded-windows`, so the renderer was not throttled),
+throwaway project, one iPhone Duo simulator on iOS 27.1 showing a still screen,
+an App Control DevTools window open, other agents running. `process-cpu.sh 20`
+with the debugging port swapped and the sim helper added; two runs each. The
+Apple pane had no row before; "Pane closed" is the comparison. Renderer RSS
+includes this long session and swings 50-80 MB between runs.
+
+| Metric | How | Pane closed | Duo, 3D | Duo, flat | Ceiling |
+|---|---|---:|---:|---:|---:|
+| Renderer CPU | `process-cpu.sh 20` | 3.0-3.2% | 3.3-3.4% | 2.5-2.6% | 25% |
+| GPU process CPU | same | 7.8-7.9% | 7.9-8.3% | 7.2-7.3% | 10% |
+| Sim helper CPU / RSS (capturing the live panel) | same | 1.7% / 60 MB (an orphaned capture, see below) | 1.9% / 70 MB | 1.7% / 60 MB | 3% / 120 MB |
+| Electron main / brain CPU | same | 0.4-0.9% / 0.4-1.6% | 0.5% / 0.7-0.8% | 0.4-1.7% / 0.6-1.6% | 15% / 10% |
+| Renderer JS heap after load | `performance.memory` | 243 MB | 253 MB | — | +40 MB over pane closed |
+
+- Folding (six poses in 20 s, 3D): GPU 25.5%, renderer 13.3%, helper 12.4%
+  for the sweep, back to the still-screen numbers once it settles. A fold
+  sweeps the hinge in 10° steps and the 3D body redraws each one; it is
+  user-driven, not idle.
+- Nothing new polls: pose and panel changes arrive as helper events, the
+  runtime list is read on open and refresh, and the Xcode feed once a day.
+- The pane's own cost over the closed baseline is about 10 MB of JS heap
+  (Apple's V68 model and three.js) and the helper's capture. The heap is over
+  the 220 MB "any tab" ceiling with the pane closed too, in this long dev
+  session; that is not this pane.
+- A reload or a closed window used to leave the capture running with no
+  viewer (the stop's 1 s grace timer died with the page); it now stops on
+  `pagehide`. A renderer crash still leaves it to the next viewer's stop.
+
 ### Focus attention inference (2026-10-15)
 
 Service measurement on the baseline MacBook Pro, Node 22.23.2: four representative

@@ -8,6 +8,7 @@ import {
   AppleDevice3DView,
   type AppleDevice3DFailure,
   type AppleDeviceDuoProps,
+  type AppleDeviceRenderer,
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
 import {
@@ -58,6 +59,8 @@ export type AppleDeviceStageProps = {
    * presenter takes its unchanged GLB path.
    */
   duo?: AppleDeviceDuoProps | undefined;
+  /** The 3D view's render methods, for the Render sheet. */
+  rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
   onDeviceInput: (input: AppleDeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
@@ -127,6 +130,7 @@ export function AppleDeviceStage({
   devicePointSize,
   interactive,
   duo,
+  rendererRef,
   onDeviceInput,
   onDeviceScroll,
   onDeviceKey,
@@ -227,6 +231,7 @@ export function AppleDeviceStage({
           devicePointSize={devicePointSize}
           interactive={interactive}
           duo={duo}
+          rendererRef={rendererRef}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
           onDeviceKey={onDeviceKey}
