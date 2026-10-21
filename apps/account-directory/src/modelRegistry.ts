@@ -6,6 +6,9 @@ import {
   MODEL_REGISTRY_PRICE_CHANNELS,
   MODEL_REGISTRY_SCHEMA_VERSION,
   type ModelRegistryAgentRow,
+  type ModelRegistryMediaKind,
+  type ModelRegistryMediaRow,
+  type ModelRegistryModality,
   type ModelRegistryModel,
   type ModelRegistryPrice,
   type ModelRegistrySnapshot,
@@ -23,12 +26,14 @@ import { sha256Hex } from "./sinkUtils";
  * growing backoff (ten minutes, doubling up to the daily interval), so a
  * persistent source failure is bounded rather than re-fetching every minute.
  *
- * - Artificial Analysis. Any `/models/<slug>` page embeds every model record
- *   (about 684) in its React Server Components payload, and
- *   `/agents/coding-agents` embeds the Coding Agent Index rows. Two page
- *   fetches per refresh, never more. There is no API for this data; the
- *   parser reads the page's own payload, so a redesign of the site can break
- *   it. A broken parse is caught by the count checks below, never stored.
+ * - Artificial Analysis. `/leaderboards/models` embeds a row for every
+ *   current model variant (273 on 2026-10-20) and an index of every variant
+ *   with its family; a `/models/<slug>` page embeds the full record of each
+ *   featured model (27); `/agents/coding-agents` embeds the Coding Agent Index
+ *   rows; and three speech leaderboards embed their rows. Six page fetches per
+ *   refresh, never more. There is no API for this data; the parser reads each
+ *   page's own payload, so a redesign of the site can break it. A broken parse
+ *   is caught by the count checks below, never stored.
  * - models.dev `api.json`: per-token prices for each channel ADE bills
  *   through.
  *
@@ -55,13 +60,27 @@ export const MODEL_REGISTRY_ERRORS = {
   methodNotAllowed: "model_registry_method_not_allowed",
 } as const;
 
-/** The model page the refresh reads. Any `/models/<slug>` page carries every record. */
+/**
+ * The model page the refresh reads for full records. Any `/models/<slug>`
+ * page carries the featured models' records (until 2026-10 it carried all).
+ */
 export const AA_MODELS_URL = "https://artificialanalysis.ai/models/gpt-6-luna";
+/** One row per current model variant, plus the variant → family index. */
+export const AA_LEADERBOARD_URL = "https://artificialanalysis.ai/leaderboards/models";
 export const AA_CODING_AGENTS_URL = "https://artificialanalysis.ai/agents/coding-agents";
+/** The speech leaderboards. Image and video arenas render in the browser and carry no data. */
+export const AA_MEDIA_URLS: Record<ModelRegistryMediaKind, string> = {
+  "text-to-speech": "https://artificialanalysis.ai/text-to-speech/models",
+  "speech-to-text": "https://artificialanalysis.ai/speech-to-text/non-streaming",
+  "speech-to-speech": "https://artificialanalysis.ai/speech-to-speech",
+};
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 export const MODEL_REGISTRY_USER_AGENT = "ADE model registry (+https://ade-app.dev)";
 
-/** A model page that yields fewer records than this is a broken parse, not a smaller catalog. */
+/**
+ * A refresh whose two model pages yield fewer variants than this together is
+ * a broken parse, not a smaller catalog.
+ */
 export const MIN_AA_MODELS = 100;
 /** Snapshots kept; older ones are deleted in the same batch as the insert. */
 export const MODEL_REGISTRY_KEEP_SNAPSHOTS = 7;
@@ -166,7 +185,7 @@ function isObject(value: unknown): value is JsonObject {
  * one component uses it, sometimes with nested objects replaced by `$`
  * references, so the longest copy wins.
  */
-function extractObjects(payload: string, startPattern: RegExp, requiredKey: string): JsonObject[] {
+function extractObjects(payload: string, startPattern: RegExp, requiredKey: string, idKey = "id"): JsonObject[] {
   const byId = new Map<string, { text: string; value: JsonObject }>();
   const pattern = new RegExp(startPattern.source, "g");
   for (let match = pattern.exec(payload); match; match = pattern.exec(payload)) {
@@ -180,9 +199,10 @@ function extractObjects(payload: string, startPattern: RegExp, requiredKey: stri
     }
     // Own key, not a substring: an outer object that merely CONTAINS a record
     // (a host row carrying its model) must not be read as one.
-    if (!isObject(value) || !(requiredKey in value) || typeof value.id !== "string") continue;
-    const previous = byId.get(value.id);
-    if (!previous || text.length > previous.text.length) byId.set(value.id, { text, value });
+    const id = isObject(value) ? value[idKey] : undefined;
+    if (!isObject(value) || !(requiredKey in value) || typeof id !== "string") continue;
+    const previous = byId.get(id);
+    if (!previous || text.length > previous.text.length) byId.set(id, { text, value });
   }
   return [...byId.values()].map((entry) => entry.value);
 }
@@ -240,6 +260,108 @@ function aaModel(record: JsonObject): ModelRegistryModel | null {
       cacheRead: num(record.cacheHitPrice),
       cacheWrite: num(record.cacheWritePrice),
     },
+    ...present({
+      profile: "record",
+      evals: numbers({
+        ...evalScores(record, RECORD_EVAL_KEYS),
+        briefcaseElo: field(field(record.briefcaseBreakdown, "overall"), "elo"),
+        briefcaseRubricPassRate: field(record.briefcaseBreakdown, "rubricPassRate"),
+        omniscienceHallucinationRate: record.omniscienceHallucinationRate,
+        opennessIndex: field(record.openness, "opennessIndex"),
+      }),
+      domains: numbers(isObject(record.capabilities) ? record.capabilities : {}),
+      personality: numbers(isObject(field(record.personalityBench, "indexScores"))
+        ? field(record.personalityBench, "indexScores") as JsonObject
+        : {}),
+      modalities: modalities(record),
+      license: str(record.licenseName),
+      licenseCategory: str(record.openSourceCategorization),
+      parametersBillions: num(record.parameters),
+      activeParametersBillions: num(record.inferenceParametersActiveBillions),
+      sizeClass: str(record.sizeClass),
+      knowledgeCutoff: str(record.knowledgeCutoffDate),
+      timeToFirstAnswerTokenSeconds: num(field(record.timeToFirstAnswerToken, "total")),
+      endToEndSeconds: num(field(record.endToEndResponseTime, "total")),
+      outputTokensPerIndexTask: num(field(record.intelligenceIndexOutputTokensPerTask, "output")),
+    }),
+  };
+}
+
+/** `MODEL_REGISTRY_EVALS` key → the payload key, where the two differ only by name. */
+const RECORD_EVAL_KEYS: Record<string, string> = {
+  terminalBench21: "terminalBench21",
+  terminalBenchHard: "terminalbenchHard",
+  terminalBenchScience: "terminalBenchScience",
+  critPt: "critpt",
+  mmmuPro: "mmmuPro",
+  apexAgents: "apexAgents",
+  analystAgent: "analystAgent",
+  tau2Bench: "tau2",
+  tauBanking: "tauBanking",
+  itBenchSre: "itBenchSre",
+  harveyLab: "harveyLab",
+  frontierCode: "frontierCode",
+  enterpriseOpsGym: "enterpriseOpsGym",
+  automationBench: "automationBenchPartialScore",
+  gdpPdf: "gdpPdfAllPass",
+  gdpval: "gdpvalNormalized",
+  gdpvalElo: "gdpval",
+  aa3dElo: "aa3dElo",
+  mlcr: "mlcrOverall",
+  omniscienceIndex: "omniscience",
+  omniscienceAccuracy: "omniscienceAccuracy",
+  aime25: "aime25",
+  liveCodeBench: "livecodebench",
+};
+
+/** The leaderboard row spells two keys differently and has no full-record-only evals. */
+const ROW_EVAL_KEYS: Record<string, string> = {
+  terminalBench21: "terminalBench21",
+  terminalBenchHard: "terminalbenchHard",
+  critPt: "critpt",
+  mmmuPro: "mmmuPro",
+  apexAgents: "apexAgents",
+  analystAgent: "analystAgent",
+  tau2Bench: "tau2",
+  tauBanking: "tauBanking",
+  itBenchSre: "itbenchSre",
+  gdpval: "gdpvalNormalized",
+  omniscienceIndex: "omniscience",
+  omniscienceAccuracy: "omniscienceAccuracy",
+  liveCodeBench: "livecodebench",
+};
+
+function evalScores(source: JsonObject, keys: Record<string, string>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(keys).map(([key, sourceKey]) => [key, source[sourceKey]]));
+}
+
+/** The finite numbers of `values`, or undefined when there are none. */
+function numbers(values: Record<string, unknown>): Record<string, number> | undefined {
+  const entries = Object.entries(values)
+    .map(([key, value]) => [key, num(value)] as const)
+    .filter((entry): entry is readonly [string, number] => entry[1] !== null);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+/** The fields of `values` that have a value: the profile leaves out what it lacks. */
+function present<T extends Record<string, unknown>>(values: T): Partial<{ [K in keyof T]: NonNullable<T[K]> }> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== null && value !== undefined),
+  ) as Partial<{ [K in keyof T]: NonNullable<T[K]> }>;
+}
+
+const MODALITIES: Array<[ModelRegistryModality, string]> = [
+  ["text", "Text"],
+  ["image", "Image"],
+  ["speech", "Speech"],
+  ["video", "Video"],
+];
+
+function modalities(record: JsonObject): ModelRegistryModel["modalities"] {
+  if (typeof record.inputModalityText !== "boolean") return undefined;
+  return {
+    input: MODALITIES.filter(([, key]) => record[`inputModality${key}`] === true).map(([modality]) => modality),
+    output: MODALITIES.filter(([, key]) => record[`outputModality${key}`] === true).map(([modality]) => modality),
   };
 }
 
@@ -253,6 +375,247 @@ export function parseArtificialAnalysisModels(html: string): ModelRegistryModel[
     .filter((model): model is ModelRegistryModel => model !== null)
     .sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
 }
+
+const AA_LEADERBOARD_ROW_START = /\{"slug":"[^"\\]+","name":"/;
+const AA_VARIANT_INDEX_KEY = '"modelsAndReleases":';
+const AA_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** A variant's family and release, from the leaderboard page's variant index. */
+export type ArtificialAnalysisVariant = { releaseSlug: string; releaseDate: string | null; deprecated: boolean | null };
+
+/**
+ * Every variant Artificial Analysis lists, current and deprecated (706 on
+ * 2026-10-20), with its family: the `modelsAndReleases` index the leaderboard
+ * page embeds for its search box. Null when the page has none.
+ */
+export function parseArtificialAnalysisVariantIndex(html: string): Map<string, ArtificialAnalysisVariant> | null {
+  const payload = readRscPayload(html);
+  const at = payload.indexOf(AA_VARIANT_INDEX_KEY);
+  if (at < 0) return null;
+  const text = balancedJson(payload, at + AA_VARIANT_INDEX_KEY.length);
+  let value: unknown;
+  try {
+    value = text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+  const releases = new Map<string, JsonObject>();
+  for (const release of Array.isArray(field(value, "releases")) ? field(value, "releases") as unknown[] : []) {
+    const slug = str(field(release, "slug"));
+    if (slug && isObject(release)) releases.set(slug, release);
+  }
+  const index = new Map<string, ArtificialAnalysisVariant>();
+  for (const variant of Array.isArray(field(value, "models")) ? field(value, "models") as unknown[] : []) {
+    const slug = str(field(variant, "slug"));
+    const releaseSlug = str(field(variant, "releaseSlug"));
+    if (!slug || !releaseSlug) continue;
+    const release = releases.get(releaseSlug);
+    index.set(slug, {
+      releaseSlug,
+      releaseDate: str(release?.releaseDate),
+      deprecated: typeof release?.deprecated === "boolean" ? release.deprecated : null,
+    });
+  }
+  return index.size ? index : null;
+}
+
+/**
+ * The effort a leaderboard name ends with: `Claude Opus 5.5 (High, Default
+ * Fallback)` is `high`. Only for a variant no full record ever named; on
+ * 2026-10-20 this agreed with the records on 676 of 691 variants, and the 15
+ * others have no effort word in the name at all (null, never a wrong level).
+ */
+function effortFromName(name: string): string | null {
+  const last = /\(([^()]*)\)\s*$/.exec(name)?.[1];
+  const word = last?.trim().split(/[\s,]/)[0]?.toLowerCase();
+  return word && AA_EFFORTS.has(word) ? word : null;
+}
+
+function aaLeaderboardModel(
+  row: JsonObject,
+  variant: ArtificialAnalysisVariant | undefined,
+  previous: ModelRegistryModel | undefined,
+): ModelRegistryModel | null {
+  const slug = str(row.slug);
+  const name = str(row.name);
+  if (!slug || !name) return null;
+  const nonHallucination = num(row.omniscienceNonHallucination);
+  // Evals the row does not publish keep their value from an earlier full record.
+  const kept = Object.entries(previous?.evals ?? {})
+    .filter(([key]) => !(key in ROW_EVAL_KEYS) && key !== "omniscienceHallucinationRate");
+  return {
+    ...previous,
+    slug,
+    releaseSlug: variant?.releaseSlug ?? previous?.releaseSlug ?? slug,
+    name,
+    shortName: str(row.shortName),
+    creator: str(row.modelCreatorName) ?? previous?.creator ?? null,
+    releaseDate: variant?.releaseDate ?? previous?.releaseDate ?? null,
+    deprecated: row.deprecated === true,
+    effort: previous ? previous.effort : effortFromName(name),
+    reasoning: row.isReasoning === true,
+    openWeights: row.isOpenWeights === true,
+    contextWindow: num(row.contextWindowTokens),
+    intelligenceIndex: num(row.intelligenceIndex),
+    intelligenceIndexEstimated: row.intelligenceIndexIsEstimated === true,
+    terminalBench40: num(row.terminalBench40),
+    sciCode: num(row.scicode),
+    longContextReasoning: num(row.lcr),
+    humanitysLastExam: num(row.hle),
+    gpqa: num(row.gpqa),
+    ifBench: num(row.ifbench),
+    costPerIndexTaskUsd: num(row.intelligenceIndexCostPerTask),
+    // The row has no time per index task; an earlier record's figure stands.
+    secondsPerIndexTask: previous?.secondsPerIndexTask ?? null,
+    outputTokensPerSecond: num(row.medianOutputTokensPerSecond),
+    timeToFirstTokenSeconds: num(row.medianTimeToFirstTokenSeconds),
+    price: {
+      input: num(row.price1mInputTokens),
+      output: num(row.price1mOutputTokens),
+      cacheRead: num(row.cacheHitPrice),
+      cacheWrite: num(row.cacheWritePrice),
+    },
+    profile: "leaderboard",
+    evals: numbers({
+      ...Object.fromEntries(kept),
+      ...evalScores(row, ROW_EVAL_KEYS),
+      omniscienceHallucinationRate: nonHallucination === null ? null : 1 - nonHallucination,
+    }),
+    sizeClass: str(row.paramClass) ?? previous?.sizeClass,
+    timeToFirstAnswerTokenSeconds: num(row.medianTimeToFirstAnswerTokenSeconds) ?? undefined,
+    endToEndSeconds: num(row.medianEndToEndResponseTimeSeconds) ?? undefined,
+  };
+}
+
+/**
+ * Every row of `/leaderboards/models` (one per current variant), sorted by
+ * slug. A row has no family, effort or release date: the family and date come
+ * from the page's variant index, the effort from `previous` (the last
+ * snapshot's same slug) or else the name, and the fields only a full record
+ * has stay from `previous`.
+ */
+export function parseArtificialAnalysisLeaderboard(
+  html: string,
+  index: Map<string, ArtificialAnalysisVariant> | null,
+  previous: readonly ModelRegistryModel[],
+): ModelRegistryModel[] {
+  const bySlug = new Map(previous.map((model) => [model.slug, model]));
+  return extractObjects(readRscPayload(html), AA_LEADERBOARD_ROW_START, "modelCreatorName", "slug")
+    .map((row) => aaLeaderboardModel(row, index?.get(String(row.slug)), bySlug.get(String(row.slug))))
+    .filter((model): model is ModelRegistryModel => model !== null)
+    .sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
+}
+
+/**
+ * One model list from both model pages and the previous snapshot. A full
+ * record wins over a leaderboard row of the same slug. A previous variant that
+ * neither page has is carried (`profile: "carried"`, deprecated as its family
+ * now is) while the variant index still lists it, and dropped once Artificial
+ * Analysis no longer does. With no index, every previous variant is carried.
+ */
+export function mergeArtificialAnalysisModels(
+  records: readonly ModelRegistryModel[],
+  leaderboard: readonly ModelRegistryModel[],
+  index: Map<string, ArtificialAnalysisVariant> | null,
+  previous: readonly ModelRegistryModel[],
+): ModelRegistryModel[] {
+  const bySlug = new Map<string, ModelRegistryModel>();
+  for (const model of leaderboard) bySlug.set(model.slug, model);
+  for (const model of records) bySlug.set(model.slug, model);
+  for (const model of previous) {
+    if (bySlug.has(model.slug)) continue;
+    const listed = index?.get(model.slug);
+    if (index && !listed) continue;
+    bySlug.set(model.slug, { ...model, deprecated: listed?.deprecated ?? model.deprecated, profile: "carried" });
+  }
+  return [...bySlug.values()].sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
+// Speech leaderboards
+// ---------------------------------------------------------------------------
+
+const AA_MEDIA_ROW_START = /\{"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","name":"/;
+/** A key only a row of that leaderboard has as its own. */
+const AA_MEDIA_ROW_KEY: Record<ModelRegistryMediaKind, string> = {
+  "text-to-speech": "pricePer1mCharacters",
+  "speech-to-text": "aaWerIndex",
+  "speech-to-speech": "bbaScore",
+};
+
+function mediaScores(kind: ModelRegistryMediaKind, row: JsonObject): Record<string, unknown> {
+  const performance = row.performance;
+  switch (kind) {
+    case "text-to-speech":
+      return {
+        qualityElo: field(row.model, "qualityElo"),
+        pricePer1mCharacters: row.pricePer1mCharacters,
+        charactersPerSecond: field(performance, "medianCharactersPerSecond"),
+        generationSeconds: field(performance, "medianGenerationTimeSeconds"),
+      };
+    case "speech-to-text":
+      return {
+        werIndex: row.aaWerIndex,
+        aaSttWer: row.aaSttDatasetWer,
+        voxPopuliWer: row.voxpopuliCleanedWer,
+        earnings22Wer: row.earnings22CleanedWer,
+        pricePer1kMinutes: row.pricePer1kMinutes,
+        speedFactor: field(performance, "medianSpeedFactor"),
+      };
+    case "speech-to-speech":
+      return {
+        qualityIndex: row.stsQualityIndex,
+        bigBenchAudio: row.bbaScore,
+        fullDuplexBench: row.fdbScore,
+        tauVoice: row.tauVoiceAggScore,
+        timeToFirstAudioSeconds: row.timeToFirstAudioSeconds,
+        costPerHourInputAudio: row.costPerHourOfInputAudio,
+        pricePerHourInput: row.pricePerHourInput,
+        pricePerHourOutput: row.pricePerHourOutput,
+      };
+  }
+}
+
+/** Every row of one speech leaderboard page, sorted by model then id. `modelSlug` is set by `linkMediaRows`. */
+export function parseArtificialAnalysisMedia(kind: ModelRegistryMediaKind, html: string): ModelRegistryMediaRow[] {
+  return extractObjects(readRscPayload(html), AA_MEDIA_ROW_START, AA_MEDIA_ROW_KEY[kind])
+    .map((row): ModelRegistryMediaRow | null => {
+      const id = str(row.id);
+      const model = str(field(row.model, "name"));
+      if (!id || !model) return null;
+      const openWeights = field(row.model, kind === "speech-to-speech" ? "openSource" : kind === "speech-to-text" ? "openWeights" : "isOpenWeights");
+      return {
+        kind,
+        id,
+        model,
+        host: str(field(row.host, "name")),
+        releaseDate: str(field(row.model, "releaseDate")),
+        openWeights: typeof openWeights === "boolean" ? openWeights : null,
+        modelSlug: null,
+        scores: numbers(mediaScores(kind, row)) ?? {},
+      };
+    })
+    .filter((row): row is ModelRegistryMediaRow => row !== null)
+    .sort((left, right) => left.model.localeCompare(right.model) || (left.id < right.id ? -1 : 1));
+}
+
+/**
+ * Links each speech row to the LLM variant whose name or short name is exactly
+ * the row's model name. A name two variants share links to none: never a guess.
+ */
+export function linkMediaRows(rows: readonly ModelRegistryMediaRow[], models: readonly ModelRegistryModel[]): ModelRegistryMediaRow[] {
+  const byName = new Map<string, string | null>();
+  for (const model of models) {
+    for (const label of new Set([model.name, model.shortName])) {
+      if (!label) continue;
+      const existing = byName.get(label);
+      byName.set(label, existing === undefined || existing === model.slug ? model.slug : null);
+    }
+  }
+  return rows.map((row) => ({ ...row, modelSlug: byName.get(row.model) ?? null }));
+}// ---------------------------------------------------------------------------
+// Coding Agent Index
+// ---------------------------------------------------------------------------
 
 function matchKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -423,7 +786,7 @@ export type ModelRegistryRefreshOptions = {
 };
 
 export type ModelRegistryRefreshResult =
-  | { stored: true; bytes: number; models: number; agents: number; sources: ModelRegistrySnapshot["sources"] }
+  | { stored: true; bytes: number; models: number; agents: number; media: number; sources: ModelRegistrySnapshot["sources"] }
   | { stored: false; reason: string; sources?: ModelRegistrySnapshot["sources"] };
 
 class SourceError extends Error {}
@@ -486,15 +849,34 @@ export async function refreshModelRegistry(
   const fetchImpl = options.fetchImpl ?? fetch;
   const previous = await readNewestSnapshot(db);
 
-  let models = previous?.models ?? [];
+  const previousModels = previous?.models ?? [];
+  let models = previousModels;
   let agents = previous?.agents ?? [];
   let artificialAnalysis: ModelRegistrySourceStatus;
-  try {
-    const parsed = parseArtificialAnalysisModels(await fetchText(fetchImpl, AA_MODELS_URL, "text/html"));
-    if (parsed.length < MIN_AA_MODELS) throw new SourceError(`models_too_few:${parsed.length}`);
-    models = parsed;
+  // Every Artificial Analysis page that failed, as `<page>: <reason>`.
+  const problems: string[] = [];
+  const page = async (label: string, url: string): Promise<string | null> => {
+    try {
+      return await fetchText(fetchImpl, url, "text/html");
+    } catch (error) {
+      problems.push(`${label}: ${errorText(error)}`);
+      return null;
+    }
+  };
+  const leaderboardHtml = await page("leaderboard", AA_LEADERBOARD_URL);
+  const recordsHtml = await page("records", AA_MODELS_URL);
+  const index = leaderboardHtml ? parseArtificialAnalysisVariantIndex(leaderboardHtml) : null;
+  const leaderboard = leaderboardHtml ? parseArtificialAnalysisLeaderboard(leaderboardHtml, index, previousModels) : [];
+  const records = recordsHtml ? parseArtificialAnalysisModels(recordsHtml) : [];
+  if (leaderboardHtml && !leaderboard.length) problems.push("leaderboard: rows_none");
+  if (leaderboardHtml && !index) problems.push("leaderboard: index_none");
+  if (recordsHtml && !records.length) problems.push("records: records_none");
+  const freshCount = new Set([...leaderboard, ...records].map((model) => model.slug)).size;
+  const aaFresh = freshCount >= MIN_AA_MODELS;
+  if (aaFresh) {
+    models = mergeArtificialAnalysisModels(records, leaderboard, index, previousModels);
     const fetchedAt = new Date(now()).toISOString();
-    // The agents page is the second half of the same source. When only it
+    // The agents page is a separate part of the same source. When only it
     // fails, the new models are kept and the previous rows stay.
     try {
       const parsedAgents = parseArtificialAnalysisAgents(
@@ -503,13 +885,43 @@ export async function refreshModelRegistry(
       );
       if (!parsedAgents.length) throw new SourceError("agents_none");
       agents = parsedAgents;
-      artificialAnalysis = { fetchedAt, ok: true };
     } catch (error) {
-      artificialAnalysis = { fetchedAt, ok: false, error: `agents: ${errorText(error)}` };
+      problems.push(`agents: ${errorText(error)}`);
     }
-  } catch (error) {
-    artificialAnalysis = failedStatus(previous?.sources.artificialAnalysis, error);
+    artificialAnalysis = problems.length
+      ? { fetchedAt, ok: false, error: problems.join("; ").slice(0, 200) }
+      : { fetchedAt, ok: true };
+  } else {
+    artificialAnalysis = failedStatus(
+      previous?.sources.artificialAnalysis,
+      [...problems, `models_too_few:${freshCount}`].join("; "),
+    );
   }
+
+  // The speech leaderboards, only while the site answers at all. Each kind
+  // that fails keeps its previous rows.
+  let media = previous?.media ?? [];
+  let mediaStatus: ModelRegistrySourceStatus;
+  if (leaderboardHtml || recordsHtml) {
+    const mediaProblems: string[] = [];
+    for (const kind of Object.keys(AA_MEDIA_URLS) as ModelRegistryMediaKind[]) {
+      try {
+        const rows = parseArtificialAnalysisMedia(kind, await fetchText(fetchImpl, AA_MEDIA_URLS[kind], "text/html"));
+        if (!rows.length) throw new SourceError("rows_none");
+        media = [...media.filter((row) => row.kind !== kind), ...rows];
+      } catch (error) {
+        mediaProblems.push(`${kind}: ${errorText(error)}`);
+      }
+    }
+    const fetchedAt = mediaProblems.length === Object.keys(AA_MEDIA_URLS).length
+      ? previous?.sources.media?.fetchedAt ?? null
+      : new Date(now()).toISOString();
+    mediaStatus = mediaProblems.length ? { fetchedAt, ok: false, error: mediaProblems.join("; ").slice(0, 200) } : { fetchedAt, ok: true };
+  } else {
+    mediaStatus = failedStatus(previous?.sources.media, "skipped: the model pages failed");
+  }
+  // Relinked on every refresh: the model list may have changed.
+  media = linkMediaRows(media, models);
 
   let prices = previous?.prices ?? {};
   let modelsDev: ModelRegistrySourceStatus;
@@ -523,9 +935,9 @@ export async function refreshModelRegistry(
     modelsDev = failedStatus(previous?.sources.modelsDev, error);
   }
 
-  const sources = { artificialAnalysis, modelsDev };
+  const sources = { artificialAnalysis, modelsDev, media: mediaStatus };
   if (!models.length) return { stored: false, reason: "no_models", sources };
-  if (!artificialAnalysis.ok && !modelsDev.ok) return { stored: false, reason: "all_sources_failed", sources };
+  if (!aaFresh && !modelsDev.ok) return { stored: false, reason: "all_sources_failed", sources };
 
   const generatedAtMs = now();
   const snapshot: ModelRegistrySnapshot = {
@@ -535,6 +947,7 @@ export async function refreshModelRegistry(
     sources,
     models,
     agents,
+    media,
     prices,
   };
   const body = JSON.stringify(snapshot);
@@ -549,7 +962,7 @@ export async function refreshModelRegistry(
       "delete from model_registry_snapshots where id not in (select id from model_registry_snapshots order by id desc limit ?)",
     ).bind(MODEL_REGISTRY_KEEP_SNAPSHOTS),
   ]);
-  return { stored: true, bytes, models: models.length, agents: agents.length, sources };
+  return { stored: true, bytes, models: models.length, agents: agents.length, media: media.length, sources };
 }
 
 export type ModelRegistryCronResult =
@@ -622,7 +1035,9 @@ export async function runModelRegistryCron(
     bytes: result.stored ? result.bytes : 0,
     models: result.stored ? result.models : 0,
     agents: result.stored ? result.agents : 0,
+    media: result.stored ? result.media : 0,
     artificialAnalysisError: result.sources?.artificialAnalysis.error,
+    mediaError: result.sources?.media?.error,
     modelsDevError: result.sources?.modelsDev.error,
     durationMs: Date.now() - startedAt,
   });

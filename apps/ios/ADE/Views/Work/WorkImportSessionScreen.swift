@@ -784,7 +784,7 @@ private struct WorkImportLaneFilterMenu: View {
       Picker("Lane", selection: $selection) {
         Text("All lanes · \(totalCount)").tag(workImportAllLanesFilter)
         ForEach(lanesWithSessions) { lane in
-          Text("\(lane.name) · \(counts[lane.id] ?? 0)").tag(lane.id)
+          Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name) · \(counts[lane.id] ?? 0)").tag(lane.id)
         }
         if scanKeys.contains(workImportOtherFoldersFilter) || selection == workImportOtherFoldersFilter {
           Text("Other folders · \(counts[workImportOtherFoldersFilter] ?? 0)").tag(workImportOtherFoldersFilter)
@@ -796,6 +796,7 @@ private struct WorkImportLaneFilterMenu: View {
           WorkLaneLogoMark(
             color: LaneColorPalette.displayColor(forHex: selectedLane.color, fallback: ADEColor.textSecondary),
             laneIcon: selectedLane.icon,
+            emoji: selectedLane.emoji,
             size: 12
           )
         } else {

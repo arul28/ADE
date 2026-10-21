@@ -29,6 +29,12 @@
  * wakes it. A wake that came due and never started is Done again and holds its
  * lane out, so a dead scheduler cannot leave a lane folded forever.
  *
+ * A finished chat whose last reply said it waits on its own work
+ * (`awaitingOwnWorkAt`, read by Jev at turn end) is Waiting too, but only
+ * while a chat it launched is still busy in the same lane. The verdict alone
+ * never folds a lane: when that work ends, the chat is Done again. (Live
+ * background work needs no verdict: it already reads as running.)
+ *
  * Pure on purpose: the sidebar hands over plain data and the rules stay
  * testable without mounting a list.
  */
@@ -218,6 +224,18 @@ function laneFocusRows(
     const row = laneRowFocus(session, seenOf(session), inputs);
     rowBySessionId.set(session.id, row);
     if (row && isBusyAgentRow(session, row)) busyIds.add(session.id);
+  }
+  const busyLauncherIds = new Set<string>();
+  for (const session of sessions) {
+    const launcher = busyIds.has(session.id) ? launcherSessionId(session) : null;
+    if (launcher && launcher !== session.id) busyLauncherIds.add(launcher);
+  }
+  for (const session of sessions) {
+    if (!session.awaitingOwnWorkAt || !busyLauncherIds.has(session.id)) continue;
+    if (!rowBySessionId.get(session.id)?.resting) continue;
+    const waiting: WorkRowFocus = { status: "waiting", holdsOut: false };
+    rowBySessionId.set(session.id, waiting);
+    if (isBusyAgentRow(session, waiting)) busyIds.add(session.id);
   }
   return { rowBySessionId, busyIds };
 }

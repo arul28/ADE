@@ -268,7 +268,8 @@ export type ComposerModelSuggestion = {
   routeLabel?: string | null;
 };
 
-const HARNESS_LABELS: Record<string, string> = {
+/** Each chat provider's display name. */
+export const HARNESS_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   opencode: "OpenCode",

@@ -231,7 +231,8 @@ describe("SessionContextMenu lane section", () => {
     expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Open in web" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /Select All Lanes/ })).toBeTruthy();
-    // Colour palette survived the move into the submenu.
+    // The colour palette is reachable too, one hover further in.
+    openSubmenuByHover(screen.getByRole("menuitem", { name: "Color" }));
     expect(screen.getAllByRole("button", { name: /Rainbow|Sky|Amber|Rose/ }).length).toBeGreaterThan(0);
   });
 

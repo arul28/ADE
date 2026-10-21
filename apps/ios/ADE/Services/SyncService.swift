@@ -25004,6 +25004,7 @@ extension SyncService {
         name: lane.name,
         color: lane.color,
         icon: lane.icon?.rawValue,
+        emoji: lane.emoji,
         laneType: lane.laneType,
         branchRef: lane.branchRef
       )

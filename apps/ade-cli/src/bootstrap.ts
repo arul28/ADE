@@ -116,6 +116,10 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
+import { createJevService, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { jevTallyFileStore } from "../../desktop/src/main/services/jev/jevTally";
+import { jevEnabled } from "../../desktop/src/shared/jevSettings";
+import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
@@ -170,6 +174,7 @@ import {
   type UsageProductAnalyticsExporter,
 } from "../../desktop/src/main/services/analytics/usageProductAnalyticsExporter";
 import {
+  captureDailyJevAnalytics,
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
 } from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
@@ -256,6 +261,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -464,6 +470,8 @@ export type AdeRuntime = {
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  /** Jev decisions (`ai.jevDecide`); absent on runtimes that never ask. */
+  jevService?: JevService | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
@@ -1440,6 +1448,23 @@ export async function createAdeRuntime(args: {
       },
     });
 
+    const jevService = createJevService({
+      logger,
+      isEnabled: (feature) => jevEnabled(projectConfigService.get().effective.ai?.chat, feature),
+      // Spending the user's own Zen balance is theirs to switch on: read the
+      // machine-local file only, never a repo's shared `.ade/ade.yaml`.
+      useZenCredit: () => projectConfigService.get().local.ai?.chat?.jevZenCreditEnabled === true,
+      bonus: {
+        baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
+        accountToken: () => getAccountAccessToken(),
+      },
+      appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+      tallyStore: jevTallyFileStore(
+        path.join(resolveMachineAdeLayout().adeDir, "jev", `tallies-${sha256Hex(projectId).slice(0, 16)}.json`),
+      ),
+    });
+    teardown.push(() => jevService.dispose());
+
     const conflictService = createConflictService({
       db,
       logger,
@@ -1537,6 +1562,7 @@ export async function createAdeRuntime(args: {
       processRegistry,
       aiIntegrationService,
       projectConfigService,
+      jevService,
       logger,
       broadcastData: (event) => {
         pushEvent("pty", { type: "pty_data", event });
@@ -1556,7 +1582,10 @@ export async function createAdeRuntime(args: {
           runtimeState: signal.runtimeState,
         });
       },
-      onSessionUserInput: ({ sessionId }) => {
+      onSessionAttentionRequested: (request) => runtimeForCtoActions
+        ? requestSessionAttentionForRuntime(runtimeForCtoActions, request)
+        : sessionService.requestAttention(request.sessionId, request.message, request.source),
+      onSessionAttentionResolved: ({ sessionId }) => {
         pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
       },
       diskPressureMonitor,
@@ -1658,6 +1687,19 @@ export async function createAdeRuntime(args: {
     laneTeardownDeps.rebaseSuggestionService = {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
+    laneTeardownDeps.sessionService = sessionService;
+    // Lanes archived before archive took their chats along keep those chats
+    // visible under an "Archived lane" header; archive them once per project.
+    try {
+      const archivedSessionCount = sessionService.archiveSessionsOfArchivedLanes();
+      if (archivedSessionCount > 0) {
+        logger.info("lane.archive.sessions_backfilled", { archivedSessionCount });
+      }
+    } catch (error) {
+      logger.warn("lane.archive.sessions_backfill_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // Set once the runtime below is assembled; the CTO's home-machine actions read it.
     let runtimeForCtoActions: AdeRuntime | null = null;
@@ -2348,6 +2390,7 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        jevDecide: jevService.decide,
         projectNotesService,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
@@ -2568,6 +2611,16 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
+      const settleNudgeSweep = createSettleNudgeSweep({
+        sessionService,
+        agentChatService,
+        jevService,
+        isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+      });
+      settleNudgeSweep.start();
+      teardown.push(() => settleNudgeSweep.dispose());
+    }
     // The broker judges an attached video against the chat's turn start.
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
@@ -3312,6 +3365,13 @@ export async function createAdeRuntime(args: {
                 reportDay: target.day,
                 occurredAt: target.occurredAt,
               });
+              captureDailyJevAnalytics({
+                analytics: productAnalyticsService,
+                tally: jevService.tallyForDay(target.day),
+                projectId,
+                reportDay: target.day,
+                occurredAt: target.occurredAt,
+              });
               lastDailyAnalyticsDay = target.day;
             })
             .catch((error) => {
@@ -3420,6 +3480,7 @@ export async function createAdeRuntime(args: {
       syncService = createSyncService({
         db,
         usageTrackingService,
+        jevService,
         getProxyService: () => getProxyService(),
         accountSettingsStore,
         productAnalyticsService,
@@ -3633,6 +3694,7 @@ export async function createAdeRuntime(args: {
       searchService,
       externalSessionsService,
       aiIntegrationService,
+      jevService,
       agentChatService,
       chatLaunchService,
       cursorCloudFleetService,

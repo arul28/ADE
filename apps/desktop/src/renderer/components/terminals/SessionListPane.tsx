@@ -102,7 +102,7 @@ import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
-import { iconGlyph } from "../lanes/laneIconGlyph";
+import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
@@ -3223,7 +3223,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
         style={{ color: laneHeaderTint.text ?? (laneAccent ? toneText(laneAccent) : "var(--color-muted-fg)") }}
       >
-        {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
+        <LaneEmojiGlyph
+          emoji={lane.emoji}
+          icon={lane.icon}
+          fallback={<LaneIcon size={12} weight="regular" />}
+        />
       </span>
     );
     const lanePrs = boundMachineLanePrs(prsByLaneId, lane.id);
@@ -3767,6 +3771,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           </StickyGroupHeader>
         );
       })}
+      {/* Archiving a lane archives its sessions, so this block only holds a
+          chat restored on its own from the Archive while its lane stays
+          archived (or one a peer on an older ADE left behind). */}
       {archivedLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const trimmedLaneName = (list[0]?.laneName ?? "").trim();
@@ -3786,8 +3793,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               className="mx-1.5 mb-1.5 border-l border-fg/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
               data-testid="archived-lane-explanation"
             >
-              This lane is archived, so the lane list leaves it out. Its chats are kept. Manage the lane under
-              Settings › This computer › Archive.
+              This lane is archived, but these chats are not. Restore the lane under Settings › This computer ›
+              Archive, or archive the chats.
             </div>
             {renderHandoffCards(laneHandoffJobs)}
             {renderLaneSessionLists(laneId, list)}

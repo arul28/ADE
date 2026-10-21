@@ -558,7 +558,7 @@ struct WorkSidebarSectionHeader: View {
         .fill(group.tint)
         .frame(width: 7, height: 7)
     case .laneBranch:
-      WorkLaneLogoMark(color: group.tint, laneIcon: group.laneIcon, size: 11)
+      WorkLaneLogoMark(color: group.tint, laneIcon: group.laneIcon, emoji: group.laneEmoji, size: 11)
         .frame(width: 12, height: 12)
     case .warning:
       Image(systemName: "exclamationmark.triangle")

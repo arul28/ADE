@@ -21,6 +21,7 @@ import {
   isMusicDeveloperTokenRequest,
   type MusicDeveloperTokenEnv,
 } from "./musicDeveloperToken";
+import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type JevBonusEnv } from "./jevBonus";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -28,7 +29,7 @@ import {
   type UsageResearchEnv,
 } from "./usageResearch";
 
-type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & SentryEnv;
+type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv & SentryEnv;
 
 export default Sentry.withSentry(sentryOptions, {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
@@ -47,6 +48,9 @@ export default Sentry.withSentry(sentryOptions, {
     // Apple Music developer tokens: same shape as the registry (account bearer,
     // GET only, no CORS — the desktop main process is the only caller).
     if (isMusicDeveloperTokenRequest(url)) return handleMusicDeveloperTokenRequest(request, env);
+    // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
+    // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
+    if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
     return handleRequest(request, env);
   },
 
@@ -73,6 +77,8 @@ export default Sentry.withSentry(sentryOptions, {
       // snapshot is a day old; every other tick is one indexed read.
       // `MODEL_REGISTRY_REFRESH=0` stops the fetches.
       settle("model_registry", () => runModelRegistryCron(env)),
+      // Jev bonus: per-account day counts past a week.
+      settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
     ]));
   },
 });

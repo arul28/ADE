@@ -102,7 +102,7 @@ struct LanePeekPreview: View {
     let laneAccent = laneTint.text ?? ADEColor.textPrimary
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
-        WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, size: 12)
+        WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 12)
         Text(snapshot.lane.name)
           .font(.headline)
           .foregroundStyle(laneAccent)

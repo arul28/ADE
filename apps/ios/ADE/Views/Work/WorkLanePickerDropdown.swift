@@ -170,7 +170,7 @@ struct WorkLanePickerDropdown: View {
           .font(.system(size: 11, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
       } else if let triggerLaneColor {
-        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 11)
+        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, emoji: selectedLane?.emoji, size: 11)
       }
       Text(triggerTitle)
         .font(.system(size: 13, weight: .semibold))
@@ -217,7 +217,7 @@ struct WorkLanePickerDropdown: View {
   private var triggerTitleRow: some View {
     HStack(spacing: 6) {
       if let triggerLaneColor, !isAutoCreateSelected {
-        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 13)
+        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, emoji: selectedLane?.emoji, size: 13)
       } else if isAutoCreateSelected {
         Image(systemName: "sparkles")
           .font(.system(size: 13, weight: .semibold))
@@ -337,7 +337,7 @@ struct WorkLanePickerMenu: View {
       onSelect(lane.id)
     } label: {
       HStack(alignment: .top, spacing: 10) {
-        WorkLaneLogoMark(color: laneColor, laneIcon: lane.icon, size: 14)
+        WorkLaneLogoMark(color: laneColor, laneIcon: lane.icon, emoji: lane.emoji, size: 14)
           .frame(width: 18)
           .padding(.top, 2)
           .opacity(disabled ? 0.45 : 1)

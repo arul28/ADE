@@ -115,6 +115,7 @@ struct LaneBatchManageSheet: View {
                 WorkLaneLogoMark(
                   color: LaneColorPalette.displayColor(forHex: snapshot.lane.color, fallback: ADEColor.textSecondary),
                   laneIcon: snapshot.lane.icon,
+                  emoji: snapshot.lane.emoji,
                   size: 13
                 )
                 .frame(width: 18)

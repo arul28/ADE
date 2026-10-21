@@ -13,6 +13,7 @@ import {
   Path,
   PushPin,
   PushPinSlash,
+  Smiley,
   Stack,
   X,
   type Icon,
@@ -24,8 +25,13 @@ import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
+import { Z_LAYERS } from "../ui/zLayers";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
-import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
+import { colorsInUse } from "./laneColorPalette";
+import { LaneColorPicker } from "./LaneColorPicker";
+import { showToast } from "../app/toast/toastStore";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -392,6 +398,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       key: "color",
       label: "Color",
       icon: Palette,
+      submenu: true,
       entries: [{
         kind: "custom",
         key: "swatches",
@@ -401,6 +408,22 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
             lanesById={lanesById}
             onChanged={onAppearanceChanged}
             runtimePin={runtimePin}
+          />
+        ),
+      }],
+    });
+    groups.push({
+      key: "emoji",
+      label: "Emoji",
+      icon: Smiley,
+      entries: [{
+        kind: "custom",
+        key: "picker",
+        node: (
+          <LaneEmojiRow
+            lane={lane}
+            runtimePin={runtimePin}
+            onChanged={onAppearanceChanged}
           />
         ),
       }],
@@ -467,9 +490,7 @@ export function ColorSwatchRow({
     }
     return map;
   }, [lanesArray, ctxLane.id]);
-  const currentLower = ctxLane.color?.toLowerCase() ?? null;
-
-  const apply = async (next: string | null) => {
+  const apply = async (next: string) => {
     setError(null);
     setBusy(true);
     try {
@@ -484,46 +505,12 @@ export function ColorSwatchRow({
 
   return (
     <div style={{ padding: "4px 12px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
-      <SwatchGroup
-        label="Rainbow"
-        colors={LANE_RAINBOW_COLORS}
-        selectedLower={currentLower}
-        used={used}
-        owners={owners}
-        busy={busy}
-        onPick={apply}
-      />
-      <SwatchGroup
-        label="Classic"
-        colors={LANE_CLASSIC_COLORS}
-        selectedLower={currentLower}
-        used={used}
-        owners={owners}
-        busy={busy}
-        onPick={apply}
-        trailing={currentLower ? (
-          <button
-            type="button"
-            title="Clear color"
-            aria-label="Clear color"
-            disabled={busy}
-            onClick={() => apply(null)}
-            style={{
-              width: 18,
-              height: 18,
-              borderRadius: 9999,
-              backgroundColor: "transparent",
-              cursor: busy ? "not-allowed" : "pointer",
-              border: "1px dashed rgba(255,255,255,0.35)",
-              padding: 0,
-              color: "rgba(255,255,255,0.55)",
-              fontSize: 10,
-              lineHeight: "16px",
-            }}
-          >
-            ✕
-          </button>
-        ) : null}
+      <LaneColorPicker
+        value={ctxLane.color}
+        onChange={(next) => { if (!busy) void apply(next); }}
+        usedColors={used}
+        usedColorOwners={owners}
+        swatchSize={18}
       />
       {error ? (
         <div style={{ marginTop: 2, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
@@ -532,92 +519,44 @@ export function ColorSwatchRow({
   );
 }
 
-function SwatchGroup({
-  label,
-  colors,
-  selectedLower,
-  used,
-  owners,
-  busy,
-  onPick,
-  trailing,
+
+function LaneEmojiRow({
+  lane,
+  runtimePin,
+  onChanged,
 }: {
-  label: string;
-  colors: readonly LaneColor[];
-  selectedLower: string | null;
-  used: Set<string>;
-  owners: Map<string, string>;
-  busy: boolean;
-  onPick: (hex: string) => void;
-  trailing?: React.ReactNode;
+  lane: LaneSummary;
+  runtimePin: OpenProjectBinding | null;
+  onChanged?: () => void | Promise<void>;
 }) {
+  const [busy, setBusy] = React.useState(false);
+
+  const apply = async (next: string | null) => {
+    setBusy(true);
+    try {
+      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, runtimePin);
+      await onChanged?.();
+    } catch (err) {
+      showToast({
+        title: "Could not set the lane emoji",
+        message: err instanceof Error ? err.message : "Failed to set emoji",
+        tone: "error",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const laneEmoji = laneEmojiForDisplay(lane.emoji, lane.icon);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span
-        style={{
-          fontSize: 9,
-          fontWeight: 700,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: COLORS.textDim,
-        }}
-      >
-        {label}
-      </span>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {colors.map((entry) => {
-          const lower = entry.hex.toLowerCase();
-          const isSelected = selectedLower === lower;
-          const isTaken = !isSelected && used.has(lower);
-          const owner = isTaken ? owners.get(lower) ?? null : null;
-          const title = isTaken
-            ? owner
-              ? `${entry.name} — used by ${owner}`
-              : `${entry.name} — in use`
-            : entry.name;
-          return (
-            <button
-              key={entry.hex}
-              type="button"
-              title={title}
-              disabled={isTaken || busy}
-              aria-label={title}
-              aria-pressed={isSelected}
-              onClick={() => onPick(entry.hex)}
-              style={{
-                position: "relative",
-                width: 18,
-                height: 18,
-                borderRadius: 9999,
-                backgroundColor: entry.hex,
-                opacity: isTaken ? 0.65 : 1,
-                cursor: isTaken ? "not-allowed" : "pointer",
-                outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
-                outlineOffset: 1,
-                boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
-                border: "none",
-                padding: 0,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              {isTaken ? (
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  style={{ color: "rgba(255,255,255,0.95)", filter: "drop-shadow(0 1px 1px rgba(0,0,0,0.45))" }}
-                >
-                  <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              ) : null}
-            </button>
-          );
-        })}
-        {trailing}
-      </div>
+    <div className="flex items-center gap-2 px-3 py-1.5">
+      <LaneEmojiPicker
+        value={laneEmoji}
+        onChange={(next) => { void apply(next); }}
+        disabled={busy}
+        overlayLayer={Z_LAYERS.contextMenu}
+      />
+      <span className="text-[11px] text-muted-fg">{laneEmoji ?? "No emoji"}</span>
     </div>
   );
 }

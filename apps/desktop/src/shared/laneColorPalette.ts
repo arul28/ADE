@@ -61,7 +61,34 @@ export const LANE_FALLBACK_COLORS: readonly string[] = ALLOCATABLE_LANE_COLORS
   .slice(0, 8)
   .map((entry) => entry.hex);
 
-export function nextAvailableLaneColor(usedColors: Iterable<string>): string | null {
+/**
+ * A lane colour past the palette, the `index`th of an endless sequence: hues a
+ * golden angle apart, so each new one lands far from the ones before it, at
+ * the palette's own saturation and lightness so it sits with the named colours.
+ */
+export function generatedLaneColor(index: number): string {
+  const hue = (index * 137.508 + 17) % 360;
+  return hslToHex(hue, 0.72, 0.62);
+}
+
+function hslToHex(hue: number, saturation: number, lightness: number): string {
+  const a = saturation * Math.min(lightness, 1 - lightness);
+  const channel = (n: number) => {
+    const k = (n + hue / 30) % 12;
+    const value = lightness - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(value * 255).toString(16).padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
+
+/** How many generated colours to try before settling for a repeat. */
+const GENERATED_COLOR_TRIES = 512;
+
+/**
+ * The first palette colour no open lane uses, then the first unused generated
+ * one: there is always a colour for a new lane.
+ */
+export function nextAvailableLaneColor(usedColors: Iterable<string>): string {
   const used = new Set(
     [...usedColors]
       .map((color) => color.trim().toLowerCase())
@@ -70,16 +97,15 @@ export function nextAvailableLaneColor(usedColors: Iterable<string>): string | n
   for (const entry of ALLOCATABLE_LANE_COLORS) {
     if (!used.has(entry.hex.toLowerCase())) return entry.hex;
   }
-  return null;
-}
-
-export function randomLaneColor(): string {
-  const index = Math.floor(Math.random() * ALLOCATABLE_LANE_COLORS.length);
-  return ALLOCATABLE_LANE_COLORS[index]?.hex ?? ALLOCATABLE_LANE_COLORS[0]!.hex;
+  for (let index = 0; index < GENERATED_COLOR_TRIES; index += 1) {
+    const color = generatedLaneColor(index);
+    if (!used.has(color)) return color;
+  }
+  return generatedLaneColor(used.size);
 }
 
 export function allocateLaneColor(usedColors: Iterable<string>): string {
-  return nextAvailableLaneColor(usedColors) ?? randomLaneColor();
+  return nextAvailableLaneColor(usedColors);
 }
 
 /**

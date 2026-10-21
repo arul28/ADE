@@ -607,6 +607,7 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var status: LaneStatus
   var color: String?
   var icon: LaneIcon?
+  var emoji: String? = nil
   var tags: [String]
   var folder: String?
   var linearIssue: LaneLinearIssue?
@@ -1236,6 +1237,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var scheduledWorkPaused: Bool? = nil
   /// Earliest armed, unpaused wake reported by the host. Older hosts omit it.
   var nextWakeAt: String? = nil
+  /// When the turn-end check (Jev) read the last reply as waiting on the chat's
+  /// own work (subagents, CI, a watcher it started). Live only, cleared when the
+  /// next turn starts. Older hosts omit it.
+  var awaitingOwnWorkAt: String? = nil
   /// Claude SDK auto-continue after a claude.ai usage-limit reset. Older hosts omit it.
   var autoContinueAtUsageLimit: Bool? = nil
   /// ISO instant this chat is parked waiting for a usage-limit reset. Older hosts omit it.
@@ -1350,6 +1355,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.scheduledWork == rhs.scheduledWork
       && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
       && lhs.nextWakeAt == rhs.nextWakeAt
+      && lhs.awaitingOwnWorkAt == rhs.awaitingOwnWorkAt
       && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
       && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
       && lhs.usageLimitResume == rhs.usageLimitResume

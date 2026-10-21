@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import { deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
@@ -80,6 +81,9 @@ type SessionRow = {
   lastTurnFailedAt: string | null;
   settleOverride: string | null;
   settleSource: string | null;
+  settleNudgeTurnId: string | null;
+  settleNudgeDoneProbability: number | null;
+  settleNudgeDismissedTurnId: string | null;
   snoozedUntil: string | null;
   snoozedAt: string | null;
   wokeAt: string | null;
@@ -126,6 +130,8 @@ export const STALE_RUNNING_SESSION_RESCAN_DELAY_MS = Math.max(
 
 /** Bounded so a large sweep cannot open a provider stop per session at once. */
 const SETTLE_TEARDOWN_CONCURRENCY = 4;
+/** Set once the one-time archived-lane session backfill has run in this project. */
+const ARCHIVED_LANE_SESSIONS_BACKFILL_KEY = "lane_archive.sessions_backfill.v1";
 
 const SESSION_COLUMNS = `
   s.id as id,
@@ -154,6 +160,9 @@ const SESSION_COLUMNS = `
   s.last_turn_failed_at as lastTurnFailedAt,
   s.settle_override as settleOverride,
   s.settle_source as settleSource,
+  s.settle_nudge_turn_id as settleNudgeTurnId,
+  s.settle_nudge_done_probability as settleNudgeDoneProbability,
+  s.settle_nudge_dismissed_turn_id as settleNudgeDismissedTurnId,
   s.snoozed_until as snoozedUntil,
   s.snoozed_at as snoozedAt,
   s.woke_at as wokeAt,
@@ -203,6 +212,7 @@ function normalizeAttentionSource(value: unknown): SessionAttentionSource | null
     || value === "user"
     || value === "linear"
     || value === "turn_end_question"
+    || value === "cli_prompt"
     ? value
     : null;
 }
@@ -829,6 +839,14 @@ export function createSessionService({
       lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
       settleOverride: normalizeSettleOverride(row.settleOverride),
       settleSource: normalizeSettleSource(row.settleSource),
+      settleNudgeTurnId: normalizeOptionalText(row.settleNudgeTurnId, 512),
+      settleNudgeDoneProbability: typeof row.settleNudgeDoneProbability === "number"
+        && Number.isFinite(row.settleNudgeDoneProbability)
+        && row.settleNudgeDoneProbability >= 0
+        && row.settleNudgeDoneProbability <= 1
+        ? row.settleNudgeDoneProbability
+        : null,
+      settleNudgeDismissedTurnId: normalizeOptionalText(row.settleNudgeDismissedTurnId, 512),
       snoozedUntil: normalizeIsoTimestamp(row.snoozedUntil),
       snoozedAt: normalizeIsoTimestamp(row.snoozedAt),
       wokeAt: normalizeIsoTimestamp(row.wokeAt),
@@ -1386,6 +1404,34 @@ export function createSessionService({
       if (archiveSession(sessionId)) archived.push(sessionId);
     }
     return archived;
+  };
+
+  /**
+   * Archive every chat, CLI and shell of a lane that is being archived. The
+   * caller has already stopped the lane's live work, so this only sets
+   * `archived_at`; rows and transcripts stay.
+   *
+   * The stamp is the lane's own `archived_at`, and that equality is the mark
+   * that the lane archived them: `unarchiveSessionsForLane` clears exactly
+   * the rows carrying it. A session the user archived on its own keeps its
+   * earlier stamp (`archived_at is null` skips it) and stays archived when
+   * the lane comes back. No new column, because `terminal_sessions` syncs to
+   * the phone and older peers through cr-sqlite.
+   */
+  const archiveSessionsForLane = (laneId: string, laneArchivedAt: string): string[] => {
+    const trimmed = laneId.trim();
+    if (!trimmed || !laneArchivedAt) return [];
+    const ids = db.all<{ id: string }>(
+      "select id from terminal_sessions where lane_id = ? and archived_at is null",
+      [trimmed],
+    ).map((row) => row.id);
+    if (ids.length === 0) return [];
+    db.run(
+      "update terminal_sessions set archived_at = ? where lane_id = ? and archived_at is null",
+      [laneArchivedAt, trimmed],
+    );
+    for (const sessionId of ids) emitChanged({ sessionId, reason: "meta-updated" });
+    return ids;
   };
 
   const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
@@ -2242,6 +2288,53 @@ export function createSessionService({
       return true;
     },
 
+    archiveSessionsForLane,
+
+    /** Undo `archiveSessionsForLane`: only the rows stamped with the lane's archive time. */
+    unarchiveSessionsForLane(laneId: string, laneArchivedAt: string): string[] {
+      const trimmed = laneId.trim();
+      if (!trimmed || !laneArchivedAt) return [];
+      const ids = db.all<{ id: string }>(
+        "select id from terminal_sessions where lane_id = ? and archived_at = ?",
+        [trimmed, laneArchivedAt],
+      ).map((row) => row.id);
+      if (ids.length === 0) return [];
+      db.run(
+        "update terminal_sessions set archived_at = null where lane_id = ? and archived_at = ?",
+        [trimmed, laneArchivedAt],
+      );
+      for (const sessionId of ids) emitChanged({ sessionId, reason: "meta-updated" });
+      return ids;
+    },
+
+    /**
+     * One-time catch-up for lanes archived before lane archive took their
+     * sessions along (or by a peer on an older ADE). Runs once per project,
+     * behind a kv marker: a chat the user restores from an archived lane must
+     * stay restored, so a later start must not archive it again.
+     */
+    archiveSessionsOfArchivedLanes(): number {
+      if (db.getJson(ARCHIVED_LANE_SESSIONS_BACKFILL_KEY)) return 0;
+      const lanes = db.all<{ laneId: string; archivedAt: string }>(
+        `
+          select l.id as laneId, l.archived_at as archivedAt
+            from lanes l
+           where l.status = 'archived'
+             and l.archived_at is not null
+             and exists (
+               select 1 from terminal_sessions s
+                where s.lane_id = l.id and s.archived_at is null
+             )
+        `,
+      );
+      let archived = 0;
+      for (const lane of lanes) {
+        archived += archiveSessionsForLane(lane.laneId, lane.archivedAt).length;
+      }
+      db.setJson(ARCHIVED_LANE_SESSIONS_BACKFILL_KEY, { at: new Date().toISOString() });
+      return archived;
+    },
+
     async settleSession(
       sessionId: string,
       opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
@@ -2515,6 +2608,51 @@ export function createSessionService({
       return writeSessionActivity(sessionId, value);
     },
 
+    /**
+     * Persist one successful Jev answer only while its source turn is still current.
+     * No row-status check: a chat row stays `running` between turns, so the
+     * caller reads busy-ness from the chat; the turn marker and
+     * `last_output_at` catch a turn that started meanwhile.
+     */
+    setSettleNudgeVerdict(args: {
+      sessionId: string;
+      turnId: string;
+      doneProbability: number;
+      expectedTurnMarker: string | null;
+      expectedLastActivityAt: string | null;
+    }): boolean {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const turnId = typeof args.turnId === "string" ? args.turnId.trim().slice(0, 512) : "";
+      const doneProbability = Number(args.doneProbability);
+      if (
+        !sessionId
+        || !turnId
+        || !Number.isFinite(doneProbability)
+        || doneProbability < 0
+        || doneProbability > 1
+      ) return false;
+      const expectedTurnMarker = normalizeOptionalText(args.expectedTurnMarker, 512);
+      const expectedLastActivityAt = normalizeIsoTimestamp(args.expectedLastActivityAt);
+      const changed = db.runChanged(
+        `update terminal_sessions
+            set settle_nudge_turn_id = ?,
+                settle_nudge_done_probability = ?,
+                settle_nudge_dismissed_turn_id = null
+          where id = ?
+            and settle_nudge_turn_id is ?
+            and last_output_at is ?
+            and archived_at is null
+            and settled_at is null
+            and settle_override is null
+            and attention_requested_at is null
+            and last_turn_failed_at is null
+            and (snoozed_until is null or snoozed_until <= ?)`,
+        [turnId, doneProbability, sessionId, expectedTurnMarker, expectedLastActivityAt, new Date().toISOString()],
+      );
+      if (changed > 0) emitChanged({ sessionId, reason: "meta-updated" });
+      return changed > 0;
+    },
+
     getStatusNoteUpdatedAt(sessionId: string): string | null {
       return statusNoteUpdatedAtById.get(sessionId.trim()) ?? null;
     },
@@ -2652,7 +2790,13 @@ export function createSessionService({
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: { kind: "clearOnActivity", cause: "turn_start" },
+          intent: {
+            kind: "clearOnActivity",
+            cause: "turn_start",
+            // The pending marker invalidates any Jev answer already in flight.
+            // A unique value lets the eventual write fail its compare-and-set.
+            settleNudgeTurnId: `pending:${randomUUID()}`,
+          },
           extraSet: {
             last_turn_failed_at: null,
             attention_requested_at: null,

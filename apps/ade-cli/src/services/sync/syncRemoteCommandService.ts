@@ -403,6 +403,7 @@ import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/c
 import { prepareHarnessLaunch } from "../../../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import { buildCliIdentityResumeMetadata } from "../../../../desktop/src/shared/cliLaunch";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
@@ -606,6 +607,8 @@ type SyncRemoteCommandServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   operationService?: ReturnType<typeof createOperationService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  /** Jev decisions for the hosted web client; absent answers null, the caller's fallback. */
+  jevService?: Pick<JevService, "decide" | "status"> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
@@ -1973,6 +1976,9 @@ function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLa
   };
   if ("color" in value) {
     parsed.color = value.color == null ? null : asTrimmedString(value.color) ?? null;
+  }
+  if ("emoji" in value) {
+    parsed.emoji = value.emoji == null ? null : asTrimmedString(value.emoji) ?? null;
   }
   if ("icon" in value) {
     parsed.icon = value.icon == null ? null : (asTrimmedString(value.icon) as UpdateLaneAppearanceArgs["icon"]);
@@ -7335,6 +7341,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // the key before sending (`webclient/adapter/misc.ts`), so a handler here
   // would persist the literal placeholder as the provider's key. Adding a key
   // stays a desktop-only operation, and the web control says so.
+  // Jev answers like the desktop action: null is "use your own logic", never an error.
+  register("ai.jevDecide", { viewerAllowed: true }, async (payload) =>
+    args.jevService ? args.jevService.decide(payload as unknown as Parameters<JevService["decide"]>[0]) : null);
+  register("ai.jevStatus", { viewerAllowed: true }, async () => args.jevService?.status() ?? null);
   register("ai.updateConfig", { viewerAllowed: true, queueable: true }, async (payload) => {
     const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
     projectConfigService.updateAiConfig(payload as Partial<AiConfig>);
@@ -8150,6 +8160,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   });
 
+  register("usage.getModelCatalog", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const provider = asTrimmedString(payload.provider);
+    return args.usageTrackingService.getModelCatalog(provider ? { provider } : {});
+  });
   register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
     if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
     const preset = asTrimmedString(payload.preset);

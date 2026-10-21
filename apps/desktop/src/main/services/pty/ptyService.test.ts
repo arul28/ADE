@@ -10,6 +10,7 @@ import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { buildCliStatusRequest, cliStatusScreenTextFromOutputTail } from "./cliStatusInspector";
 
 const PINNED_CLAUDE = "/ade-test/tools/claude/claude";
 const PINNED_CODEX = "/ade-test/tools/codex/codex -c check_for_update_on_startup=false";
@@ -10049,5 +10050,31 @@ describe("ptyService", () => {
         ).rejects.toThrow(/Terminal PTY '.*' is not running/);
       });
     });
+  });
+});
+
+describe("idle terminal check: what leaves the machine", () => {
+  it("sends a redacted, capped tail that still ends on the prompt", () => {
+    const token = `sk-${"a".repeat(40)}`;
+    const raw = [
+      "\u001b[32m".repeat(1_000) + "x".repeat(2_000_000),
+      "y".repeat(5_000),
+      ...Array.from({ length: 60 }, (_, index) => `building step ${index} ${"z".repeat(120)}`),
+      // Close to the prompt, so the size cap keeps it and only redaction can hide it.
+      `export OPENAI_API_KEY=${token}`,
+      "Continue? [y/N]",
+    ].join("\n");
+
+    const request = buildCliStatusRequest(cliStatusScreenTextFromOutputTail(raw), {
+      isTrackedCli: false,
+      toolTypeHint: "shell",
+      resumeCommand: null,
+    });
+
+    expect(request, "a waiting prompt is worth asking about").not.toBeNull();
+    expect(request!.state).not.toContain(token);
+    expect(request!.tail.length).toBeLessThanOrEqual(4_000);
+    expect(Math.max(...request!.tail.split("\n").map((line) => line.length))).toBeLessThanOrEqual(201);
+    expect(request!.lastLine).toBe("Continue? [y/N]");
   });
 });

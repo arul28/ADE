@@ -13,11 +13,13 @@ import type { ProjectDetail, ProjectIcon } from "../../../shared/types";
  * index are derived from a single ordered array of these, so there is exactly
  * one place that knows what comes first.
  */
-export type PaletteSectionKey = "chatFind" | "threads" | "commands" | "entities";
+export type PaletteSectionKey = "suggested" | "chatFind" | "threads" | "commands" | "entities";
 
 export type PaletteSection = { key: PaletteSectionKey; count: number };
 
 export type PaletteSectionsInput = {
+  /** Rows the optional Jev suggestion group will render above normal results. */
+  suggestedCount?: number;
   /**
    * True when the query looks like a command title, which puts commands ahead
    * of threads. See `commandsLeadPaletteResults`.
@@ -51,6 +53,7 @@ export type PaletteSectionsInput = {
  * and callers can key off a section without checking whether it exists.
  */
 export function buildPaletteSections({
+  suggestedCount = 0,
   commandsLead,
   threadCount,
   commandCount,
@@ -61,9 +64,12 @@ export function buildPaletteSections({
   const threads: PaletteSection = { key: "threads", count: threadCount };
   const commands: PaletteSection = { key: "commands", count: commandCount };
   const entities: PaletteSection = { key: "entities", count: entityCount };
-  return commandsLead
+  const ordered = commandsLead
     ? [commands, chatFind, threads, entities]
     : [chatFind, threads, commands, entities];
+  return suggestedCount > 0
+    ? [{ key: "suggested", count: suggestedCount }, ...ordered]
+    : ordered;
 }
 
 /** Total number of keyboard-navigable rows across every section. */
@@ -262,4 +268,35 @@ export function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
     if (typeof oldestKey !== "string") break;
     PROJECT_ICON_CACHE.delete(oldestKey);
   }
+}
+
+/**
+ * Where the keyboard index lands when the Jev "Suggested" rows above the
+ * normal results change. The index is flat, so rows added or removed above
+ * the cursor shift it to keep the same normal row selected.
+ */
+export function shiftSelectedIndexForSuggestions({
+  current,
+  previous,
+  query,
+  context,
+  nextCount,
+  normalCount,
+}: {
+  current: number;
+  previous: { query: string; context: string; commandIds: readonly string[] } | null;
+  query: string;
+  context: string;
+  nextCount: number;
+  /** Rows of normal results, which the suggested rows sit in front of. */
+  normalCount: number;
+}): number {
+  const previousCount = previous?.commandIds.length ?? 0;
+  const baseIndex =
+    previous &&
+    (previous.query !== query || previous.context !== context) &&
+    current >= previousCount
+      ? current - previousCount
+      : current;
+  return baseIndex < normalCount ? baseIndex + nextCount : baseIndex;
 }

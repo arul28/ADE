@@ -1,0 +1,125 @@
+{
+  "$comment": "Runnable models the router cannot map onto the model registry, matched by hand for the model sheet only (modelSheet.ts). Not read by routing. relation: same = the model Artificial Analysis measured; same-model-faster-serving = that model on faster serving (scores apply, speed does not); nearest-sibling = a related model, shown as a note and never used for scores; none = nothing comparable. Checked 2026-10-20 against the registry snapshot, models.dev prices, and artificialanalysis.ai model pages.",
+  "matches": [
+    {
+      "harnessModelId": "cursor/composer-2",
+      "registryFamily": null,
+      "relation": "none",
+      "confidence": "high",
+      "reason": "Cursor's own in-house coding model; Artificial Analysis does not measure Composer (no model page, not on its model list)."
+    },
+    {
+      "harnessModelId": "cursor/composer-2.5",
+      "registryFamily": null,
+      "relation": "none",
+      "confidence": "high",
+      "reason": "Cursor's own in-house coding model; Artificial Analysis does not measure Composer (no model page, not on its model list)."
+    },
+    {
+      "harnessModelId": "cursor/default",
+      "registryFamily": null,
+      "relation": "none",
+      "confidence": "high",
+      "reason": "Cursor's Auto mode is a router, not a model: Cursor picks a model per request, so no one benchmark applies."
+    },
+    {
+      "harnessModelId": "cursor/muse-wonder-1.0",
+      "registryFamily": "muse-wonder",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Meta's Muse Wonder, released 2026-10-12; Artificial Analysis lists 'Muse Wonder (Max)' and a separate 'Muse Wonder Full'. Cursor's '1.0' with six effort levels reads as the standard model, not Full.",
+      "availabilityDoubt": "Cursor lists every model its models API returns for the API key (Cursor.models.list, else GET api.cursor.com/v1/models); a listing does not prove the plan can run it. Muse Wonder is eight days old and priced like a frontier model ($4/$20 per M); one short chat on it would confirm."
+    },
+    {
+      "harnessModelId": "opencode/openai/gpt-5.3-codex-spark",
+      "registryFamily": "gpt-5-3-codex",
+      "relation": "nearest-sibling",
+      "confidence": "medium",
+      "reason": "Codex Spark is a smaller, much faster model in the GPT-5.3 Codex line, not GPT-5.3 Codex itself; Artificial Analysis has no Spark page. models.dev bills it at GPT-5.3 Codex's price ($1.75/$14), which says nothing about quality."
+    },
+    {
+      "harnessModelId": "opencode/openai/gpt-6-astra-ultrafast",
+      "registryFamily": "gpt-6-astra",
+      "relation": "same-model-faster-serving",
+      "confidence": "high",
+      "reason": "GPT-6 Astra on OpenAI's Ultrafast tier: the same weights served faster at a higher price. Quality scores apply; measured speed does not."
+    },
+    {
+      "harnessModelId": "opencode/openai/gpt-6.1-sol-ultrafast",
+      "registryFamily": "gpt-6-1-sol",
+      "relation": "same-model-faster-serving",
+      "confidence": "high",
+      "reason": "GPT-6.1 Sol on OpenAI's Ultrafast tier: the same weights served faster at a higher price. Quality scores apply; measured speed does not."
+    },
+    {
+      "harnessModelId": "opencode/opencode-go/beam-free",
+      "registryFamily": "reflection-beam",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Reflection's Beam 1.0 (Artificial Analysis 'Beam 1.0', released 2026-10-16), offered free for a limited time. The free tier may run a different checkpoint; nothing published says so."
+    },
+    {
+      "harnessModelId": "opencode/opencode/beam-free",
+      "registryFamily": "reflection-beam",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Reflection's Beam 1.0 (Artificial Analysis 'Beam 1.0', released 2026-10-16), offered free for a limited time. The free tier may run a different checkpoint; nothing published says so."
+    },
+    {
+      "harnessModelId": "opencode/opencode-go/hy4-preview",
+      "registryFamily": "hy3",
+      "relation": "nearest-sibling",
+      "confidence": "low",
+      "reason": "Tencent Hy4 preview has no Artificial Analysis page; Hy3 is the previous generation and says little about Hy4."
+    },
+    {
+      "harnessModelId": "opencode/opencode-go/longcat-2.5-preview-free",
+      "registryFamily": "longcat-2-0",
+      "relation": "nearest-sibling",
+      "confidence": "low",
+      "reason": "LongCat 2.5 preview has no Artificial Analysis page; LongCat 2.0 is the previous release."
+    },
+    {
+      "harnessModelId": "opencode/opencode/longcat-2.5-preview-free",
+      "registryFamily": "longcat-2-0",
+      "relation": "nearest-sibling",
+      "confidence": "low",
+      "reason": "LongCat 2.5 preview has no Artificial Analysis page; LongCat 2.0 is the previous release."
+    },
+    {
+      "harnessModelId": "opencode/opencode-go/qwen3.8-flash",
+      "registryFamily": "qwen3-8-flash-next",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Artificial Analysis lists one Qwen3.8 Flash model, 'Qwen3.8-Flash-Next', at exactly the price models.dev gives qwen3.8-flash ($0.15 in, $0.47 out, $0.016 cache read). The names differ, so this is likely but not certain."
+    },
+    {
+      "harnessModelId": "opencode/opencode/qwen3.8-flash",
+      "registryFamily": "qwen3-8-flash-next",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Artificial Analysis lists one Qwen3.8 Flash model, 'Qwen3.8-Flash-Next', at exactly the price models.dev gives qwen3.8-flash ($0.15 in, $0.47 out, $0.016 cache read). The names differ, so this is likely but not certain."
+    },
+    {
+      "harnessModelId": "opencode/opencode/big-pickle",
+      "registryFamily": null,
+      "relation": "none",
+      "confidence": "high",
+      "reason": "A stealth model on OpenCode Zen: the lab behind it is not published, so no benchmark can be tied to it."
+    },
+    {
+      "harnessModelId": "opencode/opencode/grok-build-0.1",
+      "registryFamily": "grok-build-0-1-0616",
+      "relation": "same",
+      "confidence": "medium",
+      "reason": "Artificial Analysis measured 'Grok Build 0.1 0616' at the same price xAI lists for grok-build-0.1 ($1/$2). AA no longer lists it as current, so its numbers are from June and xAI may have updated the model since."
+    },
+    {
+      "harnessModelId": "opencode/opencode/nemotron-3-ultra-free",
+      "registryFamily": "nemotron-3-ultra-550b-a55b",
+      "relation": "same",
+      "confidence": "high",
+      "reason": "NVIDIA Nemotron 3 Ultra 550B A55B, the only Nemotron 3 Ultra; the free route is the same open-weights model."
+    }
+  ]
+}

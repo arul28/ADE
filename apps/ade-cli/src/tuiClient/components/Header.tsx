@@ -63,7 +63,7 @@ function HeaderComponent({
             <>
               <Text color={theme.color.t4}>{"  │  "}</Text>
               <Text color={theme.color.t4}>lane </Text>
-              <Text color={laneColor} bold>{laneIconGlyph(lane.icon)}</Text>
+              <Text color={laneColor} bold>{laneIconGlyph(lane.emoji ?? lane.icon)}</Text>
               <Text> </Text>
               <Text color={laneColor}>{formatLaneLabel(lane)}</Text>
             </>

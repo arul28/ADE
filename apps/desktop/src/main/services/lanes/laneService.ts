@@ -100,6 +100,7 @@ import type {
   StackChainItem,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
+import { legacyLaneEmojiIcon, legacyLaneIconEmoji, normalizeLaneEmoji } from "../../../shared/laneEmoji";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
@@ -697,6 +698,18 @@ function parseLaneIcon(value: string | null): LaneIcon {
   return null;
 }
 
+function parseLaneEmoji(storedIcon: string | null): string | null {
+  const legacyEmoji = legacyLaneIconEmoji(storedIcon);
+  if (legacyEmoji) return legacyEmoji;
+  if (!storedIcon) return null;
+  try {
+    return normalizeLaneEmoji(storedIcon);
+  } catch {
+    // A malformed value from a peer should not make lane lists unreadable.
+    return null;
+  }
+}
+
 function parseLaneTags(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -930,6 +943,7 @@ function toLaneSummary(args: {
       kind: status.branchDriftKind,
     }),
     color: row.color,
+    emoji: parseLaneEmoji(row.icon),
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
@@ -1634,6 +1648,15 @@ export type LaneDeleteTeardownDeps = {
    */
   iosSimulatorService?: {
     stopForLane: (laneId: string) => Promise<void>;
+  };
+  /**
+   * The lane's chat, CLI and shell rows. Archive stamps them with the lane's
+   * `archived_at` after the live work is stopped; restore clears exactly that
+   * stamp, so a session the user archived on its own stays archived.
+   */
+  sessionService?: {
+    archiveSessionsForLane: (laneId: string, laneArchivedAt: string) => string[];
+    unarchiveSessionsForLane: (laneId: string, laneArchivedAt: string) => string[];
   };
 };
 
@@ -5019,6 +5042,19 @@ export function createLaneService({
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
 
+  /** Bring back the sessions `archiveLaneCore` archived with the lane. Best-effort. */
+  const restoreLaneSessions = (laneId: string, laneArchivedAt: string | null): void => {
+    if (!laneArchivedAt) return;
+    try {
+      teardownDeps?.sessionService?.unarchiveSessionsForLane(laneId, laneArchivedAt);
+    } catch (error) {
+      logger.warn("lane.unarchive.sessions_restore_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const commitLaneRestoreState = (laneId: string, worktreePath?: string): void => {
     db.run("begin immediate");
     try {
@@ -5308,6 +5344,16 @@ export function createLaneService({
 
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+    // The lane's chats go with it: a chat with no lane to work in has nothing
+    // to do in the Work list. Archived, not deleted — restore brings them back.
+    try {
+      teardownDeps?.sessionService?.archiveSessionsForLane(laneId, now);
+    } catch (error) {
+      logger.warn("lane.archive.sessions_archive_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     invalidateLanePathCaches();
     // An archived lane keeps nothing on the Apple side but its recordings: the
     // device (if ADE made it) and the build cache are deleted, and unarchiving
@@ -8170,7 +8216,7 @@ export function createLaneService({
       });
     },
 
-    updateAppearance({ laneId, color, icon, tags }: UpdateLaneAppearanceArgs): void {
+    updateAppearance({ laneId, color, emoji, icon, tags }: UpdateLaneAppearanceArgs): void {
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       const normalizedTags = tags == null
@@ -8185,7 +8231,18 @@ export function createLaneService({
       const normalizedColor = lane.lane_type === "primary"
         ? PRIMARY_LANE_COLOR
         : color === undefined ? lane.color : color;
-      const normalizedIcon = icon === undefined ? parseLaneIcon(lane.icon) : icon;
+      const appearanceEmoji = emoji === undefined
+        ? icon === undefined
+          ? parseLaneEmoji(lane.icon)
+          : legacyLaneIconEmoji(icon)
+        : normalizeLaneEmoji(emoji);
+      const storedIcon = emoji === undefined
+        ? icon === undefined
+          ? lane.icon
+          : icon ?? null
+        : appearanceEmoji == null
+          ? null
+          : legacyLaneEmojiIcon(appearanceEmoji) ?? appearanceEmoji;
 
       if (lane.lane_type !== "primary" && normalizedColor && normalizedColor !== lane.color) {
         const conflict = db.get<{ name: string }>(
@@ -8210,7 +8267,7 @@ export function createLaneService({
         `,
         [
           normalizedColor ?? null,
-          normalizedIcon ?? null,
+          storedIcon,
           JSON.stringify(normalizedTags),
           laneId,
           projectId
@@ -8596,6 +8653,7 @@ export function createLaneService({
       }
       if (row.lane_type === "primary") {
         commitLaneRestoreState(laneId);
+        restoreLaneSessions(laneId, row.archived_at);
         invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -8633,6 +8691,7 @@ export function createLaneService({
             throw new Error("The saved lane folder is occupied by a different or unregistered Git worktree.");
           }
           commitLaneRestoreState(laneId);
+          restoreLaneSessions(laneId, row.archived_at);
           invalidateLanePathCaches();
           const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
           if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -8675,6 +8734,7 @@ export function createLaneService({
           });
           throw error;
         }
+        restoreLaneSessions(laneId, row.archived_at);
         invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);

@@ -10,7 +10,7 @@ struct LaneOpenChip: View {
     let laneTint = laneSurfaceTint(forHex: snapshot.lane.color)
     let laneAccent = laneTint.text ?? ADEColor.textPrimary
     HStack(spacing: 6) {
-      WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, size: 10)
+      WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 10)
       Text(snapshot.lane.name)
         .font(.caption.weight(.medium))
         .foregroundStyle(laneAccent)
@@ -323,7 +323,7 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var laneGlyphTile: some View {
-    WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 15)
+    WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 15)
       .frame(width: 20, height: 20)
       .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
   }
@@ -480,6 +480,7 @@ func laneStackCardRenderSignature(
   hasher.combine(lane.name)
   hasher.combine(lane.color)
   hasher.combine(lane.icon?.rawValue)
+  hasher.combine(lane.emoji)
   hasher.combine(lane.laneType)
   hasher.combine(lane.archivedAt)
   hasher.combine(lane.branchRef)

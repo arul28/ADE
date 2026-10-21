@@ -6,12 +6,23 @@ import {
   RENDERER_GONE_UNKNOWN_REASON,
 } from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
+import { JEV_FEATURES } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
   ProductAnalyticsPropertyValue,
 } from "../../../shared/types/productAnalytics";
+
+/** The `jev` daily summary row's counters (`captureDailyJevAnalytics`); numbers only. */
+const JEV_DAILY_PROPERTIES = [
+  "jev_wanted_count", "jev_ok_count", "jev_cached_count", "jev_breaker_skip_count",
+  "jev_answered_free_count", "jev_answered_zen_credit_count", "jev_answered_bonus_count",
+  "jev_busy_count", "jev_rate_limited_count", "jev_auth_rejected_count", "jev_timeout_count", "jev_network_count",
+  "jev_http_error_count", "jev_bad_response_count", "jev_breaker_open_count", "jev_unsent_input_token_estimate",
+  "jev_latency_avg_ms", "jev_slow_count",
+  ...JEV_FEATURES.map((feature) => `jev_sent_${feature}`),
+];
 
 export const DEFAULT_DAILY_BUDGET = 200;
 export const DEDUPE_CACHE_LIMIT = 1_000;
@@ -115,6 +126,7 @@ const NUMBER_PROPERTIES = new Set([
   "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed", "blocked_ms",
   "failing_minutes", "attempt",
   "time_since_install_seconds",
+  ...JEV_DAILY_PROPERTIES,
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
@@ -285,6 +297,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Never a URL, a tab, a song, a layout, an account, or a widget's settings.
   "tab_opened",
   "widget_added",
+  // The composer's model hint: what the user did with a chip, by the kind of
+  // suggestion. Never the prompt, the models, or the efforts.
+  "hint_model", "hint_effort", "hint_cheaper",
   "music_connected",
   "spotify_connected",
   // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
@@ -325,6 +340,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
     "push_operations", "pr_landings", "files_changed", "artifacts_captured", "automation_runs", "worker_runs",
     "active_days", "current_streak_days", "token_count", "input_token_count", "output_token_count", "call_count",
     "duration_ms", "provider_count", "model_count", "error_count",
+    ...JEV_DAILY_PROPERTIES,
   ]),
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
   ade_update_install_aborted: new Set(["reason"]),
@@ -412,6 +428,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "mcp_servers",
     // ADE MCP: this computer as an MCP server for outside AI apps.
     "ade_mcp",
+    // Jev's model and effort hint in the chat composer.
+    "model_hint",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -506,6 +524,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
     // Where a lane-template setup chat was opened.
     "from_banner", "from_settings",
+    // What the user did with a model hint chip. A chip left alone is not sent.
+    "hint_accepted", "hint_dismissed",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([
@@ -530,7 +550,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "local", "remote",
   ]),
   release_channel: new Set(["stable", "beta", "development", "unknown"]),
-  summary_kind: new Set(["overall", "client", "provider", "model"]),
+  summary_kind: new Set(["overall", "client", "provider", "model", "jev"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
   // Derived from the normalizer's own enum so the two cannot drift. Deliberately
   // not folded into `reason`: that key is pinned to the auto-update abort set,
