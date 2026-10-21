@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleDevicePose,
+  AppleDuoAppStoreScreenshotsResult,
   AppleDuoModelResult,
   AppleDevicePosture,
   AppleSetPostureArgs,
@@ -126,6 +128,8 @@ import {
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_DEVICE_POSES,
+  APPLE_DUO_COVER_SCREEN_ID,
+  APPLE_DUO_INNER_SCREEN_ID,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
   APPLE_ROTATE_UNMEASURABLE_CODE,
@@ -2120,7 +2124,7 @@ const AGENT_NO_LANE_DEVICE_MESSAGE =
  */
 const AGENT_DEVICE_DRIVING_ACTIONS = [
   "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
-  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "typeText", "drag", "swipe", "scroll", "selectPoint",
+  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "drag", "swipe", "scroll", "selectPoint",
   "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
@@ -2143,6 +2147,23 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
   if (!chatSessionId || !parseForeignCallerSessionId(chatSessionId)) return null;
   return { machineName: externalChatContext(chatSessionId)?.machineName ?? null };
+}
+
+/** A PNG's pixel size from its IHDR chunk, or null for anything else. */
+function readPngSize(filePath: string): { width: number; height: number } | null {
+  try {
+    const header = Buffer.alloc(24);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, header, 0, 24, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (header.readUInt32BE(0) !== 0x89504e47) return null;
+    return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
 }
 
 /** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
@@ -5855,6 +5876,58 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return { base64: duoModelCache.base64, path: modelPath };
   };
 
+  /**
+   * The App Store Connect iPhone Duo set: the cover closed (1398×2034) and the
+   * inner display open (2853×2007), each captured from its own panel, filed
+   * as proof. Folds the simulator to take them and puts the hinge back.
+   */
+  const duoAppStoreScreenshots = async (
+    shotArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> & { projectRoot?: string | null } = {},
+  ): Promise<AppleDuoAppStoreScreenshotsResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(shotArgs);
+    const deviceUdid = await resolveControlDeviceUdid(shotArgs.deviceUdid, runtime);
+    const before = await readPosture(deviceUdid);
+    if (!before.supported) throw new Error("App Store Duo screenshots need an iPhone Duo simulator.");
+    const root = await resolveScopedRootForSession({ projectRoot: shotArgs.projectRoot, laneId: shotArgs.laneId }, runtime);
+    const directory = path.join(root, ...SCREENSHOT_CACHE_SEGMENTS);
+    await fs.promises.mkdir(directory, { recursive: true });
+    const settleOn = async (screenId: number) => {
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        if ((await readPosture(deviceUdid)).activeScreenId === screenId) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      // iOS animates into the new panel's layout after the switch.
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    };
+    const shots: AppleDuoAppStoreScreenshotsResult["shots"] = [];
+    const take = async (display: "cover" | "inner", pose: AppleDevicePose, screenId: number) => {
+      await helper().send({ type: "posture", udid: deviceUdid, pose });
+      await settleOn(screenId);
+      const filePath = path.join(directory, `app-store-duo-${display}-${randomUUID().slice(0, 8)}.png`);
+      await run("xcrun", ["simctl", "io", deviceUdid, "screenshot", `--display=${screenId}`, filePath], { timeoutMs: 30_000 });
+      const size = readPngSize(filePath);
+      const shot = { deviceUdid, filePath, capturedAt: nowIso(), width: size?.width ?? 0, height: size?.height ?? 0 };
+      const proofArtifactId = fileScreenshotAsProof(shot, {
+        ...shotArgs,
+        caption: `App Store · iPhone Duo ${display} display ${shot.width}×${shot.height}`,
+      }, runtime);
+      shots.push({ display, width: shot.width, height: shot.height, filePath, proofArtifactId });
+    };
+    return enqueueControl("posture", async () => {
+      try {
+        await take("cover", "closed", APPLE_DUO_COVER_SCREEN_ID);
+        await take("inner", "open", APPLE_DUO_INNER_SCREEN_ID);
+      } finally {
+        if (before.angle !== null) {
+          await helper().send({ type: "posture", udid: deviceUdid, angle: before.angle }).catch(() => undefined);
+        }
+      }
+      return { shots };
+    });
+  };
+
   /** The lane whose device this is, for an event about a device no stream is showing. */
   const laneIdHoldingUdid = (udid: string): string | null =>
     laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
@@ -6790,6 +6863,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     setPosture,
     getPosture,
     getDuoModel,
+    duoAppStoreScreenshots,
     typeText,
     drag,
     swipe: drag,

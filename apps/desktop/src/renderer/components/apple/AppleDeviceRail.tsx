@@ -80,7 +80,11 @@ export type AppleDeviceRailProps = {
     angle: number;
     /** The named posture this angle is nearest to, for the checked item. */
     stance: AppleDuoStanceId;
+    /** What the simulator itself reports, shown beside ADE's own angle. */
+    reported?: { angle: number | null; panel: "cover" | "inner" | null; orientation: string | null } | null;
   } | undefined;
+  /** Capture both Duo displays at App Store Connect's sizes. */
+  onDuoAppStoreShots?: (() => void) | undefined;
   onDuoStance?: (stance: AppleDuoStanceId) => void;
   onDuoNudge?: (delta: number) => void;
   /** The hinge slider moved: preview the angle (the 3D body follows at once). */
@@ -157,6 +161,7 @@ export function AppleDeviceRail({
   onDuoNudge,
   onDuoAngle,
   onDuoAngleCommit,
+  onDuoAppStoreShots,
   onOrientation,
   onScreenshot,
   onRender,
@@ -253,6 +258,12 @@ export function AppleDeviceRail({
             {onDuoAngleCommit ? (
               <DuoHingeSlider angle={duo.angle} onPreview={onDuoAngle} onCommit={onDuoAngleCommit} />
             ) : null}
+            {duo.reported ? (
+              <div className="px-2 pb-1 font-sans text-[10px] leading-4 text-muted-fg">
+                {["Simulator", duo.reported.angle !== null ? `${Math.round(duo.reported.angle)}\u00b0` : null, duo.reported.panel, duo.reported.orientation]
+                  .filter(Boolean).join(" \u00b7 ")}
+              </div>
+            ) : null}
             {APPLE_DUO_STANCES.map((stance) => (
               <DropdownMenu.Item
                 key={stance.id}
@@ -283,6 +294,15 @@ export function AppleDeviceRail({
               <ArrowsInLineVertical size={14} />
               {`Open hinge ${APPLE_DUO_NUDGE_DEGREES}\u00b0`}
             </DropdownMenu.Item>
+            {onDuoAppStoreShots ? (
+              <>
+                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onDuoAppStoreShots()}>
+                  <Camera size={14} />
+                  App Store screenshots
+                </DropdownMenu.Item>
+              </>
+            ) : null}
           </RailMenu>
         ) : null}
         {/*

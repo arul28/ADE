@@ -49,6 +49,7 @@ import type {
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
   AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
   AppleSetPostureResult,
@@ -3157,6 +3158,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDevicePosture>;
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
+        duoAppStoreScreenshots: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDuoAppStoreScreenshotsResult>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
         scroll: (
           args: AppleScrollArgs,

@@ -183,6 +183,8 @@ export const APPLE_AGENT_ACTIONS = [
   "getPosture",
   /* Apple's Duo model from this Mac's Xcode, for 3D views and renders. */
   "getDuoModel",
+  /* Both iPhone Duo displays at App Store Connect's sizes, filed as proof. */
+  "duoAppStoreScreenshots",
 
   /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
   "runTests",
@@ -968,6 +970,11 @@ export type AppleDuoModelResult = {
   base64: string | null;
   /** Where it was read from, for diagnostics. */
   path: string | null;
+};
+
+export type AppleDuoAppStoreScreenshotsResult = {
+  /** One per panel, at App Store Connect's iPhone Duo sizes. */
+  shots: Array<{ display: "cover" | "inner"; width: number; height: number; filePath: string; proofArtifactId: string | null }>;
 };
 
 /** A lane's foldable changed pose or active panel, whoever moved it. */

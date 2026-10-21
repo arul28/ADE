@@ -2896,6 +2896,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple rotate landscape-left --text     Set orientation
     $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
     $ ade apple posture --text                   A foldable's hinge angle and active panel
+    $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -14898,6 +14899,13 @@ function buildIosSimulatorPlan(
     });
     return iosAction("Apple device fold", "setPosture", {
       pose,
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "app-store-shots" || sub === "app-store-screenshots") {
+    // Both iPhone Duo displays at App Store Connect's sizes, filed as proof.
+    return iosAction("Apple Duo App Store screenshots", "duoAppStoreScreenshots", {
       deviceUdid: readIosSimulatorDevice(args),
       ...(laneId ? { laneId } : {}),
     });

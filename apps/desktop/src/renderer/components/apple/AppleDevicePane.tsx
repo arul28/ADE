@@ -1426,6 +1426,15 @@ export function AppleDevicePane({
                     capable: true,
                     angle: duoState.pose.angle,
                     stance: nearestAppleDuoStance(duoState.pose.angle),
+                    reported: duoPosture
+                      ? {
+                        angle: duoPosture.angle,
+                        panel: duoPosture.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
+                          ? "cover"
+                          : duoPosture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" : null,
+                        orientation: duoPosture.orientation,
+                      }
+                      : null,
                   }
                 : undefined}
               onDuoStance={(stance) => {
@@ -1435,6 +1444,18 @@ export function AppleDevicePane({
               onDuoAngle={(angle) =>
                 setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
               onDuoAngleCommit={(angle) => sendDuoPosture({ angle })}
+              onDuoAppStoreShots={() => {
+                showToast({ id: "apple-duo-app-store", tone: "info", title: "Taking App Store screenshots…", message: "Folding the Duo closed, then open." });
+                void window.ade.iosSimulator
+                  .duoAppStoreScreenshots({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+                  .then((result) => showToast({
+                    id: "apple-duo-app-store",
+                    tone: "success",
+                    title: "App Store screenshots filed to the proof drawer",
+                    message: result.shots.map((shot) => `${shot.display} ${shot.width}×${shot.height}`).join(" · "),
+                  }))
+                  .catch((cause: unknown) => setError(cause));
+              }}
               onDuoNudge={(delta) => {
                 const next = clampAppleDuoAngle(duoState.pose.angle + delta);
                 setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));

@@ -329,6 +329,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // Removing runtimes shuts down, moves or erases every simulator on them first.
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
+  ["ios_simulator.duoAppStoreScreenshots", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.

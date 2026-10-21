@@ -1006,6 +1006,7 @@ import type {
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
   AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
   AppleSetPostureResult,
@@ -9739,6 +9740,12 @@ const adeBridge = {
     ): Promise<AppleDevicePosture> =>
       callIosSimulatorActionOr<AppleDevicePosture>(pin, "getPosture", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorGetPosture, args)),
     /** Apple's Duo model from the owning machine's Xcode (base64), for the 3D view. */
+    /** Both Duo displays at App Store Connect's sizes, filed as proof. Folds the simulator. */
+    duoAppStoreScreenshots: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDuoAppStoreScreenshotsResult> =>
+      callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
     getDuoModel: (pin?: OpenProjectBinding | null): Promise<AppleDuoModelResult> =>
       callIosSimulatorActionOr<AppleDuoModelResult>(pin, "getDuoModel", {}, () => ipcRenderer.invoke(IPC.iosSimulatorGetDuoModel)),
     /**
