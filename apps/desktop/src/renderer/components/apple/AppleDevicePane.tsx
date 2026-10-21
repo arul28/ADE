@@ -1061,6 +1061,8 @@ export function AppleDevicePane({
       setDuoPosture(null);
       return;
     }
+    // An older host has no posture action: the Duo body still draws.
+    if (typeof window.ade.iosSimulator.getPosture !== "function") return;
     let cancelled = false;
     void window.ade.iosSimulator
       .getPosture({ laneId, chatSessionId: sessionId }, runtimePinRef.current)

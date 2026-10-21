@@ -63,6 +63,9 @@ export function useAppleRuntimes({
   onErrorRef.current = onError;
 
   const reload = useCallback(() => {
+    // A bridge without the runtime actions (an older host) shows no Runtimes
+    // section rather than taking the pane down with it.
+    if (typeof window.ade.iosSimulator.runtimeList !== "function") return;
     const ticket = ++readTicket.current;
     setLoading(true);
     void window.ade.iosSimulator.runtimeList(runtimePinRef.current)
