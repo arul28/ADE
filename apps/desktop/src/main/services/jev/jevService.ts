@@ -64,6 +64,15 @@ const ZEN_CREDIT_MODEL = "jev-1.13";
 const BONUS_PATH = "/jev/systemone";
 /** Falling through to the next route needs at least this much of the call's time left. */
 const MIN_ROUTE_BUDGET_MS = 300;
+/**
+ * The ADE bonus's last calls of the day are kept for interactive questions
+ * (the model hint, mostly): background features stop using it here. Small,
+ * because the status features (turn end, CLI waiting, status line) are what
+ * the bonus is mostly for.
+ */
+const BONUS_INTERACTIVE_RESERVE = 20;
+/** Never on the bonus: a chat idle for hours can wait for the free allowance to reset. */
+const FREE_ONLY_FEATURES: ReadonlySet<JevFeature> = new Set(["settle_nudge"]);
 
 const INTERACTIVE_TIMEOUT_MS = 1_500;
 const BACKGROUND_TIMEOUT_MS = 4_000;
@@ -173,6 +182,13 @@ type Breaker = {
   /** For OpenCode: which of its two endpoints answered last. */
   preferredUrl: number;
 };
+
+/** The bonus calls the account directory says are left today (`x-ade-jev-remaining`), by UTC day. */
+let bonusRemaining: { day: string; remaining: number } | null = null;
+
+function utcDay(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
 
 /** One breaker per route: the free allowance running out says nothing about the bonus. */
 const breakers: Record<JevRoute, Breaker> = {
@@ -404,6 +420,9 @@ async function callJev(args: {
   const usage = parseUsage(body);
   // A 200 means the service is up, even when this answer is unusable.
   recordSuccess(breaker);
+  const remainingHeader = route.id === "bonus" ? headers?.get("x-ade-jev-remaining")?.trim() : null;
+  const remaining = remainingHeader ? finiteNumberOrNull(Number(remainingHeader)) : null;
+  if (remaining != null) bonusRemaining = { day: utcDay(nowMs), remaining };
   if (!answers) return { ok: false, reason: "bad_response", usage };
   return { ok: true, answers, latencyMs: nowMs - startedAt, usage };
 }
@@ -669,8 +688,18 @@ export function createJevService(deps: JevServiceDeps): JevService {
   const availabilityReason = (): JevAvailabilityReason => (deps.isEnabled() ? "ok" : "disabled");
 
   /** A route ready to take a call now, or null: its breaker is open, or it is not set up. */
-  const resolveRoute = async (id: JevRoute, nowMs: number, budgetMs: number): Promise<Route | null> => {
+  const resolveRoute = async (
+    id: JevRoute,
+    request: JevDecideRequest,
+    nowMs: number,
+    budgetMs: number,
+  ): Promise<Route | null> => {
     if (breakerOpen(breakers[id], nowMs)) return null;
+    if (id === "bonus") {
+      if (FREE_ONLY_FEATURES.has(request.feature)) return null;
+      const left = bonusRemaining?.day === utcDay(nowMs) ? bonusRemaining.remaining : null;
+      if (request.priority === "background" && left != null && left <= BONUS_INTERACTIVE_RESERVE) return null;
+    }
     if (id === "free") return { id, urls: OPENCODE_JEV_URLS, token: null, model: FREE_MODEL };
     if (id === "zen_credit") {
       if (!deps.useZenCredit?.()) return null;
@@ -708,7 +737,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
     let sent = false;
     for (const id of JEV_ROUTES) {
       if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
-      const route = await resolveRoute(id, Date.now(), deadline - Date.now() - MIN_ROUTE_BUDGET_MS);
+      const route = await resolveRoute(id, request, Date.now(), deadline - Date.now() - MIN_ROUTE_BUDGET_MS);
       if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
       if (!route) continue;
       sent = true;
