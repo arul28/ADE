@@ -52,12 +52,12 @@ export function SessionLifecycleSection() {
       group="Session lifecycle"
       anchor="session-lifecycle"
       title="Session lifecycle"
-      hint="Control when completed lane work moves into the quiet Settled section."
+      hint="When finished lane work moves to Settled."
     >
       <ModernRows>
         <ModernRow
           title="Auto-settle sessions when lane PR merges"
-          hint="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
+          hint="A merged PR settles the sessions it covers, once any running turn finishes."
           control={
             // Until the machine answers, the toggle is not drawn: a switch
             // shown "on" while loading (or after a failed read) claimed a

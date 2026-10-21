@@ -12,6 +12,10 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
  * Read from the machine the page shows: project notes are the same everywhere,
  * and the "this computer" ones are that machine's.
  */
+function formatKb(bytes: number): string {
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
 export function AgentNotesSection() {
   const { pin } = useSettingsMachineScope();
   const pinKey = pin?.key ?? null;
@@ -45,7 +49,12 @@ export function AgentNotesSection() {
       group="Agent notes"
       anchor="agent-notes"
       title="Agent notes"
-      hint="Facts agents saved about working on this project. Every new agent session here gets them."
+      hint={<>What agents learned about working on this project. New agent sessions get them; change them with <code>ade notes</code>.</>}
+      actions={result && notes.length > 0 ? (
+        <span className="ade-modern-muted kit-num" title="How much of the notes budget each agent prompt uses">
+          {formatKb(result.renderedBytes)} of {formatKb(result.limits.maxRenderedBytes)}
+        </span>
+      ) : undefined}
     >
       <ModernRows>
         {loadFailed ? (
@@ -78,11 +87,6 @@ export function AgentNotesSection() {
           ))
         )}
       </ModernRows>
-      {result && notes.length > 0 ? (
-        <p className="ade-modern-muted" style={{ marginTop: 8 }}>
-          Agents get {result.renderedBytes} of {result.limits.maxRenderedBytes} bytes. Change or remove notes with <code>ade notes</code>.
-        </p>
-      ) : null}
     </ModernSection>
   );
 }
