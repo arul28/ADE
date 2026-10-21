@@ -105,8 +105,8 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
       title={`What's new: ${page.title}`}
       hideHeader
       hideClose
-      width={760}
-      maxHeight="min(86vh, 760px)"
+      width={1080}
+      maxHeight="min(90vh, 900px)"
       bodyPadding={false}
       panelClassName="ade-whats-new"
       testId="whats-new"

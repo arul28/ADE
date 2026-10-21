@@ -22,19 +22,19 @@ export default function AdeTipsAnnouncement({ close }: AnnouncementPageProps) {
       </header>
       <ul className="ade-wn-tips-points">
         <li>
-          <Lightbulb size={18} weight="duotone" aria-hidden />
+          <Lightbulb size={20} weight="duotone" aria-hidden />
           <span>
             <strong>Browse any time.</strong> Help › ADE Tips, the command palette, or the Home widget.
           </span>
         </li>
         <li>
-          <SquaresFour size={18} weight="duotone" aria-hidden />
+          <SquaresFour size={20} weight="duotone" aria-hidden />
           <span>
             <strong>Suggested for you.</strong> A suggestion you postpone waits there instead of vanishing.
           </span>
         </li>
         <li>
-          <Compass size={18} weight="duotone" aria-hidden />
+          <Compass size={20} weight="duotone" aria-hidden />
           <span>
             <strong>Tour again.</strong> “Show me around again” replays setup and the guided tour.
           </span>

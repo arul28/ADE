@@ -4,9 +4,11 @@
  * content (pages/*.tsx). Page-specific styles live with their page.
  */
 
+/* A big canvas: pages are full-bleed feature spreads, not notices. */
 .ade-whats-new {
   position: relative;
   overflow: hidden;
+  min-height: min(680px, calc(100vh - 64px));
 }
 
 .ade-whats-new-close.kit-icon-btn {
@@ -20,7 +22,7 @@
 }
 
 .ade-whats-new-loading {
-  height: 360px;
+  height: 520px;
 }
 
 .ade-whats-new-foot {

@@ -6,7 +6,7 @@
 }
 
 .ade-wn-tips-hero {
-  padding: 44px 48px 30px;
+  padding: 72px 72px 48px;
   background:
     radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, #8b5cf6 30%, transparent), transparent 60%),
     radial-gradient(100% 120% at 100% 0%, color-mix(in srgb, #22d3ee 18%, transparent), transparent 55%);
@@ -15,16 +15,16 @@
 
 .ade-wn-tips-eyebrow {
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--kit-text-3);
 }
 
 .ade-wn-tips-title {
-  margin: 10px 0 0;
+  margin: 14px 0 0;
   font-family: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
-  font-size: 34px;
+  font-size: 52px;
   font-weight: 400;
   line-height: 1.12;
   letter-spacing: -0.01em;
@@ -38,32 +38,33 @@
 
 .ade-wn-tips-lede {
   margin: 12px 0 0;
-  max-width: 520px;
-  font-size: 13.5px;
-  line-height: 20px;
+  max-width: 640px;
+  margin-top: 18px;
+  font-size: 16px;
+  line-height: 25px;
   color: var(--kit-text-2);
 }
 
 .ade-wn-tips-points {
   display: grid;
-  gap: 14px;
+  gap: 20px;
   margin: 0;
-  padding: 24px 48px 8px;
+  padding: 40px 72px 8px;
   list-style: none;
 }
 
 .ade-wn-tips-points li {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  font-size: 13px;
-  line-height: 19px;
+  gap: 14px;
+  font-size: 15px;
+  line-height: 22px;
   color: var(--kit-text-2);
 }
 
 .ade-wn-tips-points svg {
   flex: none;
-  margin-top: 1px;
+  margin-top: 2px;
   color: #a78bfa;
 }
 
@@ -73,5 +74,5 @@
 }
 
 .ade-wn-tips-cta {
-  padding: 18px 48px 28px;
+  padding: 32px 72px 48px;
 }
