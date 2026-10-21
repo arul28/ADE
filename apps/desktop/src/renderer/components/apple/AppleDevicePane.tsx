@@ -28,7 +28,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
-import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
+import type { AppleDevice3DFailure, AppleDeviceDuoProps, AppleDeviceRenderer } from "./AppleDevice3DView";
 import {
   appleDeviceSupportsDuo,
   clampAppleDuoAngle,
@@ -73,7 +73,8 @@ import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleD
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
 import { useAppleDuoModel } from "./useAppleDuoModel";
-import { APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
+import { APPLE_RENDER_ANGLES, AppleRenderSheet, appleRenderContactSheet, type AppleRenderRequest } from "./AppleRenderSheet";
+import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
@@ -226,6 +227,8 @@ export function AppleDevicePane({
   const [duoState, setDuoState] = useState(() => createAppleDuoState());
   /** What the simulator itself reports: its hinge and the panel that is on. */
   const [duoPosture, setDuoPosture] = useState<AppleDevicePosture | null>(null);
+  const duoPostureRef = useRef<AppleDevicePosture | null>(null);
+  duoPostureRef.current = duoPosture;
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -949,6 +952,108 @@ export function AppleDevicePane({
     if (duoAngleTimerRef.current) clearTimeout(duoAngleTimerRef.current);
   }, []);
 
+  /* ── 3D renders ────────────────────────────────────────────────────────── */
+
+  const rendererRef = useRef<AppleDeviceRenderer | null>(null);
+  const [renderOpen, setRenderOpen] = useState(false);
+  const [rendering, setRendering] = useState(false);
+  const openRender = useCallback(() => {
+    // Renders come from the 3D body; bring it up if the flat view is on.
+    if (effectiveMode !== "3d") setMode("3d");
+    setRenderOpen(true);
+  }, [effectiveMode]);
+
+  /**
+   * Render the device: for a Duo each pose folds the REAL simulator first and
+   * waits for it to settle, so every shot shows the panel and layout that
+   * pose really has. Every image (and the video) is filed to the proof drawer.
+   */
+  const runRender = useCallback(async (request: AppleRenderRequest) => {
+    const renderer = rendererRef.current;
+    if (!renderer) {
+      showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
+      return;
+    }
+    setRendering(true);
+    const options = {
+      width: 1600,
+      height: 1600,
+      lighting: request.lighting,
+      shadow: request.shadow,
+    };
+    const shots = APPLE_RENDER_ANGLES.filter((angle) => request.angles.includes(angle.id));
+    const images: Array<{ dataUrl: string; label: string }> = [];
+    /*
+     * A pose is ready to shoot once the simulator itself says so: its hinge
+     * at the pose's angle and the panel that pose lights on. Then iOS still
+     * animates its interface into the new orientation, so give that time too.
+     * A fixed wait shot the closed phone before its cover came on.
+     */
+    const POSE_TARGETS: Record<AppleDevicePose, { angle: number; screen: number }> = {
+      closed: { angle: 0, screen: APPLE_DUO_COVER_SCREEN_ID },
+      tent: { angle: 80, screen: APPLE_DUO_COVER_SCREEN_ID },
+      laptop: { angle: 90, screen: APPLE_DUO_INNER_SCREEN_ID },
+      book: { angle: 90, screen: APPLE_DUO_INNER_SCREEN_ID },
+      open: { angle: 180, screen: APPLE_DUO_INNER_SCREEN_ID },
+    };
+    const settle = async (pose: AppleDevicePose) => {
+      const target = POSE_TARGETS[pose];
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        const posture = duoPostureRef.current;
+        if (posture?.angle != null && Math.abs(posture.angle - target.angle) <= 3
+          && posture.activeScreenId === target.screen) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    };
+    try {
+      const passes: Array<AppleDevicePose | null> = request.poses.length ? request.poses : [null];
+      for (const pose of passes) {
+        if (pose) {
+          await window.ade.iosSimulator.setPosture({ laneId, chatSessionId: sessionId, pose }, runtimePinRef.current);
+          await settle(pose);
+        }
+        const rendered = rendererRef.current?.renderShots(shots.map((angle) => angle.shot), options) ?? [];
+        rendered.forEach((dataUrl, index) => images.push({
+          dataUrl,
+          label: [pose ? pose[0]!.toUpperCase() + pose.slice(1) : null, shots[index]!.label].filter(Boolean).join(" · "),
+        }));
+      }
+      const name = deviceName ?? "device";
+      // The scene bridge files a PNG or WebM to this chat's proof drawer. A
+      // window without it (the web client) has nowhere to put renders.
+      const attachRenderProof = (args: { dataUrl: string; title: string; sessionId: string | null }) =>
+        window.ade.scene?.attachProof(args) ?? Promise.resolve(false);
+      let filed = 0;
+      for (const image of images) {
+        if (await attachRenderProof({ dataUrl: image.dataUrl, title: `${name} · ${image.label}`, sessionId })) filed++;
+      }
+      if (request.contactSheet && images.length > 1) {
+        const sheet = await appleRenderContactSheet(images);
+        if (sheet && await attachRenderProof({ dataUrl: sheet, title: `${name} · contact sheet`, sessionId })) filed++;
+      }
+      if (request.video) {
+        const blob = await rendererRef.current?.renderTurntable({ ...options, width: 1280, height: 1280, seconds: 6 });
+        if (blob) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).replace(/^data:video\/webm;[^,]*,/, "data:video/webm;base64,"));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          if (await attachRenderProof({ dataUrl, title: `${name} · turntable`, sessionId })) filed++;
+        }
+      }
+      showToast({ id: "apple-render", tone: "success", title: `Rendered ${filed} item${filed === 1 ? "" : "s"} to the proof drawer` });
+      setRenderOpen(false);
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setRendering(false);
+    }
+  }, [deviceName, laneId, sessionId]);
+
   /** Read the pose once the Duo is live; posture events keep it current after that. */
   const duoLive = duoCapable && state === "live";
   useEffect(() => {
@@ -1110,6 +1215,7 @@ export function AppleDevicePane({
                */
               interactive={appleInputAllowed(state) && !inspectOn}
               duo={duoProps}
+              rendererRef={rendererRef}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
               onDeviceKey={input.key}
@@ -1338,6 +1444,8 @@ export function AppleDevicePane({
               orientationPending={rotating}
               onOrientation={rotateTo}
               onScreenshot={screenshot}
+              onRender={canUse3d ? openRender : undefined}
+              rendering={rendering}
               onToggleTools={() => setToolsOpen((open) => !open)}
               onToggleInspect={toggleInspect}
               onMode={setMode}
@@ -1413,6 +1521,16 @@ export function AppleDevicePane({
           </div>
         ) : null}
       </div>
+      {renderOpen ? (
+        <AppleRenderSheet
+          open
+          deviceName={deviceName}
+          duo={duoCapable}
+          rendering={rendering}
+          onClose={() => setRenderOpen(false)}
+          onRender={(request) => void runRender(request)}
+        />
+      ) : null}
     </div>
   );
 }

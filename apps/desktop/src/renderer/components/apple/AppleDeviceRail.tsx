@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Aperture,
   ArrowsInLineVertical,
   ArrowsOut,
   Camera,
@@ -96,6 +97,9 @@ export type AppleDeviceRailProps = {
   /** §V2: rotate TO a named orientation. The blind cycle is gone. */
   onOrientation: (orientation: AppleDeviceOrientation) => void;
   onScreenshot: () => void;
+  /** Open the Render sheet (3D stills and video). Absent hides it. */
+  onRender?: (() => void) | undefined;
+  rendering?: boolean;
   onToggleTools: () => void;
   onToggleInspect: () => void;
   /** §A2: ONE button. It switches to the other view and shows which is on. */
@@ -155,6 +159,8 @@ export function AppleDeviceRail({
   onDuoAngleCommit,
   onOrientation,
   onScreenshot,
+  onRender,
+  rendering = false,
   onToggleTools,
   onToggleInspect,
   onMode,
@@ -335,6 +341,15 @@ export function AppleDeviceRail({
             >
               <Camera size={16} />
             </RailButton>
+            {onRender ? (
+              <RailButton
+                label={rendering ? "Rendering" : "Render the device in 3D"}
+                disabled={rendering}
+                onClick={onRender}
+              >
+                <Aperture size={16} />
+              </RailButton>
+            ) : null}
             <RailButton
               label={recording ? "Stop recording" : "Record"}
               pressed={recording}

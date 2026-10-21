@@ -122,3 +122,27 @@ export function decodeScenePngDataUrl(dataUrl: string | null | undefined): Buffe
   if (bytes.length < 8 || bytes.readUInt32BE(0) !== 0x89504e47) return null;
   return bytes;
 }
+
+const WEBM_DATA_URL_PREFIX = "data:video/webm;base64,";
+/** A rendered device video (the Apple panel's 3D renders): a few seconds of WebM. */
+const MAX_SCENE_VIDEO_BYTES = 40 * 1024 * 1024;
+
+/**
+ * A WebM data URL's bytes, or null. Same rules as the PNG decoder: the prefix,
+ * a size cap, and the container's own magic (EBML) so a blob that decodes to
+ * something else is refused.
+ */
+export function decodeSceneWebmDataUrl(dataUrl: string | null | undefined): Buffer | null {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith(WEBM_DATA_URL_PREFIX)) return null;
+  const base64 = dataUrl.slice(WEBM_DATA_URL_PREFIX.length);
+  if (!base64.length) return null;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64, "base64");
+  } catch {
+    return null;
+  }
+  if (!bytes.length || bytes.length > MAX_SCENE_VIDEO_BYTES) return null;
+  if (bytes.length < 4 || bytes.readUInt32BE(0) !== 0x1a45dfa3) return null;
+  return bytes;
+}

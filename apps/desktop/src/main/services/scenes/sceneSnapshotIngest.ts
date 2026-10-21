@@ -129,18 +129,28 @@ export async function ingestSceneSnapshot({
     return { filed: true, ownerSessionId, artifactId: still.artifactId };
   }
 
+  // A rendered video (the Apple panel's 3D renders) files as a recording.
+  const video = resolved.toLowerCase().endsWith(".webm");
   const filed = broker.ingest({
     backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
     // The desktop drew these pixels; ADE captured them.
     provenance: { source: "ade-capture" as const },
     ...(ownerSessionId ? { owners: [{ kind: "chat_session" as const, id: ownerSessionId }] } : {}),
-    inputs: [{
-      kind: "screenshot",
-      title: title.slice(0, 200),
-      path: resolved,
-      mimeType: "image/png",
-      description: "Snapshot of an agent-authored scene.",
-    }],
+    inputs: [video
+      ? {
+        kind: "video_recording",
+        title: title.slice(0, 200),
+        path: resolved,
+        mimeType: "video/webm",
+        description: "A rendered video of a device.",
+      }
+      : {
+        kind: "screenshot",
+        title: title.slice(0, 200),
+        path: resolved,
+        mimeType: "image/png",
+        description: "Snapshot of an agent-authored scene.",
+      }],
   });
   // Read defensively: the broker is injected, and a caller that answers
   // nothing has still filed the bytes. An unknown id costs the caller its

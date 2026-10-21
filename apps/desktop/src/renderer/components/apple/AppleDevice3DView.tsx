@@ -3,7 +3,7 @@
 // trackpad rule that ctrl-wheel and pinch are camera zoom while a plain wheel
 // is the DEVICE's scroll. The body and display live in `appleDeviceScene.ts`.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { CanvasTexture, Group, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
+import type { CanvasTexture, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
@@ -97,6 +97,8 @@ export type AppleDevice3DViewProps = {
    * unchanged and does no extra per-frame work.
    */
   duo?: AppleDeviceDuoProps | undefined;
+  /** Set to the viewer's render methods while it is mounted. */
+  rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
   /**
    * Bumped by "Reset view". Handled IN PLACE — the round-3 stage remounted the
    * whole view for this, and a remount means a new `WebGLRenderer` and a new
@@ -183,6 +185,22 @@ type ViewerHooks = {
   onUnavailable: (reason: AppleDevice3DFailure) => void;
 };
 
+/** One render angle: yaw/pitch in radians, or the camera exactly as the person left it. */
+export type AppleDeviceRenderShot = { yaw: number; pitch: number } | { current: true };
+
+export type AppleDeviceRenderLighting = "transparent" | "studio" | "dusk";
+
+export type AppleDeviceRenderOptions = {
+  width: number;
+  height: number;
+  lighting: AppleDeviceRenderLighting;
+  /** A soft contact shadow under the phone. */
+  shadow: boolean;
+};
+
+/** What the pane drives renders through; set while a 3D view is mounted. */
+export type AppleDeviceRenderer = Pick<Viewer, "renderShots" | "renderTurntable">;
+
 type Viewer = {
   sync(props: AppleDevice3DViewProps): void;
   resize(width: number, height: number, pixelRatio: number): void;
@@ -197,6 +215,10 @@ type Viewer = {
   /** "Reset view": back to the rest pose and the default zoom, same renderer. */
   resetView(now: number): void;
   cancelGestures(now: number): void;
+  /** Stills of the body at camera presets, as PNG data URLs. */
+  renderShots(shots: AppleDeviceRenderShot[], options: AppleDeviceRenderOptions): string[];
+  /** A turntable of the body, recorded as WebM. Null when the window cannot record. */
+  renderTurntable(options: AppleDeviceRenderOptions & { seconds: number }): Promise<Blob | null>;
   dispose(): void;
 };
 
@@ -658,8 +680,138 @@ function createViewer(
 
   sync(initial);
 
+  /**
+   * Render the body off the live loop, at a size and with lighting of its own,
+   * then put everything back exactly as the person left it.
+   */
+  let shadowMesh: Mesh | null = null;
+  const ensureShadow = () => {
+    if (shadowMesh) return shadowMesh;
+    const size = 256;
+    const canvas2d = document.createElement("canvas");
+    canvas2d.width = size;
+    canvas2d.height = size;
+    const ctx = canvas2d.getContext("2d");
+    if (ctx) {
+      const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      gradient.addColorStop(0, "rgba(0,0,0,0.55)");
+      gradient.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size, size);
+    }
+    const material = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas2d), transparent: true, depthWrite: false });
+    shadowMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    shadowMesh.rotation.x = -Math.PI / 2;
+    shadowMesh.renderOrder = -1;
+    return shadowMesh;
+  };
+
+  const withRenderSetup = <T,>(options: AppleDeviceRenderOptions, run: () => T): T => {
+    if (!body) throw new Error("There is no device body to render yet.");
+    const saved = {
+      viewport: { ...viewport },
+      quaternion: body.root.quaternion.clone(),
+      background: scene.background,
+      key: { color: key.color.clone(), intensity: key.intensity },
+      rim: { color: rim.color.clone(), intensity: rim.intensity },
+      fill: { color: fill.color.clone(), intensity: fill.intensity },
+    };
+    if (options.lighting === "studio") {
+      scene.background = new THREE.Color(0xe7e8ec);
+      key.color.set(0xffffff);
+      key.intensity = 5.2;
+    } else if (options.lighting === "dusk") {
+      scene.background = new THREE.Color(0x1d1830);
+      key.color.set(0xffc58a);
+      key.intensity = 4.8;
+      rim.color.set(0x8fa8ff);
+      fill.color.set(0x6b4fa8);
+    } else {
+      scene.background = null;
+    }
+    const shadow = options.shadow ? ensureShadow() : null;
+    if (shadow) scene.add(shadow);
+    viewport = { width: options.width, height: options.height, pixelRatio: 1 };
+    renderer.setDrawingBufferSize(options.width, options.height, 1);
+    try {
+      return run();
+    } finally {
+      if (shadow) scene.remove(shadow);
+      scene.background = saved.background;
+      key.color.copy(saved.key.color);
+      key.intensity = saved.key.intensity;
+      rim.color.copy(saved.rim.color);
+      rim.intensity = saved.rim.intensity;
+      fill.color.copy(saved.fill.color);
+      fill.intensity = saved.fill.intensity;
+      body.root.quaternion.copy(saved.quaternion);
+      viewport = saved.viewport;
+      drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
+      fitCamera();
+      invalidate();
+    }
+  };
+
+  const renderOne = (shot: AppleDeviceRenderShot, options: AppleDeviceRenderOptions) => {
+    if (!body) return;
+    if (!("current" in shot)) body.root.quaternion.setFromEuler(new THREE.Euler(shot.pitch, shot.yaw, 0, "YXZ"));
+    body.orientation.updateWorldMatrix(true, true);
+    fitCamera();
+    camera.position.z = fitDistance * ("current" in shot ? Math.exp(zoomLog) : 1);
+    camera.updateProjectionMatrix();
+    if (shadowMesh && options.shadow) {
+      const bounds = new THREE.Box3().setFromObject(body.root);
+      const size = bounds.getSize(new THREE.Vector3());
+      shadowMesh.position.set(0, bounds.min.y - 0.01, 0);
+      shadowMesh.scale.set(size.x * 1.2, Math.max(size.z, size.x * 0.35), 1);
+    }
+    const blit = mirrorFrame();
+    if (blit.resized) rebuildTexture();
+    else if (texture) texture.needsUpdate = true;
+    renderer.render(scene, camera);
+  };
+
   return {
     sync,
+    renderShots(shots, options) {
+      return withRenderSetup(options, () => shots.map((shot) => {
+        renderOne(shot, options);
+        return renderer.domElement.toDataURL("image/png");
+      }));
+    },
+    async renderTurntable(options) {
+      if (typeof MediaRecorder === "undefined") return null;
+      const recorderCanvas = document.createElement("canvas");
+      recorderCanvas.width = options.width;
+      recorderCanvas.height = options.height;
+      const ctx = recorderCanvas.getContext("2d");
+      if (!ctx) return null;
+      const stream = recorderCanvas.captureStream(30);
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm";
+      const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data);
+      };
+      const stopped = new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+      });
+      recorder.start();
+      const frames = Math.max(30, Math.round(options.seconds * 30));
+      for (let frame = 0; frame < frames; frame++) {
+        const yaw = -0.6 + (Math.PI * 2 * frame) / frames;
+        withRenderSetup(options, () => {
+          renderOne({ yaw, pitch: 0.12 }, options);
+          ctx.clearRect(0, 0, options.width, options.height);
+          ctx.drawImage(renderer.domElement, 0, 0, options.width, options.height);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000 / 30));
+      }
+      recorder.stop();
+      await stopped;
+      for (const track of stream.getTracks()) track.stop();
+      return new Blob(chunks, { type: "video/webm" });
+    },
     resize(width, height, pixelRatio) {
       if (disposed) return;
       if (![width, height, pixelRatio].every(Number.isFinite) || width <= 0 || height <= 0) return;
@@ -945,6 +1097,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
         return;
       }
       viewerRef.current = viewer;
+      if (propsRef.current.rendererRef) propsRef.current.rendererRef.current = viewer;
       trackpadDispose = bindTrackpad(canvas, viewer);
       const { width, height } = host.getBoundingClientRect();
       viewer.resize(width, height, window.devicePixelRatio || 1);
@@ -968,6 +1121,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
       trackpadDispose?.();
       viewerRef.current?.dispose();
       viewerRef.current = null;
+      if (propsRef.current.rendererRef) propsRef.current.rendererRef.current = null;
     };
   }, []);
 
