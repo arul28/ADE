@@ -48,6 +48,23 @@ export async function runLaneEnvironmentSetup(
   return deps.laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
 }
 
+/**
+ * A lane's setup as a brand-new lane gets it: the project's default lane
+ * template, else the project's lane env config alone. Active lanes only.
+ */
+export function runDefaultLaneEnvironmentSetup(
+  deps: LaneEnvironmentSetupDeps & {
+    laneTemplateService?: Pick<
+      ReturnType<typeof createLaneTemplateService>,
+      "getTemplate" | "resolveTemplateAsEnvInit" | "getDefaultTemplateId"
+    > | null;
+  },
+  laneId: string,
+): Promise<LaneEnvInitProgress> {
+  const templateId = deps.laneTemplateService?.getDefaultTemplateId() ?? null;
+  return runLaneEnvironmentSetup(deps, { laneId, ...(templateId ? { templateId } : {}), includeArchived: false });
+}
+
 function envInitConfigHasWork(config: LaneEnvInitConfig | null | undefined): boolean {
   if (!config) return false;
   return Boolean(

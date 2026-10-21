@@ -9730,18 +9730,23 @@ final class ADETests: XCTestCase {
       CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "provider", val: .string("codex"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
       CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "model_id", val: .string("gpt-5"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 4),
       CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "created_at", val: .string("2026-07-28T12:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 5),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "move_away_held_at", val: .string("2026-07-28T12:30:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 6),
     ])
 
-    XCTAssertEqual(result.appliedCount, 6)
+    XCTAssertEqual(result.appliedCount, 7)
     XCTAssertEqual(result.touchedTables, ["prompt_stashes"])
     XCTAssertFalse(database.skippedUnknownSyncTables.contains("prompt_stashes"))
+    XCTAssertNoThrow(try database.executeSqlForTesting(
+      "select move_away_held_at from prompt_stashes limit 0"
+    ))
 
     let promptChanges = database.exportChangesSince(version: 0).filter { $0.table == "prompt_stashes" }
-    XCTAssertEqual(promptChanges.count, 6)
+    XCTAssertEqual(promptChanges.count, 7)
     XCTAssertTrue(promptChanges.allSatisfy { $0.pk == packedPk })
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "text" })?.val, .string("  preserve this draft\n"))
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachments_json" })?.val, .string("[{\"path\":\"/project/.ade/attachments/design.png\",\"type\":\"image\"}]"))
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachment_origin_site_id" })?.val, .string(siteId))
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "move_away_held_at" })?.val, .string("2026-07-28T12:30:00.000Z"))
 
     database.close()
   }

@@ -9,6 +9,7 @@ import {
   Hourglass,
 } from "@phosphor-icons/react";
 import type {
+  AgentChatCrossMachineBatchMoveApproval,
   AgentChatCrossMachineHandoffCheckpoint,
   AgentChatCrossMachineHandoffRecord,
   AgentChatEventEnvelope,
@@ -187,6 +188,8 @@ export function CrossMachineHandoffBanner({
 
   let model: BannerModel | null = null;
   switch (record.state) {
+    case "returned":
+      return null;
     case "pending":
       model = {
         id: "cross-machine-move",
@@ -326,6 +329,69 @@ export function CrossMachineHandoffBanner({
       return null;
   }
   return <Banner layout="inline" model={model} style={style} testId="cross-machine-move-banner" />;
+}
+
+/**
+ * An agent's batch move waiting for the person, above the requesting chat's
+ * composer: the summary's `crossMachineBatchApproval` (the transcript card is
+ * only the record). Approve or deny goes to the chat's own brain.
+ */
+export function CrossMachineBatchApprovalBanner({
+  approval,
+  runtimePin,
+  style,
+}: {
+  approval: AgentChatCrossMachineBatchMoveApproval | null | undefined;
+  /** The machine the chat runs on; the batch lives on that brain. */
+  runtimePin: OpenProjectBinding | null;
+  style?: CSSProperties;
+}) {
+  const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
+  // Answered here: hidden until the summary drops it.
+  const [answeredBatchId, setAnsweredBatchId] = useState<string | null>(null);
+  if (!approval || approval.batchId === answeredBatchId) return null;
+
+  const machine = approval.machineName.trim() || "another machine";
+  const count = approval.chats.length;
+  const laneCount = Math.max(0, approval.laneCount ?? 0);
+  const resolve = async (approve: boolean) => {
+    if (busy) return;
+    setBusy(approve ? "approve" : "deny");
+    try {
+      await window.ade.agentChat.resolveCrossMachineBatchMoveApproval(
+        { batchId: approval.batchId, approve },
+        runtimePin,
+      );
+      setAnsweredBatchId(approval.batchId);
+    } catch (error) {
+      showToast({
+        tone: "warning",
+        title: `Couldn't ${approve ? "approve" : "deny"} the batch move to ${machine}`,
+        message: `${stripElectronErrorWrapper(error instanceof Error ? error.message : String(error))} `
+          + `Check the batch with \`ade chat move --status ${approval.batchId}\`, or try again.`,
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const titles = approval.chats.map((chat) => chat.title?.trim() || chat.sessionId);
+  const model: BannerModel = {
+    id: "cross-machine-batch-move",
+    tone: "accent",
+    icon: <ArrowBendUpRight size={13} weight="bold" />,
+    title: `An agent wants to move ${plural(count, "chat")} to ${machine}`,
+    detail: [
+      `Approve or deny the whole batch. Each chat keeps its own permission level.${laneCount > 0
+        ? ` This batch also imports ${plural(laneCount, "lane")}.`
+        : ""}`,
+      titles.length ? titles.join(", ") : null,
+    ].filter(Boolean).join(" "),
+    actions: [
+      { label: "Approve", variant: "solid", busy: busy === "approve", disabled: Boolean(busy), onClick: () => void resolve(true) },
+      { label: "Deny", variant: "secondary", busy: busy === "deny", disabled: Boolean(busy), onClick: () => void resolve(false) },
+    ],
+  };
+  return <Banner layout="inline" model={model} style={style} testId="cross-machine-batch-move-banner" />;
 }
 
 function readArrival(envelope: AgentChatEventEnvelope): CrossMachineHandoffArrival | null {

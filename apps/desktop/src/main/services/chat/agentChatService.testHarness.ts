@@ -796,9 +796,17 @@ vi.mock("../ai/qwenUserSettings", () => ({
 
 vi.mock("../ai/localModelDiscovery", () => ({}));
 
-vi.mock("../git/git", () => ({
-  runGit: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
-}));
+vi.mock("../git/git", () => {
+  const runGit = vi.fn(async (_args: string[], _options?: unknown) => ({ stdout: "", stderr: "", exitCode: 0 }));
+  return {
+    runGit,
+    runGitOrThrow: vi.fn(async (args: string[], options: unknown) => {
+      const result = await runGit(args, options as never);
+      if (result.exitCode !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
+      return result.stdout;
+    }),
+  };
+});
 
 vi.mock("./turnDiffSummary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./turnDiffSummary")>();

@@ -10,6 +10,7 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
   AgentChatCrossMachineHandoffRecord,
+  AgentChatCrossMachineBatchMoveApproval,
   AgentChatDroidPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatModelHandoff,
@@ -342,6 +343,8 @@ export type TerminalSessionSummary = {
   modelHandoffHistory?: AgentChatModelHandoff[];
   /** The chat's latest move to another machine (banner, menu, Work-row chip). */
   crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
+  /** A batch move waiting for the person to approve it in this caller chat. */
+  crossMachineBatchApproval?: AgentChatCrossMachineBatchMoveApproval | null;
   /**
    * The model this chat is currently running, projected from
    * `AgentChatSessionSummary` so a session ROW can name it without opening the

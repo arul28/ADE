@@ -11,6 +11,8 @@ import type {
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
+  AgentChatCrossMachineBatchMoveRecord,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
   AgentChatLaunchDefaults,
@@ -354,6 +356,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     resolveCrossMachineHandoffApproval: async (args, pin) => {
       guardPin("resolveCrossMachineHandoffApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
+    },
+    resolveCrossMachineBatchMoveApproval: async (args: AgentChatResolveCrossMachineBatchMoveApprovalArgs, pin) => {
+      guardPin("resolveCrossMachineBatchMoveApproval", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.resolveCrossMachineBatchMoveApproval", args);
     },
     acknowledgeCrossMachineHandoff: async (args, pin) => {
       guardPin("acknowledgeCrossMachineHandoff", pin);

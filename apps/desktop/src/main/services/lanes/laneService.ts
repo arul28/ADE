@@ -6448,6 +6448,8 @@ export function createLaneService({
         name?: string;
         description?: string;
         baseBranch?: string;
+        /** Record an existing lane as this lane's parent without rebasing. */
+        parentLaneId?: string | null;
         /**
          * Push the branch to origin when it tracks nothing. Default true. A
          * cross-machine move carrying unpushed commits passes false: arriving
@@ -6460,6 +6462,10 @@ export function createLaneService({
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
+      const parentLaneId = args.parentLaneId?.trim() || null;
+      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
+      if (parentLaneId && !parent) throw new Error(`Parent lane not found in this project: ${parentLaneId}`);
+      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
 
       let branchRef = rawRef;
       let remoteRefToTrack: string | null = null;
@@ -6532,15 +6538,14 @@ export function createLaneService({
         );
         worktreeAdded = true;
 
-        // Imported branches are always root lanes. No caller passes
-        // parentLaneId — if a child lane is wanted, the "child" creation
-        // mode is used instead.
-        const parentLaneId: string | null = null;
-        const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
-        if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-        if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
-
-        const baseRef = args.baseBranch?.trim() || defaultBaseRef;
+        // Preserve a remote lane tree by recording the parent directly. This
+        // import intentionally uses the given branch as-is and never rebases.
+        // A primary parent is a root lane, as in `createChild`; a lane parent
+        // is also the base its status is counted against.
+        const recordedParentLaneId = parent && parent.lane_type !== "primary" ? parent.id : null;
+        const baseRef = args.baseBranch?.trim()
+          || (parent && parent.lane_type !== "primary" ? parent.branch_ref : null)
+          || defaultBaseRef;
         const laneColor = allocateLaneColorForProject();
 
         db.run("begin immediate");
@@ -6553,7 +6558,7 @@ export function createLaneService({
               )
               values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
             `,
-            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, laneColor, now]
+            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, recordedParentLaneId, laneColor, now]
           );
 
           const racedAdoptionRows = db.all<{ id: string }>(

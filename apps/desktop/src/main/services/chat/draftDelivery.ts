@@ -1,4 +1,5 @@
 import type { AgentChatFileRef, DraftEntry } from "../../../shared/types/chat";
+import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -13,7 +14,12 @@ export type DraftDeliveryOutcome =
   | { status: "sent"; firedAt: string }
   | { status: "blocked"; error: string }
   | { status: "missed"; error: string }
-  | { status: "retry"; error: string }
+  | {
+    status: "retry";
+    error: string;
+    moveAwayHeldAt?: string | null;
+    resumeScheduledAt?: string;
+  }
   /**
    * Another pass already owns this send. Never written back to the row — the
    * runtime that owns it must not have its claim recorded over.
@@ -50,6 +56,8 @@ export type DraftDeliveryDeps = {
   now: () => number;
   /** Whether the chat a schedule points at still exists and can receive a turn. */
   targetChatExists: (sessionId: string) => boolean;
+  /** A moved-away target stays armed until the person chooses to work here. */
+  isChatMovedAway?: (sessionId: string) => boolean;
   /** Deliver the draft into an existing chat as a real user turn. */
   sendToChat: (args: {
     sessionId: string;
@@ -107,17 +115,48 @@ export async function deliverDraft(
   deps: DraftDeliveryDeps,
 ): Promise<DraftDeliveryOutcome> {
   const nowMs = deps.now();
+  const targetSessionId = draft.targetKind === "existing" ? draft.targetSessionId?.trim() : null;
+  // A move-away lock pauses the draft before lateness rules run: even a strict
+  // draft must remain pending so it can deliver if the chat returns here.
+  const targetMovedAway = Boolean(
+    targetSessionId
+    && deps.targetChatExists(targetSessionId)
+    && deps.isChatMovedAway?.(targetSessionId),
+  );
+  if (targetMovedAway) {
+    return {
+      status: "retry",
+      error: "This chat continues on another machine.",
+      moveAwayHeldAt: draft.moveAwayHeldAt ?? new Date(nowMs).toISOString(),
+    };
+  }
   const fireAt = draft.scheduledAt ? Date.parse(draft.scheduledAt) : Number.NaN;
-  const latenessMs = Number.isFinite(fireAt) ? nowMs - fireAt : 0;
+  const heldAt = draft.moveAwayHeldAt ? Date.parse(draft.moveAwayHeldAt) : Number.NaN;
+  // Move the deadline once by the time spent waiting after the schedule was
+  // due. The retry write clears the marker, so later retries consume the
+  // remaining strict/grace window instead of shifting the deadline again.
+  const resumeScheduledAt = Number.isFinite(fireAt) && Number.isFinite(heldAt)
+    ? new Date(fireAt + Math.max(0, nowMs - Math.max(heldAt, fireAt))).toISOString()
+    : null;
+  const withResumeSchedule = (outcome: DraftDeliveryOutcome): DraftDeliveryOutcome => {
+    if (outcome.status !== "retry" || !resumeScheduledAt) return outcome;
+    return {
+      ...outcome,
+      moveAwayHeldAt: outcome.moveAwayHeldAt ?? null,
+      resumeScheduledAt,
+    };
+  };
+  const effectiveFireAt = resumeScheduledAt ? Date.parse(resumeScheduledAt) : fireAt;
+  const latenessMs = Number.isFinite(effectiveFireAt) ? nowMs - effectiveFireAt : 0;
 
   const late = isLate(latenessMs, draft);
   if (late) return late;
 
   if (!deps.attachmentsReady(draft)) {
-    return {
+    return withResumeSchedule({
       status: "retry",
       error: "Waiting for this send's images to reach this machine.",
-    };
+    });
   }
 
   const attachments = draft.attachments ?? [];
@@ -137,18 +176,32 @@ export async function deliverDraft(
         thinking: draft.thinking ?? null,
       });
     } else {
-      const sessionId = draft.targetSessionId?.trim();
+      const sessionId = targetSessionId;
       if (!sessionId) {
         return { status: "blocked", error: "This send has no chat to go to. Pick one." };
       }
       if (!deps.targetChatExists(sessionId)) {
         return { status: "blocked", error: "The chat this send was aimed at is gone. Pick another target." };
       }
+      if (deps.isChatMovedAway?.(sessionId)) {
+        return withResumeSchedule({
+          status: "retry",
+          error: "This chat continues on another machine.",
+          moveAwayHeldAt: new Date(nowMs).toISOString(),
+        });
+      }
       await deps.sendToChat({ sessionId, text: draft.text, attachments });
     }
     return { status: "sent", firedAt: new Date(nowMs).toISOString() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isMovedAwayChatError(error)) {
+      return withResumeSchedule({
+        status: "retry",
+        error: message,
+        moveAwayHeldAt: new Date(nowMs).toISOString(),
+      });
+    }
     deps.logger.warn("draft.deliver_failed", { draftId: draft.id, message });
     if (error instanceof DraftDeliveryUnsupportedError) {
       // Retrying cannot help; surface it so the row says why.
@@ -156,6 +209,6 @@ export async function deliverDraft(
     }
     // A throw is a transport/session problem, not a decision — keep the send
     // armed and try again rather than losing the message.
-    return { status: "retry", error: message };
+    return withResumeSchedule({ status: "retry", error: message });
   }
 }

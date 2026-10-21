@@ -123,6 +123,7 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
+import { runDefaultLaneEnvironmentSetup } from "./services/lanes/laneEnvironmentSetup";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
@@ -4612,6 +4613,14 @@ app.whenReady().then(async () => {
 
     const agentChatService = createAgentChatService({
       museQuota,
+      // A lane a batch move imported here gets the same setup a new lane
+      // does: the default lane template, else the project's lane env config.
+      runCrossMachineLaneSetup: async (laneId) => {
+        await runDefaultLaneEnvironmentSetup(
+          { laneService, projectConfigService, portAllocationService, laneEnvironmentService, laneTemplateService },
+          laneId,
+        );
+      },
       // This host's account machine key, so a scheduled send that names a
       // machine can be matched to it. Resolved lazily and defensively: the
       // bridge may not exist yet at construction time, and a null simply means
@@ -4811,6 +4820,7 @@ app.whenReady().then(async () => {
       prService,
       sessionService,
       messageSession: (args) => agentChatService.messageSession(args),
+      isChatMovedAway: (sessionId) => Boolean(agentChatService.getCrossMachineMoveLock(sessionId, "pr_watch")),
       emitPrEvent,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
     });

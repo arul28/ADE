@@ -391,6 +391,7 @@ struct WorkSessionDestinationView: View {
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
+  @State var chatSummaryRefreshGeneration = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -411,6 +412,10 @@ struct WorkSessionDestinationView: View {
   /// last derived from. Streaming text deltas do not change it, so the roster
   /// scan runs per new envelope rather than per token.
   @State var chatInfoTranscriptShape = ""
+  /// Id and terminal state of the batch-move approval cards near the
+  /// transcript's end, so a card that arrives mid-frame or is resolved by
+  /// another client refreshes the summary's approval banner.
+  @State var crossMachineBatchApprovalCardsSignature = ""
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   /// Post-send reconciliation runs behind the composer rather than in front of
@@ -1717,7 +1722,8 @@ struct WorkSessionDestinationView: View {
       threadComments: threadCommentsForView,
       onUpdateThreadComment: updateThreadCommentAction,
       onDeleteThreadComment: deleteThreadCommentAction,
-      crossMachineHandoffActions: crossMachineHandoffActions
+      crossMachineHandoffActions: crossMachineHandoffActions,
+      crossMachineBatchMoveApprovalActions: crossMachineBatchMoveApprovalActions
     )
   }
 
@@ -1867,6 +1873,8 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshChatSummaryFromHost() async {
+    chatSummaryRefreshGeneration &+= 1
+    let refreshGeneration = chatSummaryRefreshGeneration
     if chatSummary == nil, let cached = syncService.chatSummaryCache[sessionId] {
       chatSummary = cached
     }
@@ -1885,6 +1893,7 @@ struct WorkSessionDestinationView: View {
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      guard refreshGeneration == chatSummaryRefreshGeneration else { return }
       // A fetch that started before the brain cleared the move still carries it.
       let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
@@ -1905,6 +1914,7 @@ struct WorkSessionDestinationView: View {
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
           let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    guard refreshGeneration == chatSummaryRefreshGeneration else { return }
     let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {
@@ -2639,7 +2649,38 @@ extension WorkSessionDestinationView {
     if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
       refreshChatInfoSnapshots()
     }
+    // The transcript card is durable; its projected summary is the action
+    // surface. When an approval card appears or settles (here or on another
+    // client), refresh the summary so an idle caller chat shows or clears the
+    // banner without turn polling. Only the tail is scanned, so a long chat
+    // pays a constant cost per frame.
+    let cards = workCrossMachineBatchApprovalCardsSignature(transcript)
+    if cards.signature != crossMachineBatchApprovalCardsSignature {
+      let hadCards = !crossMachineBatchApprovalCardsSignature.isEmpty
+      crossMachineBatchApprovalCardsSignature = cards.signature
+      // A first look at settled cards needs nothing; a live card or a change does.
+      if hadCards || cards.hasLiveCard {
+        Task { await refreshChatSummaryFromHost() }
+      }
+    }
   }
+}
+
+/// Id and terminal state of the batch-move approval cards in the last 24
+/// transcript entries, and whether any of them is still live.
+func workCrossMachineBatchApprovalCardsSignature(
+  _ transcript: [WorkChatEnvelope]
+) -> (signature: String, hasLiveCard: Bool) {
+  var parts: [String] = []
+  var hasLiveCard = false
+  for envelope in transcript.suffix(24) {
+    guard case .adeCard(let card) = envelope.event,
+          card.variant == "cross_machine_batch_move_approval"
+    else { continue }
+    if !card.isTerminal { hasLiveCard = true }
+    parts.append("\(card.id):\(card.isTerminal ? 1 : 0)")
+  }
+  return (parts.joined(separator: ","), hasLiveCard)
 }
 
 extension WorkSessionDestinationView: Equatable {

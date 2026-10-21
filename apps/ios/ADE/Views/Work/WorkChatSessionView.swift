@@ -280,6 +280,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// This chat's move to another machine, when there is one (drives the card
   /// above the composer and the first-send confirmation).
   let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
+  /// Batch move waiting for approval in this chat, projected by the host.
+  let crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -319,6 +321,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.activeBackgroundTaskCount = nil
       self.usageLimitResume = nil
       self.crossMachineHandoff = nil
+      self.crossMachineBatchApproval = nil
       return
     }
 
@@ -361,6 +364,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
+    self.crossMachineBatchApproval = summary.crossMachineBatchApproval
   }
 
   var currentModelId: String {
@@ -715,6 +719,8 @@ struct WorkChatSessionView: View {
   /// go). Nil hides the card's buttons and sends without asking (an older host
   /// has no record).
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
+  /// Approve or deny a pending batch move projected onto this caller chat.
+  var crossMachineBatchMoveApprovalActions: WorkCrossMachineBatchMoveApprovalActions? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
@@ -1743,6 +1749,15 @@ struct WorkChatSessionView: View {
           model: model,
           enabled: !hostUnreachable,
           actions: crossMachineHandoffActions
+        )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+
+      if let approval = chatSummaryContext.crossMachineBatchApproval, !approval.batchId.isEmpty {
+        WorkCrossMachineBatchMoveApprovalBanner(
+          approval: approval,
+          enabled: !hostUnreachable,
+          actions: crossMachineBatchMoveApprovalActions
         )
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }

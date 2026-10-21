@@ -2431,12 +2431,26 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     DESTINATION; the chat moves from here. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
-                                                    it; a newer user message cancels it). An agent moves only its
-                                                    own chat, keeps its permissions, and waits for the person's
-                                                    approval unless the chat is full-auto.
+                                                    it; a newer user message cancels it). Moving your own chat or a
+                                                    descendant you started needs no approval at any permission level;
+                                                    another chat always needs the person's approval. The moved chat
+                                                    keeps its own permission level, never broader.
+                                                    The source is locked after arrival until the person chooses
+                                                    Work here instead.
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
+    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+                                                    Move selected chats, their lanes, and descendants in tree order
+    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+                                                    Defaults to fork; --brief sends a short context summary.
+                                                    An agent batch with any unrelated chat waits for one approval
+                                                    card on the caller's chat, listing the chats; deny cancels all.
+                                                    A person's batch needs no approval. Chats that already
+                                                    continue on another machine are skipped (named: refused).
+                                                    Also: --no-descendants, --no-changes, --interrupt, --note "…"
+    $ ade chat move --status <batch-id>              Show batch progress and per-item state
+    $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -4159,6 +4173,19 @@ export function findFlagName(args: string[], names: readonly string[]): string |
     if (matched) return matched;
   }
   return null;
+}
+
+/**
+ * Refuses a value flag (`names`, space-separated form) whose next token is
+ * another option. Run it before `readValue`, which would take that option as
+ * the value.
+ */
+function rejectFlagOperands(args: readonly string[], names: readonly string[]): void {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (names.includes(args[index]!) && args[index + 1]?.startsWith("--")) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
 }
 
 export function readValue(args: string[], names: readonly string[]): string | null {
@@ -10070,6 +10097,66 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat actions",
       steps: [listActionsStep("actions", "chat")],
     };
+  if (sub === "move") {
+    // `--note --no-changes` reports the missing note instead of eating
+    // `--no-changes` and moving the changes the person asked to leave behind.
+    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    const statusBatchId = readValue(args, ["--status"]);
+    const retryBatchId = readValue(args, ["--retry"]);
+    if (statusBatchId !== null && retryBatchId !== null) {
+      throw new CliUsageError("Use either --status <batch-id> or --retry <batch-id>.");
+    }
+    if (statusBatchId !== null || retryBatchId !== null) {
+      if (args.length > 0) {
+        throw new CliUsageError("chat move --status/--retry accepts only its batch id.");
+      }
+      const batchId = statusBatchId ?? retryBatchId!;
+      if (!batchId.trim()) {
+        throw new CliUsageError("chat move --status/--retry requires a non-empty batch id.");
+      }
+      const action = statusBatchId !== null ? "getCrossMachineBatchMove" : "retryCrossMachineBatchMove";
+      return {
+        kind: "execute",
+        label: statusBatchId !== null ? "chat move status" : "chat move retry",
+        steps: [actionStep("result", "chat", action, { batchId })],
+      };
+    }
+    const machine = readValue(args, ["--machine"]);
+    if (machine === null || !machine.trim()) {
+      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    }
+    const allWorkOnThisMachine = readFlag(args, ["--all"]);
+    const includeDescendants = !readFlag(args, ["--no-descendants"]);
+    const mode = readFlag(args, ["--brief"]) ? "brief" : "fork";
+    const includeChanges = !readFlag(args, ["--no-changes"]);
+    const whenBusy = readFlag(args, ["--interrupt"]) ? "interrupt" : "wait";
+    const note = readValue(args, ["--note"]);
+    const sessionIds = standalonePositionals(args);
+    if (args.length > 0) {
+      throw new CliUsageError(`chat move contains unrecognized arguments: ${args.join(" ")}`);
+    }
+    if (allWorkOnThisMachine && sessionIds.length > 0) {
+      throw new CliUsageError("Use --all or list session ids, not both.");
+    }
+    if (!allWorkOnThisMachine && sessionIds.length === 0) {
+      throw new CliUsageError("chat move requires --all or at least one session id.");
+    }
+    return {
+      kind: "execute",
+      label: "chat move batch to another machine",
+      steps: [
+        actionStep("result", "chat", "startCrossMachineBatchMove", {
+          machine,
+          ...(allWorkOnThisMachine ? { allWorkOnThisMachine: true } : { sessionIds }),
+          includeDescendants,
+          mode,
+          includeChanges,
+          whenBusy,
+          ...(note !== null ? { note } : {}),
+        }),
+      ],
+    };
+  }
   // Linear session-scoped subcommands resolve their own session id AFTER
   // consuming --issue-id (so firstPositional can't mistake an issue id flag value
   // for the session), so they opt out of the shared positional grab here.
@@ -12435,18 +12522,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
 function buildScenePlan(args: string[]): CliPlan {
   // Flags with values come out first: `ade scene --theme light preview f`
-  // would otherwise read `light` as the verb.
-  // Reject an option as another flag's operand before readValue consumes it,
-  // so `--theme --width 980` reports the missing theme value instead of eating
-  // `--width` and losing the width.
-  for (let index = 0; index < args.length - 1; index += 1) {
-    if (
-      (args[index] === "--theme" || args[index] === "--width")
-      && args[index + 1]?.startsWith("--")
-    ) {
-      throw new CliUsageError(`${args[index]} requires a value.`);
-    }
-  }
+  // would otherwise read `light` as the verb. `--theme --width 980` reports
+  // the missing theme value instead of eating `--width` and losing the width.
+  rejectFlagOperands(args, ["--theme", "--width"]);
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);

@@ -12,6 +12,7 @@ import {
 } from "./automationService";
 import type { AutomationRuleInput, TriggerContext } from "./automationService";
 import type { AutomationAction } from "../../../shared/types";
+import { MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -203,6 +204,7 @@ function createService(args: {
   /** Rules that live in `.ade/ade.yaml`, which this process may never rewrite. */
   sharedRules?: AutomationRuleInput[];
   agentChatService?: unknown;
+  adeActionRegistry?: unknown;
   db?: { db: AdeDb; raw: Database };
 }) {
   const store = args.db ?? createInMemoryAdeDb();
@@ -234,6 +236,7 @@ function createService(args: {
     } as any,
     projectConfigService: projectConfig.service,
     ...(args.agentChatService ? { agentChatService: args.agentChatService as any } : {}),
+    ...(args.adeActionRegistry ? { adeActionRegistry: args.adeActionRegistry as any } : {}),
     onEvent: (payload) => { events.push(payload as Record<string, unknown>); },
   });
   return { service, projectConfig, store, events };
@@ -945,6 +948,106 @@ describe("agent-session run budget", () => {
     });
 
     service.dispose();
+  });
+
+  it("releases the run-budget attempt when an ADE action's chat moved away", async () => {
+    const startCrossMachineHandoff = vi.fn(async () => {
+      throw new MovedAwayChatError("chat-123", {
+        handoffId: "move-1",
+        targetMachineName: "Mac mini",
+        targetSessionId: "chat-destination",
+      });
+    });
+    const adeActionRegistry = {
+      isAllowed: () => true,
+      getService: () => ({ startCrossMachineHandoff }),
+      listDomains: () => [],
+      listActions: () => [],
+    };
+    const rule = makeRule({
+      id: "retry-after-move",
+      oneShot: true,
+      maxRuns: 1,
+      execution: {
+        kind: "built-in",
+        builtIn: {
+          actions: [{
+            type: "ade-action",
+            adeAction: {
+              domain: "chat",
+              action: "startCrossMachineHandoff",
+              args: { sourceSessionId: "chat-123", machine: "Mac mini", targetModelId: "openai/gpt-5.5" },
+            },
+          }],
+        },
+      },
+    });
+    const { service, projectConfig } = createService({ rules: [rule], adeActionRegistry });
+    try {
+      const first = await service.triggerManually({ id: rule.id });
+      const firstDetail = await service.getRunDetail({ runId: first.id });
+      expect(first.status).toBe("succeeded");
+      expect(firstDetail?.actions[0]?.status).toBe("skipped");
+      expect(projectConfig.listLocalIds()).toContain(rule.id);
+
+      const second = await service.triggerManually({ id: rule.id });
+      expect(second.status).toBe("succeeded");
+      expect(startCrossMachineHandoff).toHaveBeenCalledTimes(2);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps the run-budget attempt when an earlier action completed before a chat move was held", async () => {
+    const sendNotification = vi.fn(async () => ({ accepted: true }));
+    const startCrossMachineHandoff = vi.fn(async () => {
+      throw new MovedAwayChatError("chat-123", {
+        handoffId: "move-1",
+        targetMachineName: "Mac mini",
+        targetSessionId: "chat-destination",
+      });
+    });
+    const adeActionRegistry = {
+      isAllowed: () => true,
+      getService: (domain: string) => domain === "attention" ? { sendNotification } : { startCrossMachineHandoff },
+      listDomains: () => [],
+      listActions: () => [],
+    };
+    const rule = makeRule({
+      id: "notify-before-moved-chat",
+      oneShot: true,
+      maxRuns: 1,
+      execution: {
+        kind: "built-in",
+        builtIn: {
+          actions: [
+            {
+              type: "ade-action",
+              adeAction: { domain: "attention", action: "sendNotification", args: { title: "Work is ready" } },
+            },
+            {
+              type: "ade-action",
+              adeAction: {
+                domain: "chat",
+                action: "startCrossMachineHandoff",
+                args: { sourceSessionId: "chat-123", machine: "Mac mini", targetModelId: "openai/gpt-5.5" },
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { service, projectConfig } = createService({ rules: [rule], adeActionRegistry });
+    try {
+      const run = await service.triggerManually({ id: rule.id });
+      const detail = await service.getRunDetail({ runId: run.id });
+      expect(run.status).toBe("succeeded");
+      expect(detail?.actions.map((action) => action.status)).toEqual(["succeeded", "skipped"]);
+      expect(sendNotification).toHaveBeenCalledTimes(1);
+      expect(projectConfig.listLocalIds()).not.toContain(rule.id);
+    } finally {
+      service.dispose();
+    }
   });
 });
 

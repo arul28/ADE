@@ -2009,6 +2009,36 @@ extension WorkSessionDestinationView {
     )
   }
 
+  /// The batch approval is sourced from this caller chat's summary and routed
+  /// to the same machine that owns the chat.
+  var crossMachineBatchMoveApprovalActions: WorkCrossMachineBatchMoveApprovalActions? {
+    guard syncService.crossMachineHandoffActionAvailable(
+      "chat.resolveCrossMachineBatchMoveApproval",
+      sessionId: sessionId
+    ) else { return nil }
+    let sessionId = sessionId
+    return WorkCrossMachineBatchMoveApprovalActions(resolveApproval: { batchId, approve in
+      do {
+        try await syncService.resolveCrossMachineBatchMoveApproval(
+          sourceSessionId: sessionId,
+          batchId: batchId,
+          approve: approve
+        )
+        ADEHaptics.success()
+        if var summary = composerChatSummary,
+           summary.crossMachineBatchApproval?.batchId == batchId {
+          summary.crossMachineBatchApproval = nil
+          chatSummary = summary
+          syncService.cacheChatSummary(summary)
+        }
+        await refreshChatStateAfterAction(forceRemote: true)
+      } catch {
+        ADEHaptics.error()
+        errorMessage = "Couldn't \(approve ? "approve" : "deny") the batch move: \(error.localizedDescription)"
+      }
+    })
+  }
+
   @MainActor
   private func runCrossMachineHandoffAction(
     _ failure: String,

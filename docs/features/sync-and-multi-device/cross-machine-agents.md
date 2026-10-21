@@ -66,8 +66,11 @@ ade chat handoff <session> --retry                 # retry a failed or unknown m
 - An agent moving its own chat mid-turn needs `--when-turn-ends`. Any newer
   message from the person cancels a queued move (a scheduled wake or another
   agent's message does not).
-- A chat-bound agent can list options for, move, cancel, retry or preview only
-  its own chat.
+- A chat-bound agent can move its own chat or a descendant it started. The
+  brain checks the persisted parent chain up to 32 links and stops on cycles.
+  Starting a move for an unrelated chat asks the person for approval even if
+  that chat is full-auto; its approval card names both chats. Cancel, retry,
+  acknowledge and preview stay within the caller's own chat and descendants.
 - An agent's move runs at the chat's own permission level: permission flags
   (`--permissions`, `--sandbox`, …) are dropped, and the destination chat gets
   the source chat's level in the target model's provider (a provider that
@@ -76,9 +79,17 @@ ade chat handoff <session> --retry                 # retry a failed or unknown m
   or dismissed with `--cancel`. A retry whose chat changed since the move was
   sent is refused for `unknown` (it may have landed) and prepared afresh for
   `failed`.
-- A chat that is not full-auto waits for the person to approve an
-  agent-requested move. An `ade` shell with no chat identity counts as an agent.
-  After the person denies one, the agent can't ask again for two minutes.
+- An agent may move its own chat and descendants it started without approval,
+  at each chat's existing permission level. An unrelated chat always waits
+  for the person's approval, regardless of its permission level. An `ade` shell
+  with no chat identity counts as an agent.
+  Approval request limits and the two-minute deny cooldown are scoped to the
+  target chat.
+- Once a move reaches `continued`, the source brain refuses agent, CLI and
+  remote turn requests with the destination machine and chat id. Automatic
+  work stays pending until the person chooses **Work here instead**. Desktop
+  sends still route to the destination; the person's explicit work-here choice
+  unlocks the source.
 - Blockers come back as one line each with a fix ("run `ade git push --lane …`,
   or pass --include-changes"); nothing is sent while any remain.
 

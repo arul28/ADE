@@ -236,6 +236,34 @@ describe("createAgentChatService", () => {
       })).rejects.toThrow(/not found/i);
     });
 
+    it("refuses to create scheduled work for a chat that continues on another machine", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const { service } = createService({ db: scheduledWork.db });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+      const handoffId = "handoff-12345678";
+      scheduledWork.db.setJson(`agent-chat-cross-machine-move:v1:${session.id}`, {
+        request: { handoffId },
+        record: {
+          handoffId,
+          state: "continued",
+          targetMachineName: "Studio",
+          targetSessionId: "destination-chat",
+        },
+      });
+
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 60,
+        prompt: "Do not re-arm the old chat.",
+      })).rejects.toMatchObject({ code: "chat_moved_away" });
+      expect(scheduledWork.readState()?.schedules ?? []).toEqual([]);
+      service.forceDisposeAll();
+    });
+
     it("arms update resumes only for the sessions it is given, and never reports a paused one", async () => {
       const scheduledWork = createScheduledWorkDb();
       const { service } = createService({ db: scheduledWork.db });

@@ -38,6 +38,7 @@ import {
 import { createRemoteLaunchBudget } from "../../tuiClient/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
 import {
   getSignedInAccountAccessToken,
@@ -535,7 +536,11 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     if (isRecord(value) && value.ok === false) {
       const error = isRecord(value.error) ? value.error : {};
       const message = typeof error.message === "string" ? error.message : "The action failed.";
-      throw new Error(`${source} refused ${label}: ${message}`);
+      const refusal = `${source} refused ${label}: ${message}`;
+      // The machine's own ADE code (a string; JSON-RPC codes are numbers)
+      // rides along, so a caller can tell a definitive refusal from a failure.
+      if (typeof error.code === "string" && error.code.trim()) throw codedError(refusal, error.code);
+      throw new Error(refusal);
     }
     const bytes = resultByteLength(value);
     if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {

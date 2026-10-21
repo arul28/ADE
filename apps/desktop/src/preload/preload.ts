@@ -631,6 +631,11 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
+  AgentChatCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+  AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -8073,6 +8078,36 @@ const adeBridge = {
     ): Promise<AgentChatCrossMachineHandoffRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRetryCrossMachineHandoff, args),
+      ),
+    // A batch move is owned by the source brain, including when this window's
+    // project tab is bound to a different machine.
+    startCrossMachineBatchMove: async (
+      args: AgentChatCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "startCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatStartCrossMachineBatchMove, args),
+      ),
+    getCrossMachineBatchMove: async (
+      args: AgentChatGetCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetCrossMachineBatchMove, args),
+      ),
+    retryCrossMachineBatchMove: async (
+      args: AgentChatRetryCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRetryCrossMachineBatchMove, args),
+      ),
+    resolveCrossMachineBatchMoveApproval: async (
+      args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "resolveCrossMachineBatchMoveApproval", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatResolveCrossMachineBatchMoveApproval, args),
       ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     resolveCrossMachineHandoffApproval: async (

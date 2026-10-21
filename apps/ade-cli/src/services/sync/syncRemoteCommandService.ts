@@ -54,12 +54,18 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
+import {
+  decodeCrossMachineDestinationPreflightArgs,
+} from "../../../../desktop/src/shared/crossMachineHandoff";
 import type {
   PrSnapshotHydration,
   PrSummary,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
+  AgentChatCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
@@ -73,7 +79,6 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
-  AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatDroidPermissionMode,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
@@ -380,6 +385,7 @@ import {
   parseCursorConfigValues,
 } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
 import {
+  runDefaultLaneEnvironmentSetup,
   runLaneEnvironmentSetup,
   type LaneEnvironmentSetupDeps,
 } from "../../../../desktop/src/main/services/lanes/laneEnvironmentSetup";
@@ -1278,30 +1284,6 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
   };
 }
 
-function parseCrossMachineDestinationPreflightArgs(
-  value: Record<string, unknown>,
-): AgentChatCrossMachineDestinationPreflightArgs {
-  const mode = parseHandoffMode(value.mode, "chat.preflightCrossMachineDestination");
-  const sourceProvider = asTrimmedString(value.sourceProvider);
-  return {
-    targetModelId: requireString(
-      value.targetModelId,
-      "chat.preflightCrossMachineDestination requires targetModelId.",
-    ) as AgentChatCrossMachineDestinationPreflightArgs["targetModelId"],
-    sourceBranchRef: requireString(
-      value.sourceBranchRef,
-      "chat.preflightCrossMachineDestination requires sourceBranchRef.",
-    ),
-    sourceHeadSha: requireString(
-      value.sourceHeadSha,
-      "chat.preflightCrossMachineDestination requires sourceHeadSha.",
-    ),
-    ...(mode !== undefined ? { mode } : {}),
-    ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
-    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
-  };
-}
-
 function parseFastForwardCrossMachineHandoffLaneArgs(
   value: Record<string, unknown>,
 ): { laneId: string; expectedHead: string } {
@@ -1530,6 +1512,32 @@ function parseAcceptCrossMachineHandoffArgs(
       value.capsuleFingerprint,
       "chat.acceptCrossMachineHandoff requires capsuleFingerprint.",
     ),
+  };
+}
+
+function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): AgentChatCrossMachineBatchMoveArgs {
+  const sessionIds = value.sessionIds;
+  if (sessionIds !== undefined && (!Array.isArray(sessionIds) || sessionIds.some((id) => typeof id !== "string"))) {
+    throw new Error("chat.startCrossMachineBatchMove requires string session ids.");
+  }
+  if (value.mode !== undefined && value.mode !== "fork" && value.mode !== "brief") {
+    throw new Error("chat.startCrossMachineBatchMove mode must be fork or brief.");
+  }
+  if (value.whenBusy !== undefined && value.whenBusy !== "wait" && value.whenBusy !== "interrupt") {
+    throw new Error("chat.startCrossMachineBatchMove whenBusy must be wait or interrupt.");
+  }
+  if (value.note !== undefined && (typeof value.note !== "string" || value.note.length > 4_000)) {
+    throw new Error("chat.startCrossMachineBatchMove note must be at most 4,000 characters.");
+  }
+  return {
+    machine: requireString(value.machine, "chat.startCrossMachineBatchMove requires machine."),
+    ...(Array.isArray(sessionIds) ? { sessionIds: sessionIds as string[] } : {}),
+    ...(typeof value.includeDescendants === "boolean" ? { includeDescendants: value.includeDescendants } : {}),
+    ...(typeof value.allWorkOnThisMachine === "boolean" ? { allWorkOnThisMachine: value.allWorkOnThisMachine } : {}),
+    ...(value.mode === "fork" || value.mode === "brief" ? { mode: value.mode } : {}),
+    ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
+    ...(value.whenBusy === "wait" || value.whenBusy === "interrupt" ? { whenBusy: value.whenBusy } : {}),
+    ...(typeof value.note === "string" ? { note: value.note } : {}),
   };
 }
 
@@ -4464,8 +4472,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
    */
   const startDefaultLaneSetup = (laneId: string): void => {
     if (!args.laneEnvironmentService || !args.projectConfigService) return;
-    const templateId = args.laneTemplateService?.getDefaultTemplateId() ?? null;
-    void runLaneEnvironmentSetup(
+    void runDefaultLaneEnvironmentSetup(
       {
         laneService: args.laneService,
         projectConfigService: args.projectConfigService,
@@ -4473,15 +4480,20 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
         laneEnvironmentService: args.laneEnvironmentService,
         laneTemplateService: args.laneTemplateService ?? null,
       },
-      { laneId, ...(templateId ? { templateId } : {}), includeArchived: false },
+      laneId,
     ).catch((error: unknown) => {
       args.logger.warn("sync.lane_default_setup_failed", {
         laneId,
-        templateId,
+        templateId: args.laneTemplateService?.getDefaultTemplateId() ?? null,
         error: error instanceof Error ? error.message : String(error),
       });
     });
   };
+  // The raw payload goes straight to the chat service, which decodes it,
+  // imports the lane, and starts setup on a lane it created, so every
+  // transport (this command, run_ade_action) gets the same import.
+  register("chat.importCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").importCrossMachineHandoffLane(payload));
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
@@ -5238,7 +5250,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     ));
   register("chat.preflightCrossMachineDestination", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").preflightCrossMachineDestination(
-      parseCrossMachineDestinationPreflightArgs(payload),
+      decodeCrossMachineDestinationPreflightArgs(payload),
     ));
   register("chat.fastForwardCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").fastForwardCrossMachineHandoffLane(
@@ -5268,6 +5280,28 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...parseStartCrossMachineHandoffArgs(payload),
       requestedBy: "user",
     }));
+  register("chat.startCrossMachineBatchMove", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startCrossMachineBatchMove({
+      ...parseStartCrossMachineBatchMoveArgs(payload),
+      requestedBy: "user",
+    }));
+  register("chat.getCrossMachineBatchMove", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineBatchMove({
+      batchId: requireString(payload.batchId, "chat.getCrossMachineBatchMove requires batchId."),
+    }));
+  register("chat.retryCrossMachineBatchMove", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineBatchMove({
+      batchId: requireString(payload.batchId, "chat.retryCrossMachineBatchMove requires batchId."),
+    }));
+  register("chat.resolveCrossMachineBatchMoveApproval", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.approve !== "boolean") {
+      throw new Error("chat.resolveCrossMachineBatchMoveApproval requires a boolean approve value.");
+    }
+    return requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineBatchMoveApproval({
+      batchId: requireString(payload.batchId, "chat.resolveCrossMachineBatchMoveApproval requires batchId."),
+      approve: payload.approve,
+    });
+  });
   register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
@@ -5277,12 +5311,16 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
       ...(payload.asBrief === true ? { asBrief: true } : {}),
     }));
-  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.approve !== "boolean") {
+      throw new Error("chat.resolveCrossMachineHandoffApproval requires a boolean approve value.");
+    }
+    return requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
       handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
-      approve: payload.approve === true,
-    }));
+      approve: payload.approve,
+    });
+  });
   register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),

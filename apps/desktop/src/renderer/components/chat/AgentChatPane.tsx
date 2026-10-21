@@ -315,6 +315,7 @@ import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import {
   CrossMachineArrivalBanner,
+  CrossMachineBatchApprovalBanner,
   CrossMachineHandoffBanner,
   openChatOnOtherMachine,
   useCrossMachineArrival,
@@ -17620,6 +17621,15 @@ export function AgentChatPane({
       style={composerBannerStyle}
     />
   ) : null;
+  // An agent's batch move that waits for the person in this (requesting) chat.
+  const crossMachineBatchApprovalBanner = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope ? (
+    <CrossMachineBatchApprovalBanner
+      key={`batch-move:${selectedSessionId}`}
+      approval={selectedSession?.crossMachineBatchApproval}
+      runtimePin={chatRuntimePin}
+      style={composerBannerStyle}
+    />
+  ) : null;
   const crossMachineArrivalBanner = renderedSessionId && crossMachineArrival ? (
     <CrossMachineArrivalBanner
       key={`arrival:${renderedSessionId}`}
@@ -17727,6 +17737,7 @@ export function AgentChatPane({
       {takeoverBanner}
       {stalledTurnBanner}
       {crossMachineMoveBanner}
+      {crossMachineBatchApprovalBanner}
       {crossMachineArrivalBanner}
       {steeringPendingInput ? (
         <div
@@ -18185,6 +18196,7 @@ export function AgentChatPane({
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
+                        {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}
                         {composerElement}
