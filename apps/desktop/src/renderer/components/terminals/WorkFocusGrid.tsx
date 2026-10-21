@@ -191,7 +191,7 @@ export function focusPageSummary(
 }
 
 /**
- * The Focus grid's roster: every chat that waits for the user, always on
+ * The Focus grid's roster: every chat that needs the user, always on
  * screen, grouped by page. The page on screen is lit; a chip names its chat
  * with the agent's logo, a click goes to that chat's page and focuses its
  * tile, and a right-click opens the sidebar's session menu. A chat that arrived on another page carries the accent
@@ -276,7 +276,7 @@ export function WorkFocusRoster({
 
 /**
  * One waiting chat: the agent's logo and the chat's name, nothing else. Every
- * chat here waits for the user, so a status would repeat itself. No hover
+ * chat here needs the user, so a status would repeat itself. No hover
  * card; right-click opens the same session menu as the sidebar card.
  */
 function RosterChip({

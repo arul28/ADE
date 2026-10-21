@@ -18,8 +18,10 @@
  * A finished helper that an agent launched (its nesting parent, or the
  * `launchedBySessionId` of a `--no-parent` chat) is the launcher's business while
  * the launcher is busy in the same lane: it takes no part in the fold, just like a
- * finished nested row. Once the launcher finishes, its own Done holds the lane out
- * and the helpers hold it out again until the user has looked at them.
+ * finished nested row. A clean finish takes no part anywhere; the one finish that
+ * still asks is a failure, and while the launcher works that failure is deferred
+ * too. Once the launcher finishes, an unacknowledged failure holds the lane out
+ * again until the user looks.
  *
  * A finished chat with a scheduled wake still to come is Waiting, not Done: it
  * will start again on its own (a subagent polling CI, a /loop). A parent whose
@@ -51,8 +53,8 @@ type WorkRowFocus = {
   missedWake?: boolean;
   /**
    * A chat between turns (ready/idle) with nothing scheduled. Only such a row
-   * may be lifted to Waiting by a busy subagent: a failed or stopped parent
-   * still needs the user, whatever its subagents are doing.
+   * may be lifted to Waiting by a busy subagent: a failed parent still needs the
+   * user, whatever its subagents are doing; a stopped one is plain Done.
    */
   resting?: boolean;
 };
@@ -144,10 +146,12 @@ function workRowFocus(args: {
       // The turn is over by the user's own choice or the runtime's own exit.
       // Nothing is waiting on a person, so it rides along like a clean finish.
       return { status: "done", holdsOut: false };
-    default:
-      // A phase added later starts quiet: nothing holds a lane out until a rule
-      // here says it does.
+    default: {
+      // A phase added later must decide here: the compiler stops on the `never`
+      // assignment until it does, instead of letting it go quietly unseen.
+      const _exhaustive: never = phase;
       return { status: "done", holdsOut: false };
+    }
   }
 }
 
@@ -260,7 +264,8 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
  *
  * Nested rows (attached shells, subagents) can raise a hand and so hold their
  * lane out, but a finished nested row cannot: nobody opens a helper to mark it
- * seen, so it would pin the lane open forever. A missed wake is the exception.
+ * seen, so an unacknowledged failure there would pin the lane open forever. A
+ * missed wake is the exception.
  *
  * A finished helper the agent launched (`launcherSessionId`) is skipped the same
  * way while that launcher is a busy agent in this lane. A raised hand, a stale
@@ -412,12 +417,14 @@ export function stampWorkSeenAt(
  * every lane Focus left unfolded.
  *
  * Built from the same `holdsOut` flag as the fold, so the grid and the sidebar
- * cannot disagree: a lane is unfolded exactly because one of these rows holds
- * it out, and no row gets a tile without one. A clean finish is Done, not a
- * request, so it never claims a Focus slot — the sidebar's inbox already shows
- * it, and a lane that has only finished rows never folds. A Working or Waiting
- * row stays out of the grid even when its lane is unfolded; the sidebar still
- * shows it, which is where the user sees why it is not a tile. Plain shells are
+ * cannot disagree: every tile holds its lane out, and no row gets a tile without
+ * one. The reverse is not exact — a nested row or a plain shell can hold a lane
+ * out with no tile, which is the sidebar's business, not a request on this desk.
+ * A clean finish is Done, not a request, so it never claims a Focus slot — the
+ * sidebar's inbox already shows it, and a lane that has only finished rows never
+ * folds. A Working or Waiting row stays out of the grid even when its lane is
+ * unfolded; the sidebar still shows it, which is where the user sees why it is
+ * not a tile. Plain shells are
  * not agents and never get a tile. A nested row (subagent, attached shell) gets
  * a tile only while it asks for the user or a wake it promised came due; a
  * finished one is the parent's business. A finished helper whose launcher is

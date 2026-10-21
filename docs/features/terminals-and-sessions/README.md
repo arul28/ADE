@@ -1166,7 +1166,9 @@ Renderer surfaces:
   third, non-quiet shelf: a lane that has live work and nothing waiting on the
   user folds onto a collapsed **Working** shelf, the
   first shelf inside the quiet zone (only the user opens or closes it; the open
-  chat's lane folds too). The rule is `summarizeLaneFocus` in
+  chat's lane folds too). It returns to the inbox when its last busy row
+  finishes, or when something in it needs the user, and floats to the front of
+  the active tier on either return (never in Manual sort). The rule is `summarizeLaneFocus` in
   `workLaneFocus.ts`; a raised hand, a stale run, a stalled turn
   (`sessionTurnStallMs`: a live turn silent for five minutes that owns no open
   work), a scheduled wake that came due and never started, or a failure the user

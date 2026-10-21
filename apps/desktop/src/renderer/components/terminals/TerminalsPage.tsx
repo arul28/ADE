@@ -383,7 +383,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
          board. The toggle in the toolbar is the way back. */
       if (work.workViewMode === "board") work.setWorkViewMode("list");
       // In the Focus grid a row click focuses that chat's tile. A chat with no
-      // tile (it is working, or the grid is full) opens in the normal view.
+      // tile (it is working or finished, so it is not on the user's desk, or the
+      // grid is full) opens in the normal view.
       if (focusGridMode) {
         if (!focusSession(id)) work.setWorkFocusGrid(false);
       }

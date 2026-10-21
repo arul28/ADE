@@ -714,9 +714,9 @@ own headers, chat action panes and floating previews); what differs:
   a stale or stalled run, a scheduled wake that came due and never started, or a
   failure the user has not left. That is the same `holdsOut` flag the fold
   reads, so a clean finish never gets a tile. Plain shells never get a tile; a
-  nested row gets one only while it asks for the user. Chats from other machines
-  are included through their row's binding (remembered with
-  `machineRouter.rememberSessionPin`).
+  nested row gets one only while it asks for the user or a wake it promised came
+  due. Chats from other machines are included through their row's binding
+  (remembered with `machineRouter.rememberSessionPin`).
   `SessionListPane` reports the list (`WorkFocusQueueItem`: session + binding)
   through `onFocusQueueChange`, so the grid and the list cannot disagree. The
   project sidebar stays mounted while collapsed, keeping that report live as
