@@ -1,3 +1,6 @@
+import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../shared/welcomeVideo";
+import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
+
 /**
  * Where this computer is in ADE's onboarding: whether the first-run flow ran,
  * whether the user skipped it, how far the guided tour got, and how far each
@@ -46,78 +49,60 @@ export type OnboardingProgress = {
   hints: Partial<Record<OnboardingHintId, OnboardingHintProgress>>;
 };
 
-const STORAGE_KEY = "ade.onboarding.v1";
-const CHANGE_EVENT = "ade:onboarding-progress";
+export const ONBOARDING_PROGRESS_STORAGE_KEY = "ade.onboarding.v1";
+
+/** This app launch; onboarding that finished during it counts from the next launch. */
+const LAUNCHED_AT = Date.now();
 
 function isHintId(value: string): value is OnboardingHintId {
   return (ONBOARDING_HINT_IDS as readonly string[]).includes(value);
 }
 
-function finiteOrUndefined(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function parseProgress(stored: unknown): OnboardingProgress {
+  const record = storedRecord(stored);
+  if (!record) return { tour: {}, hints: {} };
+  const hints: OnboardingProgress["hints"] = {};
+  for (const [id, value] of Object.entries(storedRecord(record.hints) ?? {})) {
+    const entry = storedRecord(value);
+    if (!isHintId(id) || !entry) continue;
+    hints[id] = {
+      shown: finiteNumber(entry.shown) ?? 0,
+      doneAt: finiteNumber(entry.doneAt),
+      dismissedAt: finiteNumber(entry.dismissedAt),
+    };
+  }
+  const rawTour = storedRecord(record.tour) ?? {};
+  return {
+    startedAt: finiteNumber(record.startedAt),
+    skippedAt: finiteNumber(record.skippedAt),
+    tour: {
+      step: typeof rawTour.step === "string" && rawTour.step ? rawTour.step : undefined,
+      completedAt: finiteNumber(rawTour.completedAt),
+    },
+    hints,
+  };
 }
 
+const store = createLocalStore({ key: ONBOARDING_PROGRESS_STORAGE_KEY, event: "ade:onboarding-progress", parse: parseProgress });
+
 export function readOnboardingProgress(): OnboardingProgress {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { tour: {}, hints: {} };
-    const record = parsed as Record<string, unknown>;
-    const hints: OnboardingProgress["hints"] = {};
-    const rawHints = record.hints;
-    if (rawHints && typeof rawHints === "object" && !Array.isArray(rawHints)) {
-      for (const [id, value] of Object.entries(rawHints as Record<string, unknown>)) {
-        if (!isHintId(id) || !value || typeof value !== "object") continue;
-        const entry = value as Record<string, unknown>;
-        hints[id] = {
-          shown: finiteOrUndefined(entry.shown) ?? 0,
-          doneAt: finiteOrUndefined(entry.doneAt),
-          dismissedAt: finiteOrUndefined(entry.dismissedAt),
-        };
-      }
-    }
-    const rawTour = record.tour && typeof record.tour === "object" && !Array.isArray(record.tour)
-      ? record.tour as Record<string, unknown>
-      : {};
-    return {
-      startedAt: finiteOrUndefined(record.startedAt),
-      skippedAt: finiteOrUndefined(record.skippedAt),
-      tour: {
-        step: typeof rawTour.step === "string" && rawTour.step ? rawTour.step : undefined,
-        completedAt: finiteOrUndefined(rawTour.completedAt),
-      },
-      hints,
-    };
-  } catch {
-    return { tour: {}, hints: {} };
-  }
+  return store.get();
 }
 
 function writeOnboardingProgress(next: OnboardingProgress): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable: onboarding simply does not remember this session.
-  }
-  window.dispatchEvent(new Event(CHANGE_EVENT));
+  store.set(next);
 }
 
 function update(mutate: (draft: OnboardingProgress) => void): void {
-  const draft = readOnboardingProgress();
+  const current = store.get();
+  const draft: OnboardingProgress = { ...current, tour: { ...current.tour }, hints: { ...current.hints } };
   mutate(draft);
   writeOnboardingProgress(draft);
 }
 
 /** Calls `listener` whenever progress changes, in this window or another one. */
 export function subscribeOnboardingProgress(listener: () => void): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key === STORAGE_KEY) listener();
-  };
-  window.addEventListener(CHANGE_EVENT, listener);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    window.removeEventListener(CHANGE_EVENT, listener);
-    window.removeEventListener("storage", onStorage);
-  };
+  return store.subscribe(listener);
 }
 
 /** The welcome flow ran: hints may show from now on. */
@@ -135,9 +120,13 @@ export function skipOnboarding(): void {
   });
 }
 
-/** "Show me around again": a fresh start, the tour from its first step and every hint back. */
-export function restartOnboarding(): void {
+/**
+ * "Show me around again" (help menu, command palette): a fresh start (the tour
+ * from its first step and every hint back), and the welcome video again.
+ */
+export function showMeAroundAgain(): void {
   writeOnboardingProgress({ startedAt: Date.now(), tour: {}, hints: {} });
+  window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
 }
 
 /** The tour moved to `step`. */
@@ -157,6 +146,19 @@ export function completeTour(): void {
 /** Whether the tour should show: onboarding is on and the tour is not finished. */
 export function isTourOpen(progress: OnboardingProgress = readOnboardingProgress()): boolean {
   return isOnboardingActive(progress) && !progress.tour.completedAt;
+}
+
+/**
+ * Onboarding is done with this computer (finished, skipped, or never ran),
+ * and was done before this app launch: the first session belongs to
+ * onboarding, so later tiers (suggestions, tips, "What's new") wait for the
+ * next launch.
+ */
+export function onboardingSettledBeforeThisLaunch(progress: OnboardingProgress = readOnboardingProgress()): boolean {
+  if (!progress.startedAt) return true;
+  if (isTourOpen(progress)) return false;
+  const finishedAt = progress.skippedAt ?? progress.tour.completedAt ?? progress.startedAt;
+  return finishedAt < LAUNCHED_AT;
 }
 
 export function isOnboardingActive(progress: OnboardingProgress = readOnboardingProgress()): boolean {

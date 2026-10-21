@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
 import { adeTipGroup, machineTipOrder, runTipAction, tipActionAvailable, type AdeTip } from "../../../onboarding/adeTips";
-import { ADE_TIP_SHOTS } from "../../onboarding/tips/adeTipsWall";
 import {
   answerTipCard,
   claimTipCard,
@@ -92,7 +91,7 @@ export function useFeatureTipCard(enabled: boolean): void {
           eyebrow: "Tip",
           // Drawn like its tile in ADE Tips: its group's colour, and its screenshot when it has one.
           hue: adeTipGroup(tip.group).hue,
-          art: ADE_TIP_SHOTS[tip.id],
+          art: tip.shot,
           title: tip.title,
           detail: tip.sentence,
           actions: [

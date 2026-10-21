@@ -2,7 +2,8 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, X } from "@phosphor-icons/react";
 import { Dialog } from "../ui/dialog";
 import { useAppStore } from "../../state/appStore";
-import { isTourOpen, readOnboardingProgress } from "../../onboarding/onboardingProgress";
+import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
+import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import { ANNOUNCEMENT_PAGES, type AnnouncementPageDef } from "./announcementPages";
 import { dueAnnouncements, markAnnouncementSeen, useSeenAnnouncements } from "./announcementSeen";
 import "./announcements.css";
@@ -29,27 +30,10 @@ const OPEN_EVENT = "ade:open-whats-new";
 /** The project settles before anything shows over it. */
 const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
-/** This app launch; onboarding that finished during it waits for the next launch. */
-const LAUNCHED_AT = Date.now();
 
 /** Opens every "What's new" page (Help menu, command palette). */
 export function openWhatsNew(): void {
   window.dispatchEvent(new Event(OPEN_EVENT));
-}
-
-function somethingElseIsUp(): boolean {
-  return document.querySelector(
-    '[role="dialog"][aria-modal="true"], [role="alertdialog"], [data-onboarding-hint-layer], .ade-gate',
-  ) != null;
-}
-
-/** Onboarding is done with this computer, and was done before this launch. */
-function onboardingSettled(): boolean {
-  const progress = readOnboardingProgress();
-  if (!progress.startedAt) return true;
-  if (isTourOpen(progress)) return false;
-  const finishedAt = progress.skippedAt ?? progress.tour.completedAt ?? progress.startedAt;
-  return finishedAt < LAUNCHED_AT;
 }
 
 export function AnnouncementsHost() {
@@ -72,7 +56,7 @@ export function AnnouncementsHost() {
     const since = Date.now();
     const check = () => {
       if (document.hidden || Date.now() - since < SETTLE_MS) return;
-      if (!onboardingSettled() || somethingElseIsUp()) return;
+      if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
       setShownThisLaunch(true);
       setPages(dueAnnouncements());
     };

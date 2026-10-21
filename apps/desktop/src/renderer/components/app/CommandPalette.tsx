@@ -7,10 +7,10 @@ import React, {
 } from "react";
 import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
 import { openWhatsNew } from "../announcements/AnnouncementsHost";
-import { restartOnboarding } from "../../onboarding/onboardingProgress";
+import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
+import { resetOnboardingTiers } from "../../onboarding/resetOnboardingTiers";
 import { setSuggestionsTestMode, suggestionsTestMode } from "../../onboarding/situationalSuggestions";
 import { showToast } from "./toast/toastStore";
-import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
@@ -858,10 +858,7 @@ export function CommandPalette({
         hint: "Welcome, projects and first-chat hints",
         group: "Help",
         keywords: ["onboarding", "welcome", "tour", "setup"],
-        run: () => {
-          restartOnboarding();
-          window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
-        },
+        run: showMeAroundAgain,
       },
       {
         id: "ping",
@@ -902,14 +899,7 @@ export function CommandPalette({
           group: "Debug",
           keywords: ["suggestion", "whats new", "announcement", "tips", "onboarding", "reset"],
           run: () => {
-            for (const key of [
-              "ade.suggestions.v1",
-              "ade.suggestions.prompts.v1",
-              "ade.tips.suggestions.v1",
-              "ade.announcements.seen.v1",
-            ]) {
-              window.localStorage.removeItem(key);
-            }
+            resetOnboardingTiers();
             window.location.reload();
           },
         },

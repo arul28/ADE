@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
 import {
   At,
   DeviceMobile,
@@ -28,7 +29,7 @@ import {
  * - `start` for the scope it can start right now (the open project), so Tips
  *   can start it with the same pin and data the suggestion card would use.
  *
- * Every suggestion but the lane template goes through
+ * Every suggestion goes through
  * `components/app/suggestions/useSituationalSuggestion.tsx`, which does this
  * registering and keeps the shared rules (one at a time, a cooldown, never
  * during onboarding) in `situationalSuggestions.ts`.
@@ -54,7 +55,13 @@ export type AdeSuggestionDefinition = {
   icon: Icon;
   /** The primary action's label. */
   actionLabel: string;
+  /** Show the same signal again after this long (default: once). */
+  repeatAfterMs?: number;
+  /** "Don't suggest again" turns it off for one scope (a project) only, not the whole kind. */
+  neverPer?: "scope";
 };
+
+const DAY_MS = 24 * 3_600_000;
 
 export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> = {
   "lane-template": {
@@ -63,6 +70,9 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
     why: "This repo has packages, and new lanes start without them. A template installs or copies them each time.",
     icon: Stack,
     actionLabel: "Set one up with an agent",
+    // Back for a project after two weeks while its signal holds.
+    repeatAfterMs: 14 * DAY_MS,
+    neverPer: "scope",
   },
   "usage-low": {
     id: "usage-low",
@@ -86,6 +96,7 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
       + "Saved as a secret, agents can use it without it sitting in a transcript.",
     icon: Key,
     actionLabel: "Open Secrets",
+    repeatAfterMs: 30 * DAY_MS,
   },
   "issue-tracker": {
     id: "issue-tracker",
@@ -137,90 +148,51 @@ export type PostponedSuggestion = {
   postponedAt: number;
 };
 
-const STORAGE_KEY = "ade.tips.suggestions.v1";
-const CHANGE_EVENT = "ade:tips-suggestions";
+export const POSTPONED_SUGGESTIONS_STORAGE_KEY = "ade.tips.suggestions.v1";
 const MAX_ENTRIES = 20;
 
-function isSuggestionId(value: unknown): value is AdeSuggestionId {
+export function isSuggestionId(value: unknown): value is AdeSuggestionId {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(ADE_SUGGESTIONS, value);
 }
 
-function readStored(): PostponedSuggestion[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]") as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const out: PostponedSuggestion[] = [];
-    for (const entry of parsed) {
-      if (!entry || typeof entry !== "object") continue;
-      const record = entry as Record<string, unknown>;
-      if (!isSuggestionId(record.id) || typeof record.scopeKey !== "string" || !record.scopeKey) continue;
-      const postponedAt = typeof record.postponedAt === "number" && Number.isFinite(record.postponedAt) ? record.postponedAt : 0;
-      out.push({
-        id: record.id,
-        scopeKey: record.scopeKey,
-        context: typeof record.context === "string" && record.context ? record.context : null,
-        postponedAt,
-      });
-    }
-    return out;
-  } catch {
-    return [];
+function parsePostponed(stored: unknown): readonly PostponedSuggestion[] {
+  if (!Array.isArray(stored)) return [];
+  const out: PostponedSuggestion[] = [];
+  for (const entry of stored) {
+    const record = storedRecord(entry);
+    if (!record || !isSuggestionId(record.id) || typeof record.scopeKey !== "string" || !record.scopeKey) continue;
+    out.push({
+      id: record.id,
+      scopeKey: record.scopeKey,
+      context: typeof record.context === "string" && record.context ? record.context : null,
+      postponedAt: finiteNumber(record.postponedAt) ?? 0,
+    });
   }
+  return out;
 }
 
-let snapshot: readonly PostponedSuggestion[] | null = null;
+const store = createLocalStore({ key: POSTPONED_SUGGESTIONS_STORAGE_KEY, event: "ade:tips-suggestions", parse: parsePostponed });
 
-function getSnapshot(): readonly PostponedSuggestion[] {
-  snapshot ??= readStored();
-  return snapshot;
-}
-
-function write(next: PostponedSuggestion[]): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next.slice(0, MAX_ENTRIES)));
-  } catch {
-    // Storage unavailable: the suggestion is only postponed for this session.
-  }
-  snapshot = null;
-  window.dispatchEvent(new Event(CHANGE_EVENT));
-}
+const write = (next: readonly PostponedSuggestion[]) => store.set(next.slice(0, MAX_ENTRIES));
 
 const sameEntry = (entry: PostponedSuggestion, id: AdeSuggestionId, scopeKey: string) =>
   entry.id === id && entry.scopeKey === scopeKey;
 
 /** "Not now": file the suggestion into ADE Tips (newest first). */
 export function postponeSuggestion(input: { id: AdeSuggestionId; scopeKey: string; context?: string | null }): void {
-  const rest = getSnapshot().filter((entry) => !sameEntry(entry, input.id, input.scopeKey));
+  const rest = store.get().filter((entry) => !sameEntry(entry, input.id, input.scopeKey));
   write([{ id: input.id, scopeKey: input.scopeKey, context: input.context ?? null, postponedAt: Date.now() }, ...rest]);
 }
 
 /** The suggestion was started, refused for good, or no longer applies. */
 export function forgetPostponedSuggestion(id: AdeSuggestionId, scopeKey: string): void {
-  const current = getSnapshot();
+  const current = store.get();
   if (!current.some((entry) => sameEntry(entry, id, scopeKey))) return;
   write(current.filter((entry) => !sameEntry(entry, id, scopeKey)));
 }
 
-export function isSuggestionPostponed(id: AdeSuggestionId, scopeKey: string): boolean {
-  return getSnapshot().some((entry) => sameEntry(entry, id, scopeKey));
-}
-
-function subscribeStored(listener: () => void): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
-    snapshot = null;
-    listener();
-  };
-  window.addEventListener(CHANGE_EVENT, listener);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    window.removeEventListener(CHANGE_EVENT, listener);
-    window.removeEventListener("storage", onStorage);
-  };
-}
-
 export function usePostponedSuggestions(): readonly PostponedSuggestion[] {
-  return useSyncExternalStore(subscribeStored, getSnapshot, getSnapshot);
+  return useSyncExternalStore(store.subscribe, store.get, store.get);
 }
 
 // ── live handlers from the suggestion's owner ──────────────────────────

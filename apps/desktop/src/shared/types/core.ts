@@ -172,7 +172,7 @@ export type OnboardingProjectCandidate = {
   repoLabel: string | null;
   /** Coding-agent sessions (any importable provider) that ran in this project or its worktrees. */
   chatCount: number;
-  /** Of those, the ones active in the last 30 days: what setup imports. */
+  /** Of those, the ones active within `ONBOARDING_CHAT_WINDOW_DAYS` (shared/onboardingChatWindow.ts): what setup imports. */
   recentChatCount: number;
   lastActiveAt: number | null;
   /** Which providers those chats came from, in the importer's display order. */
@@ -197,7 +197,7 @@ export type OnboardingProjectDiscovery = {
 
 /**
  * One chat setup's import would bring in for a project: a provider session
- * from the last 30 days that ran in the project or one of its worktrees.
+ * from the last `ONBOARDING_CHAT_WINDOW_DAYS` days that ran in the project or one of its worktrees.
  * `provider` + `id` are the importer's own identity (`externalSessions.list`
  * rows), so a choice made in setup matches the session at import time.
  */

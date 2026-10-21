@@ -19,7 +19,7 @@ import {
   repoRoot,
   shutdownRuntime,
 } from "./dev-shared.mjs";
-import { devDesktopUserDataFolder, pruneStaleDevUserData } from "./dev-user-data.mjs";
+import { devDesktopUserDataFolder, pruneStaleDevUserData, userDataInUse } from "./dev-user-data.mjs";
 
 function usage() {
   return [
@@ -180,17 +180,27 @@ async function prepareFirstRun(socketPath, { keep = false } = {}) {
   }
   const home = path.join(os.homedir(), ".ade-dev-first-run");
   fs.mkdirSync(home, { recursive: true });
+  // The app's own data lives in the home, so a reset clears it and --keep keeps it.
+  const userData = process.env.ADE_DESKTOP_USER_DATA_PATH?.trim() || path.join(home, "desktop-app");
   if (!keep) {
+    // A first-run app still open holds its data (and its brain may be
+    // starting): emptying the home under it corrupts both.
+    if (userDataInUse(userData)) {
+      throw new Error(
+        `A first-run ADE app is still open (it holds ${userData}). Quit it first; its home must not be reset while it runs.`,
+      );
+    }
     for (const name of fs.readdirSync(home)) {
-      if (!FIRST_RUN_KEPT.has(name)) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+      if (FIRST_RUN_KEPT.has(name)) continue;
+      // Bounded retries (Node's own, ~5 s in all): on Windows a folder a
+      // just-exited process still has a handle in fails with EBUSY/EPERM for
+      // a moment.
+      fs.rmSync(path.join(home, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
   process.env.ADE_HOME = home;
   process.env.ADE_DEV_ALLOW_ALT_HOME = "1";
-  // The app's own data lives in the home, so a reset clears it and --keep keeps it.
-  if (!process.env.ADE_DESKTOP_USER_DATA_PATH?.trim()) {
-    process.env.ADE_DESKTOP_USER_DATA_PATH = path.join(home, "desktop-app");
-  }
+  process.env.ADE_DESKTOP_USER_DATA_PATH = userData;
   const signedIn = fs.existsSync(path.join(home, "secrets", "credentials.json.enc"));
   process.stdout.write(
     `[ade] first run : ${home} ${keep ? "kept (a later visit)" : "reset"} (sign-in ${signedIn ? "kept" : "not set up yet; the app will ask"})\n`,

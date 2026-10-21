@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Banner } from "./Banner";
 import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
+import { floatingLayerBusy } from "../overlayState";
 
 /**
  * Situational suggestions (`useAppBanner(model, { placement: "suggestion" })`)
@@ -22,8 +23,6 @@ import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
  * hint for attention, so it waits while either is up.
  */
 
-const BUSY_SELECTOR = '[role="dialog"][aria-modal="true"], [role="alertdialog"], [data-onboarding-hint-layer]';
-
 /**
  * Whether a modal or a first-chat hint is up. Both portal into <body>, so
  * watching body's own children (not its subtree) is enough, and it only runs
@@ -36,7 +35,7 @@ function useModalOpen(watch: boolean): boolean {
       setOpen(false);
       return;
     }
-    const check = () => setOpen(document.querySelector(BUSY_SELECTOR) !== null);
+    const check = () => setOpen(floatingLayerBusy());
     check();
     const observer = new MutationObserver(check);
     observer.observe(document.body, { childList: true });

@@ -29,7 +29,7 @@ export type ChatSendSignals = {
 
 /** A pasted log can be huge; the secret shapes are found near where they are pasted. */
 const SECRET_SCAN_MAX_CHARS = 20_000;
-const PROMPT_STORAGE_KEY = "ade.suggestions.prompts.v1";
+export const PROMPT_STORAGE_KEY = "ade.suggestions.prompts.v1";
 const PROMPT_WINDOW_MS = 7 * 24 * 3_600_000;
 const PROMPT_REPEATS = 3;
 const PROMPT_MIN_CHARS = 20;

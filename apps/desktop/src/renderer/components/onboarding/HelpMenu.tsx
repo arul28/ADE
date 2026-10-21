@@ -1,18 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useCallback, useRef, useState } from "react";
 import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
-import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import { fgTint } from "../lanes/laneDesignTokens";
-import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
-import { restartOnboarding } from "../../onboarding/onboardingProgress";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { Z_LAYERS } from "../ui/zLayers";
+import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
 import { openAdeTips } from "./tips/AdeTipsDialog";
 import { openWhatsNew } from "../announcements/AnnouncementsHost";
-
-type MenuPosition = { top?: number; bottom?: number; left?: number; right?: number } | null;
 
 /**
  * The question-mark menu: docs, ADE Tips, the welcome tour again, and help
@@ -37,55 +35,8 @@ export function HelpMenu({
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
 
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<MenuPosition>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  const close = useCallback(() => {
-    setOpen(false);
-    setPosition(null);
-  }, []);
-
-  const openAt = useCallback(() => {
-    const el = buttonRef.current;
-    if (!el) return;
-    // Rect and window are measured in screen px; the menu's `left`/`right`/`top` are
-    // written in the viewport frame (see `fixedFrameOf`), so both are converted.
-    const frame = fixedFrameOf(null);
-    const r = fixedRect(frame, el.getBoundingClientRect());
-    const viewport = fixedViewport(frame);
-    const vertical = side === "above"
-      ? { bottom: Math.max(8, viewport.height - r.top + 6) }
-      : { top: r.bottom + 6 };
-    setPosition(
-      align === "start"
-        ? { ...vertical, left: Math.max(8, r.left) }
-        : { ...vertical, right: Math.max(8, viewport.width - r.right) },
-    );
-    setOpen(true);
-  }, [align, side]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!(e.target instanceof Node)) return;
-      if (menuRef.current?.contains(e.target)) return;
-      if (buttonRef.current?.contains(e.target)) return;
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, close]);
+  const close = useCallback(() => setOpen(false), []);
 
   const handleOpenDocs = useCallback(() => {
     close();
@@ -102,12 +53,10 @@ export function HelpMenu({
     openWhatsNew();
   }, [close]);
 
-  // A fresh start: every first-run hint comes back, and the welcome flow
-  // (which listens for this event) shows again.
+  // A fresh start: every first-run hint comes back, and the welcome flow shows again.
   const handleShowAround = useCallback(() => {
     close();
-    restartOnboarding();
-    window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
+    showMeAroundAgain();
   }, [close]);
 
   return (
@@ -125,7 +74,7 @@ export function HelpMenu({
           className,
         )}
         data-state={open ? "open" : undefined}
-        onClick={() => (open ? close() : openAt())}
+        onClick={() => setOpen((wasOpen) => !wasOpen)}
         style={{
           WebkitAppRegion: "no-drag",
           color: open ? "var(--color-accent)" : undefined,
@@ -134,51 +83,37 @@ export function HelpMenu({
         <Question size={iconSize} weight={open ? "fill" : "regular"} />
       </button>
 
-      {open && position
-        ? createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="Help"
-              className="ade-help-menu"
-              style={{
-                position: "fixed",
-                top: position.top,
-                bottom: position.bottom,
-                left: position.left,
-                right: position.right,
-                zIndex: 9999,
-                minWidth: 268,
-                padding: 4,
-                borderRadius: 10,
-                background: "var(--color-popup-bg, #141022)",
-                border: `1px solid ${fgTint(12)}`,
-                boxShadow: "0 16px 40px -10px rgba(0,0,0,0.55), 0 0 0 1px rgba(167,139,250,0.05)",
-                color: "var(--color-fg, #F0F0F2)",
-                fontSize: 12.5,
-              }}
-            >
-              <MenuItem onClick={handleOpenWhatsNew}>What's new</MenuItem>
-              <MenuItem onClick={handleOpenTips}>ADE Tips</MenuItem>
-              <MenuItem onClick={handleShowAround}>Show me around again</MenuItem>
-              <MenuItem onClick={handleOpenDocs}>
-                <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
-                <ArrowSquareOut size={11} weight="regular" />
-              </MenuItem>
+      <AnchoredMenu
+        open={open}
+        anchorRef={buttonRef}
+        onClose={close}
+        placement={`${side === "above" ? "top" : "bottom"}-${align}`}
+        offset={6}
+        zIndex={Z_LAYERS.popover}
+        role="menu"
+        aria-label="Help"
+        className={cn(MENU_SURFACE_CLASS, "ade-help-menu")}
+        // The shared menu paint; the help rows keep their own type size.
+        style={{ minWidth: 268, fontSize: 12.5 }}
+      >
+        <MenuItem onClick={handleOpenWhatsNew}>What's new</MenuItem>
+        <MenuItem onClick={handleOpenTips}>ADE Tips</MenuItem>
+        <MenuItem onClick={handleShowAround}>Show me around again</MenuItem>
+        <MenuItem onClick={handleOpenDocs}>
+          <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
+          <ArrowSquareOut size={11} weight="regular" />
+        </MenuItem>
 
-              <MenuDivider />
+        <MenuDivider />
 
-              <SectionLabel>Help preferences</SectionLabel>
-              <CheckboxItem
-                checked={smartTooltipsEnabled}
-                onToggle={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
-                label="Show detailed hover tooltips"
-                hint="Extra detail appears when you hover a button — what it does and what would happen."
-              />
-            </div>,
-            document.body,
-          )
-        : null}
+        <SectionLabel>Help preferences</SectionLabel>
+        <CheckboxItem
+          checked={smartTooltipsEnabled}
+          onToggle={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
+          label="Show detailed hover tooltips"
+          hint="Extra detail appears when you hover a button — what it does and what would happen."
+        />
+      </AnchoredMenu>
     </>
   );
 }

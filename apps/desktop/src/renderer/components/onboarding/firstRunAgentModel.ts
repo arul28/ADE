@@ -2,16 +2,17 @@ import type { AiProviderConnectionStatus, AiSettingsStatus } from "../../../shar
 import { ACP_PROVIDER_METADATA } from "../../../shared/acpProviderMetadata";
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { cursorProviderAvailable } from "../../lib/platform";
+import { providerOffersModels, providerStatusConnected } from "../settings/providers/providerConnected";
 import type { SettingsProviderId } from "../settings/providers/types";
 
 /**
  * Every coding agent ADE runs, as the first-run cards show them: the welcome
  * card's row of marks and the tiles on "Connect your agents".
  *
- * Same ids as Settings › Agents & Models (`SettingsProviderId`).
- * The status rules below mirror the Settings descriptors (`descriptors.tsx`,
- * `acpProviders.tsx`) without importing them: those pull the whole Settings
- * page into the launch path, and this card only needs "connected or not".
+ * Same ids as Settings › Agents & Models (`SettingsProviderId`), and the
+ * same "connected" rule (`providerStatusConnected`, which the Settings
+ * descriptors read too) without loading the Settings page into the launch
+ * path.
  */
 
 /** How a provider signs in from setup, before any project is open. */
@@ -84,10 +85,10 @@ function notConnected(agent: FirstRunAgent, connection: AiProviderConnectionStat
 }
 
 /**
- * One agent's status, by the Settings tiles' rules: Claude by its SDK binary
- * and auth, Muse by runtime and sign-in, OpenCode by its own binary and
- * catalog, everyone else by their connection row's `runtimeAvailable` — plus
- * the model picker's `availableProviders` flag for any of them.
+ * One agent's status: connected by the Settings tiles' rule
+ * (`providerStatusConnected`), or, for any but Claude and OpenCode, when the
+ * model picker already offers its models or ADE's copy is there with a saved
+ * sign-in.
  */
 export function firstRunAgentStatus(
   agent: FirstRunAgent,
@@ -98,46 +99,30 @@ export function firstRunAgentStatus(
     // A failed read still offers sign-in; only a read in flight is "Checking".
     return failed ? notConnected(agent, null) : { state: "checking", detail: "Checking…" };
   }
-  const connection = agent.id === "opencode" ? null : status.providerConnections?.[agent.id] ?? null;
-  // The model picker's own "can run here" flag. Setup asks one question — can
-  // this agent chat now? — so a provider ADE already offers models for counts
-  // as connected even where Settings still wants more (Cursor signed in with
-  // OAuth but no verified API key).
+  if (agent.id === "opencode") {
+    if (!providerStatusConnected("opencode", status)) return { state: "later", detail: "Not set up yet" };
+    // Settings calls an installed OpenCode connected: its free models work with no key.
+    const signedIn = (status.opencodeProviders ?? []).filter((provider) => provider.signedIn).length;
+    return {
+      state: "connected",
+      detail: signedIn ? `${signedIn} provider${signedIn === 1 ? "" : "s"} signed in` : "Free models",
+    };
+  }
+  const connection = status.providerConnections?.[agent.id] ?? null;
+  // Setup asks one question — can this agent chat now? — so a provider the
+  // model picker already offers counts as connected even where Settings
+  // still wants more (Cursor signed in with OAuth but no verified API key).
   //
   // Before any project is open the status comes from the machine-level
   // fallback, which never probes a runtime, so `runtimeAvailable` can read
   // false for an installed, signed-in agent. ADE's own copy present plus a
   // saved sign-in is the honest "ready" here.
-  const runnable = (status.availableProviders as Partial<Record<string, unknown>> | undefined)?.[agent.id] === true
-    || (connection?.runtimeDetected === true && connection.authAvailable === true);
-  switch (agent.id) {
-    case "claude": {
-      const claude = status.availableProviders?.claude;
-      if (claude?.binary.present && claude.auth.ready) {
-        return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
-      }
-      return notConnected(agent, connection);
-    }
-    case "opencode": {
-      if (status.opencodeBinaryInstalled === false || status.opencodeInventoryError) {
-        return { state: "later", detail: "Not set up yet" };
-      }
-      // Settings calls an installed OpenCode connected: its free models work with no key.
-      const signedIn = (status.opencodeProviders ?? []).filter((provider) => provider.signedIn).length;
-      return {
-        state: "connected",
-        detail: signedIn ? `${signedIn} provider${signedIn === 1 ? "" : "s"} signed in` : "Free models",
-      };
-    }
-    case "muse":
-      if ((connection?.runtimeAvailable && connection.authAvailable) || runnable) {
-        return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
-      }
-      return notConnected(agent, connection);
-    default:
-      if (connection?.runtimeAvailable || runnable) {
-        return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
-      }
-      return notConnected(agent, connection);
+  const runnable = agent.id !== "claude" && (
+    providerOffersModels(agent.id, status)
+    || (connection?.runtimeDetected === true && connection.authAvailable === true)
+  );
+  if (providerStatusConnected(agent.id, status) || runnable) {
+    return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
   }
+  return notConnected(agent, connection);
 }

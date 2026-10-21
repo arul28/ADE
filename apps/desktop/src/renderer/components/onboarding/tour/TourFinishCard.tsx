@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ArrowCounterClockwise, Lightbulb, Question } from "@phosphor-icons/react";
 import { openAdeTips } from "../tips/AdeTipsDialog";
-import { hasOpenModal, isAnchorVisible, prefersReducedMotion, readFrame } from "./anchorGeometry";
+import { modalOpen } from "../../ui/overlayState";
+import { isAnchorVisible, prefersReducedMotion, readFrame } from "./anchorGeometry";
 import type { TourCursorMotion } from "./tourCursor";
 import { watchTourDom } from "./tourWatch";
 
@@ -32,13 +33,13 @@ export function TourFinishCard({
   onDone: () => void;
 }) {
   const titleId = useId();
-  const [blocked, setBlocked] = useState(hasOpenModal);
+  const [blocked, setBlocked] = useState(modalOpen);
   const [helpButton, setHelpButton] = useState<HTMLElement | null>(null);
   const doneRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     const watch = watchTourDom(() => {
-      setBlocked(hasOpenModal());
+      setBlocked(modalOpen());
       setHelpButton((current) => (current && isAnchorVisible(current) ? current : findHelpButton()));
     }, { minIntervalMs: 400 });
     return () => watch.dispose();

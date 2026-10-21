@@ -50,11 +50,14 @@ const SHEET_SCRIM_STYLE: CSSProperties = {
 const SHEET_EDGE_GAP = 8;
 
 /** The panel material (the notice card, lifted). */
-const DIALOG_PANEL_SURFACE: CSSProperties = {
+const DIALOG_PANEL_MATERIAL: CSSProperties = {
   background: "color-mix(in srgb, var(--color-card) 98%, transparent)",
   border: "1px solid color-mix(in srgb, var(--color-border) 88%, var(--color-fg) 12%)",
   borderRadius: 14,
   boxShadow: "var(--shadow-float)",
+};
+
+const DIALOG_PANEL_TEXT: CSSProperties = {
   color: "var(--color-fg)",
   fontFamily: "var(--font-sans)",
 };
@@ -133,6 +136,18 @@ export type DialogProps = {
    * bubbles through portals) — for dialogs mounted inside a clickable row/tab.
    */
   stopClickPropagation?: boolean;
+  /**
+   * Where the dialog portals. Default `document.body`. A full-window surface
+   * that is not itself a Radix dialog (first-run setup's gate) passes its root
+   * so the dialog draws over it and inherits its tokens.
+   */
+  container?: HTMLElement | null;
+  /**
+   * The panel's look: `card` (default) is the dialog's own material; `none`
+   * leaves background, border, radius and shadow to `panelClassName` (a
+   * surface with its own glass, like first-run setup's).
+   */
+  material?: "card" | "none";
   children?: ReactNode;
 };
 
@@ -187,6 +202,8 @@ export function Dialog({
   role = "dialog",
   testId,
   stopClickPropagation = false,
+  container,
+  material = "card",
   children,
 }: DialogProps): JSX.Element {
   const zIndex = Z_LAYERS[layer];
@@ -254,7 +271,7 @@ export function Dialog({
 
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
-      <RadixDialog.Portal>
+      <RadixDialog.Portal container={container ?? undefined}>
         <RadixDialog.Overlay
           className="ade-dialog-scrim"
           style={{ ...(placement === "right" ? SHEET_SCRIM_STYLE : DIALOG_SCRIM_STYLE), zIndex }}
@@ -269,7 +286,8 @@ export function Dialog({
           data-placement={placement}
           tabIndex={-1}
           style={{
-            ...DIALOG_PANEL_SURFACE,
+            ...(material === "card" ? DIALOG_PANEL_MATERIAL : null),
+            ...DIALOG_PANEL_TEXT,
             // Centered the way a UA <dialog> is — inset 0 + auto margins — not
             // with a transform: a transformed panel would become the containing
             // block for the `position: fixed` popovers that portal into it. The
@@ -279,7 +297,7 @@ export function Dialog({
               ? {
                 // Fully opaque: a sheet sits over live page content, and the
                 // modal's 98% material lets that content ghost through.
-                background: "var(--color-card)",
+                ...(material === "card" ? { background: "var(--color-card)" } : null),
                 top: SHEET_EDGE_GAP,
                 right: SHEET_EDGE_GAP,
                 bottom: SHEET_EDGE_GAP,

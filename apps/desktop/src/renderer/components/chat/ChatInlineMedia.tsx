@@ -14,7 +14,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { streamFileBytes } from "../files/v2/streamBytes";
 import { cn } from "../ui/cn";
-import { resolveWorkspaceMediaTarget } from "./chatWorkspacePaths";
+import { classifyMediaPath } from "./chatWorkspacePaths";
 import {
   inlineMediaFilename,
   inlineMediaKind,
@@ -68,17 +68,20 @@ export function ChatInlineMedia({
     setTarget(null);
     setResolved(false);
     setOutside(false);
-    void resolveWorkspaceMediaTarget({ path: src, pin, laneId })
-      .then(async (next) => {
+    void classifyMediaPath({ path: src, pin, laneId })
+      .then(async (media) => {
         if (cancelled) return;
-        if (!next) setOutside(true);
-        if (next) {
+        let next: Resolution = null;
+        if (media.kind === "resolved") {
+          next = media.target;
           await createPinnedFilesApi(pin).readFileRange({
             workspaceId: next.workspaceId,
             path: next.relativePath,
             offset: 0,
             length: 1,
           });
+        } else {
+          setOutside(media.kind === "outside");
         }
         setTarget(next);
         setResolved(true);
@@ -162,10 +165,10 @@ export function ChatInlineAudio({
     let cancelled = false;
     setResolvedTarget(null);
     setResolved(false);
-    void resolveWorkspaceMediaTarget({ path: attachmentPath, pin, laneId })
-      .then((next) => {
+    void classifyMediaPath({ path: attachmentPath, pin, laneId })
+      .then((media) => {
         if (cancelled) return;
-        setResolvedTarget(next);
+        setResolvedTarget(media.kind === "resolved" ? media.target : null);
         setResolved(true);
       })
       .catch((error: unknown) => {

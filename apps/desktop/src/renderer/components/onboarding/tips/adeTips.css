@@ -221,7 +221,7 @@
 }
 
 /* One group's tips as a wall, in the landing page's manner: tiles of mixed
-   sizes packed into one grid (sizes and order in `adeTipsWall.ts`), the
+   sizes packed into one grid (sizes and order in `onboarding/adeTips.ts`), the
    group's own bright tile first, screenshot tiles for its headline features
    and icon tiles for the rest. Four columns, two in a narrower window, one in
    a very narrow one. */

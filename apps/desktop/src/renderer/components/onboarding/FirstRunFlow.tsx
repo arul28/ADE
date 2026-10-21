@@ -16,17 +16,24 @@ import {
   type OnboardingProjectCandidate,
   type OnboardingProjectDiscovery,
 } from "../../../shared/types";
+import { ONBOARDING_CHAT_WINDOW_DAYS, ONBOARDING_CHAT_WINDOW_MS } from "../../../shared/onboardingChatWindow";
+import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { relativeWhen } from "../../lib/format";
+import { arePathsEqual } from "../../lib/pathUtils";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { chatImportKey, queueChatImports } from "../../onboarding/pendingChatImports";
 import { useAppStore } from "../../state/appStore";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { AdeQrCode } from "../ui/AdeQrCode";
+import { Dialog } from "../ui/dialog";
 import { PortalContainerContext } from "../ui/portalContainer";
 import { FirstRunChatPicker, type ChatListState } from "./FirstRunChatPicker";
 import { firstRunAgents } from "./firstRunAgentModel";
 import "./firstRun.css";
+import "./firstRunWelcome.css";
+import "./firstRunProjects.css";
+import "./firstRunDevices.css";
 
 /**
  * ADE's first run on a computer, after (or around) sign-in:
@@ -46,9 +53,6 @@ import "./firstRun.css";
  * Both cards sit on the launch gate's glass (`.ade-gate` tokens), so they read
  * as one flow with the sign-in card between them.
  */
-
-/** Chats active in this window come in with their project. Matches the main-side count. */
-export const FIRST_RUN_CHAT_WINDOW_MS = 30 * 24 * 3_600_000;
 
 export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSkip: () => void }) {
   const agents = useMemo(() => firstRunAgents(), []);
@@ -121,10 +125,15 @@ function pluralize(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
+function folderName(folder: string): string {
+  return basenameCrossPlatform(folder) || folder;
+}
+
+/** A chosen folder as-is, where the app cannot resolve it to its project (the browser preview). */
 function folderCandidate(rootPath: string): OnboardingProjectCandidate {
   return {
     rootPath,
-    name: rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath,
+    name: folderName(rootPath),
     repoLabel: null,
     chatCount: 0,
     recentChatCount: 0,
@@ -161,7 +170,7 @@ export async function addFirstRunProjects(
     projects
       .filter((project) => project.recentChatCount > 0 && importRoots.has(project.rootPath))
       .map((project) => ({ rootPath: project.rootPath, excludedKeys: excludedByRoot.get(project.rootPath) })),
-    Date.now() - FIRST_RUN_CHAT_WINDOW_MS,
+    Date.now() - ONBOARDING_CHAT_WINDOW_MS,
   );
   return { rootPaths: added.map((project) => project.rootPath) };
 }
@@ -178,7 +187,7 @@ export function showFirstRunProjects(result: FirstRunResult): void {
   if (!store.project) return;
   store.setOpenProjectTabRoots((current) => [
     ...current,
-    ...result.rootPaths.filter((rootPath) => !current.includes(rootPath)),
+    ...result.rootPaths.filter((rootPath) => !current.some((open) => arePathsEqual(open, rootPath))),
   ]);
 }
 
@@ -325,15 +334,34 @@ export function FirstRunProjects({
   }, [addable, allSelected]);
 
   const addFolder = useCallback(async () => {
-    const rootPath = await window.ade.project.chooseDirectory({ title: "Add a project" }).catch(() => null);
-    if (!rootPath) return;
-    setDiscovery((current) => {
-      if (current.phase !== "ready") return current;
-      if (current.projects.some((project) => project.rootPath === rootPath)) return current;
-      return { ...current, projects: [...current.projects, folderCandidate(rootPath)] };
-    });
-    setSelected((current) => new Set(current).add(rootPath));
-  }, []);
+    const folder = await window.ade.project.chooseDirectory({ title: "Add a project" }).catch(() => null);
+    if (!folder) return;
+    setError(null);
+    // The project the folder belongs to: a subfolder adds its checkout, a lane
+    // or worktree its project. Main adds only git checkouts, so a folder
+    // outside one is refused here rather than shown ticked and then skipped.
+    const resolve = window.ade.app.resolveOnboardingFolder;
+    let candidate: OnboardingProjectCandidate | null;
+    try {
+      candidate = resolve ? await resolve(folder) : folderCandidate(folder);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return;
+    }
+    if (!candidate) {
+      setError(`${folderName(folder)} isn't in a git project. Choose the folder of a git checkout.`);
+      return;
+    }
+    const isCandidate = (project: OnboardingProjectCandidate) => arePathsEqual(project.rootPath, candidate.rootPath);
+    const target = (discovery.phase === "ready" ? discovery.projects.find(isCandidate) : undefined) ?? candidate;
+    setDiscovery((current) => (
+      current.phase !== "ready" || current.projects.some(isCandidate)
+        ? current
+        : { ...current, projects: [...current.projects, candidate] }
+    ));
+    // A project already in ADE is listed, never added again.
+    if (!target.inAde) setSelected((current) => new Set(current).add(target.rootPath));
+  }, [discovery]);
 
   const finish = useCallback(async () => {
     if (!chosen.length && !importingInAde.length) {
@@ -371,20 +399,7 @@ export function FirstRunProjects({
 
       <section className="ade-fr-list" aria-label="Projects found on this computer">
         <div className="ade-fr-list-head">
-          <span>
-            {discovery.phase === "loading"
-              ? "Looking for your projects…"
-              : !projects.length
-                ? "No projects found yet"
-                : !addable.length
-                  ? inAdeCount === 1
-                    ? "Your project is already in ADE"
-                    : `All ${inAdeCount} of your projects are already in ADE`
-                  : [
-                      `${pluralize(addable.length, "new project", "new projects")} found`,
-                      inAdeCount ? `${inAdeCount} already in ADE` : null,
-                    ].filter(Boolean).join(" · ")}
-          </span>
+          <span>{listHeadline(discovery.phase === "loading", projects.length, addable.length, inAdeCount)}</span>
           {addable.length > 1 ? (
             <button type="button" className="ade-fr-text-btn" onClick={toggleAll}>
               {allSelected ? "Select none" : "Select all"}
@@ -454,9 +469,19 @@ export function FirstRunProjects({
         </button>
       </footer>
 
-      {qrOpen ? <PhoneQrLightbox onClose={closeQr} /> : null}
+      <PhoneQrLightbox open={qrOpen} onClose={closeQr} container={gateEl} />
     </div>
   );
+}
+
+/** The line over the projects list: still looking, none, all already in ADE, or how many are new. */
+function listHeadline(loading: boolean, found: number, addable: number, inAde: number): string {
+  if (loading) return "Looking for your projects…";
+  if (!found) return "No projects found yet";
+  if (!addable) return inAde === 1 ? "Your project is already in ADE" : `All ${inAde} of your projects are already in ADE`;
+  const parts = [`${pluralize(addable, "new project", "new projects")} found`];
+  if (inAde) parts.push(`${inAde} already in ADE`);
+  return parts.join(" · ");
 }
 
 /**
@@ -576,7 +601,7 @@ function ProjectRow({
             title={
               importOn
                 ? "These chats come in when the project first opens. Click to leave them all out."
-                : "Bring the last 30 days of chats in when the project first opens, each in the lane it ran in."
+                : `Bring the last ${ONBOARDING_CHAT_WINDOW_DAYS} days of chats in when the project first opens, each in the lane it ran in.`
             }
             onClick={() => onSetImport(project.rootPath, !importOn, project.inAde)}
           >
@@ -700,49 +725,44 @@ function DevicesStrip({ onExpandQr }: { onExpandQr: () => void }) {
 }
 
 /**
- * The phone QR, big enough to scan from across a desk, over the projects card's
- * own glass. Escape, the close button or a click outside the code closes it.
- * Escape is caught before setup's own Escape-to-skip (`OnboardingBootstrap`)
- * sees it, so closing the code never skips setup.
+ * The phone QR, big enough to scan from across a desk, in a pane of the
+ * gate's own glass. The shared `Dialog` (portalled into the gate, so it draws
+ * over the card with the gate's tokens) owns the scrim, the focus trap and
+ * Escape; setup's Escape-to-skip leaves keys from an open dialog alone.
  */
-function PhoneQrLightbox({ onClose }: { onClose: () => void }) {
+function PhoneQrLightbox({
+  open,
+  onClose,
+  container,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** The gate root. */
+  container: HTMLElement | null;
+}) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    // Capture on window runs before setup's bubble-phase listener on window.
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      opener?.focus();
-    };
-  }, [onClose]);
-
   return (
-    <div
-      className="ade-fr-qr-lightbox"
-      role="dialog"
-      aria-modal="true"
-      aria-label="ADE for iPhone"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
+      title="ADE for iPhone"
+      hideHeader
+      hideClose
+      container={container}
+      initialFocusRef={closeRef}
+      width={292}
+      bodyPadding={false}
+      scrollBody={false}
+      panelClassName="ade-fr-qr-panel"
+      // The gate's glass pane (`firstRunDevices.css`) instead of the dialog's card material.
+      material="none"
+      panelStyle={{ overflow: "visible" }}
+      bodyStyle={{ overflow: "visible" }}
     >
-      <div className="ade-fr-qr-panel">
-        <button
-          ref={closeRef}
-          type="button"
-          className="ade-fr-qr-close"
-          aria-label="Close"
-          onClick={onClose}
-        >
+      <div className="ade-fr-qr-content">
+        <button ref={closeRef} type="button" className="ade-fr-qr-close" aria-label="Close" onClick={onClose}>
           <X size={13} weight="bold" />
         </button>
         <span className="ade-fr-qr-big">
@@ -753,6 +773,6 @@ function PhoneQrLightbox({ onClose }: { onClose: () => void }) {
           <span className="ade-fr-device-sub">Point your iPhone camera at the code to install it.</span>
         </span>
       </div>
-    </div>
+    </Dialog>
   );
 }

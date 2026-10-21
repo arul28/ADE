@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } from "../../../../shared/types";
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
@@ -48,7 +48,6 @@ type Props = {
 };
 
 const WEEK_MS = 7 * 24 * 3_600_000;
-const SECRET_REPEAT_AFTER_MS = 30 * 24 * 3_600_000;
 const QUOTA_WINDOWS = new Set(["five_hour", "weekly", "monthly"]);
 const TRACKER_LABEL: Record<IssueTracker, string> = { linear: "Linear", jira: "Jira", github: "GitHub" };
 const TRACKER_SETTINGS: Record<IssueTracker, string> = {
@@ -122,7 +121,7 @@ function useUsageLowSuggestion({ enabled, navigate }: Props): void {
     id: "usage-low",
     signalKey: low?.key ?? null,
     detail: low?.detail,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     start,
   });
 }
@@ -151,7 +150,7 @@ function useMachineMentionSuggestion({ enabled, lanes, navigate }: Props, machin
     detail: machineName
       ? `${machineName} is connected. Type @ in any chat and pick it, and the work starts there.`
       : undefined,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     context: machineName,
     start,
   });
@@ -164,9 +163,8 @@ function useChatSecretSuggestion({ enabled, navigate }: Props): void {
   useSituationalSuggestion({
     id: "chat-secret",
     signalKey: enabled && secretSeq > 0 ? "sent" : null,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     start,
-    repeatAfterMs: SECRET_REPEAT_AFTER_MS,
   });
 }
 
@@ -201,6 +199,8 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
           return;
         }
       }
+      // This message's links are all connected: the earlier one no longer applies.
+      setUnconnected(null);
     })();
     return () => {
       cancelled = true;
@@ -222,7 +222,7 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
         + "Connected, agents can read the issue and lanes can link to it."
       : undefined,
     actionLabel: label ? `Connect ${label}` : undefined,
-    tipsScopeKey: unconnected ?? APP_SCOPE,
+    scopeKey: unconnected ?? APP_SCOPE,
     context: label,
     start,
   });
@@ -250,9 +250,7 @@ function workingChatCount(itemsById: Readonly<Record<string, AttentionItem>>): n
 function useParallelChatsSuggestion({ enabled, navigate }: Props): void {
   const working = useActivityStore((state) => workingChatCount(state.itemsById));
   const running = enabled && working >= 3;
-  // Read when the signal is there: the grid's state lives in the project's store.
-  const project = running ? projectWorkView() : null;
-  const gridOn = project?.store.getState().workViewByProject[project.key]?.workFocusGrid === true;
+  const gridOn = useWorkFocusGridOn(running);
   const start = useCallback(() => {
     const target = projectWorkView();
     if (!target) return;
@@ -268,9 +266,28 @@ function useParallelChatsSuggestion({ enabled, navigate }: Props): void {
   useSituationalSuggestion({
     id: "parallel-chats",
     signalKey: running && !gridOn ? "running" : null,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     start,
   });
+}
+
+/**
+ * Whether the open project's Work grid is on, kept current while `watch`:
+ * the grid's state lives in the project's own store, so turning it on or off
+ * after the chats are running still updates the signal.
+ */
+function useWorkFocusGridOn(watch: boolean): boolean {
+  const projectKey = useAppStore(selectActiveProjectStateKey);
+  const store = watch && projectKey ? workViewStoreForProject(projectKey) : null;
+  const read = useCallback(
+    () => (store && projectKey ? store.getState().workViewByProject[projectKey]?.workFocusGrid === true : false),
+    [projectKey, store],
+  );
+  const subscribe = useCallback(
+    (listener: () => void) => (store ? store.subscribe(listener) : () => {}),
+    [store],
+  );
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** The same prompt was sent three times this week in this project. */
@@ -280,7 +297,7 @@ function useRepeatPromptSuggestion({ enabled, navigate }: Props): void {
   useSituationalSuggestion({
     id: "repeat-prompt",
     signalKey: enabled ? repeatedPrompt : null,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     start,
   });
 }
@@ -313,7 +330,7 @@ function usePairPhoneSuggestion({ enabled }: Props, onlyThisMachine: boolean): v
   useSituationalSuggestion({
     id: "pair-phone",
     signalKey: candidate && noPhone ? "week-one" : null,
-    tipsScopeKey: APP_SCOPE,
+    scopeKey: APP_SCOPE,
     start,
   });
 }
@@ -359,7 +376,7 @@ function useStackedPrsSuggestion({ enabled, projectRoot, projectBinding, lanes, 
       ? `${stacked.lane.name} is built on ${stacked.parent.name}, which has an open pull request. `
         + "Its PR can target that branch, so each one is reviewed on its own."
       : undefined,
-    tipsScopeKey: scopeKey ?? APP_SCOPE,
+    scopeKey: scopeKey ?? APP_SCOPE,
     context: projectName,
     start: scopeKey ? start : null,
   });

@@ -181,6 +181,7 @@ import {
   useThreadComments,
 } from "./threadCommentsStore";
 import { ClaudeModUi } from "./ClaudeModUi";
+import { registerDraftModelSetter } from "./draftModelSeam";
 import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
@@ -10118,15 +10119,19 @@ export function AgentChatPane({
     pendingEventQueueRef.current = [];
   }, []);
 
+  // "Last used" is what the person chose: a model ADE set on a draft (the
+  // tour's first chat, `draftKeepsMachineDefaultsRef`) is not written.
   useEffect(() => {
     if (!preferencesReady) return;
     if (!modelId.trim().length) return;
+    if (draftKeepsMachineDefaultsRef.current) return;
     writeLastUsedModelId(modelId);
     writeLastPresetSelection(modelId, draftHarnessPresetId);
   }, [modelId, draftHarnessPresetId, preferencesReady]);
 
   useEffect(() => {
     if (!preferencesReady) return;
+    if (draftKeepsMachineDefaultsRef.current) return;
     writeLastUsedReasoningEffort({
       laneId,
       modelId,
@@ -10491,28 +10496,25 @@ export function AgentChatPane({
     insertComposerDraft,
   ]);
 
-  /** The draft's model was set by ADE, not picked: its launch is not remembered as the machine default. */
+  /**
+   * The draft's model was set by ADE, not picked: neither the machine's
+   * remembered launch defaults nor this composer's own "last used" keys
+   * (`ade.chat.last*`) take it. A model the person picks clears this.
+   */
   const draftKeepsMachineDefaultsRef = useRef(false);
   // A draft's model, set from outside (the onboarding tour picks a cheap one
-  // for the first chat). Routed through the composer's own handler, so the
-  // usual checks apply; `handled` tells the sender a draft took it.
+  // for the first chat; `draftModelSeam.ts`). Routed through the composer's
+  // own handler, so the usual checks apply.
   const composerModelChangeRef = useRef<((modelId: string) => void) | null>(null);
   useEffect(() => {
     if (!forceDraft) return undefined;
-    const onSetDraftModel = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        modelId?: unknown;
-        rememberLaunchDefaults?: boolean;
-        handled?: boolean;
-      }>).detail;
-      if (!detail || typeof detail.modelId !== "string" || !composerModelChangeRef.current) return;
-      composerModelChangeRef.current(detail.modelId);
+    return registerDraftModelSetter((pick) => {
+      if (!composerModelChangeRef.current) return false;
+      composerModelChangeRef.current(pick.modelId);
       // After the pick above, which clears the flag as a person's pick would.
-      draftKeepsMachineDefaultsRef.current = detail.rememberLaunchDefaults === false;
-      detail.handled = true;
-    };
-    window.addEventListener("ade:agent-chat:set-draft-model", onSetDraftModel);
-    return () => window.removeEventListener("ade:agent-chat:set-draft-model", onSetDraftModel);
+      draftKeepsMachineDefaultsRef.current = !pick.rememberLaunchDefaults;
+      return true;
+    });
   }, [forceDraft]);
 
   useEffect(() => {
@@ -11243,7 +11245,12 @@ export function AgentChatPane({
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
       recordStarPillThreadCreated();
-      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+      if (draftKeepsMachineDefaultsRef.current) {
+        // ADE's pick launched once; the next draft here remembers again.
+        draftKeepsMachineDefaultsRef.current = false;
+      } else {
+        rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+      }
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -12263,7 +12270,12 @@ export function AgentChatPane({
         const built = buildChatCreateArgs(prepared);
         provider = built.provider;
         // Same "remember what I launched with" write the direct create path makes.
-        rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        if (draftKeepsMachineDefaultsRef.current) {
+          // ADE's pick launched once; the next draft here remembers again.
+          draftKeepsMachineDefaultsRef.current = false;
+        } else {
+          rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        }
         chat = {
           create: built.createArgs,
           message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode),
@@ -17047,7 +17059,7 @@ export function AgentChatPane({
       ? sessionRoutePick.presetId
       : selectedSession?.presetId ?? null;
   // The composer's model pick, also reachable from outside for a draft
-  // (`ade:agent-chat:set-draft-model`, the onboarding tour's first chat).
+  // (`draftModelSeam.ts`, the onboarding tour's first chat).
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
     draftKeepsMachineDefaultsRef.current = false;
     // A Custom pick is validated by the picker against what its

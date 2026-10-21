@@ -19,6 +19,8 @@ export default defineConfig({
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
     "main/loginImportReadWorker":
       "src/main/services/builtInBrowser/loginImport/loginImportReadWorkerEntry.ts",
+    "main/onboardingDiscoveryWorker":
+      "src/main/services/onboarding/onboardingDiscoveryWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts",
     "preload/browserMedia": "src/preload/browserMedia.ts"

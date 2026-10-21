@@ -13,9 +13,10 @@ import {
 } from "../../../onboarding/onboardingProgress";
 import {
   anchorRadius,
+  createSettle,
   findOutOfViewAnchor,
+  followAnchor,
   findVisibleAnchor,
-  hasOpenModal,
   isAnchorVisible,
   placeCard,
   prefersReducedMotion,
@@ -25,17 +26,11 @@ import {
   type Box,
   type Frame,
 } from "./anchorGeometry";
+import { modalOpen } from "../../ui/overlayState";
 import { useLaneChatHandoff } from "../../../lib/laneChatHandoff";
 import { AdeTourCursorArt } from "./AdeTourCursorArt";
-import {
-  FIRST_CHAT_PROMPT,
-  pickFirstChatModel,
-  restoreRememberedLaunch,
-  setDraftModel,
-  snapshotRememberedLaunch,
-  type FirstChatModel,
-  type RememberedLaunchSnapshot,
-} from "./firstChat";
+import { FIRST_CHAT_PROMPT, pickFirstChatModel, type FirstChatModel } from "./firstChat";
+import { setOpenDraftModel } from "../../chat/draftModelSeam";
 import {
   TOUR_FINISH_ID,
   TOUR_STEPS,
@@ -135,10 +130,12 @@ let firstChatSetup: FirstChatSetup = null;
  * in the primary lane with the first question in its composer and a cheap
  * model picked (`firstChat.ts`). Never sends. On the tab's own machine
  * (`pin` null), where its lanes and its status come from.
+ *
+ * ADE picked that model, not the user, so the draft neither remembers it as
+ * the machine's default nor saves it as the composer's last-used model
+ * (`rememberLaunchDefaults: false`); a model the user picks in the step is
+ * theirs and sticks.
  */
-/** What the composer remembered before the first chat; put back when the step ends. */
-let rememberedLaunch: RememberedLaunchSnapshot | null = null;
-
 function useFirstChatPrefill(active: boolean): FirstChatSetup {
   const handOff = useLaneChatHandoff(null, { startDraftInLane: true });
   const primaryLaneId = useAppStore((state) => state.lanes.find((lane) => lane.laneType === "primary")?.id ?? null);
@@ -152,7 +149,6 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
       // Wait for Work's chats list to say there is nothing yet.
       if (firstChatSetup || !noChatsToOpen()) return;
       firstChatSetup = { model: null, noAgents: false };
-      rememberedLaunch ??= snapshotRememberedLaunch();
       watch?.dispose();
       handOff({ laneId: primaryLaneId, sessionId: null, prompt: FIRST_CHAT_PROMPT });
       void window.ade.ai.getStatus()
@@ -160,7 +156,7 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
           const model = pickFirstChatModel(status);
           firstChatSetup = { model, noAgents: !(status.availableModelIds ?? []).length };
           if (!cancelled) setSetup(firstChatSetup);
-          if (model) await setDraftModel(model.id);
+          if (model) await setOpenDraftModel({ modelId: model.id, rememberLaunchDefaults: false });
         })
         .catch(() => undefined);
     };
@@ -170,13 +166,6 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
       watch?.dispose();
     };
   }, [active, handOff, primaryLaneId]);
-
-  // The step is over (sent, skipped or left): the user's own model is the default again.
-  useEffect(() => {
-    if (active || !rememberedLaunch) return;
-    restoreRememberedLaunch(rememberedLaunch);
-    rememberedLaunch = null;
-  }, [active]);
 
   return setup;
 }
@@ -270,7 +259,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
   // to do. Event-driven (`watchTourDom`), no polling.
   useEffect(() => {
     if (finishing) return undefined;
-    let pending: { anchor: HTMLElement; since: number } | null = null;
+    const settle = createSettle<HTMLElement>(SETTLE_MS);
     let missingSince: number | null = null;
     let skipSince: number | null = null;
     let watch: TourWatch | null = null;
@@ -280,8 +269,8 @@ function TourRunner({ stepId }: { stepId: string | null }) {
       setView(nextView);
     };
     const evaluate = () => {
-      if (hasOpenModal()) {
-        pending = null;
+      if (modalOpen()) {
+        settle.reset();
         missingSince = null;
         commit({ kind: "hidden" });
         return;
@@ -294,7 +283,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
       // up (a draft before the chat it opened), and a skip decided on it
       // would race past steps that are about to apply.
       if (step.skipIf?.()) {
-        pending = null;
+        settle.reset();
         skipSince ??= now;
         const skipLeft = SKIP_SETTLE_MS - (now - skipSince);
         if (skipLeft > 0) {
@@ -320,17 +309,15 @@ function TourRunner({ stepId }: { stepId: string | null }) {
           return;
         }
         // A control that just appeared: give the page a beat to settle first.
-        if (!pending || pending.anchor !== anchor) pending = { anchor, since: now };
-        const settleLeft = SETTLE_MS - (now - pending.since);
+        const settleLeft = settle.wait(anchor, now);
         if (settleLeft > 0) {
           watch?.scheduleCheck(settleLeft);
           return;
         }
-        pending = null;
         commit({ kind: "shown", anchor });
         return;
       }
-      pending = null;
+      settle.reset();
       missingSince ??= now;
       const pauseLeft = PAUSE_AFTER_MS - (now - missingSince);
       if (pauseLeft > 0) {
@@ -507,9 +494,7 @@ function TourStepOverlay({
   useLayoutEffect(() => {
     let lastFrame: Frame | null = null;
     let lastCardHeight = -1;
-    let raf = 0;
     const layout = () => {
-      raf = 0;
       const frame = readFrame(anchor);
       const cardHeight = cardRef.current?.offsetHeight ?? 0;
       if (lastFrame && sameFrame(lastFrame, frame) && cardHeight === lastCardHeight) return;
@@ -544,26 +529,12 @@ function TourStepOverlay({
       caret.style.left = card.side === "above" || card.side === "below" ? `${offset}px` : "";
       caret.style.top = card.side === "above" || card.side === "below" ? "" : `${offset}px`;
     };
-    const schedule = () => {
-      if (!raf) raf = window.requestAnimationFrame(layout);
-    };
-    layout();
+    const follow = followAnchor(anchor, layout, { fallbackMs: FOLLOW_FALLBACK_MS, observe: [cardRef.current] });
+    const { schedule } = follow;
     relayoutRef.current = schedule;
-    const observer = new ResizeObserver(schedule);
-    observer.observe(anchor);
-    if (cardRef.current) observer.observe(cardRef.current);
-    window.addEventListener("resize", schedule, { passive: true });
-    window.addEventListener("scroll", schedule, { capture: true, passive: true });
-    const fallback = window.setInterval(() => {
-      if (!document.hidden) schedule();
-    }, FOLLOW_FALLBACK_MS);
     return () => {
       if (relayoutRef.current === schedule) relayoutRef.current = null;
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-      window.removeEventListener("scroll", schedule, { capture: true });
-      window.clearInterval(fallback);
-      if (raf) window.cancelAnimationFrame(raf);
+      follow.dispose();
     };
   }, [anchor, arrived, cursor, place, recheckRef, relayoutRef]);
 

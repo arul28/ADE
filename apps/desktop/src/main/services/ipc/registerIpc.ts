@@ -218,6 +218,7 @@ import type {
   BatchAssessmentResult,
   AppInfo,
   AppWelcomeVideoState,
+  OnboardingProjectCandidate,
   OnboardingProjectChat,
   OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
@@ -1006,8 +1007,9 @@ import {
   type BrowserLoginImportService,
 } from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
-import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, upsertRecentProject } from "../state/globalState";
-import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingProjectDiscovery";
+import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, addRecentProjectsWithoutEviction } from "../state/globalState";
+import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingDiscoveryClient";
+import { resolveOnboardingFolder } from "../onboarding/onboardingProjectDiscovery";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -4691,15 +4693,26 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
-  // First-run setup on this computer. All three run here and only here: setup
+  // First-run setup on this computer. All four run here and only here: setup
   // is the first open of ADE on a machine, and it reads that machine's own
   // coding-agent history. The web client and other machines never call them.
-  ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> => {
-    const knownRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
-      .filter((entry) => !entry.remote)
-      .map((entry) => entry.rootPath);
-    return discoverOnboardingProjects({ knownRoots, logger: getCtx().logger });
-  });
+  const localRecentRoots = (): string[] => (readGlobalState(globalStatePath).recentProjects ?? [])
+    .filter((entry) => !entry.remote)
+    .map((entry) => entry.rootPath);
+  ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> =>
+    discoverOnboardingProjects({ knownRoots: localRecentRoots(), logger: getCtx().logger }));
+
+  // A folder the user picked in setup, as the project it belongs to (a
+  // subfolder resolves to its checkout, a lane or worktree to its project), or
+  // null when it is not in a git checkout. Reads a few files; no git.
+  ipcMain.handle(
+    IPC.appResolveOnboardingFolder,
+    async (_event, arg: { folder?: unknown } = {}): Promise<OnboardingProjectCandidate | null> => {
+      const folder = typeof arg?.folder === "string" ? arg.folder.trim() : "";
+      if (!folder) return null;
+      return resolveOnboardingFolder({ folder, knownRoots: localRecentRoots() });
+    },
+  );
 
   // One project's importable chats on this computer, for setup's per-chat
   // picker. Read when the picker opens, before any project is open.
@@ -4720,16 +4733,19 @@ export function registerIpc({
         .map((value) => path.resolve(value.trim()))
         .slice(0, 40);
       const before = readGlobalState(globalStatePath);
-      let next = before;
-      // Added last-first, so the first root the user saw ends up first in the tab bar.
-      for (const rootPath of [...roots].reverse()) {
-        // Only git checkouts: this adds project tabs, never arbitrary folders.
-        if (!fs.existsSync(path.join(rootPath, ".git"))) continue;
-        next = upsertRecentProject(next, { rootPath, displayName: path.basename(rootPath) });
-      }
-      // `upsertRecentProject` clears the reopen-on-launch project unless told to
-      // record one; adding tabs must not change which project reopens.
-      if (before.lastProjectRoot) next = { ...next, lastProjectRoot: before.lastProjectRoot };
+      // In the order shown, never evicting a listed project: when the picks
+      // fit within the recents cap they go ahead of the projects already
+      // listed; when they would overflow it they go after them, so a later
+      // open's trim drops the newest additions first and never the user's
+      // earlier projects (local or remote). Only git checkouts: this adds
+      // project tabs, never arbitrary folders. The reopen-on-launch project
+      // stays as it was.
+      const next = addRecentProjectsWithoutEviction(
+        before,
+        roots
+          .filter((rootPath) => fs.existsSync(path.join(rootPath, ".git")))
+          .map((rootPath) => ({ rootPath, displayName: path.basename(rootPath) })),
+      );
       if (next !== before) {
         writeGlobalState(globalStatePath, next);
         clearRecentProjectSummaryCache();

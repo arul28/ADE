@@ -8,6 +8,9 @@
  * of onboarding: a project added on one machine imports that machine's chats.
  */
 
+import { normalizePathForComparison } from "../lib/pathUtils";
+import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
+
 const STORAGE_KEY = "ade.onboarding.pendingChatImports.v1";
 
 export type PendingChatImport = {
@@ -30,36 +33,34 @@ export function chatImportKey(provider: string, sessionId: string): string {
 
 type PendingChatImports = Record<string, PendingChatImport>;
 
-function read(): PendingChatImports {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: PendingChatImports = {};
-    for (const [rootPath, value] of Object.entries(parsed as Record<string, unknown>)) {
-      const entry = value as Partial<PendingChatImport> | null;
-      if (entry && typeof entry.sinceMs === "number" && typeof entry.addedAt === "number") {
-        const excludedKeys = Array.isArray(entry.excludedKeys)
-          ? entry.excludedKeys.filter((key): key is string => typeof key === "string")
-          : [];
-        out[rootPath] = {
-          sinceMs: entry.sinceMs,
-          addedAt: entry.addedAt,
-          ...(excludedKeys.length ? { excludedKeys } : null),
-        };
-      }
-    }
-    return out;
-  } catch {
-    return {};
+function parseEntries(stored: unknown): PendingChatImports {
+  const out: PendingChatImports = {};
+  for (const [rootPath, value] of Object.entries(storedRecord(stored) ?? {})) {
+    const entry = storedRecord(value);
+    if (!entry) continue;
+    const sinceMs = finiteNumber(entry.sinceMs);
+    const addedAt = finiteNumber(entry.addedAt);
+    if (sinceMs === undefined || addedAt === undefined) continue;
+    const excludedKeys = Array.isArray(entry.excludedKeys)
+      ? entry.excludedKeys.filter((key): key is string => typeof key === "string")
+      : [];
+    out[rootPath] = { sinceMs, addedAt, ...(excludedKeys.length ? { excludedKeys } : null) };
   }
+  return out;
 }
 
-function write(next: PendingChatImports): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable: the chats stay importable from Work's import browser.
-  }
+/** When storage is unavailable the list holds for this session; the chats stay importable from Work's import browser. */
+const store = createLocalStore({ key: STORAGE_KEY, event: "ade:pending-chat-imports", parse: parseEntries });
+
+/**
+ * The stored key that names the same folder as `rootPath`, if any. Roots are
+ * compared as paths (separators, a trailing slash, a Windows drive's case), so
+ * a project that opens under a differently written root still finds its entry.
+ */
+function keyFor(entries: PendingChatImports, rootPath: string): string | null {
+  if (rootPath in entries) return rootPath;
+  const wanted = normalizePathForComparison(rootPath);
+  return Object.keys(entries).find((key) => normalizePathForComparison(key) === wanted) ?? null;
 }
 
 export function queueChatImports(
@@ -67,22 +68,28 @@ export function queueChatImports(
   sinceMs: number,
 ): void {
   if (!entries.length) return;
-  const next = read();
+  const next = { ...store.get() };
   const now = Date.now();
   for (const { rootPath, excludedKeys } of entries) {
     const excluded = excludedKeys ? [...excludedKeys] : [];
+    const existing = keyFor(next, rootPath);
+    if (existing !== null) delete next[existing];
     next[rootPath] = { sinceMs, addedAt: now, ...(excluded.length ? { excludedKeys: excluded } : null) };
   }
-  write(next);
+  store.set(next);
 }
 
 export function pendingChatImportFor(rootPath: string): PendingChatImport | null {
-  return read()[rootPath] ?? null;
+  const entries = store.get();
+  const key = keyFor(entries, rootPath);
+  return key === null ? null : entries[key] ?? null;
 }
 
 export function clearPendingChatImport(rootPath: string): void {
-  const next = read();
-  if (!(rootPath in next)) return;
-  delete next[rootPath];
-  write(next);
+  const current = store.get();
+  const key = keyFor(current, rootPath);
+  if (key === null) return;
+  const next = { ...current };
+  delete next[key];
+  store.set(next);
 }

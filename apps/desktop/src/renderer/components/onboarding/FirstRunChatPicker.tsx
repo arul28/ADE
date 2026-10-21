@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { Check, GitBranch } from "@phosphor-icons/react";
+import { ONBOARDING_CHAT_WINDOW_DAYS } from "../../../shared/onboardingChatWindow";
 import { EXTERNAL_SESSION_PROVIDER_LABELS, type OnboardingProjectChat } from "../../../shared/types";
 import { chatImportKey } from "../../onboarding/pendingChatImports";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -38,9 +39,8 @@ function folderLabel(cwd: string | null, rootPath: string): string | null {
  * import off. "Select all" and the pill's own box both mean every chat.
  *
  * Portalled (into the gate, see `FirstRunProjects`) so the card's scrolling
- * rows never clip it. Escape closes the picker only, never setup: it is caught
- * on window in the capture phase, ahead of setup's Escape-to-skip, and marked
- * handled.
+ * rows never clip it. Escape closes the picker only, never setup: setup's
+ * Escape-to-skip ignores keys while a menu or popover is open over it.
  */
 export function FirstRunChatPicker({
   projectName,
@@ -88,17 +88,6 @@ export function FirstRunChatPicker({
     returnFocusRef.current?.focus();
   }, [onClose, returnFocusRef]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeAndReturn();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [closeAndReturn]);
-
   // Focus moves in on open, and onto the first chat once the list is there,
   // unless the user has already moved it somewhere else. A frame later: the
   // menu stays hidden (unfocusable) until it has been placed.
@@ -115,6 +104,13 @@ export function FirstRunChatPicker({
   }, [anchorRef, phase]);
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Escape from inside the picker closes it and puts focus back on its
+    // pill. Setup's own Escape-to-skip leaves keys from an open picker alone,
+    // and `AnchoredMenu` closes it on an Escape from anywhere else.
+    if (event.key === "Escape") {
+      closeAndReturn();
+      return;
+    }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const rows = Array.from(panelRef.current?.querySelectorAll<HTMLElement>("[data-chat-row]") ?? []);
     if (!rows.length) return;
@@ -150,7 +146,7 @@ export function FirstRunChatPicker({
         }}
       >
         <div className="ade-fr-picker-head">
-          <span className="ade-fr-picker-title">Last 30 days</span>
+          <span className="ade-fr-picker-title">Last {ONBOARDING_CHAT_WINDOW_DAYS} days</span>
           {phase === "ready" && keys.length ? (
             <>
               <span className="ade-fr-picker-count" aria-live="polite">
@@ -176,7 +172,7 @@ export function FirstRunChatPicker({
             Couldn't read this project's chats. The box still brings them all in.
           </p>
         ) : !chats.length ? (
-          <p className="ade-fr-picker-note">No chats from the last 30 days to choose from.</p>
+          <p className="ade-fr-picker-note">No chats from the last {ONBOARDING_CHAT_WINDOW_DAYS} days to choose from.</p>
         ) : (
           <div className="ade-fr-picker-rows" role="group" aria-label={`${projectName} chats`}>
             {chats.map((chat, index) => {

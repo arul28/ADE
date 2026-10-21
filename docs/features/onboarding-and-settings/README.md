@@ -580,18 +580,33 @@ Renderer — onboarding:
   Machines list share the flow and both copy modules. `AccountPage` re-exports
   `describeThisComputerMissing` for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
-  `firstRun.css` — first-run setup on a computer: the welcome card (the
+  `firstRun.css` (shared frame and motion) with one stylesheet per step
+  (`firstRunWelcome.css`, `firstRunAgents.css`, `firstRunProjects.css`,
+  `firstRunDevices.css`) — first-run setup on a computer: the welcome card (the
   website's "Every AI coding tool" promise, one button, Skip setup) and "Bring
   your projects in" (the git projects found on this computer, the phone QR and
-  the "another computer" line). `LaunchGate.tsx` runs it around sign-in;
-  `OnboardingBootstrap.tsx` shows it again over the app for "Show me around
-  again" or a reload during setup. See [First run on a computer](#first-run-on-a-computer).
+  the "another computer" line). `FirstRunSteps.tsx` holds the step machine
+  (`useFirstRunSteps`) and the card renderer both hosts share:
+  `LaunchGate.tsx` runs it around sign-in; `OnboardingBootstrap.tsx` shows it
+  again over the app for "Show me around again" or a reload during setup, and
+  leaves out "Connect your agents" when the front tab is a project on another
+  machine (that card reads and signs in on the tab's machine). See
+  [First run on a computer](#first-run-on-a-computer).
 - `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
   — finds the projects for that card from every importable provider's
   history, without spawning git (`app.discoverOnboardingProjects`), and lists
   one project's importable chats for the import picker
-  (`app.listOnboardingProjectChats`). `app.addOnboardingProjects` adds the
-  chosen ones to recent projects. All three run only on this computer.
+  (`app.listOnboardingProjectChats`). Both read in a child process
+  (`onboardingDiscoveryClient.ts`, `ELECTRON_RUN_AS_NODE`), because the
+  providers' discoverers read synchronously and held Electron main for up to
+  2.7 s; the chat lists come back with each answer and are kept in main for
+  the setup session. `app.resolveOnboardingFolder` turns a folder picked with
+  "Add another folder" into the project it belongs to (a subfolder into its
+  checkout, a lane or worktree into its project), or refuses one outside a git
+  checkout. `app.addOnboardingProjects` adds the chosen ones to the front of
+  recent projects without evicting any (the list may pass its cap of 24 until
+  later opens trim it). All four run only on this computer. The 30-day window
+  is `shared/onboardingChatWindow.ts`.
 - `apps/desktop/src/renderer/components/onboarding/FirstRunChatPicker.tsx` —
   the per-chat picker behind an import pill's count.
 - `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
@@ -1970,7 +1985,9 @@ video it replaced), so a computer set up before it existed never sees it.
    new chat in the primary lane with "In one sentence, what is this
    project?" in the composer, on a cheap model the computer can run — Haiku,
    Luna or Composer when their provider is connected, else the lowest-priced
-   runnable model the registry knows — which the user sends themselves), the
+   runnable model the registry knows — which the user sends themselves; ADE
+   set that model, so it is not saved as the machine's or the composer's
+   last-used model, while a model the user picks there is), the
    Tools pane, back to a new chat, a new project
    tab, the Home page and its edit tools, and Connections. Some steps ask for
    the click (the card says so, and the click moves the tour on); every card
@@ -2021,8 +2038,8 @@ ADE Tips, the command palette, the home screen's ADE Tips widget or the
 tour's last card (`renderer/onboarding/adeTips.ts` holds the tips;
 `components/onboarding/tips/` draws them). One group at a time, as a wall of
 tiles: the group's own tile, screenshot tiles for its headline features
-(`adeTipsWall.ts` sets sizes and order, and packs each group with no holes in
-four columns and in two) and icon tiles for the rest. Suggestions the user
+(each tip's `size` and `shot` in `adeTips.ts`, listed in wall order, pack each
+group with no holes in four columns and in two) and icon tiles for the rest. Suggestions the user
 postponed sit first, under **For you**.
 
 Every tip has **Try it**. It goes where the feature lives (a page of the open
@@ -2050,7 +2067,7 @@ To test tiers 2 and 3 without waiting days: `npm run dev:desktop -- --first-run
 --keep` reopens the isolated app as a returning user, and in dev builds the
 command palette has **Dev: Suggestions test mode** (no cooldown, no
 once-per-launch or per-day, no snooze; answer a card and the next can show)
-and **Dev: Reset Tips, suggestions and What's new**.
+and **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
 
 ### Situational suggestions
 
@@ -2068,7 +2085,12 @@ finished (or was skipped) on an earlier launch. "Not now" snoozes the kind for
 two weeks. `components/app/suggestions/useSituationalSuggestion.tsx` draws the
 card and does the Tips plumbing; `SituationalSuggestions.tsx` (mounted in
 `AppShell`) holds one small hook per signal. The lane-template suggestion
-(`useLaneDependencyBanners`) predates the helper and keeps its own storage.
+(`useLaneDependencyBanners`) goes through the same helper, with two
+differences: it comes back for a project after two weeks while it still
+applies, and "Don't suggest again" turns it off for that project only
+(`neverPerScope`). Its answers from before the shared rules
+(`ade.laneTemplateSuggestion.v1`) are folded into `ade.suggestions.v1` on
+first read.
 
 | Suggestion | Signal | Action |
 | --- | --- | --- |

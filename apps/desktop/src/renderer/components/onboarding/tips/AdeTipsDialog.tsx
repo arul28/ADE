@@ -20,14 +20,13 @@ import {
   type PostponedSuggestion,
 } from "../../../onboarding/adeTipsSuggestions";
 import { AdeTourCursorArt } from "../tour/AdeTourCursorArt";
-import { ADE_TIP_SHOTS, ADE_TIPS_WALL, type TipTileSize } from "./adeTipsWall";
 import { useGoTo } from "../spotlight/useGoTo";
 import { markTipTried, setTipCardsOff, tipCardsOff, useSuggestionRulesVersion } from "../../../onboarding/situationalSuggestions";
 import "./adeTips.css";
 
 /**
  * ADE Tips: everything worth knowing, one group at a time, laid out as a wall
- * of tiles in the landing page's manner (`adeTipsWall.ts`): the group's own
+ * of tiles in the landing page's manner (sizes and order in `adeTips.ts`): the group's own
  * tile, its headline features as large tiles with a screenshot of the real
  * app, the rest as icon tiles. Each tip's "Try it" goes to the real place and
  * rings the control there (`spotlight/`). Suggestions the user postponed with "Not now" get a
@@ -127,7 +126,7 @@ export function AdeTipsDialog({
     cell?.scrollIntoView({ block: "nearest" });
   }, [focusTipId, open]);
 
-  const tiles = active.id === SUGGESTED_ID ? [] : wallTiles(active.id);
+  const tiles = active.id === SUGGESTED_ID ? [] : tipsInGroup(active.id);
   const ActiveIcon = active.icon;
 
   return (
@@ -222,11 +221,10 @@ export function AdeTipsDialog({
                 <p className="ade-tips-intro-blurb">{active.blurb}</p>
                 <span className="ade-tips-intro-count">{active.count} {active.count === 1 ? "tip" : "tips"}</span>
               </article>
-              {tiles.map(({ tip, size }, index) => (
+              {tiles.map((tip, index) => (
                 <TipTile
                   key={tip.id}
                   tip={tip}
-                  size={size}
                   index={index + 1}
                   focused={tip.id === focusTipId}
                   canTry={tipActionAvailable(tip.action)}
@@ -243,34 +241,21 @@ export function AdeTipsDialog({
 
 const staggerStyle = (index: number) => ({ "--tips-i": Math.min(index, 10) }) as CSSProperties;
 
-/** A group's tips in wall order, each with its tile size; a tip the layout forgot still shows, small. */
-function wallTiles(group: AdeTipGroupId): { tip: AdeTip; size: TipTileSize }[] {
-  const tips = tipsInGroup(group);
-  const placed = ADE_TIPS_WALL[group].flatMap(({ id, size }) => {
-    const tip = tips.find((candidate) => candidate.id === id);
-    return tip ? [{ tip, size }] : [];
-  });
-  const rest = tips.filter((tip) => !placed.some((entry) => entry.tip === tip)).map((tip) => ({ tip, size: "small" as const }));
-  return [...placed, ...rest];
-}
-
 function TipTile({
   tip,
-  size,
   index,
   focused,
   canTry,
   onTry,
 }: {
   tip: AdeTip;
-  size: TipTileSize;
   index: number;
   focused: boolean;
   canTry: boolean;
   onTry: () => void;
 }) {
   const TipIcon = tip.icon;
-  const shot = size === "screen" ? ADE_TIP_SHOTS[tip.id] : undefined;
+  const { shot } = tip;
   const tryButton = canTry ? (
     <button type="button" className="ade-tips-try" onClick={onTry} aria-label={`Try ${tip.title}`}>
       <span className="ade-tips-try-cursor" aria-hidden><AdeTourCursorArt /></span>
@@ -302,7 +287,7 @@ function TipTile({
   return (
     <article
       className="ade-tips-tile"
-      data-size={size}
+      data-size={tip.size}
       data-tip-id={tip.id}
       data-focused={focused || undefined}
       data-can-try={canTry || undefined}

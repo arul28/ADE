@@ -32,8 +32,15 @@ const SECRET_PATTERNS: readonly RegExp[] = [
  * counts unless it is a placeholder (`"${TOKEN}"`, `"<your key>"`); an
  * unquoted one must carry a digit and must not be a reference
  * (`token = getToken();`, `secret: process.env.SECRET`, `password: string`).
+ *
+ * Every repeat is bounded and each value is read once (`(?=(…))\2` is an
+ * atomic group: no shorter run is retried after the full one fails), so the
+ * scan stays linear on hostile text. Unbounded `[\w-]*` around the key name
+ * backtracked catastrophically: 20,000 characters of `token-` took 99 s, on the
+ * send path and in the clipboard history. Key names longer than 48
+ * characters, and values longer than 1,024, are not read as assignments.
  */
-const SECRET_ASSIGNMENT = /\b[\w-]*(?:password|passwd|secret|api[_-]?key|access[_-]?key|token)[\w-]*["']?\s*[:=]\s*(?:(["'`])([^"'`\s]{8,})\1|([^\s"'`;,(){}[\]]{8,})(?=$|[\s;,]))/gi;
+const SECRET_ASSIGNMENT = /\b[\w-]{0,48}(?:password|passwd|secret|api[_-]?key|access[_-]?key|token)[\w-]{0,48}["']?\s{0,16}[:=]\s{0,16}(?:(["'`])(?=([^"'`\s]{8,1024}))\2\1|(?=([^\s"'`;,(){}[\]]{8,1024}))\3(?=$|[\s;,]))/gi;
 const PLACEHOLDER_VALUE = /^(?:\$|<|%|\{)/;
 const DOTTED_REFERENCE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/;
 

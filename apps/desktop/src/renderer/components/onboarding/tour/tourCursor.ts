@@ -29,14 +29,38 @@ function placeAt(point: Point): string {
   return translate(point.x - TIP, point.y - TIP);
 }
 
+export type GlideOptions = {
+  reduced: boolean;
+  press: boolean;
+  viewport: Point;
+  /** After the press (or right after arriving, with no press). */
+  afterPress?: () => void;
+};
+
 export class TourCursorMotion {
   private element: HTMLElement | null = null;
   /** Where the tip is (or is heading, mid-glide). */
-  private point: Point | null = restingPoint;
+  private point: Point | null;
   private shown = false;
   private motion: Animation | null = null;
   private fade: Animation | null = null;
   private gliding = false;
+  /** Starts where the last tour cursor rested, and leaves its own rest for the next one. */
+  private readonly resume: boolean;
+
+  /**
+   * `resume: false` (a hint's one-off cursor) always starts from the middle
+   * of the window and does not move the tour's resting point.
+   */
+  constructor(options: { resume?: boolean } = {}) {
+    this.resume = options.resume ?? true;
+    this.point = this.resume ? restingPoint : null;
+  }
+
+  private rest(point: Point): void {
+    this.point = point;
+    if (this.resume) restingPoint = point;
+  }
 
   attach(element: HTMLElement | null): void {
     if (this.element === element) return;
@@ -52,13 +76,12 @@ export class TourCursorMotion {
    * where the cursor is right now (mid-glide too), else from the middle of
    * the window. `press` adds two clicks on arrival.
    */
-  glideTo(to: Point, options: { reduced: boolean; press: boolean; viewport: Point }, onArrive: () => void): void {
+  glideTo(to: Point, options: GlideOptions, onArrive: () => void): void {
     const element = this.element;
     if (!element) return;
     const from = this.currentPoint() ?? this.point ?? { x: options.viewport.x / 2, y: options.viewport.y / 2 };
     this.stopMotion();
-    this.point = to;
-    restingPoint = to;
+    this.rest(to);
     const wasShown = this.shown;
     this.shown = true;
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
@@ -68,12 +91,13 @@ export class TourCursorMotion {
       if (!wasShown || distance >= 2) element.style.opacity = "0";
       this.fadeTo(1, false);
       onArrive();
+      options.afterPress?.();
       return;
     }
     // Fading in as it starts to move reads as the cursor arriving, not popping.
     this.fadeTo(1, false, wasShown ? 0 : FADE_MS);
     if (distance < 2) {
-      this.afterArrive(to, options.press, onArrive);
+      this.afterArrive(to, options, onArrive);
       return;
     }
     this.gliding = true;
@@ -87,7 +111,7 @@ export class TourCursorMotion {
         if (this.motion !== glide) return;
         this.gliding = false;
         this.motion = null;
-        this.afterArrive(this.point ?? to, options.press, onArrive);
+        this.afterArrive(this.point ?? to, options, onArrive);
       })
       .catch(() => {
         // Replaced by a newer glide, or the tour closed.
@@ -99,8 +123,7 @@ export class TourCursorMotion {
     const element = this.element;
     if (!element || !this.point) return;
     if (Math.abs(to.x - this.point.x) < 0.5 && Math.abs(to.y - this.point.y) < 0.5) return;
-    this.point = to;
-    restingPoint = to;
+    this.rest(to);
     if (this.gliding) return;
     element.style.transform = placeAt(to);
   }
@@ -112,8 +135,7 @@ export class TourCursorMotion {
     const at = this.currentPoint();
     this.stopMotion();
     if (at) {
-      this.point = at;
-      restingPoint = at;
+      this.rest(at);
       element.style.transform = placeAt(at);
     }
     if (!this.shown) return;
@@ -127,10 +149,13 @@ export class TourCursorMotion {
     this.fade = null;
   }
 
-  private afterArrive(to: Point, press: boolean, onArrive: () => void): void {
+  private afterArrive(to: Point, options: GlideOptions, onArrive: () => void): void {
     onArrive();
     const element = this.element;
-    if (!press || !element || typeof element.animate !== "function") return;
+    if (!options.press || !element || typeof element.animate !== "function") {
+      options.afterPress?.();
+      return;
+    }
     // One short click. A transform animation here ticks style on the main
     // thread every frame (measured), so it stays brief; the ring's pulse,
     // opacity only, carries the rest of the "here".
@@ -146,7 +171,9 @@ export class TourCursorMotion {
     this.motion = pressing;
     pressing.finished
       .then(() => {
-        if (this.motion === pressing) this.motion = null;
+        if (this.motion !== pressing) return;
+        this.motion = null;
+        options.afterPress?.();
       })
       .catch(() => undefined);
   }

@@ -340,6 +340,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 150_000;
     case IPC.githubCreateIssue:
       return 180_000;
+    // First-run discovery runs in a child with its own ceiling (60s discover,
+    // 30s chat list, `onboardingDiscoveryClient.ts`). The IPC budget outlives
+    // it, so a wedged child ends in setup's empty answer, not an IPC timeout.
+    case IPC.appDiscoverOnboardingProjects:
+      return 75_000;
+    case IPC.appListOnboardingProjectChats:
+      return 40_000;
     case IPC.archiveRestore:
       return 10 * 60_000;
     case IPC.archiveDelete:

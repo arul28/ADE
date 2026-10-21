@@ -291,12 +291,14 @@ export function createClipboardHistory(deps: {
   };
 
   const recordText = (text: string) => {
-    if (isConcealed() || looksLikeSecret(text)) {
+    // Only what would be kept is scanned: a copy can be megabytes, and the
+    // scan runs on the main thread.
+    const kept = text.slice(0, CLIPBOARD_MAX_CHARS);
+    if (isConcealed() || looksLikeSecret(kept)) {
       skippedSecrets += 1;
       announce();
       return;
     }
-    const kept = text.slice(0, CLIPBOARD_MAX_CHARS);
     const existing = entries.findIndex((entry) => !entry.image && entry.text === kept);
     const entry: HomeClipboardEntry = existing >= 0
       ? { ...entries[existing]!, copiedAt: Date.now() }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Package, Stack } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Package } from "@phosphor-icons/react";
 import type { LaneDependencyStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice/appBannerStore";
@@ -8,13 +8,8 @@ import { useAppStore } from "../../state/appStore";
 import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
-import {
-  ADE_SUGGESTIONS,
-  forgetPostponedSuggestion,
-  postponeSuggestion,
-  registerSuggestionKind,
-  registerSuggestionStarter,
-} from "../../onboarding/adeTipsSuggestions";
+import { forgetPostponedSuggestion } from "../../onboarding/adeTipsSuggestions";
+import { useSituationalSuggestion } from "./suggestions/useSituationalSuggestion";
 
 /**
  * Two notices about the open project's main checkout, on the tab's machine:
@@ -26,9 +21,11 @@ import {
  *   made a lane (so they know what one is), the main checkout has lockfiles,
  *   and there is no default lane template, so new lanes start with no
  *   packages. The primary action puts a setup prompt in a new chat in the main
- *   checkout. "Not now" snoozes it for two weeks and files it into ADE Tips
- *   ("Suggested for you"), where it can be started later or turned off for
- *   good ("Don't suggest again").
+ *   checkout. It follows the shared suggestion rules
+ *   (`useSituationalSuggestion`): once per project, again after two weeks
+ *   while it still applies; "Not now" files it into ADE Tips ("Suggested for
+ *   you"), where it can be started later or turned off for this project
+ *   ("Don't suggest again").
  *
  * Both read `lane.getDependencyStatus`, which only stats files (and hashes a
  * lockfile when it changed). It runs a few seconds after the project opens, on
@@ -41,41 +38,7 @@ const RECHECK_INTERVAL_MS = 10 * 60_000;
 const FOCUS_RECHECK_MIN_MS = 2 * 60_000;
 const UPDATE_WATCH_INTERVAL_MS = 15_000;
 const UPDATE_WATCH_MAX_MS = 30 * 60_000;
-const SUGGESTION_SNOOZE_MS = 14 * 24 * 3_600_000;
-const SUGGESTION_STORAGE_KEY = "ade.laneTemplateSuggestion.v1";
-const LANE_TEMPLATE_SUGGESTION = ADE_SUGGESTIONS["lane-template"];
 const MAX_NAMED_FOLDERS = 3;
-
-type SuggestionState = Record<string, number | "never">;
-
-function readSuggestionState(): SuggestionState {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(SUGGESTION_STORAGE_KEY) ?? "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: SuggestionState = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === "never" || (typeof value === "number" && Number.isFinite(value))) out[key] = value;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function suggestionHidden(key: string, nowMs: number = Date.now()): boolean {
-  const value = readSuggestionState()[key];
-  return value === "never" || (typeof value === "number" && nowMs < value);
-}
-
-function hideSuggestion(key: string, until: number | "never"): void {
-  try {
-    const state = readSuggestionState();
-    state[key] = until;
-    window.localStorage.setItem(SUGGESTION_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // best effort — storage may be unavailable
-  }
-}
 
 /** "apps/desktop and apps/ade-cli", "the root folder", "apps/web and 3 more". */
 function describeFolders(dirs: string[]): string {
@@ -102,7 +65,6 @@ export function useLaneDependencyBanners({
 }): void {
   const [status, setStatus] = useState<LaneDependencyStatus | null>(null);
   const [watchUntil, setWatchUntil] = useState(0);
-  const [suggestionVersion, setSuggestionVersion] = useState(0);
   const lastCheckRef = useRef(0);
   const updatingRef = useRef(false);
   const machineName = machineNameForBinding(projectBinding);
@@ -248,26 +210,6 @@ export function useLaneDependencyBanners({
     { placement: "docked", priority: APP_BANNER_PRIORITY.default },
   );
 
-  const snoozeSuggestion = useCallback((until: number | "never") => {
-    if (scopeKey) hideSuggestion(scopeKey, until);
-    setSuggestionVersion((value) => value + 1);
-  }, [scopeKey]);
-
-  // "Don't suggest again" from ADE Tips, for this project or any other one.
-  useEffect(() => registerSuggestionKind("lane-template", {
-    never: (key) => {
-      captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" });
-      hideSuggestion(key, "never");
-      setSuggestionVersion((value) => value + 1);
-    },
-  }), []);
-
-  const suggestionSnoozed = useMemo(
-    () => (scopeKey ? suggestionHidden(scopeKey) : true),
-    // `suggestionVersion` re-reads storage after the user answers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scopeKey, suggestionVersion, status],
-  );
   // The signal: packages to install, no template to install them, and a lane
   // already made, so "lane" means something to the user by now.
   const templateWouldHelp = Boolean(
@@ -277,51 +219,25 @@ export function useLaneDependencyBanners({
       && !status.defaultTemplateId,
   );
   const hasOwnLane = lanes.some((lane) => lane.laneType !== "primary" && !lane.archivedAt);
-  const showSuggestion = templateWouldHelp && hasOwnLane && !suggestionSnoozed;
 
+  // ADE Tips can start it whenever a template would help, lane or not.
   const startFromSuggestion = useCallback(() => {
-    if (!status) return;
-    snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS);
-    if (scopeKey) forgetPostponedSuggestion("lane-template", scopeKey);
-    void startTemplateChat(status);
-  }, [scopeKey, snoozeSuggestion, startTemplateChat, status]);
+    if (status) void startTemplateChat(status);
+  }, [startTemplateChat, status]);
 
-  // ADE Tips can start a postponed suggestion while this project is open.
-  useEffect(() => {
-    if (!scopeKey || !templateWouldHelp) return;
-    return registerSuggestionStarter("lane-template", scopeKey, startFromSuggestion);
-  }, [scopeKey, startFromSuggestion, templateWouldHelp]);
+  useSituationalSuggestion({
+    id: "lane-template",
+    signalKey: scopeKey && templateWouldHelp && hasOwnLane ? scopeKey : null,
+    scopeKey,
+    context: projectContext,
+    start: scopeKey && templateWouldHelp ? startFromSuggestion : null,
+    onNever: () => captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" }),
+    busy: templateChatBusy,
+  });
 
   // A default template now exists: nothing left to suggest from Tips.
   const hasDefaultTemplate = Boolean(status?.defaultTemplateId);
   useEffect(() => {
     if (scopeKey && hasDefaultTemplate) forgetPostponedSuggestion("lane-template", scopeKey);
   }, [hasDefaultTemplate, scopeKey]);
-
-  useAppBanner(
-    showSuggestion
-      ? {
-          id: "lane-template-suggestion",
-          tone: "accent",
-          icon: <Stack size={21} weight="duotone" />,
-          busy: templateChatBusy,
-          eyebrow: "Suggestion",
-          title: LANE_TEMPLATE_SUGGESTION.title,
-          detail: LANE_TEMPLATE_SUGGESTION.why,
-          actions: [
-            { label: LANE_TEMPLATE_SUGGESTION.actionLabel, variant: "solid", onClick: startFromSuggestion },
-            {
-              label: "Not now",
-              variant: "secondary",
-              title: "Hide for two weeks. It stays in ADE Tips.",
-              onClick: () => {
-                snoozeSuggestion(Date.now() + SUGGESTION_SNOOZE_MS);
-                if (scopeKey) postponeSuggestion({ id: "lane-template", scopeKey, context: projectContext });
-              },
-            },
-          ],
-        }
-      : null,
-    { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion },
-  );
 }

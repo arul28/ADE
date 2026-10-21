@@ -4,8 +4,11 @@ import { fixedFrameOf, fixedRect } from "../../../lib/webZoom";
 import {
   anchorRadius,
   clamp,
-  hasBox,
+  clippingAncestor,
+  createSettle,
+  followAnchor,
   isAnchorVisible,
+  isRendered,
   placeCard,
   prefersReducedMotion,
   readFrame,
@@ -68,41 +71,16 @@ function findSpot(spots: readonly SpotlightSpot[]): Found | null {
 function scrollFirstSpotIntoView(spots: readonly SpotlightSpot[]): void {
   for (const spot of spots) {
     for (const node of document.querySelectorAll<HTMLElement>(spot.selector)) {
-      if (!hasBox(node)) continue;
-      if (typeof node.checkVisibility === "function" && !node.checkVisibility({ visibilityProperty: true })) continue;
+      if (!isRendered(node)) continue;
       node.scrollIntoView({ block: "center", inline: "nearest" });
       return;
     }
   }
 }
 
-/** The nearest ancestor that scrolls or clips, so the ring does not spill over the chrome around a scrolled list. */
-function clippingAncestor(node: HTMLElement): HTMLElement | null {
-  for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
-    const style = window.getComputedStyle(parent);
-    if (style.overflowX !== "visible" || style.overflowY !== "visible") return parent;
-  }
-  return null;
-}
-
 /** A ring at least this big is a whole section; its label goes inside. */
 const SECTION_MIN_WIDTH = 560;
 const SECTION_MIN_HEIGHT = 140;
-
-function labelFits(
-  side: CardSide,
-  ring: Box,
-  size: { width: number; height: number },
-  viewport: { vw: number; vh: number },
-): boolean {
-  const room = {
-    right: viewport.vw - VIEWPORT_MARGIN - (ring.left + ring.width + LABEL_GAP),
-    left: ring.left - LABEL_GAP - VIEWPORT_MARGIN,
-    below: viewport.vh - VIEWPORT_MARGIN - (ring.top + ring.height + LABEL_GAP),
-    above: ring.top - LABEL_GAP - VIEWPORT_MARGIN,
-  }[side];
-  return side === "right" || side === "left" ? room >= size.width : room >= size.height;
-}
 
 function SpotlightRunner({ id, request }: { id: number; request: SpotlightRequest }) {
   const [found, setFound] = useState<Found | null>(null);
@@ -115,7 +93,7 @@ function SpotlightRunner({ id, request }: { id: number; request: SpotlightReques
   useEffect(() => {
     const startedAt = performance.now();
     const deadline = startedAt + (request.waitMs ?? DEFAULT_WAIT_MS);
-    let pending: { found: Found; since: number } | null = null;
+    const settle = createSettle<HTMLElement>(SETTLE_MS);
     let nudged = false;
     let watch: TourWatch | null = null;
     const commit = (next: Found | null) => {
@@ -139,17 +117,15 @@ function SpotlightRunner({ id, request }: { id: number; request: SpotlightReques
       }
       const hit = !request.ready || request.ready() ? findSpot(request.spots) : null;
       if (hit) {
-        if (!pending || pending.found.node !== hit.node) pending = { found: hit, since: now };
-        const settleLeft = SETTLE_MS - (now - pending.since);
+        const settleLeft = settle.wait(hit.node, now);
         if (settleLeft > 0) {
           watch?.scheduleCheck(settleLeft);
           return;
         }
-        pending = null;
         commit(hit);
         return;
       }
-      pending = null;
+      settle.reset();
       if (!nudged && now - startedAt >= NUDGE_AFTER_MS) {
         nudged = true;
         scrollFirstSpotIntoView(request.spots);
@@ -200,6 +176,7 @@ function SpotlightRing({ node, label }: { node: HTMLElement; label: string }) {
   const ringRef = useRef<HTMLDivElement | null>(null);
   const labelRef = useRef<HTMLDivElement | null>(null);
   const radius = useMemo(() => anchorRadius(node), [node]);
+  // The ring stays inside the list it scrolls in, not over the chrome around it.
   const clipper = useMemo(() => clippingAncestor(node), [node]);
 
   // Marks the ringed element, so a control that only shows on hover (a
@@ -211,11 +188,11 @@ function SpotlightRing({ node, label }: { node: HTMLElement; label: string }) {
 
   // Follow the element with direct style writes, once a frame at most, and
   // only when something moved: scrolls, resizes, and its own size changing.
+  // A page that just opened may still be sliding into place, which no event
+  // reports: follow it every frame for a moment, then on events only.
   useLayoutEffect(() => {
-    let raf = 0;
     let last = "";
     const layout = () => {
-      raf = 0;
       if (!node.isConnected) return;
       const frame = readFrame(node);
       let left = frame.left - RING_PAD;
@@ -259,9 +236,9 @@ function SpotlightRing({ node, label }: { node: HTMLElement; label: string }) {
       const order: readonly CardSide[] = ring.height > ring.width
         ? ["right", "left", "below", "above"]
         : ["below", "above", "right", "left"];
-      const side = section ? undefined : order.find((candidate) => labelFits(candidate, ring, size, frame));
-      const spot = side
-        ? placeCard(ring, size, frame, [side], LABEL_GAP)
+      const beside = section ? null : placeCard(ring, size, frame, order, LABEL_GAP);
+      const spot = beside?.fitted
+        ? beside
         : {
           x: section
             ? clamp(ring.left + ring.width - size.width - 12, VIEWPORT_MARGIN, frame.vw - size.width - VIEWPORT_MARGIN)
@@ -278,31 +255,8 @@ function SpotlightRing({ node, label }: { node: HTMLElement; label: string }) {
       labelEl.style.transform = translate(spot.x, spot.y);
       labelEl.dataset.side = spot.side;
     };
-    const schedule = () => {
-      if (!raf) raf = window.requestAnimationFrame(layout);
-    };
-    layout();
-    // A page that just opened may still be sliding into place, which no
-    // event reports: follow it every frame for a moment, then on events only.
-    const settleUntil = performance.now() + FOLLOW_SETTLE_MS;
-    let settleRaf = 0;
-    const settle = () => {
-      layout();
-      settleRaf = performance.now() < settleUntil ? window.requestAnimationFrame(settle) : 0;
-    };
-    settleRaf = window.requestAnimationFrame(settle);
-    const observer = new ResizeObserver(schedule);
-    observer.observe(node);
-    if (labelRef.current) observer.observe(labelRef.current);
-    window.addEventListener("resize", schedule, { passive: true });
-    window.addEventListener("scroll", schedule, { capture: true, passive: true });
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-      window.removeEventListener("scroll", schedule, { capture: true });
-      if (raf) window.cancelAnimationFrame(raf);
-      if (settleRaf) window.cancelAnimationFrame(settleRaf);
-    };
+    const follow = followAnchor(node, layout, { settleMs: FOLLOW_SETTLE_MS, observe: [labelRef.current] });
+    return follow.dispose;
   }, [clipper, node]);
 
   const pulse = !prefersReducedMotion();

@@ -154,6 +154,9 @@ import {
 } from "../shared/types/archive";
 import { emptyArchiveCounts } from "../shared/archive";
 import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
+import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
+import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
+import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -1306,25 +1309,10 @@ function browserMockGateState(): BrowserMockGateState | null {
   }
 }
 
-function browserMockLaneTemplate(): boolean {
+/** Whether the page URL carries `?<name>` (a browser-preview switch). */
+function browserMockFlag(name: string): boolean {
   try {
-    return new URLSearchParams(window.location.search).has("mockLaneTemplate");
-  } catch {
-    return false;
-  }
-}
-
-function browserMockNeedsYou(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has("mockNeedsYou");
-  } catch {
-    return false;
-  }
-}
-
-function browserMockNoChats(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has("mockNoChats");
+    return new URLSearchParams(window.location.search).has(name);
   } catch {
     return false;
   }
@@ -1334,21 +1322,7 @@ function browserMockNoChats(): boolean {
 let browserMockFirstRunEnded = false;
 
 function browserMockFirstRun(): boolean {
-  if (browserMockFirstRunEnded) return false;
-  try {
-    return new URLSearchParams(window.location.search).has("mockFirstRun");
-  } catch {
-    return false;
-  }
-}
-
-/** `?mockManyTabs` opens a crowd of project tabs to preview the tab strip's overflow. */
-function browserMockManyTabs(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has("mockManyTabs");
-  } catch {
-    return false;
-  }
+  return !browserMockFirstRunEnded && browserMockFlag("mockFirstRun");
 }
 
 /**
@@ -1366,14 +1340,6 @@ function browserMockManyTabs(): boolean {
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
  * - `?mockUsageLow`: Codex's weekly limit is at 12% left (plan running low).
  */
-function browserMockFlag(name: string): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has(name);
-  } catch {
-    return false;
-  }
-}
-
 function seedBrowserMockSuggestions(): void {
   try {
     const wanted = new URLSearchParams(window.location.search).get("mockSuggestion");
@@ -1381,18 +1347,17 @@ function seedBrowserMockSuggestions(): void {
     window.sessionStorage.setItem("ade.browserMock.suggestionSeed", wanted);
     const named = new Set(wanted.split(","));
     const weekAgo = Date.now() - 8 * 24 * 3_600_000;
-    const kinds = Object.fromEntries(
+    const kinds: SuggestionsState["kinds"] = Object.fromEntries(
       Object.keys(ADE_SUGGESTIONS)
         .filter((id) => !named.has(id))
-        .map((id) => [id, { off: "never" }]),
+        .map((id) => [id, { off: "never" as const }]),
     );
-    window.localStorage.setItem("ade.suggestions.v1", JSON.stringify({ lastShownAt: 0, kinds, shown: {} }));
-    window.localStorage.removeItem("ade.suggestions.prompts.v1");
-    window.localStorage.setItem("ade.tips.suggestions.v1", "[]");
-    window.localStorage.setItem(
-      "ade.onboarding.v1",
-      JSON.stringify({ startedAt: weekAgo, tour: { completedAt: weekAgo }, hints: {} }),
-    );
+    const suggestions: SuggestionsState = { ...EMPTY_SUGGESTIONS_STATE, kinds };
+    const onboarding: OnboardingProgress = { startedAt: weekAgo, tour: { completedAt: weekAgo }, hints: {} };
+    // What's new keeps what this tab saw, so its modal does not cover the preview.
+    resetOnboardingTiers({ keepWhatsNew: true });
+    window.localStorage.setItem(SUGGESTIONS_STORAGE_KEY, JSON.stringify(suggestions));
+    window.localStorage.setItem(ONBOARDING_PROGRESS_STORAGE_KEY, JSON.stringify(onboarding));
     writeBrowserMockWelcomeVideoState({
       videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
@@ -1462,12 +1427,7 @@ function browserMockActivityItems(): any[] {
  * is in recents yet, so setup lands on Home with only what it added.
  */
 function browserMockFreshComputer(): boolean {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    return params.has("mockFirstRun") && params.has("mockGate");
-  } catch {
-    return false;
-  }
+  return browserMockFlag("mockFirstRun") && browserMockFlag("mockGate");
 }
 
 function readBrowserMockWelcomeVideoState() {
@@ -2160,12 +2120,12 @@ const ADE_DB_SESSIONS: any[] =
     : [];
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
 // `?mockNoChats` previews a computer with no chats yet (the tour's first-chat step).
-const MOCK_SESSIONS: any[] = (browserMockNoChats() ? [] : [
+const MOCK_SESSIONS: any[] = (browserMockFlag("mockNoChats") ? [] : [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
 ])
   .filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT))
   // `?mockNeedsYou` previews a chat waiting on the user (the "needs you" hint and row).
-  .map((session) => (browserMockNeedsYou() && session.id === "mock-session-claude-1"
+  .map((session) => (browserMockFlag("mockNeedsYou") && session.id === "mock-session-claude-1"
     ? { ...session, attentionRequestedAt: new Date().toISOString() }
     : session));
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
@@ -5753,7 +5713,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           displayName: MOCK_PROJECT.name,
         },
         openProjectTabs: [MOCK_PROJECT],
-        ...(browserMockManyTabs()
+        ...(browserMockFlag("mockManyTabs")
           ? {
               openProjectTabRoots: [
                 MOCK_PROJECT.rootPath,
@@ -6873,7 +6833,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // packages and no default template. Without it the call fails, as it
       // does on a runtime that predates the action, and nothing shows.
       getDependencyStatus: async () => {
-        if (!browserMockLaneTemplate()) throw new Error("Not available in the browser preview.");
+        if (!browserMockFlag("mockLaneTemplate")) throw new Error("Not available in the browser preview.");
         return {
           projectRoot: MOCK_PROJECT.rootPath,
           platform: "darwin",

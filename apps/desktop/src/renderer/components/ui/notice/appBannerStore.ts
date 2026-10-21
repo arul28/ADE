@@ -149,6 +149,9 @@ function sameRenderedModel(a: BannerModel, b: BannerModel): boolean {
     a.ariaLabel === b.ariaLabel &&
     a.error === b.error &&
     a.eyebrow === b.eyebrow &&
+    a.hue === b.hue &&
+    a.art?.src === b.art?.src &&
+    a.art?.alt === b.art?.alt &&
     sameActions(a.actions, b.actions) &&
     sameDismiss(a.dismiss, b.dismiss)
   );

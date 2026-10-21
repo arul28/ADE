@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { AdeSuggestionId } from "./adeTipsSuggestions";
-import { isTourOpen, readOnboardingProgress, subscribeOnboardingProgress } from "./onboardingProgress";
+import { ADE_SUGGESTIONS, isSuggestionId, type AdeSuggestionId } from "./adeTipsSuggestions";
+import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
+import { isTourOpen, onboardingSettledBeforeThisLaunch, subscribeOnboardingProgress } from "./onboardingProgress";
 
 /**
  * The rules every situational suggestion (tier 3 of onboarding) shares, and
@@ -9,7 +10,7 @@ import { isTourOpen, readOnboardingProgress, subscribeOnboardingProgress } from 
  *
  * - **Once per signal.** A suggestion shows once for each `signalKey` (a
  *   provider's reset window, a lane, a tracker), or again after its
- *   `repeatAfterMs`. Ignoring a card counts as having seen it.
+ *   definition's `repeatAfterMs`. Ignoring a card counts as having seen it.
  * - **One at a time, and rarely.** At most one new suggestion per launch, and
  *   none for four hours after the last one showed, so a busy day never turns
  *   into a stream of cards.
@@ -17,21 +18,26 @@ import { isTourOpen, readOnboardingProgress, subscribeOnboardingProgress } from 
  *   until onboarding finished (or was skipped) on an earlier launch: the
  *   first session belongs to the tour.
  * - **The user's answer.** "Not now" snoozes the kind for two weeks (the card
- *   is filed into ADE Tips); "Don't suggest again" turns the kind off; doing
- *   the thing (`markSuggestionDone`) ends it too.
+ *   is filed into ADE Tips); "Don't suggest again" turns the kind off, or only
+ *   one project's (the lane template); doing the thing (`markSuggestionDone`)
+ *   ends it too.
  *
  * Feature tips (tier 2 coming to the user): now and then, one of ADE Tips'
  * tips the user has not tried shows as the same corner card. They take the
  * corner, one card at a time and never during onboarding, but keep their own
- * pace: up to three a day, two hours apart, each tip once, and off from ADE
- * Tips. They do not use up the suggestions' once-per-launch slot.
+ * pace: up to three a day, two hours apart, never within half an hour of a
+ * suggestion, each tip once, and off from ADE Tips. They do not use up the
+ * suggestions' once-per-launch slot.
  *
  * Per computer, like the rest of onboarding: this renderer's localStorage,
  * never synced. Only ids, signal keys and times are stored.
  */
 
-const STORAGE_KEY = "ade.suggestions.v1";
-const CHANGE_EVENT = "ade:suggestions";
+export const SUGGESTIONS_STORAGE_KEY = "ade.suggestions.v1";
+/** Before suggestions shared their rules, the lane template kept its own answers here (scope → snoozed-until or "never"). */
+export const LEGACY_LANE_TEMPLATE_KEY = "ade.laneTemplateSuggestion.v1";
+/** The old lane template snooze: two weeks from "Not now". */
+const LEGACY_LANE_TEMPLATE_SNOOZE_MS = 14 * 24 * 3_600_000;
 const COOLDOWN_MS = 4 * 3_600_000;
 const NOT_NOW_SNOOZE_MS = 14 * 24 * 3_600_000;
 const MAX_SHOWN = 60;
@@ -39,8 +45,8 @@ const MAX_SHOWN = 60;
 const TIP_CARDS_PER_DAY = 3;
 const TIP_DAY_MS = 24 * 3_600_000;
 const TIP_CARD_GAP_MS = 2 * 3_600_000;
-/** This app launch; onboarding that finished during it waits for the next launch. */
-const LAUNCHED_AT = Date.now();
+/** No tip card within half an hour of a suggestion. */
+const TIP_AFTER_SUGGESTION_MS = 30 * 60_000;
 
 type KindState = {
   off?: "never" | "done";
@@ -56,86 +62,136 @@ type TipCardState = {
   off: boolean;
 };
 
-type StoredState = {
+export type SuggestionsState = {
   lastShownAt: number;
   kinds: Partial<Record<AdeSuggestionId, KindState>>;
   /** `${id}\u0000${signalKey}` → when it showed. */
   shown: Record<string, number>;
+  /** `${id}\u0000${scopeKey}`: "Don't suggest again" for one scope (a project), for kinds that turn off per scope. */
+  neverScopes: string[];
   tips: TipCardState;
+};
+
+export const EMPTY_SUGGESTIONS_STATE: SuggestionsState = {
+  lastShownAt: 0,
+  kinds: {},
+  shown: {},
+  neverScopes: [],
+  tips: { shownAt: [], done: [], off: false },
 };
 
 const shownKey = (id: AdeSuggestionId, signalKey: string) => `${id}\u0000${signalKey}`;
 
-function finite(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+
+function parseState(stored: unknown): SuggestionsState {
+  const record = storedRecord(stored);
+  if (!record) return EMPTY_SUGGESTIONS_STATE;
+  const kinds: SuggestionsState["kinds"] = {};
+  for (const [id, value] of Object.entries(storedRecord(record.kinds) ?? {})) {
+    const entry = storedRecord(value);
+    if (!isSuggestionId(id) || !entry) continue;
+    kinds[id] = {
+      off: entry.off === "never" || entry.off === "done" ? entry.off : undefined,
+      snoozedUntil: finiteNumber(entry.snoozedUntil),
+    };
+  }
+  const shown: SuggestionsState["shown"] = {};
+  for (const [key, value] of Object.entries(storedRecord(record.shown) ?? {})) {
+    const at = finiteNumber(value);
+    if (at !== undefined) shown[key] = at;
+  }
+  const rawTips = storedRecord(record.tips) ?? {};
+  const tips: TipCardState = {
+    shownAt: Array.isArray(rawTips.shownAt)
+      ? rawTips.shownAt.filter((at): at is number => finiteNumber(at) !== undefined).slice(-TIP_CARDS_PER_DAY)
+      : [],
+    done: strings(rawTips.done),
+    off: rawTips.off === true,
+  };
+  return {
+    lastShownAt: finiteNumber(record.lastShownAt) ?? 0,
+    kinds,
+    shown,
+    neverScopes: strings(record.neverScopes),
+    tips,
+  };
 }
 
-function readState(): StoredState {
-  const empty: StoredState = { lastShownAt: 0, kinds: {}, shown: {}, tips: { shownAt: [], done: [], off: false } };
+/** The lane template's old answers folded into `current`. Idempotent. */
+function foldLegacyLaneTemplate(current: SuggestionsState, legacy: Record<string, unknown>): SuggestionsState {
+  const shown = { ...current.shown };
+  const neverScopes = [...current.neverScopes];
+  for (const [scopeKey, value] of Object.entries(legacy)) {
+    const key = shownKey("lane-template", scopeKey);
+    const snoozedUntil = finiteNumber(value);
+    if (value === "never") {
+      if (!neverScopes.includes(key)) neverScopes.push(key);
+    } else if (snoozedUntil !== undefined) {
+      shown[key] = Math.max(shown[key] ?? 0, snoozedUntil - LEGACY_LANE_TEMPLATE_SNOOZE_MS);
+    }
+  }
+  return { ...current, shown, neverScopes };
+}
+
+const store = createLocalStore({ key: SUGGESTIONS_STORAGE_KEY, event: "ade:suggestions", parse: parseState });
+
+function parseJson(text: string | null): unknown {
+  if (text == null) return undefined;
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
-    const record = parsed as Record<string, unknown>;
-    const kinds: StoredState["kinds"] = {};
-    if (record.kinds && typeof record.kinds === "object" && !Array.isArray(record.kinds)) {
-      for (const [id, value] of Object.entries(record.kinds as Record<string, unknown>)) {
-        if (!value || typeof value !== "object") continue;
-        const entry = value as Record<string, unknown>;
-        kinds[id as AdeSuggestionId] = {
-          off: entry.off === "never" || entry.off === "done" ? entry.off : undefined,
-          snoozedUntil: finite(entry.snoozedUntil),
-        };
-      }
-    }
-    const shown: StoredState["shown"] = {};
-    if (record.shown && typeof record.shown === "object" && !Array.isArray(record.shown)) {
-      for (const [key, value] of Object.entries(record.shown as Record<string, unknown>)) {
-        const at = finite(value);
-        if (at !== undefined) shown[key] = at;
-      }
-    }
-    const rawTips = record.tips && typeof record.tips === "object" && !Array.isArray(record.tips)
-      ? (record.tips as Record<string, unknown>)
-      : {};
-    const tips: TipCardState = {
-      shownAt: Array.isArray(rawTips.shownAt)
-        ? rawTips.shownAt.filter((at): at is number => typeof at === "number" && Number.isFinite(at)).slice(-TIP_CARDS_PER_DAY)
-        : [],
-      done: Array.isArray(rawTips.done) ? rawTips.done.filter((id): id is string => typeof id === "string") : [],
-      off: rawTips.off === true,
-    };
-    return { lastShownAt: finite(record.lastShownAt) ?? 0, kinds, shown, tips };
+    return JSON.parse(text);
   } catch {
-    return empty;
+    return undefined;
   }
 }
 
-let snapshot: StoredState | null = null;
-let version = 0;
-
-function state(): StoredState {
-  snapshot ??= readState();
-  return snapshot;
+/**
+ * Carries the lane template's old answers (`LEGACY_LANE_TEMPLATE_KEY`) into
+ * the shared state, once, before the store's first read: a project that said
+ * "Don't suggest again" keeps saying it, and a snooze runs out when it would
+ * have. Writes storage directly rather than through `store.set`: nothing has
+ * read the store yet, so nobody needs telling, and the first read can happen
+ * during a render, where an announcement would update other components. When
+ * a write fails, the next launch folds the old answers in again, to the same
+ * result.
+ */
+function migrateLegacyLaneTemplate(): void {
+  try {
+    const text = window.localStorage.getItem(LEGACY_LANE_TEMPLATE_KEY);
+    if (text == null) return;
+    const legacy = storedRecord(parseJson(text));
+    if (legacy) {
+      const current = parseState(parseJson(window.localStorage.getItem(SUGGESTIONS_STORAGE_KEY)));
+      window.localStorage.setItem(SUGGESTIONS_STORAGE_KEY, JSON.stringify(foldLegacyLaneTemplate(current, legacy)));
+    }
+    window.localStorage.removeItem(LEGACY_LANE_TEMPLATE_KEY);
+  } catch {
+    // Storage unavailable: left for the next launch.
+  }
 }
 
+let legacyMigrated = false;
+
+function state(): SuggestionsState {
+  if (!legacyMigrated) {
+    legacyMigrated = true;
+    migrateLegacyLaneTemplate();
+  }
+  return store.get();
+}
+
+/** Tells subscribers a rule's input changed that is not stored (a claim, an answer, test mode). */
 function emit(): void {
-  version += 1;
-  window.dispatchEvent(new Event(CHANGE_EVENT));
+  store.notify();
 }
 
-function write(next: StoredState): void {
+function write(next: SuggestionsState): void {
   // Keep the newest showings; older signal keys (past reset windows) drop off.
   const shown = Object.entries(next.shown)
     .sort((a, b) => b[1] - a[1])
     .slice(0, MAX_SHOWN);
-  const trimmed = { ...next, shown: Object.fromEntries(shown) };
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-  } catch {
-    // Storage unavailable: the rules hold for this session only.
-  }
-  snapshot = trimmed;
-  emit();
+  store.set({ ...next, shown: Object.fromEntries(shown) });
 }
 
 function updateKind(id: AdeSuggestionId, patch: KindState): void {
@@ -143,19 +199,32 @@ function updateKind(id: AdeSuggestionId, patch: KindState): void {
   write({ ...current, kinds: { ...current.kinds, [id]: { ...current.kinds[id], ...patch } } });
 }
 
-/** Onboarding is done with this computer, and was done before this launch. */
-function onboardingSettled(): boolean {
-  const progress = readOnboardingProgress();
-  if (!progress.startedAt) return true;
-  if (isTourOpen(progress)) return false;
-  const finishedAt = progress.skippedAt ?? progress.tour.completedAt ?? progress.startedAt;
-  return finishedAt < LAUNCHED_AT;
-}
-
 // ── this launch ─────────────────────────────────────────────────────────
 
-/** The one suggestion this launch showed, and whether the user answered it. */
-let launchClaim: { key: string; answered: boolean } | null = null;
+/**
+ * The card in the corner (a suggestion or a feature tip), and whether the user
+ * answered it. One at a time: neither kind claims the corner while it is up.
+ */
+let corner: { key: string; kind: "suggestion" | "tip"; answered: boolean } | null = null;
+/** This launch's one suggestion showed (tips do not use it). */
+let launchSlotUsed = false;
+
+const cornerUp = () => corner != null && !corner.answered;
+
+function claimCorner(key: string, kind: "suggestion" | "tip"): void {
+  corner = { key, kind, answered: false };
+  if (kind === "suggestion") launchSlotUsed = true;
+}
+
+/** Whether the card for `key` is up: claimed, not answered, and no tour running. */
+function isCornerShowing(key: string): boolean {
+  if (corner?.key !== key || corner.answered) return false;
+  return !isTourOpen();
+}
+
+function answerCorner(key: string): void {
+  if (corner?.key === key) corner = { ...corner, answered: true };
+}
 
 // ── dev test mode ───────────────────────────────────────────────────────
 
@@ -186,38 +255,42 @@ export function setSuggestionsTestMode(on: boolean): void {
   } catch {
     return;
   }
-  if (launchClaim?.answered) launchClaim = null;
+  // An answered suggestion frees this launch's slot, so the next one can show.
+  if (!(corner?.kind === "suggestion" && !corner.answered)) launchSlotUsed = false;
   emit();
 }
 
 /** Whether this signal may show now, as a new suggestion. */
-function canClaim(id: AdeSuggestionId, signalKey: string, repeatAfterMs: number | undefined, now: number): boolean {
+function canClaim(id: AdeSuggestionId, signalKey: string, scopeKey: string | null, now: number): boolean {
+  const current = state();
+  if (current.kinds[id]?.off) return false;
+  if (scopeKey !== null && current.neverScopes.includes(shownKey(id, scopeKey))) return false;
   if (suggestionsTestMode()) {
     // One card at a time still; the next may come once this one is answered.
-    if ((launchClaim && !launchClaim.answered) || tipCardUp() || isTourOpen()) return false;
-    return !testModeAnswered.has(shownKey(id, signalKey)) && !state().kinds[id]?.off;
+    if (cornerUp() || isTourOpen()) return false;
+    return !testModeAnswered.has(shownKey(id, signalKey));
   }
-  if (launchClaim || tipCardUp() || !onboardingSettled()) return false;
-  const current = state();
+  if (launchSlotUsed || cornerUp() || !onboardingSettledBeforeThisLaunch()) return false;
   const kind = current.kinds[id];
-  if (kind?.off) return false;
   if (kind?.snoozedUntil && now < kind.snoozedUntil) return false;
   if (now - current.lastShownAt < COOLDOWN_MS) return false;
   const shownAt = current.shown[shownKey(id, signalKey)];
   if (shownAt === undefined) return true;
+  const { repeatAfterMs } = ADE_SUGGESTIONS[id];
   return repeatAfterMs !== undefined && now - shownAt >= repeatAfterMs;
 }
 
 /**
  * Claims this launch's one suggestion for the signal when the rules allow it.
- * True when the suggestion is (now) the one showing.
+ * `scopeKey` is the scope "Don't suggest again" may have turned off on its own
+ * (`neverSuggestScope`). True when the suggestion is (now) the one showing.
  */
-export function claimSuggestion(id: AdeSuggestionId, signalKey: string, repeatAfterMs?: number): boolean {
+export function claimSuggestion(id: AdeSuggestionId, signalKey: string, scopeKey: string | null = null): boolean {
   const key = shownKey(id, signalKey);
-  if (launchClaim?.key === key) return !launchClaim.answered;
+  if (corner?.key === key) return !corner.answered;
   const now = Date.now();
-  if (!canClaim(id, signalKey, repeatAfterMs, now)) return false;
-  launchClaim = { key, answered: false };
+  if (!canClaim(id, signalKey, scopeKey, now)) return false;
+  claimCorner(key, "suggestion");
   const current = state();
   write({ ...current, lastShownAt: now, shown: { ...current.shown, [key]: now } });
   return true;
@@ -225,17 +298,18 @@ export function claimSuggestion(id: AdeSuggestionId, signalKey: string, repeatAf
 
 /** Whether this signal's card is up: claimed, not answered, and no tour running. */
 export function isSuggestionShowing(id: AdeSuggestionId, signalKey: string): boolean {
-  if (launchClaim?.key !== shownKey(id, signalKey) || launchClaim.answered) return false;
-  return !isTourOpen();
+  return isCornerShowing(shownKey(id, signalKey));
 }
 
 /** The user answered the card ("Not now" also snoozes the kind). */
 export function answerSuggestion(id: AdeSuggestionId, signalKey: string, answer: "started" | "not-now"): void {
-  if (launchClaim?.key === shownKey(id, signalKey)) launchClaim = { ...launchClaim, answered: true };
+  const key = shownKey(id, signalKey);
+  answerCorner(key);
   if (suggestionsTestMode()) {
     // Test mode: the answer frees the slot (no snooze), so the next signal can show.
-    testModeAnswered.add(shownKey(id, signalKey));
-    launchClaim = null;
+    testModeAnswered.add(key);
+    if (corner?.kind === "suggestion") corner = null;
+    launchSlotUsed = false;
     emit();
     return;
   }
@@ -246,6 +320,13 @@ export function answerSuggestion(id: AdeSuggestionId, signalKey: string, answer:
 /** "Don't suggest again", from ADE Tips. */
 export function neverSuggestKind(id: AdeSuggestionId): void {
   updateKind(id, { off: "never" });
+}
+
+/** "Don't suggest again" for one scope only (the lane template, per project). */
+export function neverSuggestScope(id: AdeSuggestionId, scopeKey: string): void {
+  const current = state();
+  const key = shownKey(id, scopeKey);
+  if (!current.neverScopes.includes(key)) write({ ...current, neverScopes: [...current.neverScopes, key] });
 }
 
 /** The user already does the thing (sent an @machine message, paired a phone). */
@@ -286,13 +367,6 @@ export function markTipTried(tipId: string): void {
   if (!done.includes(tipId)) updateTips({ done: [...done, tipId] });
 }
 
-/** The tip card on screen now, if any. Separate from the suggestions' once-per-launch slot. */
-let tipClaim: { key: string; answered: boolean } | null = null;
-
-function tipCardUp(): boolean {
-  return tipClaim != null && !tipClaim.answered;
-}
-
 /**
  * When the next tip card may show (0: now), or null when none may today. Up
  * to three in any 24 hours, two hours apart; never over a suggestion that
@@ -309,8 +383,6 @@ export function nextTipCardAt(now = Date.now()): number | null {
   return Math.max(0, afterGap, afterDay, afterSuggestion);
 }
 
-const TIP_AFTER_SUGGESTION_MS = 30 * 60_000;
-
 /**
  * Claims the corner for a feature tip when the rules allow it: onboarding
  * finished on an earlier launch, no suggestion or tip card up, tip cards not
@@ -320,57 +392,64 @@ const TIP_AFTER_SUGGESTION_MS = 30 * 60_000;
  */
 export function claimTipCard(tipId: string): boolean {
   const key = `${TIP_CLAIM_PREFIX}${tipId}`;
-  if (tipClaim?.key === key) return !tipClaim.answered;
+  if (corner?.key === key) return !corner.answered;
   const current = state();
   if (current.tips.off || current.tips.done.includes(tipId)) return false;
-  if ((launchClaim && !launchClaim.answered) || tipCardUp() || isTourOpen()) return false;
+  if (cornerUp() || isTourOpen()) return false;
   const now = Date.now();
   if (suggestionsTestMode()) {
     if (testModeAnswered.has(key)) return false;
   } else {
-    if (!onboardingSettled()) return false;
+    if (!onboardingSettledBeforeThisLaunch()) return false;
     const at = nextTipCardAt(now);
     if (at == null || at > now) return false;
   }
-  tipClaim = { key, answered: false };
+  claimCorner(key, "tip");
   const shownAt = [...current.tips.shownAt.filter((time) => now - time < TIP_DAY_MS), now].slice(-TIP_CARDS_PER_DAY);
   write({ ...current, tips: { ...current.tips, shownAt, done: [...current.tips.done, tipId] } });
   return true;
 }
 
 export function isTipCardShowing(tipId: string): boolean {
-  if (tipClaim?.key !== `${TIP_CLAIM_PREFIX}${tipId}` || tipClaim.answered) return false;
-  return !isTourOpen();
+  return isCornerShowing(`${TIP_CLAIM_PREFIX}${tipId}`);
 }
 
 export function answerTipCard(tipId: string): void {
   const key = `${TIP_CLAIM_PREFIX}${tipId}`;
-  if (tipClaim?.key === key) tipClaim = { ...tipClaim, answered: true };
+  answerCorner(key);
   if (suggestionsTestMode()) testModeAnswered.add(key);
   emit();
 }
 
-function subscribe(listener: () => void): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
-    snapshot = null;
-    version += 1;
-    listener();
-  };
-  const offOnboarding = subscribeOnboardingProgress(() => {
-    version += 1;
-    listener();
-  });
-  window.addEventListener(CHANGE_EVENT, listener);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    offOnboarding();
-    window.removeEventListener(CHANGE_EVENT, listener);
-    window.removeEventListener("storage", onStorage);
-  };
+/**
+ * Bumped once per change to the rules' inputs: a store write or notice (in
+ * this window or another) or an onboarding change. Counted by one listener,
+ * installed with the first read, not one per subscriber.
+ */
+let version = 0;
+let countingChanges = false;
+
+function getVersion(): number {
+  if (!countingChanges) {
+    countingChanges = true;
+    const bump = () => {
+      version += 1;
+    };
+    store.subscribe(bump);
+    subscribeOnboardingProgress(bump);
+  }
+  return version;
 }
 
-const getVersion = () => version;
+function subscribe(listener: () => void): () => void {
+  getVersion();
+  const offStore = store.subscribe(listener);
+  const offOnboarding = subscribeOnboardingProgress(listener);
+  return () => {
+    offStore();
+    offOnboarding();
+  };
+}
 
 /** Changes whenever the rules' inputs do (answers, claims, onboarding), to re-read them. */
 export function useSuggestionRulesVersion(): number {

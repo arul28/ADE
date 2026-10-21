@@ -43,6 +43,7 @@ export const IPC = {
   appDiscoverOnboardingProjects: "ade.app.discoverOnboardingProjects",
   appAddOnboardingProjects: "ade.app.addOnboardingProjects",
   appListOnboardingProjectChats: "ade.app.listOnboardingProjectChats",
+  appResolveOnboardingFolder: "ade.app.resolveOnboardingFolder",
   appGetLaunchGateState: "ade.app.getLaunchGateState",
   appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",

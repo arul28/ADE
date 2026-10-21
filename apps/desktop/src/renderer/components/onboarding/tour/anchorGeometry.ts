@@ -16,10 +16,6 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-export function hasOpenModal(): boolean {
-  return document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]') != null;
-}
-
 /** On screen, not zero-sized, and not clipped or covered: its centre hit-tests to itself. */
 export function isAnchorVisible(node: HTMLElement): boolean {
   const rect = node.getBoundingClientRect();
@@ -57,15 +53,28 @@ export function anchorShown(id: string): boolean {
   return false;
 }
 
+/** Laid out and not hidden by `visibility` or a closed `<details>`, though maybe scrolled or clipped away. */
+export function isRendered(node: HTMLElement): boolean {
+  if (!hasBox(node)) return false;
+  return typeof node.checkVisibility !== "function" || node.checkVisibility({ visibilityProperty: true });
+}
+
+/** The nearest ancestor of `node` (below `<body>`) that scrolls or clips its content. */
+export function clippingAncestor(node: Element): HTMLElement | null {
+  for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+    const style = window.getComputedStyle(parent);
+    if (style.overflowX !== "visible" || style.overflowY !== "visible") return parent;
+  }
+  return null;
+}
+
 /** Whether `node` lies outside the window or outside a scrolling or clipping ancestor. */
 function isClippedAway(node: HTMLElement): boolean {
   const rect = node.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
   if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return true;
-  for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
-    const style = window.getComputedStyle(parent);
-    if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+  for (let parent = clippingAncestor(node); parent; parent = clippingAncestor(parent)) {
     const box = parent.getBoundingClientRect();
     if (x < box.left || x > box.right || y < box.top || y > box.bottom) return true;
   }
@@ -81,9 +90,7 @@ function isClippedAway(node: HTMLElement): boolean {
 export function findOutOfViewAnchor(ids: readonly string[]): HTMLElement | null {
   for (const id of ids) {
     for (const node of document.querySelectorAll<HTMLElement>(`[${ONBOARDING_ANCHOR_ATTR}="${id}"]`)) {
-      if (!hasBox(node)) continue;
-      if (typeof node.checkVisibility === "function" && !node.checkVisibility({ visibilityProperty: true })) continue;
-      if (isClippedAway(node)) return node;
+      if (isRendered(node) && isClippedAway(node)) return node;
     }
   }
   return null;
@@ -153,7 +160,7 @@ export type CardSide = "above" | "below" | "right" | "left";
  * Where a card of `width` × `height` goes beside `ring`: the first side in
  * `order` it fits on, clamped inside the window. A card above or below a
  * small control centres on it; above or below a wide one starts at its left
- * edge.
+ * edge. When no side fits, it takes `order`'s first and says so (`fitted`).
  */
 export function placeCard(
   ring: Box,
@@ -161,7 +168,7 @@ export function placeCard(
   viewport: { vw: number; vh: number },
   order: readonly CardSide[],
   gap: number,
-): { x: number; y: number; side: CardSide } {
+): { x: number; y: number; side: CardSide; fitted: boolean } {
   const { width: w, height: h } = size;
   const { vw, vh } = viewport;
   const right = ring.left + ring.width;
@@ -174,15 +181,102 @@ export function placeCard(
     left: { x: ring.left - gap - w, y: alignY, fits: ring.left - gap - w >= VIEWPORT_MARGIN },
     above: { x: alignX, y: ring.top - gap - h, fits: ring.top - gap - h >= VIEWPORT_MARGIN },
   };
-  const side = order.find((candidate) => sides[candidate].fits) ?? order[0]!;
+  const fitting = order.find((candidate) => sides[candidate].fits);
+  const side = fitting ?? order[0]!;
   const pick = sides[side];
   return {
     x: clamp(pick.x, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN)),
     y: clamp(pick.y, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN)),
     side,
+    fitted: fitting != null,
   };
 }
 
 export function translate(x: number, y: number): string {
   return `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+}
+
+type AnchorFollow = {
+  /** Runs `onFrame` again at the next frame (coalesced with any already due). */
+  schedule: () => void;
+  dispose: () => void;
+};
+
+/**
+ * Keeps an overlay on `node` (a ring, a card, a label): runs `onFrame` now,
+ * then at most once a frame whenever something may have moved the control:
+ * its own size or that of anything in `observe` (the card), a window resize,
+ * any scroll. `settleMs` also runs it every frame for that long first, for a
+ * page still animating in (which moves its controls with no event);
+ * `fallbackMs` re-measures that often for moves nothing reports (never while
+ * the window is hidden). `onFrame` writes styles directly, not React state,
+ * and returns early when nothing moved.
+ */
+export function followAnchor(
+  node: Element,
+  onFrame: () => void,
+  options: { settleMs?: number; fallbackMs?: number; observe?: readonly (Element | null | undefined)[] } = {},
+): AnchorFollow {
+  let raf = 0;
+  let settleRaf = 0;
+  const run = () => {
+    raf = 0;
+    onFrame();
+  };
+  const schedule = () => {
+    if (!raf) raf = window.requestAnimationFrame(run);
+  };
+  onFrame();
+  if (options.settleMs) {
+    const settleUntil = performance.now() + options.settleMs;
+    const settle = () => {
+      onFrame();
+      settleRaf = performance.now() < settleUntil ? window.requestAnimationFrame(settle) : 0;
+    };
+    settleRaf = window.requestAnimationFrame(settle);
+  }
+  const observer = new ResizeObserver(schedule);
+  observer.observe(node);
+  for (const extra of options.observe ?? []) {
+    if (extra) observer.observe(extra);
+  }
+  window.addEventListener("resize", schedule, { passive: true });
+  window.addEventListener("scroll", schedule, { capture: true, passive: true });
+  const fallback = options.fallbackMs
+    ? window.setInterval(() => {
+      if (!document.hidden) schedule();
+    }, options.fallbackMs)
+    : 0;
+  return {
+    schedule,
+    dispose: () => {
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, { capture: true });
+      if (fallback) window.clearInterval(fallback);
+      if (raf) window.cancelAnimationFrame(raf);
+      if (settleRaf) window.cancelAnimationFrame(settleRaf);
+    },
+  };
+}
+
+/**
+ * "Let the page settle first": a candidate (a control that just appeared)
+ * counts once it has been the same one for `ms`. `wait` answers how long is
+ * left, 0 once it has held (and starts over for the next candidate).
+ */
+export function createSettle<T>(ms: number): { wait: (candidate: T, now: number) => number; reset: () => void } {
+  let pending: { candidate: T; since: number } | null = null;
+  return {
+    wait(candidate, now) {
+      if (!pending || pending.candidate !== candidate) pending = { candidate, since: now };
+      const left = ms - (now - pending.since);
+      if (left > 0) return left;
+      pending = null;
+      return 0;
+    },
+    reset() {
+      pending = null;
+    },
+  };
 }

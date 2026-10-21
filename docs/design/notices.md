@@ -147,36 +147,35 @@ event, and it is never urgent, so it has its own quiet presentation:
 - **The signal.** Show it only when the user can already understand it. The
   lane template suggestion waits until the project has a lane besides the main
   checkout, so "lane" means something by then.
-- **"Not now".** The owner snoozes it and files it into ADE Tips with
+- **"Not now".** The kind is snoozed and the card is filed into ADE Tips with
   `postponeSuggestion` (`renderer/onboarding/adeTipsSuggestions.ts`, per
   computer). ADE Tips lists it under "Suggested for you", where the user can
   start it later (the owner registers a starter with
   `registerSuggestionStarter` while it can run, with the same pin it would use
   on the card) or turn it off for good ("Don't suggest again", the owner's
-  `registerSuggestionKind` handler). Add a new suggestion to `ADE_SUGGESTIONS`
+  `registerSuggestionKind` handler; per kind, or per project with
+  `neverPerScope` as the lane template does). Add a new suggestion to `ADE_SUGGESTIONS`
   in that file so the card and the Tips row share one title and one line.
-- **The shared rules.** A new suggestion goes through
+- **The shared rules.** Every suggestion goes through
   `useSituationalSuggestion` (`components/app/suggestions/`), which does the
   registering above and applies the rules every suggestion shares
-  (`renderer/onboarding/situationalSuggestions.ts`): once per signal, one new
-  card per launch, a four-hour cooldown after any card, and nothing during
-  onboarding. The owner passes only its signal and its action.
+  (`renderer/onboarding/situationalSuggestions.ts`): once per signal (or
+  again after `repeatAfterMs`), one new card per launch, a four-hour cooldown
+  after any card, and nothing during onboarding. The owner passes only its
+  signal and its action. Never register a `suggestion` banner directly: it
+  would skip those rules, and a suggestion that claimed the corner behind it
+  would be used up unseen.
 
 ```tsx
-useAppBanner(
-  show && {
-    id: "lane-template-suggestion",
-    tone: "accent",
-    icon: <Stack size={13} weight="bold" />,
-    title: "Lane templates make new lanes ready to work",
-    detail: "This repo has packages, and new lanes start without them. A template installs or copies them each time.",
-    actions: [
-      { label: "Set one up with an agent", variant: "solid", onClick: start },
-      { label: "Not now", variant: "secondary", onClick: notNow },
-    ],
-  },
-  { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion },
-);
+useSituationalSuggestion({
+  id: "lane-template", // title, line and action label come from ADE_SUGGESTIONS
+  signalKey: templateWouldHelp && hasOwnLane ? scopeKey : null,
+  tipsScopeKey: scopeKey,
+  context: projectContext,
+  start: templateWouldHelp ? startTemplateChat : null,
+  repeatAfterMs: LANE_TEMPLATE_REPEAT_MS,
+  neverPerScope: true,
+});
 ```
 
 ## Dismissal

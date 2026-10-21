@@ -274,6 +274,24 @@ export function persistableRecentProjectRemote(
   };
 }
 
+/** The recents entry for an open of `proj` at `now`, keeping its pin from `prev`. */
+function recentProjectEntry(
+  proj: { rootPath: string; displayName: string; remote?: RecentProjectRemote },
+  prev: readonly RecentProject[],
+  now: string,
+): RecentProject {
+  const key = recentProjectKey(proj);
+  const existing = prev.find((p) => recentProjectKey(p) === key);
+  const remote = proj.remote ? persistableRecentProjectRemote(proj.remote) : undefined;
+  return {
+    rootPath: proj.rootPath,
+    displayName: proj.displayName,
+    lastOpenedAt: now,
+    ...(remote ? { remote } : {}),
+    ...(existing?.pinned ? { pinned: true } : {}),
+  };
+}
+
 export function upsertRecentProject(
   state: GlobalState,
   proj: { rootPath: string; displayName: string; remote?: RecentProjectRemote },
@@ -291,15 +309,7 @@ export function upsertRecentProject(
   }
   const prev = next.recentProjects ?? [];
   const key = recentProjectKey(proj);
-  const existing = prev.find((p) => recentProjectKey(p) === key);
-  const remote = proj.remote ? persistableRecentProjectRemote(proj.remote) : undefined;
-  const nextEntry: RecentProject = {
-    rootPath: proj.rootPath,
-    displayName: proj.displayName,
-    lastOpenedAt: now,
-    ...(remote ? { remote } : {}),
-    ...(existing?.pinned ? { pinned: true } : {}),
-  };
+  const nextEntry = recentProjectEntry(proj, prev, now);
   if (options.preserveRecentOrder === true) {
     const existingIndex = prev.findIndex((p) => recentProjectKey(p) === key);
     if (existingIndex >= 0 && existingIndex < RECENT_PROJECT_CAP) {
@@ -313,6 +323,41 @@ export function upsertRecentProject(
   const merged = [nextEntry, ...filtered];
   next.recentProjects = merged.filter((entry, index) => entry.pinned || index < RECENT_PROJECT_CAP);
   return next;
+}
+
+/**
+ * Adds local projects to the recents in the given order, without evicting
+ * anything, so first-run setup can never cause a project the user already had
+ * listed (local or remote) to be dropped, now or later:
+ * - When the list with the new projects still fits within the cap, the new
+ *   projects go to the front.
+ * - When it would not, they go after the projects already listed, so the
+ *   positional trim of a later open (`upsertRecentProject`) drops the newest
+ *   additions first and never the user's earlier projects. The list may exceed
+ *   the cap until then.
+ * A picked project that is already listed keeps its place in the overflow
+ * case. Leaves `lastProjectRoot` alone.
+ */
+export function addRecentProjectsWithoutEviction(
+  state: GlobalState,
+  projects: ReadonlyArray<{ rootPath: string; displayName: string }>,
+): GlobalState {
+  if (projects.length === 0) return state;
+  const prev = state.recentProjects ?? [];
+  const now = new Date().toISOString();
+  const added = new Map<string, RecentProject>();
+  for (const proj of projects) {
+    const key = recentProjectKey(proj);
+    if (!added.has(key)) added.set(key, recentProjectEntry(proj, prev, now));
+  }
+  const kept = prev.filter((p) => !added.has(recentProjectKey(p)));
+  if (kept.length + added.size <= RECENT_PROJECT_CAP) {
+    return { ...state, recentProjects: [...added.values(), ...kept] };
+  }
+  const updatedInPlace = prev.map((p) => added.get(recentProjectKey(p)) ?? p);
+  const prevKeys = new Set(prev.map(recentProjectKey));
+  const appended = [...added].filter(([key]) => !prevKeys.has(key)).map(([, entry]) => entry);
+  return { ...state, recentProjects: [...updatedInPlace, ...appended] };
 }
 
 export function setRecentProjectPinned(
