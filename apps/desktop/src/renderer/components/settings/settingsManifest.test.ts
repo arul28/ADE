@@ -93,12 +93,8 @@ describe("settings manifest", () => {
     "general.project-location": "location",
     "storage.project-health": "location",
     "storage.diagnostics": "service",
-    "storage.usage": "lanes-git",
-    "storage.cleanups": "lanes-git",
-    "storage.lane-rules": "lanes-git",
-    "storage.session-lifecycle": "lanes-git",
-    "storage.project-files": "lanes-git",
-    "archive.items": "lanes-git",
+    "archive.items": "storage",
+    "lanes-git.pr-chat-transcripts": "project-agents",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -294,7 +290,6 @@ describe("settings manifest", () => {
   it("lists a tab's groups in first-appearance order with no duplicates", () => {
     const groups = settingsGroupsForTab("lanes-git");
     expect(groups[0]).toBe("Lanes");
-    expect(groups.indexOf("Storage")).toBeLessThan(groups.indexOf("Starting lanes"));
     expect(groups).toContain("Rebase & stacking");
     expect(new Set(groups).size).toBe(groups.length);
   });

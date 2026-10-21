@@ -63,6 +63,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "search",
   "external-sessions",
   "provider_instances",
+  "project_notes",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];

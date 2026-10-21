@@ -16,7 +16,11 @@
  * it already means the git base-branch source ("Use fetched upstream").
  */
 
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import {
+  normalizeGitRemoteIdentity,
+  pickLiveCheckout,
+  type RegisteredCheckoutRank,
+} from "../../../shared/crossMachineHandoff";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import type {
   OpenProjectBinding,
@@ -220,14 +224,16 @@ function resolveProjectMatch(
     rootPath: string;
     displayName: string;
     gitOriginUrl: string | null;
-  }>,
+  } & RegisteredCheckoutRank>,
   repoIdentity: string | null,
   repoDisplayName: string | null,
 ): LaneMachineProjectRef | null {
   if (repoIdentity) {
-    const byOrigin = projects.find(
+    // Same rule as `--machine` calls from the CLI: the live checkout, not the
+    // first registry entry, which is often a deleted temp copy of the repo.
+    const byOrigin = pickLiveCheckout(projects.filter(
       (project) => cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity,
-    );
+    ));
     if (byOrigin) {
       return {
         projectId: byOrigin.projectId,
@@ -237,7 +243,7 @@ function resolveProjectMatch(
       };
     }
   }
-  const byName = projects.find((project) => {
+  const byName = pickLiveCheckout(projects.filter((project) => {
     const nameMatches =
       sameRepoName(project.displayName, repoDisplayName)
       || sameRepoName(pathBaseName(project.rootPath), repoDisplayName);
@@ -250,7 +256,7 @@ function resolveProjectMatch(
     const candidateIdentity = cachedGitRemoteIdentity(project.gitOriginUrl);
     if (repoIdentity && candidateIdentity && candidateIdentity !== repoIdentity) return false;
     return true;
-  });
+  }));
   if (!byName) return null;
   return {
     projectId: byName.projectId,

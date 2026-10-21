@@ -16,6 +16,7 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
+import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
@@ -902,6 +903,61 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
     ...record,
     icon: icons.get(index) ?? EMPTY_PROJECT_ICON,
   }));
+}
+
+/** Stats past this are left unknown, so a hung network mount can't stall the list. */
+const LIST_FOLDER_CHECK_BUDGET_MS = 250;
+/** How long one folder answer is reused; the list is read often and folders rarely move. */
+const FOLDER_PRESENCE_TTL_MS = 10_000;
+
+/**
+ * One stat per folder at a time, its answer reused for a few seconds. A stat
+ * on an unreachable drive holds a libuv thread until the OS gives up, so a
+ * fresh stat on every list would pile up behind it and starve the brain's
+ * other file, crypto and zlib work.
+ */
+const folderPresence = new Map<string, { settledAt: number | null; check: Promise<boolean | undefined> }>();
+
+function checkFolderPresence(rootPath: string): Promise<boolean | undefined> {
+  const cached = folderPresence.get(rootPath);
+  // A pending stat is reused however long it takes.
+  if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < FOLDER_PRESENCE_TTL_MS)) {
+    return cached.check;
+  }
+  const entry: { settledAt: number | null; check: Promise<boolean | undefined> } = {
+    settledAt: null,
+    check: fs.promises.stat(rootPath).then(
+      (stat) => stat.isDirectory(),
+      (error: NodeJS.ErrnoException) => (error?.code === "ENOENT" || error?.code === "ENOTDIR" ? false : undefined),
+    ),
+  };
+  folderPresence.set(rootPath, entry);
+  void entry.check.then(() => { entry.settledAt = Date.now(); });
+  return entry.check;
+}
+
+/**
+ * Whether each project's folder is on this machine, by index: `false` when it
+ * is gone, `undefined` when the check failed for another reason (no permission)
+ * or ran out of time. Another machine choosing between several checkouts of a
+ * repository uses it to skip a deleted copy. Async stats on the thread pool,
+ * all at once, under one deadline: nothing blocks the event loop.
+ */
+async function readProjectFolderPresence(
+  records: readonly { rootPath: string }[],
+  budgetMs = LIST_FOLDER_CHECK_BUDGET_MS,
+): Promise<Array<boolean | undefined>> {
+  const presence = new Array<boolean | undefined>(records.length).fill(undefined);
+  // Drop answers past their time, so a removed project's folder isn't kept forever.
+  for (const [rootPath, entry] of folderPresence) {
+    if (entry.settledAt !== null && Date.now() - entry.settledAt >= FOLDER_PRESENCE_TTL_MS) folderPresence.delete(rootPath);
+  }
+  const checks = Promise.all(records.map((record, index) =>
+    checkFolderPresence(record.rootPath).then((value) => { presence[index] = value; })));
+  await withTimeout(checks, budgetMs);
+  // A copy, so a stat that lands after the deadline can't change an answer
+  // that was already sent.
+  return [...presence];
 }
 
 function defaultParentDir(projectRegistry: ProjectRegistry): string {
@@ -2813,7 +2869,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      return await decorateProjectListWithIcons(projectRegistry.list());
+      const records = projectRegistry.list();
+      const [decorated, presence] = await Promise.all([
+        decorateProjectListWithIcons(records),
+        readProjectFolderPresence(records),
+      ]);
+      // Additive: older callers ignore `exists`, and an unknown answer is left out.
+      return decorated.map((record, index) =>
+        presence[index] === undefined ? record : { ...record, exists: presence[index] });
     }
 
     if (method === "projects.add") {

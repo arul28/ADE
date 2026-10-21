@@ -99,6 +99,8 @@ import {
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
+import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
+import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1109,13 +1111,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** By-lane only: fold lanes with nothing waiting on the user into a Working shelf. */
   workFoldBusyLanes?: boolean;
   setWorkFoldBusyLanes?: (enabled: boolean) => void;
-  /** Focus grid: the work area shows every chat that waits for the user. */
+  /** Focus grid: the work area shows every chat that needs the user. */
   workFocusGrid?: boolean;
   setWorkFocusGrid?: (enabled: boolean) => void;
   /**
-   * The chats that wait for the user while Focus is on, in list order
+   * The chats that need the user while Focus is on, in list order
    * (`workFocusQueue`). Reported up so the Focus grid shows exactly what the
-   * sidebar left unfolded.
+   * sidebar refuses to fold away.
    */
   onFocusQueueChange?: (items: readonly WorkFocusQueueItem[]) => void;
   /** Focus grid with the sidebar open: each waiting chat's page mark. */
@@ -1309,6 +1311,19 @@ export const SessionListPane = React.memo(function SessionListPane({
       ...others,
     ];
   }, [activeMachineId, crossMachineEntries, projectBinding]);
+  // A machine that answers the connection but refuses the chat read would
+  // otherwise just contribute nothing, which reads as "no chats there". Only
+  // when it has nothing retained to show: a blip on a machine whose chats are
+  // still listed is not worth a notice.
+  const machineReadFailures = useMemo(
+    // Only while this pane shows other machines' chats at all: entries can
+    // outlive the sync that filled them.
+    () => (crossMachineSyncActive ? Object.values(crossMachineEntries) : []).flatMap((entry) =>
+      entry.machineId !== activeMachineId && entry.online && entry.error && entry.sessions.length === 0
+        ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
+        : []),
+    [activeMachineId, crossMachineEntries, crossMachineSyncActive],
+  );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
     && !workSessionFilters.machine.includes(activeMachineId);
 
@@ -1673,7 +1688,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [foldBusyLanesActive, laneFocusByLaneId, workPinnedLaneIdSet]);
 
   /**
-   * The Focus grid's chats: what Focus left unfolded and that waits for the
+   * The Focus grid's chats: the rows that hold a lane out and so wait on the
    * user, after the user's own filters. Empty while Focus is off.
    */
   const focusQueueIds = useMemo(() => {
@@ -1684,6 +1699,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       filingBuckets,
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
+      seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
       busySubagentParentIds,
       nowMs: stallNowMs,
@@ -1698,6 +1714,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
     busySubagentParentIds,
+    workSeenAtBySessionId,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1919,6 +1936,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedForeignLaneIds,
     filingBucketsFor: filingBucketsForForeignSessions,
     foreignNesting: unfilteredForeignNestingByCompositeId,
+    seenAtBySessionId: workSeenAtBySessionId,
     nowMs: stallNowMs,
     onChange: onFocusQueueChange,
   });
@@ -4172,6 +4190,32 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* No rule under the strip: the toolbar's own bottom padding separates it
           from the list, and one fewer boundary before the first chat. */}
+
+      {machineReadFailures.map((failure) => (
+        <div key={failure.machineId} className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
+          <Banner
+            layout="inline"
+            model={{
+              id: `work-machine-read-failure:${failure.machineId}`,
+              tone: "warning",
+              icon: <Desktop size={13} weight="bold" />,
+              title: `Couldn't load chats from ${failure.machineName}`,
+              detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
+              actions: [{
+                label: "Copy error",
+                variant: "link",
+                onClick: () => {
+                  void copyTextToClipboard(failure.error).then((copied) => {
+                    showToast(copied
+                      ? { title: "Error copied", tone: "success" }
+                      : { title: "Couldn't copy the error", tone: "error" });
+                  });
+                },
+              }],
+            }}
+          />
+        </div>
+      ))}
 
       {/* Session list */}
       <div

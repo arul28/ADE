@@ -61,7 +61,11 @@ import type { createAdeCliService } from "../../desktop/src/main/services/cli/ad
 import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
 import { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
 import { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
-import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
+import {
+  planNewLaneEnvironment,
+  runDefaultLaneEnvironmentSetup,
+  runLaneEnvironmentSetup,
+} from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
@@ -99,6 +103,10 @@ import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatc
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import {
+  createProjectNotesService,
+  type ProjectNotesService,
+} from "../../desktop/src/main/services/projectNotes/projectNotesService";
 import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -472,6 +480,8 @@ export type AdeRuntime = {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
+  /** Facts agents saved about this project; read once per new agent session. */
+  projectNotesService?: ProjectNotesService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearAgentRuntime?: LinearAgentRuntime | null;
@@ -1540,8 +1550,10 @@ export async function createAdeRuntime(args: {
         });
     };
 
+    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
+      projectNotesService,
       runtimeSocketPath,
       sessionActivityReportingEnabled,
       transcriptsDir: paths.transcriptsDir,
@@ -2379,6 +2391,7 @@ export async function createAdeRuntime(args: {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         jevDecide: jevService.decide,
+        projectNotesService,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         adoptHarnessPreset: (preset) => {
@@ -2475,6 +2488,20 @@ export async function createAdeRuntime(args: {
         ...(typeof args !== "string" && args.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: args.crossMachineHandoffTransport }
           : {}),
+        // A lane a batch move imported here gets the same setup a new lane
+        // does: the default lane template, else the project's lane env config.
+        runCrossMachineLaneSetup: async (laneId) => {
+          await runDefaultLaneEnvironmentSetup(
+            {
+              laneService,
+              projectConfigService,
+              portAllocationService,
+              laneEnvironmentService,
+              laneTemplateService,
+            },
+            laneId,
+          );
+        },
         // An agent asked to move a chat, or an agent-started or queued move
         // ended while the person may be away.
         notifyCrossMachineHandoff: ({ sessionId, record, title }) => {
@@ -3674,6 +3701,7 @@ export async function createAdeRuntime(args: {
       cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
+      projectNotesService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       jiraService: jiraServiceRef,

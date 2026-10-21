@@ -71,6 +71,7 @@ import {
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
+import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
@@ -122,6 +123,7 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
+import { runDefaultLaneEnvironmentSetup } from "./services/lanes/laneEnvironmentSetup";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
@@ -309,7 +311,7 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   deferToRunningWindowsInstall,
   startWindowsInstallProgress,
@@ -375,6 +377,7 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
+import { createProjectNotesService } from "./services/projectNotes/projectNotesService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
@@ -3197,6 +3200,8 @@ app.whenReady().then(async () => {
     // The same gate as the update checks themselves: a development or channel
     // build has no feed of its own, so the brain updates its standalone runtime.
     supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    // Only a service-managed app uninstalls its service before installing.
+    preflightInstall: shouldRepairRuntimeServiceOnFallback ? checkRuntimeServiceRemovable : undefined,
     logger: updateLogger,
   });
   // The brain owns the turn-following lock so it survives this app quitting.
@@ -4416,8 +4421,10 @@ app.whenReady().then(async () => {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         return require("node-pty") as NodePtyType;
       });
+    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
+      projectNotesService,
       runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
@@ -4622,6 +4629,15 @@ app.whenReady().then(async () => {
 
     const agentChatService = createAgentChatService({
       museQuota,
+      projectNotesService,
+      // A lane a batch move imported here gets the same setup a new lane
+      // does: the default lane template, else the project's lane env config.
+      runCrossMachineLaneSetup: async (laneId) => {
+        await runDefaultLaneEnvironmentSetup(
+          { laneService, projectConfigService, portAllocationService, laneEnvironmentService, laneTemplateService },
+          laneId,
+        );
+      },
       // This host's account machine key, so a scheduled send that names a
       // machine can be matched to it. Resolved lazily and defensively: the
       // bridge may not exist yet at construction time, and a null simply means
@@ -4821,6 +4837,7 @@ app.whenReady().then(async () => {
       prService,
       sessionService,
       messageSession: (args) => agentChatService.messageSession(args),
+      isChatMovedAway: (sessionId) => Boolean(agentChatService.getCrossMachineMoveLock(sessionId, "pr_watch")),
       emitPrEvent,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
     });
@@ -6024,6 +6041,7 @@ app.whenReady().then(async () => {
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
+      projectNotesService,
       linearCredentialService,
       linearIssueTracker,
       githubService,
@@ -6349,6 +6367,7 @@ app.whenReady().then(async () => {
       testService,
       ctoStateService,
       ctoMemoryService,
+      projectNotesService,
       adeProjectService,
       linearCredentialService,
       linearIssueTracker,
@@ -9533,6 +9552,8 @@ app.whenReady().then(async () => {
     analytics: productAnalyticsService,
   });
 
+  // Whether this Mac's ADE.app is root-owned (a password on every update).
+  registerAppBundleOwnershipIpc({ logger: getMachineMainLogger(), analytics: productAnalyticsService });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),

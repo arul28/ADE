@@ -1233,7 +1233,37 @@ export function cmdQuote(value: string): string {
   return quoted;
 }
 
+/**
+ * The CLI the app runs its brain from (`ADE_CLI_JS`, else the packaged one),
+ * when this process is that app's Electron main. Main's argv names no script
+ * (`ADE.exe` alone, or a file or deeplink it was opened with), so the argv
+ * rules below would describe an `ADE serve` brain that never runs. Every
+ * check that proves a live brain against this command then refuses the real
+ * one: on Windows that refusal aborted every update install from 1.2.112 on.
+ */
+function electronMainCliScript(): string | null {
+  const electronProcess = process as NodeJS.Process & { type?: string; resourcesPath?: string };
+  if (electronProcess.type !== "browser") return null;
+  // `resolveCliScriptPath` honors this override first, so this must too.
+  const override = process.env.ADE_CLI_JS?.trim();
+  if (override) return path.resolve(override);
+  const resourcesPath = electronProcess.resourcesPath?.trim();
+  if (!resourcesPath) return null;
+  const cliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
+  return fs.existsSync(cliPath) ? cliPath : null;
+}
+
 export function resolveAdeServeCommand(): AdeServiceCommand {
+  // Same path `resolveCliScriptPath` in the desktop pool hands the brain it
+  // spawns, so the command matches the running brain's character for character.
+  const mainCli = electronMainCliScript();
+  if (mainCli) {
+    return withRuntimeBuildHash({
+      command: process.execPath,
+      args: [mainCli, "serve"],
+      env: runtimeEnvironment(mainCli),
+    });
+  }
   const entry = typeof process.argv[1] === "string" && process.argv[1].trim()
     ? path.resolve(process.argv[1])
     : "";

@@ -179,10 +179,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
+
+      # Restore-only: a cache saved on a release tag is invisible to the next
+      # release, so saving here only filled the repo's 10 GB cache limit. main's
+      # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
@@ -418,10 +430,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
+
+      # Restore-only: a cache saved on a release tag is invisible to the next
+      # release, so saving here only filled the repo's 10 GB cache limit. main's
+      # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
@@ -728,8 +752,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: apps/ade-cli/package-lock.json
+
+      # Restore-only: a cache saved on a release tag is invisible to the next
+      # release, so saving here only filled the repo's 10 GB cache limit. main's
+      # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - uses: actions/setup-python@v5
         if: runner.os == 'macOS'
@@ -890,10 +928,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
+
+      # Restore-only: a cache saved on a release tag is invisible to the next
+      # release, so saving here only filled the repo's 10 GB cache limit. main's
+      # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
+      # Ask npm where its cache is: hosted Windows runners move it to
+      # C:\npm\cache, so a hard-coded path silently caches nothing.
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # The packaged-app smoke imports its SDKs with ESM import(), which
       # ignores the app's NODE_PATH, so it resolves their dependencies from the

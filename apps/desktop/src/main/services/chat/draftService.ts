@@ -68,6 +68,7 @@ type DraftRow = {
   scheduled_by_session_id: string | null;
   fired_at: string | null;
   last_error: string | null;
+  move_away_held_at: string | null;
   armed_by_site_id: string | null;
 };
 
@@ -75,7 +76,7 @@ const DRAFT_COLUMNS = `
   id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
   updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
   target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
-  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, armed_by_site_id
+  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, move_away_held_at, armed_by_site_id
 `;
 
 function optionalString(value: unknown): string | null {
@@ -214,6 +215,7 @@ function fromRow(row: DraftRow, localSiteId: string | null): DraftEntry {
     scheduledBySessionId: row.scheduled_by_session_id,
     firedAt: row.fired_at,
     lastError: row.last_error,
+    moveAwayHeldAt: row.move_away_held_at,
   };
 }
 
@@ -515,6 +517,7 @@ export function createDraft(
     scheduledBySessionId: schedule?.scheduledBySessionId ?? null,
     firedAt: null,
     lastError: null,
+    moveAwayHeldAt: null,
   };
   db.run(
     `
@@ -632,7 +635,8 @@ type DraftPatchColumn =
   | "model"
   | "provider"
   | "model_id"
-  | "last_error";
+  | "last_error"
+  | "move_away_held_at";
 
 /**
  * Edit a draft's text, or arm/retime/clear its schedule. Returns the updated
@@ -680,6 +684,7 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     // Nothing to deliver any more, so nothing owns it either.
     patch.armed_by_site_id = null;
     patch.last_error = null;
+    patch.move_away_held_at = null;
   } else if (args.schedule !== undefined && args.schedule !== null) {
     const existingStatus = asEnum(existing.status, DRAFT_STATUSES) ?? "draft";
     const wasPending = (PENDING_DRAFT_STATUSES as readonly string[]).includes(existingStatus);
@@ -707,6 +712,7 @@ export function updateDraft(db: DraftDb, value: unknown): DraftEntry | null {
     patch.scheduled_by_session_id = schedule.scheduledBySessionId;
     patch.armed_by_site_id = currentSiteId(db);
     patch.last_error = null;
+    patch.move_away_held_at = null;
   }
 
   const keys = Object.keys(patch) as DraftPatchColumn[];
@@ -777,17 +783,28 @@ export function setDraftStatusIfSending(
     status: DraftStatus;
     firedAt?: string | null;
     lastError?: string | null;
+    scheduledAt?: string | null;
+    moveAwayHeldAt?: string | null;
   },
   claimedAt: string,
 ): boolean {
   const now = new Date().toISOString();
+  const updateScheduledAt = patch.scheduledAt !== undefined;
+  const updateMoveAwayHeldAt = patch.moveAwayHeldAt !== undefined;
   const sql = `update prompt_stashes
-       set status = ?, fired_at = coalesce(?, fired_at), last_error = ?, updated_at = ?
+       set status = ?, fired_at = coalesce(?, fired_at), last_error = ?,
+           scheduled_at = case when ? = 1 then ? else scheduled_at end,
+           move_away_held_at = case when ? = 1 then ? else move_away_held_at end,
+           updated_at = ?
        where id = ? and status = 'sending' and updated_at = ?`;
   const values: SqlValue[] = [
     patch.status,
     patch.firedAt ?? null,
     patch.lastError ?? null,
+    updateScheduledAt ? 1 : 0,
+    patch.scheduledAt ?? null,
+    updateMoveAwayHeldAt ? 1 : 0,
+    patch.moveAwayHeldAt ?? null,
     now,
     id,
     claimedAt,
@@ -805,24 +822,35 @@ export function setDraftStatusIfSending(
 }
 
 /** Statuses/errors the scheduler writes back onto a row. */
-export function setDraftStatus(  db: DraftDb,
+export function setDraftStatus(db: DraftDb,
   id: string,
   patch: {
     status: DraftStatus;
     firedAt?: string | null;
     lastError?: string | null;
+    scheduledAt?: string | null;
+    moveAwayHeldAt?: string | null;
   },
 ): void {
+  const updateScheduledAt = patch.scheduledAt !== undefined;
+  const updateMoveAwayHeldAt = patch.moveAwayHeldAt !== undefined;
   db.run(
     `
       update prompt_stashes
-      set status = ?, fired_at = coalesce(?, fired_at), last_error = ?, updated_at = ?
+      set status = ?, fired_at = coalesce(?, fired_at), last_error = ?,
+          scheduled_at = case when ? = 1 then ? else scheduled_at end,
+          move_away_held_at = case when ? = 1 then ? else move_away_held_at end,
+          updated_at = ?
       where id = ?
     `,
     [
       patch.status,
       patch.firedAt ?? null,
       patch.lastError ?? null,
+      updateScheduledAt ? 1 : 0,
+      patch.scheduledAt ?? null,
+      updateMoveAwayHeldAt ? 1 : 0,
+      patch.moveAwayHeldAt ?? null,
       new Date().toISOString(),
       id,
     ],

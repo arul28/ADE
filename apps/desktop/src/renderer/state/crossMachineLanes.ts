@@ -1525,11 +1525,16 @@ async function readMachine(
     if (generation !== runtime.generation) return;
     // Record the failure WITHOUT lanes/sessions: retention is the point. A
     // machine we briefly couldn't reach keeps everything it last told us.
+    // Reachability follows the snapshot exactly as on success, so a machine
+    // that is connected but refuses its very first read (a project folder that
+    // is gone there) is a live machine with an error, which Work shows, not an
+    // offline one it hides.
     store.mergeCrossMachineLanes({
       machineId,
       machineName,
       targetId,
       projectId,
+      ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
       error: error instanceof Error ? error.message : String(error),
     });
   }

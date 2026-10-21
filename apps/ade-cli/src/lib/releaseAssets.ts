@@ -225,3 +225,23 @@ export async function sha256File(filePath: string): Promise<string> {
   await pipeline(fs.createReadStream(filePath), hash);
   return hash.digest("hex");
 }
+
+export function manifestNameForPlatform(platform: NodeJS.Platform): string {
+  return platform === "darwin" ? "latest-mac.yml" : "latest.yml";
+}
+
+/**
+ * Streamed, not buffered: the file this hashes is the ~1 GB desktop installer,
+ * and a single allocation that size is an out-of-memory kill mid-install on a
+ * small VM or container -- one that grows with every release. The shell code
+ * this replaced streamed it too (`[IO.File]::OpenRead` -> `ComputeHash`).
+ */
+export async function sha512Base64(filePath: string): Promise<string> {
+  const hash = createHash("sha512");
+  // Fed by hand rather than piped into `hash` as a stream: ending its writable
+  // side finalizes the digest internally, and `hash.digest()` would then throw.
+  await pipeline(fs.createReadStream(filePath), async (source) => {
+    for await (const chunk of source) hash.update(chunk as Uint8Array);
+  });
+  return hash.digest("base64");
+}

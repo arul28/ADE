@@ -55,14 +55,16 @@ export function WorkFocusGridEmpty({
               <span className="font-semibold tabular-nums text-fg">
                 {workingCount} {workingCount === 1 ? "session is" : "sessions are"} working.
               </span>{" "}
-              {workingCount === 1 ? "It shows" : "They show"} up here when {workingCount === 1 ? "it finishes" : "they finish"} or {workingCount === 1 ? "needs" : "need"} you.
+              {workingCount === 1 ? "It shows" : "They show"} up here when {workingCount === 1 ? "it needs" : "they need"} you.
+              Finished work stays in the sidebar.
             </div>
           </>
         ) : (
           <>
             <div className="text-[15px] font-medium text-fg">All quiet for now</div>
             <div className="text-[12px] leading-relaxed text-fg/80">
-              No sessions are working. A chat shows up here when an agent finishes a turn or asks you something.
+              No sessions are working. A chat shows up here when it asks you something, a run fails, or a scheduled
+              wake never starts.
             </div>
           </>
         )}
@@ -189,7 +191,7 @@ export function focusPageSummary(
 }
 
 /**
- * The Focus grid's roster: every chat that waits for the user, always on
+ * The Focus grid's roster: every chat that needs the user, always on
  * screen, grouped by page. The page on screen is lit; a chip names its chat
  * with the agent's logo, a click goes to that chat's page and focuses its
  * tile, and a right-click opens the sidebar's session menu. A chat that arrived on another page carries the accent
@@ -274,7 +276,7 @@ export function WorkFocusRoster({
 
 /**
  * One waiting chat: the agent's logo and the chat's name, nothing else. Every
- * chat here waits for the user, so a status would repeat itself. No hover
+ * chat here needs the user, so a status would repeat itself. No hover
  * card; right-click opens the same session menu as the sidebar card.
  */
 function RosterChip({

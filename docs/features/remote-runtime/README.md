@@ -20,6 +20,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
+- `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
+  `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
+  connected Windows machine on a build that cannot self-install.
+- `apps/desktop/src/shared/crossMachineHandoff.ts` — `pickLiveCheckout`, the
+  shared choice of a project's checkout on a machine: folder exists, then
+  user-opened, then `lastOpenedAt`. `projects.list`
+  (`apps/ade-cli/src/multiProjectRpcServer.ts`) returns an optional `exists`
+  per project, from async stats under a 250 ms budget (one stat per path at a
+  time, cached 10 s). `laneMachines`, `agentMachineBridge`,
+  `ctoCrossMachineBridge`, `machineBridge`, `cliMachineTargeting` and
+  `remoteBootstrap` all pick through it; `ade projects` labels a missing
+  folder "folder missing".
+
 - `apps/ade-cli/src/services/account/machineBridge.ts`,
   `agentMachineBridge.ts` — brain-to-brain connection pools (one per caller
   class: CTO, agents) and the agents' `machines.call` forwarding. The host's
@@ -1819,6 +1832,20 @@ the same path on macOS and Windows. With no app attached, an app too old to
 know the method, or `unsupported`, the standalone `ade brain update` runs as
 before. The reply's `route` says which (`desktop_app` or `standalone`), and
 `pendingVersion` names the version the machine should come back on.
+
+A connected Windows machine on a build that cannot self-install
+(`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) is not sent
+`app_update.install`. `runtimeBridge` routes its Update to
+`updateViaRemoteTerminal` (`remoteTerminalUpdate.ts`): it opens a remote PTY in
+the primary lane of that machine's live project, runs
+`ade brain update [--version X]`, and polls `session.get`. Exit 0 or a dropped
+connection means installing (reply route `terminal`); a refused read while still
+connected is retried, then reported failed; a non-zero exit is failed with a
+manual hint. It gives up after `REMOTE_MACHINE_UPDATE_TIMEOUT_MS` (15 min), and
+the IPC ceiling allows for it. The app-routed install on a healthy build first
+runs a read-only service-removal preflight, so `failed` carries the reason
+instead of an `installing` that cannot finish. See
+[Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
 
 A brain update this app did not start (`ade brain update` on the machine, or a
 remote one that fell back to the standalone route) writes its progress to

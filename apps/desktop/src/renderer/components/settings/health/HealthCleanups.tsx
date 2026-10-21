@@ -181,9 +181,8 @@ function ArchivePolicy({
         {field("reclaimArchivedAfterHours", "Offer to remove archived folders after", "Archived lane folders show in Storage for you to remove. ADE never removes them itself.", "Off", "hours")}
       </ModernRows>
       <p className="ade-modern-muted">
-        Only clean, merged, idle lanes with no running chat or terminal are archived; the primary lane and attached folders never are.
-        Archiving keeps the branch, chats and files.
-        {anyLocal ? " Rules without Reset come from the project's shared settings." : " These values come from the project's shared settings until you change one here."}
+        Only clean, merged, idle lanes with nothing running are archived, never the primary lane. Their branch, chats and files stay.
+        {anyLocal ? " Rules without Reset use the project's shared value." : " Values come from the project's shared settings until you change one."}
       </p>
     </ModernSection>
   );

@@ -1018,7 +1018,7 @@ export function codexComputerUseMcpFlags(
 }
 
 function workTabCliPreamblePrompt(
-  skillRoots: readonly string[],
+  sessionGuidance: string,
   hasInitialPrompt = false,
 ): string {
   const launchInstruction = hasInitialPrompt
@@ -1035,7 +1035,7 @@ function workTabCliPreamblePrompt(
   return [
     launchInstruction,
     "",
-    buildAdeCliSessionGuidance(skillRoots),
+    sessionGuidance,
   ].join("\n");
 }
 
@@ -1208,6 +1208,11 @@ export function buildTrackedCliLaunchCommand(args: {
   preset?: TrackedCliPresetLaunch | null;
   /** False when this runtime has no RPC endpoint that can accept agent reports. */
   sessionActivityReportingEnabled?: boolean;
+  /**
+   * The Project notes block, read once by the caller (the process that owns
+   * the lane) when the session starts. Absent: no block.
+   */
+  projectNotes?: string | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -1215,6 +1220,7 @@ export function buildTrackedCliLaunchCommand(args: {
   const skillRoots = args.laneWorktreePath
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
     : getAdeAgentSkillRootsForPrompt();
+  const sessionGuidance = buildAdeCliSessionGuidance(skillRoots, args.projectNotes);
   // The preset lands LAST so it outranks the account env: a preset that names
   // its own config home must win over the instance patch, or a key-sourced
   // preset would run inside the user's own signed-in directory.
@@ -1253,7 +1259,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
     // `--mcp-config` takes several values, so a flag must follow it, never the prompt.
     commandArgs.push(...trackedCliUserMcpFlags("claude", args.userMcp));
-    const guidance = [buildAdeCliSessionGuidance(skillRoots), activityGuidance]
+    const guidance = [sessionGuidance, activityGuidance]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
     commandArgs.push("--append-system-prompt", guidance);
@@ -1297,7 +1303,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const codexModel = passthroughModelId
       ? normalizeCliFlagValue(args.model)
       : resolveCodexCliModelForLaunch(args.model);
-    const initialInput = workTabCliPrompt(initialPrompt, skillRoots, activityGuidance);
+    const initialInput = workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance);
     const commandArgs: string[] = [
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
@@ -1335,7 +1341,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(cursorModel),
     ];
     const initialInput = initialPrompt
-      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      ? workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance)
       : null;
     return {
       command: "cursor-agent",
@@ -1347,7 +1353,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "droid") {
-    const prompt = workTabCliPrompt(initialPrompt, skillRoots, activityGuidance);
+    const prompt = workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance);
     if (currentPlatform() === "win32") {
       // Windows Droid has to run through `powershell.exe -Command <line>` so the
       // settings JSON can be written to a temp file before droid starts, and
@@ -1394,7 +1400,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "pi") {
     const guidance = [
-      buildAdeCliSessionGuidance(skillRoots),
+      sessionGuidance,
       activityGuidance,
       `ADE permission policy for this Pi session: ${permissionMode}. Pi has no supported native ADE permission flag, so follow this policy and the ADE guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
@@ -1443,7 +1449,7 @@ export function buildTrackedCliLaunchCommand(args: {
     // into the TUI instead would land it in Muse's first-run "Do you trust
     // this workspace?" dialog; an argv prompt waits behind that dialog and is
     // submitted once the user answers (verified against muse 1.4.7).
-    commandArgs.push(workTabCliPrompt(initialPrompt, skillRoots, activityGuidance));
+    commandArgs.push(workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance));
     return {
       command: MUSE_CLI_COMMAND,
       args: commandArgs,
@@ -1462,7 +1468,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
-    commandArgs.push("--append-system-prompt", buildAdeCliSessionGuidance(skillRoots));
+    commandArgs.push("--append-system-prompt", sessionGuidance);
     // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
     // prompt goes through `cmd.exe`, which expands `%NAME%`, flattens newlines,
     // and caps the command line at ~8191 characters. Same rule as Claude:
@@ -1503,7 +1509,7 @@ export function buildTrackedCliLaunchCommand(args: {
       args: commandArgs,
       startupCommand: commandArrayToLine(["kimi", ...commandArgs], { platform: "linux" }),
       ...(initialPrompt
-        ? { initialInput: workTabCliPrompt(initialPrompt, skillRoots, activityGuidance), initialInputDelayMs: 750 }
+        ? { initialInput: workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance), initialInputDelayMs: 750 }
         : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -1520,7 +1526,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToGrokFlags(permissionMode));
-    commandArgs.push("--rules", buildAdeCliSessionGuidance(skillRoots));
+    commandArgs.push("--rules", sessionGuidance);
     const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
     if (initialPrompt && promptRidesInArgv) {
       commandArgs.push(initialPrompt);
@@ -1561,7 +1567,7 @@ export function buildTrackedCliLaunchCommand(args: {
     // Copilot has no flag for system text, so ADE's guidance rides in front of
     // the first message. An empty launch stays idle, as Cursor's does.
     const copilotFirstMessage = initialPrompt
-      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      ? workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance)
       : null;
     const promptRidesInArgv = Boolean(copilotFirstMessage) && currentPlatform() !== "win32";
     if (copilotFirstMessage && promptRidesInArgv) {
@@ -1597,7 +1603,7 @@ export function buildTrackedCliLaunchCommand(args: {
     // commands, so ADE's guidance rides in front of the first message. An
     // empty launch stays idle, as Cursor's does.
     const devinFirstMessage = initialPrompt
-      ? workTabCliPrompt(initialPrompt, skillRoots, activityGuidance)
+      ? workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance)
       : null;
     if (devinFirstMessage) {
       commandArgs.push("--", devinFirstMessage);
@@ -1984,10 +1990,10 @@ function claudeSessionSettingsFlags(
 
 function workTabCliPrompt(
   initialPrompt: string | null,
-  skillRoots: readonly string[],
+  sessionGuidance: string,
   additionalGuidance?: string | null,
 ): string {
-  const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt));
+  const preamble = workTabCliPreamblePrompt(sessionGuidance, Boolean(initialPrompt));
   const withAdditionalGuidance = additionalGuidance
     ? [preamble, "", additionalGuidance].join("\n")
     : preamble;

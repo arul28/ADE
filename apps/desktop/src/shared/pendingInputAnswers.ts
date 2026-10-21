@@ -1,4 +1,5 @@
 import type { PendingInputKind, PendingInputOption, PendingInputQuestion } from "./types/chat";
+import { isUserOnlyConsentCard } from "./types/macDesktop";
 
 /**
  * The answer semantics for a pending-input question, shared by every surface
@@ -95,6 +96,45 @@ export function isAskQuestionRequest(
  */
 export const PENDING_INPUT_SEND_BLOCKED_MESSAGE =
   "Answer or decline the pending request before sending another message.";
+
+/**
+ * May a typed message stand in for "Decline" on this card?
+ *
+ * While an approval waits, the composer stays open: sending declines the card
+ * and then delivers the message the way any mid-turn message goes, so the
+ * user can say "don't run that, do this instead" in one step. Questions are
+ * not on this path — their card already takes the composer's editor as the
+ * free-text answer, and a typed reply there is sent as the user talking back
+ * (`withTypedReplyNote`). Non-blocking cards never gated the composer.
+ *
+ * Kept locked, because a decline there does not leave room for the message:
+ * - ACP runtimes have no mid-turn steer, so a turn that survives the decline
+ *   would drop the message.
+ * - Codex and Cursor answer a plan decline with a follow-up turn of their
+ *   own, which would race the message.
+ * - Cards only the user may answer (a secret, a consent): the typed text could
+ *   be the secret, and the answer is the permission itself.
+ */
+export function isRedirectablePendingRequest(
+  request: {
+    kind?: string | null;
+    blocking?: boolean;
+    source?: string | null;
+    providerMetadata?: Record<string, unknown>;
+  } | null | undefined,
+): boolean {
+  if (!request || isNonBlockingPendingRequest(request) || isAskQuestionRequest(request)) return false;
+  if (request.source === "acp") return false;
+  if (request.kind === "plan_approval" && (request.source === "codex" || request.source === "cursor")) return false;
+  return !isUserOnlyConsentCard(request.providerMetadata);
+}
+
+/** The composer's placeholder while a redirectable card waits. */
+export function pendingInputRedirectPlaceholder(kind: string | null | undefined): string {
+  return kind === "plan_approval"
+    ? "Send a message to reject the plan and redirect the agent"
+    : "Send a message to decline and redirect the agent";
+}
 
 /**
  * Any card that leaves the composer usable.
@@ -255,6 +295,7 @@ export function withTypedReplyNote(
   values: readonly string[],
 ): string[] {
   if (!options.length || !values.length) return [...values];
+  if (values.every((value) => value === QUESTION_SKIPPED_FOR_REPLY_ANSWER)) return [...values];
   const known = new Set(options.flatMap((option) => [option.value, option.label].map((entry) => entry.trim().toLowerCase())));
   // A whole match first: labels can contain commas ("Keep both, improve summary").
   const namesOptionsOnly = (value: string) => {
@@ -310,6 +351,47 @@ export function answerState(picks: readonly string[], note: string): AnswerState
   if (hasPick) return "PICK";
   if (hasNote) return "NOTE";
   return "EMPTY";
+}
+
+/**
+ * A multi-question card where the only thing entered is a typed reply on the
+ * current page: no picks anywhere, nothing on the other pages. That is the
+ * user talking back rather than filling the set in ("skip these, just do X"),
+ * so it may be sent alone — the provider gets that one note, which
+ * `withTypedReplyNote` marks as a reply to act on, and the other questions go
+ * unanswered. Rule 5 (every question answered) covers the card being filled in.
+ */
+export function isLoneTypedReply(args: {
+  picks: readonly string[];
+  note: string;
+  totalAnswered: number;
+  totalQuestions: number;
+}): boolean {
+  return args.totalQuestions > 1
+    && args.totalAnswered === 1
+    && answerState(args.picks, args.note) === "NOTE";
+}
+
+/** What the questions a lone typed reply skipped are answered with. */
+export const QUESTION_SKIPPED_FOR_REPLY_ANSWER =
+  "[Not answered: the user replied in their own words to another question in this set instead.]";
+
+/**
+ * The payload for {@link isLoneTypedReply}: the reply on its own question and
+ * {@link QUESTION_SKIPPED_FOR_REPLY_ANSWER} on every other. Every question gets
+ * a value because a provider may refuse a partial set — Claude's
+ * AskUserQuestion reports "The user did not provide answers" when one is
+ * missing.
+ */
+export function loneTypedReplyAnswers(
+  questions: readonly PendingInputQuestion[],
+  questionId: string,
+  note: string,
+): Record<string, string> {
+  return Object.fromEntries(questions.map((question) => [
+    question.id,
+    question.id === questionId ? note.trim() : QUESTION_SKIPPED_FOR_REPLY_ANSWER,
+  ]));
 }
 
 /**

@@ -1,13 +1,50 @@
 import type {
   AgentChatAcceptCrossMachineHandoffResult,
   AgentChatCrossMachineContinuation,
+  AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineHandoffCheckpoint,
   AgentChatCrossMachineHandoffRecord,
+  AgentChatCrossMachineLaneImportArgs,
+  AgentChatCrossMachineLaneImportResult,
+  AgentChatCrossMachineLaneSetupStatus,
+  AgentChatCrossMachineMoveRelation,
+  AgentChatProvider,
   AgentChatSession,
   AgentChatCrossMachineTargetConfig,
   RemoteRuntimeHandoffStoragePreflightResult,
 } from "./types";
+
+/**
+ * The code a destination's definitive return refusal carries (it never
+ * committed the return). The source then moves the chat as a new chat there.
+ */
+export const CROSS_MACHINE_RETURN_REFUSED_CODE = "cross_machine_return_refused";
+
+/** A move's continuation instruction when the person gave none (the destination then adds nothing of its own). */
+export const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
+  "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
+
+/** Resolve whether target is the caller's chat or one of its descendants. */
+export function crossMachineMoveRelation(
+  callerSessionId: string | null | undefined,
+  targetSessionId: string | null | undefined,
+  parentSessionIdFor: (sessionId: string) => string | null | undefined,
+): AgentChatCrossMachineMoveRelation {
+  if (!callerSessionId || !targetSessionId) return "other";
+  if (callerSessionId === targetSessionId) return "self";
+  const visited = new Set<string>();
+  let currentSessionId: string | null = targetSessionId;
+  for (let depth = 0; depth < 32 && currentSessionId; depth += 1) {
+    if (visited.has(currentSessionId)) return "other";
+    visited.add(currentSessionId);
+    const parentSessionId: string | null = parentSessionIdFor(currentSessionId)?.trim() || null;
+    if (!parentSessionId) return "other";
+    if (parentSessionId === callerSessionId) return "descendant";
+    currentSessionId = parentSessionId;
+  }
+  return "other";
+}
 
 /**
  * Every move field that sets what the destination chat may do. An agent's move
@@ -27,11 +64,85 @@ export const CROSS_MACHINE_PERMISSION_FIELDS = [
   "cursorConfigValues",
 ] as const satisfies ReadonlyArray<keyof AgentChatCrossMachineTargetConfig>;
 
+/**
+ * Every public target field a move start may carry, as a record so the type
+ * checker names any field added to `AgentChatCrossMachineTargetConfig` later.
+ */
+const CROSS_MACHINE_TARGET_CONFIG_FIELDS: Record<keyof AgentChatCrossMachineTargetConfig, true> = {
+  targetModelId: true,
+  reasoningEffort: true,
+  fastMode: true,
+  fastTier: true,
+  claudePermissionMode: true,
+  codexApprovalPolicy: true,
+  codexSandbox: true,
+  codexConfigSource: true,
+  opencodePermissionMode: true,
+  droidPermissionMode: true,
+  copilotPermissionMode: true,
+  copilotContextTier: true,
+  copilotAutoTier: true,
+  musePermissionMode: true,
+  permissionMode: true,
+  cursorModeId: true,
+  cursorConfigValues: true,
+  acpPermissionMode: true,
+  acpConfigSnapshot: true,
+};
+
+/**
+ * Only the target config fields of `args`. A move persists what it will ask
+ * the destination for; internal batch context (lane, parent link, approval)
+ * never comes from a caller's arguments.
+ */
+export function pickCrossMachineTargetConfig(
+  args: Partial<AgentChatCrossMachineTargetConfig> & Record<string, unknown>,
+): Partial<AgentChatCrossMachineTargetConfig> {
+  const next: Record<string, unknown> = {};
+  for (const field of Object.keys(CROSS_MACHINE_TARGET_CONFIG_FIELDS)) {
+    if (args[field] !== undefined) next[field] = args[field];
+  }
+  return next as Partial<AgentChatCrossMachineTargetConfig>;
+}
+
 /** `args` without any permission field (see `CROSS_MACHINE_PERMISSION_FIELDS`). */
 export function withoutCrossMachinePermissionFields<T extends Record<string, unknown>>(args: T): T {
   const next: Record<string, unknown> = { ...args };
   for (const field of CROSS_MACHINE_PERMISSION_FIELDS) delete next[field];
   return next as T;
+}
+
+/**
+ * Move fields no caller supplies. Who asked, and for which chat, is stamped by
+ * the trusted host after this strip (a window is the person; the RPC server
+ * derives an agent's identity and relation; an automation is an agent of an
+ * unrelated chat). Batch and approval context is the orchestrator's own: it
+ * builds it, and no caller, person or agent, may hand it in.
+ */
+export const CROSS_MACHINE_CALLER_FIELDS = [
+  // Caller identity and relation, stamped by the host.
+  "requestedBy",
+  "requestedFor",
+  "requestingSessionId",
+  "requestedBySessionId",
+  "requestedByTitle",
+  // Batch and approval context, built by the orchestrator.
+  "batchMove",
+  "parentLink",
+  "sourceLane",
+  "destinationParentLaneId",
+  "approvedByPerson",
+  "handoffId",
+  "sourceChatTitle",
+] as const;
+
+/** `args` without any caller-stamped or orchestrator-owned field (see `CROSS_MACHINE_CALLER_FIELDS`). */
+export function withoutCrossMachineCallerFields<T extends Record<string, unknown>>(
+  args: T,
+): Omit<T, (typeof CROSS_MACHINE_CALLER_FIELDS)[number]> {
+  const next: Record<string, unknown> = { ...args };
+  for (const field of CROSS_MACHINE_CALLER_FIELDS) delete next[field];
+  return next as Omit<T, (typeof CROSS_MACHINE_CALLER_FIELDS)[number]>;
 }
 
 /** A move that is still asking, waiting or in flight. */
@@ -88,6 +199,7 @@ export function crossMachineContinuation(
   record: AgentChatCrossMachineHandoffRecord | null | undefined,
 ): AgentChatCrossMachineContinuation | null {
   if (!record) return null;
+  if (record.state === "returned") return null;
   if (record.continuedOn) return record.continuedOn;
   if (record.state !== "continued" || !record.targetLaneId || !record.targetSessionId) return null;
   return {
@@ -169,6 +281,47 @@ export function normalizeGitRemoteIdentity(value: string | null | undefined): st
   }
 }
 
+/** The fields of a registered project that say which checkout is the one in use. */
+export type RegisteredCheckoutRank = {
+  lastOpenedAt?: number | null;
+  /** "system" is a folder something ran ADE in, not one the person opened. */
+  catalogVisibility?: "recent" | "system" | null;
+  /**
+   * Set by `projects.list`: false when the project's folder is not on that
+   * machine (deleted, or on a drive that isn't mounted). Older brains leave it
+   * out, which counts as present.
+   */
+  exists?: boolean;
+};
+
+/**
+ * Picks the checkout of one repository to route to on another machine. A
+ * machine often registers a repository several times (a moved checkout, release
+ * copies in a temp folder, another tool's worktrees), and every caller that
+ * routes by repository must land on the same one: a folder that is there beats
+ * one that is gone, a project the person opened beats one ADE registered on its
+ * own, then the most recently opened wins, then registry order. A folder that is
+ * gone still wins when nothing else matches, so the caller hears why it can't
+ * be opened (an unplugged drive) instead of "not found".
+ *
+ * `candidates` are the records that already match the repository.
+ */
+export function pickLiveCheckout<T extends RegisteredCheckoutRank>(candidates: readonly T[]): T | null {
+  let best: T | null = null;
+  for (const candidate of candidates) {
+    if (!best || checkoutOutranks(candidate, best)) best = candidate;
+  }
+  return best;
+}
+
+function checkoutOutranks(candidate: RegisteredCheckoutRank, current: RegisteredCheckoutRank): boolean {
+  const candidatePresent = candidate.exists !== false;
+  if (candidatePresent !== (current.exists !== false)) return candidatePresent;
+  const candidateOpened = candidate.catalogVisibility !== "system";
+  if (candidateOpened !== (current.catalogVisibility !== "system")) return candidateOpened;
+  return (candidate.lastOpenedAt ?? 0) > (current.lastOpenedAt ?? 0);
+}
+
 export function sanitizePortableGitRemote(value: string): string {
   const trimmed = value.trim();
   try {
@@ -245,6 +398,7 @@ export function decodeCrossMachineDestinationPreflightResult(
     ...(laneFastForward ? { laneFastForward } : {}),
     // Absent on older destinations; only an explicit true means support.
     ...(record.gitBundleSupport === true ? { gitBundleSupport: true } : {}),
+    ...(record.batchMoveSupport === 1 ? { batchMoveSupport: 1 } : {}),
   };
 }
 
@@ -275,5 +429,122 @@ export function decodeAcceptCrossMachineHandoffResult(
     session: sessionRecord as unknown as AgentChatSession,
     reusedLane: requireBoolean(record.reusedLane, "Destination lane reuse status"),
     reusedSession: requireBoolean(record.reusedSession, "Destination chat reuse status"),
+    ...(Array.isArray(record.warnings)
+      ? { warnings: requireStringList(record.warnings, "Destination handoff warnings") }
+      : {}),
+    // Absent on older destinations, which never recreate scheduled work: the
+    // source then keeps every job it has.
+    ...(Array.isArray(record.scheduledWorkIds)
+      ? { scheduledWorkIds: requireStringList(record.scheduledWorkIds, "Destination scheduled work ids") }
+      : {}),
+  };
+}
+
+const LANE_SETUP_STATUSES: ReadonlySet<string> = new Set<AgentChatCrossMachineLaneSetupStatus>([
+  "running",
+  "completed",
+  "failed",
+  "not_configured",
+  "not_needed",
+]);
+
+export function decodeCrossMachineLaneImportResult(value: unknown): AgentChatCrossMachineLaneImportResult {
+  const record = requireRecord(value, "Destination lane import");
+  const setupStatus = typeof record.setupStatus === "string" && LANE_SETUP_STATUSES.has(record.setupStatus)
+    ? record.setupStatus as AgentChatCrossMachineLaneSetupStatus
+    : null;
+  return {
+    importId: requireString(record.importId, "Destination lane import identifier"),
+    laneId: requireString(record.laneId, "Destination lane identifier"),
+    reusedLane: requireBoolean(record.reusedLane, "Destination lane reuse status"),
+    carriedChanges: record.carriedChanges === true,
+    snapshotSha: typeof record.snapshotSha === "string" && record.snapshotSha.trim() ? record.snapshotSha : null,
+    warnings: requireStringList(record.warnings, "Destination lane import warnings"),
+    ...(setupStatus ? { setupStatus } : {}),
+  };
+}
+
+function isArgsRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireArgString(value: unknown, message: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(message);
+  return value;
+}
+
+/** Absent (undefined or null) stays absent; anything else must be a non-empty string. */
+function optionalArgString(value: unknown, message: string): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(message);
+  return value;
+}
+
+/**
+ * A batch lane import as the destination receives it, from any transport (the
+ * sync remote command, `run_ade_action`) and from the source's own outbox.
+ * Deep checks of the git bundle stay with `validateHandoffGitBundle`.
+ */
+export function decodeCrossMachineLaneImportArgs(value: unknown): AgentChatCrossMachineLaneImportArgs {
+  if (!isArgsRecord(value)) throw new Error("The batch lane import is malformed.");
+  const sourceLane = value.sourceLane;
+  if (!isArgsRecord(sourceLane) || typeof sourceLane.name !== "string" || !sourceLane.name.trim()) {
+    throw new Error("The batch lane import is missing its source lane details.");
+  }
+  const parentLaneId = sourceLane.parentLaneId ?? null;
+  if (parentLaneId !== null && (typeof parentLaneId !== "string" || !parentLaneId.trim())) {
+    throw new Error("The batch lane import has an invalid source parent lane id.");
+  }
+  if (value.gitBundle != null && !isArgsRecord(value.gitBundle)) {
+    throw new Error("The batch lane import has an invalid git bundle.");
+  }
+  const sourceMachineKey = optionalArgString(value.sourceMachineKey, "The batch lane import has an invalid source machine key.");
+  const destinationParentLaneId = optionalArgString(
+    value.destinationParentLaneId,
+    "The batch lane import has an invalid destination parent lane id.",
+  );
+  const returnToLaneId = optionalArgString(value.returnToLaneId, "The batch lane return has an invalid origin lane id.");
+  return {
+    importId: requireArgString(value.importId, "The batch lane import is missing its import id."),
+    sourceMachineName: requireArgString(value.sourceMachineName, "The batch lane import is missing its source machine name."),
+    ...(sourceMachineKey ? { sourceMachineKey } : {}),
+    sourceLane: {
+      laneId: requireArgString(sourceLane.laneId, "The batch lane import is missing its source lane id."),
+      parentLaneId,
+      name: sourceLane.name,
+    },
+    ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
+    ...(returnToLaneId ? { returnToLaneId } : {}),
+    branchRef: requireArgString(value.branchRef, "The batch lane import is missing its branch."),
+    headSha: requireArgString(value.headSha, "The batch lane import is missing its source commit."),
+    originUrl: requireArgString(value.originUrl, "The batch lane import is missing its origin."),
+    ...(value.gitBundle != null
+      ? { gitBundle: value.gitBundle as unknown as NonNullable<AgentChatCrossMachineLaneImportArgs["gitBundle"]> }
+      : {}),
+  };
+}
+
+export function decodeCrossMachineDestinationPreflightArgs(value: unknown): AgentChatCrossMachineDestinationPreflightArgs {
+  if (!isArgsRecord(value)) throw new Error("The destination preflight request is malformed.");
+  const mode = value.mode == null ? undefined : typeof value.mode === "string" ? value.mode.trim() : value.mode;
+  if (mode !== undefined && mode !== "brief" && mode !== "fork") {
+    throw new Error("The destination preflight mode must be brief or fork.");
+  }
+  const sourceProvider = typeof value.sourceProvider === "string" ? value.sourceProvider.trim() : "";
+  const batchLaneImportId = optionalArgString(value.batchLaneImportId, "The destination preflight has an invalid batch lane import id.");
+  const returnToLaneId = optionalArgString(value.returnToLaneId, "The destination preflight has an invalid return lane id.");
+  return {
+    targetModelId: requireArgString(
+      value.targetModelId,
+      "The destination preflight requires targetModelId.",
+    ) as AgentChatCrossMachineDestinationPreflightArgs["targetModelId"],
+    sourceBranchRef: requireArgString(value.sourceBranchRef, "The destination preflight requires sourceBranchRef."),
+    sourceHeadSha: requireArgString(value.sourceHeadSha, "The destination preflight requires sourceHeadSha."),
+    ...(mode !== undefined ? { mode } : {}),
+    ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
+    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
+    ...(value.requireBatchMoveSupport === true ? { requireBatchMoveSupport: true } : {}),
+    ...(batchLaneImportId ? { batchLaneImportId } : {}),
+    ...(returnToLaneId ? { returnToLaneId } : {}),
   };
 }

@@ -239,6 +239,15 @@ export const WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS = 180_000;
 export const WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS = 195_000;
 /** The renderer's timer outlives the transport, so the real reason wins. */
 export const WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS = 210_000;
+
+/**
+ * A machine update downloads a full build before it restarts, so the normal
+ * call timeout is far too short. Fifteen minutes covers a slow link without
+ * leaving the request open forever.
+ */
+export const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
+/** The renderer's timer outlives the update call, so the machine's own answer wins. */
+export const REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS = REMOTE_MACHINE_UPDATE_TIMEOUT_MS + 30_000;
 /**
  * Windows types one character at a time, so a long `type` outlives the 30 s
  * default. The brain's own driver budget is capped at

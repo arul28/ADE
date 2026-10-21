@@ -8,6 +8,7 @@ import {
   type PrWatchRemark,
 } from "../../../shared/prWatch";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types/chat";
+import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import type { PrActionRun, PrCheck, PrComment, PrEventPayload, PrReview, PrSummary } from "../../../shared/types/prs";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import type { Logger } from "../logging/logger";
@@ -48,6 +49,8 @@ export type PrWatchServiceDeps = {
     get: (sessionId: string) => { toolType?: string | null; settledAt?: string | null; archivedAt?: string | null } | null;
   };
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
+  /** Moved-away watches remain armed until the source chat is unlocked. */
+  isChatMovedAway?: (sessionId: string) => boolean;
   emitPrEvent: (event: PrEventPayload) => void;
   getGithubBackgroundPauseUntilMs?: () => number | null | Promise<number | null>;
   tickMs?: number;
@@ -158,6 +161,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       stopWatch(record, "chat_gone", pr);
       return;
     }
+    if (deps.isChatMovedAway?.(record.sessionId)) return;
     if (!pr) {
       stopWatch(record, "closed", null);
       return;
@@ -273,6 +277,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
         mem.deliveryFailures = 0;
         told = { summary, at: deliveredAt };
       } catch (error) {
+        if (isMovedAwayChatError(error)) return;
         mem.deliveryFailures += 1;
         if (mem.deliveryFailures === 1 || mem.deliveryFailures % PR_WATCH_DELIVERY_FAILURE_LOG_EVERY === 0) {
           logger.warn("prs.watch_wake_delivery_failed", {

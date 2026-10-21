@@ -55,6 +55,15 @@ The practical volume checks are therefore:
 - Before staging/install: `process.execPath`, which resolves to the installed
   application bundle's volume on macOS.
 
+### App bundle ownership
+
+A root-owned `/Applications/ADE.app` makes every update ask for a password.
+`appBundleOwnership.ts` detects it and `AppBundleOwnershipBanner.tsx` docks
+"ADE will ask for your password on every update" with Fix it (an `osascript`
+admin `chown -R` of the bundle to the user) and Details. The IPC
+(`registerAppBundleOwnershipIpc.ts`, types in `shared/types/appBundleOwnership.ts`)
+is local-only and takes no pin: it acts on this computer's bundle.
+
 ## Windows update path
 
 Windows x64 uses electron-builder's per-user NSIS target and
@@ -132,6 +141,51 @@ Measured in Windows Sandbox with real installers (2026-10-07): from
 Over half of that was the sandbox copying files; the same copy takes 7 s on
 recent hardware. The first update after this change still runs the previous
 version's uninstaller, so it gets the install-side savings only.
+
+### Windows: the service-removal preflight and blocked builds
+
+The update transaction removes the background service before the installer
+runs. `readRecordedBrain` (`serviceManager/installWindows.ts`) refuses to stop a
+brain whose recorded command does not match the one ADE would launch. From
+Electron main, `resolveAdeServeCommand()` (`serviceManager/common.ts`) describes
+`ADE.exe <resources>\ade-cli\cli.cjs serve` through `electronMainCliScript`
+(`ADE_CLI_JS` when set, else the packaged `cli.cjs`); `readRecordedBrain` also
+accepts the command recorded in the service launcher script
+(`readLauncherBrainCommand`). ADE 1.2.112 and 1.2.113 described a bare
+`ADE.exe serve`, so they refused to stop the real brain and aborted every
+in-app update.
+
+`checkWindowsServiceRemovable` / `checkRuntimeServiceRemovable` run the same
+check read-only. `remoteUpdateInstall.ts` calls it before replying, so a remote
+install answers `failed` with the reason instead of `installing` and then
+dying. `isWindowsSelfInstallBlocked` (`shared/updateVersions.ts`) names the
+builds that cannot self-install. For a connected Windows machine on such a
+build, the desktop's Update routes through a remote terminal instead
+(`remoteTerminalUpdate.ts`; see
+[Remote runtime](../remote-runtime/README.md#machineupdateandrestart)).
+
+The machine itself recovers with `brain update --apply-staged`, run by the
+newly downloaded standalone binary. On Windows with a stable app installed,
+`applyWindowsDesktopUpdate` (`ade-cli/src/commands/windowsDesktopRescue.ts`)
+installs the desktop app rather than swapping the service to the standalone
+runtime:
+
+1. Verify the installer's sha512 against `latest.yml` and its Authenticode
+   signer against the installed app's; a mismatch fails closed.
+2. Stop the service through the staged binary.
+3. Run the installer with `--updated /S` (plus `--force-run` when the app was
+   open).
+4. With the app closed, start the service through the app's own
+   `cli.cjs brain start`. The NSIS `-Updating` setup path skips the service.
+5. If the installer fails, restore the old service with `brain start`.
+
+Helper-only environment (staged runtime paths, `ADE_CLI_PATH`, self-mutation
+flags) is stripped before the installer and the app CLI run, and so is
+`ELECTRON_RUN_AS_NODE` for the installer, so the app it reopens starts as an
+app. The app CLI gets the module paths its installer's setup step uses. With no app installed, the standalone runtime swap runs as before.
+`cliDelegation.ts` never delegates `brain update --apply-staged` to
+`ADE_CLI_PATH`; from an ADE terminal it used to hand the install back to the
+old app's CLI.
 
 `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
 fresh on the release tag and adds the installer, blockmap, and `latest.yml` to

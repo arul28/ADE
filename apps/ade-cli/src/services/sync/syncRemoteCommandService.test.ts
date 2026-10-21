@@ -156,6 +156,25 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("requires an explicit batch approval decision instead of turning malformed input into a denial", async () => {
+    const resolveCrossMachineBatchMoveApproval = vi.fn();
+    const { service } = createService({ agentChatService: { resolveCrossMachineBatchMoveApproval } });
+
+    for (const approve of [undefined, null, "yes"]) {
+      await expect(service.execute(makePayload("chat.resolveCrossMachineBatchMoveApproval", {
+        batchId: "batch-1",
+        ...(approve === undefined ? {} : { approve }),
+      }))).rejects.toThrow(/requires a boolean approve value/);
+    }
+    expect(resolveCrossMachineBatchMoveApproval).not.toHaveBeenCalled();
+
+    await service.execute(makePayload("chat.resolveCrossMachineBatchMoveApproval", {
+      batchId: "batch-1",
+      approve: false,
+    }));
+    expect(resolveCrossMachineBatchMoveApproval).toHaveBeenCalledWith({ batchId: "batch-1", approve: false });
+  });
+
   it("restricts credential-backed CLI launches to paired controllers", () => {
     const { service } = createService();
 

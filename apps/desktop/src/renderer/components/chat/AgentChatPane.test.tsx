@@ -522,6 +522,32 @@ function buildPendingInputTranscript(sessionId: string): string {
   })}\n`;
 }
 
+function buildBlockingApprovalTranscript(sessionId: string): string {
+  return `${JSON.stringify({
+    sessionId,
+    timestamp: "2026-03-24T05:57:45.700Z",
+    event: {
+      type: "approval_request",
+      itemId: "approval-1",
+      kind: "tool_call",
+      description: "Run the migration?",
+      turnId: "turn-1",
+      detail: {
+        request: {
+          requestId: "approval-1",
+          itemId: "approval-1",
+          source: "claude",
+          kind: "approval",
+          title: "Approval requested",
+          description: "Run the migration?",
+          blocking: true,
+          turnId: "turn-1",
+        },
+      },
+    },
+  })}\n`;
+}
+
 function buildCodexSteeringTranscript(sessionId: string): string {
   return `${buildStatusStartedTranscript(sessionId)}${JSON.stringify({
     sessionId,
@@ -4107,6 +4133,45 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
     expect(window.ade.agentChat.respondToInput).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "declines the approval, then sends", declineRejects: false },
+    { name: "keeps the draft and sends nothing when the decline fails", declineRejects: true },
+  ])("a send while an approval waits $name", async ({ declineRejects }) => {
+    const session = buildSession("session-1");
+    const { send, steer } = installAdeMocks({
+      transcript: buildBlockingApprovalTranscript(session.sessionId),
+    });
+    if (declineRejects) {
+      vi.mocked(window.ade.agentChat.respondToInput).mockRejectedValue(new Error("decline failed"));
+    }
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    const text = "Use the staging database instead.";
+    fireEvent.change(textbox, { target: { value: text } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    const respond = vi.mocked(window.ade.agentChat.respondToInput);
+    await waitFor(() => expect(respond).toHaveBeenCalled());
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: session.sessionId, itemId: "approval-1", decision: "decline" }),
+      null,
+    );
+
+    if (declineRejects) {
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(text));
+      expect(send).not.toHaveBeenCalled();
+      expect(steer).not.toHaveBeenCalled();
+      return;
+    }
+
+    await waitFor(() => expect(send.mock.calls.length + steer.mock.calls.length).toBe(1));
+    const dispatch = send.mock.calls.length > 0 ? send : steer;
+    expect(JSON.stringify(dispatch.mock.calls[0])).toContain(text);
+    expect(respond.mock.invocationCallOrder[0]).toBeLessThan(dispatch.mock.invocationCallOrder[0]);
   });
 
   it("falls back to the session summary when a chat is awaiting input", async () => {
@@ -10490,6 +10555,12 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByText("Continue primary work")).toBeTruthy();
       expect(screen.queryByText("Continue background work")).toBeNull();
     });
+
+    // Typing hides it; deleting back to an empty box offers it again.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "C" } });
+    await waitFor(() => expect(screen.queryByText("Continue primary work")).toBeNull());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("Continue primary work")).toBeTruthy());
   });
 
   it("persists the first view without showing historical scheduled wakes as away activity", async () => {

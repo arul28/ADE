@@ -29,6 +29,7 @@ import {
 } from "../sessions/chatSessionProjection";
 import type { createSessionService } from "../sessions/sessionService";
 import { getErrorMessage } from "../shared/utils";
+import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -829,6 +830,7 @@ export function createSessionBoardMoveActions(deps: {
           });
         } catch (error) {
           const restored = await restoreBoardMoveSnapshot(sessionService, sessionId, before, after);
+          if (isMovedAwayChatError(error)) return;
           deps.logger.warn("session.board_move_reverted", {
             sessionId,
             moveId,

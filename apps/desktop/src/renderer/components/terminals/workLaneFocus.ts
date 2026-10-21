@@ -8,17 +8,20 @@
  * the board can never name different states for the same work. Snoozed and
  * settled rows do not take part: they already have their own shelves.
  *
- * Folding is a different question from the badge. A lane folds only when every
- * live row is Working or Waiting, or Done in a way the user has already seen.
- * A raised hand, a stale run, or a finished turn nobody has looked at keeps the
- * whole lane out, with every row still visible, so the user sees the context of
- * the thing asking for them.
+ * Folding is a different question from the badge. A lane folds when it has live
+ * work and no row that actually needs the user. A raised hand, a stale run, a
+ * missed wake, or a failure nobody has acknowledged keeps the whole lane out,
+ * with every row still visible, so the user sees the context of the thing
+ * asking for them. A clean finish does not: Done is not a request, so it neither
+ * holds its lane open nor claims a Focus tile.
  *
  * A finished helper that an agent launched (its nesting parent, or the
  * `launchedBySessionId` of a `--no-parent` chat) is the launcher's business while
  * the launcher is busy in the same lane: it takes no part in the fold, just like a
- * finished nested row. Once the launcher finishes, its own Done holds the lane out
- * and the helpers hold it out again until the user has looked at them.
+ * finished nested row. A clean finish takes no part anywhere; the one finish that
+ * still asks is a failure, and while the launcher works that failure is deferred
+ * too. Once the launcher finishes, an unacknowledged failure holds the lane out
+ * again until the user looks.
  *
  * A finished chat with a scheduled wake still to come is Waiting, not Done: it
  * will start again on its own (a subagent polling CI, a /loop). A parent whose
@@ -56,8 +59,8 @@ type WorkRowFocus = {
   missedWake?: boolean;
   /**
    * A chat between turns (ready/idle) with nothing scheduled. Only such a row
-   * may be lifted to Waiting by a busy subagent: a failed or stopped parent
-   * still needs the user, whatever its subagents are doing.
+   * may be lifted to Waiting by a busy subagent: a failed parent still needs the
+   * user, whatever its subagents are doing; a stopped one is plain Done.
    */
   resting?: boolean;
 };
@@ -85,10 +88,14 @@ function finishedAtMs(session: TerminalSessionSummary): number {
 }
 
 /**
- * Has the user left this row since it last finished? Seen comes only from the
- * leave stamp (`useWorkSessions`), never from the row being open: a finished
- * row clicked in the inbox must not fold its lane out from under the cursor.
- * Its lane folds once the user moves on.
+ * Has the user left this row since it last failed? Seen comes only from the
+ * leave stamp (`useWorkSessions`), never from the row being open: a failure
+ * clicked in the inbox must not fold its lane out from under the cursor. Its
+ * lane folds once the user moves on.
+ *
+ * Only an unacknowledged failure asks this. A clean finish does not consult the
+ * stamp at all: Done is not a request, so its lane folds whether or not the
+ * user ever opened it.
  */
 function isWorkRowSeen(session: TerminalSessionSummary, seenAt: string | null | undefined): boolean {
   if (!seenAt) return false;
@@ -132,12 +139,25 @@ function workRowFocus(args: {
       const wake = scheduledWakeState(args.session.nextWakeAt, args.nowMs);
       if (wake === "pending") return { status: "waiting", holdsOut: false };
       if (wake === "overdue") return { status: "done", holdsOut: true, missedWake: true };
-      return { status: "done", holdsOut: !args.seen, resting: true };
+      // A clean finish is Done, not a request. It never holds its lane out and
+      // never claims a Focus tile: there is nothing here for a person to answer.
+      return { status: "done", holdsOut: false, resting: true };
     }
-    default:
-      // failed / stopped / ended: the turn is over. It holds the
-      // lane out until the user has looked at it since it finished.
+    case "failed":
+      // A failure is an error nobody has acknowledged yet. It keeps its lane
+      // open, and gets a tile, until the user has left it since it failed.
       return { status: "done", holdsOut: !args.seen };
+    case "stopped":
+    case "ended":
+      // The turn is over by the user's own choice or the runtime's own exit.
+      // Nothing is waiting on a person, so it rides along like a clean finish.
+      return { status: "done", holdsOut: false };
+    default: {
+      // A phase added later must decide here: the compiler stops on the `never`
+      // assignment until it does, instead of letting it go quietly unseen.
+      const _exhaustive: never = phase;
+      return { status: "done", holdsOut: false };
+    }
   }
 }
 
@@ -238,7 +258,7 @@ function deferredToBusyLauncher(
 export type WorkLaneFocus = {
   /** Highest-priority status among the lane's live rows; null when it has none. */
   status: WorkLaneFocusStatus | null;
-  /** Whether the lane belongs in the Working shelf (pins and primary aside). */
+  /** Whether the lane belongs in the Working shelf (pins aside). */
   folds: boolean;
 };
 
@@ -247,16 +267,23 @@ export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
 /**
  * One lane's focus from its full roster.
  *
- * It folds when every live row is busy (Working/Waiting) or already-seen Done,
- * and at least one is actually busy: a lane holding only finished rows is not
- * working, it is waiting to be settled. Only agent rows count as busy: a plain
- * shell (a dev server, an App Control shell) can run forever, so it must not
- * keep a lane folded once its chat is done. `launching` counts launches with
- * no session row yet, which are busy by definition.
+ * It folds when it has at least one busy agent row and no row that needs the
+ * user. A lane holding only finished rows is not working, it is waiting to be
+ * settled, so it never folds and stays in the inbox with its rows visible. Only
+ * agent rows count as busy: a plain shell (a dev server, an App Control shell)
+ * can run forever, so it must not keep a lane folded once its chat is done.
+ * `launching` counts launches with no session row yet, which are busy by
+ * definition.
+ *
+ * What holds a lane out: a raised hand, a stale or stalled run, a scheduled wake
+ * that came due and never ran, or a failure the user has not left since. A
+ * clean finish, a stopped chat, and an ended one do not: Done is not a request,
+ * and counting it as one let an unopened chat block a lane that had live work.
  *
  * Nested rows (attached shells, subagents) can raise a hand and so hold their
  * lane out, but a finished nested row cannot: nobody opens a helper to mark it
- * seen, so it would pin the lane open forever. A missed wake is the exception.
+ * seen, so an unacknowledged failure there would pin the lane open forever. A
+ * missed wake is the exception.
  *
  * A finished helper the agent launched (`launcherSessionId`) is skipped the same
  * way while that launcher is a busy agent in this lane. A raised hand, a stale
@@ -404,15 +431,20 @@ export function stampWorkSeenAt(
 }
 
 /**
- * The chats the Focus grid shows: every agent chat that waits for the user,
- * from every lane Focus left unfolded.
+ * The chats the Focus grid shows: the rows that actually need the user, from
+ * every lane Focus left unfolded.
  *
- * Built from the same per-row rule as the fold, so the grid and the sidebar
- * cannot disagree: a lane is unfolded exactly because one of these rows holds
- * it out. A Working or Waiting row stays out of the grid even when its lane is
+ * Built from the same `holdsOut` flag as the fold, so the grid and the sidebar
+ * cannot disagree: every tile holds its lane out, and no row gets a tile without
+ * one. The reverse is not exact — a nested row or a plain shell can hold a lane
+ * out with no tile, which is the sidebar's business, not a request on this desk.
+ * A clean finish is Done, not a request, so it never claims a Focus slot — the
+ * sidebar's inbox already shows it, and a lane that has only finished rows never
+ * folds. A Working or Waiting row stays out of the grid even when its lane is
  * unfolded; the sidebar still shows it, which is where the user sees why it is
- * not a tile. Plain shells are not agents and never get a tile. A nested row
- * (subagent, attached shell) gets a tile only while it asks for the user; a
+ * not a tile. Plain shells are
+ * not agents and never get a tile. A nested row (subagent, attached shell) gets
+ * a tile only while it asks for the user or a wake it promised came due; a
  * finished one is the parent's business. A finished helper whose launcher is
  * busy in its lane (`summarizeLaneFocus`) gets no tile either, so the grid and
  * the sidebar agree.
@@ -422,6 +454,8 @@ export function workFocusQueue(args: {
   filingBuckets: ReadonlyMap<string, SessionFilingBucket>;
   foldedLaneIds: ReadonlySet<string>;
   laneWaiting: (laneId: string) => boolean;
+  /** The leave stamps `summarizeLaneFocus` reads, so an acknowledged failure stops asking. */
+  seenAtBySessionId: Readonly<Record<string, string>>;
   nestedSessionIds: ReadonlySet<string>;
   /** Same set as `summarizeLaneFocus`: a parent kept busy by a subagent gets no tile. */
   busySubagentParentIds?: ReadonlySet<string>;
@@ -436,13 +470,17 @@ export function workFocusQueue(args: {
   }
   const laneBySessionId = new Map<string, LaneFocusRows>();
   for (const [laneId, laneSessions] of sessionsByLaneId) {
-    const lane = laneFocusRows(laneSessions, () => false, {
-      filingBuckets: args.filingBuckets,
-      laneWaiting: args.laneWaiting(laneId),
-      nestedSessionIds: args.nestedSessionIds,
-      busySubagentParentIds: args.busySubagentParentIds,
-      nowMs: args.nowMs,
-    });
+    const lane = laneFocusRows(
+      laneSessions,
+      (session) => isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+      {
+        filingBuckets: args.filingBuckets,
+        laneWaiting: args.laneWaiting(laneId),
+        nestedSessionIds: args.nestedSessionIds,
+        busySubagentParentIds: args.busySubagentParentIds,
+        nowMs: args.nowMs,
+      },
+    );
     for (const session of laneSessions) laneBySessionId.set(session.id, lane);
   }
   const ids: string[] = [];
@@ -461,9 +499,11 @@ export function workFocusQueue(args: {
     }
     if (args.nestedSessionIds.has(session.id)) continue;
     if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
-    // A stale or stalled run is filed as working but holds its lane out: it
-    // may be stuck, so the user is the one who has to look.
-    if (row.status === "done" || (row.status === "working" && row.holdsOut)) ids.push(session.id);
+    // One rule with the fold: a row that holds its lane out is the row on the
+    // user's desk. That covers the stale or stalled run (filed as working but
+    // possibly stuck, so the user is the one who has to look) and the failure
+    // nobody has left yet. A clean finish holds nothing out and gets no tile.
+    if (row.holdsOut) ids.push(session.id);
   }
   return ids;
 }

@@ -49,6 +49,13 @@ export function createRemoteUpdateInstaller(args: {
   getService: () => UpdateService | null;
   /** False for development and channel builds: they have no feed of their own. */
   supported: boolean;
+  /**
+   * Whether the install's own preparation would go ahead, asked before this
+   * app tells anyone it is installing. The answer goes back before the quit,
+   * so a refusal found later would reach the asking machine only as an update
+   * that never landed.
+   */
+  preflightInstall?: () => Promise<{ ok: true } | { ok: false; message: string }>;
   logger: Pick<Logger, "info" | "warn">;
   installDelayMs?: number;
   checkTimeoutMs?: number;
@@ -61,6 +68,21 @@ export function createRemoteUpdateInstaller(args: {
   /** The wait for a download to finish; one at a time, the latest request wins. */
   let pendingDownload: { stop: () => void } | null = null;
   let disposed = false;
+
+  /** The reason the install would refuse, or null when it would go ahead. */
+  const preflight = async (): Promise<string | null> => {
+    if (!args.preflightInstall) return null;
+    try {
+      const answer = await args.preflightInstall();
+      return answer.ok ? null : answer.message;
+    } catch (error) {
+      // A check that cannot run is not a refusal: the install decides then.
+      args.logger.warn("autoUpdate.remote_install_preflight_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
 
   const clearPendingDownload = (): void => {
     pendingDownload?.stop();
@@ -110,7 +132,15 @@ export function createRemoteUpdateInstaller(args: {
       if (snapshot.status === "ready") {
         stop();
         if (covers(snapshot.version, targetVersion)) {
-          scheduleInstall(service, snapshot.version);
+          const version = snapshot.version;
+          void preflight().then((blocked) => {
+            if (pendingDownload !== null || disposed) return;
+            if (blocked) {
+              args.logger.warn("autoUpdate.remote_install_blocked", { version, reason: blocked });
+              return;
+            }
+            scheduleInstall(service, version);
+          });
         } else {
           args.logger.warn("autoUpdate.remote_install_downloaded_older", {
             targetVersion,
@@ -220,6 +250,10 @@ export function createRemoteUpdateInstaller(args: {
               snapshot.version,
               `The ADE app on that machine only found ${snapshot.version}, not ${targetVersion}.`,
             );
+          }
+          const blocked = await preflight();
+          if (blocked) {
+            return result("failed", snapshot, snapshot.version, `ADE ${snapshot.version} is downloaded but can't install: ${blocked}`);
           }
           scheduleInstall(service, snapshot.version);
           return result("installing", snapshot, snapshot.version, `Installing ADE ${snapshot.version}.`);

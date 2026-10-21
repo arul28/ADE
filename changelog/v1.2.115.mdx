@@ -1,0 +1,13 @@
+---
+title: "v1.2.115"
+description: "Release notes for ADE v1.2.115 - October 21, 2026"
+---
+
+ADE 1.2.115 moves a whole set of lanes and chats to another machine at once, and back again.
+
+## New
+
+- Move a set of lanes and chats to another machine together with `ade chat move --machine <machine> --all`. Lane and chat relationships and scheduled work follow them, and an interrupted move can be retried (#1850).
+- A chat that continues on another machine is locked on the old one, so nothing restarts a second copy there. A direct send explains where to continue, or you can choose "Work here instead" (#1850).
+- Moving back continues the original chat, restores its schedules and unlocks the original lane. A return that would merge diverged histories is refused (#1850).
+- The iOS app shows and drives the same multi-chat moves (#1850).

@@ -38,6 +38,7 @@ import {
 import { createRemoteLaunchBudget } from "../../tuiClient/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
+import { codedError } from "../../../../desktop/src/shared/codedError";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
 import {
   getSignedInAccountAccessToken,
@@ -66,6 +67,9 @@ export type RemoteProjectRecord = {
   displayName: string | null;
   gitOriginUrl: string | null;
   lastOpenedAt: number;
+  catalogVisibility?: "recent" | "system";
+  /** False when the folder is gone on that machine; absent from older brains. */
+  exists?: boolean;
 };
 
 export type PooledConnection = {
@@ -165,6 +169,10 @@ export function coerceProjects(value: unknown): RemoteProjectRecord[] {
         : null,
       gitOriginUrl: typeof entry.gitOriginUrl === "string" ? entry.gitOriginUrl : null,
       lastOpenedAt: typeof entry.lastOpenedAt === "number" ? entry.lastOpenedAt : 0,
+      ...(entry.catalogVisibility === "recent" || entry.catalogVisibility === "system"
+        ? { catalogVisibility: entry.catalogVisibility }
+        : {}),
+      ...(typeof entry.exists === "boolean" ? { exists: entry.exists } : {}),
     }];
   });
 }
@@ -528,7 +536,11 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     if (isRecord(value) && value.ok === false) {
       const error = isRecord(value.error) ? value.error : {};
       const message = typeof error.message === "string" ? error.message : "The action failed.";
-      throw new Error(`${source} refused ${label}: ${message}`);
+      const refusal = `${source} refused ${label}: ${message}`;
+      // The machine's own ADE code (a string; JSON-RPC codes are numbers)
+      // rides along, so a caller can tell a definitive refusal from a failure.
+      if (typeof error.code === "string" && error.code.trim()) throw codedError(refusal, error.code);
+      throw new Error(refusal);
     }
     const bytes = resultByteLength(value);
     if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {

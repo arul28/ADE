@@ -1211,6 +1211,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
+    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -2435,12 +2436,26 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     DESTINATION; the chat moves from here. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
-                                                    it; a newer user message cancels it). An agent moves only its
-                                                    own chat, keeps its permissions, and waits for the person's
-                                                    approval unless the chat is full-auto.
+                                                    it; a newer user message cancels it). Moving your own chat or a
+                                                    descendant you started needs no approval at any permission level;
+                                                    another chat always needs the person's approval. The moved chat
+                                                    keeps its own permission level, never broader.
+                                                    The source is locked after arrival until the person chooses
+                                                    Work here instead.
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
+    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+                                                    Move selected chats, their lanes, and descendants in tree order
+    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+                                                    Defaults to fork; --brief sends a short context summary.
+                                                    An agent batch with any unrelated chat waits for one approval
+                                                    card on the caller's chat, listing the chats; deny cancels all.
+                                                    A person's batch needs no approval. Chats that already
+                                                    continue on another machine are skipped (named: refused).
+                                                    Also: --no-descendants, --no-changes, --interrupt, --note "…"
+    $ ade chat move --status <batch-id>              Show batch progress and per-item state
+    $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
@@ -2671,6 +2686,30 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   The target is always explicit: name --target or --new-chat --lane, or the command fails.
   Output is a readable table by default; --text is one line per row; --json is structured.
+`,
+  notes: `${ADE_BANNER}
+  Project notes
+
+  Short facts earlier agents learned about working on this project in ADE: how
+  to build or launch its app, a dev-server port, an ADE quirk here. Every new
+  agent session on this project gets them in its prompt. They live in the
+  project's ADE database and reach every machine with the project.
+
+    $ ade notes list --text                         Project notes plus this machine's
+    $ ade notes list --section iOS --text           One section
+    $ ade notes add --section iOS --scope machine "Build with the ADE scheme on the iPhone 17 Pro simulator"
+                                                    Save one fact (--scope defaults to project)
+    $ ade notes edit <id> "New text"                Rewrite a note; --section and --scope move it
+    $ ade notes rm <id>                             Remove a stale or wrong note
+
+  Scopes:
+    project   True on any machine with this project.
+    machine   True only on this computer. Pick it when unsure.
+
+  Limits (enforced; a write past one is refused with what to merge or remove):
+    one line of at most 200 characters per note, 8 notes per section, and a
+    prompt block of at most 3072 bytes. Ids may be shortened to a unique prefix.
+  Users can read every note in Settings > Agents > Agent notes.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -3645,8 +3684,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Unarchive items (needs the CTO role)
 
   Each item reports done or failed on its own; the command exits non-zero when
-  any item failed. Deleting is yours alone: do it in Settings → Archive on the
-  desktop, the web client, or the phone. Agents and automations can't delete.
+  any item failed. Deleting is yours alone: do it in Project → Storage &
+  cleanup → Archive on desktop or web. Agents and automations can't delete.
 `,
   health: `${ADE_BANNER}
   Project health
@@ -3667,10 +3706,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
-  volume's free space, mirroring the desktop Settings storage dashboard. The
-  snapshot is read-only; compression is lossless and safe. Maintenance runs the
-  policy-driven ledger sweep (prune/compress/vacuum). Target-scoped cleanup
-  (which deletes files) is intentionally left to the action bridge.
+  volume's free space, like Settings → Project → Storage & cleanup on the
+  desktop. The snapshot is read-only; compression is lossless and safe.
+  Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
+  Target-scoped cleanup (which deletes files) is left to the action bridge.
 
     $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
     $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
@@ -4191,6 +4230,19 @@ export function findFlagName(args: string[], names: readonly string[]): string |
     if (matched) return matched;
   }
   return null;
+}
+
+/**
+ * Refuses a value flag (`names`, space-separated form) whose next token is
+ * another option. Run it before `readValue`, which would take that option as
+ * the value.
+ */
+function rejectFlagOperands(args: readonly string[], names: readonly string[]): void {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (names.includes(args[index]!) && args[index + 1]?.startsWith("--")) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
 }
 
 export function readValue(args: string[], names: readonly string[]): string | null {
@@ -10103,6 +10155,66 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat actions",
       steps: [listActionsStep("actions", "chat")],
     };
+  if (sub === "move") {
+    // `--note --no-changes` reports the missing note instead of eating
+    // `--no-changes` and moving the changes the person asked to leave behind.
+    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    const statusBatchId = readValue(args, ["--status"]);
+    const retryBatchId = readValue(args, ["--retry"]);
+    if (statusBatchId !== null && retryBatchId !== null) {
+      throw new CliUsageError("Use either --status <batch-id> or --retry <batch-id>.");
+    }
+    if (statusBatchId !== null || retryBatchId !== null) {
+      if (args.length > 0) {
+        throw new CliUsageError("chat move --status/--retry accepts only its batch id.");
+      }
+      const batchId = statusBatchId ?? retryBatchId!;
+      if (!batchId.trim()) {
+        throw new CliUsageError("chat move --status/--retry requires a non-empty batch id.");
+      }
+      const action = statusBatchId !== null ? "getCrossMachineBatchMove" : "retryCrossMachineBatchMove";
+      return {
+        kind: "execute",
+        label: statusBatchId !== null ? "chat move status" : "chat move retry",
+        steps: [actionStep("result", "chat", action, { batchId })],
+      };
+    }
+    const machine = readValue(args, ["--machine"]);
+    if (machine === null || !machine.trim()) {
+      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    }
+    const allWorkOnThisMachine = readFlag(args, ["--all"]);
+    const includeDescendants = !readFlag(args, ["--no-descendants"]);
+    const mode = readFlag(args, ["--brief"]) ? "brief" : "fork";
+    const includeChanges = !readFlag(args, ["--no-changes"]);
+    const whenBusy = readFlag(args, ["--interrupt"]) ? "interrupt" : "wait";
+    const note = readValue(args, ["--note"]);
+    const sessionIds = standalonePositionals(args);
+    if (args.length > 0) {
+      throw new CliUsageError(`chat move contains unrecognized arguments: ${args.join(" ")}`);
+    }
+    if (allWorkOnThisMachine && sessionIds.length > 0) {
+      throw new CliUsageError("Use --all or list session ids, not both.");
+    }
+    if (!allWorkOnThisMachine && sessionIds.length === 0) {
+      throw new CliUsageError("chat move requires --all or at least one session id.");
+    }
+    return {
+      kind: "execute",
+      label: "chat move batch to another machine",
+      steps: [
+        actionStep("result", "chat", "startCrossMachineBatchMove", {
+          machine,
+          ...(allWorkOnThisMachine ? { allWorkOnThisMachine: true } : { sessionIds }),
+          includeDescendants,
+          mode,
+          includeChanges,
+          whenBusy,
+          ...(note !== null ? { note } : {}),
+        }),
+      ],
+    };
+  }
   // Linear session-scoped subcommands resolve their own session id AFTER
   // consuming --issue-id (so firstPositional can't mistake an issue id flag value
   // for the session), so they opt out of the shared positional grab here.
@@ -12067,6 +12179,147 @@ function buildDraftsPlan(args: string[]): CliPlan {
   }
 }
 
+/**
+ * `ade notes`: Project notes, the short facts every ADE agent on this project
+ * gets in its prompt. The runtime that owns the lane holds them (the
+ * `project_notes` action domain); the caps are enforced there, so a refused
+ * write comes back as the action's error, with what to merge or remove.
+ */
+function buildNotesPlan(args: string[]): CliPlan {
+  const sub = firstStandalonePositional(args) ?? "list";
+  const notesStep = (action: string, input: JsonObject = {}): InvocationStep =>
+    actionStep("result", "project_notes", action, input);
+  const readScope = (): "project" | "machine" | null => {
+    const raw = readValue(args, ["--scope"]);
+    if (raw == null) return null;
+    const scope = raw.trim().toLowerCase();
+    if (scope !== "project" && scope !== "machine") {
+      throw new CliUsageError(`--scope must be project or machine, not '${raw}'.`);
+    }
+    return scope;
+  };
+  // The chat or CLI session this ran inside, recorded as the note's author.
+  const sessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  const confirm = (verb: string) => (result: unknown): string => {
+    const note = unwrapActionEnvelope(result);
+    const record: JsonObject = isRecord(note) ? note : {};
+    const scope = asString(record.scope) === "machine" ? " (this machine)" : "";
+    return `${verb} note ${asString(record.id) ?? ""} [${asString(record.section) ?? ""}${scope}]: ${asString(record.body) ?? ""}`;
+  };
+  switch (sub) {
+    case "list":
+    case "ls": {
+      const section = readValue(args, ["--section"]);
+      const scope = readScope();
+      return {
+        kind: "execute",
+        label: "notes list",
+        steps: [notesStep("list", { ...(section ? { section } : {}), ...(scope ? { scope } : {}) })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: (result) => formatProjectNotesLines(result),
+        tableText: (result) => formatProjectNotesTable(result),
+      };
+    }
+    case "add": {
+      const section = requireValue(readValue(args, ["--section"]), "--section <area>");
+      const scope = readScope();
+      const body = requireValue(
+        readValue(args, ["--body", "--note"]) ?? (standalonePositionals(args).join(" ").trim() || null),
+        "the note text",
+      );
+      return {
+        kind: "execute",
+        label: "notes add",
+        steps: [notesStep("add", { section, body, ...(scope ? { scope } : {}), ...(sessionId ? { sessionId } : {}) })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Saved"),
+        tableText: confirm("Saved"),
+      };
+    }
+    case "edit": {
+      // Flags first, so `edit --section iOS <id>` cannot take the flag's value as the id.
+      const section = readValue(args, ["--section"]);
+      const scope = readScope();
+      const bodyFlag = readValue(args, ["--body", "--note"]);
+      const id = requireValue(firstStandalonePositional(args), "a note id");
+      const body = bodyFlag ?? (standalonePositionals(args).join(" ").trim() || null);
+      if (!section && !scope && !body) {
+        throw new CliUsageError("ade notes edit <id> needs new text, --section or --scope.");
+      }
+      return {
+        kind: "execute",
+        label: "notes edit",
+        steps: [notesStep("edit", {
+          id,
+          ...(body ? { body } : {}),
+          ...(section ? { section } : {}),
+          ...(scope ? { scope } : {}),
+          ...(sessionId ? { sessionId } : {}),
+        })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Updated"),
+        tableText: confirm("Updated"),
+      };
+    }
+    case "rm":
+    case "remove":
+    case "delete": {
+      const id = requireValue(firstStandalonePositional(args), "a note id");
+      return {
+        kind: "execute",
+        label: "notes rm",
+        steps: [notesStep("remove", { id })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Removed"),
+        tableText: confirm("Removed"),
+      };
+    }
+    default:
+      throw new CliUsageError(`Unknown notes subcommand '${sub}'. Run 'ade help notes'.`);
+  }
+}
+
+function projectNoteRows(result: unknown): JsonObject[] {
+  const record = isRecord(result) ? result : {};
+  return Array.isArray(record.notes) ? record.notes.filter(isRecord) : [];
+}
+
+function projectNotesFooter(result: unknown): string {
+  const record = isRecord(result) ? result : {};
+  const limits = isRecord(record.limits) ? record.limits : {};
+  const bytes = typeof record.renderedBytes === "number" ? record.renderedBytes : null;
+  const cap = typeof limits.maxRenderedBytes === "number" ? limits.maxRenderedBytes : null;
+  return bytes != null && cap != null ? `Prompt block: ${bytes} of ${cap} bytes.` : "";
+}
+
+function formatProjectNotesLines(result: unknown): string {
+  const rows = projectNoteRows(result);
+  if (rows.length === 0) return ["Project notes\n(no notes)", projectNotesFooter(result)].filter(Boolean).join("\n");
+  return [
+    ...rows.map((note) => {
+      const scope = asString(note.scope) === "machine" ? " (this machine)" : "";
+      return `${asString(note.id) ?? ""}  [${asString(note.section) ?? ""}${scope}] ${asString(note.body) ?? ""}`;
+    }),
+    projectNotesFooter(result),
+  ].filter(Boolean).join("\n");
+}
+
+function formatProjectNotesTable(result: unknown): string {
+  const table = renderTable(
+    ["id", "section", "scope", "note", "updated"],
+    projectNoteRows(result).map((note) => [
+      asString(note.id) ?? "",
+      asString(note.section) ?? "",
+      asString(note.scope) ?? "",
+      asString(note.body) ?? "",
+      (asString(note.updatedAt) ?? "").slice(0, 10),
+    ]),
+    "Project notes\n(no notes)",
+    { fullColumns: ["id", "note"] },
+  );
+  return [table, projectNotesFooter(result)].filter(Boolean).join("\n");
+}
+
 function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
   return {
     key: "result",
@@ -12468,18 +12721,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
 function buildScenePlan(args: string[]): CliPlan {
   // Flags with values come out first: `ade scene --theme light preview f`
-  // would otherwise read `light` as the verb.
-  // Reject an option as another flag's operand before readValue consumes it,
-  // so `--theme --width 980` reports the missing theme value instead of eating
-  // `--width` and losing the width.
-  for (let index = 0; index < args.length - 1; index += 1) {
-    if (
-      (args[index] === "--theme" || args[index] === "--width")
-      && args[index + 1]?.startsWith("--")
-    ) {
-      throw new CliUsageError(`${args[index]} requires a value.`);
-    }
-  }
+  // would otherwise read `light` as the verb. `--theme --width 980` reports
+  // the missing theme value instead of eating `--width` and losing the width.
+  rejectFlagOperands(args, ["--theme", "--width"]);
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);
@@ -17748,7 +17992,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Settings → Archive (desktop, web, or phone). The command line can list and restore them.",
+      "Delete archived items in ADE: Project → Storage & cleanup → Archive (desktop or web). The command line can list and restore them.",
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
@@ -20556,6 +20800,8 @@ function buildCliPlan(
   // is deliberately no `ade sends`.
   if (primary === "drafts")
     return buildDraftsPlan(args);
+  if (primary === "notes" || primary === "note")
+    return buildNotesPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
@@ -32098,7 +32344,9 @@ function formatProjectsList(value: unknown): string {
       project.projectId,
       project.displayName,
       project.rootPath,
-      project.catalogVisibility === "system" ? "system" : "recent",
+      // A folder that is gone is listed, not dropped: it may be on a drive that
+      // isn't plugged in. Saying so lets the person remove a stale copy.
+      `${project.catalogVisibility === "system" ? "system" : "recent"}${project.exists === false ? ", folder missing" : ""}`,
       project.gitOriginUrl,
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()

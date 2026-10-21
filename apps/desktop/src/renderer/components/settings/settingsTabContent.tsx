@@ -42,7 +42,9 @@ import { providerDescriptor } from "./providers/descriptors";
 import { SecretsSection } from "./SecretsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { SettingsOverview } from "./overview/SettingsOverview";
-import { LanesSettingsPage } from "./lanes/LanesSettingsPage";
+import { LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
+import { AgentNotesSection } from "./AgentNotesSection";
+import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
@@ -380,10 +382,17 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <ChatSection />,
     },
   ],
-  // Project → Lanes: the lane list, storage, archive, cleanups, sessions and
-  // how lanes start, on the machine that owns the project (its pin).
+  // Project → Lanes, Storage & cleanup and Agents act on the machine that owns
+  // the project (its pin); every section in them reads that pin.
   "lanes-git": [
     { entryIds: "tab", render: () => <SettingsColumn wide><LanesSettingsPage /></SettingsColumn>, machine: "routed", title: "Lanes" },
+  ],
+  storage: [
+    { entryIds: "tab", render: () => <SettingsColumn wide><StorageSettingsPage /></SettingsColumn>, machine: "routed", title: "Storage & cleanup" },
+  ],
+  "project-agents": [
+    { entryIds: ["project-agents.agent-notes"], render: () => <AgentNotesSection />, machine: "routed", title: "Agent notes" },
+    { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection />, machine: "routed", title: "PR chat transcripts" },
   ],
   // Project → Location: where the project lives (the move runs in this
   // computer's main process, and says so for a project on another one) and

@@ -4000,6 +4000,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table prompt_stashes add column scheduled_by_session_id text");
   safeAddColumn(db, "alter table prompt_stashes add column fired_at text");
   safeAddColumn(db, "alter table prompt_stashes add column last_error text");
+  safeAddColumn(db, "alter table prompt_stashes add column move_away_held_at text");
   // The CRR site id of the runtime that armed a send. Only that runtime
   // delivers a send that names no machine, so two synced machines holding the
   // same row cannot both fire it.
@@ -4737,6 +4738,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
+
+  // Project notes: short facts agents learned about working on this project in
+  // ADE, injected into every new agent session (projectNotesService.ts).
+  // Per-project (the DB instance is the scope) and CRR-replicated on purpose,
+  // so a fact saved on one machine reaches every machine with the project; the
+  // repo cannot carry them because main is never pushed from a lane.
+  // `scope = 'machine'` rows hold for one machine only: `machine_id` is that
+  // machine's account machine key, and other machines keep but never show them.
+  // PK-only (a CRR may not carry another UNIQUE index); deletes are ordinary
+  // CRR tombstones. Caps are enforced in the service, not here.
+  db.run(`
+    create table if not exists project_agent_notes (
+      id text primary key,
+      scope text not null default 'project',
+      machine_id text,
+      section text not null default '',
+      body text not null default '',
+      created_at text not null default '',
+      updated_at text not null default '',
+      updated_by text
+    )
+  `);
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

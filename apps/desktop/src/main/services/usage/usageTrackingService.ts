@@ -5741,6 +5741,9 @@ export function createUsageTrackingService({
         logger,
         ...(configHome ? { configHome } : {}),
       });
+    // A spent reset ends the five-hour window now; start the next one rather
+    // than waiting for a poll to notice.
+    if (result.status === "reset") autoStartScheduler.onWindowReset(accountId);
     // Re-read regardless of outcome: `nothingToReset` and `alreadyRedeemed`
     // both mean the displayed numbers may be stale too.
     if (provider === "codex") {

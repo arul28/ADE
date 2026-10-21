@@ -2,6 +2,7 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { MusicBridge } from "../shared/types/music";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
@@ -141,6 +142,8 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProjectNotesListArgs,
+  ProjectNotesListResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -306,6 +309,11 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
+  AgentChatCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+  AgentChatCrossMachineBatchMoveRecord,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
@@ -2487,6 +2495,22 @@ declare global {
           args: AgentChatRetryCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
+        startCrossMachineBatchMove: (
+          args: AgentChatCrossMachineBatchMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
+        getCrossMachineBatchMove: (
+          args: AgentChatGetCrossMachineBatchMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineBatchMoveRecord | null>;
+        retryCrossMachineBatchMove: (
+          args: AgentChatRetryCrossMachineBatchMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
+        resolveCrossMachineBatchMoveApproval: (
+          args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
         resolveCrossMachineHandoffApproval: (
           args: AgentChatResolveCrossMachineHandoffApprovalArgs,
           pin?: OpenProjectBinding | null,
@@ -3864,6 +3888,10 @@ declare global {
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
       };
+      /** Project notes agents saved, read-only here; `pin` picks the machine. */
+      projectNotes: {
+        list: (args?: ProjectNotesListArgs, pin?: OpenProjectBinding | null) => Promise<ProjectNotesListResult>;
+      };
       providerInstances: {
         list: (
           args?: ProviderInstanceListArgs,
@@ -4867,6 +4895,8 @@ declare global {
       /** Quits and reopens ADE after the usual quit warnings. False when unavailable. */
       updateRelaunchApp: () => Promise<boolean>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      /** Whether this computer's ADE.app needs a password on every update, and the one-click fix. Absent on the web client. */
+      appBundleOwnership?: AppBundleOwnershipBridge;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
       /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */

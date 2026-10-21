@@ -875,6 +875,18 @@ implements a two-layer transform:
      rather than entries of the Turn details row: a warning after the answer
      must stay visible outside the fold, and folding it into a details row
      created earlier in the turn would hide it.
+   - Receipt notices — `info`, `config`, `hook` and `file_persist`, with no
+     error or warning severity and no dedicated row status — render as one
+     muted line: a glyph chosen by meaning (a compass for a plan transition,
+     a tray for a queued message, a plug for a reconnect, a brain for a
+     recalled memory), the message, and a chevron when there is a detail to
+     open. There is no `INFO` chip and no card; a status that changed nothing
+     is not an answer. Neighbouring receipts from the same turn share one line
+     with a trailing `+N` count, folded by `foldQuietNoticeLines` in
+     `filterVisibleTranscriptRows`; the line expands to every member. The
+     statuses with their own rows (model switch, spawn, host sleep, reset
+     credit, voice) and every actionable or failing notice keep their
+     existing treatment.
    - Exact duplicate `error` rows are collapsed by turn id, message, detail,
      and semantic `errorInfo`. This replay guard handles historical
      transcripts written before provider-side dedupe without hiding distinct

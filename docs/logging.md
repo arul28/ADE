@@ -495,6 +495,20 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Pressing **Fix it** on the macOS banner that says ADE will ask for a password on
+every update (its app bundle belongs to root or another account) records the
+same `ade_feature_used` event at the IPC owner that runs the fix
+(`registerAppBundleOwnershipIpc.ts`), with `feature: "updates"`,
+`action: "bundle_ownership_fix"`, and one closed `outcome`: `completed`,
+`partial` (the command ran but some files still are not the user's),
+`cancelled` (the password prompt was dismissed), or `failed`. The product
+question is how many installations end up with a root-owned app and whether the
+fix clears it. It carries no path, owner name, uid, or osascript output; those
+stay in the local `app_bundle_ownership.fix` line. A one-hour deduplication key
+per outcome bounds it to four accepted events per installation per hour, and in
+practice one per affected installation, inside the existing `ade_feature_used`
+ceilings. The check itself and the banner showing capture nothing.
+
 Choosing a keep-awake level records the same `ade_feature_used` event at the
 brain keep-awake service's persist boundary — after the choice is written, so a
 refused level (the lid-closed one whose password prompt was cancelled) is never
@@ -1439,6 +1453,8 @@ Host-recorded mobile mutations may still appear in the canonical `ade_*` namespa
 ### Public marketing site
 
 The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It is default-on with a browser-local opt-out (an explicit "false" preference, settable on /privacy) and uses a separate `ade_marketing_*` namespace.
+
+The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel.ts`): it loads only when website analytics is on, and any download or copy-install click reports Freebuff's `installation_completed` goal with no event id, so Freebuff keeps one per ad click. That event means a download intent; the site cannot see an install finish.
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 

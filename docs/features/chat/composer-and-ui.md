@@ -1549,6 +1549,28 @@ chat pane mount, which happens either way.
   message."`. `AgentChatPane.submit` mirrors the message into the
   composer's error banner so a fast double-Enter doesn't silently
   drop the second send.
+- **Sending while an approval waits declines it and redirects.** An
+  approval, permissions, plan or model-choice card does not lock the
+  composer (`isRedirectablePendingRequest` in `shared/pendingInputAnswers.ts`).
+  The placeholder reads "Send a message to decline and redirect the agent"
+  ("…to reject the plan…" for a plan), and sending declines every waiting
+  card through `respondToInput`, then delivers the message the way any
+  mid-turn message goes (a steer, or a new turn if the decline ended it).
+  The decline runs inside `AgentChatPane.submit`, after the local commands
+  (`/context`, `/output-style`, Codex memory reset) and right before
+  dispatch, so only a message that is really going out declines anything.
+  A failed decline sends nothing and keeps the draft; a draft edited while
+  the declines were in flight is not sent (the banner says so). A send
+  that would go anywhere but this chat's next turn (a subagent, a queued
+  launch message, a continued chat on another machine, a cloud launch)
+  refuses while a card waits instead of slipping past it. Escape clears a typed redirect
+  first and cancels the card only from an empty composer. The card's own
+  buttons are unchanged. Still hard-locked: ACP runtimes (no mid-turn steer,
+  so the message would be dropped), Codex and Cursor plan approvals (their
+  decline starts a follow-up turn of its own), and cards only the user may
+  answer (`isUserOnlyConsentCard`: secrets, desktop consent, MCP App calls).
+  Questions keep their own card: a typed reply there is already the user
+  talking back (`withTypedReplyNote`).
 
 ### Launch memory
 
@@ -2701,6 +2723,13 @@ per question — `EMPTY`, `PICK`, `PICK_NOTE`, `NOTE` — and five rules:
    `Send note`, `Send N answers`). If the label and the payload can disagree,
    the implementation is wrong.
 5. **Multi-question:** Send is enabled only when every question is answered.
+   The one exception is a lone typed reply (`isLoneTypedReply`): text on the
+   current page and nothing picked or typed anywhere else. A `Send note`
+   button beside `Next` sends it alone, so typing "skip these, do X instead"
+   redirects the agent. Every other question is answered with
+   `QUESTION_SKIPPED_FOR_REPLY_ANSWER` (`loneTypedReplyAnswers`), because a
+   partial set is refused by Claude's AskUserQuestion ("The user did not
+   provide answers"). Enter still means `Next`.
 
 The note row's placeholder says which of its two jobs is live: `Your answer`
 when the question has no options, `Or send your own response instead` when

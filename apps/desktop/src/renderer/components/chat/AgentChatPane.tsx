@@ -105,6 +105,7 @@ import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
   isDismissiblePendingRequest,
   isNonBlockingPendingRequest,
+  isRedirectablePendingRequest,
 } from "../../../shared/pendingInputAnswers";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
@@ -314,6 +315,7 @@ import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import {
   CrossMachineArrivalBanner,
+  CrossMachineBatchApprovalBanner,
   CrossMachineHandoffBanner,
   openChatOnOtherMachine,
   useCrossMachineArrival,
@@ -4412,6 +4414,9 @@ export function AgentChatPane({
   );
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  // The draft as typed right now, for a send that awaits before it dispatches.
+  const liveDraftRef = useRef(draft);
+  liveDraftRef.current = draft;
   const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
   const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
@@ -5288,8 +5293,9 @@ export function AgentChatPane({
     }
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
-    if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
+    // Typing only hides the suggestion (the composer offers it on an empty
+    // draft), so backspacing to empty brings it back.
+  }, [companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
 
   // Publish this session's draft presence for the sidebar's row indicator.
   // Runs on every keystroke; the store no-ops when the boolean is unchanged,
@@ -13648,9 +13654,20 @@ export function AgentChatPane({
     // In a subagent's transcript view, a runtime that can message its
     // subagents (Muse) sends the draft to that subagent, on the chat's own
     // machine (the chat's runtime pin), not as a new turn of the parent.
+    // Approvals a send would decline. Only a message dispatched as this
+    // chat's next turn declines them; a send routed anywhere else (a subagent,
+    // a queued launch, a continued chat) refuses while they wait.
+    const pendingToDecline = selectedSessionId
+      ? (resolvedPendingInputsBySession[selectedSessionId] ?? []).filter((entry) =>
+        entry.request.blocking && isRedirectablePendingRequest(entry.request))
+      : [];
     if (subagentView && selectedSessionId && selectedSubagentCapability.canMessage) {
       const text = draft.trim();
       if (!text) return;
+      if (pendingToDecline.length > 0) {
+        setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+        return;
+      }
       submitInFlightRef.current = true;
       setBusy(true);
       setError(null);
@@ -13676,12 +13693,23 @@ export function AgentChatPane({
     };
     if (selectedSessionId) {
       const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
-      const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
-      if (hasBlockingPending || selectedSession?.awaitingInput === true) {
+      const blockingPending = sessionPending.filter((entry) => entry.request.blocking);
+      // Approvals do not block a send: it declines them first (below). A
+      // question, or a wait with no card to decline, still does.
+      const sendRedirectsPending = blockingPending.length > 0
+        && pendingToDecline.length === blockingPending.length;
+      if (
+        (blockingPending.length > 0 && !sendRedirectsPending)
+        || (blockingPending.length === 0 && selectedSession?.awaitingInput === true)
+        || (sendRedirectsPending && crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff))
+      ) {
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
-      if (await sendToContinuedChat()) return;
+      if (await sendToContinuedChat()) {
+        clearPromptSuggestionForSession(selectedSessionId);
+        return;
+      }
     }
     clearPromptSuggestionForSession(selectedSessionId);
     if (draft.trim().length || attachments.length) recordStarPillMessageSent();
@@ -13695,6 +13723,10 @@ export function AgentChatPane({
       const text = draft.trim();
       const visualContext = composeVisualContext(iosElementContextItems, appControlContextItems, builtInBrowserContextItems);
       if (!text.length && !visualContext.prefix.length && !attachments.length) return;
+      if (pendingToDecline.length > 0) {
+        setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+        return;
+      }
       const composed = applyVisualContext(
         text,
         isProviderSlashCommandInput(text)
@@ -14146,6 +14178,31 @@ export function AgentChatPane({
         setBusy(false);
       }
       return;
+    }
+    // Sending while approvals wait declines them, then sends. It runs here,
+    // after the local commands above and right before dispatch, so only a
+    // message that is really going out declines anything. A failed decline
+    // sends nothing and keeps the draft; a draft edited while the declines
+    // were in flight is not sent either.
+    if (pendingToDecline.length > 0) {
+      submitInFlightRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        for (const entry of pendingToDecline) {
+          if (!(await handleApproval(entry.itemId, "decline"))) return;
+        }
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+      // The user may have switched chats, edited the text, or changed the
+      // attachments while the declines were in flight: send nothing then.
+      if (renderSelectedSessionIdRef.current !== selectedSessionId) return;
+      if (liveDraftRef.current !== draft || attachmentsRef.current !== attachments) {
+        setError("The approval was declined, but your message changed while that was sending, so nothing was sent. Send it again.");
+        return;
+      }
     }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
@@ -17564,6 +17621,15 @@ export function AgentChatPane({
       style={composerBannerStyle}
     />
   ) : null;
+  // An agent's batch move that waits for the person in this (requesting) chat.
+  const crossMachineBatchApprovalBanner = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope ? (
+    <CrossMachineBatchApprovalBanner
+      key={`batch-move:${selectedSessionId}`}
+      approval={selectedSession?.crossMachineBatchApproval}
+      runtimePin={chatRuntimePin}
+      style={composerBannerStyle}
+    />
+  ) : null;
   const crossMachineArrivalBanner = renderedSessionId && crossMachineArrival ? (
     <CrossMachineArrivalBanner
       key={`arrival:${renderedSessionId}`}
@@ -17671,6 +17737,7 @@ export function AgentChatPane({
       {takeoverBanner}
       {stalledTurnBanner}
       {crossMachineMoveBanner}
+      {crossMachineBatchApprovalBanner}
       {crossMachineArrivalBanner}
       {steeringPendingInput ? (
         <div
@@ -18129,6 +18196,7 @@ export function AgentChatPane({
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
+                        {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}
                         {composerElement}

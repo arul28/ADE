@@ -161,6 +161,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_stack_land",
   "pr_watch_wake",
   "claude_session_quota",
+  "cross_machine_batch_move_approval",
   "lane_setup",
 ];
 

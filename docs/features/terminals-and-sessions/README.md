@@ -1117,6 +1117,10 @@ Renderer surfaces:
   hook because the two trap shapes differ; its own doc names the dialogs not yet
   converged onto it.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
+  also shows an inline "Couldn't load chats from <machine>" banner, with a Copy
+  error action, only when that machine is online and returned an error with no
+  chats; an offline machine keeps its quiet state.
+- `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
   Settled. Snoozed sits one tier above Settled and is fed by the separate
@@ -1171,22 +1175,27 @@ Renderer surfaces:
   the user into the quiet header.
   The toolbar's **Focus** pill (`workFoldBusyLanes`; it also switches the
   grouping to by-lane) adds a
-  third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
-  after the user has left them) folds onto a collapsed **Working** shelf, the
+  third, non-quiet shelf: a lane that has live work and nothing waiting on the
+  user folds onto a collapsed **Working** shelf, the
   first shelf inside the quiet zone (only the user opens or closes it; the open
-  chat's lane folds too), and the lane unfolds when something needs the user or
-  finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
-  hand, a stale run, a stalled turn (`sessionTurnStallMs`: a live turn silent
-  for five minutes that owns no open work), or an unseen finish holds the lane
-  out with its rows visible, a finished nested row never does, and pinned lanes
+  chat's lane folds too). It returns to the inbox when its last busy row
+  finishes, or when something in it needs the user, and floats to the front of
+  the active tier on either return (never in Manual sort). The rule is `summarizeLaneFocus` in
+  `workLaneFocus.ts`; a raised hand, a stale run, a stalled turn
+  (`sessionTurnStallMs`: a live turn silent for five minutes that owns no open
+  work), a scheduled wake that came due and never started, or a failure the user
+  has not left holds the lane out with its rows visible. A clean finish is not a
+  request: it never holds a lane open and never gets a Focus tile, and a lane
+  with nothing live (only finished rows) never folds at all, so its rows stay in
+  the inbox. A finished nested row never holds a lane out, and pinned lanes
   never fold. The primary lane folds like any other lane. The pill's second
   half turns on the **Focus grid** (see
   [ui-surfaces.md](ui-surfaces.md#focus-grid)). Each
   lane header draws one rolled-up status dot (`LaneFocusStatusDot`, Needs you >
-  Working > Waiting > Done) from the same derivation. A finished row counts as
-  seen only once the user leaves it — `useWorkSessions` stamps
+  Working > Waiting > Done) from the same derivation. A failure counts as
+  acknowledged only once the user leaves it — `useWorkSessions` stamps
   `workSeenAtBySessionId` on selection change, bounded to `WORK_SEEN_AT_LIMIT` —
-  so opening a finished row does not fold its lane out from under the cursor, and
+  so opening a failed row does not fold its lane out from under the cursor, and
   a lane returning from the shelf floats to the front of the active tier (never
   in Manual sort).
   Renders a bulk action bar at the bottom when sessions are multi-selected

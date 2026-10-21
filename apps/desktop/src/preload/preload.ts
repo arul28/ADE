@@ -197,6 +197,8 @@ import type {
   ProviderInstanceCreateResult,
   ProviderInstanceGetSettingsArgs,
   ProviderInstanceListArgs,
+  ProjectNotesListArgs,
+  ProjectNotesListResult,
   ProviderInstanceLoginCommand,
   ProviderInstanceLoginCommandArgs,
   ProviderInstanceRefreshArgs,
@@ -633,6 +635,11 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
+  AgentChatCrossMachineBatchMoveArgs,
+  AgentChatGetCrossMachineBatchMoveArgs,
+  AgentChatRetryCrossMachineBatchMoveArgs,
+  AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+  AgentChatCrossMachineBatchMoveRecord,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
@@ -1221,6 +1228,7 @@ import type { GitHubIssueCommentLike, GitHubIssueLike, GitHubIssuePatch } from "
 import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/music";
 import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shared/harnessPresets";
 import { isRoutePresetId } from "../shared/harnessRoutes";
+import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -8098,6 +8106,36 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRetryCrossMachineHandoff, args),
       ),
+    // A batch move is owned by the source brain, including when this window's
+    // project tab is bound to a different machine.
+    startCrossMachineBatchMove: async (
+      args: AgentChatCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "startCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatStartCrossMachineBatchMove, args),
+      ),
+    getCrossMachineBatchMove: async (
+      args: AgentChatGetCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetCrossMachineBatchMove, args),
+      ),
+    retryCrossMachineBatchMove: async (
+      args: AgentChatRetryCrossMachineBatchMoveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "retryCrossMachineBatchMove", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRetryCrossMachineBatchMove, args),
+      ),
+    resolveCrossMachineBatchMoveApproval: async (
+      args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "resolveCrossMachineBatchMoveApproval", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatResolveCrossMachineBatchMoveApproval, args),
+      ),
     // Brain-owned move: a chat pinned to another machine reaches that brain.
     resolveCrossMachineHandoffApproval: async (
       args: AgentChatResolveCrossMachineHandoffApprovalArgs,
@@ -10891,6 +10929,19 @@ const adeBridge = {
     setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxyMutationResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
+      ),
+  },
+  projectNotes: {
+    list: async (
+      args: ProjectNotesListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectNotesListResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProjectNotesListResult>(
+        pin,
+        "project_notes",
+        "list",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.projectNotesList, args),
       ),
   },
   providerInstances: {
@@ -14039,6 +14090,11 @@ const adeBridge = {
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
   },
+  // This computer's ADE.app only; no pin (see registerAppBundleOwnershipIpc).
+  appBundleOwnership: {
+    getStatus: (args?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.appBundleOwnershipGetStatus, args ?? {}),
+    fix: () => ipcRenderer.invoke(IPC.appBundleOwnershipFix),
+  } satisfies AppBundleOwnershipBridge,
   home: {
     clipboard: {
       getState: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardGetState),

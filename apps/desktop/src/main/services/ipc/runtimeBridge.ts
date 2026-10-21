@@ -74,6 +74,10 @@ import {
 } from "../remoteRuntime/remoteConnectionService";
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
+import { updateViaRemoteTerminal } from "../remoteRuntime/remoteTerminalUpdate";
+import { getMachineMainLogger } from "../logging/machineLogger";
+import { REMOTE_MACHINE_UPDATE_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { isWindowsSelfInstallBlocked } from "../../../shared/updateVersions";
 import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
@@ -234,12 +238,6 @@ function trackPageFileWatch(
   if (request.action === "watchWorkspace") entry.ledger.noteWatch(args, senderId);
   else entry.ledger.noteStop(args, senderId);
 }
-/**
- * A machine update downloads a full build before it restarts, so the normal
- * call timeout is far too short. Fifteen minutes covers a slow link without
- * leaving the request open forever.
- */
-const REMOTE_MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
 /**
  * A confirmation dialog waits on this, so it is a few seconds, not a work
  * budget. One deadline covers the ask and its older-machine fallback.
@@ -1574,6 +1572,22 @@ export function registerRuntimeBridge({
           : null;
       const target = id ? remoteConnectionService.getTarget(id) : null;
       if (!target) throw new Error("Remote target was not found.");
+      // A build whose app cannot install updates would answer "installing" and
+      // then abort, so it gets its updater run in a terminal instead.
+      const status = remoteConnectionService.snapshot().connections
+        .find((connection) => connection.target.id === target.id);
+      if (status?.state === "connected" && isWindowsSelfInstallBlocked(status.version, status.arch)) {
+        return await updateViaRemoteTerminal({
+          status,
+          targetVersion,
+          callAction: (targetId, projectId, request) =>
+            remoteConnectionService.callAction(targetId, projectId, request),
+          isConnected: () => remoteConnectionService.snapshot().connections
+            .some((connection) => connection.target.id === target.id && connection.state === "connected"),
+          logger: getMachineMainLogger(),
+          timeoutMs: REMOTE_MACHINE_UPDATE_TIMEOUT_MS,
+        });
+      }
       return await remoteConnectionService.callMachineMethod<
         RemoteRuntimeUpdateAndRestartResult
       >(

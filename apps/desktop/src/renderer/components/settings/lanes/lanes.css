@@ -6,7 +6,9 @@
 
 /* ── The view tabs ─────────────────────────────────────────────────────── */
 
-.ade-lanes-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+/* The page is its own `modernpage` container, so the list can drop columns as
+   the settings column narrows (it is not inside a ModernPage). */
+.ade-lanes-page { container: modernpage / inline-size; display: flex; flex-direction: column; gap: 22px; min-width: 0; }
 .ade-lanes-tabs {
   display: flex;
   align-items: flex-end;
@@ -102,8 +104,9 @@
 .ade-lanes-check input:disabled { cursor: not-allowed; opacity: 0.45; }
 .ade-lanes-row-toggle {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
   padding: 4px 0;
   border: 0;

@@ -176,6 +176,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudePluginUi", "getMcpApp", "listMcpAppGrants",
       "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
       "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
+      "getCrossMachineBatchMove",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
       "generateAutoLaneIdentity",
@@ -198,6 +199,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
+      "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
+      "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
       "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
@@ -627,6 +630,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced", "loginStart",
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
+  },
+  project_notes: {
+    read: ["list", "renderPromptBlock"],
+    write: ["add", "edit", "remove"],
   },
 };
 

@@ -164,6 +164,53 @@ describe("deliverDraft", () => {
     expect(outcome.status).toBe("missed");
   });
 
+  it("pauses a strict send's lateness window while its chat is moved away", async () => {
+    const heldAtMs = NOW - 2 * 60 * 60 * 1000;
+    const heldAt = new Date(heldAtMs).toISOString();
+    const scheduledAt = new Date(NOW).toISOString();
+    const held = await deliverDraft(
+      draft({ deliveryPolicy: "strict", scheduledAt }),
+      deps({ now: () => heldAtMs, isChatMovedAway: () => true }),
+    );
+    expect(held).toEqual({
+      status: "retry",
+      error: "This chat continues on another machine.",
+      moveAwayHeldAt: heldAt,
+    });
+
+    const returnedAt = NOW + 6 * 60 * 60 * 1000;
+    const resumed = await deliverDraft(
+      draft({ deliveryPolicy: "strict", scheduledAt, moveAwayHeldAt: heldAt }),
+      deps({
+        now: () => returnedAt,
+        isChatMovedAway: () => false,
+        attachmentsReady: () => false,
+      }),
+    );
+    expect(resumed).toMatchObject({
+      status: "retry",
+      error: "Waiting for this send's images to reach this machine.",
+      resumeScheduledAt: new Date(returnedAt).toISOString(),
+      moveAwayHeldAt: null,
+    });
+
+    if (resumed.status !== "retry" || !resumed.resumeScheduledAt) {
+      throw new Error("A resumed send must persist its adjusted deadline before retrying.");
+    }
+    const laterRetry = await deliverDraft(
+      draft({
+        deliveryPolicy: "strict",
+        scheduledAt: resumed.resumeScheduledAt,
+        moveAwayHeldAt: resumed.moveAwayHeldAt,
+      }),
+      deps({ now: () => returnedAt + 1, isChatMovedAway: () => false, attachmentsReady: () => false }),
+    );
+    expect(laterRetry).toEqual({
+      status: "missed",
+      error: "Its send time passed before this machine could deliver it.",
+    });
+  });
+
   it("blocks rather than retrying when this host cannot create the chat", async () => {
     const outcome = await deliverDraft(
       draft({ targetKind: "new", targetSessionId: null, targetLaneId: "lane-1" }),

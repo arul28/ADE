@@ -733,6 +733,11 @@ export type AgentChatNoticeDetail = {
     unpushedCommits: number;
     changedFiles: number;
   };
+  /** Durable notice posted when a moved chat returns to this original chat. */
+  crossMachineHandoffReturn?: {
+    handoffId: string;
+    sourceMachineName: string;
+  };
   /**
    * Identity of one host sleep, carried by both halves of the pause/resume
    * chip (`status: "host_asleep"` then `"host_awake"`). The renderer folds the
@@ -2579,6 +2584,9 @@ export type AgentChatEventEnvelope = {
     role?: "user" | "orchestrator" | "worker" | "agent" | null;
     targetKind?: string | null;
     sourceSessionId?: string | null;
+    /** Source-side sequence and handoff id make imported transcript appends retry-safe. */
+    sourceSequence?: number;
+    crossMachineHandoffId?: string;
     /**
      * True when the fork that imported this envelope carried the conversation
      * as a transcript replay rather than a provider-side fork. A native fork
@@ -2757,6 +2765,10 @@ export type SpawnLineageSessionFields = {
    */
   launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /** Original machine/session/lane address, retained across later moves. */
+  crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
+  /** Imported prefix boundary used to send only new transcript events on return. */
+  crossMachineArrival?: AgentChatCrossMachineArrival | null;
   /**
    * When the takeover banner was dismissed or Take over was chosen. Brain-side
    * so desktop, iOS, and ADE Code do not re-show it. Absent means not shown yet.
@@ -3191,6 +3203,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   modelHandoffHistory?: AgentChatModelHandoff[];
   /** This chat's latest move to another machine, if any. */
   crossMachineHandoff?: AgentChatCrossMachineHandoffRecord | null;
+  /** A batch move waiting for the person to approve it in this caller chat. */
+  crossMachineBatchApproval?: AgentChatCrossMachineBatchMoveApproval | null;
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
   /**
@@ -4514,6 +4528,8 @@ export type AgentChatCrossMachineHandoffCapsule = {
   createdAt: string;
   source: {
     machineName: string;
+    /** Machine identity stamped by the source brain for return validation. */
+    machineKey?: string;
     sessionId: string;
     provider: AgentChatProvider;
     model: string;
@@ -4530,6 +4546,40 @@ export type AgentChatCrossMachineHandoffCapsule = {
     orchestrationParentSessionId?: string;
     spawnKind?: AgentChatSpawnKind;
   };
+  /** Original source lane identity. Optional for compatibility with v1 peers. */
+  sourceLane?: {
+    laneId: string;
+    parentLaneId: string | null;
+    name: string;
+  };
+  /** Destination id resolved from an earlier lane item in this batch. */
+  destinationParentLaneId?: string;
+  /** Set only when this chat's parent is also moved by the same batch. */
+  parentLink?: {
+    destinationParentSessionId: string;
+    spawnKind: AgentChatSpawnKind;
+  };
+  /** Portable durable wakeups/cron jobs attached to this chat. */
+  scheduledWork?: Array<{
+    id?: string;
+    kind: "wakeup" | "cron" | "loop";
+    prompt: string;
+    reason?: string;
+    runAt?: string;
+    cron?: string;
+    expiresAt?: string;
+    paused?: boolean;
+  }>;
+  /** The first destination chat in the chain owns the return address. */
+  origin?: AgentChatCrossMachineHandoffOrigin;
+  /** Present when this move returns an arrived chat to its original chat. */
+  returnTo?: {
+    sessionId: string;
+    laneId: string;
+    arrivalHandoffId: string;
+  };
+  /** Batch-only lane and continuation metadata. */
+  batchMove?: AgentChatCrossMachineCapsuleBatchMove;
   target: AgentChatCrossMachineTargetConfig;
   brief: string;
   artifacts: {
@@ -4569,6 +4619,28 @@ export type AgentChatCrossMachineHandoffCapsule = {
   gitBundle?: AgentChatCrossMachineGitBundle;
 };
 
+/** What a batch item's capsule says about its batch (`capsule.batchMove`). */
+export type AgentChatCrossMachineCapsuleBatchMove = {
+  batchId: string;
+  laneImportId: string;
+  destinationLaneId: string;
+  carriedChanges: boolean;
+  snapshotSha: string | null;
+  note?: string | null;
+  modeFallbackReason?: string | null;
+};
+
+/**
+ * Everything the orchestrator tells prepare about a batch item's move: the
+ * capsule's `batchMove`, plus the capsule-level lane and parent fields the
+ * destination reads (`sourceLane`, `destinationParentLaneId`, `parentLink`).
+ */
+export type AgentChatCrossMachineBatchMoveContext = AgentChatCrossMachineCapsuleBatchMove & {
+  sourceLane: NonNullable<AgentChatCrossMachineHandoffCapsule["sourceLane"]>;
+  destinationParentLaneId?: string;
+  parentLink?: NonNullable<AgentChatCrossMachineHandoffCapsule["parentLink"]>;
+};
+
 export type AgentChatCrossMachineGitBundle = {
   /** `git bundle` bytes, base64. */
   contentBase64: string;
@@ -4580,6 +4652,144 @@ export type AgentChatCrossMachineGitBundle = {
   /** Commits that no remote has, from oldest to newest, excluding the snapshot. */
   unpushedCommitCount: number;
   changedFileCount: number;
+};
+
+export type AgentChatCrossMachineHandoffOrigin = {
+  machineKey: string;
+  machineName: string;
+  sessionId: string;
+  laneId: string;
+};
+
+/** Imported transcript boundary on a chat that arrived from another machine. */
+export type AgentChatCrossMachineArrival = {
+  handoffId: string;
+  originSessionId: string;
+  /** Local sequence before destination work starts, used to package only its transcript suffix. */
+  localSequenceAtArrival: number;
+};
+
+/** How the agent that asked for a move is related to the chat being moved. */
+export type AgentChatCrossMachineMoveRelation = "self" | "descendant" | "other";
+
+/**
+ * How a lane a batch imported got its environment setup on the destination.
+ * `not_needed`: the batch landed in a lane that already existed there (a
+ * return, a reused lane, a primary checkout), so setup did not run again.
+ */
+export type AgentChatCrossMachineLaneSetupStatus = "running" | "completed" | "failed" | "not_configured" | "not_needed";
+
+export type AgentChatCrossMachineBatchMoveArgs = {
+  machine: string;
+  sessionIds?: string[];
+  includeDescendants?: boolean;
+  allWorkOnThisMachine?: boolean;
+  mode?: "fork" | "brief";
+  includeChanges?: boolean;
+  whenBusy?: "wait" | "interrupt";
+  note?: string;
+};
+
+export type AgentChatCrossMachineBatchMoveItemState =
+  | "pending"
+  | "sending"
+  | "awaiting_approval"
+  | "continued"
+  | "cancelled"
+  | "failed"
+  | "unknown"
+  | "blocked";
+
+type AgentChatCrossMachineBatchMoveItemBase = {
+  id: string;
+  state: AgentChatCrossMachineBatchMoveItemState;
+  dependsOn: string[];
+  sourceLaneId: string;
+  destinationLaneId?: string | null;
+  error?: string | null;
+  updatedAt: string;
+};
+
+/** A lane the batch imports on the destination before any of its chats. */
+export type AgentChatCrossMachineBatchMoveLaneItem = AgentChatCrossMachineBatchMoveItemBase & {
+  kind: "lane";
+  importId: string;
+  /** Origin lane to reuse for a batch return; the lane import applies changes there. */
+  returnToLaneId?: string | null;
+  carriedChanges?: boolean;
+  snapshotSha?: string | null;
+  warning?: string | null;
+  laneSetupStatus?: AgentChatCrossMachineLaneSetupStatus;
+};
+
+/** A chat the batch moves once its lane (and parent chat, if selected) arrived. */
+export type AgentChatCrossMachineBatchMoveChatItem = AgentChatCrossMachineBatchMoveItemBase & {
+  kind: "chat";
+  sourceSessionId: string;
+  sourceChatTitle?: string | null;
+  handoffId: string;
+  mode: "fork" | "brief";
+  requestedFor?: AgentChatCrossMachineMoveRelation;
+  modeFallbackReason?: string | null;
+  destinationSessionId?: string | null;
+};
+
+export type AgentChatCrossMachineBatchMoveItem =
+  | AgentChatCrossMachineBatchMoveLaneItem
+  | AgentChatCrossMachineBatchMoveChatItem;
+
+export type AgentChatCrossMachineBatchMoveRecord = {
+  batchId: string;
+  state: "awaiting_approval" | "pending" | "running" | "completed" | "partial" | "cancelled";
+  machineKey: string;
+  machineName: string;
+  requestedBy: "user" | "agent";
+  requestingSessionId?: string | null;
+  approvedByPerson?: boolean;
+  requestedAt: string;
+  updatedAt: string;
+  includeChanges: boolean;
+  whenBusy: "wait" | "interrupt";
+  note: string | null;
+  items: AgentChatCrossMachineBatchMoveItem[];
+};
+
+/** The caller-chat summary of a batch that still needs the person's decision. */
+export type AgentChatCrossMachineBatchMoveApproval = {
+  batchId: string;
+  machineName: string;
+  chats: Array<{ sessionId: string; title: string | null }>;
+  /** Number of lanes imported alongside the chats, if the host supports lane counts. */
+  laneCount?: number;
+};
+
+export type AgentChatGetCrossMachineBatchMoveArgs = { batchId: string };
+export type AgentChatRetryCrossMachineBatchMoveArgs = { batchId: string };
+export type AgentChatResolveCrossMachineBatchMoveApprovalArgs = { batchId: string; approve: boolean };
+
+/** A branch-only lane import, used for lanes that have no selected chat. */
+export type AgentChatCrossMachineLaneImportArgs = {
+  importId: string;
+  sourceMachineName: string;
+  sourceMachineKey?: string;
+  sourceLane: { laneId: string; parentLaneId: string | null; name: string };
+  destinationParentLaneId?: string;
+  /** Existing origin lane for a return; do not create or select another lane. */
+  returnToLaneId?: string;
+  branchRef: string;
+  headSha: string;
+  originUrl: string;
+  gitBundle?: AgentChatCrossMachineGitBundle;
+};
+
+export type AgentChatCrossMachineLaneImportResult = {
+  importId: string;
+  laneId: string;
+  reusedLane: boolean;
+  carriedChanges: boolean;
+  snapshotSha: string | null;
+  warnings: string[];
+  setupStatus?: AgentChatCrossMachineLaneSetupStatus;
 };
 
 /** Provider-native session files shipped inside a fork-mode capsule. */
@@ -4604,6 +4814,8 @@ export type AgentChatCrossMachineForkTransport = {
 export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
   sourceSessionId: string;
   handoffId: string;
+  /** Destination identity, used to detect a return to the original machine. */
+  destinationMachineKey?: string;
   continuationPrompt?: string | null;
   /** Absent = brief. */
   mode?: "brief" | "fork";
@@ -4612,6 +4824,13 @@ export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTarge
    * clean/published source requirement; a diverged branch still blocks.
    */
   includeChanges?: boolean;
+  /** A batch item's move: prepare writes the capsule's batch and lane fields from it. */
+  batchMove?: AgentChatCrossMachineBatchMoveContext;
+  /**
+   * The origin machine already refused to continue the original chat: move
+   * as a new chat there (no `returnTo`), with this chat as the return address.
+   */
+  omitReturnTo?: boolean;
 };
 
 export type AgentChatPrepareCrossMachineHandoffResult = {
@@ -4646,6 +4865,10 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
    * and an existing lane/branch only has to be clean and at or behind it.
    */
   hasGitBundle?: boolean;
+  requireBatchMoveSupport?: boolean;
+  batchLaneImportId?: string;
+  /** Original lane bound to a return; the accept action performs the final safety check. */
+  returnToLaneId?: string;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -4679,6 +4902,8 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
    * refuse a bundle handoff unless this is true.
    */
   gitBundleSupport?: boolean;
+  /** Explicit schema/action capability; absent on older ADE destinations. */
+  batchMoveSupport?: 1;
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {
@@ -4692,6 +4917,13 @@ export type AgentChatAcceptCrossMachineHandoffResult = {
   session: AgentChatSession;
   reusedLane: boolean;
   reusedSession: boolean;
+  warnings?: string[];
+  /**
+   * The source's scheduled-work ids this destination recreated on the chat.
+   * The source cancels exactly these once the move continues; absent on older
+   * destinations, which recreate none.
+   */
+  scheduledWorkIds?: string[];
 };
 
 export type AgentChatMarkCrossMachineHandoffArgs = {
@@ -4713,10 +4945,10 @@ export type AgentChatMarkCrossMachineHandoffArgs = {
  * - `pending`: waits for the current turn to end. Any newer USER message
  *   cancels it ("new instructions win").
  * - `sending`: in flight; `checkpoint` names the last durable step passed.
- * - `continued`: the destination chat started. The source stays usable; the
- *   desktop routes new messages to the destination chat until the person
- *   picks "Work here instead" (`resumedHere`). iOS asks "Continue on
- *   <machine> / Work here instead" before a send.
+ * - `continued`: the destination chat started. The source brain locks turns
+ *   and automatic work until the person picks "Work here instead"
+ *   (`resumedHere`); the desktop routes new messages to the destination chat.
+ *   iOS asks "Continue on <machine> / Work here instead" before a send.
  * - `unknown`: the destination may have accepted but confirmation was lost.
  *   Never auto-replayed; a retry reconciles through the destination record.
  */
@@ -4725,6 +4957,7 @@ export type AgentChatCrossMachineHandoffState =
   | "pending"
   | "sending"
   | "continued"
+  | "returned"
   | "failed"
   | "cancelled"
   | "unknown";
@@ -4746,6 +4979,13 @@ export type AgentChatCrossMachineHandoffRecord = {
   /** Uncommitted and unpushed work travels as a git bundle. */
   includeChanges: boolean;
   requestedBy: "user" | "agent";
+  /** How the requesting agent is related to the chat being moved. Stamped by the RPC host. */
+  requestedFor?: AgentChatCrossMachineMoveRelation;
+  /** Trusted requester identity for the person's approval card. */
+  requestedBySessionId?: string | null;
+  requestedByTitle?: string | null;
+  /** Target chat title captured with the request, for approval cards. */
+  sourceChatTitle?: string | null;
   /**
    * The permission level the destination chat would run with, in words
    * ("ask before changes"). An agent's move runs there at the source chat's
@@ -4770,6 +5010,17 @@ export type AgentChatCrossMachineHandoffRecord = {
    * Until then, the source composer sends to the destination chat.
    */
   resumedHere: boolean;
+  /**
+   * The origin machine definitively refused to continue the original chat
+   * (nothing was committed there). Later moves to that machine go as a new
+   * chat instead of a return.
+   */
+  returnRefused?: {
+    handoffId: string;
+    machineKey: string;
+    reason: string;
+    at: string;
+  } | null;
 };
 
 export type AgentChatCrossMachineContinuation = {
@@ -4862,6 +5113,7 @@ export type AgentChatPreviewCrossMachineHandoffArgs = {
   targetModelId: ModelId;
   mode?: "brief" | "fork";
   includeChanges?: boolean;
+  batchMove?: boolean;
 };
 
 export type AgentChatPreviewCrossMachineHandoffResult = {
@@ -6104,6 +6356,8 @@ export type DraftEntry = {
   firedAt?: string | null;
   /** Why a scheduled draft is blocked or missed, for the Needs-you row. */
   lastError?: string | null;
+  /** When this send first paused because its target chat continued on another machine. */
+  moveAwayHeldAt?: string | null;
 };
 
 /** Plain drafts keep the original 20-row ceiling. */

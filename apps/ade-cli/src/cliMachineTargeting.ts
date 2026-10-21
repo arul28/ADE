@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
+import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import {
   CliExecutionError,
@@ -450,8 +450,17 @@ async function executePlanOnAllMachines(
       return asString(local?.displayName) ?? path.basename(roots.projectRoot);
     }
     const projects = Array.isArray(machine.projects) ? machine.projects.filter(isRecord) : [];
-    const match = projects.find((project) => asString(project.origin) === localIdentity);
-    return asString(match?.name) ?? null;
+    // The checkout the call itself is routed to (see `pickLiveCheckout`), not
+    // the first registry entry with this origin.
+    const match = pickLiveCheckout(projects
+      .filter((project) => localIdentity !== null && asString(project.origin) === localIdentity)
+      .map((project) => ({
+        name: asString(project.name),
+        lastOpenedAt: typeof project.lastOpenedAt === "number" ? project.lastOpenedAt : 0,
+        catalogVisibility: project.catalogVisibility === "system" ? "system" as const : null,
+        ...(typeof project.exists === "boolean" ? { exists: project.exists } : {}),
+      })));
+    return match?.name ?? null;
   };
   const tag = (rows: JsonObject[], machineName: string, project: string | null): JsonObject[] =>
     rows.map((row) => ({ [MACHINE_ROW_KEY]: machineName, [MACHINE_PROJECT_ROW_KEY]: project, ...row }));

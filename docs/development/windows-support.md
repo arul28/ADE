@@ -361,6 +361,13 @@ the named pipe is healthy.
   `install.ps1`, and `SHA256SUMS` from the immutable proof run. Missing or
   mismatched evidence is a public-release blocker; do not relabel it as a pass
   or substitute a manual binary copy.
+- The service-removal check must pass from Electron main: `resolveAdeServeCommand()`
+  describes `ADE.exe <resources>\ade-cli\cli.cjs serve`, and `readRecordedBrain`
+  also accepts the command in the service launcher script. A machine stuck on
+  1.2.112/1.2.113 recovers with `ade brain update`, whose `--apply-staged` step
+  installs the desktop app itself (sha512 and Authenticode signer checked, service
+  restored if the installer fails). See
+  [Desktop auto-update](../features/onboarding-and-settings/desktop-auto-update.md).
 - `install.ps1` stages everything under the ADE home, never `%TEMP%`:
   `<runtime dir>.new` / `.previous` beside the runtime, `ade.new.exe` /
   `ade.bak.exe` beside `ade.exe`. `%TEMP%` holds the downloads and nothing else,
