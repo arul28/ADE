@@ -219,6 +219,12 @@ export function createAppleDeviceNamespace(
     deviceDetach: (async (args?: unknown) => invoke("deviceDetach", args ?? {}, false)) as never,
     deviceDeleteInstalled: (async (args?: unknown) => invoke("deviceDeleteInstalled", args ?? {}, false)) as never,
     deviceCleanup: (async (args?: unknown) => invoke("deviceCleanup", args ?? {}, false)) as never,
+    runtimeList: (async () => invoke("runtimeList", {}, true)) as never,
+    runtimeInstall: (async (args?: unknown) => invoke("runtimeInstall", args ?? {}, false)) as never,
+    runtimeInstallCancel: (async () => invoke("runtimeInstallCancel", {}, false)) as never,
+    runtimeDelete: (async (args?: unknown) => invoke("runtimeDelete", args ?? {}, false)) as never,
+    runtimePrune: (async (args?: unknown) => invoke("runtimePrune", args ?? {}, false)) as never,
+    xcodeRunFirstLaunch: (async (args?: unknown) => invoke("xcodeRunFirstLaunch", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(
       "apple.recordList",

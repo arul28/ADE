@@ -16,6 +16,8 @@ import type {
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
   AppleLaneDevice,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeSimulatorDisposition,
   IosElementContextItem,
   IosSimulatorStatus,
   OpenProjectBinding,
@@ -66,6 +68,7 @@ import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
+import { useAppleRuntimes } from "./useAppleRuntimes";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
@@ -138,6 +141,26 @@ const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOff
   "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
   "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
 };
+
+/** What a runtime remove did, as one toast. Counts only; the details are in the log. */
+function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
+  const freed = result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+  const parts = [
+    result.deleted.length ? `removed ${result.deleted.map((entry) => entry.name).join(", ")}` : null,
+    result.moved.length ? `moved ${result.moved.length} simulator${result.moved.length === 1 ? "" : "s"}` : null,
+    result.erased.length ? `erased ${result.erased.length}` : null,
+  ].filter(Boolean);
+  const failed = result.errors.length > 0;
+  showToast({
+    id: "apple-runtime-remove",
+    tone: failed ? "warning" : "success",
+    title: failed
+      ? (result.deleted.length ? "Some runtimes were not removed" : "The runtime was not removed")
+      : `Freed ${(freed / 1e9).toFixed(1)} GB`,
+    message: [parts.length ? `${parts.join(", ")}.` : null, failed ? result.errors[0]!.message : null].filter(Boolean).join(" "),
+    ...(failed ? { durationMs: 18_000 } : {}),
+  });
+}
 
 export function AppleDevicePane({
   sessionId,
@@ -563,6 +586,74 @@ export function AppleDevicePane({
       });
   }, [laneId, refreshList]);
 
+  /* ── simulator runtimes ──────────────────────────────────────────────── */
+
+  /**
+   * "Install & create": the model the person picked while its runtime was
+   * missing. When the download settles as done, it is created on the newest
+   * runtime that now runs it.
+   */
+  const installThenCreateRef = useRef<string | null>(null);
+  const [runtimesNonce, setRuntimesNonce] = useState(0);
+  const runtimes$ = useAppleRuntimes({
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    enabled: !hidden,
+    refreshNonce: runtimesNonce,
+    onError: (cause) => setError(cause),
+    onInstallSettled: (install) => {
+      const wanted = installThenCreateRef.current;
+      installThenCreateRef.current = null;
+      refreshList();
+      if (install.phase === "failed") {
+        showToast({ id: "apple-runtime-install", tone: "error", title: `iOS ${install.version} didn't install`, message: install.message ?? undefined, durationMs: 18_000 });
+        return;
+      }
+      if (install.phase !== "done") return;
+      void window.ade.iosSimulator.runtimeList(runtimePinRef.current).then((inventory) => {
+        const target = wanted
+          ? inventory.runtimes
+            .filter((entry) => entry.deviceTypes.some((type) => type.identifier === wanted))
+            .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0] ?? null
+          : null;
+        const model = target?.deviceTypes.find((type) => type.identifier === wanted) ?? null;
+        if (target && model) {
+          showToast({ id: "apple-runtime-install", tone: "success", title: `iOS ${install.version} is installed`, message: `Creating ${model.name}…` });
+          createDevice({ runtime: target.runtimeIdentifier, deviceType: model.identifier });
+          return;
+        }
+        const duo = inventory.runtimes.flatMap((entry) => entry.deviceTypes.map((type) => ({ entry, type })))
+          .find(({ type }) => /duo/i.test(type.name)) ?? null;
+        showToast({
+          id: "apple-runtime-install",
+          tone: "success",
+          title: `iOS ${install.version} is installed`,
+          ...(duo ? { actions: [{ label: `Create ${duo.type.name}`, onClick: () => createDevice({ runtime: duo.entry.runtimeIdentifier, deviceType: duo.type.identifier }) }] } : {}),
+        });
+      }).catch(() => undefined);
+    },
+  });
+  const installAndCreate = useCallback((deviceType: string) => {
+    installThenCreateRef.current = deviceType;
+    void runtimes$.install();
+  }, [runtimes$]);
+  const removeRuntime = useCallback((id: string, simulators: AppleRuntimeSimulatorDisposition) => {
+    void runtimes$.remove(id, simulators).then((result) => {
+      if (result) showRuntimeRemoval(result);
+      refreshList();
+    });
+  }, [refreshList, runtimes$]);
+  const pruneRuntimes = useCallback((simulators: AppleRuntimeSimulatorDisposition) => {
+    void runtimes$.prune(simulators).then((result) => {
+      if (result) showRuntimeRemoval(result);
+      refreshList();
+    });
+  }, [refreshList, runtimes$]);
+  const refreshAll = useCallback(() => {
+    refreshList();
+    setRuntimesNonce((value) => value + 1);
+  }, [refreshList]);
+
   /**
    * Delete a simulator from the picker's per-device menu.
    *
@@ -848,8 +939,15 @@ export function AppleDevicePane({
             onCleanup={cleanupDevices}
             cleaning={cleaning}
             onDelete={deleteInstalled}
-            onRefresh={refreshList}
+            onRefresh={refreshAll}
             playing={!hidden}
+            runtimeInventory={runtimes$.inventory}
+            removingRuntime={runtimes$.removing}
+            onInstallAndCreate={installAndCreate}
+            onCancelInstall={runtimes$.cancelInstall}
+            onRemoveRuntime={removeRuntime}
+            onPruneRuntimes={pruneRuntimes}
+            onRunXcodeSetup={runtimes$.runXcodeSetup}
           />
         );
       case "starting":

@@ -1,0 +1,582 @@
+import type { ChildProcess } from "node:child_process";
+import type {
+  AppleInstalledRuntime,
+  AppleMissingRuntime,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeEntry,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleRuntimeSimulator,
+  AppleRuntimeSimulatorDisposition,
+  AppleSimulatorDeviceType,
+  AppleXcodeStatus,
+  IosSimulatorEventPayload,
+} from "../../../shared/types/iosSimulator";
+import type { Logger } from "../logging/logger";
+import { appleDeviceFamily, appleRuntimeScore, parseAppleInstalledRuntimes } from "./appleSimulatorCatalog";
+
+/**
+ * Simulator runtimes: list what is installed and what depends on it, fetch the
+ * runtime this Xcode expects, and remove old ones.
+ *
+ * Everything here runs on the machine that owns the lane's simulators; the
+ * renderer reaches it through the `ios_simulator` action domain with the
+ * lane's pin, so a laptop pinned to a desktop manages the desktop's runtimes.
+ *
+ * The download is a background job. `runtimeInstall` returns as soon as
+ * `xcodebuild -downloadPlatform` starts; progress arrives as
+ * `apple.runtime.install` events and in every `runtimeList` answer. That keeps
+ * the RPC short however long the 8 GB download takes, and a closed panel does
+ * not stop it.
+ */
+
+type RunCommand = (
+  command: string,
+  args: string[],
+  options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string; stderr: string }>;
+
+type SpawnCommand = (command: string, args: string[]) => ChildProcess;
+
+export type AppleRuntimeManagerDeps = {
+  run: RunCommand;
+  spawn: SpawnCommand;
+  emit: (payload: IosSimulatorEventPayload) => void;
+  logger: Logger;
+  /** Free bytes on the system volume, where CoreSimulator stages runtimes. */
+  freeBytes: () => Promise<number | null>;
+  /** Simulators a lane of this project holds. */
+  laneHeldUdids: () => Set<string>;
+  /** ADE made this simulator (marker file or lane row). */
+  isAdeSimulator: (udid: string) => boolean;
+  /** Stop recordings, streams and helper sessions on a simulator before it is shut down. */
+  releaseHolds: (udid: string) => Promise<void>;
+  /** Device lists and statuses changed. */
+  invalidate: () => void;
+  /** Apple's newest Xcode, from the releases feed; cached by the caller. */
+  latestXcode: () => Promise<AppleXcodeStatus["latest"]>;
+  arch?: string;
+  now?: () => Date;
+};
+
+/* ───────────────────────── parsing (pure) ───────────────────────── */
+
+type RuntimeImage = {
+  id: string;
+  runtimeIdentifier: string;
+  version: string;
+  build: string | null;
+  sizeBytes: number | null;
+  deletable: boolean;
+  lastUsedAt: string | null;
+};
+
+/** `simctl runtime list -j`: the disk images, keyed by runtime identifier. */
+export function parseSimctlRuntimeImages(stdout: string): Map<string, RuntimeImage> {
+  const parsed = JSON.parse(stdout) as Record<string, Record<string, unknown>>;
+  const images = new Map<string, RuntimeImage>();
+  for (const [key, value] of Object.entries(parsed ?? {})) {
+    if (!value || typeof value !== "object") continue;
+    const runtimeIdentifier = typeof value.runtimeIdentifier === "string" ? value.runtimeIdentifier : null;
+    if (!runtimeIdentifier) continue;
+    const id = typeof value.identifier === "string" ? value.identifier : key;
+    const sizeBytes = typeof value.sizeBytes === "number" && value.sizeBytes > 0 ? value.sizeBytes : null;
+    images.set(runtimeIdentifier, {
+      id,
+      runtimeIdentifier,
+      version: typeof value.version === "string" ? value.version : "",
+      build: typeof value.build === "string" ? value.build : null,
+      sizeBytes,
+      deletable: value.deletable !== false,
+      lastUsedAt: typeof value.lastUsedAt === "string" ? value.lastUsedAt : null,
+    });
+  }
+  return images;
+}
+
+type RuntimeDevice = { udid: string; name: string; state: string; deviceTypeIdentifier: string | null };
+
+/** `simctl list devices --json`, every device grouped by runtime identifier (available or not). */
+export function parseSimctlDevicesByRuntime(stdout: string): Map<string, RuntimeDevice[]> {
+  const parsed = JSON.parse(stdout) as { devices?: Record<string, Array<Record<string, unknown>>> };
+  if (!parsed || typeof parsed.devices !== "object" || parsed.devices === null) {
+    throw new Error("simctl list devices returned no device set");
+  }
+  const byRuntime = new Map<string, RuntimeDevice[]>();
+  for (const [runtimeIdentifier, devices] of Object.entries(parsed.devices)) {
+    const list: RuntimeDevice[] = [];
+    for (const device of devices ?? []) {
+      if (typeof device.udid !== "string") continue;
+      list.push({
+        udid: device.udid,
+        name: typeof device.name === "string" ? device.name : device.udid,
+        state: typeof device.state === "string" ? device.state : "Unknown",
+        deviceTypeIdentifier: typeof device.deviceTypeIdentifier === "string" ? device.deviceTypeIdentifier : null,
+      });
+    }
+    byRuntime.set(runtimeIdentifier, list);
+  }
+  return byRuntime;
+}
+
+type DeviceTypeRecord = AppleSimulatorDeviceType & { productFamily: string; minRuntimeVersion: string | null; maxRuntimeVersion: string | null };
+
+/** `simctl list devicetypes -j`. */
+export function parseSimctlDeviceTypes(stdout: string): DeviceTypeRecord[] {
+  const parsed = JSON.parse(stdout) as { devicetypes?: Array<Record<string, unknown>> };
+  const types: DeviceTypeRecord[] = [];
+  for (const type of parsed.devicetypes ?? []) {
+    if (typeof type.identifier !== "string" || typeof type.name !== "string") continue;
+    const productFamily = typeof type.productFamily === "string" ? type.productFamily : "";
+    types.push({
+      identifier: type.identifier,
+      name: type.name,
+      family: appleDeviceFamily({ deviceTypeIdentifier: type.identifier, name: `${productFamily} ${type.name}` }),
+      productFamily,
+      minRuntimeVersion: typeof type.minRuntimeVersionString === "string" ? type.minRuntimeVersionString : null,
+      maxRuntimeVersion: typeof type.maxRuntimeVersionString === "string" ? type.maxRuntimeVersionString : null,
+    });
+  }
+  return types;
+}
+
+/** `xcodebuild -showsdks -json`: the iOS simulator SDK version this Xcode builds with (`27.1`). */
+export function parseIosSimulatorSdkVersion(stdout: string): string | null {
+  const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+  let best: string | null = null;
+  for (const sdk of Array.isArray(parsed) ? parsed : []) {
+    if (sdk.platform !== "iphonesimulator" || typeof sdk.platformVersion !== "string") continue;
+    if (!best || appleRuntimeScore(sdk.platformVersion) > appleRuntimeScore(best)) best = sdk.platformVersion;
+  }
+  return best;
+}
+
+/** `xcodebuild -version`: `Xcode 27.1` / `Build version 27A9275`. */
+export function parseXcodeVersionOutput(stdout: string): { version: string | null; build: string | null } {
+  const version = /Xcode\s+(\d+(?:\.\d+){0,2})/u.exec(stdout)?.[1] ?? null;
+  const build = /Build version\s+(\S+)/u.exec(stdout)?.[1] ?? null;
+  return { version, build };
+}
+
+/** Apple's releases RSS: the newest Xcode, skipping betas and RCs unless asked. */
+export function parseLatestXcodeFromReleasesFeed(xml: string, options: { includeBeta?: boolean } = {}): AppleXcodeStatus["latest"] {
+  let best: NonNullable<AppleXcodeStatus["latest"]> | null = null;
+  const items = xml.split(/<item>/u).slice(1);
+  for (const item of items) {
+    const title = /<title>([^<]*)<\/title>/u.exec(item)?.[1]?.trim() ?? "";
+    const match = /^Xcode\s+(\d+(?:\.\d+){0,2})(?:\s+(beta(?:\s*\d+)?|RC(?:\s*\d+)?))?(?:\s+\(([^)]+)\))?$/iu.exec(title);
+    if (!match) continue;
+    const beta = Boolean(match[2]);
+    if (beta && !options.includeBeta) continue;
+    const link = /<link>([^<]*)<\/link>/u.exec(item)?.[1]?.trim() ?? "https://developer.apple.com/xcode/";
+    const candidate = { version: match[1]!, build: match[3] ?? null, beta, url: link };
+    if (!best || appleRuntimeScore(candidate.version) > appleRuntimeScore(best.version)) best = candidate;
+  }
+  return best;
+}
+
+/**
+ * One progress line from `xcodebuild -downloadPlatform`, e.g.
+ * `Downloading iOS 27.1 Simulator (24A94425) (arm64): 52.3% (4.1 GB of 7.85 GB)`.
+ * Returns the fields that changed, or null for lines that are not progress.
+ */
+export function parseRuntimeDownloadProgress(line: string): Partial<AppleRuntimeInstallState> | null {
+  const body = /^Downloading .+?:\s*(.*)$/u.exec(line.trim())?.[1]?.trim();
+  if (body === undefined) return null;
+  const progress = /^(\d+(?:\.\d+)?)%\s*\(([^)]+?)\s+of\s+([^)]+?)\)/u.exec(body);
+  if (progress) {
+    return { phase: "downloading", percent: Number(progress[1]), received: progress[2]!, total: progress[3]! };
+  }
+  if (/^Preparing/iu.test(body)) return { phase: "preparing" };
+  if (/^Installing/iu.test(body)) return { phase: "installing", percent: 100 };
+  if (/^Done/iu.test(body)) return { phase: "done", percent: 100 };
+  return null;
+}
+
+/* ───────────────────────── the manager ───────────────────────── */
+
+/** CoreSimulator wants headroom beyond the image itself while it stages and verifies. */
+const INSTALL_FREE_BYTES_FLOOR = 10 * 1024 ** 3;
+/** At most four progress events a second; xcodebuild prints far more often. */
+const PROGRESS_EVENT_INTERVAL_MS = 250;
+
+export type AppleRuntimeManager = ReturnType<typeof createAppleRuntimeManager>;
+
+export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
+  const now = () => (deps.now ? deps.now() : new Date());
+  let install: AppleRuntimeInstallState | null = null;
+  let child: ChildProcess | null = null;
+  let lastEmitAt = 0;
+
+  const emitInstall = (force = false) => {
+    if (!install) return;
+    const at = Date.now();
+    if (!force && at - lastEmitAt < PROGRESS_EVENT_INTERVAL_MS) return;
+    lastEmitAt = at;
+    deps.emit({ type: "apple.runtime.install", install: { ...install } });
+  };
+
+  const finish = (phase: "done" | "failed" | "cancelled", message: string | null) => {
+    if (!install) return;
+    install = { ...install, phase, message, finishedAt: now().toISOString() };
+    child = null;
+    deps.invalidate();
+    emitInstall(true);
+    deps.logger.info("apple.runtime_install_finished", { version: install.version, phase, message });
+  };
+
+  const readXcode = async (): Promise<Omit<AppleXcodeStatus, "latest" | "updateAvailable">> => {
+    const version = await deps.run("xcodebuild", ["-version"], { timeoutMs: 20_000 })
+      .then(({ stdout }) => parseXcodeVersionOutput(stdout))
+      .catch(() => ({ version: null, build: null }));
+    // Exit 0 means nothing is pending; anything else (including a missing
+    // Xcode) is reported as pending only when an Xcode version was read.
+    const firstLaunchPending = version.version
+      ? await deps.run("xcodebuild", ["-checkFirstLaunchStatus"], { timeoutMs: 20_000 }).then(() => false, () => true)
+      : false;
+    return { ...version, firstLaunchPending };
+  };
+
+  const xcodeStatus = async (): Promise<AppleXcodeStatus> => {
+    const [local, latest] = await Promise.all([readXcode(), deps.latestXcode().catch(() => null)]);
+    const updateAvailable = Boolean(local.version && latest
+      && appleRuntimeScore(latest.version) > appleRuntimeScore(local.version));
+    return { ...local, latest, updateAvailable };
+  };
+
+  /**
+   * Is a model still current? Xcode lists every model it knows with the range
+   * of runtimes that run it; a model whose newest runtime is older than this
+   * Xcode's SDK is retired (iPhone Xs stops at iOS 18.99) and keeps no runtime
+   * around on its own.
+   */
+  const isCurrentModel = (type: DeviceTypeRecord | undefined, sdkScore: number | null): boolean =>
+    !type || sdkScore === null || !type.maxRuntimeVersion || appleRuntimeScore(type.maxRuntimeVersion) >= sdkScore;
+
+  /**
+   * The runtimes, joined with their disk images, the simulators on them, and
+   * whether a newer installed runtime makes each one replaceable.
+   */
+  const readRuntimes = async () => {
+    const [runtimesOut, imagesOut, devicesOut, typesOut, sdkOut] = await Promise.all([
+      deps.run("xcrun", ["simctl", "list", "runtimes", "--json"], { timeoutMs: 30_000 }),
+      deps.run("xcrun", ["simctl", "runtime", "list", "-j"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "{}", stderr: "" })),
+      deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 }),
+      deps.run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "{}", stderr: "" })),
+      deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "[]", stderr: "" })),
+    ]);
+    const installed = parseAppleInstalledRuntimes(runtimesOut.stdout);
+    const images = parseSimctlRuntimeImages(imagesOut.stdout);
+    const devices = parseSimctlDevicesByRuntime(devicesOut.stdout);
+    const types = (() => {
+      try {
+        return parseSimctlDeviceTypes(typesOut.stdout);
+      } catch {
+        return [] as DeviceTypeRecord[];
+      }
+    })();
+    const sdkVersion = (() => {
+      try {
+        return parseIosSimulatorSdkVersion(sdkOut.stdout);
+      } catch {
+        return null;
+      }
+    })();
+    const sdkScore = sdkVersion ? appleRuntimeScore(sdkVersion) : null;
+    const typeById = new Map(types.map((type) => [type.identifier, type]));
+    const held = deps.laneHeldUdids();
+    const newestByPlatform = new Map<string, string>();
+    for (const runtime of installed) {
+      const current = newestByPlatform.get(runtime.platform);
+      const currentRuntime = current ? installed.find((candidate) => candidate.identifier === current) : null;
+      if (!currentRuntime || appleRuntimeScore(runtime.version) > appleRuntimeScore(currentRuntime.version)) {
+        newestByPlatform.set(runtime.platform, runtime.identifier);
+      }
+    }
+    const newerRuns = (runtime: AppleInstalledRuntime, typeId: string) => installed.some((other) =>
+      other.platform === runtime.platform
+      && appleRuntimeScore(other.version) > appleRuntimeScore(runtime.version)
+      && other.deviceTypes.some((candidate) => candidate.identifier === typeId));
+    const entries = installed.map((runtime): AppleRuntimeEntry => {
+      const image = images.get(runtime.identifier) ?? null;
+      const simulators: AppleRuntimeSimulator[] = (devices.get(runtime.identifier) ?? []).map((device) => ({
+        ...device,
+        laneHeld: held.has(device.udid),
+        ade: held.has(device.udid) || deps.isAdeSimulator(device.udid),
+      }));
+      const hasNewer = installed.some((other) => other.platform === runtime.platform
+        && appleRuntimeScore(other.version) > appleRuntimeScore(runtime.version));
+      // Replaceable when a newer runtime runs every current model it runs and
+      // every model one of its simulators uses. iOS 27.0 is never replaceable
+      // by iOS 27.1, which runs only the Duo.
+      const superseded = hasNewer
+        && runtime.deviceTypes
+          .filter((type) => isCurrentModel(typeById.get(type.identifier), sdkScore))
+          .every((type) => newerRuns(runtime, type.identifier))
+        && simulators.every((simulator) => !simulator.deviceTypeIdentifier || newerRuns(runtime, simulator.deviceTypeIdentifier));
+      return {
+        id: image?.id ?? null,
+        runtimeIdentifier: runtime.identifier,
+        name: runtime.name,
+        platform: runtime.platform,
+        version: runtime.version || image?.version || "",
+        build: image?.build ?? null,
+        sizeBytes: image?.sizeBytes ?? null,
+        deletable: Boolean(image?.id) && image?.deletable !== false,
+        lastUsedAt: image?.lastUsedAt ?? null,
+        newest: newestByPlatform.get(runtime.platform) === runtime.identifier,
+        superseded,
+        deviceTypes: runtime.deviceTypes,
+        simulators,
+      };
+    });
+    return { entries, installed, types, sdkVersion };
+  };
+
+  /**
+   * What this Xcode can simulate but the Mac cannot yet: the current iPhone and
+   * iPad models (they run on this Xcode's SDK version) that no installed
+   * runtime runs. Counted per model, not per runtime: with only iOS 27.1
+   * installed every iPhone but the Duo is missing, because they need iOS 27.0.
+   */
+  const missingFrom = (input: { installed: AppleInstalledRuntime[]; types: DeviceTypeRecord[]; sdkVersion: string | null }): AppleMissingRuntime | null => {
+    if (!input.sdkVersion) return null;
+    const sdkScore = appleRuntimeScore(input.sdkVersion);
+    const supported = new Set(input.installed
+      .filter((runtime) => runtime.platform === "iOS")
+      .flatMap((runtime) => runtime.deviceTypes.map((type) => type.identifier)));
+    const deviceTypes = input.types
+      .filter((type) => type.productFamily === "iPhone" || type.productFamily === "iPad")
+      .filter((type) => !supported.has(type.identifier))
+      .filter((type) => !type.minRuntimeVersion || appleRuntimeScore(type.minRuntimeVersion) <= sdkScore)
+      .filter((type) => isCurrentModel(type, sdkScore))
+      .map(({ identifier, name, family }) => ({ identifier, name, family }))
+      .reverse();
+    if (!deviceTypes.length) return null;
+    return { platform: "iOS", version: input.sdkVersion, name: `iOS ${input.sdkVersion}`, deviceTypes };
+  };
+
+  const runtimeList = async (): Promise<AppleRuntimeInventory> => {
+    const [read, xcode, freeBytes] = await Promise.all([
+      readRuntimes(),
+      xcodeStatus(),
+      deps.freeBytes().catch(() => null),
+    ]);
+    return { runtimes: read.entries, missing: missingFrom(read), install: install ? { ...install } : null, xcode, freeBytes };
+  };
+
+  const runtimeInstall = async (args: AppleRuntimeInstallArgs = {}): Promise<AppleRuntimeInstallState> => {
+    if (child && install && (install.phase === "checking" || install.phase === "preparing" || install.phase === "downloading" || install.phase === "installing")) {
+      return { ...install };
+    }
+    const platform = args.platform?.trim() || "iOS";
+    // An explicit version pins `-buildVersion`. Without one, Xcode fetches every
+    // runtime it needs: Xcode 27.1 needs iOS 27.0 (every iPhone) AND iOS 27.1
+    // (only the Duo), and pinning 27.1 alone would leave the other iPhones out.
+    const pinnedVersion = args.version?.trim() || null;
+    const version = pinnedVersion ?? await deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 })
+      .then(({ stdout }) => parseIosSimulatorSdkVersion(stdout))
+      .catch(() => null);
+    if (!version) throw new Error("Could not read which iOS runtime this Xcode expects. Open Xcode once, then try again.");
+    install = {
+      platform,
+      version,
+      phase: "checking",
+      percent: null,
+      received: null,
+      total: null,
+      message: null,
+      startedAt: now().toISOString(),
+      finishedAt: null,
+    };
+    emitInstall(true);
+    const free = await deps.freeBytes().catch(() => null);
+    if (free !== null && free < INSTALL_FREE_BYTES_FLOOR) {
+      const gb = (free / 1024 ** 3).toFixed(1);
+      finish("failed", `Only ${gb} GB free. A runtime needs about 10 GB while it installs; remove an older runtime first.`);
+      return { ...install };
+    }
+    const commandArgs = ["-downloadPlatform", platform];
+    if (pinnedVersion) commandArgs.push("-buildVersion", pinnedVersion);
+    if ((deps.arch ?? process.arch) === "arm64") commandArgs.push("-architectureVariant", "arm64");
+    deps.logger.info("apple.runtime_install_started", { platform, version });
+    const spawned = deps.spawn("xcodebuild", commandArgs);
+    child = spawned;
+    install = { ...install, phase: "preparing" };
+    emitInstall(true);
+    let tail = "";
+    let lastLine = "";
+    const onChunk = (chunk: Buffer | string) => {
+      tail += chunk.toString();
+      // xcodebuild redraws its progress line with carriage returns.
+      const lines = tail.split(/[\r\n]+/u);
+      tail = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        lastLine = line.trim();
+        const update = parseRuntimeDownloadProgress(line);
+        if (!update || !install || child !== spawned) continue;
+        install = { ...install, ...update, phase: update.phase === "done" ? "installing" : update.phase ?? install.phase };
+        emitInstall(update.phase !== "downloading");
+      }
+    };
+    spawned.stdout?.on("data", onChunk);
+    spawned.stderr?.on("data", onChunk);
+    spawned.on("error", (error) => {
+      if (child !== spawned) return;
+      finish("failed", error.message);
+    });
+    spawned.on("close", (code, signal) => {
+      if (child !== spawned) return;
+      if (install?.phase === "cancelled") return;
+      if (code === 0) finish("done", null);
+      else finish("failed", lastLine || `xcodebuild exited with ${signal ?? code}`);
+    });
+    return { ...install };
+  };
+
+  const runtimeInstallCancel = async (): Promise<AppleRuntimeInstallState | null> => {
+    const running = child;
+    if (!running || !install) return install ? { ...install } : null;
+    install = { ...install, phase: "cancelled", message: "Cancelled", finishedAt: now().toISOString() };
+    child = null;
+    try {
+      running.kill("SIGTERM");
+    } catch {
+      // Already gone.
+    }
+    deps.invalidate();
+    emitInstall(true);
+    return { ...install };
+  };
+
+  const shutdown = async (udid: string) => {
+    await deps.releaseHolds(udid).catch(() => undefined);
+    await deps.run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 }).catch(() => undefined);
+  };
+
+  /**
+   * Move or erase the simulators on `entry`, then delete its disk image.
+   *
+   * Lane devices always move when a newer runtime runs their model; one that
+   * cannot move stops the removal, because erasing a lane's device behind its
+   * back would leave the lane pointing at nothing.
+   */
+  const deleteOne = async (
+    entry: AppleRuntimeEntry,
+    all: AppleRuntimeEntry[],
+    disposition: AppleRuntimeSimulatorDisposition,
+    result: AppleRuntimeDeleteResult,
+  ) => {
+    if (!entry.id || !entry.deletable) {
+      result.errors.push({ id: entry.id, udid: null, message: `${entry.name} is part of Xcode and cannot be removed here.` });
+      return;
+    }
+    // The newest newer runtime that runs THIS simulator's model: iOS 27.1 runs
+    // only the Duo, so an iPhone 17 on iOS 26.3 moves to iOS 27.0, not 27.1.
+    const newer = all
+      .filter((candidate) => candidate.platform === entry.platform
+        && appleRuntimeScore(candidate.version) > appleRuntimeScore(entry.version))
+      .sort((a, b) => appleRuntimeScore(b.version) - appleRuntimeScore(a.version));
+    const targetFor = (simulator: AppleRuntimeSimulator): AppleRuntimeEntry | null => (simulator.deviceTypeIdentifier
+      ? newer.find((candidate) => candidate.deviceTypes.some((type) => type.identifier === simulator.deviceTypeIdentifier)) ?? null
+      : null);
+    const stuck = entry.simulators.filter((simulator) => simulator.laneHeld && !targetFor(simulator));
+    if (stuck.length) {
+      result.errors.push({
+        id: entry.id,
+        udid: stuck[0]!.udid,
+        message: `${stuck.map((simulator) => simulator.name).join(", ")} belongs to a lane and no newer runtime runs its model. Delete it from that lane first.`,
+      });
+      return;
+    }
+    for (const simulator of entry.simulators) {
+      const target = targetFor(simulator);
+      const move = simulator.laneHeld || (disposition === "upgrade" && target !== null);
+      try {
+        await shutdown(simulator.udid);
+        if (move && target) {
+          await deps.run("xcrun", ["simctl", "upgrade", simulator.udid, target.runtimeIdentifier], { timeoutMs: 5 * 60_000 });
+          result.moved.push({ udid: simulator.udid, name: simulator.name, to: target.name });
+        } else {
+          await deps.run("xcrun", ["simctl", "delete", simulator.udid], { timeoutMs: 2 * 60_000 });
+          result.erased.push({ udid: simulator.udid, name: simulator.name });
+        }
+      } catch (error) {
+        result.errors.push({ id: entry.id, udid: simulator.udid, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (result.errors.some((error) => error.id === entry.id)) return;
+    try {
+      await deps.run("xcrun", ["simctl", "runtime", "delete", entry.id], { timeoutMs: 5 * 60_000 });
+      result.deleted.push({ id: entry.id, name: entry.name, sizeBytes: entry.sizeBytes });
+      deps.logger.info("apple.runtime_deleted", { id: entry.id, name: entry.name });
+    } catch (error) {
+      result.errors.push({ id: entry.id, udid: null, message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const assertConfirmed = (confirmed: boolean | undefined) => {
+    if (confirmed !== true) {
+      throw new Error("Removing a simulator runtime is the user's call. Ask them to remove it from the Apple Development panel's Runtimes section, which lists what it will move or erase.");
+    }
+  };
+
+  const runtimeDelete = async (args: AppleRuntimeDeleteArgs): Promise<AppleRuntimeDeleteResult> => {
+    assertConfirmed(args?.confirmedByUser);
+    const { entries } = await readRuntimes();
+    const entry = entries.find((candidate) => candidate.id === args.id);
+    if (!entry) throw new Error(`No installed runtime has id ${args.id}.`);
+    const result: AppleRuntimeDeleteResult = { deleted: [], moved: [], erased: [], errors: [] };
+    try {
+      await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result);
+    } finally {
+      deps.invalidate();
+    }
+    return result;
+  };
+
+  /** Remove every runtime whose models a newer installed runtime all runs (`superseded`). */
+  const runtimePrune = async (args: AppleRuntimePruneArgs): Promise<AppleRuntimeDeleteResult> => {
+    assertConfirmed(args?.confirmedByUser);
+    const { entries } = await readRuntimes();
+    const result: AppleRuntimeDeleteResult = { deleted: [], moved: [], erased: [], errors: [] };
+    try {
+      for (const entry of entries.filter((candidate) => candidate.superseded && candidate.deletable)) {
+        await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result);
+      }
+    } finally {
+      deps.invalidate();
+    }
+    return result;
+  };
+
+  const xcodeRunFirstLaunch = async (args: { confirmedByUser?: boolean } = {}): Promise<AppleXcodeStatus> => {
+    if (args?.confirmedByUser !== true) {
+      throw new Error("Xcode's first-launch setup installs system packages. Ask the user to run it from the Apple Development panel.");
+    }
+    try {
+      await deps.run("xcodebuild", ["-runFirstLaunch"], { timeoutMs: 10 * 60_000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Xcode's setup needs an administrator. Run \`sudo xcodebuild -runFirstLaunch\` in Terminal. (${message})`);
+    }
+    return xcodeStatus();
+  };
+
+  const dispose = () => {
+    if (child) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      child = null;
+    }
+  };
+
+  return { runtimeList, runtimeInstall, runtimeInstallCancel, runtimeDelete, runtimePrune, xcodeRunFirstLaunch, dispose };
+}

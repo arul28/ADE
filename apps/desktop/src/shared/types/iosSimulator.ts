@@ -171,6 +171,12 @@ export const APPLE_AGENT_ACTIONS = [
      only ever deletes a device ADE made; the user's own are listed, not touched. */
   "deviceCleanup",
 
+  /* Simulator runtimes: what is installed, and fetch the one this Xcode
+     expects. Removing one is the person's call (APPLE_USER_ONLY_ACTIONS). */
+  "runtimeList",
+  "runtimeInstall",
+  "runtimeInstallCancel",
+
   /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
   "runTests",
 
@@ -263,7 +269,14 @@ export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
  * {@link APPLE_AGENT_ACTIONS} only), the RPC server refuses them to agent
  * callers, and automations cannot run them.
  */
-export const APPLE_USER_ONLY_ACTIONS = ["deviceDeleteInstalled"] as const;
+export const APPLE_USER_ONLY_ACTIONS = [
+  "deviceDeleteInstalled",
+  /* Removing a runtime erases or moves every simulator on it. */
+  "runtimeDelete",
+  "runtimePrune",
+  /* `xcodebuild -runFirstLaunch` installs system packages. */
+  "xcodeRunFirstLaunch",
+] as const;
 
 /** The live recording, as `getStatus` reports it. */
 export type IosSimulatorStatusRecording = {
@@ -896,7 +909,8 @@ export type IosSimulatorEventPayload =
   | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
   | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
   | AppleDeviceStateEvent
-  | AppleRecordingStateEvent;
+  | AppleRecordingStateEvent
+  | AppleRuntimeInstallEvent;
 
 export type AppleRecordingPhase = "started" | "updated" | "stopped";
 
@@ -1550,7 +1564,10 @@ export type AppleSimulatorDeviceType = {
   family: AppleLaneDeviceFamily;
 };
 
-/** A simulator runtime this Mac has installed. ADE never downloads one. */
+/**
+ * A simulator runtime this Mac has installed. ADE downloads one only when the
+ * person asks (`runtimeInstall`); creating a device never downloads anything.
+ */
 export type AppleInstalledRuntime = {
   identifier: string;
   /** `iOS 26.3`. */
@@ -1559,6 +1576,137 @@ export type AppleInstalledRuntime = {
   platform: string;
   /** Newest first, as CoreSimulator lists them. */
   deviceTypes: AppleSimulatorDeviceType[];
+};
+
+/* ------------------------------------------------------------------------- *
+ * Simulator runtimes: what is installed, what this Xcode expects, and the one
+ * download that may be running. Read by the picker's Runtimes section and by
+ * `ade apple runtimes`; every call runs on the machine that owns the lane.
+ * ------------------------------------------------------------------------- */
+
+/** A simulator that lives on a runtime, so removing the runtime affects it. */
+export type AppleRuntimeSimulator = {
+  udid: string;
+  name: string;
+  state: string;
+  deviceTypeIdentifier: string | null;
+  /** A lane of this project holds it (ADE moves it for the person). */
+  laneHeld: boolean;
+  /** ADE made it (marker or lane), as opposed to the person or Xcode. */
+  ade: boolean;
+};
+
+/** One installed runtime, with its cost and what depends on it. */
+export type AppleRuntimeEntry = {
+  /** CoreSimulator's disk-image UUID: what `simctl runtime delete` takes. Null for a runtime CoreSimulator cannot delete. */
+  id: string | null;
+  /** `com.apple.CoreSimulator.SimRuntime.iOS-27-1`. */
+  runtimeIdentifier: string;
+  /** `iOS 27.1`. */
+  name: string;
+  platform: string;
+  version: string;
+  build: string | null;
+  sizeBytes: number | null;
+  deletable: boolean;
+  lastUsedAt: string | null;
+  /** The newest installed runtime of its platform. */
+  newest: boolean;
+  /**
+   * Every model it runs is also run by a newer installed runtime, so removing
+   * it loses no model. Not the same as "not newest": iOS 27.1 runs only the
+   * iPhone Duo, so iOS 27.0 stays the newest runtime for every other iPhone.
+   */
+  superseded: boolean;
+  /** Device models it runs, for "Install & create" and for moving simulators. */
+  deviceTypes: AppleSimulatorDeviceType[];
+  simulators: AppleRuntimeSimulator[];
+};
+
+/**
+ * The runtime this Xcode's SDK expects but the Mac does not have, and the
+ * device models only it can run (the iPhone Duo on Xcode 27.1).
+ */
+export type AppleMissingRuntime = {
+  platform: string;
+  version: string;
+  name: string;
+  deviceTypes: AppleSimulatorDeviceType[];
+};
+
+export type AppleRuntimeInstallPhase = "checking" | "preparing" | "downloading" | "installing" | "done" | "failed" | "cancelled";
+
+/** The one runtime download a machine runs at a time. */
+export type AppleRuntimeInstallState = {
+  platform: string;
+  version: string;
+  phase: AppleRuntimeInstallPhase;
+  /** 0–100 while downloading. */
+  percent: number | null;
+  /** `4.1 GB`, as xcodebuild prints it. */
+  received: string | null;
+  total: string | null;
+  /** Why it failed, or what it is waiting on. */
+  message: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
+export type AppleRuntimeInstallEvent = {
+  type: "apple.runtime.install";
+  install: AppleRuntimeInstallState;
+};
+
+/** The Xcode on this machine, and whether Apple has shipped a newer one. */
+export type AppleXcodeStatus = {
+  /** `27.1`; null when Xcode is not installed or could not be read. */
+  version: string | null;
+  build: string | null;
+  /** Xcode's first-launch setup has not run for this version (`-checkFirstLaunchStatus`). */
+  firstLaunchPending: boolean;
+  /** Apple's newest release from developer.apple.com, checked at most once a day. Null when unknown. */
+  latest: { version: string; build: string | null; beta: boolean; url: string } | null;
+  /** `latest` is newer than `version`. */
+  updateAvailable: boolean;
+};
+
+export type AppleRuntimeInventory = {
+  runtimes: AppleRuntimeEntry[];
+  missing: AppleMissingRuntime | null;
+  install: AppleRuntimeInstallState | null;
+  xcode: AppleXcodeStatus;
+  /** Free bytes on the volume runtimes install to. Null when unreadable. */
+  freeBytes: number | null;
+};
+
+export type AppleRuntimeInstallArgs = {
+  /** `27.1`. Omitted: whatever runtimes this Xcode needs (Xcode 27.1 fetches both iOS 27.0 and 27.1). */
+  version?: string | null;
+  platform?: string | null;
+};
+
+/** What to do with the simulators on a runtime being removed. */
+export type AppleRuntimeSimulatorDisposition = "upgrade" | "erase";
+
+export type AppleRuntimeDeleteArgs = {
+  /** `AppleRuntimeEntry.id`. */
+  id: string;
+  /** Applies to the person's simulators. ADE's lane devices are always moved when they can be. */
+  simulators: AppleRuntimeSimulatorDisposition;
+  /** Set only by a person confirming in the picker. */
+  confirmedByUser?: boolean;
+};
+
+export type AppleRuntimePruneArgs = {
+  simulators: AppleRuntimeSimulatorDisposition;
+  confirmedByUser?: boolean;
+};
+
+export type AppleRuntimeDeleteResult = {
+  deleted: Array<{ id: string; name: string; sizeBytes: number | null }>;
+  moved: Array<{ udid: string; name: string; to: string }>;
+  erased: Array<{ udid: string; name: string }>;
+  errors: Array<{ id: string | null; udid: string | null; message: string }>;
 };
 
 /**

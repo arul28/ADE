@@ -1005,6 +1005,13 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -9624,6 +9631,35 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDeviceCleanupResult> =>
       callIosSimulatorMutation(pin, "deviceCleanup", args, IPC.iosSimulatorDeviceCleanup),
+
+    /** Installed simulator runtimes, the one this Xcode expects, and any download in progress. */
+    runtimeList: (pin?: OpenProjectBinding | null): Promise<AppleRuntimeInventory> =>
+      callIosSimulatorActionOr<AppleRuntimeInventory>(pin, "runtimeList", {}, () => ipcRenderer.invoke(IPC.iosSimulatorRuntimeList)),
+    /** Start downloading a runtime. Returns at once; progress arrives as `apple.runtime.install` events. */
+    runtimeInstall: (
+      args: AppleRuntimeInstallArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState> =>
+      callIosSimulatorMutation(pin, "runtimeInstall", args, IPC.iosSimulatorRuntimeInstall),
+    runtimeInstallCancel: (pin?: OpenProjectBinding | null): Promise<AppleRuntimeInstallState | null> =>
+      callIosSimulatorMutation(pin, "runtimeInstallCancel", undefined, IPC.iosSimulatorRuntimeInstallCancel),
+    /** Remove one runtime, moving or erasing the simulators on it. The person confirms first. */
+    runtimeDelete: (
+      args: AppleRuntimeDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimeDelete", args, IPC.iosSimulatorRuntimeDelete),
+    /** Remove every runtime older than the newest of its platform. */
+    runtimePrune: (
+      args: AppleRuntimePruneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimePrune", args, IPC.iosSimulatorRuntimePrune),
+    xcodeRunFirstLaunch: (
+      args: { confirmedByUser?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleXcodeStatus> =>
+      callIosSimulatorMutation(pin, "xcodeRunFirstLaunch", args, IPC.iosSimulatorXcodeRunFirstLaunch),
 
     /**
      * One decoded frame from the running stream.

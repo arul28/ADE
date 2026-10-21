@@ -528,6 +528,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
       "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
       "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
+      "runtimeList",
     ],
     write: [
       "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",
@@ -540,7 +541,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "clearStatusBar", "startEventLog", "stopEventLog", "screenshot", "captureProofBundle",
       "recordStart", "recordStop", "recordDelete", "ensurePreviewWorkspace",
       "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "shutdown", "openDevice",
-      "closeDevice", "deviceDeleteInstalled",
+      "closeDevice", "deviceDeleteInstalled", "runtimeInstall", "runtimeInstallCancel",
+      "runtimeDelete", "runtimePrune", "xcodeRunFirstLaunch",
     ],
   },
   mac_desktop: {

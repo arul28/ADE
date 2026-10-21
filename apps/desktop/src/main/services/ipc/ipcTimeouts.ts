@@ -79,6 +79,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     deviceDelete: IPC.iosSimulatorDeviceDelete,
     deviceDetach: IPC.iosSimulatorDeviceDetach,
     deviceCleanup: IPC.iosSimulatorDeviceCleanup,
+    runtimeDelete: IPC.iosSimulatorRuntimeDelete,
+    runtimePrune: IPC.iosSimulatorRuntimePrune,
+    xcodeRunFirstLaunch: IPC.iosSimulatorXcodeRunFirstLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
@@ -276,6 +279,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // Mapped from the remote `ios_simulator.deviceCleanup` above, but with no
     // case of its own it fell to 30s against a 15 minute cleanup pass.
     case IPC.iosSimulatorDeviceCleanup:
+    case IPC.iosSimulatorRuntimeDelete:
+    case IPC.iosSimulatorRuntimePrune:
+    case IPC.iosSimulatorXcodeRunFirstLaunch:
       return IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS;
     // UAC, the Windows password dialog, or Windows' sign-in window may be
     // waiting on a person; see WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.

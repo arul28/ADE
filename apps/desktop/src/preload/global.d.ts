@@ -48,6 +48,13 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -3076,6 +3083,24 @@ declare global {
           args?: AppleDeviceCleanupArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDeviceCleanupResult>;
+        runtimeList: (pin?: OpenProjectBinding | null) => Promise<AppleRuntimeInventory>;
+        runtimeInstall: (
+          args?: AppleRuntimeInstallArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState>;
+        runtimeInstallCancel: (pin?: OpenProjectBinding | null) => Promise<AppleRuntimeInstallState | null>;
+        runtimeDelete: (
+          args: AppleRuntimeDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        runtimePrune: (
+          args: AppleRuntimePruneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        xcodeRunFirstLaunch: (
+          args?: { confirmedByUser?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleXcodeStatus>;
         frame: (
           args?: AppleFrameArgs,
           pin?: OpenProjectBinding | null,

@@ -7,6 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeInstallArgs,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStatePhase,
@@ -140,7 +144,13 @@ import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessT
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry } from "./laneDeviceRegistry";
-import { appleInstalledSimulatorsFrom, appleRuntimeScore, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, appleRuntimeScore, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { createAppleRuntimeManager, parseLatestXcodeFromReleasesFeed, type AppleRuntimeManager } from "./appleRuntimeManager";
+import { readAppleDeviceMarker } from "./appleDeviceMarker";
+
+/** Apple's developer releases feed, for the "newer Xcode" note. */
+const APPLE_RELEASES_FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss";
+const APPLE_LATEST_XCODE_KEY = "apple.xcode.latestRelease";
 import { appleAppOnDevice, appleLaneDerivedDataPath } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
 import type { LaneDeviceStore } from "./laneDeviceRows";
@@ -6517,6 +6527,63 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     laneMaintenance().start();
   }
 
+  /* ───────────────────────── simulator runtimes ───────────────────────── */
+
+  /** Apple's newest Xcode, read from the releases feed at most once a day per machine. */
+  let latestXcodeCache: { at: number; value: AppleXcodeStatus["latest"] } | null = null;
+  const latestXcode = async (): Promise<AppleXcodeStatus["latest"]> => {
+    const dayMs = 24 * 60 * 60_000;
+    if (latestXcodeCache && Date.now() - latestXcodeCache.at < dayMs) return latestXcodeCache.value;
+    const stored = args.laneDeviceStore?.getJson<{ at: number; value: AppleXcodeStatus["latest"] }>(APPLE_LATEST_XCODE_KEY) ?? null;
+    if (stored && typeof stored.at === "number" && Date.now() - stored.at < dayMs) {
+      latestXcodeCache = stored;
+      return stored.value;
+    }
+    try {
+      const response = await fetch(APPLE_RELEASES_FEED_URL, { signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = parseLatestXcodeFromReleasesFeed(await response.text());
+      latestXcodeCache = { at: Date.now(), value };
+      try {
+        args.laneDeviceStore?.setJson(APPLE_LATEST_XCODE_KEY, latestXcodeCache);
+      } catch {
+        // The cache is a courtesy; the in-memory copy still holds for today.
+      }
+      return value;
+    } catch (error) {
+      args.logger.debug("apple.xcode_release_feed_failed", { error: error instanceof Error ? error.message : String(error) });
+      // Try again in an hour rather than on every list.
+      latestXcodeCache = { at: Date.now() - dayMs + 60 * 60_000, value: latestXcodeCache?.value ?? stored?.value ?? null };
+      return latestXcodeCache.value;
+    }
+  };
+
+  let runtimeManagerInstance: AppleRuntimeManager | null = null;
+  const runtimeManager = (): AppleRuntimeManager => {
+    runtimeManagerInstance ??= createAppleRuntimeManager({
+      run: (command, commandArgs, options) => run(command, commandArgs, options),
+      spawn: (command, commandArgs) => spawnProcess(command, commandArgs, { stdio: ["ignore", "pipe", "pipe"] }),
+      emit,
+      logger: args.logger,
+      freeBytes: async () => {
+        const stats = await fs.promises.statfs(os.homedir());
+        return Number(stats.bavail) * Number(stats.bsize);
+      },
+      laneHeldUdids: () => new Set(laneDevices.list().map((device) => device.udid)),
+      isAdeSimulator: (udid) => readAppleDeviceMarker(appleDeviceDataRoot(), udid) !== null,
+      releaseHolds: async (udid) => {
+        await stopDeviceRecording(udid, "device-off");
+        await lifecycle.releaseUnlanedHolds(udid);
+      },
+      invalidate: () => {
+        invalidateDeviceList();
+        for (const runtime of runtimes.values()) invalidateStatus(runtime);
+      },
+      latestXcode,
+    });
+    return runtimeManagerInstance;
+  };
+
   /**
    * The one place an agent's device is decided, for every action below.
    *
@@ -6625,6 +6692,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,
+
+    /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
+    runtimeList: async () => {
+      assertDarwin();
+      return runtimeManager().runtimeList();
+    },
+    runtimeInstall: async (installArgs: AppleRuntimeInstallArgs = {}) => {
+      assertDarwin();
+      return runtimeManager().runtimeInstall(installArgs);
+    },
+    runtimeInstallCancel: async () => {
+      assertDarwin();
+      return runtimeManager().runtimeInstallCancel();
+    },
+    runtimeDelete: async (deleteArgs: AppleRuntimeDeleteArgs) => {
+      assertDarwin();
+      return runtimeManager().runtimeDelete(deleteArgs);
+    },
+    runtimePrune: async (pruneArgs: AppleRuntimePruneArgs) => {
+      assertDarwin();
+      return runtimeManager().runtimePrune(pruneArgs);
+    },
+    xcodeRunFirstLaunch: async (setupArgs: { confirmedByUser?: boolean } = {}) => {
+      assertDarwin();
+      return runtimeManager().xcodeRunFirstLaunch(setupArgs);
+    },
     /** The lane is being archived or deleted: let go of its device in this process. */
     stopForLane,
 
@@ -6772,6 +6865,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     dispose: () => {
       disposed = true;
       maintenance?.stop();
+      runtimeManagerInstance?.dispose();
       for (const runtime of runtimes.values()) {
         runtime.hub?.dispose();
         runtime.hub = null;

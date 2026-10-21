@@ -10394,6 +10394,12 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeList, async () => ensureIosSimulator().runtimeList());
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstall, async (_event, arg = {}) => ensureIosSimulator().runtimeInstall(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
+  ipcMain.handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
+  ipcMain.handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
