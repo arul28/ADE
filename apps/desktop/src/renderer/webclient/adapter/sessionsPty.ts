@@ -55,6 +55,9 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
    */
   const sessionMirror = new Map<string, TerminalSessionSummary[]>();
   const sessionRefreshInFlight = new Map<string, Promise<TerminalSessionSummary[]>>();
+  // Bumped on invalidation: a listing that started before it does not
+  // overwrite the mirror with rows from before the change.
+  let sessionListGeneration = 0;
 
   function subscribeSession(sessionId: string, ptyId?: string | null): void {
     if (!sessionId || terminalSubscriptions.has(sessionId)) return;
@@ -123,8 +126,11 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   infra.addDispose(
     events.on("sessionsInvalidated", () => {
-      // Drop any retained listing so the refresh this triggers reads the host.
+      // Drop any retained or in-flight listing so the refresh this triggers
+      // reads the host, not a request that started before the change.
       commands.invalidateCache(["work.listSessions"]);
+      sessionRefreshInFlight.clear();
+      sessionListGeneration += 1;
       events.emit("sessionsChanged", {
         sessionId: "__ade_web_invalidation__",
         reason: "meta-updated",
@@ -151,14 +157,17 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     const flightKey = authoritative ? `${key}\u0000authoritative` : key;
     const existing = sessionRefreshInFlight.get(flightKey);
     if (existing) return await existing;
+    const generation = sessionListGeneration;
     const request = (async () => {
       const sessions = await commands.call<TerminalSessionSummary[]>("work.listSessions", args, {
         fallback: [],
         idempotent: true,
         authoritative,
       });
-      terminalRegistry.registerSummaries(sessions);
-      rememberSessionRows(key, sessions);
+      if (generation === sessionListGeneration) {
+        terminalRegistry.registerSummaries(sessions);
+        rememberSessionRows(key, sessions);
+      }
       return sessions;
     })();
     sessionRefreshInFlight.set(flightKey, request);

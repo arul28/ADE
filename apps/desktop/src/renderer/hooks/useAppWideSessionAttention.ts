@@ -166,7 +166,10 @@ export function useAppWideSessionAttention(): void {
       if (isCurrentProjectEvent(event)) scheduleRefresh();
     });
     const unsubscribeExit = window.ade.pty.onExit((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (!isCurrentProjectEvent(event)) return;
+      // An exit changes the session's status, so rows cached before it are stale.
+      invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
+      scheduleRefresh();
     });
     const unsubscribeChat = window.ade.agentChat.onEvent((event) => {
       if (!shouldRefreshSessionListForChatEvent(event)) return;

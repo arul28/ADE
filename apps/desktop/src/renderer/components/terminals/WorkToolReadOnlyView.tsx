@@ -112,11 +112,14 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     try {
       const next = await read(laneId);
       if (requestedLaneId.current !== laneId) return false;
-      const signature = JSON.stringify(next ?? null);
-      if (signature === lastStateSignature.current) return false;
+      // Every read is stamped with a fresh `capturedAt`, so it is left out of
+      // the comparison; the state is still applied, since the takeover hold
+      // reads that stamp.
+      const signature = next ? JSON.stringify({ ...next, capturedAt: undefined }) : "null";
+      const changed = signature !== lastStateSignature.current;
       lastStateSignature.current = signature;
       setState(next);
-      return true;
+      return changed;
     } catch {
       if (requestedLaneId.current !== laneId) return false;
       const changed = lastStateSignature.current !== "null";

@@ -304,18 +304,23 @@ export function LinearQuickViewButton({
     if (!shouldAutoCheckVisibility) return;
     if (visible) return;
     if (!activeProjectRoot) return;
+    // A read still in flight when the project changes answers for the old one.
+    let stopped = false;
     const poller = createBackoffPoller({
       baseMs: visibilityRetryIntervalMs,
       maxMs: DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS,
       isActive: () => true,
       read: () => loadVisibility().then((nextVisible) => {
         // Connected: the effect re-runs with `visible` set and stops this poller.
-        if (nextVisible) setVisible(true);
+        if (nextVisible && !stopped) setVisible(true);
         return false;
       }),
     });
     poller.start();
-    return () => poller.stop();
+    return () => {
+      stopped = true;
+      poller.stop();
+    };
   }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
 
   const openQuickView = useCallback(() => {

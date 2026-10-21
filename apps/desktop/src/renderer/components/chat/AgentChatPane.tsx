@@ -5918,9 +5918,21 @@ export function AgentChatPane({
 
     void tick();
 
+    // Reads skipped while hidden are made up at once on return, not after the
+    // backed-off wait.
+    const onVisibilityChange = () => {
+      if (document.hidden || !isRunning || tickInFlight || cancelled) return;
+      if (timerId !== null) window.clearTimeout(timerId);
+      timerId = null;
+      unchangedReads = 0;
+      void tick();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       cancelled = true;
       if (timerId !== null) window.clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
 

@@ -207,12 +207,13 @@ const REPLAY_SCROLLBACK_LINES = 30_000;
 const HYDRATION_BACKFILL_RETRY_MS = 250;
 const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
-// A blank pane that keeps answering empty is waiting on output that the live
-// stream delivers anyway, so each empty read waits longer (each read fetches up
-// to 128 KB) and the retries stop after a few answers in a row.
+// A blank pane that keeps answering empty waits longer after each empty read
+// (each fetches up to 128 KB). The stored snapshot can still land later with no
+// PTY event, so it keeps probing for about the 30 s the fixed-rate retries
+// covered: ten reads instead of a hundred and twenty.
 const HYDRATION_BACKFILL_EMPTY_RETRY_START_MS = 150;
 const HYDRATION_BACKFILL_EMPTY_RETRY_MAX_MS = 5_000;
-const HYDRATION_BACKFILL_MAX_EMPTY_STREAK = 5;
+const HYDRATION_BACKFILL_MAX_EMPTY_STREAK = 10;
 /**
  * Whether webfonts have finished loading, so a cell measurement can be trusted.
  *

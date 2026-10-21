@@ -229,17 +229,22 @@ export function CloudAgentsQuickViewButton({
   // while the page is hidden, and reads at once when it becomes visible.
   useEffect(() => {
     if (!shouldAutoCheckVisibility || !activeProjectRoot || visible) return undefined;
+    // A read still in flight when the project changes answers for the old one.
+    let stopped = false;
     const poller = createBackoffPoller({
       baseMs: visibilityRetryIntervalMs,
       maxMs: DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS,
       isActive: () => true,
       read: () => loadVisibility().then((next) => {
-        setVisible(next);
+        if (!stopped) setVisible(next);
         return false;
       }),
     });
     poller.start();
-    return () => poller.stop();
+    return () => {
+      stopped = true;
+      poller.stop();
+    };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 
   // Push-driven finish badge where the provider has one. No polling: the
