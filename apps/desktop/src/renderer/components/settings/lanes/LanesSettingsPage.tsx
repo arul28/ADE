@@ -1,6 +1,6 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Archive, ArrowClockwise, GitBranch, HardDrives, Notebook, SlidersHorizontal } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, GitBranch, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
@@ -9,9 +9,7 @@ import { ArchiveSection } from "../ArchiveSection";
 import { SessionLifecycleSection } from "../SessionLifecycleSection";
 import { ProjectSection } from "../ProjectSection";
 import { LaneBehaviorSection } from "../LaneBehaviorSection";
-import { PrChatTranscriptsSection } from "../PrChatTranscriptsSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
-import { AgentNotesSection } from "../AgentNotesSection";
 import { HealthSpace } from "../health/HealthSpace";
 import { HealthCleanups } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
@@ -26,7 +24,7 @@ import "../machineSettings.css";
 import "../health/health.css";
 import "./lanes.css";
 
-type ViewId = "lanes" | "space" | "archive" | "rules" | "notes";
+type ViewId = "lanes" | "lane-rules" | "space" | "archive" | "cleanup-rules";
 
 type View = {
   id: ViewId;
@@ -36,31 +34,29 @@ type View = {
   anchors: readonly string[];
 };
 
-const VIEWS: readonly View[] = [
-  { id: "lanes", label: "Lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
+const LANES_VIEWS: readonly View[] = [
+  { id: "lanes", label: "Your lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
+  {
+    id: "lane-rules",
+    label: "Rules",
+    icon: <SlidersHorizontal size={13} weight="duotone" />,
+    anchors: ["new-lane-base", "auto-rebase", "rebase-suggestions", "rebase-min-behind", "lane-templates"],
+  },
+];
+
+const STORAGE_VIEWS: readonly View[] = [
   { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", "storage-cleanups"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
-    id: "rules",
+    id: "cleanup-rules",
     label: "Rules",
     icon: <SlidersHorizontal size={13} weight="duotone" />,
-    anchors: [
-      "lane-storage-rules",
-      "session-lifecycle",
-      "project",
-      "new-lane-base",
-      "auto-rebase",
-      "rebase-suggestions",
-      "rebase-min-behind",
-      "pr-chat-transcripts",
-      "lane-templates",
-    ],
+    anchors: ["lane-storage-rules", "session-lifecycle", "project"],
   },
-  { id: "notes", label: "Agent notes", icon: <Notebook size={13} weight="duotone" />, anchors: ["agent-notes"] },
 ];
 
-/** The hosted web client can reach only the archive and the lane rules. */
-const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["archive", "rules"]);
+/** The hosted web client can reach only the archive and the rules. */
+const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["lane-rules", "archive", "cleanup-rules"]);
 
 /** The view among `views` that draws `anchor`, or null when none of them does. */
 function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | null {
@@ -69,24 +65,38 @@ function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | 
 }
 
 /**
- * Settings → Project → Lanes, as five views under one tab strip: the lanes
- * themselves (stale ones first, with a safe bulk archive), the space they and
- * ADE's data take, the archive, the rules for how lanes start, settle and get
- * archived, and the notes agents saved about working on the project. One view shows at a time, so the page is never a long scroll
- * of folded sections; a link or a settings search that names a card switches
- * to the view that holds it.
+ * Settings → Project → Lanes: the lanes themselves (stale ones first, with a
+ * safe bulk archive), and the rules for how new lanes start and stay current.
+ */
+export function LanesSettingsPage() {
+  return <ProjectViewsPage allViews={LANES_VIEWS} label="Lanes settings" />;
+}
+
+/**
+ * Settings → Project → Storage & cleanup: the space lanes and ADE's data take,
+ * the archive, and the rules for what gets archived, closed and kept.
+ */
+export function StorageSettingsPage() {
+  return <ProjectViewsPage allViews={STORAGE_VIEWS} label="Storage settings" />;
+}
+
+/**
+ * One project page as views under a tab strip. One view shows at a time, so
+ * the page is never a long scroll of folded sections; a link or a settings
+ * search that names a card switches to the view that holds it. A page left
+ * with one view (the hosted web client) drops the strip.
  *
  * Remote machines: the page always acts on the machine that owns the project
  * (`useSettingsMachineScope().pin`), and so does every section in it.
  */
-export function LanesSettingsPage() {
+function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; label: string }) {
   const { pin, isThisMachine } = useSettingsMachineScope();
   const location = useLocation();
   const searchAnchors = useSettingsSearchAnchors();
   const web = isWebClientMode();
   const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
-  const views = React.useMemo(() => (web ? VIEWS.filter((view) => WEB_VIEWS.has(view.id)) : VIEWS), [web]);
+  const views = React.useMemo(() => (web ? allViews.filter((view) => WEB_VIEWS.has(view.id)) : allViews), [web, allViews]);
 
   const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
   const [view, setView] = React.useState<ViewId>(() => viewForAnchor(views, hashAnchor) ?? views[0]!.id);
@@ -110,7 +120,7 @@ export function LanesSettingsPage() {
   // A search with no match in this view moves to the first view that has one.
   React.useEffect(() => {
     if (!searchAnchors || searchAnchors.length === 0) return;
-    const holds = (id: ViewId) => VIEWS.find((entry) => entry.id === id)!.anchors.some((anchor) => searchAnchors.includes(anchor));
+    const holds = (id: ViewId) => views.find((entry) => entry.id === id)!.anchors.some((anchor) => searchAnchors.includes(anchor));
     setView((current) => (holds(current) ? current : views.find((entry) => holds(entry.id))?.id ?? current));
   }, [searchAnchors, views]);
 
@@ -199,17 +209,19 @@ export function LanesSettingsPage() {
         );
       case "archive":
         return <ArchiveSection />;
-      case "notes":
-        return <AgentNotesSection />;
-      case "rules":
+      case "lane-rules":
+        return (
+          <>
+            <LaneBehaviorSection />
+            <LaneTemplatesSection />
+          </>
+        );
+      case "cleanup-rules":
         return (
           <>
             {web ? null : <HealthCleanups data={data} show="rules" />}
             <SessionLifecycleSection />
             <ProjectSection />
-            <LaneBehaviorSection />
-            <PrChatTranscriptsSection />
-            <LaneTemplatesSection />
           </>
         );
       default:
@@ -219,33 +231,35 @@ export function LanesSettingsPage() {
 
   return (
     <div className="ade-lanes-page">
-      <div className="ade-lanes-tabs" role="tablist" aria-label="Lanes settings">
-        {views.map((entry) => {
-          const count = badge(entry.id);
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              id={`lanes-tab-${entry.id}`}
-              aria-selected={view === entry.id}
-              aria-controls={`lanes-view-${entry.id}`}
-              className="ade-lanes-tab"
-              onClick={() => setView(entry.id)}
-            >
-              {entry.icon}
-              {entry.label}
-              {count ? <span className="ade-lanes-tab-badge kit-num" data-tone={count.tone}>{count.text}</span> : null}
-              {/* Views not drawn still answer the settings search. */}
-              {view === entry.id ? null : entry.anchors.map((anchor) => <span key={anchor} hidden data-settings-anchor={anchor} />)}
-            </button>
-          );
-        })}
-      </div>
+      {views.length > 1 ? (
+        <div className="ade-lanes-tabs" role="tablist" aria-label={label}>
+          {views.map((entry) => {
+            const count = badge(entry.id);
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                role="tab"
+                id={`lanes-tab-${entry.id}`}
+                aria-selected={view === entry.id}
+                aria-controls={`lanes-view-${entry.id}`}
+                className="ade-lanes-tab"
+                onClick={() => setView(entry.id)}
+              >
+                {entry.icon}
+                {entry.label}
+                {count ? <span className="ade-lanes-tab-badge kit-num" data-tone={count.tone}>{count.text}</span> : null}
+                {/* Views not drawn still answer the settings search. */}
+                {view === entry.id ? null : entry.anchors.map((anchor) => <span key={anchor} hidden data-settings-anchor={anchor} />)}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <div
-        role="tabpanel"
+        role={views.length > 1 ? "tabpanel" : undefined}
         id={`lanes-view-${view}`}
-        aria-labelledby={`lanes-tab-${view}`}
+        aria-labelledby={views.length > 1 ? `lanes-tab-${view}` : undefined}
         className="ade-modern-sections"
       >
         {renderView(view)}

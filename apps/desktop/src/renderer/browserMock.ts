@@ -265,7 +265,7 @@ const resolvedArg2 =
     v;
 
 /**
- * A storage snapshot shaped like a real project for Settings → Project → Lanes in the
+ * A storage snapshot shaped like a real project for Settings → Project → Storage & cleanup in the
  * browser preview: a few lanes (one archived, one left over), history, caches,
  * build staging, proof and the database, with a cleanup history.
  */

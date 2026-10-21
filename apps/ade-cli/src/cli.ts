@@ -2705,7 +2705,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Limits (enforced; a write past one is refused with what to merge or remove):
     one line of at most 200 characters per note, 8 notes per section, and a
     prompt block of at most 3072 bytes. Ids may be shortened to a unique prefix.
-  Users can read every note in Settings > Lanes > Agent notes.
+  Users can read every note in Settings > Agents > Agent notes.
 `,
   agent: `${ADE_BANNER}
   Agent sessions

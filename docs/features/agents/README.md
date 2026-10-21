@@ -421,7 +421,7 @@ project gets the same list, whatever harness runs it.
   session guidance (`buildAdeCliSessionGuidance`), OpenCode terminals through
   their session instructions, and `spawn_agent` in its prompt. Personal chats
   get none.
-- **Visibility.** Settings → Lanes → Agent notes lists every note an agent on
+- **Visibility.** Settings → Project → Agents → Agent notes lists every note an agent on
   that machine sees (section, scope, text, last updated), read-only. There is
   no editing UI; users and agents change notes with `ade notes`.
 

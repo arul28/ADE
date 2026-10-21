@@ -36,8 +36,12 @@ export const SETTINGS_TAB_IDS = [
   "mcp",
   "stats",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
-  // still lands; Storage, Archive and Cleanups joined it.
+  // still lands.
   "lanes-git",
+  "project-agents",
+  // Project → Storage & cleanup: the space, archive and cleanup rules that
+  // used to share the Lanes page. `?tab=storage` was Health's id; it lands here.
+  "storage",
   "location",
   "secrets",
   "integrations",
@@ -122,7 +126,7 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
  * The open project's pages. They always act on the machine that owns the
  * project (the tab's binding), never on a picked machine.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "location", "secrets", "integrations"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -157,7 +161,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
-  { id: "lanes-git", label: "Lanes", description: "Every lane in this project, the space they take, and how new ones start.", group: "project" },
+  { id: "lanes-git", label: "Lanes", description: "Every lane in this project, and how new ones start and stay current.", group: "project" },
+  { id: "project-agents", label: "Agents", description: "What agents keep about this project: their notes, and PR chat transcripts.", group: "project" },
+  { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
   { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
   { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira for this project.", group: "project" },
@@ -952,10 +958,12 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Voice conversations",
   },
 
-  // ── Lanes ────────────────────────────────────────────────────────────────
-  // Project → Lanes: the lanes, then the space they take, the archive and
-  // cleanups, then the rules for how new lanes start. The storage, archive and
-  // session ids keep their old namespaces: deeplinks and telemetry hold them.
+  // ── Lanes, Storage & cleanup, Agents ─────────────────────────────────────
+  // Project → Lanes holds the lanes and how new ones start; Project → Storage
+  // & cleanup the space, archive and cleanups; Project → Agents what agents
+  // keep about the project. Entry ids keep their old namespaces (`storage.*`,
+  // `archive.*`, `lanes-git.pr-chat-transcripts`): deeplinks and telemetry
+  // hold them.
   {
     id: "lanes-git.lanes",
     label: "Your lanes",
@@ -970,7 +978,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.usage",
     label: "Storage",
     keywords: ["space", "size", "clean", "reclaim", "gb", "free", "disk", "storage", "usage", "clean up safely"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "storage",
     scope: "machine-repo",
     web: "hidden",
@@ -980,7 +988,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "archive.items",
     label: "Archived lanes, chats, and shells",
     keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "archive",
     scope: "machine-repo",
     web: "machine",
@@ -990,7 +998,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.cleanups",
     label: "Cleanup history",
     keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "storage-cleanups",
     scope: "machine-repo",
     web: "hidden",
@@ -1000,7 +1008,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.lane-rules",
     label: "Archive idle lanes",
     keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention", "lane storage rules"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "lane-storage-rules",
     scope: "machine-repo",
     web: "hidden",
@@ -1010,7 +1018,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.session-lifecycle",
     label: "Session lifecycle",
     keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "session-lifecycle",
     scope: "machine",
     web: "hidden",
@@ -1020,7 +1028,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.project-files",
     label: "Project files",
     keywords: [".ade", "folder", "repair", "session logs", "config", "icon", "name", "repository", "root"],
-    tab: "lanes-git",
+    tab: "storage",
     anchor: "project",
     scope: "machine-repo",
     web: "hidden",
@@ -1077,10 +1085,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Templates",
   },
   {
-    id: "lanes-git.agent-notes",
+    id: "project-agents.agent-notes",
     label: "Agent notes",
     keywords: ["notes", "agent", "memory", "knowledge", "prompt", "facts", "ade notes"],
-    tab: "lanes-git",
+    tab: "project-agents",
     anchor: "agent-notes",
     scope: "account-repo",
     web: "hidden",
@@ -1090,7 +1098,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "lanes-git.pr-chat-transcripts",
     label: "PR chat transcripts",
     keywords: ["pull request", "transcript", "attach", "review"],
-    tab: "lanes-git",
+    tab: "project-agents",
     anchor: "pr-chat-transcripts",
     scope: "machine-repo",
     web: "machine",
@@ -1322,6 +1330,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "background-jobs": "agents",
   automations: "agents",
   "lane-templates": "lanes-git",
+  "agent-notes": "project-agents",
+  notes: "project-agents",
   "ade-usage": "stats",
   usage: "stats",
   secret: "secrets",
@@ -1330,16 +1340,18 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   // Project → Location. A bare `?tab=general` opens ADE service, where most of
   // it went; a `#hash` on the same link still lands on its own card.
   general: "service",
-  // Health (tab id `storage`) was split up too: its lanes, space, cleanups and
-  // sessions are on Project → Lanes, its project checks on Project → Location,
+  // Health (once tab id `storage`, now Storage & cleanup's id) was split up
+  // too: its space, cleanups and sessions are on Project → Storage & cleanup,
+  // its lanes on Project → Lanes, its project checks on Project → Location,
   // its service on Computer → ADE service, and its summary is the Overview.
-  storage: "lanes-git",
-  disk: "lanes-git",
-  space: "lanes-git",
+  disk: "storage",
+  space: "storage",
+  cleanup: "storage",
+  cleanups: "storage",
   health: "overview",
   diagnostics: "service",
-  archive: "lanes-git",
-  archived: "lanes-git",
+  archive: "storage",
+  archived: "storage",
   // Swept into General before; now each has a real home.
   workspace: "location",
   project: "location",
@@ -1358,7 +1370,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   tours: "overview",
   home: "overview",
   lanes: "lanes-git",
-  "session-lifecycle": "lanes-git",
+  "session-lifecycle": "storage",
   // The Attention center became the Activity pane, and Activity's settings
   // joined Notifications on one page.
   attention: "notifications",
@@ -1368,7 +1380,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
 /**
  * Legacy `?tab=` values that named one card's page. With no `#hash` of its
  * own, such a link scrolls to that card on its new page instead of landing on
- * the top of it: `?tab=archive` opens Project → Lanes at the archive.
+ * the top of it: `?tab=archive` opens Project → Storage & cleanup at the archive.
  */
 export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
   storage: "storage",
@@ -1402,7 +1414,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
-  // `session-lifecycle` is still a live anchor (Project → Lanes → Sessions).
+  // `session-lifecycle` is still a live anchor (Project → Storage & cleanup → Rules).
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
