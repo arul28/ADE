@@ -3,7 +3,7 @@
 // trackpad rule that ctrl-wheel and pinch are camera zoom while a plain wheel
 // is the DEVICE's scroll. The body and display live in `appleDeviceScene.ts`.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { CanvasTexture, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
+import type { CanvasTexture, Group, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
@@ -11,6 +11,7 @@ import { createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbi
 import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
 import { createProceduralDuoBody } from "./appleDuoScene";
+import { createV68DuoBody } from "./appleV68DuoBody";
 import {
   appleDeviceInputSize,
   createImportedBody,
@@ -44,10 +45,21 @@ export type AppleDeviceDuoProps = {
   lowerFlat: boolean;
   /** A pinch on the glass adjusts the hinge (only while enabled). */
   onHingeChange?: ((angle: number) => void) | undefined;
+  /**
+   * Apple's Duo model, prepared (`loadDuoModel`). Null while it loads or when
+   * this Xcode has none, and the drawn body stands in.
+   */
+  model?: Group | null | undefined;
+  /** The panel that is on (1 cover, 3 inner); only Apple's model shows the cover. */
+  activeScreenId?: number | null | undefined;
+  /** How the phone is held (`portrait`, `landscape-left`, …), as the simulator reports it. */
+  physicalOrientation?: string | null | undefined;
 };
 
 /** The model id a procedural Duo body reports. */
 const DUO_MODEL_KEY = "duo-procedural" as const;
+/** The model id of the body on Apple's own model. */
+const DUO_V68_MODEL_KEY = "duo-v68" as const;
 
 /** Why the 3D presenter cannot show this device, in a sentence the strip can print. */
 export type AppleDevice3DFailure =
@@ -281,7 +293,9 @@ function createViewer(
   const applyPose = () => {
     if (!body) return;
     body.root.quaternion.copy(motion.rotation);
-    body.orientation.rotation.z = layout.rotation;
+    // A physical body (Apple's Duo model) turns itself to the device's
+    // physical orientation; only the others take the display's turn here.
+    if (!("physicalOrientation" in body)) body.orientation.rotation.z = layout.rotation;
   };
 
   const fitCamera = () => {
@@ -477,6 +491,22 @@ function createViewer(
    */
   const installDuoBody = (props: AppleDevice3DViewProps) => {
     const duo = props.duo;
+    if (duo?.model) {
+      try {
+        const v68 = createV68DuoBody(THREE, {
+          model: duo.model,
+          texture,
+          angle: duo.angle,
+          activeScreenId: duo.activeScreenId ?? null,
+        });
+        installBody(v68);
+        paintDisplay();
+        hooks.onReady({ modelId: v68.modelId });
+        return;
+      } catch {
+        // A changed Xcode model: the drawn body below still works.
+      }
+    }
     const next = createProceduralDuoBody(THREE, {
       innerAspect: layout.aspect,
       texture,
@@ -544,7 +574,10 @@ function createViewer(
       if (texture) texture.needsUpdate = true;
       invalidate();
     }
-    if (body) {
+    // Apple's Duo model is physical (its inner display is landscape), so the
+    // display-orientation turn that stands a raw portrait frame up does not
+    // apply to it; its panels map their framebuffers themselves.
+    if (body && !("physicalOrientation" in body)) {
       body.orientation.rotation.z = layout.rotation;
       body.rewriteUvs(THREE, layout);
     }
@@ -552,12 +585,21 @@ function createViewer(
     const duo = props.duo;
     if (duo?.enabled) {
       // Capability-gated by the caller: only a device that folds reaches here.
-      if (currentModelKey !== DUO_MODEL_KEY) {
-        currentModelKey = DUO_MODEL_KEY;
+      const wantedKey = duo.model ? DUO_V68_MODEL_KEY : DUO_MODEL_KEY;
+      if (currentModelKey !== wantedKey) {
+        currentModelKey = wantedKey;
         installDuoBody(props);
       } else if (body?.duo) {
         body.duo.setHinge(duo.angle, duo.lowerFlat);
+        const physical = body.duo as {
+          setActivePanel?: (screenId: number | null) => void;
+          setPhysicalOrientation?: (orientation: string | null) => void;
+        };
+        physical.setActivePanel?.(duo.activeScreenId ?? null);
+        physical.setPhysicalOrientation?.(duo.physicalOrientation ?? null);
         applyPose();
+        // Folding changes the phone's shape: frame it again.
+        fitCamera();
         invalidate();
       }
       return;

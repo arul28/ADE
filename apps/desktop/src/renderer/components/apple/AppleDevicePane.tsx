@@ -72,6 +72,7 @@ import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
+import { useAppleDuoModel } from "./useAppleDuoModel";
 import { APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
@@ -896,6 +897,7 @@ export function AppleDevicePane({
    * foldable and render the Duo body on a rigid device.
    */
   const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
+  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin?.key ?? null, runtimePinRef });
   // The rail's fold controls drive the real simulator, so they show in flat
   // mode too; only the articulated body needs the 3D view.
   const duoControlsEnabled = duoCapable;
@@ -904,6 +906,9 @@ export function AppleDevicePane({
         enabled: true,
         angle: duoState.pose.angle,
         lowerFlat: duoState.pose.lowerFlat,
+        model: duoModel,
+        activeScreenId: duoPosture?.activeScreenId ?? null,
+        physicalOrientation: duoPosture?.orientation ?? null,
         onHingeChange: (angle) => {
           setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
           sendDuoAngleSoon(angle);

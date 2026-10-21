@@ -1006,6 +1006,7 @@ import type {
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
   AppleDevicePosture,
+  AppleDuoModelResult,
   AppleSetPostureArgs,
   AppleSetPostureResult,
   AppleRuntimeDeleteArgs,
@@ -9737,6 +9738,9 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDevicePosture> =>
       callIosSimulatorActionOr<AppleDevicePosture>(pin, "getPosture", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorGetPosture, args)),
+    /** Apple's Duo model from the owning machine's Xcode (base64), for the 3D view. */
+    getDuoModel: (pin?: OpenProjectBinding | null): Promise<AppleDuoModelResult> =>
+      callIosSimulatorActionOr<AppleDuoModelResult>(pin, "getDuoModel", {}, () => ipcRenderer.invoke(IPC.iosSimulatorGetDuoModel)),
     /**
      * The helper's own scroll gesture, by viewport direction.
      *

@@ -16,7 +16,7 @@ import type { AppleDeviceOrientation } from "../../../shared/types";
 import type { AppleDeviceModelId, AppleDeviceModelSource } from "./appleDeviceModels";
 
 /** A body that is not a bundled GLB — today only the procedural Duo. */
-export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural";
+export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural" | "duo-v68";
 
 /**
  * The 3D device's body and screen: the three.js runtime, the imported body

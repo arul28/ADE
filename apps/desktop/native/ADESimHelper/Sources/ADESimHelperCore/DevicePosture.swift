@@ -104,12 +104,25 @@ enum DevicePosture {
 /// read on each change so the pane knows which panel to show and route input to.
 actor DevicePostureWatchers {
     private var stops: [String: @Sendable () async -> Void] = [:]
+    /// The newest device-state revision per device. A sweep delivers a burst of
+    /// snapshots whose display re-reads finish out of order; only the newest
+    /// may be reported, or a stale mid-sweep angle lands last.
+    private var latestRevision: [String: UInt64] = [:]
+
+    private func note(udid: String, revision: UInt64) {
+        latestRevision[udid] = max(latestRevision[udid] ?? 0, revision)
+    }
+
+    private func isLatest(udid: String, revision: UInt64) -> Bool {
+        (latestRevision[udid] ?? 0) <= revision
+    }
 
     func start(udid: String, onChange: @escaping @Sendable (DevicePosture.State) -> Void) async -> Bool {
         if stops[udid] != nil { return true }
         guard await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) else { return false }
         let stop = await CoreDeviceBridge.shared.subscribeDeviceState(udid: udid) { snapshot in
             Task {
+                await self.note(udid: udid, revision: snapshot.revision)
                 // The guest elects the new panel a moment after the hinge
                 // moves, so one read right away still names the old one.
                 // Re-read over the next second; report each read that changes
@@ -124,6 +137,8 @@ actor DevicePostureWatchers {
                         tableMode: snapshot.state.tableMode,
                         displays: await DevicePosture.displays(udid: udid)
                     )
+                    // A newer snapshot owns the report from here on.
+                    guard await self.isLatest(udid: udid, revision: snapshot.revision) else { return }
                     if case let .some(previous) = lastActive, previous == state.activeScreenID { continue }
                     lastActive = .some(state.activeScreenID)
                     onChange(state)

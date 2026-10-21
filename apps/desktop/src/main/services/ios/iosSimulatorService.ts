@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleDuoModelResult,
   AppleDevicePosture,
   AppleSetPostureArgs,
   AppleSetPostureResult,
@@ -5831,6 +5832,29 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * `applied: false` with a reason, because the alternative is a viewer that
    * draws an upright screen on its side.
    */
+  /**
+   * Apple's Duo model from this machine's Xcode, for the 3D view and renders.
+   * Read once per Xcode path and kept: it is ~6 MB and does not change under
+   * a running Xcode.
+   */
+  let duoModelCache: { path: string; base64: string } | null = null;
+  const getDuoModel = async (): Promise<AppleDuoModelResult> => {
+    assertDarwin();
+    const developer = await run("xcode-select", ["-p"], { timeoutMs: 10_000 })
+      .then(({ stdout }) => stdout.trim())
+      .catch(() => "");
+    if (!developer) return { base64: null, path: null };
+    const modelPath = path.join(
+      path.dirname(developer),
+      "SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/V68.usdz",
+    );
+    if (duoModelCache?.path === modelPath) return { base64: duoModelCache.base64, path: modelPath };
+    const bytes = await fs.promises.readFile(modelPath).catch(() => null);
+    if (!bytes) return { base64: null, path: modelPath };
+    duoModelCache = { path: modelPath, base64: bytes.toString("base64") };
+    return { base64: duoModelCache.base64, path: modelPath };
+  };
+
   /** The lane whose device this is, for an event about a device no stream is showing. */
   const laneIdHoldingUdid = (udid: string): string | null =>
     laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
@@ -6765,6 +6789,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
     setPosture,
     getPosture,
+    getDuoModel,
     typeText,
     drag,
     swipe: drag,

@@ -528,7 +528,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
       "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
       "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
-      "runtimeList", "getPosture",
+      "runtimeList", "getPosture", "getDuoModel",
     ],
     write: [
       "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",

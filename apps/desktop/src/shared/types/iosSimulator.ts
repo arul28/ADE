@@ -181,6 +181,8 @@ export const APPLE_AGENT_ACTIONS = [
      (`supported: false`) on every other device. */
   "setPosture",
   "getPosture",
+  /* Apple's Duo model from this Mac's Xcode, for 3D views and renders. */
+  "getDuoModel",
 
   /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
   "runTests",
@@ -956,6 +958,16 @@ export type AppleSetPostureArgs = {
 export type AppleSetPostureResult = {
   applied: boolean;
   posture: AppleDevicePosture;
+};
+
+/**
+ * Apple's iPhone Duo model (`V68.usdz`), read from the Xcode on the machine
+ * that owns the simulator. Never bundled; null when that Xcode has none.
+ */
+export type AppleDuoModelResult = {
+  base64: string | null;
+  /** Where it was read from, for diagnostics. */
+  path: string | null;
 };
 
 /** A lane's foldable changed pose or active panel, whoever moved it. */
