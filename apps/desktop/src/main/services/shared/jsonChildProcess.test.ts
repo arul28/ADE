@@ -1,13 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { once } from "node:events";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseOnboardingDiscoveryResponse } from "../onboarding/onboardingDiscoveryWorker";
+import { discoverOnboardingProjects, terminateOnboardingDiscoveryWorkers } from "../onboarding/onboardingDiscoveryClient";
 import {
   runJsonChildProcess,
-  terminateJsonChildProcesses,
-  type JsonChildProcessSet,
 } from "./jsonChildProcess";
 
 let tempDir: string | null = null;
@@ -38,21 +36,54 @@ describe("runJsonChildProcess", () => {
     })).toBeNull();
   });
 
-  it("terminates an outstanding child during shutdown and settles its request", async () => {
+  it("terminates an outstanding onboarding discovery child during shutdown", async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-json-child-"));
     const workerPath = path.join(tempDir, "worker.cjs");
-    fs.writeFileSync(workerPath, "process.stdin.resume(); setInterval(() => {}, 1000);", "utf8");
-    const live: JsonChildProcessSet = new Set();
-    const result = runJsonChildProcess({ workerPath, request: { operation: "discover" }, live });
-    const child = [...live][0];
-    expect(child, "the child is tracked before shutdown can be requested").toBeTruthy();
-    await once(child!, "spawn");
+    const markerPath = path.join(tempDir, "started");
+    const pidPath = path.join(tempDir, "pid");
+    fs.writeFileSync(
+      workerPath,
+      `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "started");
+require("node:fs").writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+process.stdin.resume(); setInterval(() => {}, 1000);`,
+      "utf8",
+    );
+    const previousWorkerPath = process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH;
+    process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH = workerPath;
+    const warning = vi.fn();
+    let watcher: fs.FSWatcher | null = null;
+    const childStarted = new Promise<void>((resolve, reject) => {
+      watcher = fs.watch(tempDir!, () => {
+        if (fs.existsSync(markerPath)) {
+          watcher?.close();
+          resolve();
+        }
+      });
+      watcher.on("error", reject);
+    });
+    let discovery: Promise<Awaited<ReturnType<typeof discoverOnboardingProjects>>> | null = null;
 
-    expect(terminateJsonChildProcesses(live)).toBe(1);
-    const outcome = await result;
+    try {
+      discovery = discoverOnboardingProjects({ knownRoots: [], logger: { warn: warning } });
+      await childStarted;
 
-    expect(live.size).toBe(0);
-    expect(child!.killed).toBe(true);
-    expect(outcome.kind).toBe("failed");
+      expect(terminateOnboardingDiscoveryWorkers()).toBe(1);
+      const result = await discovery;
+
+      expect(result.projects).toEqual([]);
+      expect(warning).toHaveBeenCalledWith("onboarding.discovery_worker_failed", expect.objectContaining({ kind: "discover" }));
+    } finally {
+      watcher?.close();
+      if (previousWorkerPath == null) delete process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH;
+      else process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH = previousWorkerPath;
+      if (fs.existsSync(pidPath)) {
+        try {
+          process.kill(Number(fs.readFileSync(pidPath, "utf8")), "SIGTERM");
+        } catch {
+          // The shutdown path already ended the worker.
+        }
+      }
+      if (discovery) await discovery;
+    }
   });
 });
