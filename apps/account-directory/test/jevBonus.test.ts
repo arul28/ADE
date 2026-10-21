@@ -43,6 +43,27 @@ function upstream(status = 200, body: unknown = ANSWER, headers: Record<string, 
   return calls;
 }
 
+/** TypeSafe answers 200, then the body stream breaks mid-read. */
+function upstreamBodyFails() {
+  const realFetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (!url.startsWith("https://api.typesafe.ai/")) return realFetch(input, init);
+    const body = new ReadableStream({ pull(controller) { controller.error(new Error("connection reset")); } });
+    return new Response(body, { status: 200 });
+  });
+}
+
+/** The account claim succeeds; the fleet-wide claim right after it throws. */
+function failSecondClaim(env: JevBonusEnv & { DB: FakeD1Database }) {
+  const prepare = env.DB.prepare.bind(env.DB);
+  let claims = 0;
+  env.DB.prepare = ((sql: string) => {
+    if (sql.includes("insert into jev_bonus_days") && ++claims === 2) throw new Error("D1_ERROR: injected failure");
+    return prepare(sql);
+  }) as typeof env.DB.prepare;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -102,16 +123,21 @@ describe("POST /jev/systemone", () => {
   });
 
   it.each([
-    ["Jev's own rate limit", 429, 429],
-    ["a refused ADE key", 401, 503],
-    ["a Jev outage", 500, 502],
-  ] as const)("gives the slot back on %s", async (_label, upstreamStatus, status) => {
+    ["Jev's own rate limit", () => upstream(429, { error: "nope" }), 429],
+    ["a refused ADE key", () => upstream(401, { error: "nope" }), 503],
+    ["a Jev outage", () => upstream(500, { error: "nope" }), 502],
+    ["a reply body that fails to read", () => upstreamBodyFails(), 502],
+    ["a fleet count that cannot be written", (env: JevBonusEnv & { DB: FakeD1Database }) => {
+      upstream();
+      failSecondClaim(env);
+    }, 503],
+  ] as const)("gives the slot back on %s", async (_label, arrange, status) => {
     quiet();
-    upstream(upstreamStatus, { error: "nope" });
     const env = makeEnv({ JEV_BONUS_DAILY_LIMIT: "1" });
+    arrange(env);
     expect((await post(env)).status).toBe(status);
     expect(env.DB.jevBonusDays.get("2026-10-21|user_1")).toBe(0);
-    expect(env.DB.jevBonusDays.get("2026-10-21|__all__")).toBe(0);
+    expect(env.DB.jevBonusDays.get("2026-10-21|__all__") ?? 0).toBe(0);
   });
 
   it("sweeps day rows older than a week", async () => {

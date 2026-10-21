@@ -292,6 +292,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Never a URL, a tab, a song, a layout, an account, or a widget's settings.
   "tab_opened",
   "widget_added",
+  // The composer's model hint: what the user did with a chip, by the kind of
+  // suggestion. Never the prompt, the models, or the efforts.
+  "hint_model", "hint_effort", "hint_cheaper",
   "music_connected",
   "spotify_connected",
   // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
@@ -420,6 +423,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "mcp_servers",
     // ADE MCP: this computer as an MCP server for outside AI apps.
     "ade_mcp",
+    // Jev's model and effort hint in the chat composer.
+    "model_hint",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -514,6 +519,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
     // Where a lane-template setup chat was opened.
     "from_banner", "from_settings",
+    // What the user did with a model hint chip. A chip left alone is not sent.
+    "hint_accepted", "hint_dismissed",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

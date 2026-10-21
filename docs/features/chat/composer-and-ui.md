@@ -959,7 +959,7 @@ chat pane mount, which happens either way.
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
 - **Model hint (Jev).** `useComposerModelHint` (in
-  `ComposerModelHintChip.tsx`) suggests a model and effort for a new chat's
+  `useComposerModelHint.ts`, drawn by `ComposerModelHintChip.tsx`) suggests a model and effort for a new chat's
   first prompt; a chat that already has turns gets none. It asks only after
   700 ms without typing, for a prompt of at least three words or 12
   characters (`isModelHintPrompt`: "say hi back" counts, "fix it" does not),

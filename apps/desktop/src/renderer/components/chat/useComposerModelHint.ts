@@ -263,6 +263,17 @@ export function useComposerModelHint({
       effortOnly: shown.hint.effortOnly,
       fromHistory: answered?.fromHistory ?? false,
     });
+    if (outcome !== "ignore") {
+      // Product analytics: the kind of chip and the answer, once per kind and answer a day.
+      const action = shown.hint.cheaper ? "hint_cheaper" : shown.hint.effortOnly ? "hint_effort" : "hint_model";
+      const result = outcome === "accept" ? "hint_accepted" : "hint_dismissed";
+      void window.ade?.analytics?.capture({
+        event: "ade_feature_used",
+        properties: { feature: "model_hint", action, outcome: result, source: "renderer_route" },
+        dedupeKey: `model_hint:${action}:${result}`,
+        minimumIntervalMs: 24 * 60 * 60_000,
+      }).catch(() => undefined);
+    }
     // Jev reads what the user did with cheaper-model chips; a chip left alone says nothing.
     const current = answered ? resolveCurrentModel(answered.catalog, shown.from.modelId) : null;
     if (shown.hint.cheaper && outcome !== "ignore" && current) {
