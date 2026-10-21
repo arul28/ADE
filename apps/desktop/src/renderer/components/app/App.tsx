@@ -39,6 +39,7 @@ import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
+import { SpotlightHost } from "../onboarding/spotlight/SpotlightHost";
 import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
@@ -1594,6 +1595,8 @@ export function App() {
           <AnnouncementsHost />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
+          {/* The ring "Try it" leaves around the control it went to. */}
+          <SpotlightHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
           {/* "Quit ADE?" — main asks the window it is quitting from. */}

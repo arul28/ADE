@@ -20,6 +20,11 @@ import { isTourOpen, readOnboardingProgress, subscribeOnboardingProgress } from 
  *   is filed into ADE Tips); "Don't suggest again" turns the kind off; doing
  *   the thing (`markSuggestionDone`) ends it too.
  *
+ * Feature tips (tier 2 coming to the user): now and then, one of ADE Tips'
+ * tips the user has not tried shows as the same corner card. They take the
+ * same slot (one card per launch, the cooldown, never during onboarding) and,
+ * on top, at most one tip a day, each tip once, and off from ADE Tips.
+ *
  * Per computer, like the rest of onboarding: this renderer's localStorage,
  * never synced. Only ids, signal keys and times are stored.
  */
@@ -29,6 +34,8 @@ const CHANGE_EVENT = "ade:suggestions";
 const COOLDOWN_MS = 4 * 3_600_000;
 const NOT_NOW_SNOOZE_MS = 14 * 24 * 3_600_000;
 const MAX_SHOWN = 60;
+/** At most one feature tip card a day. */
+const TIP_CARD_GAP_MS = 24 * 3_600_000;
 /** This app launch; onboarding that finished during it waits for the next launch. */
 const LAUNCHED_AT = Date.now();
 
@@ -37,11 +44,21 @@ type KindState = {
   snoozedUntil?: number;
 };
 
+type TipCardState = {
+  /** When the last tip card showed. */
+  lastAt: number;
+  /** Tip ids that showed as a card or were tried from ADE Tips: never offered again. */
+  done: string[];
+  /** "Turn off" in ADE Tips. */
+  off: boolean;
+};
+
 type StoredState = {
   lastShownAt: number;
   kinds: Partial<Record<AdeSuggestionId, KindState>>;
   /** `${id}\u0000${signalKey}` → when it showed. */
   shown: Record<string, number>;
+  tips: TipCardState;
 };
 
 const shownKey = (id: AdeSuggestionId, signalKey: string) => `${id}\u0000${signalKey}`;
@@ -51,7 +68,7 @@ function finite(value: unknown): number | undefined {
 }
 
 function readState(): StoredState {
-  const empty: StoredState = { lastShownAt: 0, kinds: {}, shown: {} };
+  const empty: StoredState = { lastShownAt: 0, kinds: {}, shown: {}, tips: { lastAt: 0, done: [], off: false } };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
@@ -74,7 +91,15 @@ function readState(): StoredState {
         if (at !== undefined) shown[key] = at;
       }
     }
-    return { lastShownAt: finite(record.lastShownAt) ?? 0, kinds, shown };
+    const rawTips = record.tips && typeof record.tips === "object" && !Array.isArray(record.tips)
+      ? (record.tips as Record<string, unknown>)
+      : {};
+    const tips: TipCardState = {
+      lastAt: finite(rawTips.lastAt) ?? 0,
+      done: Array.isArray(rawTips.done) ? rawTips.done.filter((id): id is string => typeof id === "string") : [],
+      off: rawTips.off === true,
+    };
+    return { lastShownAt: finite(record.lastShownAt) ?? 0, kinds, shown, tips };
   } catch {
     return empty;
   }
@@ -226,6 +251,72 @@ export function markSuggestionDone(id: AdeSuggestionId): void {
 
 export function isSuggestionOff(id: AdeSuggestionId): boolean {
   return Boolean(state().kinds[id]?.off);
+}
+
+// ── feature tip cards ───────────────────────────────────────────────────
+
+const TIP_CLAIM_PREFIX = "tip\u0000";
+
+function updateTips(patch: Partial<TipCardState>): void {
+  const current = state();
+  write({ ...current, tips: { ...current.tips, ...patch } });
+}
+
+/** Tips already shown as a card or tried, to leave out of the next pick. */
+export function doneTipIds(): ReadonlySet<string> {
+  return new Set(state().tips.done);
+}
+
+export function tipCardsOff(): boolean {
+  return state().tips.off;
+}
+
+export function setTipCardsOff(off: boolean): void {
+  updateTips({ off });
+}
+
+/** The user tried this tip (from a card, ADE Tips or the Home widget): never offer it as a card. */
+export function markTipTried(tipId: string): void {
+  const { done } = state().tips;
+  if (!done.includes(tipId)) updateTips({ done: [...done, tipId] });
+}
+
+/**
+ * Claims this launch's one card for a feature tip when the rules allow it:
+ * the suggestions' rules (no other card this launch, the cooldown, not until
+ * onboarding finished on an earlier launch), a day since the last tip card,
+ * and tip cards not turned off. True when it is (now) the one showing.
+ */
+export function claimTipCard(tipId: string): boolean {
+  const key = `${TIP_CLAIM_PREFIX}${tipId}`;
+  if (launchClaim?.key === key) return !launchClaim.answered;
+  const current = state();
+  if (current.tips.off || current.tips.done.includes(tipId)) return false;
+  const now = Date.now();
+  if (suggestionsTestMode()) {
+    if ((launchClaim && !launchClaim.answered) || isTourOpen() || testModeAnswered.has(key)) return false;
+  } else {
+    if (launchClaim || !onboardingSettled()) return false;
+    if (now - current.lastShownAt < COOLDOWN_MS || now - current.tips.lastAt < TIP_CARD_GAP_MS) return false;
+  }
+  launchClaim = { key, answered: false };
+  write({ ...current, lastShownAt: now, tips: { ...current.tips, lastAt: now, done: [...current.tips.done, tipId] } });
+  return true;
+}
+
+export function isTipCardShowing(tipId: string): boolean {
+  if (launchClaim?.key !== `${TIP_CLAIM_PREFIX}${tipId}` || launchClaim.answered) return false;
+  return !isTourOpen();
+}
+
+export function answerTipCard(tipId: string): void {
+  const key = `${TIP_CLAIM_PREFIX}${tipId}`;
+  if (launchClaim?.key === key) launchClaim = { ...launchClaim, answered: true };
+  if (suggestionsTestMode()) {
+    testModeAnswered.add(key);
+    launchClaim = null;
+  }
+  emit();
 }
 
 function subscribe(listener: () => void): () => void {

@@ -305,7 +305,7 @@ function MusicFrame({ children, pageRef }: { children: React.ReactNode; pageRef?
   return (
     <div ref={pageRef} className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
       <ChatSceneBackdrop />
-      <div className="ade-music-frame">{children}</div>
+      <div className="ade-music-frame" data-onboarding-anchor="music-page">{children}</div>
     </div>
   );
 }

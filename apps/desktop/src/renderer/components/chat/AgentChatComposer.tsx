@@ -1197,6 +1197,7 @@ function ComposerIdleSendButton({
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
+            data-onboarding-anchor="composer-send-menu"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="Send options"

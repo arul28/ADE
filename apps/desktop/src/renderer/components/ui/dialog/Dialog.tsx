@@ -288,9 +288,12 @@ export function Dialog({
               }
               : { inset: 0, margin: "auto" }),
             zIndex,
-            width: `min(${resolvedWidth}, calc(100vw - ${placement === "right" ? SHEET_EDGE_GAP * 2 : 32}px))`,
+            // Viewport units ignore the hosted web client's body zoom
+            // (`webZoom.ts`); dividing by its factor keeps a wide dialog inside
+            // the window there. Electron's page zoom needs nothing (factor 1).
+            width: `min(${resolvedWidth}, calc((100vw - ${placement === "right" ? SHEET_EDGE_GAP * 2 : 32}px) / var(--ade-web-zoom-factor, 1)))`,
             height: placement === "right" ? "auto" : cssLength(height) ?? "fit-content",
-            maxHeight: placement === "right" ? "none" : cssLength(maxHeight) ?? "calc(100vh - 48px)",
+            maxHeight: placement === "right" ? "none" : cssLength(maxHeight) ?? "calc((100vh - 48px) / var(--ade-web-zoom-factor, 1))",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",

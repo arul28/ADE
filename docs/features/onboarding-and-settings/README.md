@@ -2014,6 +2014,42 @@ To add one: create `pages/<Name>.tsx` exporting a default component that
 takes `{ close }` (call it before navigating from a "Try it" button), then add
 its entry at the top of `ANNOUNCEMENT_PAGES`.
 
+### ADE Tips
+
+Onboarding's second tier: every feature worth knowing, browsed from Help ›
+ADE Tips, the command palette, the home screen's ADE Tips widget or the
+tour's last card (`renderer/onboarding/adeTips.ts` holds the tips;
+`components/onboarding/tips/` draws them). One group at a time, as a wall of
+tiles: the group's own tile, screenshot tiles for its headline features
+(`adeTipsWall.ts` sets sizes and order, and packs each group with no holes in
+four columns and in two) and icon tiles for the rest. Suggestions the user
+postponed sit first, under **For you**.
+
+Every tip has **Try it**. It goes where the feature lives (a page of the open
+project, a Settings card, a new chat, Home in a new tab, the Connections
+panel, Music) and then the spotlight (`components/onboarding/spotlight/`)
+rings the control there with one line on what to do, using the tour's
+geometry, page watch and layer. It waits up to a few seconds for the control
+to appear, fades after six seconds or on any click or Escape, and leaves the
+user where they landed if the control never shows. A tip that lives inside a
+chat (rewind, comments, PR watch) rings the open chat's control when there is
+one, else a chat row with "Open a chat and…". With no project open, a project
+tip goes Home and rings the projects ("Open a project first"). All of it is
+navigation in the front window: no call reaches a machine.
+
+Tips also come to the user now and then (`useFeatureTipCard`): a while into a
+project session, one tip they have not tried shows as the corner card ("Tip",
+Try it, Not now). It takes the same slot as a situational suggestion and asks
+after them, so a real signal wins; on top of the suggestions' rules it shows at
+most one tip a day and each tip once, and trying a tip from ADE Tips or the
+Home widget counts too. ADE Tips' header turns them off.
+
+To test tiers 2 and 3 without waiting days: `npm run dev:desktop -- --first-run
+--keep` reopens the isolated app as a returning user, and in dev builds the
+command palette has **Dev: Suggestions test mode** (no cooldown, no
+once-per-launch or per-day, no snooze; answer a card and the next can show)
+and **Dev: Reset Tips, suggestions and What's new**.
+
 ### Situational suggestions
 
 Onboarding's third tier: a small card in the bottom-right corner (the

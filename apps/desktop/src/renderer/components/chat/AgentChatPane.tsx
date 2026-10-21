@@ -16714,6 +16714,7 @@ export function AgentChatPane({
       }}
       title={chatActionsOpen ? "Close chat progress" : "Open chat progress"}
       aria-label={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
+      data-onboarding-anchor="chat-actions"
       aria-pressed={chatActionsOpen}
     >
       <TreeStructure size={16} weight="bold" />

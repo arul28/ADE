@@ -21,6 +21,7 @@ import { forgetPostponedSuggestion, registerSuggestionStarter } from "../../../o
 import { isSuggestionOff, markSuggestionDone } from "../../../onboarding/situationalSuggestions";
 import { useChatSendSignals, type IssueTracker } from "./chatSendSignals";
 import { useSituationalSuggestion } from "./useSituationalSuggestion";
+import { useFeatureTipCard } from "./useFeatureTipCard";
 
 /**
  * The situational suggestions' signals (tier 3 of onboarding), each a small
@@ -80,6 +81,8 @@ export function SituationalSuggestions(props: Props): null {
   useRepeatPromptSuggestion(props);
   usePairPhoneSuggestion(props, machinesSettled && otherMachines.length === 0);
   useStackedPrsSuggestion(props);
+  // Last: a tip only asks for the slot once these have had their chance.
+  useFeatureTipCard(props.enabled);
   return null;
 }
 

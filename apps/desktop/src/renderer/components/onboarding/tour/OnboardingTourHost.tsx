@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowRight, CursorClick, PaperPlaneRight } from "@phosphor-icons/react";
 import { ViewportOverlayPortal } from "../../ui/ViewportOverlayHost";
 import { useAppStore } from "../../../state/appStore";
@@ -42,16 +41,15 @@ import {
   TOUR_STEPS,
   isDoStep,
   noChatsToOpen,
-  onDraftPage,
   stepCopy,
   type TourAsk,
-  type TourDestination,
   type TourPlace,
   type TourStepDef,
 } from "./onboardingTourSteps";
 import { TourCursorMotion, type Point } from "./tourCursor";
 import { TourFinishCard } from "./TourFinishCard";
 import { watchTourDom, type TourWatch } from "./tourWatch";
+import { useGoTo } from "../spotlight/useGoTo";
 import "./onboardingTour.css";
 
 /**
@@ -89,8 +87,6 @@ const RING_PAD = 5;
 const CARD_WIDTH = 300;
 const CARD_GAP = 14;
 
-const MACHINE_ROUTE = /^\/(chats|browser|music|account|hub)(\/|$)/;
-
 export function OnboardingTourHost() {
   const [progress, setProgress] = useState(readOnboardingProgress);
   useEffect(() => subscribeOnboardingProgress(() => setProgress(readOnboardingProgress())), []);
@@ -127,68 +123,6 @@ function anchorKeyOf(anchor: HTMLElement): number {
     anchorKeys.set(anchor, key);
   }
   return key;
-}
-
-const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
-/**
- * Opens a fresh draft on Work with Work's own New chat button, so it gets the
- * lane and machine Work would pick. Work restores the last open chat a beat
- * after it mounts, which can replace a draft that showed first, so a draft
- * only counts once it has stayed; until then New chat is pressed again.
- */
-async function openDraft(alive: () => boolean): Promise<void> {
-  const deadline = performance.now() + 5_000;
-  let draftSince: number | null = null;
-  let pressedAt = -Infinity;
-  while (alive() && performance.now() < deadline) {
-    const now = performance.now();
-    if (onDraftPage()) {
-      draftSince ??= now;
-      if (now - draftSince >= 700) return;
-    } else {
-      draftSince = null;
-      const newChat = findVisibleAnchor("new-chat");
-      if (newChat && now - pressedAt > 900) {
-        newChat.click();
-        pressedAt = now;
-      }
-    }
-    await wait(120);
-  }
-}
-
-/**
- * "Show me": take the user to where a step's control lives. Only ever on the
- * user's click; the tour never moves anyone on its own.
- */
-function useGoTo(): (destination: TourDestination) => void {
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
-  const pathRef = useRef(pathname);
-  pathRef.current = pathname;
-  const runRef = useRef(0);
-  useEffect(() => () => {
-    runRef.current += 1;
-  }, []);
-  return useCallback((destination: TourDestination) => {
-    runRef.current += 1;
-    const run = runRef.current;
-    const store = useAppStore.getState();
-    // Home, or nowhere else to go yet: Work and its drafts need a project.
-    if (destination === "home" || store.project == null) {
-      store.openNewTab();
-      // Chats, Browser and Music are tabs of their own; Home lives behind the project route.
-      if (MACHINE_ROUTE.test(pathRef.current)) navigate("/work");
-      return;
-    }
-    if (store.isNewTabOpen) store.cancelNewTab();
-    else if (store.showWelcome) store.setShowWelcome(false);
-    if (store.standaloneSettingsOpen) store.setStandaloneSettingsOpen(false);
-    if (!/^\/work(\/|$)/.test(pathRef.current)) navigate("/work");
-    if (destination !== "draft") return;
-    void openDraft(() => runRef.current === run);
-  }, [navigate]);
 }
 
 type FirstChatSetup = { model: FirstChatModel | null; noAgents: boolean } | null;
@@ -461,7 +395,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
       outOfView.scrollIntoView({ block: "nearest", inline: "nearest" });
       return;
     }
-    if (step.goTo) goTo(step.goTo);
+    if (step.goTo) goTo(step.goTo === "work" ? "/work" : step.goTo);
   }, [goTo, outOfView, step.goTo]);
 
   const setCursorElement = useCallback((element: HTMLDivElement | null) => cursor.attach(element), [cursor]);
