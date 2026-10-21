@@ -1,0 +1,23 @@
+---
+title: "v1.2.114"
+description: "Release notes for ADE v1.2.114 - October 20, 2026"
+---
+
+ADE 1.2.114 unsticks Windows updates from 1.2.112 and 1.2.113, lets you decline an approval by sending a new message, makes lane setup find npm on every Mac, and trims ADE's prompt token cost.
+
+## New
+
+- Send a message while an approval waits to decline it and redirect the agent (#1839).
+- ADE recognizes projects you moved, and warns when the app is owned by root and can't update (#1847).
+
+## Fixes
+
+- Windows machines stuck on 1.2.112 or 1.2.113 update again (#1847).
+- Lane setup finds npm on every Mac, and the setup timer reads correctly (#1846).
+- Usage starts the next window on its own when a provider resets early (#1848).
+- The next-prompt suggestion returns when the prompt box is emptied again (#1844) and clears when a send goes to a continued chat (#1845).
+- The CLI hints `--machine` when a chat lives on another machine (#1842).
+
+## Speed
+
+- ADE's own prompts cost fewer tokens (#1835).
