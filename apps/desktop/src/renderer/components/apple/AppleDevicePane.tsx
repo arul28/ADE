@@ -78,6 +78,7 @@ import { APPLE_RENDER_ANGLES, AppleRenderSheet, appleRenderContactSheet, type Ap
 import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
+import { AppleDuoHingeBar } from "./AppleDuoHingeBar";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 
@@ -160,6 +161,9 @@ const APPLE_DUO_INNER_ORIENTATION: Record<AppleDeviceOrientation, AppleDeviceOri
   "landscape-right": "portrait",
 };
 
+/** The hinge angle each preset folds the simulator to (as the helper's `poseAngles`). */
+const APPLE_DUO_POSE_ANGLES: Record<AppleDevicePose, number> = { closed: 0, tent: 80, laptop: 90, book: 90, open: 180 };
+
 /** What a runtime remove did, as one toast. Counts only; the details are in the log. */
 function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
   const freed = result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
@@ -228,6 +232,8 @@ export function AppleDevicePane({
   const [duoState, setDuoState] = useState(() => createAppleDuoState());
   /** What the simulator itself reports: its hinge and the panel that is on. */
   const [duoPosture, setDuoPosture] = useState<AppleDevicePosture | null>(null);
+  /** The fold ADE asked for and until when its sweep's reports are ignored. */
+  const duoFoldTargetRef = useRef<{ angle: number; until: number } | null>(null);
   const duoPostureRef = useRef<AppleDevicePosture | null>(null);
   duoPostureRef.current = duoPosture;
   const [rotating, setRotating] = useState(false);
@@ -404,6 +410,14 @@ export function AppleDevicePane({
           if (event.udid !== deviceUdidRef.current) return;
           setDuoPosture(event.posture);
           const angle = event.posture.angle;
+          // ADE asked for this fold: the simulator sweeps there in 10° steps,
+          // and drawing each step pulled the hinge back toward where it came
+          // from. Hold the asked-for angle until the sweep lands (or gives up).
+          const fold = duoFoldTargetRef.current;
+          if (fold && angle !== null) {
+            if (Date.now() < fold.until && Math.abs(angle - fold.angle) > 2) return;
+            duoFoldTargetRef.current = null;
+          }
           if (angle !== null) {
             setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
               ? current
@@ -939,6 +953,8 @@ export function AppleDevicePane({
    * settle it (the readback is what the guest actually did).
    */
   const sendDuoPosture = useCallback((target: { pose?: AppleDevicePose; angle?: number }) => {
+    const angle = target.pose ? APPLE_DUO_POSE_ANGLES[target.pose] : target.angle;
+    if (typeof angle === "number") duoFoldTargetRef.current = { angle, until: Date.now() + 4_000 };
     void window.ade.iosSimulator
       .setPosture({ laneId, chatSessionId: sessionId, ...target }, runtimePinRef.current)
       .then((result) => setDuoPosture(result.posture))
@@ -1308,6 +1324,23 @@ export function AppleDevicePane({
               powered-off lane device read as one that was about to come up. The
               label sits outside the stage so the dimming does not fade it too.
             */}
+            {duoControlsEnabled && state === "live" ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-4 z-[3] flex justify-center">
+                <AppleDuoHingeBar
+                  angle={duoState.pose.angle}
+                  reported={duoPosture
+                    ? {
+                      angle: duoPosture.angle,
+                      panel: duoPosture.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
+                        ? "cover"
+                        : duoPosture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" : null,
+                    }
+                    : null}
+                  onPreview={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
+                  onCommit={(angle) => sendDuoPosture({ angle })}
+                />
+              </div>
+            ) : null}
             {state === "stopped" ? (
               <div
                 data-apple-off-screen=""
@@ -1498,24 +1531,12 @@ export function AppleDevicePane({
                     capable: true,
                     angle: duoState.pose.angle,
                     stance: nearestAppleDuoStance(duoState.pose.angle),
-                    reported: duoPosture
-                      ? {
-                        angle: duoPosture.angle,
-                        panel: duoPosture.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
-                          ? "cover"
-                          : duoPosture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" : null,
-                        orientation: duoPosture.orientation,
-                      }
-                      : null,
                   }
                 : undefined}
               onDuoStance={(stance) => {
                 setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
                 sendDuoPosture({ pose: stance });
               }}
-              onDuoAngle={(angle) =>
-                setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
-              onDuoAngleCommit={(angle) => sendDuoPosture({ angle })}
               onDuoAppStoreShots={() => {
                 showToast({ id: "apple-duo-app-store", tone: "info", title: "Taking App Store screenshots…", message: "Folding the Duo closed, then open." });
                 void window.ade.iosSimulator

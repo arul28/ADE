@@ -378,12 +378,17 @@ poses (laptop) turn the phone, and the camera refits on each fold. Taps send the
 live panel's framebuffer point. The drawn body (`appleDuoScene.ts`) remains the
 fallback when the model is missing.
 
-**Controls.** The rail's Duo menu: presets, ±15° steps, a continuous hinge
-slider (previews on drag, folds on release), a readout of the simulator's
-reported angle, panel and orientation, and **App Store screenshots** (both
+**Controls.** The hinge bar under the device (`AppleDuoHingeBar`): a
+continuous slider that previews on drag and folds on release, with the
+simulator's reported angle and live panel beside it. The rail's Duo menu:
+presets, ±15° steps, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
 app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
-within 4°; arrow keys stay exact. ⌥[ and ⌥] fold and unfold by the step. A
+within 4°; arrow keys stay exact. The 3D body eases into every pose (hinge,
+the landscape turn, the half turn that shows the cover) and the camera eases
+to each new fit; while ADE's own fold sweeps, the simulator's intermediate
+reports are held off so the hinge does not jump back. A drag on the 3D view
+leaves the device where it was let go; Reset view brings back the rest pose. ⌥[ and ⌥] fold and unfold by the step. A
 fold to closed or open reports its posture once the guest has switched panels.
 The floating player reads the posture too, so it draws the inner panel upright
 and follows folds. Screenshots of a foldable (more than one integrated panel in

@@ -168,6 +168,14 @@ export function createV68DuoBody(
   })();
 
   let activeScreenId = options.activeScreenId;
+  /*
+   * Every pose change EASES: the hinge, the landscape turn and the turn that
+   * shows the cover. The simulator reports its sweep in 10° steps, a preset
+   * jumps 90° at once, and the cover coming on is a half turn; drawn as they
+   * arrive, each read as a snap. `target*` is what was asked for, `shown*`
+   * what is drawn, and `animate` closes the gap a little every frame.
+   */
+  let targetAngle = options.angle;
   let angle = options.angle;
   /**
    * The phone as held, about the view axis: laptop is the open phone turned
@@ -175,6 +183,9 @@ export function createV68DuoBody(
    * this body.
    */
   let physicalTurn = 0;
+  let targetTurn = 0;
+  let coverYaw = 0;
+  let lastAnimateAt = 0;
   const holder = new THREE.Group();
   root.remove(orientation);
   holder.add(orientation);
@@ -195,11 +206,9 @@ export function createV68DuoBody(
    */
   const applyPose = () => {
     const phi = ((180 - Math.min(180, Math.max(0, angle))) / 2) * DEG;
-    const coverOnRight = coverHalf === right;
     left.rotation.y = phi;
     right.rotation.y = -phi;
-    const coverActive = activeScreenId === APPLE_DUO_COVER_SCREEN_ID;
-    orientation.rotation.y = coverActive ? (coverOnRight ? -(Math.PI - phi) : Math.PI - phi) : 0;
+    orientation.rotation.y = coverYaw;
     // Folded, the phone is no longer centred on the hinge: keep whatever is
     // standing there centred, so the camera's fit frames it.
     model.position.set(0, 0, 0);
@@ -210,8 +219,42 @@ export function createV68DuoBody(
     holder.rotation.z = physicalTurn;
   };
 
+  /** The turn that puts the cover toward the camera at the TARGET fold. */
+  const targetCoverYaw = () => {
+    if (activeScreenId !== APPLE_DUO_COVER_SCREEN_ID) return 0;
+    const phi = ((180 - Math.min(180, Math.max(0, targetAngle))) / 2) * DEG;
+    return coverHalf === right ? -(Math.PI - phi) : Math.PI - phi;
+  };
+  coverYaw = targetCoverYaw();
+
   paintPanels();
   applyPose();
+
+  /** Exponential ease: ~90% of the way in 230 ms, whatever the frame rate. */
+  const animate = (now: number): boolean => {
+    const dt = lastAnimateAt ? Math.min(0.1, Math.max(0, (now - lastAnimateAt) / 1000)) : 1 / 60;
+    lastAnimateAt = now;
+    const k = 1 - Math.exp(-dt / 0.1);
+    const yawGoal = targetCoverYaw();
+    const settled = Math.abs(targetAngle - angle) < 0.05
+      && Math.abs(targetTurn - physicalTurn) < 0.001
+      && Math.abs(yawGoal - coverYaw) < 0.001;
+    if (settled) {
+      if (angle === targetAngle && physicalTurn === targetTurn && coverYaw === yawGoal) {
+        lastAnimateAt = 0;
+        return false;
+      }
+      angle = targetAngle;
+      physicalTurn = targetTurn;
+      coverYaw = yawGoal;
+    } else {
+      angle += (targetAngle - angle) * k;
+      physicalTurn += (targetTurn - physicalTurn) * k;
+      coverYaw += (yawGoal - coverYaw) * k;
+    }
+    applyPose();
+    return true;
+  };
 
   const raycastActive = (raycaster: Raycaster) => {
     const map = activeMap();
@@ -226,22 +269,18 @@ export function createV68DuoBody(
     setPhysicalOrientation: (orientation: string | null) => void;
   } = {
     setHinge(next) {
-      angle = next;
-      applyPose();
+      targetAngle = Math.min(180, Math.max(0, next));
     },
     setPhysicalOrientation(value) {
-      const next = value === "landscape-left" ? Math.PI / 2 : value === "landscape-right" ? -Math.PI / 2 : 0;
-      if (next === physicalTurn) return;
-      physicalTurn = next;
-      applyPose();
+      targetTurn = value === "landscape-left" ? Math.PI / 2 : value === "landscape-right" ? -Math.PI / 2 : 0;
     },
     setActivePanel(screenId) {
       if (screenId !== APPLE_DUO_COVER_SCREEN_ID && screenId !== APPLE_DUO_INNER_SCREEN_ID) return;
       if (screenId === activeScreenId) return;
       activeScreenId = screenId;
       paintPanels();
-      applyPose();
     },
+    animate,
     // The 3D view's contract: framebuffer portrait coordinates of the live
     // panel, `vFromBottom` counted from the frame's bottom row.
     pickInner(raycaster) {

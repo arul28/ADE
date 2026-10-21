@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Aperture,
@@ -81,8 +81,6 @@ export type AppleDeviceRailProps = {
     angle: number;
     /** The named posture this angle is nearest to, for the checked item. */
     stance: AppleDuoStanceId;
-    /** What the simulator itself reports, shown beside ADE's own angle. */
-    reported?: { angle: number | null; panel: "cover" | "inner" | null; orientation: string | null } | null;
   } | undefined;
   /** Capture both Duo displays at App Store Connect's sizes. */
   onDuoAppStoreShots?: (() => void) | undefined;
@@ -90,10 +88,7 @@ export type AppleDeviceRailProps = {
   onDuoAddSkill?: (() => void) | undefined;
   onDuoStance?: (stance: AppleDuoStanceId) => void;
   onDuoNudge?: (delta: number) => void;
-  /** The hinge slider moved: preview the angle (the 3D body follows at once). */
-  onDuoAngle?: (angle: number) => void;
-  /** The hinge slider was let go: fold the simulator to it. */
-  onDuoAngleCommit?: (angle: number) => void;
+
   /**
    * Press one of the device's physical buttons (lock, volume, Siri, app
    * switcher). `shake` is deliberately absent: this Xcode's `simctl` and the
@@ -162,8 +157,6 @@ export function AppleDeviceRail({
   duo,
   onDuoStance,
   onDuoNudge,
-  onDuoAngle,
-  onDuoAngleCommit,
   onDuoAppStoreShots,
   onDuoAddSkill,
   onOrientation,
@@ -259,15 +252,6 @@ export function AppleDeviceRail({
             icon={<ArrowsInLineVertical size={16} />}
           >
             <div className={MENU_LABEL_CLASS}>{"Duo posture \u00b7 "}{`${duo.angle}\u00b0`}</div>
-            {onDuoAngleCommit ? (
-              <DuoHingeSlider angle={duo.angle} onPreview={onDuoAngle} onCommit={onDuoAngleCommit} />
-            ) : null}
-            {duo.reported ? (
-              <div className="px-2 pb-1 font-sans text-[10px] leading-4 text-muted-fg">
-                {["Simulator", duo.reported.angle !== null ? `${Math.round(duo.reported.angle)}\u00b0` : null, duo.reported.panel, duo.reported.orientation]
-                  .filter(Boolean).join(" \u00b7 ")}
-              </div>
-            ) : null}
             {APPLE_DUO_STANCES.map((stance) => (
               <DropdownMenu.Item
                 key={stance.id}
@@ -521,81 +505,5 @@ function RailMenu({
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
-  );
-}
-
-/**
- * Device Hub's continuous hinge, 0° shut to 180° flat. Dragging previews the
- * angle on the body; letting go folds the simulator, once, to where it was
- * let go (the simulator sweeps there itself).
- *
- * Kept outside Radix's item handling: a range input inside a menu item would
- * close the menu on pointerdown and lose arrow keys to the menu's typeahead.
- */
-/**
- * Soft detents at Closed, Laptop and Open: a drag that lands within a few
- * degrees settles on the pose, as a real hinge clicks into place. Arrow keys
- * stay exact.
- */
-const DUO_HINGE_DETENTS = [0, 90, 180];
-const DUO_HINGE_DETENT_RANGE = 4;
-
-function snapToDetent(angle: number): number {
-  const detent = DUO_HINGE_DETENTS.find((entry) => Math.abs(entry - angle) <= DUO_HINGE_DETENT_RANGE);
-  return detent ?? angle;
-}
-
-function DuoHingeSlider({
-  angle,
-  onPreview,
-  onCommit,
-}: {
-  angle: number;
-  onPreview?: ((angle: number) => void) | undefined;
-  onCommit: (angle: number) => void;
-}) {
-  const [value, setValue] = useState(Math.round(angle));
-  const [dragging, setDragging] = useState(false);
-  useEffect(() => {
-    if (!dragging) setValue(Math.round(angle));
-  }, [angle, dragging]);
-  const commit = () => {
-    setDragging(false);
-    onCommit(value);
-  };
-  return (
-    <div
-      className="flex items-center gap-2 px-2 py-1.5"
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <span className="w-6 shrink-0 font-sans text-[10px] text-muted-fg">0°</span>
-      <input
-        type="range"
-        min={0}
-        max={180}
-        step={1}
-        value={value}
-        aria-label="Hinge angle"
-        aria-valuetext={`${value} degrees`}
-        className="min-w-0 flex-1 accent-accent"
-        onPointerDown={() => setDragging(true)}
-        list="apple-duo-hinge-detents"
-        onChange={(event) => {
-          const raw = Number(event.currentTarget.value);
-          const next = dragging ? snapToDetent(raw) : raw;
-          setValue(next);
-          onPreview?.(next);
-        }}
-        onPointerUp={commit}
-        onKeyUp={(event) => {
-          if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") commit();
-        }}
-      />
-      <datalist id="apple-duo-hinge-detents">
-        {DUO_HINGE_DETENTS.map((detent) => <option key={detent} value={detent} />)}
-      </datalist>
-      <span className="w-9 shrink-0 text-right font-sans text-[10px] tabular-nums text-fg/80">{`${value}°`}</span>
-    </div>
   );
 }

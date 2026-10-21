@@ -253,7 +253,10 @@ function createViewer(
   scene.add(key, rim, fill);
 
   const rest = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.035, -0.12, 0, "YXZ"));
-  const motion: AppleDeviceOrbit = createAppleDeviceOrbit();
+  // Free orbit: a drag leaves the phone where it was let go (coasting on its
+  // release speed), never latched back to a front-facing view. "Reset view"
+  // is how you get the rest pose back.
+  const motion: AppleDeviceOrbit = createAppleDeviceOrbit({ choose: (rotation) => rotation });
   motion.setPose(rest, performance.now(), true);
 
   let texture: CanvasTexture | null = null;
@@ -280,6 +283,13 @@ function createViewer(
   let raf = 0;
   let zoomLog = 0;
   let fitDistance = 5.5;
+  /**
+   * The distance actually drawn. A fold changes the phone's shape and so the
+   * fit; jumping to each new fit pumped the zoom on every hinge step, so the
+   * drawn distance eases to it instead. Zero until the first fit.
+   */
+  let shownDistance = 0;
+  let lastDistanceAt = 0;
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
@@ -329,7 +339,8 @@ function createViewer(
     const tan = Math.tan(((CAMERA_FOV * Math.PI) / 180) / 2);
     const distance = Math.max(size.x / (tan * camera.aspect), size.y / tan) * 0.62 + Math.max(0, bounds.max.z);
     fitDistance = Math.max(1.4, distance);
-    camera.position.set(0, 0, fitDistance * Math.exp(zoomLog));
+    if (!shownDistance) shownDistance = fitDistance;
+    camera.position.set(0, 0, shownDistance * Math.exp(zoomLog));
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
   };
@@ -360,10 +371,26 @@ function createViewer(
         poseDirty = true;
         notifyPose(false);
       }
-      camera.position.z = fitDistance * Math.exp(zoomLog);
+      // A Duo eases into each pose; while it moves its shape (and fit) does.
+      const folding = body?.duo?.animate?.(now) ?? false;
+      if (folding) {
+        fitCamera();
+        poseDirty = true;
+        notifyPose(false);
+      }
+      const dt = lastDistanceAt ? Math.min(0.1, (now - lastDistanceAt) / 1000) : 1 / 60;
+      const easing = Math.abs(fitDistance - shownDistance) > 0.001;
+      if (easing) {
+        lastDistanceAt = now;
+        shownDistance += (fitDistance - shownDistance) * (1 - Math.exp(-dt / 0.12));
+      } else {
+        shownDistance = fitDistance;
+        lastDistanceAt = 0;
+      }
+      camera.position.z = shownDistance * Math.exp(zoomLog);
       camera.updateProjectionMatrix();
       renderer.render(scene, camera);
-      if (motion.needsFrame()) invalidate();
+      if (motion.needsFrame() || folding || easing) invalidate();
       else notifyPose(true);
     } catch {
       // A render can throw while the context is gone; `webglcontextlost` is
@@ -754,6 +781,8 @@ function createViewer(
 
   const renderOne = (shot: AppleDeviceRenderShot, options: AppleDeviceRenderOptions) => {
     if (!body) return;
+    // A still is of the pose, not of the way there: finish any fold ease.
+    for (let step = 0, at = performance.now(); step < 80 && body.duo?.animate?.(at); step++) at += 100;
     if (!("current" in shot)) body.root.quaternion.setFromEuler(new THREE.Euler(shot.pitch, shot.yaw, 0, "YXZ"));
     body.orientation.updateWorldMatrix(true, true);
     fitCamera();

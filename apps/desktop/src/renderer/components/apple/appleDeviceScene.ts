@@ -59,6 +59,12 @@ export type DuoBodyControls = {
    * position. Null when the point cannot be placed.
    */
   innerToWorld: (u: number, vFromBottom: number) => Vector3 | null;
+  /**
+   * Ease toward the last pose asked for, at `now` (ms). True while still
+   * moving, so the view keeps drawing. Bodies that jump straight to their
+   * pose leave it out.
+   */
+  animate?: (now: number) => boolean;
 };
 
 export type DeviceBody = {
