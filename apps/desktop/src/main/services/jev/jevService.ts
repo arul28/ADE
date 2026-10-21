@@ -1,14 +1,20 @@
 /**
- * `decide`: ask OpenCode Zen's free Jev decision model a typed question.
+ * `decide`: ask the Jev decision model a typed question.
  *
  * Every ADE feature that asks Jev goes through here. Jev is an optional
- * upgrade layered over each caller's existing logic, and the free tier is
- * rate limited and sometimes down, so every failure of any kind answers
- * `null` ("use your fallback") and nothing here throws or shows the user an
- * error. Callers must treat `null` as normal.
+ * upgrade layered over each caller's existing logic, and every route to it is
+ * rate limited or capped and sometimes down, so every failure of any kind
+ * answers `null` ("use your fallback") and nothing here throws or shows the
+ * user an error. Callers must treat `null` as normal.
  *
- * Only a machine with an OpenCode Zen sign-in calls out (`jevAvailability`).
- * The breaker, the call cap and the result cache are this machine's, shared by
+ * One call tries the routes in order (`callRoutes`): OpenCode's free Jev, no
+ * key needed; Jev on the user's own OpenCode Zen balance, only when they opt
+ * in and are signed in (`jevAvailability`); then the ADE bonus, ADE's key
+ * behind the account directory, capped per account per day. Each route has
+ * its own breaker, so a spent free allowance moves calls to the next route
+ * until it resets.
+ *
+ * The breakers, the call cap and the result cache are this machine's, shared by
  * every project runtime the brain hosts; counts and the summary log are per
  * runtime, so they land in that project's log. Each runtime also keeps a day
  * tally (numbers only) that the daily usage summary reports, so the cost of
@@ -20,6 +26,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import {
   JEV_FEATURES,
+  JEV_ROUTES,
   type JevAnswer,
   type JevAnswers,
   type JevAvailabilityReason,
@@ -30,6 +37,7 @@ import {
   type JevOutcome,
   type JevQuestion,
   type JevQuestions,
+  type JevRoute,
   type JevStatus,
 } from "../../../shared/types/jev";
 import type { Logger } from "../logging/logger";
@@ -40,14 +48,22 @@ import { localDayKey } from "../usage/localDay";
 import { asRecord, finiteNumberOrNull, sha256Hex } from "../shared/utils";
 
 /**
- * The documented endpoint first, then the one Jev launched on. A 404 from one
- * moves to the other, which then stays first for later calls.
+ * OpenCode's endpoints: the documented one first, then the one Jev launched
+ * on. A 404 from one moves to the other, which then stays first for later
+ * calls.
  */
-const JEV_URLS = [
+const OPENCODE_JEV_URLS = [
   "https://opencode.ai/inference/systemone/v1/systemone",
   "https://opencode.ai/zen/v1/systemone",
 ] as const;
-const JEV_MODEL = "jev-1.13-free";
+/** OpenCode's free Jev: no key needed, a daily allowance per network. */
+const FREE_MODEL = "jev-1.13-free";
+/** Paid Jev on the user's own OpenCode Zen balance (opt-in). */
+const ZEN_CREDIT_MODEL = "jev-1.13";
+/** The ADE bonus: the account directory forwards to Jev with ADE's key, capped per account per day. */
+const BONUS_PATH = "/jev/systemone";
+/** Falling through to the next route needs at least this much of the call's time left. */
+const MIN_ROUTE_BUDGET_MS = 300;
 
 const INTERACTIVE_TIMEOUT_MS = 1_500;
 const BACKGROUND_TIMEOUT_MS = 4_000;
@@ -125,11 +141,9 @@ function readZenCredential(dbPath: string, nowMs: number): JevCredential {
 }
 
 /**
- * The one gate on calling Jev: this machine has an unexpired OpenCode Zen
- * sign-in. Stores are searched in `openCodeDataDirs` order (ADE's own store
- * first) and the first usable token wins. Free Jev also answers without a
- * key; allowing keyless calls is a product decision that belongs here and
- * nowhere else. The token is never logged.
+ * This machine's OpenCode Zen sign-in, for the `zen_credit` route only: free
+ * Jev needs no key. Stores are searched in `openCodeDataDirs` order (ADE's own
+ * store first) and the first usable token wins. The token is never logged.
  */
 function jevAvailability(nowMs: number): JevCredential {
   if (credentialCache && nowMs - credentialCache.at < CREDENTIAL_TTL_MS) return credentialCache.value;
@@ -150,16 +164,27 @@ function jevAvailability(nowMs: number): JevCredential {
 
 type BreakerReason = "rate_limited" | "auth_rejected" | "transient";
 
-const breaker: {
+type Breaker = {
   until: number;
   reason: BreakerReason | null;
   consecutiveFailures: number;
   /** Transient opens since the last success; each doubles the back-off. */
   transientOpens: number;
-} = { until: 0, reason: null, consecutiveFailures: 0, transientOpens: 0 };
+  /** For OpenCode: which of its two endpoints answered last. */
+  preferredUrl: number;
+};
+
+/** One breaker per route: the free allowance running out says nothing about the bonus. */
+const breakers: Record<JevRoute, Breaker> = {
+  free: { until: 0, reason: null, consecutiveFailures: 0, transientOpens: 0, preferredUrl: 0 },
+  zen_credit: { until: 0, reason: null, consecutiveFailures: 0, transientOpens: 0, preferredUrl: 0 },
+  bonus: { until: 0, reason: null, consecutiveFailures: 0, transientOpens: 0, preferredUrl: 0 },
+};
+
+/** Where one call goes: OpenCode free, OpenCode on the user's Zen credit, or the ADE bonus. */
+type Route = { id: JevRoute; urls: readonly string[]; token: string | null; model: string };
 
 let inFlight = 0;
-let preferredUrl = 0;
 const resultCache = new Map<string, { at: number; answers: Record<string, JevAnswer> }>();
 /** Identical questions already on the wire share one call. */
 const pendingByKey = new Map<string, Promise<CallResult>>();
@@ -175,17 +200,17 @@ type CallResult =
     usage?: JevUsage | null;
   };
 
-function breakerOpen(nowMs: number): boolean {
+function breakerOpen(breaker: Breaker, nowMs: number): boolean {
   return breaker.until > nowMs;
 }
 
-function openBreaker(reason: BreakerReason, durationMs: number, nowMs: number): { reason: BreakerReason; until: number } {
+function openBreaker(breaker: Breaker, reason: BreakerReason, durationMs: number, nowMs: number): { reason: BreakerReason; until: number } {
   breaker.reason = reason;
   breaker.until = nowMs + durationMs;
   return { reason, until: breaker.until };
 }
 
-function recordSuccess(): void {
+function recordSuccess(breaker: Breaker): void {
   breaker.until = 0;
   breaker.reason = null;
   breaker.consecutiveFailures = 0;
@@ -193,13 +218,13 @@ function recordSuccess(): void {
 }
 
 /** 5xx, timeouts and network errors: back off after two in a row, 1 min doubling to 15. */
-function recordTransientFailure(nowMs: number): { reason: BreakerReason; until: number } | undefined {
+function recordTransientFailure(breaker: Breaker, nowMs: number): { reason: BreakerReason; until: number } | undefined {
   breaker.consecutiveFailures += 1;
   if (breaker.consecutiveFailures < TRANSIENT_FAILURES_TO_OPEN) return undefined;
   breaker.consecutiveFailures = 0;
   const backoff = Math.min(TRANSIENT_BACKOFF_MS * 2 ** breaker.transientOpens, TRANSIENT_BACKOFF_MAX_MS);
   breaker.transientOpens += 1;
-  return openBreaker("transient", backoff, nowMs);
+  return openBreaker(breaker, "transient", backoff, nowMs);
 }
 
 function retryAfterMs(header: string | null, nowMs: number): number | null {
@@ -313,59 +338,61 @@ function parseAnswers(questions: JevQuestions, body: unknown): Record<string, Je
 }
 
 async function callJev(args: {
-  token: string;
+  route: Route;
   state: string;
   questions: JevQuestions;
   timeoutMs: number;
   userAgent: string;
 }): Promise<CallResult> {
   const startedAt = Date.now();
+  const { route } = args;
+  const breaker = breakers[route.id];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
   let status = 0;
   let headers: Headers | null = null;
   let text = "";
   try {
-    for (let attempt = 0; attempt < JEV_URLS.length; attempt += 1) {
-      const urlIndex = (preferredUrl + attempt) % JEV_URLS.length;
-      const response = await fetch(JEV_URLS[urlIndex]!, {
+    for (let attempt = 0; attempt < route.urls.length; attempt += 1) {
+      const urlIndex = (breaker.preferredUrl + attempt) % route.urls.length;
+      const response = await fetch(route.urls[urlIndex]!, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${args.token}`,
+          ...(route.token ? { Authorization: `Bearer ${route.token}` } : {}),
           "Content-Type": "application/json",
           Accept: "application/json",
           // Cloudflare refuses some default client agents (403 "error code: 1010").
           "User-Agent": args.userAgent,
         },
-        body: JSON.stringify({ model: JEV_MODEL, state: args.state, questions: args.questions }),
+        body: JSON.stringify({ model: route.model, state: args.state, questions: args.questions }),
         signal: controller.signal,
       });
       status = response.status;
       headers = response.headers;
       text = await response.text();
       if (status !== 404) {
-        preferredUrl = urlIndex;
+        breaker.preferredUrl = urlIndex;
         break;
       }
     }
   } catch {
     const nowMs = Date.now();
-    return { ok: false, reason: controller.signal.aborted ? "timeout" : "network", breakerOpened: recordTransientFailure(nowMs) };
+    return { ok: false, reason: controller.signal.aborted ? "timeout" : "network", breakerOpened: recordTransientFailure(breaker, nowMs) };
   } finally {
     clearTimeout(timer);
   }
   const nowMs = Date.now();
   if (status === 429) {
     const wait = retryAfterMs(headers?.get("retry-after") ?? null, nowMs) ?? RATE_LIMIT_BACKOFF_MS;
-    return { ok: false, reason: "rate_limited", breakerOpened: openBreaker("rate_limited", wait, nowMs) };
+    return { ok: false, reason: "rate_limited", breakerOpened: openBreaker(breaker, "rate_limited", wait, nowMs) };
   }
-  if (status === 401 || status === 403) {
+  if (status === 401 || status === 402 || status === 403) {
     // The token may have been revoked or rotated; read the store again next time.
-    credentialCache = null;
-    return { ok: false, reason: "auth_rejected", breakerOpened: openBreaker("auth_rejected", AUTH_BACKOFF_MS, nowMs) };
+    if (route.id === "zen_credit") credentialCache = null;
+    return { ok: false, reason: "auth_rejected", breakerOpened: openBreaker(breaker, "auth_rejected", AUTH_BACKOFF_MS, nowMs) };
   }
   if (status < 200 || status >= 300) {
-    return { ok: false, reason: "http_error", breakerOpened: recordTransientFailure(nowMs) };
+    return { ok: false, reason: "http_error", breakerOpened: recordTransientFailure(breaker, nowMs) };
   }
   let body: unknown = null;
   try {
@@ -376,7 +403,7 @@ async function callJev(args: {
   const answers = parseAnswers(args.questions, body);
   const usage = parseUsage(body);
   // A 200 means the service is up, even when this answer is unusable.
-  recordSuccess();
+  recordSuccess(breaker);
   if (!answers) return { ok: false, reason: "bad_response", usage };
   return { ok: true, answers, latencyMs: nowMs - startedAt, usage };
 }
@@ -414,6 +441,13 @@ export type JevServiceDeps = {
   isEnabled: (feature?: JevFeature) => boolean;
   appVersion?: string | null;
   tallyStore?: JevTallyStore | null;
+  /** Opt-in: once the free allowance is out, spend the user's own OpenCode Zen balance. Read per call. */
+  useZenCredit?: () => boolean;
+  /** The ADE bonus: the account directory's origin and the signed-in ADE account's bearer. */
+  bonus?: {
+    baseUrl: () => string | null;
+    accountToken: () => Promise<string | null>;
+  } | null;
 };
 
 /**
@@ -444,10 +478,12 @@ type TallyDetails = {
   usage?: JevUsage | null;
   /** For wanted calls never sent: the request's estimated input tokens. */
   estimatedInputTokens?: number;
+  /** The route that answered. */
+  route?: JevRoute;
   breakerOpened?: boolean;
 };
 
-const UNSENT_OUTCOMES: ReadonlySet<JevOutcome> = new Set(["not_signed_in", "token_expired", "breaker_open", "busy"]);
+const UNSENT_OUTCOMES: ReadonlySet<JevOutcome> = new Set(["breaker_open", "busy"]);
 
 function emptyTally(day: string): JevDayTally {
   return {
@@ -457,6 +493,7 @@ function emptyTally(day: string): JevDayTally {
     failed: 0,
     outcomes: {},
     sentByFeature: {},
+    answeredByRoute: {},
     inputTokens: 0,
     outputTokens: 0,
     unsentInputTokensEstimate: 0,
@@ -483,7 +520,7 @@ function countMap<K extends string>(value: unknown, keys: readonly K[]): Partial
 }
 
 const OUTCOME_KEYS: readonly JevOutcome[] = [
-  "ok", "cached", "disabled", "not_signed_in", "token_expired", "breaker_open", "busy", "invalid_request",
+  "ok", "cached", "disabled", "breaker_open", "busy", "invalid_request",
   "timeout", "network", "rate_limited", "auth_rejected", "http_error", "bad_response",
 ];
 
@@ -508,6 +545,7 @@ function readTallies(store: JevTallyStore | null | undefined): JevDayTally[] {
       failed: count(record.failed),
       outcomes: countMap(record.outcomes, OUTCOME_KEYS),
       sentByFeature: countMap(record.sentByFeature, JEV_FEATURES),
+      answeredByRoute: countMap(record.answeredByRoute, JEV_ROUTES),
       inputTokens: count(record.inputTokens),
       outputTokens: count(record.outputTokens),
       unsentInputTokensEstimate: count(record.unsentInputTokensEstimate),
@@ -576,6 +614,9 @@ export function createJevService(deps: JevServiceDeps): JevService {
       current.sentByFeature[feature] = (current.sentByFeature[feature] ?? 0) + 1;
       if (outcome !== "ok") current.failed += 1;
     }
+    if (details.route && outcome === "ok") {
+      current.answeredByRoute[details.route] = (current.answeredByRoute[details.route] ?? 0) + 1;
+    }
     if (details.usage) {
       current.inputTokens += details.usage.inputTokens;
       current.outputTokens += details.usage.outputTokens;
@@ -625,10 +666,73 @@ export function createJevService(deps: JevServiceDeps): JevService {
     }
   };
 
-  const availabilityReason = (nowMs: number): JevAvailabilityReason => {
-    if (!deps.isEnabled()) return "disabled";
-    const credential = jevAvailability(nowMs);
-    return credential.ok ? "ok" : credential.reason;
+  const availabilityReason = (): JevAvailabilityReason => (deps.isEnabled() ? "ok" : "disabled");
+
+  /** A route ready to take a call now, or null: its breaker is open, or it is not set up. */
+  const resolveRoute = async (id: JevRoute, nowMs: number, budgetMs: number): Promise<Route | null> => {
+    if (breakerOpen(breakers[id], nowMs)) return null;
+    if (id === "free") return { id, urls: OPENCODE_JEV_URLS, token: null, model: FREE_MODEL };
+    if (id === "zen_credit") {
+      if (!deps.useZenCredit?.()) return null;
+      const credential = jevAvailability(nowMs);
+      return credential.ok ? { id, urls: OPENCODE_JEV_URLS, token: credential.token, model: ZEN_CREDIT_MODEL } : null;
+    }
+    const base = deps.bonus?.baseUrl()?.trim().replace(/\/+$/, "");
+    if (!base) return null;
+    // A token refresh may go to the network: it gets the call's remaining time, no more.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const token = await Promise.race([
+      deps.bonus!.accountToken().catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), budgetMs);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    // The account directory picks the model; this one is only a label.
+    return token ? { id, urls: [`${base}${BONUS_PATH}`], token, model: "jev-latest" } : null;
+  };
+
+  /**
+   * One call down the routes, in order, inside one time budget: a route that
+   * is rate-limited, refused or broken hands the same call to the next while
+   * enough time is left. A timeout spends the budget, so it ends the chain.
+   */
+  const callRoutes = async (
+    feature: JevFeature,
+    request: JevDecideRequest,
+    timeoutMs: number,
+  ): Promise<CallResult & { route?: JevRoute; sent: boolean }> => {
+    const deadline = Date.now() + timeoutMs;
+    let last: CallResult = { ok: false, reason: "breaker_open" };
+    let sent = false;
+    for (const id of JEV_ROUTES) {
+      if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
+      const route = await resolveRoute(id, Date.now(), deadline - Date.now() - MIN_ROUTE_BUDGET_MS);
+      if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
+      if (!route) continue;
+      sent = true;
+      const result = await callJev({
+        route,
+        state: request.state,
+        questions: request.questions,
+        timeoutMs: deadline - Date.now(),
+        userAgent,
+      });
+      if (result.ok) return { ...result, route: id, sent };
+      if (result.breakerOpened) {
+        logger.warn("jev.breaker_opened", {
+          feature,
+          route: id,
+          reason: result.breakerOpened.reason,
+          trigger: result.reason,
+          until: new Date(result.breakerOpened.until).toISOString(),
+        });
+      }
+      last = result;
+      if (result.reason === "timeout") break;
+    }
+    return { ...last, sent };
   };
 
   const decideOnce = async (request: JevDecideRequest): Promise<Record<string, JevAnswer> | null> => {
@@ -642,20 +746,11 @@ export function createJevService(deps: JevServiceDeps): JevService {
       return null;
     }
     const nowMs = Date.now();
-    const credential = jevAvailability(nowMs);
-    if (!credential.ok) {
-      record(feature, credential.reason, { estimatedInputTokens: estimateInputTokens(request) });
-      return null;
-    }
-    const key = sha256Hex(JSON.stringify([JEV_MODEL, request.state, request.questions]));
+    const key = sha256Hex(JSON.stringify(["jev", request.state, request.questions]));
     const cached = cacheGet(key, nowMs);
     if (cached) {
       record(feature, "cached");
       return cached;
-    }
-    if (breakerOpen(nowMs)) {
-      record(feature, "breaker_open", { estimatedInputTokens: estimateInputTokens(request) });
-      return null;
     }
     let pending = pendingByKey.get(key);
     if (!pending) {
@@ -667,27 +762,22 @@ export function createJevService(deps: JevServiceDeps): JevService {
       const defaultTimeout = request.priority === "background" ? BACKGROUND_TIMEOUT_MS : INTERACTIVE_TIMEOUT_MS;
       const timeoutMs = Math.min(Math.max(finiteNumberOrNull(request.timeoutMs) ?? defaultTimeout, 100), MAX_TIMEOUT_MS);
       inFlight += 1;
-      pending = callJev({ token: credential.token, state: request.state, questions: request.questions, timeoutMs, userAgent })
+      const chain = callRoutes(feature, request, timeoutMs)
         .finally(() => {
           inFlight -= 1;
           pendingByKey.delete(key);
         });
+      pending = chain;
       pendingByKey.set(key, pending);
-      const result = await pending;
-      if (!result.ok && result.breakerOpened) {
-        logger.warn("jev.breaker_opened", {
-          feature,
-          reason: result.breakerOpened.reason,
-          trigger: result.reason,
-          until: new Date(result.breakerOpened.until).toISOString(),
-        });
-      }
+      const result = await chain;
       if (result.ok) cacheSet(key, result.answers, Date.now());
       record(feature, result.ok ? "ok" : result.reason, {
-        sent: true,
+        sent: result.sent,
         latencyMs: result.ok ? result.latencyMs : undefined,
         usage: result.usage,
+        route: result.route,
         breakerOpened: !result.ok && Boolean(result.breakerOpened),
+        estimatedInputTokens: result.sent ? undefined : estimateInputTokens(request),
       });
       return result.ok ? result.answers : null;
     }
@@ -710,17 +800,23 @@ export function createJevService(deps: JevServiceDeps): JevService {
 
     status() {
       const nowMs = Date.now();
-      const reason = availabilityReason(nowMs);
-      const open = breakerOpen(nowMs);
+      const reason = availabilityReason();
+      const zen = jevAvailability(nowMs);
       return {
         available: reason === "ok",
         reason,
-        breaker: {
-          open,
-          reason: open ? breaker.reason : null,
-          until: open ? new Date(breaker.until).toISOString() : null,
-          consecutiveFailures: breaker.consecutiveFailures,
-        },
+        routes: JEV_ROUTES.map((route) => {
+          const breaker = breakers[route];
+          const open = breakerOpen(breaker, nowMs);
+          return {
+            route,
+            open,
+            reason: open ? breaker.reason : null,
+            until: open ? new Date(breaker.until).toISOString() : null,
+            consecutiveFailures: breaker.consecutiveFailures,
+          };
+        }),
+        zen: zen.ok ? "signed_in" : zen.reason,
         inFlight,
         counts: structuredClone(counts),
         today: structuredClone(tallies.find((existing) => existing.day === localDayKey(nowMs)) ?? null),

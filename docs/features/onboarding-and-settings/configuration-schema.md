@@ -420,10 +420,14 @@ always does). It **defaults to false**: each completed turn costs one short
 call on the chat's helper model. See
 [Chat › Next prompt suggestions](../chat/README.md#next-prompt-suggestions).
 
-`AiChatConfig.smartDecisionsEnabled?: boolean` lets ADE ask OpenCode Zen's free
-Jev model before its built-in rules ("Smart decisions (OpenCode Jev)"). It
-**defaults to true** and only matters on a machine with an OpenCode Zen
-sign-in; `false` makes every Jev call answer `null` with no network call. See
+`AiChatConfig.smartDecisionsEnabled?: boolean` lets ADE ask the Jev decision
+model before its built-in rules ("Smart decisions (Jev)"): OpenCode's free Jev
+with no sign-in, then the ADE bonus. It **defaults to true**; `false` makes
+every Jev call answer `null` with no network call. The group switches
+(`smartChatStatusEnabled`, `smartSettleNudgeEnabled`, `smartPaletteEnabled`,
+`smartLaneEmojiEnabled`, each default true) turn off one group of features.
+`jevZenCreditEnabled?: boolean` (default false) spends the user's own OpenCode
+Zen balance on Jev once the free allowance is out, before the bonus. See
 [Chat › Jev decisions](../chat/README.md#jev-decisions).
 
 `AiChatConfig.modelHintMode?: "model_and_effort" | "effort_only" | "off"`

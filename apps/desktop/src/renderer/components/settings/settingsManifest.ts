@@ -612,8 +612,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "chat.smart-decisions",
-    label: "Smart decisions (OpenCode Jev)",
-    keywords: ["jev", "opencode", "zen", "sign in", "turn end", "question", "classifier"],
+    label: "Smart decisions (Jev)",
+    keywords: ["jev", "opencode", "turn end", "question", "classifier", "bonus"],
     tab: "chat",
     anchor: "smart-decisions",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
@@ -671,6 +671,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "emoji", "lane", "icon"],
     tab: "chat",
     anchor: "smart-lane-emoji",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
+    id: "chat.jev-zen-credit",
+    label: "Use my OpenCode Zen credit",
+    keywords: ["jev", "opencode", "zen", "sign in", "credit", "balance"],
+    tab: "chat",
+    anchor: "jev-zen-credit",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",

@@ -1440,6 +1440,11 @@ export async function createAdeRuntime(args: {
     const jevService = createJevService({
       logger,
       isEnabled: (feature) => jevEnabled(projectConfigService.get().effective.ai?.chat, feature),
+      useZenCredit: () => projectConfigService.get().effective.ai?.chat?.jevZenCreditEnabled === true,
+      bonus: {
+        baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
+        accountToken: () => getAccountAccessToken(),
+      },
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       tallyStore: jevTallyFileStore(
         path.join(resolveMachineAdeLayout().adeDir, "jev", `tallies-${sha256Hex(projectId).slice(0, 16)}.json`),

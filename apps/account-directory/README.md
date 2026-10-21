@@ -726,6 +726,44 @@ npm run deploy && npm run deploy:production
 Logs: one `music_developer_token_request` line per call with status, reason and
 duration, never the token.
 
+## Jev bonus
+
+`POST /jev/systemone` answers a signed-in ADE caller's Jev question with ADE's
+key: the same Clerk bearer check as `GET /router/registry`, POST only, no
+CORS, `cache-control: no-store`. The ADE brain sends it the same
+`{ state, questions }` it sends OpenCode's free Jev, but only once that day's
+free allowance is out (or OpenCode refused the call). The Worker forwards it
+to TypeSafe's API (`https://api.typesafe.ai/v1/systemone`) with model
+`JEV_MODEL` (`jev-latest` unset, which tracks the newest Jev) and answers with
+TypeSafe's response unchanged, plus `x-ade-jev-remaining`, the caller's calls
+left today.
+
+Each account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (300 unset), and the
+whole fleet `JEV_BONUS_DAILY_GLOBAL_LIMIT` (100,000 unset), in `jev_bonus_days`
+(migration `0015`): one upsert per call whose `where count < ?` is the cap, so
+concurrent calls cannot both take the last slot. Over either cap the answer is
+429 `jev_bonus_exhausted` with `retry-after` set to the next UTC midnight, and
+the brain stops asking the bonus until then. A call TypeSafe did not answer
+gives its slot back; TypeSafe's own 429 passes through, a refused key answers
+503. Rows older than a week are swept by the cron. At Jev's price ($0.042 per
+million input tokens, output free) a full day at the cap is about 1.5 cents
+per account.
+
+The key is the secret `JEV_API_KEY`, a TypeSafe API key. Without it the route
+answers 503 `jev_unavailable` and the brain uses its built-in rules; nothing
+else depends on it, so the deploy preflight does not require it.
+
+```bash
+cd apps/account-directory
+wrangler secret put JEV_API_KEY
+wrangler secret put JEV_API_KEY --env production
+npm run deploy && npm run deploy:production
+```
+
+Logs: one `jev_bonus_request` line per call with status, reason, TypeSafe's
+status, token counts and duration. The question and the answer are never
+logged or stored.
+
 ## Local checks
 
 ```sh

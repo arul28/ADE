@@ -2103,12 +2103,18 @@ export type AiChatConfig = {
    */
   promptSuggestionsEnabled?: boolean;
   /**
-   * "Smart decisions (OpenCode Jev)": let ADE ask OpenCode Zen's free Jev
-   * model small yes/no questions (did a turn end on a question?) before its
-   * built-in rules. On unless set to false; only does anything on a machine
-   * with an OpenCode Zen sign-in. Lives in `.ade/local.yaml`.
+   * "Smart decisions (Jev)": let ADE ask the Jev decision model small
+   * questions (did a turn end on a question?) before its built-in rules. On
+   * unless set to false. OpenCode's free Jev needs no sign-in; the ADE bonus
+   * takes over when its daily allowance is out. Lives in `.ade/local.yaml`.
    */
   smartDecisionsEnabled?: boolean;
+  /**
+   * Once OpenCode's free allowance is out, spend the user's own OpenCode Zen
+   * balance on Jev before the ADE bonus. Off unless set to true; needs a Zen
+   * sign-in on this machine.
+   */
+  jevZenCreditEnabled?: boolean;
   /**
    * The Smart decisions groups (`shared/jevSettings.ts`), each on unless set
    * to false and only asked while `smartDecisionsEnabled` is on: whether a

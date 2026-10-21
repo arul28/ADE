@@ -164,6 +164,28 @@ export function logModelRegistryRequest(args: {
  * One line per `GET /music/developer-token`. Never the token: status, a fixed
  * reason, and how long signing took.
  */
+/** One `POST /jev/systemone` call: counts, status and timing only, never the question or answer. */
+export function logJevBonusRequest(args: {
+  status: number;
+  reason?: string;
+  upstreamStatus?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMs: number;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "jev_bonus_request",
+    status: args.status,
+    ...(args.reason ? { reason: args.reason } : {}),
+    ...(args.upstreamStatus != null ? { upstreamStatus: args.upstreamStatus } : {}),
+    ...(args.inputTokens != null ? { inputTokens: args.inputTokens } : {}),
+    ...(args.outputTokens != null ? { outputTokens: args.outputTokens } : {}),
+    durationMs: Math.max(0, Math.round(args.durationMs)),
+  }));
+}
+
 export function logMusicDeveloperTokenRequest(args: {
   status: number;
   reason?: string;

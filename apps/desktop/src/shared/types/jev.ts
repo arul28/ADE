@@ -73,11 +73,18 @@ export type JevDecideRequest<Q extends JevQuestions = JevQuestions> = {
   timeoutMs?: number;
 };
 
+/**
+ * Where a call is answered, tried in this order: OpenCode's free Jev (no key,
+ * a daily allowance per network), Jev on the user's own OpenCode Zen balance
+ * (only when they opt in), and the ADE bonus (ADE's key through the account
+ * directory, capped per account per day).
+ */
+export type JevRoute = "free" | "zen_credit" | "bonus";
+export const JEV_ROUTES: readonly JevRoute[] = ["free", "zen_credit", "bonus"];
+
 /** Why a call answered `null`, as counted in `jev.summary` and `status()`. */
 export type JevFallbackReason =
   | "disabled"
-  | "not_signed_in"
-  | "token_expired"
   | "breaker_open"
   | "busy"
   | "invalid_request"
@@ -90,18 +97,22 @@ export type JevFallbackReason =
 
 export type JevOutcome = "ok" | "cached" | JevFallbackReason;
 
-export type JevAvailabilityReason = "ok" | "disabled" | "not_signed_in" | "token_expired";
+export type JevAvailabilityReason = "ok" | "disabled";
 
 export type JevStatus = {
   available: boolean;
   reason: JevAvailabilityReason;
-  breaker: {
+  /** Each route's breaker, in the order calls try them. */
+  routes: Array<{
+    route: JevRoute;
     open: boolean;
     /** What opened it: `rate_limited`, `auth_rejected`, or `transient`. */
     reason: string | null;
     until: string | null;
     consecutiveFailures: number;
-  };
+  }>;
+  /** This machine's OpenCode Zen sign-in, which only the `zen_credit` route uses. */
+  zen: "signed_in" | "not_signed_in" | "token_expired";
   inFlight: number;
   /** Since this brain started, per feature and outcome. */
   counts: Partial<Record<JevFeature, Partial<Record<JevOutcome, number>>>>;
@@ -116,7 +127,7 @@ export type JevStatus = {
 export type JevDayTally = {
   /** Machine-local calendar day, `YYYY-MM-DD`. */
   day: string;
-  /** `decide()` calls that would reach Jev if it were up and signed in (the setting is on). */
+  /** `decide()` calls that would reach Jev if it were up (the setting is on). */
   wanted: number;
   /** Requests actually sent. */
   sent: number;
@@ -126,10 +137,12 @@ export type JevDayTally = {
   outcomes: Partial<Record<JevOutcome, number>>;
   /** Requests sent, per feature. */
   sentByFeature: Partial<Record<JevFeature, number>>;
+  /** Answered requests, per route. */
+  answeredByRoute: Partial<Record<JevRoute, number>>;
   /** Tokens Jev reported for sent requests. */
   inputTokens: number;
   outputTokens: number;
-  /** Estimated input tokens for wanted calls that were never sent (signed out, breaker, busy). */
+  /** Estimated input tokens for wanted calls that were never sent (breaker, busy). */
   unsentInputTokensEstimate: number;
   /** Times the breaker opened. */
   breakerOpens: number;

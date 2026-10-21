@@ -4548,15 +4548,20 @@ config service):
   without a native suggestion (Settings › Chat › Next prompt). Defaults to
   **false**. Per project and per machine, read on the machine that runs the
   chat. See [Next prompt suggestions](#next-prompt-suggestions).
-- `ai.chat.smartDecisionsEnabled` -- "Smart decisions (OpenCode Jev)" in
-  Settings › Chat (`SmartDecisionsSection.tsx`). On a machine with no
-  OpenCode Zen sign-in (or an expired one) the row says Jev is free with
-  one and offers **Sign in to OpenCode**, the same `OAuthConnectModal` the
+- `ai.chat.smartDecisionsEnabled` -- "Smart decisions (Jev)" in Settings ›
+  Chat (`SmartDecisionsSection.tsx`). Jev needs no sign-in: OpenCode's free
+  Jev answers first and the ADE bonus after it (see
+  [Jev decisions](#jev-decisions)). Defaults to **true**. Off makes every
+  `ai.jevDecide` answer `null` with no network call, so every feature uses
+  its built-in rules.
+- `ai.chat.jevZenCreditEnabled` -- "Use my OpenCode Zen credit", the last
+  row under Smart decisions: once the free allowance is out, Jev is paid
+  from the user's own Zen balance (`jev-1.13`) before the ADE bonus.
+  Defaults to **false**. Without a Zen sign-in (or with an expired one) the
+  row offers **Sign in to OpenCode**, the same `OAuthConnectModal` the
   Providers page uses for the `opencode` provider, on the settings page's
-  machine pin; after it connects the row shows as signed in and re-reads
-  `ai.jevStatus` once the brain's one-minute sign-in cache has expired. Defaults to **true**. Off makes every `ai.jevDecide` answer `null`
-  with no network call, so every feature uses its built-in rules. See
-  [Jev decisions](#jev-decisions).
+  machine pin; after it connects the row shows the switch and re-reads
+  `ai.jevStatus` once the brain's one-minute sign-in cache has expired.
 - Smart decisions groups -- shown under the master switch while it is on
   and Zen is signed in, one row each with an icon, a switch and what it
   decides; each defaults to **true**, and off answers `null` for its
@@ -4577,36 +4582,51 @@ config service):
 ### Jev decisions
 
 `apps/desktop/src/main/services/jev/jevService.ts` is the one helper every
-feature uses to ask OpenCode Zen's free `jev-1.13-free` decision model a typed
-question (`noul` yes/no, `choice`, `score`; types in `shared/types/jev.ts`).
+feature uses to ask the Jev decision model a typed question (`noul` yes/no,
+`choice`, `score`; types in `shared/types/jev.ts`).
 `decide({ feature, state, questions, priority, timeoutMs? })` answers every
 question asked or `null`, and `null` means "use your existing logic": it is
-returned for every failure (turned off, no sign-in, expired token, breaker
-open, call cap reached, timeout, network, non-2xx, bad JSON, a missing answer,
-or a choice/score outside the criteria). It never throws and no Jev failure is
+returned for every failure (turned off, every route spent or down, call cap
+reached, timeout, network, non-2xx, bad JSON, a missing answer, or a
+choice/score outside the criteria). It never throws and no Jev failure is
 ever shown to the user. `score` answers are normalized to the criterion index,
 its label, and one probability per criterion.
 
-- **Availability.** Only a machine with an unexpired OpenCode Zen sign-in calls
-  out: the `credential` row `integration_id = 'opencode'` (active first, else
-  newest) in `opencode.db`, searched in `openCodeDataDirs()` order, read-only
-  with `busy_timeout = 0`, cached 60 s. ADE never refreshes the token. The gate
-  is `jevAvailability`, one function.
+- **Routes.** One call tries them in order inside one time budget
+  (`callRoutes`, `JEV_ROUTES`), and a route that is rate-limited, refused or
+  broken hands the same call to the next while at least 300 ms are left; a
+  timeout ends the chain.
+  1. `free`: OpenCode's `jev-1.13-free`, with no key. Its allowance is per
+     network (measured: about 220 calls a day), shared by every Jev feature
+     and every ADE on that network, and resets at midnight UTC.
+  2. `zen_credit`: OpenCode's paid `jev-1.13` on the user's own Zen balance,
+     only with `ai.chat.jevZenCreditEnabled` and an unexpired Zen sign-in
+     (`jevAvailability`: the `credential` row `integration_id = 'opencode'`,
+     active first, else newest, in `opencode.db`, searched in
+     `openCodeDataDirs()` order, read-only with `busy_timeout = 0`, cached
+     60 s; ADE never refreshes the token).
+  3. `bonus`: the account directory's `POST /jev/systemone` with the signed-in
+     ADE account's bearer; the Worker forwards to TypeSafe's Jev API with
+     ADE's key, capped per account per UTC day (300 by default). The account
+     token is fetched within the call's remaining time. See the account
+     directory README, "Jev bonus".
 - **Resilience.** Timeouts default to 1500 ms (`interactive`) and 4000 ms
-  (`background`). The breaker backs off 5 min on 429 (or `retry-after`), 30 min
-  on 401/403, and after two consecutive 5xx/timeout/network failures 1 min
-  doubling to 15 min; any 200 resets it. Four calls in flight at most, of which
-  background may use three; a background call over the cap is dropped, never
-  queued. Identical questions share one call and a 10-minute LRU cache (128
-  entries) keyed by a hash of model, state and questions. The breaker, cap and
-  cache are per brain process; counts are per project runtime.
+  (`background`). Each route has its own breaker: 429 backs off until
+  `retry-after` (the free allowance and the bonus cap both name midnight UTC)
+  or 5 min; 401/402/403 back off 30 min; two consecutive 5xx/timeout/network
+  failures 1 min doubling to 15 min; any 200 resets that route. Four calls in
+  flight at most, of which background may use three; a background call over
+  the cap is dropped, never queued. Identical questions share one call and a
+  10-minute LRU cache (128 entries) keyed by a hash of state and questions.
+  Breakers, cap and cache are per brain process; counts are per project
+  runtime, and the day tally counts answers per route (`answeredByRoute`).
 - **Reach.** `ai.jevDecide` and `ai.jevStatus` are ADE actions (read, reachable
   remotely); the renderer calls `window.ade.ai.jevDecide(request, pin)` and
   `window.ade.ai.jevStatus(pin)`, routed to the pinned machine, and both answer
   `null` instead of throwing. `feature` is a closed union (`JEV_FEATURES`):
   `turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`,
   `model_hint`, `status_line`. A feature whose Smart decisions group is off
-  answers `null` (outcome `disabled`) before any sign-in check.
+  answers `null` (outcome `disabled`) before any route is tried.
 
 ### Next prompt suggestions
 

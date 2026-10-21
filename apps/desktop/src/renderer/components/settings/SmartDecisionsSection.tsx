@@ -1,9 +1,9 @@
 import { useEffect, useState, type ElementType, type ReactNode } from "react";
-import { CheckCircle, Command, Gauge, HandWaving, Smiley } from "@phosphor-icons/react";
+import { CheckCircle, Command, Gauge, HandWaving, Smiley, Wallet } from "@phosphor-icons/react";
 import type { AiChatConfig } from "../../../shared/types";
 import { JEV_GROUP_CONFIG_KEY } from "../../../shared/jevSettings";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
-import type { JevAvailabilityReason } from "../../../shared/types/jev";
+import type { JevStatus } from "../../../shared/types/jev";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { showToast } from "../app/toast/toastStore";
 import { OAuthConnectModal } from "./OAuthConnectModal";
@@ -33,15 +33,17 @@ const STATUS_SETTLE_MS = 61_000;
  * and the composer. Saved to this project's `.ade/local.yaml` on the machine
  * this settings page is scoped to, and read from that machine's Jev.
  *
- * With no OpenCode Zen sign-in on that machine the switch would do nothing, so
- * the row offers the sign-in instead, through the same dialog Providers uses.
+ * Jev needs no sign-in: OpenCode's free allowance answers first and the ADE
+ * bonus after it. An OpenCode Zen sign-in only adds the optional step between
+ * them, the user's own Zen balance, offered through the same dialog Providers
+ * uses.
  */
 export function SmartDecisionsSection() {
   const { pin } = useSettingsMachineScope();
   const pinKey = pin?.key ?? null;
   const { onWeb, status, saving, enabled, save } = useChatConfigToggle("smartDecisionsEnabled", { defaultOn: true });
   // Null until read, and on a machine whose ADE has no Jev.
-  const [reason, setReason] = useState<JevAvailabilityReason | null>(null);
+  const [zen, setZen] = useState<JevStatus["zen"] | null>(null);
   const [statusRead, setStatusRead] = useState(0);
   const [signIn, setSignIn] = useState<{ methods: OpenCodeProviderAuthMethod[] } | null>(null);
   const [opening, setOpening] = useState(false);
@@ -50,7 +52,7 @@ export function SmartDecisionsSection() {
     if (onWeb) return;
     let cancelled = false;
     void window.ade.ai.jevStatus(pin).then((jev) => {
-      if (!cancelled) setReason(jev?.reason ?? null);
+      if (!cancelled) setZen(jev?.zen ?? null);
     });
     return () => {
       cancelled = true;
@@ -71,8 +73,7 @@ export function SmartDecisionsSection() {
     return () => window.clearTimeout(timer);
   }, [settling]);
 
-  if (onWeb || reason == null) return null;
-  const signedOut = reason === "not_signed_in" || reason === "token_expired";
+  if (onWeb || zen == null) return null;
 
   const openSignIn = async () => {
     setOpening(true);
@@ -105,19 +106,15 @@ export function SmartDecisionsSection() {
       <ModernRows>
         <ModernRow
           anchor="smart-decisions"
-          title="Smart decisions (OpenCode Jev)"
-          hint={signedOut
-            ? reason === "token_expired"
-              ? "Your OpenCode Zen sign-in expired. Sign in again to use the free Jev model; until then ADE's built-in rules decide."
-              : "Free with an OpenCode Zen sign-in: ADE asks the free Jev model, for example whether a finished turn asked you something."
-            : status === "loading"
-              ? "Loading…"
-              : status === "failed"
-                ? "Couldn't load the configuration."
-                : "Uses your OpenCode Zen sign-in to ask the free Jev model, for example whether a finished turn asked you something. When Jev is slow or unavailable, ADE's built-in rules decide."}
-          control={signedOut ? signInButton : (
+          title="Smart decisions (Jev)"
+          hint={status === "loading"
+            ? "Loading…"
+            : status === "failed"
+              ? "Couldn't load the configuration."
+              : "ADE asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ADE's bonus answers for signed-in ADE accounts. When Jev is slow or unavailable, ADE's built-in rules decide."}
+          control={(
             <SettingsToggle
-              label="Smart decisions (OpenCode Jev)"
+              label="Smart decisions (Jev)"
               checked={enabled}
               disabled={status !== "loaded" || saving}
               onChange={(value) => void save(value)}
@@ -125,7 +122,7 @@ export function SmartDecisionsSection() {
           )}
         />
       </ModernRows>
-      {signedOut || !enabled || status !== "loaded" ? null : (
+      {!enabled || status !== "loaded" ? null : (
         <div style={{ marginTop: 10 }}>
           <ModernRows>
             <GroupRow
@@ -158,6 +155,29 @@ export function SmartDecisionsSection() {
               hint="Picks an emoji for a new lane from its name."
             />
           </ModernRows>
+          <div style={{ marginTop: 10 }}>
+            <ModernRows>
+              {zen === "signed_in" ? (
+                <GroupRow
+                  anchor="jev-zen-credit"
+                  configKey="jevZenCreditEnabled"
+                  defaultOn={false}
+                  icon={Wallet}
+                  title="Use my OpenCode Zen credit"
+                  hint="Once the free allowance is out, spend your own OpenCode Zen balance on Jev before ADE's bonus. Jev costs about $0.04 per million input tokens: well under a cent a day."
+                />
+              ) : (
+                <ModernRow
+                  anchor="jev-zen-credit"
+                  title={<GroupTitle icon={Wallet}>Use my OpenCode Zen credit</GroupTitle>}
+                  hint={zen === "token_expired"
+                    ? "Your OpenCode Zen sign-in expired. Sign in again to spend your own Zen balance on Jev once the free allowance is out. Optional: the ADE bonus covers it otherwise."
+                    : "Optional: sign in to OpenCode Zen to spend your own balance on Jev once the free allowance is out, before ADE's bonus."}
+                  control={signInButton}
+                />
+              )}
+            </ModernRows>
+          </div>
         </div>
       )}
       {signIn ? (
@@ -168,7 +188,7 @@ export function SmartDecisionsSection() {
           onClose={() => setSignIn(null)}
           onConnected={() => {
             setSignIn(null);
-            setReason("ok");
+            setZen("signed_in");
             setSettling(true);
           }}
         />
@@ -188,15 +208,16 @@ function GroupTitle({ icon: Icon, children }: { icon: ElementType; children: Rea
   );
 }
 
-/** One group of Jev decisions. Off, its features use ADE's built-in rules. */
-function GroupRow({ anchor, configKey, icon, title, hint }: {
+/** One switch under Smart decisions: a group of Jev decisions (off, its features use ADE's built-in rules), or the Zen credit opt-in. */
+function GroupRow({ anchor, configKey, defaultOn = true, icon, title, hint }: {
   anchor: string;
-  configKey: (typeof JEV_GROUP_CONFIG_KEY)[keyof typeof JEV_GROUP_CONFIG_KEY];
+  configKey: (typeof JEV_GROUP_CONFIG_KEY)[keyof typeof JEV_GROUP_CONFIG_KEY] | "jevZenCreditEnabled";
+  defaultOn?: boolean;
   icon: ElementType;
   title: string;
   hint: string;
 }) {
-  const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn: true });
+  const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn });
   return (
     <ModernRow
       anchor={anchor}

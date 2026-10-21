@@ -16,7 +16,8 @@ import type {
 
 /** The `jev` daily summary row's counters (`captureDailyJevAnalytics`); numbers only. */
 const JEV_DAILY_PROPERTIES = [
-  "jev_wanted_count", "jev_ok_count", "jev_cached_count", "jev_not_signed_in_count", "jev_breaker_skip_count",
+  "jev_wanted_count", "jev_ok_count", "jev_cached_count", "jev_breaker_skip_count",
+  "jev_answered_free_count", "jev_answered_zen_credit_count", "jev_answered_bonus_count",
   "jev_busy_count", "jev_rate_limited_count", "jev_auth_rejected_count", "jev_timeout_count", "jev_network_count",
   "jev_http_error_count", "jev_bad_response_count", "jev_breaker_open_count", "jev_unsent_input_token_estimate",
   "jev_latency_avg_ms", "jev_slow_count",
