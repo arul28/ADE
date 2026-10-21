@@ -380,6 +380,7 @@ describe("draftService", () => {
 
     it("keeps a cross-machine pause through retries and clears it after delivery", () => {
       const created = createDraft(db, { text: "send after return", schedule: schedule() });
+      const originalScheduledAt = created.scheduledAt!;
       const heldAt = "2026-10-09T12:00:00.000Z";
 
       const firstClaim = claimScheduledDraft(db, created.id);
@@ -396,8 +397,13 @@ describe("draftService", () => {
       expect(setDraftStatusIfSending(db, created.id, {
         status: "scheduled",
         lastError: "Waiting for this send's images to reach this machine.",
+        scheduledAt: undefined,
+        moveAwayHeldAt: undefined,
       }, retryClaim!)).toBe(true);
-      expect(getDraft(db, created.id)?.moveAwayHeldAt).toBe(heldAt);
+      expect(getDraft(db, created.id)).toMatchObject({
+        scheduledAt: originalScheduledAt,
+        moveAwayHeldAt: heldAt,
+      });
 
       const resumedClaim = claimScheduledDraft(db, created.id);
       expect(resumedClaim).toBeTruthy();

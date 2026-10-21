@@ -789,8 +789,8 @@ export function setDraftStatusIfSending(
   claimedAt: string,
 ): boolean {
   const now = new Date().toISOString();
-  const updateScheduledAt = Object.hasOwn(patch, "scheduledAt");
-  const updateMoveAwayHeldAt = Object.hasOwn(patch, "moveAwayHeldAt");
+  const updateScheduledAt = patch.scheduledAt !== undefined;
+  const updateMoveAwayHeldAt = patch.moveAwayHeldAt !== undefined;
   const sql = `update prompt_stashes
        set status = ?, fired_at = coalesce(?, fired_at), last_error = ?,
            scheduled_at = case when ? = 1 then ? else scheduled_at end,
@@ -832,8 +832,8 @@ export function setDraftStatus(db: DraftDb,
     moveAwayHeldAt?: string | null;
   },
 ): void {
-  const updateScheduledAt = Object.hasOwn(patch, "scheduledAt");
-  const updateMoveAwayHeldAt = Object.hasOwn(patch, "moveAwayHeldAt");
+  const updateScheduledAt = patch.scheduledAt !== undefined;
+  const updateMoveAwayHeldAt = patch.moveAwayHeldAt !== undefined;
   db.run(
     `
       update prompt_stashes

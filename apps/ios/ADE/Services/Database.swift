@@ -2942,6 +2942,14 @@ final class DatabaseService {
   }
 
   private func ensureHydrationProjectionColumns() throws {
+    // A desktop can write this CRR column while pausing a scheduled send for a
+    // chat that continues on another machine. The phone must accept it even
+    // though it does not read the value.
+    try ensureColumn(
+      tableName: "prompt_stashes",
+      columnName: "move_away_held_at",
+      definition: "text"
+    )
     try ensureColumn(
       tableName: "lanes",
       columnName: "attached_root_path",
