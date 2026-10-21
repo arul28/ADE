@@ -84,6 +84,11 @@ actor CaptureEngine {
         self.deviceUDID = deviceUDID
     }
 
+    /// ADE patch (foldables): capture the panel CoreDevice reports active.
+    func setPreferredScreen(_ screenID: UInt32?) async {
+        await frameCapture.setPreferredScreen(screenID)
+    }
+
     func start() async throws {
         guard phase == .unstarted else { return }
         phase = .starting

@@ -117,3 +117,8 @@ Verbatim, byte for byte:
 | `ADESimHelperCore/Vendor/serve-sim/DeviceStateDelivery.swift` | `dc483f5227caf43d7d5ab652fe761af096711d9323916c6b223cad0e22e21bc8` |
 
 ADE's own code on top of it lives outside `Vendor/`: `DevicePosture.swift` and the `posture`, `posture-get`, `posture-watch` commands in `Protocol.swift` / `SimHelperRuntime.swift`.
+
+### ADE patches for foldables (2026-10-21)
+
+- `FrameCapture.swift`: `setPreferredScreen(_:)` and a `screenProperties` → `screenID` read, so capture follows the panel CoreDevice reports active (the Duo keeps both panels' surfaces alive and the largest is always the inner one). With no preferred screen the upstream largest-surface pick is unchanged, which is every non-foldable device.
+- `CaptureEngine.swift`: `setPreferredScreen(_:)` forwarding to it.

@@ -64,14 +64,39 @@ enum DevicePosture {
         )
     }
 
+    /// The angle each of Device Hub's presets puts the hinge at.
+    private static let poseAngles: [String: Double] = ["closed": 0, "open": 180, "laptop": 90, "book": 90, "tent": 80]
+
     /// Apply a preset or a raw angle. Returns false when the device has no hinge
     /// or CoreDevice refused the send; never throws for "this is not a Duo".
+    ///
+    /// The hinge SWEEPS to its target, as Device Hub's default does, rather
+    /// than jumping. SpringBoard's fold state machine has hysteresis: a jump
+    /// straight between 0° and 180° can leave it on the old panel (the inner
+    /// screen stays on with the phone closed, or the cover with it open). A
+    /// sweep of ~10° steps, a frame apart, crosses every threshold the way a
+    /// real hinge does; the preset is then applied for its orientation and
+    /// Table Mode.
     static func apply(udid: String, pose: String?, angle: Double?) async -> Bool {
         let bridge = CoreDeviceBridge.shared
         guard await bridge.supportsHingeAngle(udid: udid) else { return false }
+        guard let target = pose.flatMap({ poseAngles[$0] }) ?? angle else { return false }
+        // A fresh helper may not know the angle yet. The active panel says
+        // which end the hinge is nearer: the cover shows only when closed.
+        var current = await bridge.hingeState(udid: udid).angle
+        if current == nil, let active = await displays(udid: udid).first(where: \.active)?.screenID {
+            current = active == 1 ? 0 : 180
+        }
+        if let current, abs(current - target) > 10 {
+            let steps = Int((abs(current - target) / 10).rounded(.up))
+            for step in 1..<steps {
+                let value = current + (target - current) * Double(step) / Double(steps)
+                guard await bridge.setHingeAngle(udid: udid, angle: value) else { return false }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+        }
         if let pose { return await bridge.setHingePose(udid: udid, pose: pose) }
-        if let angle { return await bridge.setHingeAngle(udid: udid, angle: angle) }
-        return false
+        return await bridge.setHingeAngle(udid: udid, angle: target)
     }
 }
 
@@ -85,14 +110,24 @@ actor DevicePostureWatchers {
         guard await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) else { return false }
         let stop = await CoreDeviceBridge.shared.subscribeDeviceState(udid: udid) { snapshot in
             Task {
-                let displays = await DevicePosture.displays(udid: udid)
-                onChange(DevicePosture.State(
-                    supported: true,
-                    angle: snapshot.state.angle,
-                    orientation: snapshot.state.orientation,
-                    tableMode: snapshot.state.tableMode,
-                    displays: displays
-                ))
+                // The guest elects the new panel a moment after the hinge
+                // moves, so one read right away still names the old one.
+                // Re-read over the next second; report each read that changes
+                // the active panel, plus the first.
+                var lastActive: UInt32?? = .none
+                for delayMs in [0, 250, 600, 1_200] {
+                    if delayMs > 0 { try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
+                    let state = DevicePosture.State(
+                        supported: true,
+                        angle: snapshot.state.angle,
+                        orientation: snapshot.state.orientation,
+                        tableMode: snapshot.state.tableMode,
+                        displays: await DevicePosture.displays(udid: udid)
+                    )
+                    if case let .some(previous) = lastActive, previous == state.activeScreenID { continue }
+                    lastActive = .some(state.activeScreenID)
+                    onChange(state)
+                }
             }
         }
         stops[udid] = stop

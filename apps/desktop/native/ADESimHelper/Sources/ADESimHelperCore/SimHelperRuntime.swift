@@ -49,8 +49,32 @@ public actor SimHelperRuntime {
         }
     }
 
-    private func emitPosture(udid: String, state: DevicePosture.State) {
-        emit(.postureChanged(udid: udid, state: state.payload))
+    /// Follow a foldable's pose: the session's capture and input track the
+    /// active panel, and ADE hears every change (with the panel's new size when
+    /// it changed) as `posture-changed`. A no-op for a device with no hinge.
+    private func watchPosture(udid: String) async -> Bool {
+        let session = sessions[udid]
+        let started = await postureWatchers.start(udid: udid) { [weak self] state in
+            guard let self else { return }
+            Task { await self.postureChanged(udid: udid, state: state) }
+        }
+        if started, session != nil {
+            await postureChanged(udid: udid, state: await DevicePosture.read(udid: udid))
+        }
+        return started
+    }
+
+    private func postureChanged(udid: String, state: DevicePosture.State) async {
+        var payload = state.payload
+        if let session = sessions[udid] {
+            _ = await session.applyActiveScreen(state.activeScreenID)
+            let metrics = await session.metrics
+            payload["pointWidth"] = metrics.pointWidth
+            payload["pointHeight"] = metrics.pointHeight
+            payload["pixelWidth"] = metrics.pixelWidth
+            payload["pixelHeight"] = metrics.pixelHeight
+        }
+        emit(.postureChanged(udid: udid, state: payload))
     }
 
     public func shutdown() async {
@@ -137,16 +161,20 @@ public actor SimHelperRuntime {
             case let .captureStart(_, udid, fps, scale, bitrateKbps):
                 let session = try session(for: udid)
                 let started = try await session.startCapture(fps: fps, scale: scale, bitrateKbps: bitrateKbps)
+                // A foldable streams its active panel, so pick it before the
+                // first metrics go out and keep following it after.
+                if await session.isFoldable() { _ = await watchPosture(udid: udid) }
+                let metrics = await session.metrics
                 emit(.captureStarted(
                     id: id,
                     udid: udid,
                     url: started.url,
                     token: started.token,
-                    pointWidth: started.metrics.pointWidth,
-                    pointHeight: started.metrics.pointHeight,
-                    pixelWidth: started.metrics.pixelWidth,
-                    pixelHeight: started.metrics.pixelHeight,
-                    scale: started.metrics.scale
+                    pointWidth: metrics.pointWidth,
+                    pointHeight: metrics.pointHeight,
+                    pixelWidth: metrics.pixelWidth,
+                    pixelHeight: metrics.pixelHeight,
+                    scale: metrics.scale
                 ))
 
             case let .captureStop(_, udid):
@@ -203,10 +231,7 @@ public actor SimHelperRuntime {
 
             case let .postureWatch(_, udid, enabled):
                 if enabled {
-                    let watching = await postureWatchers.start(udid: udid) { [weak self] state in
-                        guard let self else { return }
-                        Task { await self.emitPosture(udid: udid, state: state) }
-                    }
+                    let watching = await watchPosture(udid: udid)
                     emit(.ok(id: id, payload: ["watching": watching]))
                 } else {
                     await postureWatchers.stop(udid: udid)
