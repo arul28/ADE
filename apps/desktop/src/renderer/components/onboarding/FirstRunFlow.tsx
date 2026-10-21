@@ -128,6 +128,7 @@ function folderCandidate(rootPath: string): OnboardingProjectCandidate {
     providers: [],
     laneCount: 0,
     suggested: true,
+    inAde: false,
   };
 }
 
@@ -136,23 +137,27 @@ export type FirstRunResult = { rootPaths: string[] };
 
 /**
  * Adds the chosen projects to this computer's recent projects and queues the
- * chats of the ones whose import pill is on for each one's first open.
+ * chats of the ones whose import pill is on for each one's next open.
+ * Projects already in ADE (`inAde`) are not added again; their chats can
+ * still be queued.
  */
 export async function addFirstRunProjects(
   projects: OnboardingProjectCandidate[],
   importRoots: ReadonlySet<string>,
 ): Promise<FirstRunResult> {
   const add = window.ade.app.addOnboardingProjects;
-  if (!projects.length || !add) return { rootPaths: [] };
-  await add(projects.map((project) => project.rootPath));
-  window.dispatchEvent(new Event(RECENT_PROJECTS_CHANGED_EVENT));
+  const added = projects.filter((project) => !project.inAde);
+  if (added.length && add) {
+    await add(added.map((project) => project.rootPath));
+    window.dispatchEvent(new Event(RECENT_PROJECTS_CHANGED_EVENT));
+  }
   queueChatImports(
     projects
       .filter((project) => project.recentChatCount > 0 && importRoots.has(project.rootPath))
       .map((project) => project.rootPath),
     Date.now() - FIRST_RUN_CHAT_WINDOW_MS,
   );
-  return { rootPaths: projects.map((project) => project.rootPath) };
+  return { rootPaths: added.map((project) => project.rootPath) };
 }
 
 /**
@@ -198,7 +203,13 @@ export function FirstRunProjects({
       .then((result) => {
         if (cancelled) return;
         setDiscovery({ phase: "ready", machineName: result.machineName, projects: result.projects });
-        setSelected(new Set(result.projects.filter((project) => project.suggested).map((project) => project.rootPath)));
+        setSelected(
+          new Set(
+            result.projects
+              .filter((project) => project.suggested && !project.inAde)
+              .map((project) => project.rootPath),
+          ),
+        );
       })
       .catch(() => {
         if (!cancelled) setDiscovery({ phase: "ready", machineName: "this computer", projects: [] });
@@ -210,9 +221,17 @@ export function FirstRunProjects({
 
   const projects = discovery.phase === "ready" ? discovery.projects : [];
   const machineName = discovery.phase === "ready" ? discovery.machineName : null;
+  /** Projects setup can add; the rest are already in ADE. */
+  const addable = useMemo(() => projects.filter((project) => !project.inAde), [projects]);
+  const inAdeCount = projects.length - addable.length;
   const chosen = useMemo(
-    () => projects.filter((project) => selected.has(project.rootPath)),
-    [projects, selected],
+    () => addable.filter((project) => selected.has(project.rootPath)),
+    [addable, selected],
+  );
+  /** Projects already in ADE whose chats are to come in. */
+  const importingInAde = useMemo(
+    () => projects.filter((project) => project.inAde && importing.has(project.rootPath)),
+    [importing, projects],
   );
 
   const toggle = useCallback((rootPath: string) => {
@@ -224,24 +243,24 @@ export function FirstRunProjects({
     });
   }, []);
 
-  // Importing a project's chats means adding the project too.
-  const setImport = useCallback((rootPath: string, on: boolean) => {
+  // Importing a new project's chats means adding the project too.
+  const setImport = useCallback((rootPath: string, on: boolean, inAde: boolean) => {
     setImporting((current) => {
       const next = new Set(current);
       if (on) next.add(rootPath);
       else next.delete(rootPath);
       return next;
     });
-    if (on) setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
+    if (on && !inAde) setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
   }, []);
   const [qrOpen, setQrOpen] = useState(false);
   const openQr = useCallback(() => setQrOpen(true), []);
   const closeQr = useCallback(() => setQrOpen(false), []);
 
-  const allSelected = projects.length > 0 && chosen.length === projects.length;
+  const allSelected = addable.length > 0 && chosen.length === addable.length;
   const toggleAll = useCallback(() => {
-    setSelected(allSelected ? new Set() : new Set(projects.map((project) => project.rootPath)));
-  }, [allSelected, projects]);
+    setSelected(allSelected ? new Set() : new Set(addable.map((project) => project.rootPath)));
+  }, [addable, allSelected]);
 
   const addFolder = useCallback(async () => {
     const rootPath = await window.ade.project.chooseDirectory({ title: "Add a project" }).catch(() => null);
@@ -255,21 +274,21 @@ export function FirstRunProjects({
   }, []);
 
   const finish = useCallback(async () => {
-    if (!chosen.length) {
+    if (!chosen.length && !importingInAde.length) {
       onDone({ rootPaths: [] });
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      onDone(await addFirstRunProjects(chosen, importing));
+      onDone(await addFirstRunProjects([...chosen, ...importingInAde], importing));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setBusy(false);
     }
-  }, [chosen, importing, onDone]);
+  }, [chosen, importing, importingInAde, onDone]);
 
-  const chatTotal = chosen.reduce(
+  const chatTotal = [...chosen, ...importingInAde].reduce(
     (sum, project) => sum + (importing.has(project.rootPath) ? project.recentChatCount : 0),
     0,
   );
@@ -291,11 +310,18 @@ export function FirstRunProjects({
           <span>
             {discovery.phase === "loading"
               ? "Looking for your projects…"
-              : projects.length
-                ? `${pluralize(projects.length, "project", "projects")} found`
-                : "No projects found yet"}
+              : !projects.length
+                ? "No projects found yet"
+                : !addable.length
+                  ? inAdeCount === 1
+                    ? "Your project is already in ADE"
+                    : `All ${inAdeCount} of your projects are already in ADE`
+                  : [
+                      `${pluralize(addable.length, "new project", "new projects")} found`,
+                      inAdeCount ? `${inAdeCount} already in ADE` : null,
+                    ].filter(Boolean).join(" · ")}
           </span>
-          {projects.length > 1 ? (
+          {addable.length > 1 ? (
             <button type="button" className="ade-fr-text-btn" onClick={toggleAll}>
               {allSelected ? "Select none" : "Select all"}
             </button>
@@ -309,7 +335,7 @@ export function FirstRunProjects({
                 <ProjectRow
                   key={project.rootPath}
                   project={project}
-                  checked={selected.has(project.rootPath)}
+                  checked={project.inAde || selected.has(project.rootPath)}
                   importing={importing.has(project.rootPath)}
                   onToggle={toggle}
                   onSetImport={setImport}
@@ -339,13 +365,11 @@ export function FirstRunProjects({
           Skip
         </button>
         <span className="ade-fr-summary" aria-live="polite">
-          {chosen.length
-            ? [
-                pluralize(chosen.length, "project", "projects"),
-                laneTotal ? pluralize(laneTotal, "lane", "lanes") : null,
-                chatTotal ? `${pluralize(chatTotal, "chat", "chats")} to import` : null,
-              ].filter(Boolean).join(" · ")
-            : null}
+          {[
+            chosen.length ? pluralize(chosen.length, "project", "projects") : null,
+            laneTotal ? pluralize(laneTotal, "lane", "lanes") : null,
+            chatTotal ? `${pluralize(chatTotal, "chat", "chats")} to import` : null,
+          ].filter(Boolean).join(" · ") || null}
         </span>
         <button
           type="button"
@@ -376,7 +400,7 @@ function ProjectRow({
   checked: boolean;
   importing: boolean;
   onToggle: (rootPath: string) => void;
-  onSetImport: (rootPath: string, on: boolean) => void;
+  onSetImport: (rootPath: string, on: boolean, inAde: boolean) => void;
   index: number;
 }) {
   const icon = useProjectIcon(project.rootPath);
@@ -387,19 +411,22 @@ function ProjectRow({
   const chats = project.recentChatCount;
   const chatsLabel = pluralize(chats, "chat", "chats");
   // A project left out brings no chats, whatever its toggle said before.
+  // (One already in ADE is never left out.)
   const importOn = importing && checked;
   return (
     <div
       className="ade-fr-row"
       data-checked={checked ? "true" : undefined}
+      data-in-ade={project.inAde ? "true" : undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
     >
       <button
         type="button"
         className="ade-fr-row-main"
-        aria-pressed={checked}
-        onClick={() => onToggle(project.rootPath)}
-        title={project.rootPath}
+        aria-pressed={project.inAde ? undefined : checked}
+        aria-disabled={project.inAde || undefined}
+        onClick={project.inAde ? undefined : () => onToggle(project.rootPath)}
+        title={project.inAde ? `${project.rootPath} is already in ADE` : project.rootPath}
       >
         <span className="ade-fr-check" aria-hidden="true">
           {checked ? <Check size={11} weight="bold" /> : null}
@@ -411,7 +438,11 @@ function ProjectRow({
           <span className="ade-fr-name-main">{project.name}</span>
           <span className="ade-fr-name-sub">{project.repoLabel ?? project.rootPath}</span>
         </span>
-        {meta.length ? <span className="ade-fr-meta">{meta.join(" · ")}</span> : null}
+        {project.inAde ? (
+          <span className="ade-fr-in-ade">In ADE</span>
+        ) : meta.length ? (
+          <span className="ade-fr-meta">{meta.join(" · ")}</span>
+        ) : null}
       </button>
       {chats > 0 ? (
         // A yes/no choice, not an action: it reads as a question while off and
@@ -430,7 +461,7 @@ function ProjectRow({
               ? "These chats come in when the project first opens. Click to leave them out."
               : "Bring the last 30 days of chats in when the project first opens, each in the lane it ran in."
           }
-          onClick={() => onSetImport(project.rootPath, !importOn)}
+          onClick={() => onSetImport(project.rootPath, !importOn, project.inAde)}
         >
           <span className="ade-fr-import-box" aria-hidden="true">
             <Check size={10} weight="bold" />

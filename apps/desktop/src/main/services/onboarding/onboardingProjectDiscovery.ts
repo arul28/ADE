@@ -325,7 +325,7 @@ function repoLabelFor(projectRoot: string): string | null {
 }
 
 export async function discoverOnboardingProjects(args: {
-  /** Projects already in ADE on this computer: left out. */
+  /** Projects already in ADE on this computer: listed after the new ones, marked `inAde`. */
   knownRoots: string[];
   logger?: DiscoveryLogger;
   now?: number;
@@ -356,7 +356,6 @@ export async function discoverOnboardingProjects(args: {
     }
     if (!rootPath || isExcluded(rootPath, excluded)) continue;
     const key = pathKey(rootPath);
-    if (known.has(key)) continue;
     const entry = byProject.get(key) ?? { rootPath, folders: [] };
     entry.folders.push(folder);
     byProject.set(key, entry);
@@ -384,13 +383,16 @@ export async function discoverOnboardingProjects(args: {
       providers: EXTERNAL_SESSION_PROVIDERS.filter((provider) => providers.has(provider)),
       laneCount: listLinkedLaneWorktreeRoots(rootPath).length,
       suggested: recentChatCount >= SUGGESTED_MIN_RECENT_CHATS,
+      inAde: known.has(pathKey(rootPath)),
     });
   }
-  projects.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+  // New projects first, so ones already in ADE never crowd them past the cap.
+  projects.sort((a, b) => Number(a.inAde) - Number(b.inAde) || (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
 
   args.logger?.info?.("onboarding.projects_discovered", {
     folders: activity.size,
     projects: projects.length,
+    inAde: projects.filter((project) => project.inAde).length,
   });
   // The name the user gave this computer (macOS ComputerName), not its network hostname.
   const machineName = (await resolveDeviceDisplayNameSettled()).replace(/\.(local|lan|home)$/i, "").trim();

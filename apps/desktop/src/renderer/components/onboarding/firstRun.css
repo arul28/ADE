@@ -399,6 +399,27 @@
   color: var(--gate-text-3, var(--gate-text-2));
 }
 
+/* Already in ADE: shown, never toggled; only its chat import is a choice. */
+.ade-fr-row[data-in-ade="true"] .ade-fr-row-main {
+  cursor: default;
+}
+
+.ade-fr-row[data-in-ade="true"] .ade-fr-check {
+  border-color: color-mix(in srgb, var(--color-fg) 30%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+
+.ade-fr-in-ade {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--gate-text-2);
+}
+
 .ade-fr-row:not([data-checked="true"]) .ade-fr-meta,
 .ade-fr-row:not([data-checked="true"]) .ade-fr-import,
 .ade-fr-row:not([data-checked="true"]) .ade-fr-name-main {

@@ -181,6 +181,12 @@ export type OnboardingProjectCandidate = {
   laneCount: number;
   /** Pre-selected: active recently, with a few chats. */
   suggested: boolean;
+  /**
+   * Already one of ADE's projects on this computer. Listed so a returning
+   * user sees their projects (and can still bring their chats in), never
+   * added again.
+   */
+  inAde: boolean;
 };
 
 export type OnboardingProjectDiscovery = {
