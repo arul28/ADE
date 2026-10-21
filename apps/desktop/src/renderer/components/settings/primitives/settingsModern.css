@@ -263,6 +263,7 @@
 .ade-modern-field[data-mono="true"]::placeholder { font-family: var(--font-sans); }
 
 /* Smart decisions groups: an icon chip before the title, options indented under it. */
+.ade-smart-group-block { margin-top: 10px; }
 .ade-smart-group-title { display: inline-flex; align-items: center; gap: 8px; }
 .ade-smart-group-icon {
   display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none;

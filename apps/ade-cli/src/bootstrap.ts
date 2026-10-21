@@ -1440,7 +1440,9 @@ export async function createAdeRuntime(args: {
     const jevService = createJevService({
       logger,
       isEnabled: (feature) => jevEnabled(projectConfigService.get().effective.ai?.chat, feature),
-      useZenCredit: () => projectConfigService.get().effective.ai?.chat?.jevZenCreditEnabled === true,
+      // Spending the user's own Zen balance is theirs to switch on: read the
+      // machine-local file only, never a repo's shared `.ade/ade.yaml`.
+      useZenCredit: () => projectConfigService.get().local.ai?.chat?.jevZenCreditEnabled === true,
       bonus: {
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
         accountToken: () => getAccountAccessToken(),
@@ -1674,7 +1676,7 @@ export async function createAdeRuntime(args: {
     };
     laneTeardownDeps.sessionService = sessionService;
     // Lanes archived before archive took their chats along keep those chats
-    // visible under an "Archived lane" header; archive them once. Idempotent.
+    // visible under an "Archived lane" header; archive them once per project.
     try {
       const archivedSessionCount = sessionService.archiveSessionsOfArchivedLanes();
       if (archivedSessionCount > 0) {
@@ -2582,7 +2584,12 @@ export async function createAdeRuntime(args: {
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
-      const settleNudgeSweep = createSettleNudgeSweep({ sessionService, agentChatService, jevService });
+      const settleNudgeSweep = createSettleNudgeSweep({
+        sessionService,
+        agentChatService,
+        jevService,
+        isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+      });
       settleNudgeSweep.start();
       teardown.push(() => settleNudgeSweep.dispose());
     }

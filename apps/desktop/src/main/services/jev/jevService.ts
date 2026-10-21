@@ -20,10 +20,6 @@
  * tally (numbers only) that the daily usage summary reports, so the cost of
  * paying for Jev can be read from real use.
  */
-import fs, { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
-import { homedir } from "node:os";
-import path from "node:path";
 import {
   JEV_FEATURES,
   JEV_ROUTES,
@@ -41,11 +37,11 @@ import {
   type JevStatus,
 } from "../../../shared/types/jev";
 import type { Logger } from "../logging/logger";
-import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
-import { openCodeDataDirs } from "../shared/providerConfigHomes";
-import { writeFileAtomic } from "../state/durableFile";
-import { localDayKey } from "../usage/localDay";
 import { asRecord, finiteNumberOrNull, sha256Hex } from "../shared/utils";
+import { createJevTally, type JevTallyDetails, type JevTallyStore, type JevUsage } from "./jevTally";
+import { forgetJevCredential, jevAvailability } from "./jevZenCredential";
+
+export { jevTallyFileStore, type JevTallyStore } from "./jevTally";
 
 /**
  * OpenCode's endpoints: the documented one first, then the one Jev launched
@@ -81,10 +77,6 @@ const MAX_TIMEOUT_MS = 10_000;
 const MAX_IN_FLIGHT = 4;
 const MAX_BACKGROUND_IN_FLIGHT = MAX_IN_FLIGHT - 1;
 
-const CREDENTIAL_TTL_MS = 60_000;
-/** A token this close to expiry reads as expired; OpenCode owns the refresh. */
-const TOKEN_EXPIRY_SLACK_MS = 60_000;
-
 const RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 const AUTH_BACKOFF_MS = 30 * 60_000;
 const TRANSIENT_FAILURES_TO_OPEN = 2;
@@ -97,77 +89,12 @@ const RESULT_CACHE_TTL_MS = 10 * 60_000;
 const SUMMARY_INTERVAL_MS = 10 * 60_000;
 const SUMMARY_MAX_LATENCIES = 500;
 
-/** Days of tallies kept in the project store; the daily report reads yesterday's. */
-const TALLY_DAYS_KEPT = 8;
-/** The tally is written at most this often, and on dispose. */
-const TALLY_SAVE_INTERVAL_MS = 60_000;
-/** An answer slower than this counts as slow in the tally. */
-const SLOW_ANSWER_MS = 1_000;
+/** Longest `state`, and longest questions as JSON: far above any ADE question, and every route refuses huge bodies. */
+const MAX_STATE_CHARS = 32_000;
+const MAX_QUESTIONS_JSON_CHARS = 32_000;
 /** Jev's fixed prompt is about 250 tokens; text runs about 4 characters a token. */
 const ESTIMATED_BASE_TOKENS = 250;
 const ESTIMATED_CHARS_PER_TOKEN = 4;
-
-// ── Availability ───────────────────────────────────────────────────────────
-
-type JevCredential = { ok: true; token: string } | { ok: false; reason: "not_signed_in" | "token_expired" };
-
-let credentialCache: { at: number; value: JevCredential } | null = null;
-
-/**
- * The OpenCode Zen login in one `opencode.db`: the `credential` row for
- * `integration_id = 'opencode'`, the active one first, else the newest. The
- * value is OpenCode's OAuth JSON (`access`, `refresh`, `expires` in ms). A
- * store that is missing, locked or shaped differently reads as no sign-in.
- */
-function readZenCredential(dbPath: string, nowMs: number): JevCredential {
-  if (!existsSync(dbPath)) return { ok: false, reason: "not_signed_in" };
-  let db: DatabaseSync | null = null;
-  try {
-    db = openReadOnlyDatabase(dbPath);
-    // A running OpenCode may hold the write lock; answer at once rather than wait.
-    db.exec("PRAGMA busy_timeout = 0");
-    const row = db.prepare(`
-      SELECT value FROM credential
-       WHERE integration_id = 'opencode'
-       ORDER BY (active = 1) DESC, time_updated DESC
-       LIMIT 1
-    `).get() as { value?: unknown } | undefined;
-    const value = asRecord(typeof row?.value === "string" ? JSON.parse(row.value) : null);
-    const access = typeof value?.access === "string" ? value.access.trim() : "";
-    if (value?.type !== "oauth" || !access) return { ok: false, reason: "not_signed_in" };
-    const expires = finiteNumberOrNull(value.expires);
-    if (expires != null && expires <= nowMs + TOKEN_EXPIRY_SLACK_MS) return { ok: false, reason: "token_expired" };
-    return { ok: true, token: access };
-  } catch {
-    return { ok: false, reason: "not_signed_in" };
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // Closing a read-only handle cannot lose anything.
-    }
-  }
-}
-
-/**
- * This machine's OpenCode Zen sign-in, for the `zen_credit` route only: free
- * Jev needs no key. Stores are searched in `openCodeDataDirs` order (ADE's own
- * store first) and the first usable token wins. The token is never logged.
- */
-function jevAvailability(nowMs: number): JevCredential {
-  if (credentialCache && nowMs - credentialCache.at < CREDENTIAL_TTL_MS) return credentialCache.value;
-  let value: JevCredential = { ok: false, reason: "not_signed_in" };
-  for (const dir of openCodeDataDirs({ homeDir: homedir() })) {
-    const found = readZenCredential(path.join(dir, "opencode.db"), nowMs);
-    if (found.ok) {
-      value = found;
-      break;
-    }
-    if (found.reason === "token_expired") value = found;
-  }
-  credentialCache = { at: nowMs, value };
-  return value;
-}
 
 // ── Machine-wide call state ────────────────────────────────────────────────
 
@@ -204,8 +131,6 @@ let inFlight = 0;
 const resultCache = new Map<string, { at: number; answers: Record<string, JevAnswer> }>();
 /** Identical questions already on the wire share one call. */
 const pendingByKey = new Map<string, Promise<CallResult>>();
-
-type JevUsage = { inputTokens: number; outputTokens: number };
 
 type CallResult =
   | { ok: true; answers: Record<string, JevAnswer>; latencyMs: number; usage: JevUsage | null }
@@ -280,9 +205,10 @@ function nonEmpty(value: unknown): value is string {
 /** Rejects what Jev would reject anyway, before spending a call on it. */
 function validRequest(request: JevDecideRequest): boolean {
   if (!request || !(JEV_FEATURES as readonly string[]).includes(request.feature)) return false;
-  if (!nonEmpty(request.state)) return false;
+  if (!nonEmpty(request.state) || request.state.length > MAX_STATE_CHARS) return false;
   const entries = Object.entries(asRecord(request.questions) ?? {});
   if (entries.length === 0) return false;
+  if (JSON.stringify(request.questions).length > MAX_QUESTIONS_JSON_CHARS) return false;
   return entries.every(([id, raw]) => {
     const question = raw as JevQuestion;
     if (!id.trim() || !question || !nonEmpty(question.instructions)) return false;
@@ -404,8 +330,13 @@ async function callJev(args: {
   }
   if (status === 401 || status === 402 || status === 403) {
     // The token may have been revoked or rotated; read the store again next time.
-    if (route.id === "zen_credit") credentialCache = null;
+    if (route.id === "zen_credit") forgetJevCredential();
     return { ok: false, reason: "auth_rejected", breakerOpened: openBreaker(breaker, "auth_rejected", AUTH_BACKOFF_MS, nowMs) };
+  }
+  if (status === 400 || status === 413 || status === 422) {
+    // Our request is bad (too big, or refused as input): the route is not broken,
+    // and the next route would refuse it too.
+    return { ok: false, reason: "invalid_request" };
   }
   if (status < 200 || status >= 300) {
     return { ok: false, reason: "http_error", breakerOpened: recordTransientFailure(breaker, nowMs) };
@@ -448,12 +379,6 @@ export type JevService = {
   dispose: () => void;
 };
 
-/** Where a project keeps its recent day tallies, so a restart does not lose the day. */
-export type JevTallyStore = {
-  read: () => unknown;
-  write: (days: JevDayTally[]) => void;
-};
-
 export type JevServiceDeps = {
   logger: Logger;
   /** The Smart decisions switches, read per call: the master switch, and with a feature, its group's too. */
@@ -468,114 +393,6 @@ export type JevServiceDeps = {
     accountToken: () => Promise<string | null>;
   } | null;
 };
-
-/**
- * The tallies as a JSON file on this machine. Not the project database: that
- * syncs to the user's other machines, and each machine counts its own calls.
- */
-export function jevTallyFileStore(filePath: string): JevTallyStore {
-  return {
-    read: () => {
-      try {
-        return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-      } catch {
-        return null;
-      }
-    },
-    write: (days) => {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      writeFileAtomic(filePath, `${JSON.stringify(days)}\n`);
-    },
-  };
-}
-
-/** What one `decide()` outcome adds to the day tally. */
-type TallyDetails = {
-  /** This caller put a request on the wire (not cached, not joined). */
-  sent?: boolean;
-  latencyMs?: number;
-  usage?: JevUsage | null;
-  /** For wanted calls never sent: the request's estimated input tokens. */
-  estimatedInputTokens?: number;
-  /** The route that answered. */
-  route?: JevRoute;
-  breakerOpened?: boolean;
-};
-
-const UNSENT_OUTCOMES: ReadonlySet<JevOutcome> = new Set(["breaker_open", "busy"]);
-
-function emptyTally(day: string): JevDayTally {
-  return {
-    day,
-    wanted: 0,
-    sent: 0,
-    failed: 0,
-    outcomes: {},
-    sentByFeature: {},
-    answeredByRoute: {},
-    inputTokens: 0,
-    outputTokens: 0,
-    unsentInputTokensEstimate: 0,
-    breakerOpens: 0,
-    latencyTotalMs: 0,
-    latencyCount: 0,
-    slowCount: 0,
-  };
-}
-
-function count(value: unknown): number {
-  const parsed = finiteNumberOrNull(value);
-  return parsed != null && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
-function countMap<K extends string>(value: unknown, keys: readonly K[]): Partial<Record<K, number>> {
-  const record = asRecord(value) ?? {};
-  const out: Partial<Record<K, number>> = {};
-  for (const key of keys) {
-    const n = count(record[key]);
-    if (n > 0) out[key] = n;
-  }
-  return out;
-}
-
-const OUTCOME_KEYS: readonly JevOutcome[] = [
-  "ok", "cached", "disabled", "breaker_open", "busy", "invalid_request",
-  "timeout", "network", "rate_limited", "auth_rejected", "http_error", "bad_response",
-];
-
-/** The stored tallies, newest last; anything unreadable is dropped. */
-function readTallies(store: JevTallyStore | null | undefined): JevDayTally[] {
-  let raw: unknown = null;
-  try {
-    raw = store?.read() ?? null;
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
-  const days: JevDayTally[] = [];
-  for (const item of raw) {
-    const record = asRecord(item);
-    const day = typeof record?.day === "string" ? localDayKey(record.day) : "";
-    if (!record || !day || days.some((existing) => existing.day === day)) continue;
-    days.push({
-      day,
-      wanted: count(record.wanted),
-      sent: count(record.sent),
-      failed: count(record.failed),
-      outcomes: countMap(record.outcomes, OUTCOME_KEYS),
-      sentByFeature: countMap(record.sentByFeature, JEV_FEATURES),
-      answeredByRoute: countMap(record.answeredByRoute, JEV_ROUTES),
-      inputTokens: count(record.inputTokens),
-      outputTokens: count(record.outputTokens),
-      unsentInputTokensEstimate: count(record.unsentInputTokensEstimate),
-      breakerOpens: count(record.breakerOpens),
-      latencyTotalMs: count(record.latencyTotalMs),
-      latencyCount: count(record.latencyCount),
-      slowCount: count(record.slowCount),
-    });
-  }
-  return days.sort((a, b) => a.day.localeCompare(b.day)).slice(-TALLY_DAYS_KEPT);
-}
 
 function estimateInputTokens(request: JevDecideRequest): number {
   const chars = request.state.length + JSON.stringify(request.questions).length;
@@ -593,68 +410,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
   const counts: JevStatus["counts"] = {};
   let window = new Map<JevFeature, { outcomes: Partial<Record<JevOutcome, number>>; latencies: number[] }>();
   let summaryTimer: ReturnType<typeof setInterval> | null = null;
-  const tallies = readTallies(deps.tallyStore);
-  let tallyDirty = false;
-  let tallySaveTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const saveTallies = (): void => {
-    if (tallySaveTimer) clearTimeout(tallySaveTimer);
-    tallySaveTimer = null;
-    if (!tallyDirty || !deps.tallyStore) return;
-    tallyDirty = false;
-    try {
-      deps.tallyStore.write(structuredClone(tallies));
-    } catch (error) {
-      logger.debug("jev.tally_save_failed", { error: error instanceof Error ? error.message : String(error) });
-    }
-  };
-
-  const tallyFor = (day: string): JevDayTally => {
-    let tally = tallies.find((existing) => existing.day === day);
-    if (!tally) {
-      tally = emptyTally(day);
-      tallies.push(tally);
-      tallies.sort((a, b) => a.day.localeCompare(b.day));
-      while (tallies.length > TALLY_DAYS_KEPT) tallies.shift();
-    }
-    return tally;
-  };
-
-  /** Adds one outcome to today's tally. A call the user switched off is not counted. */
-  const tally = (feature: JevFeature, outcome: JevOutcome, details: TallyDetails): void => {
-    if (outcome === "disabled" || outcome === "invalid_request") return;
-    const day = localDayKey(Date.now());
-    if (!day) return;
-    const current = tallyFor(day);
-    current.wanted += 1;
-    current.outcomes[outcome] = (current.outcomes[outcome] ?? 0) + 1;
-    if (details.sent) {
-      current.sent += 1;
-      current.sentByFeature[feature] = (current.sentByFeature[feature] ?? 0) + 1;
-      if (outcome !== "ok") current.failed += 1;
-    }
-    if (details.route && outcome === "ok") {
-      current.answeredByRoute[details.route] = (current.answeredByRoute[details.route] ?? 0) + 1;
-    }
-    if (details.usage) {
-      current.inputTokens += details.usage.inputTokens;
-      current.outputTokens += details.usage.outputTokens;
-    }
-    if (UNSENT_OUTCOMES.has(outcome) && details.estimatedInputTokens) {
-      current.unsentInputTokensEstimate += details.estimatedInputTokens;
-    }
-    if (details.breakerOpened) current.breakerOpens += 1;
-    if (details.latencyMs != null) {
-      current.latencyTotalMs += Math.max(0, Math.round(details.latencyMs));
-      current.latencyCount += 1;
-      if (details.latencyMs > SLOW_ANSWER_MS) current.slowCount += 1;
-    }
-    tallyDirty = true;
-    if (deps.tallyStore && !tallySaveTimer) {
-      tallySaveTimer = setTimeout(saveTallies, TALLY_SAVE_INTERVAL_MS);
-      tallySaveTimer.unref?.();
-    }
-  };
+  const tally = createJevTally(deps.tallyStore, logger);
 
   const flushSummary = (): void => {
     if (window.size === 0) return;
@@ -667,9 +423,9 @@ export function createJevService(deps: JevServiceDeps): JevService {
     logger.info("jev.summary", { windowMinutes: SUMMARY_INTERVAL_MS / 60_000, features });
   };
 
-  const record = (feature: JevFeature, outcome: JevOutcome, details: TallyDetails = {}): void => {
+  const record = (feature: JevFeature, outcome: JevOutcome, details: JevTallyDetails = {}): void => {
     const { latencyMs } = details;
-    tally(feature, outcome, details);
+    tally.add(feature, outcome, details);
     const total = (counts[feature] ??= {});
     total[outcome] = (total[outcome] ?? 0) + 1;
     let stats = window.get(feature);
@@ -687,45 +443,52 @@ export function createJevService(deps: JevServiceDeps): JevService {
 
   const availabilityReason = (): JevAvailabilityReason => (deps.isEnabled() ? "ok" : "disabled");
 
+  type RouteResolver = (request: JevDecideRequest, nowMs: number, budgetMs: number) => Route | null | Promise<Route | null>;
+
+  /** How each route is set up for one call; null when it is not. */
+  const routeResolvers: Record<JevRoute, RouteResolver> = {
+    free: () => ({ id: "free", urls: OPENCODE_JEV_URLS, token: null, model: FREE_MODEL }),
+
+    zen_credit: (_request, nowMs) => {
+      if (!deps.useZenCredit?.()) return null;
+      const credential = jevAvailability(nowMs);
+      return credential.ok ? { id: "zen_credit", urls: OPENCODE_JEV_URLS, token: credential.token, model: ZEN_CREDIT_MODEL } : null;
+    },
+
+    bonus: async (request, nowMs, budgetMs) => {
+      if (FREE_ONLY_FEATURES.has(request.feature)) return null;
+      const left = bonusRemaining?.day === utcDay(nowMs) ? bonusRemaining.remaining : null;
+      if (request.priority === "background" && left != null && left <= BONUS_INTERACTIVE_RESERVE) return null;
+      const base = deps.bonus?.baseUrl()?.trim().replace(/\/+$/, "");
+      if (!base) return null;
+      // A token refresh may go to the network: it gets the call's remaining time, no more.
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const token = await Promise.race([
+        deps.bonus!.accountToken().catch(() => null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), budgetMs);
+        }),
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+      // The account directory picks the model; this one is only a label.
+      return token ? { id: "bonus", urls: [`${base}${BONUS_PATH}`], token, model: "jev-latest" } : null;
+    },
+  };
+
   /** A route ready to take a call now, or null: its breaker is open, or it is not set up. */
   const resolveRoute = async (
     id: JevRoute,
     request: JevDecideRequest,
     nowMs: number,
     budgetMs: number,
-  ): Promise<Route | null> => {
-    if (breakerOpen(breakers[id], nowMs)) return null;
-    if (id === "bonus") {
-      if (FREE_ONLY_FEATURES.has(request.feature)) return null;
-      const left = bonusRemaining?.day === utcDay(nowMs) ? bonusRemaining.remaining : null;
-      if (request.priority === "background" && left != null && left <= BONUS_INTERACTIVE_RESERVE) return null;
-    }
-    if (id === "free") return { id, urls: OPENCODE_JEV_URLS, token: null, model: FREE_MODEL };
-    if (id === "zen_credit") {
-      if (!deps.useZenCredit?.()) return null;
-      const credential = jevAvailability(nowMs);
-      return credential.ok ? { id, urls: OPENCODE_JEV_URLS, token: credential.token, model: ZEN_CREDIT_MODEL } : null;
-    }
-    const base = deps.bonus?.baseUrl()?.trim().replace(/\/+$/, "");
-    if (!base) return null;
-    // A token refresh may go to the network: it gets the call's remaining time, no more.
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const token = await Promise.race([
-      deps.bonus!.accountToken().catch(() => null),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), budgetMs);
-      }),
-    ]).finally(() => {
-      if (timer) clearTimeout(timer);
-    });
-    // The account directory picks the model; this one is only a label.
-    return token ? { id, urls: [`${base}${BONUS_PATH}`], token, model: "jev-latest" } : null;
-  };
+  ): Promise<Route | null> => (breakerOpen(breakers[id], nowMs) ? null : routeResolvers[id](request, nowMs, budgetMs));
 
   /**
    * One call down the routes, in order, inside one time budget: a route that
    * is rate-limited, refused or broken hands the same call to the next while
-   * enough time is left. A timeout spends the budget, so it ends the chain.
+   * enough time is left. A timeout spends the budget, so it ends the chain; a
+   * request a route refused as bad would be refused by the next too.
    */
   const callRoutes = async (
     feature: JevFeature,
@@ -759,7 +522,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
         });
       }
       last = result;
-      if (result.reason === "timeout") break;
+      if (result.reason === "timeout" || result.reason === "invalid_request") break;
     }
     return { ...last, sent };
   };
@@ -848,20 +611,19 @@ export function createJevService(deps: JevServiceDeps): JevService {
         zen: zen.ok ? "signed_in" : zen.reason,
         inFlight,
         counts: structuredClone(counts),
-        today: structuredClone(tallies.find((existing) => existing.day === localDayKey(nowMs)) ?? null),
+        today: tally.today(nowMs),
       };
     },
 
     tallyForDay(day) {
-      const found = tallies.find((existing) => existing.day === day);
-      return found && found.wanted > 0 ? structuredClone(found) : null;
+      return tally.forDay(day);
     },
 
     dispose() {
       flushSummary();
       if (summaryTimer) clearInterval(summaryTimer);
       summaryTimer = null;
-      saveTallies();
+      tally.flush();
     },
   };
 }

@@ -130,6 +130,8 @@ export const STALE_RUNNING_SESSION_RESCAN_DELAY_MS = Math.max(
 
 /** Bounded so a large sweep cannot open a provider stop per session at once. */
 const SETTLE_TEARDOWN_CONCURRENCY = 4;
+/** Set once the one-time archived-lane session backfill has run in this project. */
+const ARCHIVED_LANE_SESSIONS_BACKFILL_KEY = "lane_archive.sessions_backfill.v1";
 
 const SESSION_COLUMNS = `
   s.id as id,
@@ -2307,10 +2309,12 @@ export function createSessionService({
 
     /**
      * One-time catch-up for lanes archived before lane archive took their
-     * sessions along (or by a peer on an older ADE). Idempotent: once a lane's
-     * sessions carry a stamp, the query no longer finds that lane.
+     * sessions along (or by a peer on an older ADE). Runs once per project,
+     * behind a kv marker: a chat the user restores from an archived lane must
+     * stay restored, so a later start must not archive it again.
      */
     archiveSessionsOfArchivedLanes(): number {
+      if (db.getJson(ARCHIVED_LANE_SESSIONS_BACKFILL_KEY)) return 0;
       const lanes = db.all<{ laneId: string; archivedAt: string }>(
         `
           select l.id as laneId, l.archived_at as archivedAt
@@ -2327,6 +2331,7 @@ export function createSessionService({
       for (const lane of lanes) {
         archived += archiveSessionsForLane(lane.laneId, lane.archivedAt).length;
       }
+      db.setJson(ARCHIVED_LANE_SESSIONS_BACKFILL_KEY, { at: new Date().toISOString() });
       return archived;
     },
 

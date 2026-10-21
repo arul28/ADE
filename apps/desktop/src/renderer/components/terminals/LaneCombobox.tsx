@@ -14,6 +14,7 @@ import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { LaneIcon as LaneIconValue } from "../../../shared/types";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 
 /**
  * Synthetic lane id for the draft-composer “auto-create lane” row.
@@ -135,14 +136,20 @@ export function laneMatchesSearch(
   return candidate.branchLabel?.toLowerCase().includes(needle) ?? false;
 }
 
+const LANE_COMBOBOX_EMOJI_CLASS = "inline-flex shrink-0 items-center justify-center text-[12px] leading-none";
+
 function laneListIcon(item: LaneListItem) {
-  if (item.emoji) return <span className="inline-flex shrink-0 items-center justify-center text-[12px] leading-none">{item.emoji}</span>;
-  if (item.icon) return item.icon;
   const color = item.color ? laneDisplayColor(item.color) : "var(--color-muted-fg)";
-  return item.color ? (
-    <LaneLogoMark color={color} size={12} />
-  ) : (
-    <LaneIcon size={12} weight="regular" style={{ color, opacity: 0.45, flexShrink: 0 }} />
+  return (
+    <LaneEmojiGlyph
+      emoji={item.emoji}
+      className={LANE_COMBOBOX_EMOJI_CLASS}
+      fallback={item.icon || (item.color ? (
+        <LaneLogoMark color={color} size={12} />
+      ) : (
+        <LaneIcon size={12} weight="regular" style={{ color, opacity: 0.45, flexShrink: 0 }} />
+      ))}
+    />
   );
 }
 
@@ -575,11 +582,13 @@ export function LaneCombobox({
         data-open={open ? "true" : "false"}
         onClick={() => setOpen(!open)}
       >
-        {value !== "all" && selectedLane?.emoji
-          ? <span className="inline-flex shrink-0 items-center justify-center text-[12px] leading-none">{selectedLane.emoji}</span>
-          : value !== "all" && selectedLane?.icon
+        <LaneEmojiGlyph
+          emoji={value !== "all" ? selectedLane?.emoji : null}
+          className={LANE_COMBOBOX_EMOJI_CLASS}
+          fallback={value !== "all" && selectedLane?.icon
             ? selectedLane.icon
             : displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
+        />
         <span className="min-w-0 shrink truncate">{displayLabel}</span>
         {selectedBranchLabel ? (
           // Shrink factor puts every pixel of squeeze on the branch first: the

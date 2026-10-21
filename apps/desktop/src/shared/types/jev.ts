@@ -82,20 +82,28 @@ export type JevDecideRequest<Q extends JevQuestions = JevQuestions> = {
 export type JevRoute = "free" | "zen_credit" | "bonus";
 export const JEV_ROUTES: readonly JevRoute[] = ["free", "zen_credit", "bonus"];
 
-/** Why a call answered `null`, as counted in `jev.summary` and `status()`. */
-export type JevFallbackReason =
-  | "disabled"
-  | "breaker_open"
-  | "busy"
-  | "invalid_request"
-  | "timeout"
-  | "network"
-  | "rate_limited"
-  | "auth_rejected"
-  | "http_error"
-  | "bad_response";
+/**
+ * Every way one `decide()` call ends, as counted in `jev.summary`, `status()`
+ * and the day tally: answered (`ok`, `cached`) or one fallback reason.
+ */
+export const JEV_OUTCOMES = [
+  "ok",
+  "cached",
+  "disabled",
+  "breaker_open",
+  "busy",
+  "invalid_request",
+  "timeout",
+  "network",
+  "rate_limited",
+  "auth_rejected",
+  "http_error",
+  "bad_response",
+] as const;
+export type JevOutcome = (typeof JEV_OUTCOMES)[number];
 
-export type JevOutcome = "ok" | "cached" | JevFallbackReason;
+/** Why a call answered `null`. */
+export type JevFallbackReason = Exclude<JevOutcome, "ok" | "cached">;
 
 export type JevAvailabilityReason = "ok" | "disabled";
 

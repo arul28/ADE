@@ -4563,7 +4563,7 @@ config service):
   machine pin; after it connects the row shows the switch and re-reads
   `ai.jevStatus` once the brain's one-minute sign-in cache has expired.
 - Smart decisions groups -- shown under the master switch while it is on
-  and Zen is signed in, one row each with an icon, a switch and what it
+  (no sign-in needed), one row each with an icon, a switch and what it
   decides; each defaults to **true**, and off answers `null` for its
   features with no network call (`jevEnabled` in `shared/jevSettings.ts`,
   read per call by `jevService`):

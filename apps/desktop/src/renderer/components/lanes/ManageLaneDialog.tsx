@@ -23,6 +23,7 @@ import {
 import { Button } from "../ui/Button";
 import { Banner } from "../ui/notice/Banner";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { LaneEmojiGlyph } from "./LaneEmojiGlyph";
 import type {
   LaneDeleteEvent,
   LaneDeleteProgress,
@@ -277,9 +278,12 @@ function ManageLaneHeaderDetails({
         <div className="max-h-[min(28vh,160px)] space-y-1.5 overflow-y-auto pr-1">
           {lanes.map((lane) => (
             <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              {laneEmojiForDisplay(lane.emoji, lane.icon)
-                ? <span className="shrink-0 text-[11px] leading-none">{laneEmojiForDisplay(lane.emoji, lane.icon)}</span>
-                : <LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
+              <LaneEmojiGlyph
+                emoji={lane.emoji}
+                icon={lane.icon}
+                className="shrink-0 text-[11px] leading-none"
+                fallback={<LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
+              />
               <span className="font-semibold text-fg">{lane.name}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>

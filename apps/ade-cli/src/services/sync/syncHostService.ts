@@ -491,6 +491,11 @@ const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>
     "activity_status_json",
     "activity_status_changed_at",
   ])],
+  // A lane's emoji lives in `icon`, and its summary sends only the five
+  // legacy icons there. A phone build that predates emoji upserts NULL from
+  // that summary, which would erase the emoji on every machine. Phones change
+  // a lane's look through the `lanes.updateAppearance` command instead.
+  ["lanes", new Set(["icon"])],
 ]);
 
 const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>

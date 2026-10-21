@@ -444,6 +444,7 @@ import {
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
+import { createAwaitingOwnWorkTracker } from "./awaitingOwnWorkTracker";
 import type { JevService } from "../jev/jevService";
 import { createNextPromptSuggestion, sanitizePromptSuggestion } from "./nextPromptSuggestion";
 import {
@@ -1359,7 +1360,7 @@ import {
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
-import { statusLineLooksStale } from "./statusLineStaleCheck";
+import { createStatusLineStaleRegen } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
   mapCursorSdkMessageToChatEvents,
@@ -12611,11 +12612,12 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
-  /**
-   * Chats whose last reply Jev read as waiting on their own work, and when.
-   * Live only: a restart stops that work too. Read by the session summary.
-   */
-  const awaitingOwnWorkAtBySession = new Map<string, string>();
+  /** Chats whose last reply Jev read as waiting on their own work; read by the session summary. */
+  const awaitingOwnWork = createAwaitingOwnWorkTracker({
+    logger,
+    // The marker lives on the summary, so the Work list must read it again.
+    onChanged: (sessionId) => emitTransientChatEnvelope(sessionId, { type: "session_meta_updated" }),
+  });
   /** Chats this one started, nested or `--no-parent`, that are still busy. */
   const countLiveChildChats = (sessionId: string): number => {
     let count = 0;
@@ -12649,14 +12651,7 @@ export function createAgentChatService(args: {
     clearInferredAttention: (sessionId, startedAt) =>
       sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
     decide: jevDecide ?? null,
-    setAwaitingOwnWork: (sessionId, at) => {
-      if (at ? awaitingOwnWorkAtBySession.get(sessionId) === at : !awaitingOwnWorkAtBySession.has(sessionId)) return;
-      if (at) awaitingOwnWorkAtBySession.set(sessionId, at);
-      else awaitingOwnWorkAtBySession.delete(sessionId);
-      if (at) logger.info("agent_chat.turn_end_awaiting_own_work", { sessionId });
-      // The marker lives on the summary, so the Work list must read it again.
-      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated" });
-    },
+    setAwaitingOwnWork: awaitingOwnWork.set,
   });
   // ADE's next-prompt suggestion for providers without a native one. Runs on
   // the same single model that names the chat: the vendor's cheap helper
@@ -20534,36 +20529,30 @@ export function createAgentChatService(args: {
     }
   };
 
-  /**
-   * The agent wrote its own status line during the turn, so ADE kept it. Ask
-   * Jev, once, whether the turn's final reply has moved past it; if so, run
-   * the same refresh "Generate status line" does. No answer keeps the line.
-   */
+  const regenStaleStatusLine = createStatusLineStaleRegen({
+    decide: jevDecide,
+    logger,
+    readStatusLine: (sessionId) => sessionService.get(sessionId)?.statusNote,
+    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }),
+  });
+
+  /** An agent-written status line is kept unless Jev reads the final reply as past it. */
   const checkAgentWrittenStatusLine = (managed: ManagedChatSession): void => {
-    if (!jevDecide) return;
-    const sessionId = managed.session.id;
-    const statusLine = sessionService.get(sessionId)?.statusNote?.trim();
-    if (!statusLine) return;
-    const entries = collectConversationEntries(managed);
-    const reply = extractLatestAssistantParagraphs(entries);
-    if (!reply.trim()) return;
-    const userMessage = [...entries].reverse().find((entry) => entry.role === "user")?.text ?? null;
     const idleSinceAt = managed.session.idleSinceAt;
-    void statusLineLooksStale({ decide: jevDecide, statusLine, userMessage, reply })
-      .then((stale) => {
-        if (stale !== true || managed.deleted) return;
-        // Only while nothing moved: no new turn since, and the same line.
-        if (managed.session.status !== "idle" || managed.session.idleSinceAt !== idleSinceAt) return;
-        if (sessionService.get(sessionId)?.statusNote?.trim() !== statusLine) return;
-        logger.info("agent_chat.status_line_stale", { sessionId });
-        return regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }).then(() => undefined);
-      })
-      .catch((error) => {
-        logger.warn("agent_chat.status_line_check_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+    regenStaleStatusLine({
+      sessionId: managed.session.id,
+      readTurn: () => {
+        const entries = collectConversationEntries(managed);
+        return {
+          reply: extractLatestAssistantParagraphs(entries),
+          userMessage: [...entries].reverse().find((entry) => entry.role === "user")?.text ?? null,
+        };
+      },
+      // Only while nothing moved: no new turn since.
+      isUnchanged: () => !managed.deleted
+        && managed.session.status === "idle"
+        && managed.session.idleSinceAt === idleSinceAt,
+    });
   };
 
   const maybeRefreshIdleStatusLine = (
@@ -62873,7 +62862,7 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
-      ...(awaitingOwnWorkAtBySession.has(row.id) ? { awaitingOwnWorkAt: awaitingOwnWorkAtBySession.get(row.id) } : {}),
+      ...awaitingOwnWork.summaryFields(row.id),
       ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),

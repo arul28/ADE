@@ -269,3 +269,34 @@ export function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
     PROJECT_ICON_CACHE.delete(oldestKey);
   }
 }
+
+/**
+ * Where the keyboard index lands when the Jev "Suggested" rows above the
+ * normal results change. The index is flat, so rows added or removed above
+ * the cursor shift it to keep the same normal row selected.
+ */
+export function shiftSelectedIndexForSuggestions({
+  current,
+  previous,
+  query,
+  context,
+  nextCount,
+  normalCount,
+}: {
+  current: number;
+  previous: { query: string; context: string; commandIds: readonly string[] } | null;
+  query: string;
+  context: string;
+  nextCount: number;
+  /** Rows of normal results, which the suggested rows sit in front of. */
+  normalCount: number;
+}): number {
+  const previousCount = previous?.commandIds.length ?? 0;
+  const baseIndex =
+    previous &&
+    (previous.query !== query || previous.context !== context) &&
+    current >= previousCount
+      ? current - previousCount
+      : current;
+  return baseIndex < normalCount ? baseIndex + nextCount : baseIndex;
+}

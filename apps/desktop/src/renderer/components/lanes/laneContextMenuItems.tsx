@@ -29,6 +29,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
 import { colorsInUse } from "./laneColorPalette";
 import { LaneColorPicker } from "./LaneColorPicker";
+import { showToast } from "../app/toast/toastStore";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
@@ -528,17 +529,19 @@ function LaneEmojiRow({
   runtimePin: OpenProjectBinding | null;
   onChanged?: () => void | Promise<void>;
 }) {
-  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const apply = async (next: string | null) => {
-    setError(null);
     setBusy(true);
     try {
       await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, runtimePin);
       await onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set emoji");
+      showToast({
+        title: "Could not set the lane emoji",
+        message: err instanceof Error ? err.message : "Failed to set emoji",
+        tone: "error",
+      });
     } finally {
       setBusy(false);
     }
@@ -553,7 +556,6 @@ function LaneEmojiRow({
         overlayLayer={Z_LAYERS.contextMenu}
       />
       <span className="text-[11px] text-muted-fg">{laneEmojiForDisplay(lane.emoji, lane.icon) ?? "No emoji"}</span>
-      {error ? <span className="text-[10px] text-red-300">{error}</span> : null}
     </div>
   );
 }

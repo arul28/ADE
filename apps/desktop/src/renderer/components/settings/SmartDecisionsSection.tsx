@@ -101,17 +101,19 @@ export function SmartDecisionsSection() {
     </button>
   );
 
+  const masterHint = status === "loading"
+    ? "Loading…"
+    : status === "failed"
+      ? "Couldn't load the configuration."
+      : "ADE asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ADE's bonus answers for signed-in ADE accounts. When Jev is slow or unavailable, ADE's built-in rules decide.";
+
   return (
     <ModernSection group="Smart decisions" title="Smart decisions" hint="Quick calls ADE makes about your chats and prompts.">
       <ModernRows>
         <ModernRow
           anchor="smart-decisions"
           title="Smart decisions (Jev)"
-          hint={status === "loading"
-            ? "Loading…"
-            : status === "failed"
-              ? "Couldn't load the configuration."
-              : "ADE asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ADE's bonus answers for signed-in ADE accounts. When Jev is slow or unavailable, ADE's built-in rules decide."}
+          hint={masterHint}
           control={(
             <SettingsToggle
               label="Smart decisions (Jev)"
@@ -123,7 +125,7 @@ export function SmartDecisionsSection() {
         />
       </ModernRows>
       {!enabled || status !== "loaded" ? null : (
-        <div style={{ marginTop: 10 }}>
+        <div className="ade-smart-group-block">
           <ModernRows>
             <GroupRow
               anchor="smart-chat-status"
@@ -155,7 +157,7 @@ export function SmartDecisionsSection() {
               hint="Picks an emoji for a new lane from its name."
             />
           </ModernRows>
-          <div style={{ marginTop: 10 }}>
+          <div className="ade-smart-group-block">
             <ModernRows>
               {zen === "signed_in" ? (
                 <GroupRow

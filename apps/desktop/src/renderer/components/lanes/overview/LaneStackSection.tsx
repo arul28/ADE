@@ -7,7 +7,7 @@ import { getLaneAccent } from "../laneColorPalette";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "../sidebar/LaneSidebarPrChip";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
-import { laneEmojiForDisplay } from "../../../../shared/laneEmoji";
+import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
 import { OVERVIEW_ROW, OVERVIEW_ROW_HOVER, OverviewSection } from "./sectionUi";
 
 function StackRow({
@@ -32,9 +32,12 @@ function StackRow({
   const content = (
     <>
       <span className={cn("flex min-w-0 shrink items-center gap-1.5 text-[13px]", current ? "font-semibold" : "font-medium")} style={{ color: toneText(accent) }}>
-        {laneEmojiForDisplay(lane.emoji, lane.icon)
-          ? <span className="text-[12px] leading-none">{laneEmojiForDisplay(lane.emoji, lane.icon)}</span>
-          : <LaneIcon size={13} />}
+        <LaneEmojiGlyph
+          emoji={lane.emoji}
+          icon={lane.icon}
+          className="text-[12px] leading-none"
+          fallback={<LaneIcon size={13} />}
+        />
         <span className="min-w-0 truncate">{lane.name}</span>
       </span>
       <span className="min-w-0 flex-1 truncate text-[12px] text-muted-fg/60">

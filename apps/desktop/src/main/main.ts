@@ -4469,7 +4469,7 @@ app.whenReady().then(async () => {
     };
     laneTeardownDeps.sessionService = sessionService;
     // Lanes archived before archive took their chats along keep those chats
-    // visible under an "Archived lane" header; archive them once. Idempotent.
+    // visible under an "Archived lane" header; archive them once per project.
     try {
       const archivedSessionCount = sessionService.archiveSessionsOfArchivedLanes();
       if (archivedSessionCount > 0) {

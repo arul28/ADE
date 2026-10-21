@@ -9,9 +9,35 @@
  * the prompt (`gist`), which is sent to Jev with later prompts.
  */
 
-const STORAGE_KEY = "ade.modelHint.history.v1";
-const MAX_ENTRIES = 100;
 const GIST_CHARS = 100;
+
+/**
+ * A capped list in localStorage, oldest first. Anything unreadable reads as
+ * empty, and a failed write is dropped: without storage the hint reads the
+ * prompt alone.
+ */
+function localRing<T>(key: string, max: number, isValid: (value: unknown) => value is T) {
+  const read = (): T[] => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(key) ?? "[]") as unknown;
+      return Array.isArray(parsed) ? parsed.filter(isValid).slice(-max) : [];
+    } catch {
+      return [];
+    }
+  };
+  const push = (entry: T): void => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify([...read(), entry].slice(-max)));
+    } catch {
+      // Best effort, as above.
+    }
+  };
+  return { read, push };
+}
+
+function gistOf(prompt: string): string {
+  return prompt.replace(/\s+/g, " ").trim().slice(0, GIST_CHARS);
+}
 
 export type ModelHintHistoryEntry = {
   at: number;
@@ -38,34 +64,19 @@ function isEntry(value: unknown): value is ModelHintHistoryEntry {
     && typeof entry.gist === "string";
 }
 
-function readAll(): ModelHintHistoryEntry[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isEntry).slice(-MAX_ENTRIES) : [];
-  } catch {
-    return [];
-  }
-}
+const history = localRing("ade.modelHint.history.v1", 100, isEntry);
 
 /** This user's new chats with this provider and maker, newest first. */
 export function readModelHintHistory(harness: string, maker: string): ModelHintHistoryEntry[] {
-  return readAll().filter((entry) => entry.harness === harness && entry.maker === maker).reverse();
+  return history.read().filter((entry) => entry.harness === harness && entry.maker === maker).reverse();
 }
 
 export function recordModelHintHistory(entry: Omit<ModelHintHistoryEntry, "at" | "gist"> & { prompt: string }): void {
-  const gist = entry.prompt.replace(/\s+/g, " ").trim().slice(0, GIST_CHARS);
+  const gist = gistOf(entry.prompt);
   if (!gist) return;
   const { prompt: _prompt, ...rest } = entry;
-  const next = [...readAll(), { ...rest, gist, at: Date.now() }].slice(-MAX_ENTRIES);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Best effort: without storage Jev reads the prompt alone.
-  }
+  history.push({ ...rest, gist, at: Date.now() });
 }
-
-const OUTCOMES_KEY = "ade.modelHint.cheaperOutcomes.v1";
-const MAX_OUTCOMES = 20;
 
 /**
  * What the user did with a "cheaper model" chip: taken or dismissed (a chip
@@ -95,28 +106,16 @@ function isOutcome(value: unknown): value is CheaperHintOutcome {
     && typeof entry.gist === "string";
 }
 
-function readAllOutcomes(): CheaperHintOutcome[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(OUTCOMES_KEY) ?? "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isOutcome).slice(-MAX_OUTCOMES) : [];
-  } catch {
-    return [];
-  }
-}
+const outcomes = localRing("ade.modelHint.cheaperOutcomes.v1", 20, isOutcome);
 
 /** This user's answers to cheaper-model chips with this provider and maker, newest first. */
 export function readCheaperHintOutcomes(harness: string, maker: string): CheaperHintOutcome[] {
-  return readAllOutcomes().filter((entry) => entry.harness === harness && entry.maker === maker).reverse();
+  return outcomes.read().filter((entry) => entry.harness === harness && entry.maker === maker).reverse();
 }
 
 export function recordCheaperHintOutcome(entry: Omit<CheaperHintOutcome, "at" | "gist"> & { prompt: string }): void {
-  const gist = entry.prompt.replace(/\s+/g, " ").trim().slice(0, GIST_CHARS);
+  const gist = gistOf(entry.prompt);
   if (!gist) return;
   const { prompt: _prompt, ...rest } = entry;
-  const next = [...readAllOutcomes(), { ...rest, gist, at: Date.now() }].slice(-MAX_OUTCOMES);
-  try {
-    window.localStorage.setItem(OUTCOMES_KEY, JSON.stringify(next));
-  } catch {
-    // Best effort: without storage the cheaper-model chip judges by the request alone.
-  }
+  outcomes.push({ ...rest, gist, at: Date.now() });
 }

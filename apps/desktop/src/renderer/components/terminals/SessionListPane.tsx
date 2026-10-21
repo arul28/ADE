@@ -100,7 +100,7 @@ import {
 } from "../../../shared/types/chat";
 import { showToast } from "../app/toast/toastStore";
 import { findGridSetForSession } from "../../lib/workGrid";
-import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
@@ -3205,8 +3205,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
         style={{ color: laneHeaderTint.text ?? (laneAccent ? toneText(laneAccent) : "var(--color-muted-fg)") }}
       >
-        {laneEmojiForDisplay(lane.emoji, lane.icon)
-          ?? <LaneIcon size={12} weight="regular" />}
+        <LaneEmojiGlyph
+          emoji={lane.emoji}
+          icon={lane.icon}
+          fallback={<LaneIcon size={12} weight="regular" />}
+        />
       </span>
     );
     const lanePrs = boundMachineLanePrs(prsByLaneId, lane.id);

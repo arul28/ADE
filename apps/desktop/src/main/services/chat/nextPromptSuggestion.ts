@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
+import { clipHead, clipTail } from "../shared/utils";
 
 /**
  * ADE's own "next prompt" suggestion, for providers that do not send one.
@@ -40,19 +41,13 @@ export const PROMPT_SUGGESTION_JSON_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-function clip(text: string, chars: number, keep: "head" | "tail"): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= chars) return trimmed;
-  return keep === "head" ? `${trimmed.slice(0, chars)}…` : `…${trimmed.slice(trimmed.length - chars)}`;
-}
-
 export function buildPromptSuggestionPrompt(input: {
   /** Oldest first, so the model sees how the user tends to phrase requests. */
   recentUserMessages: readonly string[];
   lastAssistantMessage: string;
 }): string {
   const userMessages = input.recentUserMessages
-    .map((message) => clip(message, MAX_USER_MESSAGE_CHARS, "head"))
+    .map((message) => clipHead(message, MAX_USER_MESSAGE_CHARS))
     .filter(Boolean)
     .slice(-RECENT_USER_MESSAGES);
   return [
@@ -61,7 +56,7 @@ export function buildPromptSuggestionPrompt(input: {
     "",
     // The ending is what the next message answers, so keep the tail.
     "The agent's latest reply:",
-    clip(input.lastAssistantMessage, MAX_REPLY_CHARS, "tail"),
+    clipTail(input.lastAssistantMessage, MAX_REPLY_CHARS),
   ].join("\n");
 }
 

@@ -118,7 +118,8 @@ import {
   type ModelChipSegment,
 } from "./composerModelChip";
 import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
-import { ComposerModelHintChip, useComposerModelHint } from "./ComposerModelHintChip";
+import { ComposerModelHintChip } from "./ComposerModelHintChip";
+import { useComposerModelHint } from "./useComposerModelHint";
 import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,

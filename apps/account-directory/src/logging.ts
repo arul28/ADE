@@ -160,10 +160,6 @@ export function logModelRegistryRequest(args: {
   }));
 }
 
-/**
- * One line per `GET /music/developer-token`. Never the token: status, a fixed
- * reason, and how long signing took.
- */
 /** One `POST /jev/systemone` call: counts, status and timing only, never the question or answer. */
 export function logJevBonusRequest(args: {
   status: number;
@@ -186,6 +182,10 @@ export function logJevBonusRequest(args: {
   }));
 }
 
+/**
+ * One line per `GET /music/developer-token`. Never the token: status, a fixed
+ * reason, and how long signing took.
+ */
 export function logMusicDeveloperTokenRequest(args: {
   status: number;
   reason?: string;

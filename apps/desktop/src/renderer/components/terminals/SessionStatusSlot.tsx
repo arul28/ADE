@@ -179,15 +179,13 @@ export function SessionStatusSlot({
             (snoozeMenuOpen || showSettleNudge) && "static opacity-100",
           )}
         >
-          {!showSettleNudge ? (
-            <SessionSnoozeControl
-              session={session}
-              snoozed={snoozed}
-              compact={compact}
-              runtimePin={runtimePin}
-              onOpenChange={setSnoozeMenuOpen}
-            />
-          ) : null}
+          <SessionSnoozeControl
+            session={session}
+            snoozed={snoozed}
+            compact={compact}
+            runtimePin={runtimePin}
+            onOpenChange={setSnoozeMenuOpen}
+          />
           {canSettle ? (
             <button
               type="button"

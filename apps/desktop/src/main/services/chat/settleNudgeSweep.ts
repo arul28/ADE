@@ -3,6 +3,9 @@ import type { JevService } from "../jev/jevService";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import { totalBackgroundWork } from "../../../shared/sessionCanonicalState";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import type { createSessionService } from "../sessions/sessionService";
+import type { AgentChatService } from "./agentChatService";
+import { clipHead, clipTail } from "../shared/utils";
 
 export const SETTLE_NUDGE_IDLE_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 const SETTLE_NUDGE_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
@@ -11,27 +14,12 @@ const SETTLE_NUDGE_MAX_CALLS_PER_SWEEP = 10;
 const SETTLE_NUDGE_TRANSCRIPT_LIMIT = 200;
 const SETTLE_NUDGE_TEXT_LIMIT = 1_500;
 
-type SessionService = {
-  list: (args?: { limit?: number | null }) => TerminalSessionSummary[];
-  get: (sessionId: string) => TerminalSessionSummary | null;
-  setSettleNudgeVerdict: (args: {
-    sessionId: string;
-    turnId: string;
-    doneProbability: number;
-    expectedTurnMarker: string | null;
-    expectedLastActivityAt: string | null;
-  }) => boolean;
-};
-
-type AgentChatService = {
-  getSessionSummary: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
-  readTranscript: (sessionId: string, limit?: number) => Promise<AgentChatTranscriptEntry[]>;
-};
-
 export type SettleNudgeSweepDeps = {
-  sessionService: SessionService;
-  agentChatService: AgentChatService;
+  sessionService: Pick<ReturnType<typeof createSessionService>, "list" | "get" | "setSettleNudgeVerdict">;
+  agentChatService: Pick<AgentChatService, "getSessionSummary" | "readTranscript">;
   jevService: Pick<JevService, "decide" | "status">;
+  /** Settings › Smart decisions: the master switch and "Settle finished chats". Read per sweep. */
+  isEnabled: () => boolean;
 };
 
 type CompletedTurn = {
@@ -70,10 +58,18 @@ function completedTurn(entries: AgentChatTranscriptEntry[]): CompletedTurn | nul
   return { key, userText: user.text, assistantText: assistant.text, endedAt: assistant.timestamp };
 }
 
-function clipped(text: string, limit: number, fromEnd = false): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= limit) return normalized;
-  return fromEnd ? `…${normalized.slice(-(limit - 1))}` : `${normalized.slice(0, limit - 1)}…`;
+/** One line, at most `SETTLE_NUDGE_TEXT_LIMIT` characters with the ellipsis. */
+function clipped(text: string, keep: "head" | "tail"): string {
+  const oneLine = text.replace(/\s+/g, " ");
+  return (keep === "head" ? clipHead : clipTail)(oneLine, SETTLE_NUDGE_TEXT_LIMIT, { ellipsisCounts: true });
+}
+
+/** The turn of a stored verdict the row could still show; a dismissed or pending one shows nothing. */
+function showableVerdictTurnId(session: TerminalSessionSummary): string | null {
+  const turnId = session.settleNudgeTurnId;
+  if (!turnId || turnId.startsWith("pending:")) return null;
+  if ((session.settleNudgeDoneProbability ?? 0) <= 0) return null;
+  return session.settleNudgeDismissedTurnId === turnId ? null : turnId;
 }
 
 /** A turn that printed nothing leaves `last_output_at` empty; the row's own start or end stands in. */
@@ -128,10 +124,98 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
   let running = false;
   let disposed = false;
 
+  /**
+   * Asks Jev about one row's last turn and stores its answer, only while that
+   * turn is still the chat's latest and nothing moved meanwhile. `countCall`
+   * runs just before the Jev call, which counts against the sweep's cap.
+   */
+  const judgeCandidate = async (candidate: TerminalSessionSummary, countCall: () => void): Promise<void> => {
+    const [chat, transcript] = await Promise.all([
+      deps.agentChatService.getSessionSummary(candidate.id),
+      deps.agentChatService.readTranscript(candidate.id, SETTLE_NUDGE_TRANSCRIPT_LIMIT),
+    ]);
+    if (!chat || !chatCanBeJudged(chat)) return;
+    const turn = completedTurn(transcript);
+    if (!turn || !idleLongEnough(turn.endedAt, Date.now())) return;
+    if (candidate.settleNudgeTurnId === turn.key) return;
+    if (candidate.settleNudgeDismissedTurnId === turn.key) return;
+
+    const userText = clipped(turn.userText, "head");
+    const assistantText = clipped(turn.assistantText, "tail");
+    if (!userText || !assistantText) return;
+
+    countCall();
+    const answers = await deps.jevService.decide({
+      feature: "settle_nudge",
+      priority: "background",
+      state: `User request:\n${userText}\n\nAssistant reply:\n${assistantText}`,
+      questions: {
+        done: {
+          type: "noul",
+          instructions: "Did the assistant finish what the user asked, with nothing left for the user to answer or decide?",
+        },
+      },
+    });
+    const probability = answers?.done?.type === "noul" ? answers.done.noul : null;
+    if (probability == null || !Number.isFinite(probability)) return;
+
+    const [latestSession, latestChat, latestTranscript] = await Promise.all([
+      Promise.resolve(deps.sessionService.get(candidate.id)),
+      deps.agentChatService.getSessionSummary(candidate.id),
+      deps.agentChatService.readTranscript(candidate.id, SETTLE_NUDGE_TRANSCRIPT_LIMIT),
+    ]);
+    if (
+      !latestSession
+      || !rowCanBeJudged(latestSession, Date.now())
+      || !latestChat
+      || !chatCanBeJudged(latestChat)
+      || latestChat.lastActivityAt !== chat.lastActivityAt
+      || completedTurn(latestTranscript)?.key !== turn.key
+    ) return;
+
+    deps.sessionService.setSettleNudgeVerdict({
+      sessionId: candidate.id,
+      turnId: turn.key,
+      doneProbability: probability,
+      expectedTurnMarker: candidate.settleNudgeTurnId ?? null,
+      // The row's own `last_output_at`, which the write compares against.
+      expectedLastActivityAt: candidate.lastActivityAt ?? null,
+    });
+  };
+
+  /**
+   * With the feature switched off, no verdict may keep showing. sessionService
+   * has no clear call, so this overwrites each shown one with a 0 "done"
+   * answer for the same turn, under the same compare-and-set as a new verdict.
+   */
+  const hideStoredVerdicts = (): void => {
+    for (const session of deps.sessionService.list({ limit: null })) {
+      if (disposed) return;
+      const turnId = showableVerdictTurnId(session);
+      if (!turnId) continue;
+      try {
+        deps.sessionService.setSettleNudgeVerdict({
+          sessionId: session.id,
+          turnId,
+          doneProbability: 0,
+          expectedTurnMarker: turnId,
+          expectedLastActivityAt: session.lastActivityAt ?? null,
+        });
+      } catch {
+        // Best effort, like the verdict itself; the next sweep tries again.
+      }
+    }
+  };
+
   const sweep = async (): Promise<void> => {
-    if (disposed || running || !deps.jevService.status().available) return;
+    if (disposed || running) return;
     running = true;
     try {
+      if (!deps.isEnabled()) {
+        hideStoredVerdicts();
+        return;
+      }
+      if (!deps.jevService.status().available) return;
       const nowMs = Date.now();
       const candidates = deps.sessionService.list({ limit: null })
         .filter((session) => rowCanBeJudged(session, nowMs))
@@ -140,59 +224,8 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
 
       for (const candidate of candidates) {
         if (disposed || attempted >= SETTLE_NUDGE_MAX_CALLS_PER_SWEEP) break;
-
         try {
-          const [chat, transcript] = await Promise.all([
-            deps.agentChatService.getSessionSummary(candidate.id),
-            deps.agentChatService.readTranscript(candidate.id, SETTLE_NUDGE_TRANSCRIPT_LIMIT),
-          ]);
-          if (!chat || !chatCanBeJudged(chat)) continue;
-          const turn = completedTurn(transcript);
-          if (!turn || !idleLongEnough(turn.endedAt, Date.now())) continue;
-          if (candidate.settleNudgeTurnId === turn.key) continue;
-          if (candidate.settleNudgeDismissedTurnId === turn.key) continue;
-
-          const userText = clipped(turn.userText, SETTLE_NUDGE_TEXT_LIMIT);
-          const assistantText = clipped(turn.assistantText, SETTLE_NUDGE_TEXT_LIMIT, true);
-          if (!userText || !assistantText) continue;
-
-          attempted += 1;
-          const answers = await deps.jevService.decide({
-            feature: "settle_nudge",
-            priority: "background",
-            state: `User request:\n${userText}\n\nAssistant reply:\n${assistantText}`,
-            questions: {
-              done: {
-                type: "noul",
-                instructions: "Did the assistant finish what the user asked, with nothing left for the user to answer or decide?",
-              },
-            },
-          });
-          const probability = answers?.done?.type === "noul" ? answers.done.noul : null;
-          if (probability == null || !Number.isFinite(probability)) continue;
-
-          const [latestSession, latestChat, latestTranscript] = await Promise.all([
-            Promise.resolve(deps.sessionService.get(candidate.id)),
-            deps.agentChatService.getSessionSummary(candidate.id),
-            deps.agentChatService.readTranscript(candidate.id, SETTLE_NUDGE_TRANSCRIPT_LIMIT),
-          ]);
-          if (
-            !latestSession
-            || !rowCanBeJudged(latestSession, Date.now())
-            || !latestChat
-            || !chatCanBeJudged(latestChat)
-            || latestChat.lastActivityAt !== chat.lastActivityAt
-            || completedTurn(latestTranscript)?.key !== turn.key
-          ) continue;
-
-          deps.sessionService.setSettleNudgeVerdict({
-            sessionId: candidate.id,
-            turnId: turn.key,
-            doneProbability: probability,
-            expectedTurnMarker: candidate.settleNudgeTurnId ?? null,
-            // The row's own `last_output_at`, which the write compares against.
-            expectedLastActivityAt: candidate.lastActivityAt ?? null,
-          });
+          await judgeCandidate(candidate, () => { attempted += 1; });
         } catch {
           // This is a best-effort hint. A failed read or Jev call leaves the
           // normal session row and its existing settle controls alone.

@@ -30,8 +30,10 @@ import curatedMatches from "./modelSheetMatches.json";
 import curatedNotes from "./modelSheetNotes.json";
 
 /**
- * The kinds of task the sheet scores. The composer's classifier (Jev) sorts a
- * prompt into the first eight; its separate `media` hint is not a sheet kind.
+ * The kinds of task the sheet scores. Today only `ade models sheet` reads the
+ * sheet; the composer's model hint works from the user's own recent picks and
+ * does not use these kinds. It is the knowledge layer for a later model
+ * picker (ADE-159).
  */
 export const MODEL_SHEET_TASK_KINDS = [
   "question",

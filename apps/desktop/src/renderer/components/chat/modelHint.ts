@@ -20,6 +20,7 @@
  * Every gap (Jev null or unsure, no catalogue, no choices) is "no hint": the
  * composer stays exactly as it was.
  */
+import { REASONING_TIERS_LOW_TO_HIGH } from "../../../shared/backgroundUtilityModel";
 import type { JevChoiceAnswer, JevDecideRequest, JevNoulAnswer, JevQuestion } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
 import type { CheaperHintOutcome, ModelHintHistoryEntry } from "./modelHintHistory";
@@ -53,10 +54,9 @@ const CHEAPER_CONFIDENCE = 0.9;
 /** …and Jev's probability that this user would take a cheaper model at least this. */
 const WOULD_TAKE_CHEAPER = 0.5;
 
-const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
 function effortRank(effort: string | null): number {
-  const index = effort ? EFFORT_ORDER.indexOf(effort) : -1;
-  return index < 0 ? EFFORT_ORDER.indexOf("medium") : index;
+  const index = effort ? REASONING_TIERS_LOW_TO_HIGH.indexOf(effort) : -1;
+  return index < 0 ? REASONING_TIERS_LOW_TO_HIGH.indexOf("medium") : index;
 }
 
 /** Long enough to say what it asks: "say hi back" is, "fix it" is not. */
@@ -80,7 +80,8 @@ export function makerOf(model: Pick<UserCatalogModel, "modelId" | "displayName" 
   return model.modelId.split("/").slice(-1)[0] ?? model.modelId;
 }
 
-function shortName(name: string): string {
+/** "Opus 5.5" for "Claude Opus 5.5 (latest)": how the hint names a model everywhere. */
+export function shortName(name: string): string {
   return name.replace(/^Claude\s+/, "").replace(/\s*\(latest\)$/i, "");
 }
 

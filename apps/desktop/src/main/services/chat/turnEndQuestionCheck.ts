@@ -109,6 +109,16 @@ function handCanRise(hand: TurnEndHandState): boolean {
   return !hand.hasPendingInput && !hand.attentionRequestedAt;
 }
 
+/** `true` at or above `yes`, `false` at or below `no`, and no answer in between. */
+function threeWay(p: number, no: number, yes: number): boolean | null {
+  if (p >= yes) return true;
+  if (p <= no) return false;
+  return null;
+}
+
+type JevTurnEndReading = { asksUser: boolean | null; waitingOnOwnWork: boolean };
+type AskDecider = "jev" | "model";
+
 /**
  * A turn that ends while the chat still owns live background work reads as
  * Working, so a question in its reply is invisible unless the agent called
@@ -157,7 +167,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
   const askJev = async (
     facts: TurnEndQuestionFacts,
     replyText: string,
-  ): Promise<{ asksUser: boolean | null; waitingOnOwnWork: boolean } | null> => {
+  ): Promise<JevTurnEndReading | null> => {
     if (!deps.decide) return null;
     const answers = await deps.decide({
       feature: "turn_end",
@@ -168,7 +178,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     if (!answers) return null;
     const asks = answers.asksUser.noul;
     return {
-      asksUser: asks >= JEV_ASKS_YES ? true : asks <= JEV_ASKS_NO ? false : null,
+      asksUser: threeWay(asks, JEV_ASKS_NO, JEV_ASKS_YES),
       waitingOnOwnWork: answers.waitingOnOwnWork.noul >= JEV_WAITING_YES,
     };
   };
@@ -211,31 +221,50 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
   };
 
   /**
-   * Jev first, for any provider. When it gives no clear ask answer on an
-   * unsure ending, exactly today's path: the provider's cheap model, if any.
-   * `unsure` false means the rules already said "not an ask"; Jev is then
-   * asked only whether the agent waits on its own work.
+   * Whether the reply asks the user. Jev first, for any provider; when it
+   * gives no clear answer, exactly today's path: the provider's cheap model,
+   * if any. `null` is no answer, which never raises a hand.
    */
-  const runTiebreak = async (args: {
+  const decideAsk = async (args: {
+    facts: TurnEndQuestionFacts;
+    turnId: string;
+    /** Only set for unsure endings of background-work turns. */
+    provider: AdeBackgroundUtilityProvider | null;
+    replyText: string;
+    rulesVerdict: "unsure" | "not_ask";
+    jev: JevTurnEndReading | null;
+  }): Promise<{ asksUser: boolean | null; decidedBy: AskDecider }> => {
+    const { facts, provider, jev } = args;
+    // A progress note on a background-work turn can still ask, so Jev's ask
+    // answer stands there too. With only child chats running, a "not an ask"
+    // from the rules is final; Jev was asked only whether the agent waits.
+    const jevMayOverrule = args.rulesVerdict === "unsure" || facts.backgroundWorkCount > 0;
+    const asksUser = jevMayOverrule ? jev?.asksUser ?? null : false;
+    if (asksUser !== null || !provider) return { asksUser, decidedBy: "jev" };
+    return {
+      asksUser: await runCheapModel({ facts, turnId: args.turnId, provider, replyText: args.replyText }),
+      decidedBy: "model",
+    };
+  };
+
+  /**
+   * Acts on the decision, only if nothing happened since the turn ended: a
+   * hidden ask raises the hand; a reply that waits on the agent's own work
+   * marks the chat as awaiting it.
+   */
+  const finishTurnEnd = (args: {
     facts: TurnEndQuestionFacts;
     turnId: string;
     provider: AdeBackgroundUtilityProvider | null;
     replyText: string;
-    unsure: boolean;
-  }): Promise<void> => {
-    const { facts, turnId, provider } = args;
+    jev: JevTurnEndReading | null;
+    asksUser: boolean | null;
+    decidedBy: AskDecider;
+    startedAt: number;
+  }): void => {
+    const { facts, turnId, jev, asksUser, decidedBy } = args;
     const { sessionId } = facts;
-    const startedAt = Date.now();
-    // Without a Jev helper the cheap model starts at once, exactly as before.
-    const jev = deps.decide ? await askJev(facts, args.replyText) : null;
-    let asksUser: boolean | null = args.unsure ? jev?.asksUser ?? null : false;
-    let decidedBy: "jev" | "model" = "jev";
-    if (asksUser === null && provider) {
-      decidedBy = "model";
-      asksUser = await runCheapModel({ facts, turnId, provider, replyText: args.replyText });
-    }
-    // The hand may still go up only if nothing happened since the turn ended:
-    // same live chat, no user message or new turn (either clears the pending
+    // Same live chat, no user message or new turn (either clears the pending
     // entry), no approval card, and no hand raised in the meantime.
     const stillOpen = pendingTurnBySession.get(sessionId) === turnId
       && facts.isStillCurrent()
@@ -245,13 +274,13 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     logger.info("agent_chat.turn_end_question_tiebreak", {
       sessionId,
       turnId,
-      provider,
+      provider: args.provider,
       jev: jev ? (jev.asksUser === null ? "unsure" : jev.asksUser ? "ask" : "not_ask") : "no_answer",
       decidedBy,
       asksUser,
       awaitingOwnWork,
       stillOpen,
-      durationMs: Date.now() - startedAt,
+      durationMs: Date.now() - args.startedAt,
     });
     // As with the rules, the hand is only for a reply hidden under Working.
     if (asksUser === true && stillOpen && facts.backgroundWorkCount > 0) {
@@ -259,6 +288,20 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     } else if (awaitingOwnWork) {
       deps.setAwaitingOwnWork?.(sessionId, new Date().toISOString());
     }
+  };
+
+  const runTiebreak = async (args: {
+    facts: TurnEndQuestionFacts;
+    turnId: string;
+    provider: AdeBackgroundUtilityProvider | null;
+    replyText: string;
+    rulesVerdict: "unsure" | "not_ask";
+  }): Promise<void> => {
+    const startedAt = Date.now();
+    // Without a Jev helper the cheap model starts at once, exactly as before.
+    const jev = deps.decide ? await askJev(args.facts, args.replyText) : null;
+    const { asksUser, decidedBy } = await decideAsk({ ...args, jev });
+    finishTurnEnd({ ...args, jev, asksUser, decidedBy, startedAt });
   };
 
   return {
@@ -313,20 +356,16 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
         if (hasBackgroundWork) raise(sessionId, turnId, classification.question, "rules");
         return;
       }
-      if (classification.verdict === "not_ask" && hasBackgroundWork) {
-        // The rules read a progress note, and the row already reads Working.
-        // A note can still ask ("…running. I need to know X before I merge."),
-        // so Jev, when it answers, gets the last word; the cheap model does not.
-        if (!deps.decide) return;
-        pendingTurnBySession.set(sessionId, turnId);
-        void runTiebreak({ facts, turnId, provider: null, replyText: reply.text, unsure: true });
-        return;
-      }
-      // The cheap model keeps today's scope: unsure endings of background-work turns.
-      const provider = hasBackgroundWork ? adeBackgroundUtilityProvider(facts.provider) : null;
+      // The cheap model keeps today's scope: unsure endings of background-work
+      // turns. A progress note ("not an ask") on such a turn can still ask
+      // ("…running. I need to know X before I merge."), so Jev, when it
+      // answers, gets the last word there; the cheap model does not.
+      const provider = classification.verdict === "unsure" && hasBackgroundWork
+        ? adeBackgroundUtilityProvider(facts.provider)
+        : null;
       if (!deps.decide && !provider) return;
       pendingTurnBySession.set(sessionId, turnId);
-      void runTiebreak({ facts, turnId, provider, replyText: reply.text, unsure: classification.verdict === "unsure" });
+      void runTiebreak({ facts, turnId, provider, replyText: reply.text, rulesVerdict: classification.verdict });
     },
 
     forget(sessionId) {

@@ -22,6 +22,7 @@ import {
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { motion, AnimatePresence } from "motion/react";
+import { usePaletteSuggestions } from "./usePaletteSuggestions";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
   ProjectBrowseInput,
@@ -35,10 +36,6 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
-import type {
-  JevChoiceQuestion,
-  JevDecideRequest,
-} from "../../../shared/types/jev";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -129,7 +126,7 @@ import {
   useChatFindPaletteCommand,
 } from "../chat/chatFindPalette";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
-import { lanePrTagRoutePath } from "../lanes/lanePageModel";
+import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanes/lanePageModel";
 import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
@@ -167,6 +164,44 @@ type ProjectActionOutcome = {
   error?: string;
 };
 
+/** The focused lane's PR row: open its pull request, or start one when it has none. */
+function lanePrCommand(
+  lane: { id: string; name: string },
+  tag: LaneTabPrTag | null,
+  navigate: (path: string) => void,
+): Command {
+  if (tag) {
+    return {
+      id: `lane-open-pr-${lane.id}`,
+      title: `Open PR #${tag.githubPrNumber}: ${tag.title}`,
+      hint: `Open the pull request for ${lane.name} in ADE's PRs tab`,
+      keywords: ["open pr", "open pull request", "this lane", "for this lane", lane.name],
+      group: "Lanes",
+      run: () => {
+        const route = lanePrTagRoutePath(tag);
+        if (route) navigate(route);
+      },
+    };
+  }
+  return {
+    id: `lane-create-pr-${lane.id}`,
+    title: `Create a PR for ${lane.name}`,
+    hint: `Open the pull request creator for ${lane.name}`,
+    keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", lane.name],
+    group: "Lanes",
+    // The active project binding is the selected lane's runtime. PRsPage
+    // reads the source lane from that same bound project after navigation.
+    run: () => navigate(`/prs?${new URLSearchParams({ create: "1", sourceLaneId: lane.id }).toString()}`),
+  };
+}
+
+/** Hand-written hints for settings whose "tab · group" caption says too little. */
+const SETTING_ENTRY_HINTS: Record<string, string> = {
+  "appearance.chat-font-size": "Change how large chat messages appear",
+  "archive.items": "Browse or restore older lanes, chats, and shells",
+  "lanes-git.lanes": "Manage active, stale, merged, and archived lanes",
+};
+
 type Command = {
   id: string;
   title: string;
@@ -178,105 +213,6 @@ type Command = {
   closeOnRun?: boolean;
   run: () => void | Promise<void>;
 };
-
-const PALETTE_SUGGESTION_DEBOUNCE_MS = 500;
-const PALETTE_SUGGESTION_MAX_CANDIDATES = 20;
-const PALETTE_SUGGESTION_PROBABILITY_FLOOR = 0.15;
-const PALETTE_SUGGESTION_TOP_PROBABILITY_FLOOR = 0.35;
-const PALETTE_SUGGESTION_CACHE_LIMIT = 24;
-
-const PALETTE_SUGGESTION_STOP_WORDS = new Set([
-  "a", "an", "and", "for", "in", "me", "my", "of", "on", "please",
-  "the", "this", "to", "with",
-]);
-
-const PALETTE_SUGGESTION_SYNONYMS: Record<string, string[]> = {
-  archive: ["archived", "cleanup", "clean up"],
-  bigger: ["larger", "increase", "font size", "text size"],
-  chat: ["conversation", "session"],
-  lane: ["lanes", "worktree", "selected lane"],
-  lanes: ["lane", "worktree", "selected lane"],
-  new: ["start", "create"],
-  open: ["show", "view", "go to", "navigate"],
-  old: ["archived", "stale", "merged", "idle"],
-  pr: ["pull request", "pull requests", "prs"],
-  pull: ["pr", "prs"],
-  request: ["pr", "prs"],
-  start: ["new", "create"],
-  text: ["font", "chat", "message"],
-};
-
-type PaletteSuggestionCacheEntry = {
-  requestKey: string;
-  commandIds: string[];
-};
-
-type PaletteSuggestionResult = {
-  query: string;
-  context: string;
-  commandIds: string[];
-};
-
-function containsPaletteWord(text: string, word: string): boolean {
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, "i").test(text);
-}
-
-function paletteSuggestionCandidates(
-  commands: Command[],
-  matchedCommands: Command[],
-  queryTerms: readonly string[],
-): Command[] {
-  const terms = queryTerms
-    .map((term) => term.toLowerCase())
-    .filter((term) => term.length > 1 && !PALETTE_SUGGESTION_STOP_WORDS.has(term));
-  if (terms.length === 0) return [];
-
-  const existingMatches = new Set(matchedCommands);
-  return commands
-    .map((command, order) => {
-      const title = command.title.toLowerCase();
-      const searchable = [title, command.hint ?? "", ...(command.keywords ?? [])]
-        .join(" ")
-        .toLowerCase();
-      let score = existingMatches.has(command) ? 16 : 0;
-      let matchedTerms = 0;
-      for (const term of terms) {
-        if (containsPaletteWord(title, term)) {
-          score += 5;
-          matchedTerms += 1;
-          continue;
-        }
-        if (containsPaletteWord(searchable, term)) {
-          score += 3;
-          matchedTerms += 1;
-          continue;
-        }
-        if ((PALETTE_SUGGESTION_SYNONYMS[term] ?? []).some((synonym) => searchable.includes(synonym))) {
-          score += 1;
-          matchedTerms += 1;
-        }
-      }
-      if (matchedTerms === terms.length) score += 8;
-      return { command, order, score };
-    })
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => right.score - left.score || left.order - right.order)
-    .slice(0, PALETTE_SUGGESTION_MAX_CANDIDATES)
-    .map((candidate) => candidate.command);
-}
-
-function paletteSuggestionDescription(command: Command): string {
-  const fallback = `Open the ${command.group ?? "ADE"} action for this task.`;
-  const terms = command.keywords?.slice(0, 7).join(", ");
-  return [
-    `${command.title}: ${command.hint?.trim() || fallback}`,
-    terms ? `Related terms: ${terms}` : "",
-  ]
-    .filter(Boolean)
-    .join(". ")
-    .slice(0, 280);
-}
 
 type BrowseRow = {
   id: string;
@@ -426,9 +362,6 @@ export function CommandPalette({
   const [actionOutcome, setActionOutcome] =
     useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
-  const [suggestionResult, setSuggestionResult] =
-    useState<PaletteSuggestionResult | null>(null);
-  const suggestionCacheRef = useRef(new Map<string, PaletteSuggestionCacheEntry>());
   const [filterMenuKey, setFilterMenuKey] = useState<WorkFilterMenuKey | null>(
     null,
   );
@@ -861,13 +794,8 @@ export function CommandPalette({
         id: `setting-${entry.id}`,
         title: entry.label,
         hint:
-          entry.id === "appearance.chat-font-size"
-            ? "Change how large chat messages appear"
-            : entry.id === "archive.items"
-              ? "Browse or restore older lanes, chats, and shells"
-              : entry.id === "lanes-git.lanes"
-                ? "Manage active, stale, merged, and archived lanes"
-                : `${settingsTabLabel(entry.tab)} · ${entry.group}`,
+          SETTING_ENTRY_HINTS[entry.id] ??
+          `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
         // Keywords never render; they widen what the palette's own filter
         // matches on, so "crash" reaches "Send a report to ADE".
@@ -963,26 +891,9 @@ export function CommandPalette({
           navigate(`/lanes?laneId=${encodeURIComponent(nextLane.id)}`);
         },
       },
-      ...(selectedLane && selectedLanePr?.status === "ready" ? [selectedLanePr.tag ? {
-        id: `lane-open-pr-${selectedLane.id}`,
-        title: `Open PR #${selectedLanePr.tag.githubPrNumber}: ${selectedLanePr.tag.title}`,
-        hint: `Open the pull request for ${selectedLane.name} in ADE's PRs tab`,
-        keywords: ["open pr", "open pull request", "this lane", "for this lane", selectedLane.name],
-        group: "Lanes",
-        run: () => {
-          const route = lanePrTagRoutePath(selectedLanePr.tag!);
-          if (route) navigate(route);
-        },
-      } : {
-        id: `lane-create-pr-${selectedLane.id}`,
-        title: `Create a PR for ${selectedLane.name}`,
-        hint: `Open the pull request creator for ${selectedLane.name}`,
-        keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", selectedLane.name],
-        group: "Lanes",
-        // The active project binding is the selected lane's runtime. PRsPage
-        // reads the source lane from that same bound project after navigation.
-        run: () => navigate(`/prs?${new URLSearchParams({ create: "1", sourceLaneId: selectedLane.id }).toString()}`),
-      }] : []),
+      ...(selectedLane && selectedLanePr?.status === "ready"
+        ? [lanePrCommand(selectedLane, selectedLanePr.tag, navigate)]
+        : []),
       {
         id: "lane-filter",
         title: "Focus Lane Filter",
@@ -1086,189 +997,23 @@ export function CommandPalette({
   const isFocusedChat = Boolean(
     activeSessionTarget && isChatToolType(activeSessionTarget.toolType),
   );
-  const suggestionContext = [
-    location.pathname,
-    selectedLane?.id ?? "no-lane",
-    isFocusedChat ? `chat:${activeSessionTarget?.id ?? "focused"}` : "no-chat",
-    runtimePinKey ?? "unbound",
-  ].join("\u001f");
-  const suggestionResultRef = useRef(suggestionResult);
-  suggestionResultRef.current = suggestionResult;
-  const suggestedCommands = useMemo(() => {
-    if (
-      !open ||
-      mode !== "default" ||
-      !suggestionResult ||
-      suggestionResult.query !== q.trim() ||
-      suggestionResult.context !== suggestionContext
-    ) {
-      return [];
-    }
-    const byId = new Map(commands.map((command) => [command.id, command]));
-    return suggestionResult.commandIds
-      .map((id) => byId.get(id))
-      .filter((command): command is Command => command != null);
-  }, [commands, mode, open, q, suggestionContext, suggestionResult]);
-
-  useEffect(() => {
-    const query = q.trim();
-    const wordCount = query.split(/\s+/).filter(Boolean).length;
-    const plainEnglishQuery =
-      wordCount >= 3 || (wordCount >= 2 && filtered.length === 0);
-    if (
-      !open ||
-      mode !== "default" ||
-      !query ||
-      !plainEnglishQuery ||
-      parsedWorkQuery.filterTokens.length > 0 ||
-      parsedWorkQuery.tracked !== null
-    ) {
-      setSuggestionResult(null);
-      return undefined;
-    }
-
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      const candidates = paletteSuggestionCandidates(
-        commands,
-        filtered,
-        parsedWorkQuery.terms,
-      );
-      if (candidates.length < 2) {
-        setSuggestionResult(null);
-        return;
-      }
-
-      const criteria = Object.fromEntries(
-        candidates.map((command) => [
-          command.id,
-          paletteSuggestionDescription(command),
-        ]),
-      );
-      const state = [
-        `User query: ${query}`,
-        `Current tab: ${location.pathname}`,
-        `Focused lane: ${selectedLane?.name ?? "none"}`,
-        `Chat focused: ${isFocusedChat ? "yes" : "no"}`,
-      ].join("\n");
-      const requestKey = JSON.stringify({ state, criteria });
-      const applySuggestions = (commandIds: string[]) => {
-        if (cancelled) return;
-        const availableIds = commandIds
-          .filter((id) => candidates.some((command) => command.id === id))
-          .slice(0, 3);
-        if (availableIds.length === 0) {
-          setSuggestionResult(null);
-          return;
-        }
-
-        const previous = suggestionResultRef.current;
-        const alreadyVisible =
-          previous?.query === query &&
-          previous.context === suggestionContext &&
-          previous.commandIds.join("\u001f") === availableIds.join("\u001f");
-        if (!alreadyVisible) {
-          setSelectedIdx((current) => {
-            const previousCount = previous?.commandIds.length ?? 0;
-            const baseIndex =
-              previous &&
-              (previous.query !== query || previous.context !== suggestionContext) &&
-              current >= previousCount
-                ? current - previousCount
-                : current;
-            return baseIndex < normalFlatCountRef.current
-              ? baseIndex + availableIds.length
-              : baseIndex;
-          });
-        }
-        setSuggestionResult({
-          query,
-          context: suggestionContext,
-          commandIds: availableIds,
-        });
-      };
-      const cacheResult = (commandIds: string[]) => {
-        suggestionCacheRef.current.delete(query);
-        suggestionCacheRef.current.set(query, { requestKey, commandIds });
-        while (suggestionCacheRef.current.size > PALETTE_SUGGESTION_CACHE_LIMIT) {
-          const oldest = suggestionCacheRef.current.keys().next().value;
-          if (oldest == null) break;
-          suggestionCacheRef.current.delete(oldest);
-        }
-      };
-
-      const cached = suggestionCacheRef.current.get(query);
-      if (cached?.requestKey === requestKey) {
-        applySuggestions(cached.commandIds);
-        return;
-      }
-
-      const request: JevDecideRequest<{ command: JevChoiceQuestion }> = {
-        feature: "palette",
-        state,
-        priority: "interactive",
-        questions: {
-          command: {
-            type: "choice",
-            instructions:
-              "Choose the ADE command that best matches the user's request. Use the current tab and focused lane or chat as context.",
-            criteria,
-          },
-        },
-      };
-      void window.ade.ai
-        .jevDecide(request, runtimePinRef.current)
-        .then((answers) => {
-          if (cancelled) return;
-          const answer = answers?.command;
-          const ranked =
-            answer?.type === "choice"
-              ? Object.entries(answer.probabilities)
-                  .filter(([id, probability]) =>
-                    candidates.some((command) => command.id === id) &&
-                    Number.isFinite(probability),
-                  )
-                  .sort((left, right) => right[1] - left[1])
-              : [];
-          const commandIds =
-            ranked[0]?.[1] != null &&
-            ranked[0][1] >= PALETTE_SUGGESTION_TOP_PROBABILITY_FLOOR
-              ? ranked
-                  .filter(([, probability]) =>
-                    probability > PALETTE_SUGGESTION_PROBABILITY_FLOOR,
-                  )
-                  .slice(0, 3)
-                  .map(([id]) => id)
-              : [];
-          cacheResult(commandIds);
-          applySuggestions(commandIds);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          cacheResult([]);
-          setSuggestionResult(null);
-        });
-    }, PALETTE_SUGGESTION_DEBOUNCE_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [
+  const suggestedCommands = usePaletteSuggestions({
+    open,
+    mode,
+    q,
     commands,
     filtered,
+    parsedWorkQuery,
+    pathname: location.pathname,
+    selectedLaneId: selectedLane?.id ?? null,
+    selectedLaneName: selectedLane?.name,
     isFocusedChat,
-    location.pathname,
-    mode,
-    open,
-    parsedWorkQuery.filterTokens.length,
-    parsedWorkQuery.terms,
-    parsedWorkQuery.tracked,
-    q,
+    focusedChatId: activeSessionTarget?.id,
     runtimePinKey,
-    selectedLane?.name,
-    suggestionContext,
-  ]);
+    runtimePinRef,
+    normalFlatCountRef,
+    setSelectedIdx,
+  });
 
   const grouped = useMemo(() => {
     const groups: { label: string; items: Command[] }[] = [];

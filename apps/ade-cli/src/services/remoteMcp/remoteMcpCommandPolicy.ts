@@ -111,7 +111,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["providers", new Set(["actions"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
-  ["models", new Set(["catalog"])],
+  ["models", new Set(["catalog", "sheet"])],
   ["proxy", new Set(["status"])],
   ["actions", new Set(["list"])],
 ]);

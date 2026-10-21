@@ -78,7 +78,7 @@ export function backgroundUtilityModelId(
  * Effort names from least to most thinking. `off` is Pi's name for `none`.
  * Anything else (OpenCode's `free`, `budget`) is not an effort.
  */
-const REASONING_TIERS_LOW_TO_HIGH = ["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
+export const REASONING_TIERS_LOW_TO_HIGH = ["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
 
 /**
  * The effort a background utility call runs at: the lowest tier the model

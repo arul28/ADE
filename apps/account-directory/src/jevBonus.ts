@@ -1,5 +1,6 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import { logJevBonusRequest } from "./logging";
+import { utcDayKey } from "./sinkUtils";
 
 /**
  * `POST /jev/systemone`: the ADE bonus for Jev (README, "Jev bonus").
@@ -63,10 +64,6 @@ function limit(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function utcDay(nowMs: number): string {
-  return new Date(nowMs).toISOString().slice(0, 10);
-}
-
 /** Seconds until the next UTC midnight, when every count starts again. */
 function secondsToReset(nowMs: number): number {
   const next = new Date(nowMs);
@@ -105,6 +102,28 @@ async function countFor(env: JevBonusEnv, day: string, userId: string): Promise<
   } catch {
     return null;
   }
+}
+
+/**
+ * What the caller gets when TypeSafe did not answer 2xx. TypeSafe's own limit
+ * passes through as a 429 the brain backs off from; a refused key is ADE's
+ * problem, not the caller's: 503.
+ */
+function mapUpstreamFailure(status: number, headers: Headers): { response: Response; reason: string } {
+  if (status === 429) {
+    const retryAfter = headers.get("retry-after");
+    return {
+      response: json({ error: JEV_BONUS_ERRORS.exhausted }, 429, retryAfter ? { "retry-after": retryAfter } : {}),
+      reason: "upstream_rate_limited",
+    };
+  }
+  if (status === 400 || status === 422) {
+    return { response: json({ error: JEV_BONUS_ERRORS.badRequest }, 400), reason: "upstream_rejected" };
+  }
+  if (status === 401 || status === 403) {
+    return { response: json({ error: JEV_BONUS_ERRORS.unavailable }, 503), reason: "upstream_key_refused" };
+  }
+  return { response: json({ error: JEV_BONUS_ERRORS.upstream }, 502), reason: "upstream_failed" };
 }
 
 function readQuestion(body: unknown): { state: string; questions: Record<string, unknown> } | null {
@@ -160,7 +179,7 @@ export async function handleJevBonusRequest(
   const question = readQuestion(parsed);
   if (!question) return finish(json({ error: JEV_BONUS_ERRORS.badRequest }, 400), "bad_request");
 
-  const day = utcDay(nowMs);
+  const day = utcDayKey(nowMs);
   const userId = authentication.userId;
   const dailyLimit = limit(env.JEV_BONUS_DAILY_LIMIT, DEFAULT_DAILY_LIMIT);
   const exhausted = (reason: string) => finish(
@@ -198,22 +217,18 @@ export async function handleJevBonusRequest(
     return finish(json({ error: JEV_BONUS_ERRORS.upstream }, 502), "upstream_unreachable");
   }
   upstreamStatus = upstream.status;
-  const body = await upstream.text();
+  let body: string;
+  try {
+    // The timeout also covers the body; a stalled or broken read gives the slots back.
+    body = await upstream.text();
+  } catch {
+    await giveBack();
+    return finish(json({ error: JEV_BONUS_ERRORS.upstream }, 502), "upstream_body_failed");
+  }
   if (!upstream.ok) {
     await giveBack();
-    // TypeSafe's own limit passes through as a 429 the brain backs off from;
-    // a refused key is ADE's problem, not the caller's: 503.
-    if (upstream.status === 429) {
-      const retryAfter = upstream.headers.get("retry-after");
-      return finish(json({ error: JEV_BONUS_ERRORS.exhausted }, 429, retryAfter ? { "retry-after": retryAfter } : {}), "upstream_rate_limited");
-    }
-    if (upstream.status === 400 || upstream.status === 422) {
-      return finish(json({ error: JEV_BONUS_ERRORS.badRequest }, 400), "upstream_rejected");
-    }
-    if (upstream.status === 401 || upstream.status === 403) {
-      return finish(json({ error: JEV_BONUS_ERRORS.unavailable }, 503), "upstream_key_refused");
-    }
-    return finish(json({ error: JEV_BONUS_ERRORS.upstream }, 502), "upstream_failed");
+    const failure = mapUpstreamFailure(upstream.status, upstream.headers);
+    return finish(failure.response, failure.reason);
   }
   try {
     const answer = JSON.parse(body) as { usage?: { input_tokens?: unknown; output_tokens?: unknown } };
@@ -237,6 +252,6 @@ export async function handleJevBonusRequest(
 
 /** Cron: day rows older than a week. */
 export async function cleanupJevBonusDays(env: { DB: D1Database }, nowMs: number = Date.now()): Promise<void> {
-  const cutoff = utcDay(nowMs - KEEP_DAYS * 24 * 60 * 60 * 1000);
+  const cutoff = utcDayKey(nowMs - KEEP_DAYS * 24 * 60 * 60 * 1000);
   await env.DB.prepare("delete from jev_bonus_days where day < ?").bind(cutoff).run();
 }
