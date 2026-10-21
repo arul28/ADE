@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
-import { ADE_TIPS, adeTipGroup, runTipAction, tipActionAvailable, tipIndexForDay, type AdeTip } from "../../../onboarding/adeTips";
+import { adeTipGroup, machineTipOrder, runTipAction, tipActionAvailable, type AdeTip } from "../../../onboarding/adeTips";
 import { ADE_TIP_SHOTS } from "../../onboarding/tips/adeTipsWall";
 import {
   answerTipCard,
@@ -28,14 +28,10 @@ import { useGoTo } from "../../onboarding/spotlight/useGoTo";
 const ASK_AFTER_MS = 90_000;
 const ASK_AFTER_TEST_MS = 4_000;
 
-/** The tip to offer next: today's pick among the ones not tried or shown yet. */
+/** The tip to offer next: the first in this computer's random order not tried or shown yet. */
 function nextTip(): AdeTip | null {
   const done = doneTipIds();
-  const open = ADE_TIPS.filter((tip) => tipActionAvailable(tip.action) && !done.has(tip.id));
-  if (!open.length) return null;
-  const day = new Date();
-  day.setHours(0, 0, 0, 0);
-  return open[tipIndexForDay(day.getTime(), open.length)] ?? null;
+  return machineTipOrder().find((tip) => tipActionAvailable(tip.action) && !done.has(tip.id)) ?? null;
 }
 
 export function useFeatureTipCard(enabled: boolean): void {

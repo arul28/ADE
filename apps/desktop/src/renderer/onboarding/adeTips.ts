@@ -100,7 +100,9 @@ export type AdeTipPlace =
   /** The top bar's Connections panel, on one of its tabs. Desktop only. */
   | { kind: "connections"; tab: ConnectionsPanelTab }
   /** The Music tab. Desktop only. */
-  | { kind: "music" };
+  | { kind: "music" }
+  /** Work with a chat open: the one already open, else the newest in the list. */
+  | { kind: "chat" };
 
 export type AdeTipAction = {
   place: AdeTipPlace;
@@ -147,6 +149,17 @@ const inAChat = (rowLabel: string, emptyLabel: string, ...openChatSpots: Spotlig
 
 const FIRST_CHAT = "Start a chat first; it shows here.";
 
+/**
+ * For tips that live on a message: open a chat, then ring `messageSpot` in
+ * it, or the chat itself with `noMessageLabel` when it has no such message.
+ * `runTipAction` drops the second spot when it opened a chat and the third
+ * when it did not.
+ */
+const inOpenChat = (messageSpot: SpotlightSpot, noMessageLabel: string): AdeTipAction => ({
+  place: { kind: "chat" },
+  spots: [messageSpot, at("[data-chat-message-list-root]", noMessageLabel), spot("session-list", FIRST_CHAT)],
+});
+
 export const ADE_TIPS: readonly AdeTip[] = [
   // Agents
   {
@@ -172,12 +185,18 @@ export const ADE_TIPS: readonly AdeTip[] = [
   {
     id: "rewind", group: "agents", icon: ClockCounterClockwise, title: "Rewind files",
     sentence: "Undo an agent's file edits back to any message in the chat.",
-    action: inAChat("Open a chat and hover one of your messages: Rewind puts the files back to that point.", FIRST_CHAT),
+    action: inOpenChat(
+      at("[data-chat-user-message-card]", "Hover your message: after a turn that changed files, the ↶ button in its corner puts them back."),
+      "Hover one of your messages: after a turn that changed files, ↶ in its corner puts them back.",
+    ),
   },
   {
     id: "comments", group: "agents", icon: ChatCenteredText, title: "Comments on replies",
     sentence: "Comment on any part of a reply, then send your comments to the chat.",
-    action: inAChat("Open a chat and select words in a reply to comment on them.", FIRST_CHAT),
+    action: inOpenChat(
+      at("[data-thread-comment-key]", "Select a few words in this reply, then pick Comment."),
+      "This chat has no reply yet. In a chat with one, select a few words of the reply and pick Comment.",
+    ),
   },
   {
     id: "scenes", group: "agents", icon: PresentationChart, title: "Scenes",
@@ -341,6 +360,8 @@ export const ADE_TIPS: readonly AdeTip[] = [
       place: { kind: "music" },
       spots: [
         spot("music-player", "Play, pause and skip here, or from the top bar."),
+        spot("music-connect", "Connect your music app, then play it from here or the top bar."),
+        spot("music-setup", "Set up your music app here first."),
         spot("music-page", "Connect your music app, then play it from here or the top bar."),
       ],
     },
@@ -408,6 +429,44 @@ const OPEN_PROJECT_SPOTS: readonly SpotlightSpot[] = [
   spot("add-project", "Add a project first, then try it again from ADE Tips."),
 ];
 
+/** How long Try it waits for Work's chat list before giving up on opening a chat. */
+const CHAT_LIST_WAIT_MS = 4_000;
+
+/**
+ * With a chat already open on Work, nothing; else opens the newest chat in
+ * Work's list the way a click does (its row is the control that selects).
+ * Resolves true once a chat is open, false when there is none to open.
+ */
+function openNewestChat(): Promise<boolean> {
+  // A chat with messages on screen; a new-chat draft has an empty list.
+  const chatOpen = () => document.querySelector("[data-chat-user-message-card], [data-thread-comment-key]") != null;
+  const firstRow = () => document.querySelector<HTMLElement>(`${anchorSelector("session-row")}:not([aria-disabled="true"])`);
+  return new Promise((resolve) => {
+    let done = false;
+    let timer = 0;
+    const observer = new MutationObserver(() => check());
+    const finish = (opened: boolean) => {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      window.clearTimeout(timer);
+      resolve(opened);
+    };
+    const check = () => {
+      if (done) return;
+      if (chatOpen()) return finish(true);
+      const row = firstRow();
+      if (!row) return;
+      row.click();
+      finish(true);
+    };
+    observer.observe(document.body, { childList: true, subtree: true });
+    timer = window.setTimeout(() => finish(false), CHAT_LIST_WAIT_MS);
+    // Work may still be routing in: look once it has had a frame.
+    window.requestAnimationFrame(check);
+  });
+}
+
 /**
  * "Try it": go where the tip lives, then ring the control there. `goTo` is
  * `useGoTo()` from the calling component. Front-window navigation only; no
@@ -423,6 +482,20 @@ export function runTipAction(action: AdeTipAction, goTo: (destination: GoToDesti
   if (place.kind === "music") {
     musicActions.open();
     showSpotlight({ spots: action.spots });
+    return;
+  }
+  if (place.kind === "chat") {
+    if (!hasProject) {
+      goTo("home");
+      showSpotlight({ spots: OPEN_PROJECT_SPOTS });
+      return;
+    }
+    goTo("/work");
+    // With a chat open, only its message: "Start a chat first" would be wrong.
+    void openNewestChat().then((opened) => showSpotlight({
+      spots: opened ? action.spots.slice(0, 2) : [action.spots[0]!, ...action.spots.slice(2)],
+      waitMs: 6_000,
+    }));
     return;
   }
   if (place.to !== "home" && !hasProject) {
@@ -447,4 +520,45 @@ export function tipIndexForDay(dayStartMs: number, count: number): number {
   const date = new Date(dayStartMs);
   const day = Math.round(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
   return ((day % count) + count) % count;
+}
+
+/**
+ * Every tip in this computer's own random order: a seed made once per
+ * computer (this renderer's storage, never synced), so two machines rotate
+ * through tips differently while each keeps a stable order. The Home widget
+ * steps through it by day; tip cards offer the next one not seen yet.
+ */
+const TIP_ORDER_SEED_KEY = "ade.tips.orderSeed.v1";
+let machineOrder: readonly AdeTip[] | null = null;
+
+function tipOrderSeed(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(TIP_ORDER_SEED_KEY));
+    if (Number.isInteger(stored) && stored > 0) return stored;
+    const seed = 1 + Math.floor(Math.random() * 0x7fff_fffe);
+    window.localStorage.setItem(TIP_ORDER_SEED_KEY, String(seed));
+    return seed;
+  } catch {
+    return 1 + Math.floor(Math.random() * 0x7fff_fffe);
+  }
+}
+
+export function machineTipOrder(): readonly AdeTip[] {
+  if (machineOrder) return machineOrder;
+  // mulberry32: a small seeded generator, so the shuffle is the same every launch.
+  let state = tipOrderSeed() >>> 0;
+  const next = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+  const order = [...ADE_TIPS];
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(next() * (index + 1));
+    [order[index], order[swap]] = [order[swap]!, order[index]!];
+  }
+  machineOrder = order;
+  return order;
 }

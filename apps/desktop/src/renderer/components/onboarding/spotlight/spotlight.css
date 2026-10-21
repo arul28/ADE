@@ -118,3 +118,8 @@ html[data-motion="reduced"] .ade-spot-label {
   animation: none;
   transition: none;
 }
+
+/* A user message pointed at by Rewind's "Try it": its hover actions (↶) stay up. */
+[data-chat-user-message-card][data-spotlight-target] > [data-ade-find-skip] {
+  opacity: 1;
+}

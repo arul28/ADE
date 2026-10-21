@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { CaretLeft, CaretRight, Lightbulb } from "@phosphor-icons/react";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { useAppStore } from "../../../state/appStore";
-import { ADE_TIPS, adeTipGroup, runTipAction, tipActionAvailable, tipIndexForDay } from "../../../onboarding/adeTips";
+import { adeTipGroup, machineTipOrder, runTipAction, tipActionAvailable, tipIndexForDay } from "../../../onboarding/adeTips";
 import { markTipTried } from "../../../onboarding/situationalSuggestions";
 import { openAdeTips } from "../../onboarding/tips/AdeTipsDialog";
 import { useGoTo } from "../../onboarding/spotlight/useGoTo";
@@ -14,8 +14,9 @@ import "../homeWidgets.css";
 import "../../onboarding/tips/adeTips.css";
 
 /**
- * One ADE tip at a time. Today's tip is picked from the date, so it holds all
- * day and changes tomorrow; the arrows step through the rest. "All tips" opens
+ * One ADE tip at a time. Today's tip is picked from the date in this
+ * computer's own random order (`machineTipOrder`), so it holds all day,
+ * changes tomorrow and differs between machines; the arrows step through the rest. "All tips" opens
  * the ADE Tips dialog on the tip showing here. No reads and no timers of its
  * own beyond the day turning over.
  */
@@ -26,9 +27,10 @@ export default function AdeTipsWidget({ item }: HomeWidgetProps) {
   const dayStart = useLocalDayStart();
   const [step, setStep] = useState(0);
 
-  const count = ADE_TIPS.length;
+  const order = machineTipOrder();
+  const count = order.length;
   const index = (((tipIndexForDay(dayStart, count) + step) % count) + count) % count;
-  const tip = ADE_TIPS[index]!;
+  const tip = order[index]!;
   const TipIcon = tip.icon;
   const canTry = !preview && tipActionAvailable(tip.action);
   const group = adeTipGroup(tip.group);

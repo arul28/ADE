@@ -86,7 +86,7 @@ function clippingAncestor(node: HTMLElement): HTMLElement | null {
 }
 
 /** A ring at least this big is a whole section; its label goes inside. */
-const SECTION_MIN_WIDTH = 420;
+const SECTION_MIN_WIDTH = 560;
 const SECTION_MIN_HEIGHT = 140;
 
 function labelFits(
@@ -201,6 +201,13 @@ function SpotlightRing({ node, label }: { node: HTMLElement; label: string }) {
   const labelRef = useRef<HTMLDivElement | null>(null);
   const radius = useMemo(() => anchorRadius(node), [node]);
   const clipper = useMemo(() => clippingAncestor(node), [node]);
+
+  // Marks the ringed element, so a control that only shows on hover (a
+  // message's ↶ Rewind) can show while it is pointed at.
+  useEffect(() => {
+    node.setAttribute("data-spotlight-target", "");
+    return () => node.removeAttribute("data-spotlight-target");
+  }, [node]);
 
   // Follow the element with direct style writes, once a frame at most, and
   // only when something moved: scrolls, resizes, and its own size changing.
