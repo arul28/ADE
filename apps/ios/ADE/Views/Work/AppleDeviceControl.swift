@@ -154,6 +154,8 @@ enum AppleDeviceTouchMapping {
 
 /// What one control leaves the phone as. Device POINTS throughout.
 enum AppleDeviceInput: Equatable {
+  /// One phase of a live finger: `begin`, `move` or `end`.
+  case touch(phase: String, at: CGPoint)
   case tap(CGPoint)
   case drag(from: CGPoint, to: CGPoint, durationMs: Int)
   case type(String)
@@ -167,6 +169,11 @@ enum AppleDeviceInput: Equatable {
     var args: [String: Any] = ["laneId": laneId]
     if let chatSessionId { args["chatSessionId"] = chatSessionId }
     switch self {
+    case .touch(let phase, let point):
+      args["kind"] = "touch"
+      args["phase"] = phase
+      args["x"] = Self.round(point.x)
+      args["y"] = Self.round(point.y)
     case .tap(let point):
       args["kind"] = "tap"
       args["x"] = Self.round(point.x)
@@ -233,6 +240,42 @@ struct AppleDeviceGesture: Equatable {
     let elapsed = date.timeIntervalSince(startedAt) * 1_000
     let durationMs = Int(min(Self.maxDragMs, max(Self.minDragMs, elapsed)).rounded())
     return .drag(from: start, to: finished.last, durationMs: durationMs)
+  }
+}
+
+/// A live finger, sent as it moves, one call in flight at a time.
+///
+/// `begin` and `end` are never dropped and never reordered; a `move` that has
+/// not left yet is replaced by the newer one, because a finger is where it is
+/// now, not the trail behind it. On a slow link the device sees fewer points
+/// along the way, never stale ones after the finger has moved on.
+@MainActor
+final class AppleLiveTouchSender {
+  private var pending: [(phase: String, point: CGPoint)] = []
+  private var busy = false
+  private let send: (String, CGPoint) async -> Void
+
+  init(send: @escaping (String, CGPoint) async -> Void) {
+    self.send = send
+  }
+
+  func push(_ phase: String, at point: CGPoint) {
+    if phase == "move", let last = pending.last, last.phase == "move" {
+      pending[pending.count - 1] = (phase, point)
+    } else {
+      pending.append((phase, point))
+    }
+    guard !busy else { return }
+    busy = true
+    Task { await drain() }
+  }
+
+  private func drain() async {
+    while !pending.isEmpty {
+      let next = pending.removeFirst()
+      await send(next.phase, next.point)
+    }
+    busy = false
   }
 }
 

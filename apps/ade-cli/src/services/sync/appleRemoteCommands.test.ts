@@ -36,6 +36,7 @@ function service(overrides: Partial<AppleDeviceRemoteService> = {}): AppleDevice
     })),
     stopStream: vi.fn(async () => ({})),
     tap: vi.fn(async () => ({ ok: true })),
+    touch: vi.fn(async () => ({ ok: true })),
     typeText: vi.fn(async () => ({ ok: true })),
     drag: vi.fn(async () => ({ ok: true })),
     tapElement: vi.fn(async () => ({ ok: true })),
@@ -201,7 +202,8 @@ describe("apple.* remote command handlers", () => {
       pointWidth: 393,
       pointHeight: 852,
     });
-    expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
+    // A runtime that takes a live finger says so, so the viewer streams it.
+    expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok", liveTouch: true });
   });
 
   it("a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
@@ -234,6 +236,23 @@ describe("apple.* remote command handlers", () => {
       source: "user",
       x: 10,
       y: 20,
+    });
+    await byAction.get("apple.input")!.handler({
+      laneId: "lane-a",
+      chatSessionId: "chat-owner",
+      kind: "touch",
+      phase: "move",
+      x: 11,
+      y: 21,
+    });
+    expect(target.touch).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      deviceUdid: "UDID-1",
+      chatSessionId: "chat-owner",
+      source: "user",
+      phase: "move",
+      x: 11,
+      y: 21,
     });
   });
 

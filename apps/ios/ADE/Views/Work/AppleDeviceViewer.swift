@@ -156,6 +156,10 @@ struct AppleDeviceViewer: View {
       if mode == .watching {
         showsKeyboard = false
         keyboardFocused = false
+        // Control ended under a held finger: lift it, never leave it down.
+        if let held = gesture, model.usesLiveTouch {
+          model.touch("end", at: held.last)
+        }
         gesture = nil
       }
     }
@@ -255,9 +259,14 @@ struct AppleDeviceViewer: View {
           }
           gesture = AppleDeviceGesture(start: start, at: Date())
           addTouchMark(at: value.startLocation)
+          // A host that takes a live finger gets it as it lands, so the
+          // device moves under the finger instead of once it lifts.
+          if model.usesLiveTouch { model.touch("begin", at: start) }
         }
-        if let point = model.devicePoint(for: value.location, in: rect, rotation: rotation) {
+        if let point = model.devicePoint(for: value.location, in: rect, rotation: rotation),
+           point != gesture?.last {
           gesture?.move(to: point)
+          if model.usesLiveTouch { model.touch("move", at: point) }
         }
       }
       .onEnded { value in
@@ -272,7 +281,11 @@ struct AppleDeviceViewer: View {
         guard let rect, let started = gesture,
               let end = model.devicePoint(for: value.location, in: rect, rotation: rotation)
         else { return }
-        model.send(gesture: started, endingAt: end)
+        if model.usesLiveTouch {
+          model.touch("end", at: end)
+        } else {
+          model.send(gesture: started, endingAt: end)
+        }
       }
   }
 
@@ -465,13 +478,14 @@ struct AppleDeviceViewer: View {
           .lineLimit(1)
       }
       Spacer(minLength: 0)
-      roundButton(systemName: "keyboard", label: "Type", highlighted: showsKeyboard) {
+      roundButton(systemName: "keyboard", label: showsKeyboard ? "Hide keyboard" : "Type", highlighted: showsKeyboard) {
         showsKeyboard.toggle()
         keyboardFocused = showsKeyboard
       }
-      roundButton(systemName: "circle.circle", label: "Home") {
-        model.pressHome()
+      roundButton(systemName: "house", label: "Home") {
+        model.press("home")
       }
+      hardwareButtonsMenu
       Button {
         ADEHaptics.light()
         model.endControl()
@@ -487,6 +501,34 @@ struct AppleDeviceViewer: View {
       .accessibilityHint("Stop sending touches and go back to watching.")
     }
     .frame(maxWidth: 520)
+  }
+
+  /// The buttons a finger on the screen cannot press, the same set as the
+  /// desktop rail's Hardware buttons menu.
+  private var hardwareButtonsMenu: some View {
+    Menu {
+      Section("Hardware buttons") {
+        Button { model.press("home") } label: { Label("Home", systemImage: "house") }
+        Button { model.press("lock") } label: { Label("Lock", systemImage: "lock") }
+        Button { model.press("volume-up") } label: { Label("Volume up", systemImage: "speaker.wave.2") }
+        Button { model.press("volume-down") } label: { Label("Volume down", systemImage: "speaker.wave.1") }
+        Button { model.press("siri") } label: { Label("Siri", systemImage: "mic") }
+        Button { model.press("app-switcher") } label: { Label("App switcher", systemImage: "square.grid.2x2") }
+      }
+    } label: {
+      Image(systemName: "iphone.gen3")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(.white)
+        .frame(width: 44, height: 44)
+        .background(Color.black.opacity(0.68), in: Circle())
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+    }
+    .accessibilityLabel("Hardware buttons")
+  }
+
+  private func hideKeyboard() {
+    keyboardFocused = false
+    showsKeyboard = false
   }
 
   private var keyboardBar: some View {
@@ -508,10 +550,19 @@ struct AppleDeviceViewer: View {
       roundButton(systemName: "return", label: "Return") {
         model.type("\n")
       }
+      roundButton(systemName: "keyboard.chevron.compact.down", label: "Hide keyboard") {
+        hideKeyboard()
+      }
     }
     .padding(.horizontal, 14)
     .padding(.bottom, 6)
     .frame(maxWidth: 520)
+    .toolbar {
+      ToolbarItemGroup(placement: .keyboard) {
+        Spacer()
+        Button("Done") { hideKeyboard() }
+      }
+    }
   }
 
   private var speedReadout: some View {

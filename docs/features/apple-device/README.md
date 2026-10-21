@@ -666,8 +666,9 @@ and compares the oldest unacked one's age with the best round trip of the last
 - About once a second the relay answers with `{t:"stats"}`: `rttMs`,
   `baseRttMs`, `lagMs`, `skipped`, `bitrateKbps`.
 
-A viewer that never acks (the web client and desktops today, older phones) is
-forwarded every record. The measured effect is the "Apple stream relay" row in
+The phone, the hosted web client and a desktop bound to another Mac all ack
+(the web and desktop reader is `readSocket` in `h264StreamPlayer.ts`). A viewer
+that never acks (an older client) is forwarded every record. The measured effect is the "Apple stream relay" row in
 [the performance baseline](../../perf/macos-baseline.md#brain-and-services)
 (`scripts/perf/service/apple-stream-pacing.bench.mts`): on a 1 Mb/s link a
 paced viewer stays about 50 ms behind, an unpaced one tens of seconds.
@@ -679,8 +680,10 @@ paced viewer stays about 50 ms behind, an unpaced one tens of seconds.
 hides the bars. **Control** is a press-and-hold (0.6 s, the half fills as it
 is held); a tap only says "Hold to take control". While controlling, the
 picture sits between the bars in an orange frame, the bar says "Controlling",
-and Home, a keyboard and **Done** are on it. System edge gestures are deferred
-so a swipe up from the bottom reaches the simulator.
+and Home, a hardware-buttons menu (Lock, Volume up and down, Siri, App
+switcher), a keyboard and **Done** are on it. The keyboard bar has its own hide
+button and the keyboard a Done key. System edge gestures are deferred so a
+swipe up from the bottom reaches the simulator.
 
 Control is not offered, with the reason shown, when the host lacks
 `apple.input`/`apple.invoke` or the point size, when the device shown is not
@@ -697,10 +700,17 @@ then multiplied by the helper's current point metrics. Those metrics come from
 the stream's config record (the helper's metrics in pixels, re-sent when a Duo
 folds) times the ticket's points-per-pixel, never from the decoded frame size,
 because an app drawing landscape turns the framebuffer while the helper still
-normalises against portrait. One gesture leaves as one `apple.input` call: a
-`tap` under 10 points of travel, else a `drag` replayed at its real duration
-(60 ms–2 s). Home is `apple.invoke pressButton`. Text is `apple.input type`.
-Calls are never queued or retried.
+normalises against portrait. When the stream ticket says `liveTouch: true`,
+the finger is sent as it moves: `apple.input` kind `touch` with phase `begin`,
+`move` and `end`, one call in flight, a waiting `move` replaced by the newer one
+(`AppleLiveTouchSender`). The device moves under the finger rather than after
+it lifts. The host (`touch` in `iosSimulatorService.ts`) holds at most one
+finger per lane and lifts one the viewer stops updating after 1.5 s, so a phone
+that drops off the network never leaves a touch held down. Against an older
+host the gesture leaves as one call instead: a `tap` under 10 points of
+travel, else a `drag` replayed at its real duration (60 ms–2 s). Buttons are
+`apple.invoke pressButton`. Text is `apple.input type`. Calls are never queued
+or retried.
 
 On the host, `apple.input` stamps `source: "user"` (a person's tap never
 starts an agent's auto-recording) and reads the owner from memory
@@ -716,8 +726,10 @@ A lane on another machine: `apple.*` commands route by the lane's namespaced
 id, and the video socket resolves the ticket against **that** machine's live
 address (`SyncService.appleStreamEndpoint`), not the focused machine's.
 
-The speed readout (speedometer button) shows decoded fps, received kb/s, the
-relay's round trip, skipped frames, and the median tap→screen time. The phone
+The speed readout (speedometer button) shows received fps, received kb/s, the
+relay's round trip, skipped frames, and the median tap→screen time. The fps is
+what the Mac sends: a screen that is not changing is captured at a 5 fps floor,
+so a still picture reads 5 fps however fast the link is. The phone
 cannot read pixels, so "the screen changed" is read from the stream: an idle
 device is captured at a 5 fps floor with tiny frames, and a change starts a
 burst of frames a refresh apart, or a frame several times the recent size.

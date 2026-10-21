@@ -108,6 +108,9 @@ struct AppleStreamTicket: Codable, Equatable {
   /// which leaves the viewer watch-only.
   var pointWidth: Double?
   var pointHeight: Double?
+  /// The host takes a live finger (`apple.input` kind `touch`). Older hosts
+  /// omit it, and the viewer sends whole taps and drags instead.
+  var liveTouch: Bool?
   var expiresAt: String?
 
   /// Frame size in pixels, when the host sent a real one.

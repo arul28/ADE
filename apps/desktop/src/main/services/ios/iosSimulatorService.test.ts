@@ -2297,6 +2297,51 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("a live finger reaches the helper as it moves, and one the viewer abandons is lifted", async () => {
+    // A phone can drop off the network with a finger down. The host must lift
+    // it, or the device stays touched until someone notices.
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-live-touch-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+    });
+    const touches = () => helper.sent
+      .filter((command) => command.type === "touch")
+      .map((command) => `${String(command.phase)} ${String(command.x)},${String(command.y)}`);
+
+    try {
+      const lane = { deviceUdid: "device-1", laneId: "lane-a", source: "user" as const };
+      await service.touch({ ...lane, phase: "begin", x: 100, y: 600 });
+      await service.touch({ ...lane, phase: "move", x: 100, y: 400 });
+      await service.touch({ ...lane, phase: "end", x: 100, y: 200 });
+      expect(touches()).toEqual(["begin 100,600", "move 100,400", "end 100,200"]);
+
+      // A move after the finger lifted changes nothing.
+      await service.touch({ ...lane, phase: "move", x: 50, y: 50 });
+      expect(touches()).toHaveLength(3);
+
+      // The viewer goes quiet with the finger down: lifted where it last was.
+      await service.touch({ ...lane, phase: "begin", x: 10, y: 20 });
+      await vi.advanceTimersByTimeAsync(1_501);
+      expect(touches().slice(3)).toEqual(["begin 10,20", "end 10,20"]);
+      await expect(service.touch({ ...lane, phase: "wiggle", x: 1, y: 1 })).rejects.toThrow(/begin, move or end/);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("presses helper buttons without recording overlay input, and refuses shake", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-button-`);

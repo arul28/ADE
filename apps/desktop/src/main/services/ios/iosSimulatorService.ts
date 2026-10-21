@@ -5999,6 +5999,102 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /**
+   * A finger held on a device by a live viewer, per lane: where it started,
+   * where it is, and the timer that lifts it if the viewer goes quiet.
+   */
+  const liveTouches = new Map<string, {
+    udid: string;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    release: ReturnType<typeof setTimeout>;
+  }>();
+
+  /**
+   * A held finger the viewer stops updating is lifted after this. A phone that
+   * drops off the network mid-gesture must not leave a touch held down on
+   * someone's simulator.
+   */
+  const LIVE_TOUCH_IDLE_RELEASE_MS = 1_500;
+
+  const armLiveTouchRelease = (laneKey: string, runtime: LaneRuntime): ReturnType<typeof setTimeout> => {
+    const timer = setTimeout(() => {
+      void enqueueControl("touch-release", async () => {
+        const held = liveTouches.get(laneKey);
+        if (!held || held.release !== timer) return;
+        liveTouches.delete(laneKey);
+        args.logger.warn("apple.live_touch_released", { laneId: runtime.laneId, reason: "idle" });
+        await helper().send({ type: "touch", udid: held.udid, phase: "end", x: held.x, y: held.y });
+      }).catch(() => null);
+    }, LIVE_TOUCH_IDLE_RELEASE_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    return timer;
+  };
+
+  /**
+   * One phase of a live finger (`begin`, `move`, `end`), sent as a person's
+   * finger does it, so the device moves under the finger instead of replaying
+   * the gesture once it lifts.
+   *
+   * At most one finger per lane. A `begin` while one is held lifts the old one
+   * first; a `move` or `end` with none held (it was already lifted for being
+   * idle) does nothing. Input is noted once, when the finger lifts.
+   */
+  const touch = async (input: {
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    deviceUdid?: string | null;
+    phase: string;
+    x: number;
+    y: number;
+    source?: AppleInputSource;
+  }): Promise<{ ok: true }> => {
+    assertDarwin();
+    if (input.phase !== "begin" && input.phase !== "move" && input.phase !== "end") {
+      throw new Error("touch phase must be begin, move or end.");
+    }
+    const phase = input.phase;
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
+    const x = normalizeCoordinate(input.x, "x");
+    const y = normalizeCoordinate(input.y, "y");
+    const laneKey = runtime.key;
+    return enqueueControl("touch", async () => {
+      const held = liveTouches.get(laneKey);
+      if (phase === "begin") {
+        if (held) {
+          clearTimeout(held.release);
+          liveTouches.delete(laneKey);
+          await helper().send({ type: "touch", udid: held.udid, phase: "end", x: held.x, y: held.y });
+        }
+        await helper().send({ type: "touch", udid: deviceUdid, phase: "begin", x, y });
+        liveTouches.set(laneKey, {
+          udid: deviceUdid,
+          startX: x,
+          startY: y,
+          x,
+          y,
+          release: armLiveTouchRelease(laneKey, runtime),
+        });
+        runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+        return { ok: true };
+      }
+      if (!held) return { ok: true };
+      clearTimeout(held.release);
+      await helper().send({ type: "touch", udid: held.udid, phase, x, y });
+      if (phase === "move") {
+        liveTouches.set(laneKey, { ...held, x, y, release: armLiveTouchRelease(laneKey, runtime) });
+        return { ok: true };
+      }
+      liveTouches.delete(laneKey);
+      const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source });
+      return { ok: true };
+    });
+  };
+
   const selectPoint = async (point: IosSimulatorPoint): Promise<IosSimulatorSelectResult> => {
     assertDarwin();
     const runtime = resolveRuntime(point);
@@ -6660,6 +6756,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     capLiveStream,
     frame,
     tap,
+    /** A live finger's begin/move/end, for a person driving from a viewer. */
+    touch,
     pressButton,
     rotate,
     typeText,

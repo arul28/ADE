@@ -56,6 +56,16 @@ export type AppleDeviceRemoteService = {
     text: string;
     source?: "user" | "agent";
   }): Promise<unknown>;
+  /** A live finger's phase. Absent from runtimes that predate live touch. */
+  touch?(args: {
+    laneId?: string | null;
+    deviceUdid?: string | null;
+    chatSessionId?: string | null;
+    source?: "user" | "agent";
+    phase: string;
+    x: number;
+    y: number;
+  }): Promise<unknown>;
   drag(args: {
     deviceUdid?: string | null;
     laneId?: string | null;
@@ -468,7 +478,7 @@ export function createAppleRemoteCommandHandlers(deps: {
           bitrateKbps: deps.remoteBitrateKbpsCap?.() ?? null,
         });
         const transport = isRecord(started) && isRecord(started.transport) ? started.transport : {};
-        return streamRelay.issue({
+        const ticket = streamRelay.issue({
           laneId,
           codec: asString(transport.codec),
           width: asNumber(transport.width),
@@ -477,6 +487,9 @@ export function createAppleRemoteCommandHandlers(deps: {
           pointWidth: asNumber(transport.pointWidth),
           pointHeight: asNumber(transport.pointHeight),
         });
+        // Says the viewer may send a live finger (`apple.input` kind `touch`)
+        // rather than a tap or a drag replayed once the finger lifts.
+        return { ...ticket, liveTouch: typeof service.touch === "function" };
       },
     },
     {
@@ -497,6 +510,21 @@ export function createAppleRemoteCommandHandlers(deps: {
               y: requireFiniteNumber(payload.y, "y"),
             });
             return { ok: true };
+          case "touch": {
+            if (typeof service.touch !== "function") {
+              throw new Error("apple.input touch is not available in this runtime.");
+            }
+            await service.touch({
+              laneId,
+              deviceUdid,
+              chatSessionId,
+              source: "user",
+              phase: requireString(payload.phase, "apple.input touch requires a phase."),
+              x: requireFiniteNumber(payload.x, "x"),
+              y: requireFiniteNumber(payload.y, "y"),
+            });
+            return { ok: true };
+          }
           case "type":
             await service.typeText({
               laneId,

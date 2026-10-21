@@ -50,6 +50,9 @@ final class AppleDeviceViewerModel: ObservableObject {
   private var lastSpeedPublish = Date.distantPast
   /// When the person last touched the picture while controlling.
   private var lastControlActivity = Date()
+  private lazy var liveTouch = AppleLiveTouchSender { [weak self] phase, point in
+    await self?.sendNow(.touch(phase: phase, at: point))
+  }
 
   #if DEBUG
   private var isPreview = false
@@ -237,6 +240,18 @@ final class AppleDeviceViewerModel: ObservableObject {
     return AppleDeviceTouchMapping.devicePoint(frameFraction: fraction, metrics: metrics)
   }
 
+  /// Whether this host takes a live finger. Fixed per ticket.
+  var usesLiveTouch: Bool { ticket?.liveTouch == true }
+
+  /// A live finger on the picture. The latency clock starts when it lands.
+  func touch(_ phase: String, at point: CGPoint) {
+    guard mode == .controlling || phase == "end" else { return }
+    let now = Date()
+    lastControlActivity = now
+    if phase == "begin" { latency.gestureSent(at: now) }
+    liveTouch.push(phase, at: point)
+  }
+
   func send(gesture: AppleDeviceGesture, endingAt end: CGPoint) {
     let now = Date()
     send(gesture.input(endingAt: end, at: now), at: now)
@@ -247,27 +262,31 @@ final class AppleDeviceViewerModel: ObservableObject {
     send(.type(text), at: Date())
   }
 
-  func pressHome() {
-    send(.button("home"), at: Date())
+  /// A hardware button by the helper's name: `home`, `lock`, `volume-up`,
+  /// `volume-down`, `siri`, `app-switcher`. A swipe cannot do these.
+  func press(_ button: String) {
+    send(.button(button), at: Date())
   }
 
   /// Fired without waiting on the previous one, like the desktop pane: the
   /// host serialises device input in arrival order, and waiting here would
   /// add a round trip to every tap after the first.
   private func send(_ input: AppleDeviceInput, at sentAt: Date) {
-    guard mode == .controlling, let syncService else { return }
+    guard mode == .controlling else { return }
     lastControlActivity = sentAt
     latency.gestureSent(at: sentAt)
-    let lane = laneId
-    let chat = chatSessionId
-    Task { [weak self] in
-      do {
-        try await syncService.sendAppleDeviceInput(laneId: lane, chatSessionId: chat, input: input)
-        let ms = Int(Date().timeIntervalSince(sentAt) * 1_000)
-        appleViewerLog.debug("input acked in \(ms)ms")
-      } catch {
-        self?.inputFailed(error)
-      }
+    Task { [weak self] in await self?.sendNow(input) }
+  }
+
+  private func sendNow(_ input: AppleDeviceInput) async {
+    guard let syncService else { return }
+    let started = Date()
+    do {
+      try await syncService.sendAppleDeviceInput(laneId: laneId, chatSessionId: chatSessionId, input: input)
+      let ms = Int(Date().timeIntervalSince(started) * 1_000)
+      appleViewerLog.debug("input acked in \(ms)ms")
+    } catch {
+      inputFailed(error)
     }
   }
 
