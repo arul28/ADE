@@ -3128,15 +3128,15 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     // Two surfaces asking at once cost one round-trip and see the same answer.
-    const first = adapter.ade.usage.getModelPriceOverrides();
-    const second = adapter.ade.usage.getModelPriceOverrides();
+    const first = adapter.ade.usage.getModelPriceOverrides!();
+    const second = adapter.ade.usage.getModelPriceOverrides!();
     await flushMicrotasks();
     expect(reads()).toBe(1);
 
     // A write lands while that read is still out. A read made after it must not
     // join the older request, whose answer predates the write.
-    await adapter.ade.usage.setModelPriceOverride({ modelId: "m", inputPerMillion: 1 } as never);
-    const afterWrite = adapter.ade.usage.getModelPriceOverrides();
+    await adapter.ade.usage.setModelPriceOverride!({ modelId: "m", inputPerMillion: 1 } as never);
+    const afterWrite = adapter.ade.usage.getModelPriceOverrides!();
     await flushMicrotasks();
     expect(reads()).toBe(2);
 
