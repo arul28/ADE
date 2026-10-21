@@ -71,9 +71,10 @@ import { deleteAppleSimulator } from "./simulatorPower";
  * one — and which is why delete has two behaviours: ADE deletes what it
  * created and never deletes what it did not.
  *
- * ADE never downloads a runtime. `simctl` will happily fetch several gigabytes
- * for a runtime that is merely *known*; a lane asking for a device must not
- * start that, so every runtime comes from the installed list and an empty list
+ * Creating a device never downloads a runtime. `simctl` will happily fetch
+ * several gigabytes for a runtime that is merely *known*; a lane asking for a
+ * device must not start that (a download is the person's call, from the
+ * Runtimes section — `appleRuntimeManager.ts`), so every runtime comes from the installed list and an empty list
  * is a refusal (`APPLE_NO_INSTALLED_SIMULATORS`) rather than a download.
  */
 

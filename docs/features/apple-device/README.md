@@ -9,7 +9,8 @@ active chat. Agent launches stay in the background.
 The feature is macOS-only. `xcrun` and `xcodebuild` must be available on the
 runtime host. Frames and input go through `ade-sim-helper` (CoreSimulator /
 SimulatorKit). There is no idb, no Screen Recording grant, and no
-Simulator.app window. ADE never downloads a simulator runtime.
+Simulator.app window. Creating a device never downloads anything; a runtime is
+downloaded only when the person asks, from the Runtimes section (see below).
 
 `ade ios-sim` is a deprecated alias of `ade apple` for one minor release. It
 prints one deprecation line to stderr per process.
@@ -74,6 +75,37 @@ The picker offers the runtime (when there is more than one) and the model;
 installed runtimes — `APPLE_NO_INSTALLED_SIMULATORS` when none exist,
 `APPLE_RUNTIME_NOT_INSTALLED` when the one named is not there. A lane may
 instead `device-attach` an installed simulator the user names.
+
+### Runtimes and Xcode
+
+`appleRuntimeManager.ts` owns the machine's simulator runtimes, reached as
+`ios_simulator.runtime*` actions with the lane's pin (so a laptop manages the
+desktop's runtimes):
+
+- `runtimeList`: every installed runtime with its size (`simctl runtime list`),
+  the simulators on it (ADE's or the person's), `newest`, and `superseded` — a
+  newer runtime runs every *current* model it runs and every model one of its
+  simulators uses. Retired models (their max runtime is below this Xcode's SDK)
+  never keep a runtime around. Point releases can be narrow: iOS 27.1 runs only
+  the iPhone Duo, so iOS 27.0 stays the newest runtime for every other iPhone.
+  `missing` lists current iPhone and iPad models no installed runtime runs, and
+  the Create control offers them as `iOS <sdk> · Not installed` with
+  **Install & create**.
+- `runtimeInstall`: `xcodebuild -downloadPlatform iOS` as a background job
+  (checks ~10 GB free first, cancellable, `apple.runtime.install` progress
+  events). Without a version Xcode fetches every runtime it needs; `--version`
+  pins `-buildVersion`.
+- `runtimeDelete` / `runtimePrune` (user-only): lane devices move to the newest
+  runtime that runs their model (`simctl upgrade`); the person's own simulators
+  move or are erased as they choose in the confirmation; then
+  `simctl runtime delete`. The panel re-reads until the runtime is gone
+  (CoreSimulator unmounts it a moment after the command returns).
+- The Xcode note: `xcodebuild -version`, `-checkFirstLaunchStatus` (with **Run
+  setup**, user-only `xcodeRunFirstLaunch`), and Apple's releases RSS read at
+  most once a day per machine (betas hidden).
+
+CLI: `ade apple runtimes [list|install [--version x.y]|cancel]`. Removing is the
+person's call, from the panel.
 
 `origin` on the lane row is `created` for a device ADE made, `clone` for one
 made before this change (treated exactly the same), and `attached` for the
@@ -310,30 +342,56 @@ is no separate column.
 
 ### Foldable ("Duo") mode
 
-A device whose simulator record reports fold/dual-screen support (a `Duo` —
-or `Fold` — in the CoreSimulator
-type identifier, which the installed-simulator record carries) renders an
-articulated two-panel body instead of a GLB: two screen halves, two body slabs
-and a hinge barrel, built procedurally and sized from the streamed inner display
-(`appleDuoScene.ts`). The rail grows a **Duo** menu with the four postures —
-Open (180°), Laptop (flat base), Tent, Closed (0°) — plus `Close/Open hinge 15°`
-nudge items, and a trackpad pinch on the glass moves the hinge instead of
-zooming the camera.
+Validated on the iPhone Duo simulator (Xcode 27.1, iOS 27.1). The gate is
+`appleDeviceSupportsDuo` on the CoreSimulator type identifier
+(`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`); the lane device's display
+name is never an input.
 
-The whole mode is capability-gated by `appleDeviceSupportsDuo`, which the pane
-feeds the CoreSimulator **type identifier** only. The lane device's display name
-is deliberately not a gate input: for an ADE device it is `ADE · <lane>`, so a
-lane named e.g. `duo-hinge` would otherwise mark a rigid iPhone as foldable. A
-device that does not fold gets no `duo` prop, the procedural body is never
-built, and the imported GLB path (and its per-frame work) is byte-for-byte
-unchanged. The state machine, panel rotations, continuous inner-display
-coordinate mapping and the capability matcher live in `appleDuo.ts`, away from
-three.js, so they are tested without a GPU.
+**Folding.** The helper vendors serve-sim's CoreDevice shim (see
+`native/ADESimHelper/.../Vendor/serve-sim/VENDORED.md`): Device Hub's own
+`HIDVendorDefined` send (usage page `0xFF61`, usage `0x5B`, an
+IOCFSerialize'd `{provider, source: hinge-slider-control|orientation-picker-control, type, value}`)
+reaching `dtuhidd` in the guest. ADE's `DevicePosture.swift` adds the
+`posture`, `posture-get` and `posture-watch` commands. Folds **sweep** in 10°
+steps: SpringBoard's fold state machine can stick on a 0°↔180° jump, leaving
+the wrong panel lit. A raw angle releases Tent's Table Mode and stands a
+face-down phone up. Service: `setPosture` / `getPosture`, events
+`apple.device.posture`; CLI `ade apple fold <pose>|--angle N|--sequence a,b,c`
+and `ade apple posture`.
 
-> **Not validated on a real Duo.** No iOS 27.1 iPhone Duo runtime exists on the
-> build host, so this mode is written from the documented foldable behaviour and
-> tested only by the pure geometry/state/control tests above. Live posture
-> handoff, the native fold API, and real dual-screen touch are UNVERIFIED.
+**Panels.** Screen 1 is the cover (1398×2034), screen 3 the inner display
+(2007×2853, mounted a quarter turn from its framebuffer). Capture follows the
+panel CoreDevice reports active (an ADE patch to the vendored `FrameCapture`);
+the service republishes the stream's pixel and point sizes on each switch, and
+a restarted capture re-applies the panel. Input on a Duo goes through
+CoreDevice's digitizer and keyboard services to touchscreen `0x100 + screenId`:
+the legacy Indigo inner target is disconnected and can abort `backboardd`.
+The flat view draws the inner panel a quarter turn on
+(`APPLE_DUO_INNER_ORIENTATION`).
+
+**3D.** Apple's own `V68.usdz` is read from the owning machine's Xcode
+(`getDuoModel`, never bundled) and parsed by serve-sim's vendored loader
+(`renderer/components/apple/vendor/serve-sim`). `appleV68DuoBody.ts` is a
+*physical* body: each panel maps its framebuffer itself, the live stream goes to
+the panel that is on, the closed phone turns its cover to the camera, landscape
+poses (laptop) turn the phone, and the camera refits on each fold. Taps send the
+live panel's framebuffer point. The drawn body (`appleDuoScene.ts`) remains the
+fallback when the model is missing.
+
+**Controls.** The rail's Duo menu: presets, ±15° steps, a continuous hinge
+slider (previews on drag, folds on release), a readout of the simulator's
+reported angle, panel and orientation, and **App Store screenshots** (both
+panels at App Store Connect's sizes, filed as proof; `ade apple
+app-store-shots`).
+
+### 3D renders
+
+The rail's **Render** sheet renders the live 3D body: Front, ¾ left, ¾ right or
+the current camera; Transparent, Studio or Dusk; a contact shadow; a labelled
+contact sheet; a 6 s WebM turntable. For a Duo each chosen pose folds the real
+simulator and waits for its reported angle and active panel before the shot.
+Everything files to the proof drawer through the scene proof route (which takes
+PNG or WebM).
 
 ## Agent discovery
 
