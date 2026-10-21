@@ -163,7 +163,9 @@ export function FirstRunAgents({
           </div>
         ) : null}
         <p className="ade-fr-agents-more">
-          OpenCode, Droid, Pi, Copilot and more are in Settings › Agents &amp; Models.
+          {others.length
+            ? "Add or manage agents any time in Settings › Agents & Models."
+            : "OpenCode, Droid, Pi, Copilot and more are in Settings › Agents & Models."}
         </p>
       </section>
 
