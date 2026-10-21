@@ -9244,9 +9244,9 @@ function buildCliSessionStartPlan(
   const lineage = readAgentSpawnLineage(args, { allowSpawnType: provider !== "shell" });
   const requestedPermissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   // Keep an omitted subagent permission unset so the runtime can inherit the
-  // parent's access. Other launches retain the CLI's historical default.
+  // parent's access. Other launches start on full access, ADE's default.
   const permissionMode = requestedPermissionMode ?? (
-    lineage.kind === "lineage" && lineage.spawnKind === "subagent" ? undefined : "default"
+    lineage.kind === "lineage" && lineage.spawnKind === "subagent" ? undefined : "full-auto"
   );
   const droidPermissionMode = readDroidPermissionMode(args);
   if (!isTrackedCliPermissionMode(permissionMode ?? "default")) {

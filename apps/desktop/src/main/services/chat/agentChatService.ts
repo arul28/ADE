@@ -18124,8 +18124,12 @@ export function createAgentChatService(args: {
     const permissions = ai.permissions ?? {};
     const chat = ai.chat ?? {};
     const si = ai.sessionIntelligence;
-    const cliMode = permissions.cli?.mode ?? "edit";
-    const inProcessMode = permissions.inProcess?.mode ?? "edit";
+    // With nothing configured, a chat launched without its own controls (CLI,
+    // phone, automation, an agent's spawn) runs full access, the same default
+    // the desktop composer starts on. Anything the project configures still
+    // wins, and spawned chats stay under their parent's permission ceiling.
+    const cliMode = permissions.cli?.mode ?? "full-auto";
+    const inProcessMode = permissions.inProcess?.mode ?? "full-auto";
 
     const approvalPolicy = (() => {
       const configuredCodex = permissions.providers?.codex;
@@ -18140,10 +18144,10 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      // Codex chat defaults match the documented "Default permissions" preset:
-      // workspace-write + on-request. Legacy shared CLI edit-mode fallbacks map
-      // to "untrusted", but that represents the explicit Codex edit preset
-      // rather than the default chat preset.
+      // Unconfigured, `cliMode` is full-auto (see above), so Codex runs
+      // never-ask. A configured shared `edit` mode maps to the "Default
+      // permissions" preset (workspace-write + on-request), not to the
+      // explicit Codex edit preset ("untrusted").
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
       return "on-request" as const;
@@ -47348,7 +47352,7 @@ export function createAgentChatService(args: {
           copilotPermissionMode: requestedCopilotPermissionMode
             ?? (effectivePermissionMode === "plan" ? "plan"
               : effectivePermissionMode === "edit" ? "auto-edit"
-                : effectivePermissionMode === "full-auto" ? "full-auto"
+                : effectivePermissionMode === "full-auto" || effectivePermissionMode == null ? "full-auto"
                   : "ask"),
         };
       }
@@ -47358,9 +47362,10 @@ export function createAgentChatService(args: {
         };
       }
       if (effectiveProvider === "muse") {
+        // Nothing asked for: full access, like every other provider's fallback.
         const museMode = requestedMusePermissionMode
           ?? musePermissionModeFromLegacyPermissionMode(effectivePermissionMode)
-          ?? "onRequest";
+          ?? "allowAll";
         return {
           interactionMode: effectivePermissionMode === "plan" ? "plan" as const : "default" as const,
           musePermissionMode: museMode,

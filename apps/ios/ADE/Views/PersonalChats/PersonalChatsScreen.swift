@@ -550,7 +550,7 @@ struct PersonalChatNewScreen: View {
   @EnvironmentObject private var machineFleet: MachineFleet
   @State private var provider = "claude"
   @State private var modelId = "claude-sonnet-5"
-  @State private var runtimeMode = "default"
+  @State private var runtimeMode = workDefaultRuntimeMode(provider: "claude")
   @State private var reasoningEffort = ""
   @State private var codexFastMode = false
   @State private var draft = ""

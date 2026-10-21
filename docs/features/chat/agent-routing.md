@@ -1080,11 +1080,11 @@ mode fields, so every composer showing the chat leaves Plan without waiting for
 a session refetch. Claude plan entry/exit and Cursor plan approval emit the
 same patch.
 
-Default Codex chats map to the "Default permissions" preset
-(`workspace-write` + `on-request`). The older implicit fallback that
-mapped CLI `edit` mode to `untrusted` was removed so the first-turn
-picker state matches the documented default; the explicit Codex
-`edit` preset still resolves through the picker path.
+A Codex chat launched with no controls and no project setting runs full
+access (`never` + `danger-full-access`). A project whose shared CLI mode is
+`edit` maps to the "Default permissions" preset (`workspace-write` +
+`on-request`), not the explicit Codex `edit` preset (`untrusted`), which
+still resolves through the picker path.
 
 ### OpenCode
 
@@ -1551,7 +1551,13 @@ health fixes, the project-move check) use `askFirstNativeControls`. Because a
 restored full-access choice now equals the default, restoring a launch config
 marks its model's family as visited, so a later family switch never "inherits"
 over it. Chats created without any controls (CLI, phone, automations) still
-take the main process's per-project fallback (`resolveChatConfig`).
+take the main process's per-project fallback (`resolveChatConfig`), which is
+also full access when the project configures nothing (the shared `cli` and
+`inProcess` modes default to `full-auto`; Copilot and Muse fall back to
+`full-auto` and `allowAll`). Droid keeps no fallback on purpose, so its own
+`settings.json` decides. The `ade` CLI's terminal launches, the `ade code`
+composer and the phone's new-chat composer (`workDefaultRuntimeMode`) start on
+full access too; a spawned subagent with no mode still inherits its parent.
 
 Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
 reverse, and Codex is where it matters: both axes are required for `full-auto`,
