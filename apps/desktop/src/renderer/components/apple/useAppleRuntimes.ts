@@ -111,18 +111,34 @@ export function useAppleRuntimes({
       .catch((cause: unknown) => onErrorRef.current?.(cause));
   }, [runtimePinRef]);
 
+  /**
+   * CoreSimulator unmounts a deleted runtime a moment after `simctl runtime
+   * delete` returns, so a list read straight away can still show it. Re-read
+   * until the removed runtimes are gone (a few seconds at most).
+   */
+  const reloadUntilGone = useCallback(async (removedIds: string[]) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const next = await window.ade.iosSimulator.runtimeList(runtimePinRef.current).catch(() => null);
+      if (next) setInventory(next);
+      if (!next || !next.runtimes.some((entry) => entry.id && removedIds.includes(entry.id))) return;
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+  }, [runtimePinRef]);
+
   const runRemoval = useCallback(async (call: () => Promise<AppleRuntimeDeleteResult>) => {
     setRemoving(true);
+    let result: AppleRuntimeDeleteResult | null = null;
     try {
-      return await call();
+      result = await call();
+      return result;
     } catch (cause) {
       onErrorRef.current?.(cause);
       return null;
     } finally {
+      await reloadUntilGone(result?.deleted.map((entry) => entry.id) ?? []);
       setRemoving(false);
-      reload();
     }
-  }, [reload]);
+  }, [reloadUntilGone]);
 
   const remove = useCallback((id: string, simulators: AppleRuntimeSimulatorDisposition) => runRemoval(() =>
     window.ade.iosSimulator.runtimeDelete({ id, simulators, confirmedByUser: true }, runtimePinRef.current)), [runRemoval, runtimePinRef]);
