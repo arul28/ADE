@@ -411,6 +411,10 @@ struct WorkSessionDestinationView: View {
   /// last derived from. Streaming text deltas do not change it, so the roster
   /// scan runs per new envelope rather than per token.
   @State var chatInfoTranscriptShape = ""
+  /// Id and terminal state of the batch-move approval cards near the
+  /// transcript's end, so a card that arrives mid-frame or is resolved by
+  /// another client refreshes the summary's approval banner.
+  @State var crossMachineBatchApprovalCardsSignature = ""
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   /// Post-send reconciliation runs behind the composer rather than in front of
@@ -2639,30 +2643,39 @@ extension WorkSessionDestinationView {
     }
     if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
       refreshChatInfoSnapshots()
-      if let tail = transcript.last,
-         case .adeCard(let card) = tail.event,
-         card.variant == "cross_machine_batch_move_approval",
-         !card.isTerminal {
-        Task { await refreshCrossMachineBatchApprovalSummary() }
+    }
+    // The transcript card is durable; its projected summary is the action
+    // surface. When an approval card appears or settles (here or on another
+    // client), refresh the summary so an idle caller chat shows or clears the
+    // banner without turn polling. Only the tail is scanned, so a long chat
+    // pays a constant cost per frame.
+    let cards = workCrossMachineBatchApprovalCardsSignature(transcript)
+    if cards.signature != crossMachineBatchApprovalCardsSignature {
+      let hadCards = !crossMachineBatchApprovalCardsSignature.isEmpty
+      crossMachineBatchApprovalCardsSignature = cards.signature
+      // A first look at settled cards needs nothing; a live card or a change does.
+      if hadCards || cards.hasLiveCard {
+        Task { await refreshChatSummaryFromHost() }
       }
     }
   }
+}
 
-  /// The transcript card is durable; its projected summary is the action
-  /// surface. Refresh once when a live batch approval card arrives so an idle
-  /// caller chat can show the banner without relying on turn polling.
-  @MainActor
-  private func refreshCrossMachineBatchApprovalSummary() async {
-    guard syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
-          let summary = try? await syncService.fetchChatSummary(sessionId: sessionId)
-    else { return }
-    let refreshed = syncService.withCrossMachineHandoffClearApplied(summary)
-    if chatSummary != refreshed {
-      chatSummary = refreshed
-    }
-    lastKnownChatSummary = refreshed
-    syncService.cacheChatSummary(refreshed)
+/// Id and terminal state of the batch-move approval cards in the last 24
+/// transcript entries, and whether any of them is still live.
+func workCrossMachineBatchApprovalCardsSignature(
+  _ transcript: [WorkChatEnvelope]
+) -> (signature: String, hasLiveCard: Bool) {
+  var parts: [String] = []
+  var hasLiveCard = false
+  for envelope in transcript.suffix(24) {
+    guard case .adeCard(let card) = envelope.event,
+          card.variant == "cross_machine_batch_move_approval"
+    else { continue }
+    if !card.isTerminal { hasLiveCard = true }
+    parts.append("\(card.id):\(card.isTerminal ? 1 : 0)")
   }
+  return (parts.joined(separator: ","), hasLiveCard)
 }
 
 extension WorkSessionDestinationView: Equatable {

@@ -8429,14 +8429,43 @@ struct AgentChatCrossMachineBatchMoveApprovalChat: Codable, Equatable, Identifia
   var id: String { sessionId }
   var sessionId: String
   var title: String?
+
+  init(sessionId: String, title: String? = nil) {
+    self.sessionId = sessionId
+    self.title = title
+  }
+
+  /// Never throws: a wrong-shaped title reads as no title, and a chat without
+  /// a session id decodes empty and is dropped by the approval below.
+  init(from decoder: Decoder) throws {
+    let c = try? decoder.container(keyedBy: CodingKeys.self)
+    sessionId = ((try? c?.decodeIfPresent(String.self, forKey: .sessionId)) ?? nil) ?? ""
+    title = (try? c?.decodeIfPresent(String.self, forKey: .title)) ?? nil
+  }
 }
 
 /// A batch approval projected onto the caller chat's summary. The transcript
 /// card remains the durable record; this snapshot gives every client one action surface.
+/// Decoding never throws, so a malformed approval cannot drop the summary it
+/// rides on; one without a `batchId` is treated as absent by the UI.
 struct AgentChatCrossMachineBatchMoveApproval: Codable, Equatable {
   var batchId: String
   var machineName: String
   var chats: [AgentChatCrossMachineBatchMoveApprovalChat]
+
+  init(batchId: String, machineName: String, chats: [AgentChatCrossMachineBatchMoveApprovalChat]) {
+    self.batchId = batchId
+    self.machineName = machineName
+    self.chats = chats
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try? decoder.container(keyedBy: CodingKeys.self)
+    batchId = ((try? c?.decodeIfPresent(String.self, forKey: .batchId)) ?? nil) ?? ""
+    machineName = ((try? c?.decodeIfPresent(String.self, forKey: .machineName)) ?? nil) ?? ""
+    chats = (((try? c?.decodeIfPresent([AgentChatCrossMachineBatchMoveApprovalChat].self, forKey: .chats)) ?? nil) ?? [])
+      .filter { !$0.sessionId.isEmpty }
+  }
 }
 
 /// A move of this chat to another machine, owned by the SOURCE brain and

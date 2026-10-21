@@ -63,7 +63,7 @@ import { createFileWatchLedger } from "../../desktop/src/main/services/files/fil
 import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveLock";
-import { crossMachineMoveRelation } from "../../desktop/src/shared/crossMachineHandoff";
+import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
@@ -93,6 +93,7 @@ import {
   ACTION_NOT_CALLABLE_CODE,
   ACTION_NOT_EXPOSED_CODE,
   encodeCodedErrorMessage,
+  isErrnoLikeCode,
   parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../desktop/src/shared/sentry/expectedFailure";
@@ -3386,6 +3387,128 @@ function scopeTerminalAdeActionArgs(
 }
 
 /**
+ * Who may run a move action on which chat, and what a move start carries.
+ * A chat-bound agent may act on itself or a descendant it started. A single
+ * move may request approval for another chat; a batch with any unrelated
+ * chat waits for one approval on the requesting chat. Batch and approval
+ * context, and who asked, are never taken from the caller's arguments: the
+ * caller's identity decides them (see `CROSS_MACHINE_CALLER_FIELDS`).
+ */
+function scopeCrossMachineMoveArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  rawArgs: Record<string, unknown>,
+  caller: { callerIsPerson: boolean; boundChatSessionId: string | null },
+): Record<string, unknown> {
+  const { callerIsPerson, boundChatSessionId } = caller;
+  const requestedSourceSessionId = asOptionalTrimmedString(rawArgs.sourceSessionId);
+  // ADE chats keep their parent in their own lineage (the chat service);
+  // session rows carry it only for tracked agent CLIs. The relation walk
+  // stops at 32 links and on any cycle.
+  const parentSessionIdFor = (sessionId: string) =>
+    runtime.agentChatService?.getChatParentSessionId?.(sessionId)
+      ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId
+      ?? null;
+  const relationTo = (sessionId: string | null | undefined) =>
+    crossMachineMoveRelation(boundChatSessionId, sessionId, parentSessionIdFor);
+
+  if (action === "startCrossMachineBatchMove") {
+    const startArgs = withoutCrossMachineCallerFields(rawArgs);
+    if (callerIsPerson) return { ...startArgs, requestedBy: "user" };
+    if (!boundChatSessionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "chat.startCrossMachineBatchMove needs a chat-bound agent so the person can review the batch in its caller chat.",
+      );
+    }
+    ensureCrossMachineMoveAskAllowed(boundChatSessionId);
+    // A batch that reaches beyond the caller's own tree asks the person,
+    // so it also spends the global ask budget every agent shares.
+    const namedSessionIds = Array.isArray(startArgs.sessionIds)
+      ? startArgs.sessionIds.filter((id): id is string => typeof id === "string")
+      : [];
+    if (startArgs.allWorkOnThisMachine === true || namedSessionIds.some((id) => relationTo(id.trim()) === "other")) {
+      ensureAskUserAllowed(session);
+    }
+    return { ...startArgs, requestedBy: "agent", requestingSessionId: boundChatSessionId };
+  }
+
+  if (action === "getCrossMachineBatchMove" || action === "retryCrossMachineBatchMove") {
+    const batchId = asOptionalTrimmedString(rawArgs.batchId);
+    if (!batchId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires batchId.`);
+    }
+    const batch = runtime.agentChatService?.getCrossMachineBatchMove({ batchId }) ?? null;
+    if (!callerIsPerson && batch) {
+      const chatItems = batch.items.filter((item) => item.kind === "chat");
+      const requestedByCaller = batch.requestedBy === "agent"
+        && Boolean(boundChatSessionId)
+        && batch.requestingSessionId === boundChatSessionId;
+      const allChatsInCallerTree = chatItems.length > 0
+        && chatItems.every((item) => relationTo(item.sourceSessionId) !== "other");
+      if (batch.requestedBy !== "agent" || (!requestedByCaller && !allChatsInCallerTree)) {
+        chatAccessDenied(`run_ade_action:chat.${action}`, {
+          callerChatSessionId: boundChatSessionId,
+        });
+      }
+    }
+    return { batchId };
+  }
+
+  const requestedFor = relationTo(requestedSourceSessionId);
+  if (
+    !callerIsPerson
+    && boundChatSessionId
+    && requestedFor === "other"
+    && action !== "startCrossMachineHandoff"
+  ) {
+    chatAccessDenied(`run_ade_action:chat.${action}`, {
+      callerChatSessionId: boundChatSessionId,
+      requestedSessionId: requestedSourceSessionId,
+    });
+  }
+  if (action !== "startCrossMachineHandoff") return rawArgs;
+  // Who asked and which chat they asked to move are trusted host facts,
+  // never caller-provided claims. The orchestrator applies the source
+  // chat's permission level and sends unrelated-chat requests to approval.
+  const startArgs = withoutCrossMachineCallerFields(rawArgs);
+  if (callerIsPerson) return { ...startArgs, requestedBy: "user" };
+  if (!requestedSourceSessionId) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chat.startCrossMachineHandoff requires sourceSessionId.");
+  }
+  // The request budget and deny cooldown are scoped to the chat being
+  // moved, so one chat cannot spend another chat's approval budget.
+  ensureCrossMachineMoveAskAllowed(requestedSourceSessionId);
+  // A move of an unrelated chat puts an approval card in front of the
+  // person, so it also spends the global ask budget. Its own chat or
+  // a descendant asks nobody and needs only the per-chat limit.
+  if (requestedFor === "other") ensureAskUserAllowed(session);
+  return {
+    ...startArgs,
+    requestedBy: "agent",
+    requestedFor,
+    requestedBySessionId: boundChatSessionId,
+    requestedByTitle: crossMachineRequesterTitle(runtime, session, boundChatSessionId),
+  };
+}
+
+/** How an agent's move request names its requester on the person's approval card. */
+function crossMachineRequesterTitle(
+  runtime: AdeRuntime,
+  session: SessionState,
+  boundChatSessionId: string | null,
+): string | null {
+  if (boundChatSessionId) {
+    return asOptionalTrimmedString(runtime.sessionService.get(boundChatSessionId)?.title)
+      ?? `Agent chat ${boundChatSessionId}`;
+  }
+  if (session.identity.runId) return `Agent run ${session.identity.runId}`;
+  const callerId = asOptionalTrimmedString(session.identity.callerId);
+  return callerId ? `Agent process ${callerId}` : null;
+}
+
+/**
  * The move actions that name a source chat (`sourceSessionId`). A chat-bound
  * agent may aim them at its own chat or descendants; a start for another chat
  * is allowed through only as an approval request. See runTool. Approval is
@@ -5310,14 +5433,14 @@ function ensureAskUserAllowed(session: SessionState): void {
 
 function ensureCrossMachineMoveAskAllowed(targetSessionId: string): void {
   const now = Date.now();
+  const cutoff = now - CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.windowMs;
   for (const [sessionId, events] of crossMachineMoveTargetEvents) {
-    const recent = events.filter((ts) => ts >= now - CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.windowMs);
+    const recent = events.filter((ts) => ts >= cutoff);
     if (recent.length === 0) crossMachineMoveTargetEvents.delete(sessionId);
     else crossMachineMoveTargetEvents.set(sessionId, recent);
   }
-  const targetEvents = crossMachineMoveTargetEvents.get(targetSessionId) ?? [];
-  const targetCutoff = now - CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.windowMs;
-  const recentTargetEvents = targetEvents.filter((ts) => ts >= targetCutoff);
+  // Already swept above: only this window's events remain.
+  const recentTargetEvents = crossMachineMoveTargetEvents.get(targetSessionId) ?? [];
   if (recentTargetEvents.length >= CROSS_MACHINE_MOVE_TARGET_RATE_LIMIT.maxCalls) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "cross-machine move approval rate limit exceeded for this chat.");
   }
@@ -5807,112 +5930,12 @@ async function runTool(args: {
       // only the CTO thread itself (callerIsTrustedCto) speaks for the person.
       const callerIsPerson = mayUseUserOnlyActions(session)
         || (callerIsCto && await callerIsTrustedCto(runtime, session));
-      // A chat-bound agent may act on itself or a descendant it started. A
-      // single move may request approval for another chat; a batch with any
-      // unrelated chat waits for one approval on the requesting chat.
       const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
         ?? asOptionalTrimmedString(session.identity.chatSessionId);
-      const requestedSourceSessionId = asOptionalTrimmedString(rawObjectArgs.sourceSessionId);
-      const parentSessionIdFor = (sessionId: string) =>
-        runtime.sessionService.get(sessionId)?.orchestrationParentSessionId ?? null;
-      const requestedFor = crossMachineMoveRelation(boundChatSessionId, requestedSourceSessionId, parentSessionIdFor);
-      if (action === "startCrossMachineBatchMove") {
-        const {
-          requestedBy: _ignoredRequestedBy,
-          requestedFor: _ignoredRequestedFor,
-          requestingSessionId: _ignoredRequestingSessionId,
-          requestedBySessionId: _ignoredRequestedBySessionId,
-          requestedByTitle: _ignoredRequestedByTitle,
-          approvedByPerson: _ignoredApproval,
-          ...startArgs
-        } = rawObjectArgs;
-        if (callerIsPerson) {
-          scopedObjectArgs = { ...startArgs, requestedBy: "user" };
-        } else {
-          if (!boundChatSessionId) {
-            throw new JsonRpcError(
-              JsonRpcErrorCode.invalidParams,
-              "chat.startCrossMachineBatchMove needs a chat-bound agent so the person can review the batch in its caller chat.",
-            );
-          }
-          ensureCrossMachineMoveAskAllowed(boundChatSessionId);
-          scopedObjectArgs = {
-            ...startArgs,
-            requestedBy: "agent",
-            requestingSessionId: boundChatSessionId,
-          };
-        }
-      } else if (action === "getCrossMachineBatchMove" || action === "retryCrossMachineBatchMove") {
-        const batchId = asOptionalTrimmedString(rawObjectArgs.batchId);
-        if (!batchId) {
-          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires batchId.`);
-        }
-        const batch = runtime.agentChatService?.getCrossMachineBatchMove({ batchId }) ?? null;
-        if (!callerIsPerson && batch) {
-          const chatItems = batch.items.filter((item) => item.kind === "chat" && item.sourceSessionId);
-          const requestedByCaller = batch.requestedBy === "agent"
-            && Boolean(boundChatSessionId)
-            && batch.requestingSessionId === boundChatSessionId;
-          const allChatsInCallerTree = chatItems.length > 0 && chatItems.every((item) =>
-            crossMachineMoveRelation(boundChatSessionId, item.sourceSessionId, parentSessionIdFor) !== "other");
-          if (batch.requestedBy !== "agent" || (!requestedByCaller && !allChatsInCallerTree)) {
-            chatAccessDenied(`run_ade_action:chat.${action}`, {
-              callerChatSessionId: boundChatSessionId,
-            });
-          }
-        }
-        scopedObjectArgs = { batchId };
-      } else {
-        if (
-          !callerIsPerson
-          && boundChatSessionId
-          && requestedFor === "other"
-          && action !== "startCrossMachineHandoff"
-        ) {
-          chatAccessDenied(`run_ade_action:chat.${action}`, {
-            callerChatSessionId: boundChatSessionId,
-            requestedSessionId: requestedSourceSessionId,
-          });
-        }
-        if (action === "startCrossMachineHandoff") {
-          // Who asked and which chat they asked to move are trusted host facts,
-          // never caller-provided claims. The orchestrator applies the source
-          // chat's permission level and sends unrelated-chat requests to approval.
-          const {
-            requestedBy: _ignoredRequestedBy,
-            requestedFor: _ignoredRequestedFor,
-            requestedBySessionId: _ignoredRequestedBySessionId,
-            requestedByTitle: _ignoredRequestedByTitle,
-            sourceChatTitle: _ignoredSourceChatTitle,
-            ...startArgs
-          } = rawObjectArgs;
-          if (callerIsPerson) {
-            scopedObjectArgs = { ...startArgs, requestedBy: "user" };
-          } else {
-            if (!requestedSourceSessionId) {
-              throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chat.startCrossMachineHandoff requires sourceSessionId.");
-            }
-            // The request budget and deny cooldown are scoped to the chat being
-            // moved, so one chat cannot spend another chat's approval budget.
-            ensureCrossMachineMoveAskAllowed(requestedSourceSessionId);
-            const requester = boundChatSessionId ? runtime.sessionService.get(boundChatSessionId) : null;
-            scopedObjectArgs = {
-              ...startArgs,
-              requestedBy: "agent",
-              requestedFor,
-              requestedBySessionId: boundChatSessionId,
-              requestedByTitle: asOptionalTrimmedString(requester?.title)
-                ?? (boundChatSessionId
-                  ? `Agent chat ${boundChatSessionId}`
-                  : session.identity.runId
-                    ? `Agent run ${session.identity.runId}`
-                    : asOptionalTrimmedString(session.identity.callerId)
-                      ? `Agent process ${asOptionalTrimmedString(session.identity.callerId)}`
-                      : null),
-            };
-          }
-        }
-      }
+      scopedObjectArgs = scopeCrossMachineMoveArgs(runtime, session, action, rawObjectArgs, {
+        callerIsPerson,
+        boundChatSessionId,
+      });
     }
     if (domain === "automations" && action === "webhookCreateAutomation") {
       // The calling chat is derived from the caller's identity, never taken
@@ -8781,12 +8804,21 @@ export function createAdeRpcRequestHandler(args: {
           actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
           error,
         );
+        // An ADE coded error (a definitive cross-machine return refusal, …)
+        // keeps its code across the wire so the caller can tell it apart;
+        // platform errno codes stay behind.
+        const thrownCode = error instanceof Error && !(error instanceof JsonRpcError)
+          ? (error as Error & { code?: unknown }).code
+          : undefined;
+        const adeCode = !movedAway && typeof thrownCode === "string" && thrownCode.trim() && !isErrnoLikeCode(thrownCode)
+          ? thrownCode
+          : null;
         return {
           ok: false,
           error: {
             code: movedAway
               ? error.code
-              : error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
+              : adeCode ?? (error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed),
             message,
             ...(movedAway ? {
               sessionId: error.sessionId,

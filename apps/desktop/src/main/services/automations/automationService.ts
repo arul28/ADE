@@ -90,6 +90,7 @@ import {
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../../../shared/pendingInputAnswers";
 import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
+import { CROSS_MACHINE_CALLER_FIELDS } from "../../../shared/crossMachineHandoff";
 
 const execFileAsync = promisify(execFile);
 
@@ -426,6 +427,8 @@ export type AutomationActionOutcome = {
   handoffSessionId?: string;
   /** False for a failure a retry cannot fix, such as a turn someone stopped. */
   retryable?: false;
+  /** The step's chat continues on another machine, so the step was held, not done. */
+  heldForMovedChat?: true;
 };
 
 class NonRetryableActionError extends Error {}
@@ -849,10 +852,13 @@ export function scopeAutomationAdeActionArgs(
   const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
   if (domain === "chat") {
     for (const candidate of candidates) {
-      // An unattended rule is never the person: a move it starts waits for
-      // approval unless the chat is full-auto, and the orchestrator runs it at
-      // the chat's own permission level.
-      if (action === "startCrossMachineHandoff" && isRecord(candidate)) {
+      // An unattended rule is never the person and has no chat of its own: a
+      // move it starts is an agent's move of an unrelated chat, so it waits
+      // for the person's approval (a batch needs a requesting chat and is
+      // refused), and runs at the chat's own permission level. Every relation
+      // and identity stamp it carries is borrowed, so none survives.
+      if ((action === "startCrossMachineHandoff" || action === "startCrossMachineBatchMove") && isRecord(candidate)) {
+        for (const field of CROSS_MACHINE_CALLER_FIELDS) delete candidate[field];
         candidate.requestedBy = "agent";
       }
       // A send wait's prompt provenance is the host's to derive; an
@@ -3246,7 +3252,7 @@ export function createAutomationService({
     /** The rule is the only stable identity an unattended action has; it is
      * what `scopeAutomationAdeActionArgs` hands the domain in place of a chat. */
     ruleId: string,
-  ): Promise<{ status: AutomationActionStatus; output?: string }> => {
+  ): Promise<Pick<AutomationActionOutcome, "status" | "output" | "heldForMovedChat">> => {
     if (!adeActionRegistryRef) {
       return { status: "failed", output: "ADE action registry is not available in this process." };
     }
@@ -3300,7 +3306,9 @@ export function createAutomationService({
       }
       return { status: "succeeded", output };
     } catch (error) {
-      if (isMovedAwayChatError(error)) return { status: "skipped", output: "" };
+      // The chat continues on another machine: the step is held, and the run
+      // history says why. It never counts as the one job a one-shot rule did.
+      if (isMovedAwayChatError(error)) return { status: "skipped", output: error.message, heldForMovedChat: true };
       return {
         status: "failed",
         output: error instanceof Error ? error.message : String(error),
@@ -3704,6 +3712,7 @@ export function createAutomationService({
     // Carried onto `runs-updated` so the renderer can build its own
     // HandoffLaunchJob for the chat this run just created.
     let handoffSessionId: string | null = null;
+    let heldForMovedChat = false;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -3717,6 +3726,7 @@ export function createAutomationService({
               const result = await runLegacyAction(rule, action, trigger, run.id);
               lastOutput = result.output ?? null;
               if (result.handoffSessionId) handoffSessionId = result.handoffSessionId;
+              if (result.heldForMovedChat) heldForMovedChat = true;
               if (result.status === "failed") {
                 const message = result.output ?? "Action failed";
                 throw result.retryable === false ? new NonRetryableActionError(message) : new Error(message);
@@ -3760,7 +3770,17 @@ export function createAutomationService({
         runId: run.id,
         ...(handoffSessionId ? { handoffSessionId } : {}),
       });
-      budget.settle({ succeeded: runStatus === "succeeded" });
+      if (heldForMovedChat && runStatus === "succeeded") {
+        // A step was held because its chat continues on another machine: the
+        // rule's job was not done, so the attempt goes back to the budget
+        // rather than counting toward `maxRuns` (a one-shot rule would
+        // otherwise be retired as "max-runs" without ever running). A run
+        // that also failed still spends its attempt below.
+        logger.info("automations.rule_budget.released_for_moved_chat", { automationId: rule.id, runId: run.id });
+        budget.release();
+      } else {
+        budget.settle({ succeeded: runStatus === "succeeded" });
+      }
     }
     return toRun(loadRunRow(run.id) ?? {
       id: run.id,

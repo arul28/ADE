@@ -315,7 +315,11 @@ export async function packHandoffGitBundle(args: {
  * machine: well-formed, sized as declared, ending at the capsule's own commit,
  * and fitting one transport frame together with any fork history.
  */
-export function validateHandoffGitBundle(capsule: AgentChatCrossMachineHandoffCapsule): void {
+export function validateHandoffGitBundle(
+  capsule: Pick<AgentChatCrossMachineHandoffCapsule, "gitBundle" | "forkTransport" | "transcriptEnvelopes"> & {
+    source: Pick<AgentChatCrossMachineHandoffCapsule["source"], "headSha">;
+  },
+): void {
   if (capsule.gitBundle === undefined) return;
   const bundle = capsule.gitBundle;
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) {
@@ -603,7 +607,11 @@ export async function landHandoffGitBundle<Lane extends HandoffBundleLane>(
 
 type LandHandoffGitBundleArgs<Lane extends HandoffBundleLane> = {
   projectRoot: string;
-  capsule: AgentChatCrossMachineHandoffCapsule;
+  /** A move's capsule, or a batch lane import's bundle with its lane name and source machine. */
+  capsule: {
+    gitBundle?: AgentChatCrossMachineHandoffCapsule["gitBundle"];
+    source: Pick<AgentChatCrossMachineHandoffCapsule["source"], "laneName" | "machineName">;
+  };
   handoffId: string;
   branchRef: string;
   existingLane: Lane | null;

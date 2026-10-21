@@ -631,7 +631,7 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
-  AgentChatStartCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
@@ -8082,7 +8082,7 @@ const adeBridge = {
     // A batch move is owned by the source brain, including when this window's
     // project tab is bound to a different machine.
     startCrossMachineBatchMove: async (
-      args: AgentChatStartCrossMachineBatchMoveArgs,
+      args: AgentChatCrossMachineBatchMoveArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "startCrossMachineBatchMove", { args }, () =>

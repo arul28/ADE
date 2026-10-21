@@ -34,16 +34,17 @@
  *   as `unknown`, keeping its capsule.
  */
 import { randomUUID } from "node:crypto";
-import { deterministicChatSessionId } from "../../../shared/deterministicChatSessionId";
-import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { isCodedError, parseCodedErrorMessage } from "../../../shared/codedError";
 import {
-  crossMachineMoveRelation,
+  CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeAcceptCrossMachineHandoffResult,
   decodeCrossMachineDestinationPreflightResult,
   isCrossMachineHandoffActive,
   normalizeGitRemoteIdentity,
+  pickCrossMachineTargetConfig,
   withoutCrossMachinePermissionFields,
 } from "../../../shared/crossMachineHandoff";
+import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
   isPermissionLevel,
@@ -57,10 +58,9 @@ import { isRemoteRuntimeConnectionError, isRuntimeTransportTimeoutError } from "
 import type {
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineBatchMoveArgs,
-  AgentChatCrossMachineBatchMoveItem,
+  AgentChatCrossMachineBatchMoveContext,
   AgentChatCrossMachineBatchMoveRecord,
   AgentChatCrossMachineLaneImportArgs,
-  AgentChatCrossMachineLaneImportResult,
   AgentChatCrossMachineHandoffBlocker,
   AgentChatCrossMachineHandoffCheckpoint,
   AgentChatCrossMachineHandoffMachineOption,
@@ -72,12 +72,14 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatPreviewCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffResult,
-  AgentChatStartCrossMachineBatchMoveArgs,
   AgentChatStartCrossMachineHandoffArgs,
-  AgentChatCrossMachineBatchMoveItemState,
-  AgentChatCrossMachineArrival,
-  AgentChatCrossMachineHandoffOrigin,
+  AgentChatCrossMachineMoveRelation,
 } from "../../../shared/types";
+import {
+  createCrossMachineBatchMoves,
+  type CrossMachineBatchMoveCaller,
+  type CrossMachineBatchMoveDeps,
+} from "./crossMachineBatchMove";
 
 /** One machine on the account, as the brain's machine bridge lists it. */
 export type CrossMachineHandoffMachine = {
@@ -134,46 +136,18 @@ export type CrossMachineHandoffRequest = AgentChatCrossMachineTargetConfig & {
   agentSourceLevel?: string | null;
   /** An agent's move the person approved (not one full-auto let through). */
   approvedByPerson?: boolean;
-  batchMove?: CrossMachineBatchMoveContext;
-  /** An agent may move chats it started without approval. */
-  agentAuthorizedDescendant?: boolean;
+  /** A batch item's move: its batch, lane and parent context for prepare. */
+  batchMove?: AgentChatCrossMachineBatchMoveContext;
 };
 
-type CrossMachineBatchMoveContext = NonNullable<AgentChatPrepareCrossMachineHandoffArgs["batchMove"]> & {
-  destinationParentLaneId?: string;
-  parentLink?: NonNullable<AgentChatPrepareCrossMachineHandoffArgs["parentLink"]>;
-  sourceLane: NonNullable<AgentChatPrepareCrossMachineHandoffArgs["sourceLane"]>;
+/** Who asked for a move, as the trusted host stamped it. */
+export type CrossMachineMoveCaller = {
+  requestedBy: "user" | "agent";
+  /** How the asking agent is related to the moved chat; absent is treated as unrelated. */
+  requestedFor?: AgentChatCrossMachineMoveRelation;
+  requestedBySessionId?: string | null;
+  requestedByTitle?: string | null;
 };
-
-export type CrossMachineBatchChat = {
-  sessionId: string;
-  laneId: string;
-  parentSessionId: string | null;
-  spawnKind: "subagent" | "peer";
-  isWorkChat: boolean;
-  turnActive: boolean;
-  awaitingInput: boolean;
-  permissionLevel: string | null;
-  provider: string;
-  model: string;
-  modelId?: string | null;
-  title: string | null;
-  crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
-  crossMachineArrival?: AgentChatCrossMachineArrival | null;
-  /** Is the chat's parent included in the selected batch? */
-  parentInBatch?: boolean;
-};
-
-export type CrossMachineBatchLane = {
-  laneId: string;
-  parentLaneId: string | null;
-  name: string;
-  branchRef: string;
-  originMachineKey?: string | null;
-  originLaneId?: string | null;
-};
-
-type CrossMachineBatchMovePersisted = AgentChatCrossMachineBatchMoveRecord;
 
 export type CrossMachineHandoffSource = {
   sessionId: string;
@@ -197,17 +171,31 @@ export type CrossMachineSourceInspection = {
   changes: { unpushedCommits: number; changedFiles: number } | null;
 };
 
+/** A source that can move: its origin identity, branch and commit. */
+export type CrossMachineMovableSource = { originUrl: string; branchRef: string; headSha: string };
+
 /** The capsule a move sent, exactly, so a retry can send it again. */
 export type CrossMachinePreparedCapsule = Pick<AgentChatPrepareCrossMachineHandoffResult, "capsule" | "capsuleFingerprint">;
+
+/**
+ * A batch lane import payload kept for its retry. `sent` is written right
+ * before the import is sent: once true the destination may hold it, so a retry
+ * resends exactly this payload (the destination dedupes by import id); while
+ * false nothing left this machine and a retry prepares it again.
+ */
+export type CrossMachineLaneOutboxEntry = {
+  payload: AgentChatCrossMachineLaneImportArgs;
+  sent: boolean;
+};
 
 export type CrossMachineHandoffOutbox = {
   read(handoffId: string): CrossMachinePreparedCapsule | null;
   /** Durable before it returns: written the moment acceptance is about to start. */
   write(handoffId: string, prepared: CrossMachinePreparedCapsule): void;
   remove(handoffId: string): void;
-  readLane?(importId: string): AgentChatCrossMachineLaneImportArgs | null;
-  writeLane?(importId: string, payload: AgentChatCrossMachineLaneImportArgs): void;
-  removeLane?(importId: string): void;
+  readLane(importId: string): CrossMachineLaneOutboxEntry | null;
+  writeLane(importId: string, entry: CrossMachineLaneOutboxEntry): void;
+  removeLane(importId: string): void;
 };
 
 export type CrossMachineHandoffOrchestratorDeps = {
@@ -218,24 +206,8 @@ export type CrossMachineHandoffOrchestratorDeps = {
   writePersisted: (sessionId: string, value: CrossMachineHandoffPersisted | null) => void;
   /** Every chat with a persisted move, for the startup sweep. */
   listPersisted: () => Array<{ sessionId: string; value: CrossMachineHandoffPersisted }>;
-  readBatch?: (batchId: string) => CrossMachineBatchMovePersisted | null;
-  writeBatch?: (batchId: string, value: CrossMachineBatchMovePersisted | null) => void;
-  listBatches?: () => CrossMachineBatchMovePersisted[];
-  listBatchChats?: () => Promise<CrossMachineBatchChat[]>;
-  listBatchLanes?: () => Promise<CrossMachineBatchLane[]>;
-  inspectBatchLane?: (laneId: string) => Promise<CrossMachineSourceInspection>;
-  getSourceMachineName?: () => string;
-  prepareBatchLane?: (args: {
-    batchId: string;
-    importId: string;
-    lane: CrossMachineBatchLane;
-    returnToLaneId?: string;
-    destinationParentLaneId?: string;
-    includeChanges: boolean;
-    sourceMachineName: string;
-  }) => Promise<AgentChatCrossMachineLaneImportArgs>;
-  validateBatchLane?: (payload: AgentChatCrossMachineLaneImportArgs) => Promise<void>;
-  interruptBatchChat?: (sessionId: string) => Promise<void>;
+  /** Batch moves (crossMachineBatchMove.ts); a runtime without them refuses batches. */
+  batch?: CrossMachineBatchMoveDeps;
   inspectSource: (sessionId: string) => Promise<CrossMachineSourceInspection>;
   /** False once the chat is deleted: its move is cleared (row and outbox), not written or announced. */
   chatExists?: (sessionId: string) => boolean;
@@ -258,14 +230,18 @@ export type CrossMachineHandoffOrchestratorDeps = {
   outbox: CrossMachineHandoffOutbox;
   /** The Approve/Deny card for an agent-started move, live or settled. */
   showApprovalCard: (sessionId: string, card: CrossMachineMoveApprovalCard) => void;
-  /** One Approve/Deny card for an agent batch that includes unrelated chats. */
-  showBatchApprovalCard: (sessionId: string, card: CrossMachineBatchMoveApprovalCard) => void;
   /** A durable one-line transcript notice for a move that ended without landing. */
   noticeEnded: (sessionId: string, notice: CrossMachineMoveEndedNotice) => void;
   /** Tell the phone: an agent asked to move the chat, or an unwatched move ended. */
   notifyPerson?: (sessionId: string, record: AgentChatCrossMachineHandoffRecord, title: string | null) => void;
   /** Content-free hook for product analytics: a move reached a terminal state (never for a deleted chat). */
-  onMoveOutcome?: (event: { sessionId: string; handoffId: string; outcome: CrossMachineMoveOutcome }) => void;
+  onMoveOutcome?: (event: {
+    sessionId: string;
+    handoffId: string;
+    outcome: CrossMachineMoveOutcome;
+    /** On `continued`: the source scheduled-work ids the destination recreated. */
+    carriedScheduledWorkIds?: string[];
+  }) => void;
   logger: {
     info(event: string, data?: Record<string, unknown>): void;
     warn(event: string, data?: Record<string, unknown>): void;
@@ -286,45 +262,6 @@ export type CrossMachineMoveApprovalCard = {
   subtitle: string | null;
   fallbackText: string;
 };
-
-export type CrossMachineBatchMoveApprovalCard = {
-  batchId: string;
-  live: boolean;
-  title: string;
-  subtitle: string | null;
-  rows: Array<{ text: string; detail: string | null }>;
-  fallbackText: string;
-};
-
-export function crossMachineBatchMoveApprovalCard(
-  record: AgentChatCrossMachineBatchMoveRecord,
-  live: boolean,
-): CrossMachineBatchMoveApprovalCard {
-  const chats = record.items.filter((item) => item.kind === "chat");
-  const titles = chats.map((item) => item.sourceChatTitle?.trim() || item.sourceSessionId || "Work chat");
-  const list = titles.map((title) => `• ${title}`).join("\n");
-  const count = chats.length;
-  const noun = count === 1 ? "chat" : "chats";
-  const title = live
-    ? `An agent wants to move ${count} ${noun} to ${record.machineName}`
-    : "Batch move request answered";
-  const subtitle = live
-    ? "Approve or deny the whole batch. Each chat keeps its own permission level."
-    : null;
-  const fallbackText = live
-    ? `${title}. Each chat keeps its own permission level.\n${list}\nApprove or deny the whole batch.`
-    : "The batch move request was answered.";
-  return {
-    batchId: record.batchId,
-    live,
-    title,
-    subtitle,
-    rows: live
-      ? chats.map((item, index) => ({ text: titles[index]!, detail: item.sourceSessionId ?? null }))
-      : [],
-    fallbackText,
-  };
-}
 
 export type CrossMachineMoveEndedNotice = {
   record: AgentChatCrossMachineHandoffRecord;
@@ -428,8 +365,8 @@ function errorText(error: unknown): string {
 
 function isDefinitiveCrossMachineReturnRefusal(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return (error as Error & { code?: unknown }).code === "CROSS_MACHINE_RETURN_REFUSED"
-    || parseCodedErrorMessage(error).code === "CROSS_MACHINE_RETURN_REFUSED";
+  return isCodedError(error, CROSS_MACHINE_RETURN_REFUSED_CODE)
+    || parseCodedErrorMessage(error).code === CROSS_MACHINE_RETURN_REFUSED_CODE;
 }
 
 function unwrapActionResult(value: unknown): unknown {
@@ -503,6 +440,24 @@ export function describeCrossMachineBlockers(blockers: AgentChatCrossMachineHand
     .join("\n");
 }
 
+/**
+ * The inspection's branch, commit and origin, once nothing left on it blocks
+ * a move (`includeChanges` clears the blockers changes travel with). `label`
+ * names what is moving in the refusal: "Lane 'x'", "Chat 'x'", "This chat".
+ */
+export function requireMovable(
+  inspection: CrossMachineSourceInspection,
+  options: { includeChanges: boolean; label: string },
+): CrossMachineMovableSource {
+  const blockers = inspection.blockers.filter((blocker) => !(options.includeChanges && blocker.clearedByIncludeChanges));
+  if (blockers.length) throw new Error(`${options.label} can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
+  const { originUrl, branchRef, headSha } = inspection;
+  if (!originUrl || !branchRef || !headSha) {
+    throw new Error(`${options.label} needs a published branch and origin before it can move.`);
+  }
+  return { originUrl, branchRef, headSha };
+}
+
 export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffOrchestratorDeps) {
   const now = deps.now ?? (() => new Date().toISOString());
   const nowMs = deps.nowMs ?? (() => Date.now());
@@ -512,6 +467,10 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   const knownUserMessages = new Map<string, Set<string>>();
   /** When the person last denied an agent's move, per chat. */
   const declinedAt = new Map<string, number>();
+  const declinedRecently = (sessionId: string): boolean => {
+    const deniedAt = declinedAt.get(sessionId);
+    return deniedAt !== undefined && nowMs() - deniedAt < AGENT_ASK_AFTER_DECLINE_MS;
+  };
   /** Outbox capsules `retry` just checked against the chat; runOnce skips re-checking them once. */
   const checkedOutbox = new Set<string>();
 
@@ -716,6 +675,10 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       const name = existing!.record.targetMachineName;
       throw new Error(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`);
     }
+    // Moving a chat that already continues elsewhere would leave two live
+    // copies. The person picks "Work here instead" first, then it may move.
+    const lock = crossMachineMoveLock(existing?.record);
+    if (lock) throw new MovedAwayChatError(sourceSessionId, lock);
     return existing;
   };
 
@@ -726,19 +689,17 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
    */
   const startsInFlight = new Map<string, Set<{ before: Set<string>; newMessage: boolean }>>();
 
+  /** A batch item's move: its batch-derived id, context and the batch's approval. */
+  type BatchItemOptions = {
+    handoffId?: string;
+    batchMove?: AgentChatCrossMachineBatchMoveContext;
+    approvedByPerson?: boolean;
+  };
+
   const start = async (
     args: AgentChatStartCrossMachineHandoffArgs,
-    caller: {
-      requestedBy: "user" | "agent";
-      requestedFor?: "self" | "descendant" | "other";
-      requestedBySessionId?: string | null;
-      requestedByTitle?: string | null;
-    },
-    batchOptions: {
-      handoffId?: string;
-      batchMove?: CrossMachineBatchMoveContext;
-      approvedByPerson?: boolean;
-    } = {},
+    caller: CrossMachineMoveCaller,
+    batchOptions: BatchItemOptions = {},
   ): Promise<AgentChatCrossMachineHandoffRecord> => {
     const sourceSessionId = args.sourceSessionId?.trim();
     if (!sourceSessionId) throw new Error("A source chat is required.");
@@ -760,27 +721,19 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   const startWatched = async (
     sourceSessionId: string,
     args: AgentChatStartCrossMachineHandoffArgs,
-    caller: {
-      requestedBy: "user" | "agent";
-      requestedFor?: "self" | "descendant" | "other";
-      requestedBySessionId?: string | null;
-      requestedByTitle?: string | null;
-    },
+    caller: CrossMachineMoveCaller,
     watch: { newMessage: boolean },
-    batchOptions: { handoffId?: string; batchMove?: CrossMachineBatchMoveContext; approvedByPerson?: boolean },
+    batchOptions: BatchItemOptions,
   ): Promise<AgentChatCrossMachineHandoffRecord> => {
     const source = deps.getSource(sourceSessionId);
     if (!source) throw new Error("The source chat could not be loaded.");
     if (!source.isWorkChat) throw new Error("Only Work chats can be sent to another machine.");
     refuseIfMoving(sourceSessionId);
     const isAgent = caller.requestedBy === "agent";
-    if (isAgent) {
-      const deniedAt = declinedAt.get(sourceSessionId);
-      if (deniedAt !== undefined && nowMs() - deniedAt < AGENT_ASK_AFTER_DECLINE_MS) {
-        throw new Error(
-          "The person just declined moving this chat. Don't ask again for a couple of minutes; ask them in the chat if it matters.",
-        );
-      }
+    if (isAgent && declinedRecently(sourceSessionId)) {
+      throw new Error(
+        "The person just declined moving this chat. Don't ask again for a couple of minutes; ask them in the chat if it matters.",
+      );
     }
     const targetModelId = args.targetModelId?.trim();
     if (!targetModelId) throw new Error("Pick the model the other machine should continue with.");
@@ -793,11 +746,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     const machine = await resolveMachine(args.machine ?? "");
     const includeChanges = args.includeChanges === true;
 
-    const inspection = await deps.inspectSource(sourceSessionId);
-    const blockers = inspection.blockers.filter((blocker) => !(includeChanges && blocker.clearedByIncludeChanges));
-    if (blockers.length) {
-      throw new Error(`This chat can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
-    }
+    requireMovable(await deps.inspectSource(sourceSessionId), { includeChanges, label: "This chat" });
     // The machine lookup and git checks above were awaits; a turn may have
     // ended (or started) meanwhile. Decide from the chat as it is now, or a
     // move saved as `pending` after its turn already ended would never run.
@@ -811,7 +760,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       );
     }
 
-    const requestedFor = caller.requestedFor ?? "self";
+    // Fail closed: an agent request whose relation no trusted host stamped
+    // (an automation, an older caller) is treated as an unrelated chat.
+    const requestedFor = caller.requestedFor ?? "other";
     const needsApproval = isAgent && requestedFor === "other" && batchOptions.approvedByPerson !== true;
     const state: AgentChatCrossMachineHandoffState = needsApproval
       ? "awaiting_approval"
@@ -823,7 +774,9 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       throw new Error("You sent a new message, so the chat stayed here.");
     }
     const requestedAt = now();
-    const { sourceSessionId: _source, machine: _machine, whenTurnEnds: _when, ...requested } = args;
+    // Only the public target fields persist. Batch context (lane, parent link,
+    // approval) comes from `batchOptions`, never from the caller's arguments.
+    const requested = pickCrossMachineTargetConfig(args);
     const target = agentPermissions
       ? { ...withoutCrossMachinePermissionFields(requested), ...agentPermissions.fields }
       : requested;
@@ -854,9 +807,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         targetLaneId: null,
         targetSessionId: null,
         // Keep the previous return address until this move lands. A new move
-        // revokes the earlier Work here instead choice once it continues.
+        // revokes the earlier Work here instead choice only once it continues
+        // (landing clears it); a move that is cancelled, fails or is denied
+        // leaves the person's choice as it was.
         continuedOn: existing?.record.continuedOn ?? null,
-        resumedHere: false,
+        resumedHere: existing?.record.resumedHere ?? false,
+        ...(existing?.record.returnRefused ? { returnRefused: existing.record.returnRefused } : {}),
       },
       request: {
         ...target,
@@ -1135,9 +1091,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           const level = isPermissionLevel(asked) && isPermissionLevel(levelNow)
             ? (permissionLevelRank(asked) <= permissionLevelRank(levelNow) ? asked : levelNow)
             : (isPermissionLevel(levelNow) ? levelNow : "ask");
+          // A record with no relation (written before relations existed, or
+          // by a caller that never stamped one) is an unrelated chat.
           if (
             !persisted.request.approvedByPerson
-            && persisted.record.requestedFor === "other"
+            && (persisted.record.requestedFor ?? "other") === "other"
           ) {
             const waiting = write(sessionId, persisted, { state: "awaiting_approval", checkpoint: null });
             deps.showApprovalCard(sessionId, crossMachineMoveApprovalCard(waiting.record, true));
@@ -1165,14 +1123,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           continuationPrompt: persisted.request.continuationPrompt,
           mode: persisted.record.mode,
           includeChanges: persisted.record.includeChanges,
-          ...(persisted.request.batchMove
-            ? {
-                sourceLane: persisted.request.batchMove.sourceLane,
-                destinationParentLaneId: persisted.request.batchMove.destinationParentLaneId,
-                parentLink: persisted.request.batchMove.parentLink,
-                batchMove: persisted.request.batchMove,
-              }
+          // The origin refused to continue the original chat: this move goes
+          // as a new chat there, as the refusal said it would.
+          ...(persisted.record.returnRefused?.machineKey === persisted.record.targetMachineKey
+            ? { omitReturnTo: true }
             : {}),
+          ...(persisted.request.batchMove ? { batchMove: persisted.request.batchMove } : {}),
         });
         persisted = checkpoint(sessionId, persisted, "prepared");
         await preflightDestination(transport, persisted, fresh);
@@ -1208,8 +1164,25 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       } catch (error) {
         if (prepared.capsule.returnTo && isDefinitiveCrossMachineReturnRefusal(error)) {
           // The destination explicitly refused the return before committing it.
-          // Drop the outbox so a person can choose a normal move instead.
-          end(sessionId, persisted, "failed", errorText(error), { acceptanceStarted: false });
+          // Drop the outbox and remember the refusal: the next move (or a
+          // retry) to that machine goes as a new chat there instead.
+          const refused = write(sessionId, persisted, {
+            returnRefused: {
+              handoffId: persisted.record.handoffId,
+              machineKey: persisted.record.targetMachineKey,
+              reason: errorText(error),
+              at: now(),
+            },
+          });
+          end(
+            sessionId,
+            refused,
+            "failed",
+            // The destination's refusal says what happens next (a retry or a
+            // new move starts it there as a new chat).
+            errorText(error),
+            { acceptanceStarted: false },
+          );
           return;
         }
         throw error;
@@ -1262,7 +1235,14 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
       deps.outbox.remove(persisted.record.handoffId);
       knownUserMessages.delete(sessionId);
       if (chatExists(sessionId)) {
-        deps.onMoveOutcome?.({ sessionId, handoffId: persisted.record.handoffId, outcome: "continued" });
+        deps.onMoveOutcome?.({
+          sessionId,
+          handoffId: persisted.record.handoffId,
+          outcome: "continued",
+          // Only what the destination says it recreated: an older destination
+          // recreates nothing, so the source keeps every job.
+          carriedScheduledWorkIds: accepted.scheduledWorkIds ?? [],
+        });
       }
       deps.logger.info("agent_chat.cross_machine_handoff_continued", {
         sessionId,
@@ -1302,7 +1282,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     if (inFlight) return inFlight;
     const task = runOnce(sessionId).finally(() => {
       running.delete(sessionId);
-      wakeBatchRunsForSession(sessionId);
+      batches?.wakeForSession(sessionId);
     });
     running.set(sessionId, task);
     return task;
@@ -1342,6 +1322,20 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     }
     const source = deps.getSource(sourceSessionId);
     if (source?.turnActive) throw new Error("This chat is responding. Retry when the turn ends.");
+    // The origin refused this exact return and is bound to that capsule's
+    // id, so the new-chat move it asked for needs an id of its own. A batch
+    // item is keyed by its handoff id, so it cannot be re-keyed here.
+    if (
+      persisted.record.returnRefused?.handoffId === persisted.record.handoffId
+      && !deps.outbox.read(persisted.record.handoffId)
+    ) {
+      if (persisted.request.batchMove) {
+        throw new Error(
+          `${persisted.record.targetMachineName} refused to continue the original chat. Move this chat again on its own to start it there as a new chat.`,
+        );
+      }
+      persisted = { ...persisted, record: { ...persisted.record, handoffId: randomUUID() } };
+    }
     const oldId = persisted.record.handoffId;
     const stored = deps.outbox.read(oldId);
     if (stored) {
@@ -1373,677 +1367,46 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     return next.record;
   };
 
-  const batchRuns = new Map<string, Promise<void>>();
-  const batchRunAgain = new Set<string>();
-  const requireBatchStore = (): void => {
-    if (!deps.readBatch || !deps.writeBatch || !deps.listBatches || !deps.listBatchChats || !deps.listBatchLanes) {
-      throw new Error("Batch moves are unavailable on this runtime.");
-    }
-  };
-  const readBatch = (batchId: string): CrossMachineBatchMovePersisted | null => deps.readBatch?.(batchId) ?? null;
-  const writeBatch = (
-    batchId: string,
-    record: CrossMachineBatchMovePersisted,
-  ): CrossMachineBatchMovePersisted => {
-    const next = { ...record, updatedAt: laterThan(record.updatedAt) };
-    deps.writeBatch?.(batchId, next);
-    return next;
-  };
-  const updateBatchItem = (
-    batchId: string,
-    itemId: string,
-    patch: Partial<AgentChatCrossMachineBatchMoveItem>,
-  ): CrossMachineBatchMovePersisted | null => {
-    const record = readBatch(batchId);
-    if (!record) return null;
-    const items = record.items.map((item) => item.id === itemId
-      ? { ...item, ...patch, updatedAt: laterThan(item.updatedAt) }
-      : item);
-    return writeBatch(batchId, { ...record, items });
-  };
-  const dependenciesReady = (
-    record: CrossMachineBatchMovePersisted,
-    item: AgentChatCrossMachineBatchMoveItem,
-  ): "ready" | "waiting" | "blocked" => {
-    const byId = new Map(record.items.map((candidate) => [candidate.id, candidate]));
-    for (const dependencyId of item.dependsOn) {
-      const dependency = byId.get(dependencyId);
-      if (!dependency) return "blocked";
-      if (dependency.state === "cancelled" || dependency.state === "failed" || dependency.state === "unknown" || dependency.state === "blocked") return "blocked";
-      if (dependency.state !== "continued") return "waiting";
-    }
-    return "ready";
-  };
-  const batchRequestFor = (args: AgentChatStartCrossMachineBatchMoveArgs): AgentChatCrossMachineBatchMoveArgs => ({
-    machine: args.machine,
-    ...(args.sessionIds ? { sessionIds: args.sessionIds } : {}),
-    ...(args.includeDescendants !== undefined ? { includeDescendants: args.includeDescendants } : {}),
-    ...(args.allWorkOnThisMachine !== undefined ? { allWorkOnThisMachine: args.allWorkOnThisMachine } : {}),
-    ...(args.mode ? { mode: args.mode } : {}),
-    ...(args.includeChanges !== undefined ? { includeChanges: args.includeChanges } : {}),
-    ...(args.whenBusy ? { whenBusy: args.whenBusy } : {}),
-    ...(args.note !== undefined ? { note: args.note } : {}),
-  });
-
-  const startBatch = async (
-    args: AgentChatStartCrossMachineBatchMoveArgs,
-  ): Promise<AgentChatCrossMachineBatchMoveRecord> => {
-    requireBatchStore();
-    const input = batchRequestFor(args);
-    const selector = input.machine?.trim();
-    if (!selector) throw new Error("A destination machine is required.");
-    const note = input.note?.trim() || null;
-    if (note && note.length > 4_000) throw new Error("Keep the batch continuation note under 4,000 characters.");
-    if (input.allWorkOnThisMachine === true && (input.sessionIds?.length ?? 0) > 0) {
-      throw new Error("Choose --all or explicit chat ids, not both.");
-    }
-    const selectedIds = (input.sessionIds ?? []).map((id) => id.trim()).filter(Boolean);
-    if (!input.allWorkOnThisMachine && selectedIds.length === 0) {
-      throw new Error("Choose --all or at least one Work chat id.");
-    }
-
-    const allChats = await deps.listBatchChats!();
-    const eligible = allChats.filter((chat) => chat.isWorkChat);
-    if (input.allWorkOnThisMachine === true && eligible.length === 0) {
-      throw new Error("There are no active Work chats on this project to move.");
-    }
-    const bySession = new Map(eligible.map((chat) => [chat.sessionId, chat]));
-    const lineageBySession = new Map(allChats.map((chat) => [chat.sessionId, chat]));
-    let selected = new Set(input.allWorkOnThisMachine
-      ? eligible.map((chat) => chat.sessionId)
-      : selectedIds);
-    const missing = [...selected].filter((id) => !bySession.has(id));
-    if (missing.length) throw new Error(`These chats are not active Work chats on this project: ${missing.join(", ")}.`);
-
-    if (input.includeDescendants !== false) {
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const chat of eligible) {
-          if (chat.parentSessionId && selected.has(chat.parentSessionId) && !selected.has(chat.sessionId)) {
-            selected.add(chat.sessionId);
-            changed = true;
-          }
-        }
-      }
-    }
-    const orderedChats: CrossMachineBatchChat[] = [];
-    const remaining = new Set(selected);
-    while (remaining.size) {
-      const ready = eligible.filter((chat) => remaining.has(chat.sessionId)
-        && (!chat.parentSessionId || !selected.has(chat.parentSessionId) || !remaining.has(chat.parentSessionId)));
-      if (!ready.length) throw new Error("The selected chat tree contains a parent cycle and can't be moved.");
-      for (const chat of ready) {
-        orderedChats.push(chat);
-        remaining.delete(chat.sessionId);
-      }
-    }
-    for (const chat of orderedChats) {
-      if (chat.awaitingInput) throw new Error(`Resolve the pending approval or question in '${chat.title ?? chat.sessionId}' before moving the batch.`);
-    }
-    const requestedBy = args.requestedBy === "user" ? "user" : "agent";
-    const requestingSessionId = args.requestingSessionId?.trim() || null;
-    if (requestedBy === "agent") {
-      for (const chat of orderedChats) {
-        const deniedAt = declinedAt.get(chat.sessionId);
-        if (deniedAt !== undefined && nowMs() - deniedAt < AGENT_ASK_AFTER_DECLINE_MS) {
-          throw new Error(
-            `The person just declined moving '${chat.title ?? chat.sessionId}'. Don't ask again for a couple of minutes; ask them in the chat if it matters.`,
-          );
-        }
-      }
-    }
-
-    const lanes = await deps.listBatchLanes!();
-    const lanesById = new Map(lanes.map((lane) => [lane.laneId, lane]));
-    const selectedLaneIds = new Set<string>();
-    for (const chat of orderedChats) {
-      let laneId: string | null = chat.laneId;
-      while (laneId) {
-        if (selectedLaneIds.has(laneId)) break;
-        const lane = lanesById.get(laneId);
-        if (!lane) throw new Error(`The source lane '${laneId}' could not be loaded.`);
-        selectedLaneIds.add(laneId);
-        laneId = lane.parentLaneId;
-      }
-    }
-    const orderedLanes: CrossMachineBatchLane[] = [];
-    const remainingLanes = new Set(selectedLaneIds);
-    while (remainingLanes.size) {
-      const ready = lanes.filter((lane) => remainingLanes.has(lane.laneId)
-        && (!lane.parentLaneId || !selectedLaneIds.has(lane.parentLaneId) || !remainingLanes.has(lane.parentLaneId)));
-      if (!ready.length) throw new Error("The selected lane tree contains a parent cycle and can't be moved.");
-      for (const lane of ready) {
-        orderedLanes.push(lane);
-        remainingLanes.delete(lane.laneId);
-      }
-    }
-
-    const machine = await resolveMachine(selector);
-    const transport = requireTransport();
-    const includeChanges = input.includeChanges !== false;
-    const requestedMode = input.mode === "brief" ? "brief" : "fork";
-    const laneInspections = new Map<string, CrossMachineSourceInspection>();
-    for (const lane of orderedLanes) {
-      const inspection = await deps.inspectBatchLane?.(lane.laneId);
-      if (!inspection) throw new Error("Batch lane inspection is unavailable on this runtime.");
-      const blockers = inspection.blockers.filter((blocker) => !(includeChanges && blocker.clearedByIncludeChanges));
-      if (blockers.length) throw new Error(`Lane '${lane.name}' can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
-      if (!inspection.originUrl || !inspection.branchRef || !inspection.headSha) {
-        throw new Error(`Lane '${lane.name}' needs a published branch and origin before it can move.`);
-      }
-      laneInspections.set(lane.laneId, inspection);
-    }
-
-    const batchId = randomUUID();
-    const chosenModes = new Map<string, { mode: "brief" | "fork"; fallbackReason: string | null }>();
-    for (const chat of orderedChats) {
-      const returningToOrigin = chat.crossMachineOrigin?.machineKey === machine.machineKey;
-      if (returningToOrigin && (
-        !chat.crossMachineArrival
-        || chat.crossMachineArrival.originSessionId !== chat.crossMachineOrigin?.sessionId
-      )) {
-        throw new Error(`Chat '${chat.title ?? chat.sessionId}' is missing its original transcript boundary and cannot return safely.`);
-      }
-      const inspection = await deps.inspectSource(chat.sessionId);
-      const blockers = inspection.blockers.filter((blocker) => !(includeChanges && blocker.clearedByIncludeChanges));
-      if (blockers.length) throw new Error(`Chat '${chat.title ?? chat.sessionId}' can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
-      if (!inspection.originUrl || !inspection.branchRef || !inspection.headSha) {
-        throw new Error(`Chat '${chat.title ?? chat.sessionId}' needs a published branch and origin before it can move.`);
-      }
-      const targetModelId = chat.modelId?.trim() || chat.model.trim();
-      if (!targetModelId) throw new Error(`Chat '${chat.title ?? chat.sessionId}' has no model to continue with.`);
-      const hasBundle = includeChanges && inspection.changes !== null;
-      let mode: "brief" | "fork" = requestedMode;
-      let fallbackReason: string | null = null;
-      const makePreflightArgs = (candidateMode: "brief" | "fork") => ({
-        targetModelId,
-        sourceBranchRef: inspection.branchRef!,
-        sourceHeadSha: inspection.headSha!,
-        mode: candidateMode,
-        sourceProvider: chat.provider,
-        requireBatchMoveSupport: true,
-        batchLaneImportId: `${batchId}:lane:${chat.laneId}`,
-        ...(returningToOrigin ? { returnToLaneId: chat.crossMachineOrigin!.laneId } : {}),
-        ...(hasBundle ? { hasGitBundle: true } : {}),
-      });
-      let preflight = await callPreflight(transport, {
-        machine: machine.machineKey,
-        originUrl: inspection.originUrl,
-        args: makePreflightArgs(mode),
-      });
-      if (preflight.batchMoveSupport !== 1) {
-        throw new Error(`${machine.name} needs an ADE update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`);
-      }
-      if (hasBundle && preflight.gitBundleSupport !== true) {
-        throw new Error(`${machine.name} needs an ADE update to take uncommitted changes. Update it, or move without them.`);
-      }
-      if (mode === "fork" && preflight.forkHandoffSupport?.supported === false) {
-        fallbackReason = preflight.forkHandoffSupport.reason ?? "This provider cannot move its full history between machines.";
-        mode = "brief";
-        preflight = await callPreflight(transport, {
-          machine: machine.machineKey,
-          originUrl: inspection.originUrl,
-          args: makePreflightArgs(mode),
-        });
-      } else if (mode === "fork" && preflight.forkHandoffSupport?.supported !== true) {
-        throw new Error(`${machine.name} needs an ADE update to check whether this chat can move as a fork.`);
-      }
-      if (preflight.blockingErrors.length) {
-        throw new Error(`Chat '${chat.title ?? chat.sessionId}': ${preflight.blockingErrors.join(" ")}`);
-      }
-      chosenModes.set(chat.sessionId, { mode, fallbackReason });
-    }
-
-    const modelForLanePreflight = orderedChats[0]?.modelId?.trim() || orderedChats[0]?.model.trim();
-    if (!modelForLanePreflight) throw new Error("The batch has no chat model to use for lane preflight.");
-    const chattedLaneIds = new Set(orderedChats.map((chat) => chat.laneId));
-    for (const lane of orderedLanes) {
-      if (chattedLaneIds.has(lane.laneId)) continue;
-      const inspection = laneInspections.get(lane.laneId)!;
-      const hasBundle = includeChanges && inspection.changes !== null;
-      const preflight = await callPreflight(transport, {
-        machine: machine.machineKey,
-        originUrl: inspection.originUrl!,
-        args: {
-          targetModelId: modelForLanePreflight,
-          sourceBranchRef: inspection.branchRef!,
-          sourceHeadSha: inspection.headSha!,
-          mode: "brief",
-          requireBatchMoveSupport: true,
-          batchLaneImportId: `${batchId}:lane:${lane.laneId}`,
-          ...(lane.originMachineKey === machine.machineKey && lane.originLaneId
-            ? { returnToLaneId: lane.originLaneId }
-            : {}),
-          ...(hasBundle ? { hasGitBundle: true } : {}),
-        },
-      });
-      if (preflight.batchMoveSupport !== 1) {
-        throw new Error(`${machine.name} needs an ADE update to preserve the selected lane tree.`);
-      }
-      if (hasBundle && preflight.gitBundleSupport !== true) {
-        throw new Error(`${machine.name} needs an ADE update to take changes from lane '${lane.name}'.`);
-      }
-      if (preflight.blockingErrors.length) {
-        throw new Error(`Lane '${lane.name}': ${preflight.blockingErrors.join(" ")}`);
-      }
-    }
-
-    const returnLaneBySourceLane = new Map<string, string>();
-    for (const lane of orderedLanes) {
-      if (lane.originMachineKey === machine.machineKey && lane.originLaneId) {
-        returnLaneBySourceLane.set(lane.laneId, lane.originLaneId);
-        continue;
-      }
-      const laneChats = orderedChats.filter((chat) => chat.laneId === lane.laneId);
-      const originalLaneIds = laneChats.map((chat) => {
-        if (
-          chat.crossMachineOrigin?.machineKey !== machine.machineKey
-          || chat.crossMachineArrival?.originSessionId !== chat.crossMachineOrigin.sessionId
-        ) return null;
-        return chat.crossMachineOrigin.laneId;
-      });
-      const uniqueOriginalLanes = new Set(originalLaneIds.filter((id): id is string => id !== null));
-      if (laneChats.length && originalLaneIds.every(Boolean) && uniqueOriginalLanes.size === 1) {
-        returnLaneBySourceLane.set(lane.laneId, [...uniqueOriginalLanes][0]!);
-      }
-    }
-    const laneItems: AgentChatCrossMachineBatchMoveItem[] = orderedLanes.map((lane) => {
-      const id = `lane:${lane.laneId}`;
-      const returnLaneId = returnLaneBySourceLane.get(lane.laneId);
-      return {
-        id,
-        kind: "lane",
-        state: "pending",
-        dependsOn: lane.parentLaneId && selectedLaneIds.has(lane.parentLaneId) ? [`lane:${lane.parentLaneId}`] : [],
-        sourceLaneId: lane.laneId,
-        importId: `${batchId}:lane:${lane.laneId}`,
-        ...(returnLaneId ? { returnToLaneId: returnLaneId } : {}),
-        updatedAt: now(),
-      };
-    });
-    const orderedChatIds = new Set(orderedChats.map((chat) => chat.sessionId));
-    const chatItems: AgentChatCrossMachineBatchMoveItem[] = orderedChats.map((chat) => {
-      const parentSelected = Boolean(chat.parentSessionId && orderedChatIds.has(chat.parentSessionId));
-      const requestedFor = requestedBy !== "agent"
-        ? undefined
-        : crossMachineMoveRelation(
-            requestingSessionId,
-            chat.sessionId,
-            (sessionId) => lineageBySession.get(sessionId)?.parentSessionId,
-          );
-      const mode = chosenModes.get(chat.sessionId)!;
-      const dependsOn = [`lane:${chat.laneId}`];
-      if (parentSelected) dependsOn.push(`chat:${chat.parentSessionId}`);
-      return {
-        id: `chat:${chat.sessionId}`,
-        kind: "chat",
-        state: "pending",
-        dependsOn,
-        sourceLaneId: chat.laneId,
-        sourceSessionId: chat.sessionId,
-        sourceChatTitle: chat.title,
-        handoffId: `${batchId}:chat:${chat.sessionId}`,
-        mode: mode.mode,
-        requestedFor,
-        modeFallbackReason: mode.fallbackReason,
-        updatedAt: now(),
-      };
-    });
-    const needsBatchApproval = requestedBy === "agent"
-      && chatItems.some((item) => item.requestedFor === "other");
-    if (needsBatchApproval && !requestingSessionId) {
-      throw new Error("An agent batch that includes another chat must be started from an ADE chat so the person can review it.");
-    }
-    for (const chat of allChats) {
-      if (orderedChatIds.has(chat.sessionId) || !chat.parentSessionId || !orderedChatIds.has(chat.parentSessionId)) continue;
-      deps.logger.warn("agent_chat.cross_machine_batch_parent_left_on_source", {
-        batchId,
-        parentSessionId: chat.parentSessionId,
-        childSessionId: chat.sessionId,
-      });
-    }
-    const requestedAt = now();
-    const record: CrossMachineBatchMovePersisted = {
-      batchId,
-      state: needsBatchApproval ? "awaiting_approval" : "pending",
-      machineKey: machine.machineKey,
-      machineName: machine.name,
-      requestedBy,
-      requestingSessionId,
-      ...(requestedBy === "agent" ? { approvedByPerson: false } : {}),
-      requestedAt,
-      updatedAt: requestedAt,
-      includeChanges,
-      whenBusy: input.whenBusy === "interrupt" ? "interrupt" : "wait",
-      note,
-      items: [...laneItems, ...chatItems],
-    };
-    writeBatch(batchId, record);
-    if (needsBatchApproval && requestingSessionId) {
-      deps.showBatchApprovalCard(requestingSessionId, crossMachineBatchMoveApprovalCard(record, true));
-    } else {
-      void runBatch(batchId);
-    }
-    return record;
-  };
-
-  const importBatchLaneItem = async (
-    batchId: string,
-    item: AgentChatCrossMachineBatchMoveItem,
-    batch: CrossMachineBatchMovePersisted,
-  ): Promise<void> => {
-    const lane = (await deps.listBatchLanes!()).find((candidate) => candidate.laneId === item.sourceLaneId);
-    if (!lane || !deps.prepareBatchLane || !deps.validateBatchLane || !deps.outbox.readLane || !deps.outbox.writeLane) {
-      throw new Error("Batch lane import is unavailable on this runtime.");
-    }
-    const transport = requireTransport();
-    let payload = deps.outbox.readLane(item.importId!) ?? null;
-    if (!payload) {
-      const parentLaneItem = lane.parentLaneId
-        ? batch.items.find((candidate) => candidate.id === `lane:${lane.parentLaneId}`)
-        : null;
-      if (lane.parentLaneId && !parentLaneItem?.destinationLaneId) {
-        throw new Error("The destination parent lane was not imported before its child lane.");
-      }
-      payload = await deps.prepareBatchLane({
-        batchId,
-        importId: item.importId!,
-        lane,
-        ...(item.returnToLaneId ? { returnToLaneId: item.returnToLaneId } : {}),
-        ...(parentLaneItem?.destinationLaneId ? { destinationParentLaneId: parentLaneItem.destinationLaneId } : {}),
-        includeChanges: batch.includeChanges,
-        sourceMachineName: deps.getSourceMachineName?.() || "source machine",
-      });
-      deps.outbox.writeLane!(item.importId!, payload);
-    }
-    await deps.validateBatchLane(payload);
-    updateBatchItem(batchId, item.id, { state: "sending", error: null });
-    let callStarted = false;
-    try {
-      callStarted = true;
-      const response = await transport.callAction({
-        machine: batch.machineKey,
-        originUrl: payload.originUrl,
-        action: "importCrossMachineHandoffLane",
-        args: payload as unknown as Record<string, unknown>,
-        timeoutMs: ACCEPT_TIMEOUT_MS,
-      });
-      const result = unwrapActionResult(response.result);
-      if (!result || typeof result !== "object" || Array.isArray(result)) {
-        throw new Error("The destination answered without the imported lane details.");
-      }
-      const returned = result as Partial<AgentChatCrossMachineLaneImportResult>;
-      if (
-        returned.importId !== item.importId
-        || typeof returned.laneId !== "string"
-        || typeof returned.reusedLane !== "boolean"
-        || !Array.isArray(returned.warnings)
-      ) {
-        throw new Error("The destination answered with invalid lane import details.");
-      }
-      updateBatchItem(batchId, item.id, {
-        state: "continued",
-        destinationLaneId: returned.laneId,
-        carriedChanges: returned.carriedChanges === true,
-        snapshotSha: typeof returned.snapshotSha === "string" ? returned.snapshotSha : null,
-        ...(returned.setupStatus === "running" || returned.setupStatus === "completed" || returned.setupStatus === "failed" || returned.setupStatus === "not_configured"
-          ? { laneSetupStatus: returned.setupStatus }
-          : {}),
-        warning: returned.warnings.filter((warning): warning is string => typeof warning === "string").join(" ") || null,
-        error: null,
-      });
-      deps.outbox.removeLane!(item.importId!);
-    } catch (error) {
-      const unknown = callStarted && isLostAnswer(transport, error);
-      updateBatchItem(batchId, item.id, {
-        state: unknown ? "unknown" : "failed",
-        error: errorText(error),
-      });
-      if (!callStarted) deps.outbox.removeLane!(item.importId!);
-    }
-  };
-
-  const runBatchOnce = async (batchId: string): Promise<void> => {
-    requireBatchStore();
-    const initialBatch = readBatch(batchId);
-    if (!initialBatch || initialBatch.state === "completed" || initialBatch.state === "cancelled" || initialBatch.state === "awaiting_approval") return;
-    let batch: CrossMachineBatchMovePersisted = writeBatch(batchId, { ...initialBatch, state: "running" });
-    if (batch.whenBusy === "interrupt") {
-      for (const snapshot of batch.items) {
-        const item = readBatch(batchId)?.items.find((candidate) => candidate.id === snapshot.id);
-        if (!item || item.kind !== "chat" || item.state !== "pending") continue;
-        const source = deps.getSource(item.sourceSessionId!);
-        if (!source?.turnActive) continue;
-        try {
-          if (!deps.interruptBatchChat) throw new Error("This runtime cannot interrupt a chat for a batch move.");
-          await deps.interruptBatchChat(item.sourceSessionId!);
-        } catch (error) {
-          updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
-        }
-      }
-    }
-    for (const snapshot of batch.items) {
-      const refreshedBatch = readBatch(batchId);
-      if (refreshedBatch) batch = refreshedBatch;
-      const item = batch.items.find((candidate) => candidate.id === snapshot.id);
-      if (!item || item.state === "continued" || item.state === "cancelled" || item.state === "unknown" || item.state === "failed" || item.state === "blocked") continue;
-      const dependencyState = dependenciesReady(batch, item);
-      if (dependencyState === "blocked") {
-        updateBatchItem(batchId, item.id, { state: "blocked", error: "A required parent lane or chat did not arrive." });
-        continue;
-      }
-      if (dependencyState === "waiting") continue;
-      if (item.kind === "lane") {
-        try {
-          await importBatchLaneItem(batchId, item, batch);
-        } catch (error) {
-          updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
-        }
-        continue;
-      }
-
-      const sourceSessionId = item.sourceSessionId!;
-      const move = deps.readPersisted(sourceSessionId);
-      if (move && move.record.handoffId === item.handoffId) {
-        if (move.record.state === "failed" || move.record.state === "unknown") {
-          try {
-            await retry(sourceSessionId);
-          } catch (error) {
-            updateBatchItem(batchId, item.id, { state: move.record.state, error: errorText(error) });
-            continue;
-          }
-        }
-        if (move.record.state === "sending" || move.record.state === "failed" || move.record.state === "unknown") {
-          await run(sourceSessionId);
-        }
-        else if (move.record.state === "pending" && !deps.getSource(sourceSessionId)?.turnActive) onTurnSettled(sourceSessionId);
-        const current = deps.readPersisted(sourceSessionId);
-        const currentRecord = current && current.record.handoffId === item.handoffId ? current.record : null;
-        const state = currentRecord?.state ?? null;
-        if (state === "continued") {
-          updateBatchItem(batchId, item.id, {
-            state: "continued",
-            destinationLaneId: currentRecord?.targetLaneId,
-            destinationSessionId: currentRecord?.targetSessionId,
-            error: null,
-          });
-        } else if (state === "unknown" || state === "failed") {
-          updateBatchItem(batchId, item.id, { state, error: currentRecord?.reason ?? null });
-        } else if (state === "cancelled") {
-          updateBatchItem(batchId, item.id, { state: "cancelled", error: currentRecord?.reason ?? null });
-        } else if (state === "awaiting_approval") {
-          updateBatchItem(batchId, item.id, { state: "awaiting_approval", error: currentRecord?.reason ?? null });
-        } else {
-          updateBatchItem(batchId, item.id, { state: "pending" });
-        }
-        continue;
-      }
-
-      const source = deps.getSource(sourceSessionId);
-      if (!source) {
-        updateBatchItem(batchId, item.id, { state: "failed", error: "The source chat could not be loaded." });
-        continue;
-      }
-      try {
-        const laneItem = batch.items.find((candidate) => candidate.id === `lane:${item.sourceLaneId}`);
-        const lane = (await deps.listBatchLanes!()).find((candidate) => candidate.laneId === item.sourceLaneId);
-        if (!laneItem?.destinationLaneId || !lane) throw new Error("The destination lane was not imported before its chat.");
-        const parentLaneItem = lane.parentLaneId
-          ? batch.items.find((candidate) => candidate.id === `lane:${lane.parentLaneId}`)
-          : null;
-        const parentChatItem = item.dependsOn
-          .map((id) => batch.items.find((candidate) => candidate.id === id))
-          .find((candidate) => candidate?.kind === "chat");
-        const sourceChats = await deps.listBatchChats!();
-        const selectedChat = sourceChats.find((chat) => chat.sessionId === sourceSessionId);
-        if (!selectedChat) throw new Error("The selected chat is no longer available for a batch move.");
-        const parentLink = parentChatItem?.destinationSessionId
-          ? { destinationParentSessionId: parentChatItem.destinationSessionId, spawnKind: selectedChat.spawnKind }
-          : undefined;
-        const context: CrossMachineBatchMoveContext = {
-          batchId,
-          laneImportId: laneItem.importId!,
-          destinationLaneId: laneItem.destinationLaneId,
-          carriedChanges: laneItem.carriedChanges === true,
-          snapshotSha: laneItem.snapshotSha ?? null,
-          ...(batch.note ? { note: batch.note } : {}),
-          ...(item.modeFallbackReason ? { modeFallbackReason: item.modeFallbackReason } : {}),
-          sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
-          ...(parentLaneItem?.destinationLaneId ? { destinationParentLaneId: parentLaneItem.destinationLaneId } : {}),
-          ...(parentLink ? { parentLink } : {}),
-        };
-        const record = await start({
-          sourceSessionId,
-          machine: batch.machineKey,
-          targetModelId: selectedChat.modelId?.trim() || selectedChat.model,
-          mode: item.mode ?? "brief",
-          includeChanges: batch.includeChanges,
-          whenTurnEnds: true,
-        }, {
-          requestedBy: batch.requestedBy,
-          ...(item.requestedFor ? { requestedFor: item.requestedFor } : {}),
-          ...(batch.requestingSessionId ? { requestedBySessionId: batch.requestingSessionId } : {}),
-        }, {
-          handoffId: item.handoffId,
-          approvedByPerson: batch.approvedByPerson === true,
-          batchMove: {
-            ...context,
-            sourceLane: context.sourceLane,
+  /** The batch engine, driving this orchestrator's single moves (crossMachineBatchMove.ts). */
+  const batches = deps.batch
+    ? createCrossMachineBatchMoves({
+        batch: deps.batch,
+        moves: {
+          getSource: deps.getSource,
+          readPersisted: deps.readPersisted,
+          inspectSource: deps.inspectSource,
+          outbox: deps.outbox,
+          logger: deps.logger,
+          now,
+          nowMs,
+          laterThan,
+          requireTransport,
+          resolveMachine: (selector) => resolveMachine(selector),
+          callPreflight,
+          importLane: async (transport, machine, payload) => unwrapActionResult((await transport.callAction({
+            machine,
+            originUrl: payload.originUrl,
+            action: "importCrossMachineHandoffLane",
+            args: payload,
+            timeoutMs: ACCEPT_TIMEOUT_MS,
+          })).result),
+          isLostAnswer,
+          requireMovable,
+          declinedRecently,
+          noteDeclined: (sessionId, atMs) => {
+            declinedAt.set(sessionId, atMs);
           },
-        });
-        if (record.state === "sending") await run(sourceSessionId);
-        const current = deps.readPersisted(sourceSessionId);
-        const currentRecord = current && current.record.handoffId === item.handoffId ? current.record : null;
-        if (currentRecord) {
-          const state: AgentChatCrossMachineBatchMoveItemState = currentRecord.state === "continued"
-            ? "continued"
-          : currentRecord.state === "cancelled"
-            ? "cancelled"
-            : currentRecord.state === "unknown" || currentRecord.state === "failed"
-              ? currentRecord.state
-              : currentRecord.state === "awaiting_approval"
-                ? "awaiting_approval"
-                : "pending";
-          updateBatchItem(batchId, item.id, {
-            state,
-            destinationLaneId: currentRecord.targetLaneId,
-            destinationSessionId: currentRecord.targetSessionId
-              ?? deterministicChatSessionId(`cross-machine-handoff:${item.handoffId}`),
-            error: currentRecord.reason,
-          });
-        }
-      } catch (error) {
-        updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
-      }
-    }
-    const latest = readBatch(batchId);
-    if (!latest) return;
-    const hasWaiting = latest.items.some((item) => item.state === "pending" || item.state === "sending" || item.state === "awaiting_approval");
-    const hasFailures = latest.items.some((item) => item.state === "cancelled" || item.state === "failed" || item.state === "unknown" || item.state === "blocked");
-    const state = latest.items.every((item) => item.state === "continued")
-      ? "completed"
-      : hasWaiting
-        ? "pending"
-        : hasFailures ? "partial" : "pending";
-    writeBatch(batchId, { ...latest, state });
-  };
-
-  const runBatch = (batchId: string): Promise<void> => {
-    const existing = batchRuns.get(batchId);
-    if (existing) {
-      batchRunAgain.add(batchId);
-      return existing;
-    }
-    const task = runBatchOnce(batchId).finally(() => {
-      batchRuns.delete(batchId);
-      if (batchRunAgain.delete(batchId)) void runBatch(batchId);
-    });
-    batchRuns.set(batchId, task);
-    return task;
-  };
-
-  function wakeBatchRunsForSession(sessionId: string): void {
-    for (const batch of deps.listBatches?.() ?? []) {
-      if (batch.items.some((item) => item.kind === "chat" && item.sourceSessionId === sessionId)) {
-        void runBatch(batch.batchId);
-      }
-    }
-  }
-
-  const getBatch = (batchId: string): AgentChatCrossMachineBatchMoveRecord | null => {
-    requireBatchStore();
-    return readBatch(batchId);
-  };
-
-  const resolveBatchApproval = (
-    batchId: string,
-    approve: boolean,
-  ): AgentChatCrossMachineBatchMoveRecord => {
-    requireBatchStore();
-    const batch = readBatch(batchId);
-    if (!batch || batch.requestedBy !== "agent" || !batch.requestingSessionId) {
-      throw new Error("That batch move is no longer waiting for approval.");
-    }
-    if (batch.state !== "awaiting_approval") return batch;
-    deps.showBatchApprovalCard(batch.requestingSessionId, crossMachineBatchMoveApprovalCard(batch, false));
-    if (!approve) {
-      const deniedAt = nowMs();
-      for (const item of batch.items) {
-        if (item.kind === "chat" && item.sourceSessionId) declinedAt.set(item.sourceSessionId, deniedAt);
-      }
-      const cancelled = writeBatch(batchId, {
-        ...batch,
-        state: "cancelled",
-        items: batch.items.map((item) => item.state === "continued"
-          ? item
-          : { ...item, state: "cancelled", error: "The person declined the batch move." }),
-      });
-      return cancelled;
-    }
-    const approved = writeBatch(batchId, { ...batch, state: "pending", approvedByPerson: true });
-    void runBatch(batchId);
-    return approved;
-  };
-
-  const retryBatch = async (batchId: string): Promise<AgentChatCrossMachineBatchMoveRecord> => {
-    requireBatchStore();
-    const batch = readBatch(batchId);
-    if (!batch) throw new Error("Batch move not found.");
-    if (batch.state === "awaiting_approval") throw new Error("This batch is waiting for the person's approval.");
-    if (batch.state === "cancelled") throw new Error("The person declined this batch move.");
-    if (batch.state === "completed") return batch;
-    // Reset all failed branches together. runBatch walks the durable dependency
-    // order, so a child cannot be retried until its parent has arrived.
-    for (const item of batch.items) {
-      if (item.state === "failed" || item.state === "unknown" || item.state === "blocked") {
-        updateBatchItem(batchId, item.id, { state: "pending", error: null });
-      }
-    }
-    const next = readBatch(batchId)!;
-    writeBatch(batchId, { ...next, state: "pending" });
-    void runBatch(batchId);
-    return readBatch(batchId)!;
+          mayHaveLanded,
+          start,
+          run,
+          retry: (sessionId) => retry(sessionId),
+          onTurnSettled,
+        },
+      })
+    : null;
+  const requireBatches = () => {
+    if (!batches) throw new Error("Batch moves are unavailable on this runtime.");
+    return batches;
   };
 
   /**
@@ -2105,22 +1468,17 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         onTurnSettled(sessionId);
       }
     }
-    // Per-chat outboxes keep each move idempotent. Batch records only order
-    // those moves, so a restart resumes the same remaining items in order.
-    for (const batch of deps.listBatches?.() ?? []) {
-      if (batch.state !== "completed" && batch.state !== "cancelled" && batch.state !== "awaiting_approval") {
-        void runBatch(batch.batchId);
-      }
-    }
+    batches?.sweep();
   };
 
   return {
     getOptions,
     start,
-    startBatch,
-    getBatch,
-    retryBatch,
-    resolveBatchApproval,
+    startBatch: (args: AgentChatCrossMachineBatchMoveArgs, caller: CrossMachineBatchMoveCaller) =>
+      requireBatches().start(args, caller),
+    getBatch: (batchId: string): AgentChatCrossMachineBatchMoveRecord | null => requireBatches().get(batchId),
+    retryBatch: (batchId: string) => requireBatches().retry(batchId),
+    resolveBatchApproval: (batchId: string, approve: boolean) => requireBatches().resolveApproval(batchId, approve),
     cancel,
     retry,
     preview,

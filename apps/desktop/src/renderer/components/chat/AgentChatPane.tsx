@@ -5,7 +5,6 @@ import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
 import { useNavigate } from "react-router-dom";
-import { CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX } from "../../../shared/adeCard";
 import {
   reuseStructurallyEqualArray,
   sameKeyList,
@@ -316,6 +315,7 @@ import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import {
   CrossMachineArrivalBanner,
+  CrossMachineBatchApprovalBanner,
   CrossMachineHandoffBanner,
   openChatOnOtherMachine,
   useCrossMachineArrival,
@@ -5916,7 +5916,6 @@ export function AgentChatPane({
 
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{
-        cardId?: string;
         sessionId?: string | null;
         taskId?: string | null;
         tab?: string;
@@ -5927,32 +5926,6 @@ export function AgentChatPane({
         note?: string;
       }>).detail ?? {};
       if (detail.sessionId && selectedSessionId && detail.sessionId !== selectedSessionId) return;
-      if (
-        event.type === "ade:chat:card-action"
-        && detail.variant === "cross_machine_batch_move_approval"
-        && (detail.actionId === "approve" || detail.actionId === "deny")
-      ) {
-        const batchId = detail.cardId?.startsWith(CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX)
-          ? detail.cardId.slice(CROSS_MACHINE_BATCH_MOVE_APPROVAL_CARD_PREFIX.length)
-          : "";
-        if (!batchId) return;
-        void agentChatApiRef.current.resolveCrossMachineBatchMoveApproval(
-          { batchId, approve: detail.actionId === "approve" },
-          chatRuntimePinRef.current,
-        ).then(() => {
-          showToast({
-            tone: "success",
-            title: detail.actionId === "approve" ? "Batch move approved" : "Batch move denied",
-          });
-        }).catch((error: unknown) => {
-          showToast({
-            tone: "warning",
-            title: "Couldn't resolve the batch move",
-            message: error instanceof Error ? error.message : String(error),
-          });
-        });
-        return;
-      }
       if (isLocalForkDetail(detail)) {
         applyLocalForkPrefill(
           typeof detail.note === "string" && detail.note.trim()
@@ -17648,6 +17621,15 @@ export function AgentChatPane({
       style={composerBannerStyle}
     />
   ) : null;
+  // An agent's batch move that waits for the person in this (requesting) chat.
+  const crossMachineBatchApprovalBanner = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope ? (
+    <CrossMachineBatchApprovalBanner
+      key={`batch-move:${selectedSessionId}`}
+      approval={selectedSession?.crossMachineBatchApproval}
+      runtimePin={chatRuntimePin}
+      style={composerBannerStyle}
+    />
+  ) : null;
   const crossMachineArrivalBanner = renderedSessionId && crossMachineArrival ? (
     <CrossMachineArrivalBanner
       key={`arrival:${renderedSessionId}`}
@@ -17755,6 +17737,7 @@ export function AgentChatPane({
       {takeoverBanner}
       {stalledTurnBanner}
       {crossMachineMoveBanner}
+      {crossMachineBatchApprovalBanner}
       {crossMachineArrivalBanner}
       {steeringPendingInput ? (
         <div
@@ -18213,6 +18196,7 @@ export function AgentChatPane({
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
+                        {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}
                         {composerElement}

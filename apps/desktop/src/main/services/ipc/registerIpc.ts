@@ -7,6 +7,7 @@ import type { MachineResetOptions, MachineResetPlan } from "../../../shared/type
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
@@ -509,7 +510,7 @@ import type {
   AgentChatCrossMachineHandoffRecord,
   AgentChatResolveCrossMachineHandoffApprovalArgs,
   AgentChatStartCrossMachineHandoffArgs,
-  AgentChatStartCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
@@ -9184,8 +9185,10 @@ export function registerIpc({
     IPC.agentChatStartCrossMachineHandoff,
     async (_event, arg: AgentChatStartCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> => {
       // Who asked is never taken from the renderer: a window is the person.
-      const { requestedBy: _ignored, ...startArgs } = (arg ?? {}) as AgentChatStartCrossMachineHandoffArgs & { requestedBy?: unknown };
-      return await ensureAgentChatContext().agentChatService.startCrossMachineHandoff({ ...startArgs, requestedBy: "user" });
+      return await ensureAgentChatContext().agentChatService.startCrossMachineHandoff({
+        ...withoutCrossMachineCallerFields(arg ?? ({} as AgentChatStartCrossMachineHandoffArgs)),
+        requestedBy: "user",
+      });
     },
   );
   ipcMain.handle(
@@ -9210,14 +9213,12 @@ export function registerIpc({
   );
   ipcMain.handle(
     IPC.agentChatStartCrossMachineBatchMove,
-    async (_event, arg: AgentChatStartCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> => {
-      const { requestedBy: _ignored, requestingSessionId: _ignoredSession, ...startArgs } =
-        (arg ?? {}) as AgentChatStartCrossMachineBatchMoveArgs & { requestedBy?: unknown; requestingSessionId?: unknown };
-      return await ensureAgentChatContext().agentChatService.startCrossMachineBatchMove({
-        ...startArgs,
+    async (_event, arg: AgentChatCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
+      // A window is the person; who asked is never taken from the renderer.
+      await ensureAgentChatContext().agentChatService.startCrossMachineBatchMove({
+        ...withoutCrossMachineCallerFields(arg ?? ({} as AgentChatCrossMachineBatchMoveArgs)),
         requestedBy: "user",
-      });
-    },
+      }),
   );
   ipcMain.handle(
     IPC.agentChatGetCrossMachineBatchMove,

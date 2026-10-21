@@ -1077,6 +1077,11 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+/** sha256 of the value's stable JSON: one identity for equal contents, whatever their key order. */
+export function stableFingerprint(value: unknown): string {
+  return sha256Hex(stableStringify(value));
+}
+
 // ── Base64url / PKCE helpers ─────────────────────────────────────────
 
 /** Encode a Buffer to a base64url string (no padding). */

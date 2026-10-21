@@ -618,8 +618,11 @@ ade chat move --retry <batch-id>                     # resume remaining items in
   Approve starts the whole batch; deny cancels it. Self/descendant-only agent
   batches and a person's batch need no approval.
 - After the destination starts, the source chat cannot start turns or deliver
-  automatic work until the person chooses **Work here instead**. Scheduled
-  work stays pending while the source is locked.
+  automatic work until the person chooses **Work here instead**. Its scheduled
+  work moves with it (the destination recreates it); anything the destination
+  did not take stays pending while the source is locked. A chat that continues
+  on another machine can't be moved again (`--all` and descendants skip it, a
+  named one is refused) until the person chooses **Work here instead**.
 
 ## Archived lanes, chats, and shells
 

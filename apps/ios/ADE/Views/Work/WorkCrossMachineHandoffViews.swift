@@ -228,6 +228,107 @@ struct WorkCrossMachineBatchMoveApprovalActions {
 
 // MARK: - In-chat card
 
+/// The chrome every in-chat cross-machine card shares: a tinted icon tile with
+/// the title and detail beside it, then the card's own rows and buttons.
+struct WorkCrossMachineCardShell<Content: View>: View {
+  let tint: Color
+  let symbol: String
+  let title: String
+  let detail: String?
+  /// A spinner at the header's end (a move in flight).
+  var showsProgress: Bool = false
+  var accessibilityIdentifier: String
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 9) {
+        Image(systemName: symbol)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(tint)
+          .frame(width: 24, height: 24)
+          .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        VStack(alignment: .leading, spacing: 3) {
+          Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          if let detail, !detail.isEmpty {
+            Text(detail)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer(minLength: 0)
+        if showsProgress {
+          ProgressView().controlSize(.small)
+        }
+      }
+      content()
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(tint.opacity(0.28), lineWidth: 0.8)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(accessibilityIdentifier)
+  }
+}
+
+/// A cross-machine card's capsule button: solid accent (the main action),
+/// amber (a retry: a failed move is not an error state), or outlined.
+struct WorkCrossMachineCapsuleButton: View {
+  enum Style {
+    case primary
+    case warning
+    case secondary
+  }
+
+  let label: String
+  let style: Style
+  var disabled: Bool = false
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 30)
+        .background(
+          Group {
+            switch style {
+            case .primary:
+              Capsule(style: .continuous).fill(ADEColor.accent)
+            case .warning:
+              Capsule(style: .continuous).fill(ADEColor.warning.opacity(0.18))
+            case .secondary:
+              Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.8)
+            }
+          }
+        )
+        .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(disabled)
+    .accessibilityLabel(label)
+  }
+
+  private var foreground: Color {
+    switch style {
+    case .primary: return Color.white
+    case .warning: return ADEColor.warning
+    case .secondary: return ADEColor.textPrimary
+    }
+  }
+}
+
 struct WorkCrossMachineHandoffCard: View {
   let record: AgentChatCrossMachineHandoffRecord
   let model: WorkCrossMachineHandoffCardModel
@@ -246,30 +347,14 @@ struct WorkCrossMachineHandoffCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 9) {
-        Image(systemName: model.symbol)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(tint)
-          .frame(width: 24, height: 24)
-          .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        VStack(alignment: .leading, spacing: 3) {
-          Text(model.title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
-          if let detail = model.detail, !detail.isEmpty {
-            Text(detail)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-        Spacer(minLength: 0)
-        if inFlight || model.tone == .accent && model.actions.isEmpty {
-          ProgressView().controlSize(.small)
-        }
-      }
+    WorkCrossMachineCardShell(
+      tint: tint,
+      symbol: model.symbol,
+      title: model.title,
+      detail: model.detail,
+      showsProgress: inFlight || model.tone == .accent && model.actions.isEmpty,
+      accessibilityIdentifier: "work-cross-machine-handoff-card"
+    ) {
       if !model.checkpoints.isEmpty {
         HStack(spacing: 8) {
           ForEach(Array(model.checkpoints.enumerated()), id: \.offset) { _, step in
@@ -295,16 +380,6 @@ struct WorkCrossMachineHandoffCard: View {
         }
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(tint.opacity(0.28), lineWidth: 0.8)
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("work-cross-machine-handoff-card")
   }
 
   private func actionButton(_ action: WorkCrossMachineHandoffCardModel.Action) -> some View {
@@ -312,30 +387,15 @@ struct WorkCrossMachineHandoffCard: View {
       action,
       machine: workCrossMachineHandoffOpenTarget(record)?.machineName ?? record.machineLabel
     )
-    let primary = action == .approve || action == .open || action == .retry
-    return Button {
-      run(action)
-    } label: {
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(action == .retry ? ADEColor.warning : primary ? Color.white : ADEColor.textPrimary)
-        .padding(.horizontal, 12)
-        .frame(minHeight: 30)
-        .background(
-          Group {
-            if primary {
-              // Retry is amber like the card: a failed move is not an error state.
-              Capsule(style: .continuous).fill(action == .retry ? ADEColor.warning.opacity(0.18) : ADEColor.accent)
-            } else {
-              Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.8)
-            }
-          }
-        )
-        .contentShape(Capsule(style: .continuous))
+    let style: WorkCrossMachineCapsuleButton.Style
+    switch action {
+    case .retry: style = .warning
+    case .approve, .open: style = .primary
+    default: style = .secondary
     }
-    .buttonStyle(.plain)
-    .disabled(!enabled || inFlight)
-    .accessibilityLabel(label)
+    return WorkCrossMachineCapsuleButton(label: label, style: style, disabled: !enabled || inFlight) {
+      run(action)
+    }
   }
 
   private func run(_ action: WorkCrossMachineHandoffCardModel.Action) {
@@ -380,84 +440,56 @@ struct WorkCrossMachineBatchMoveApprovalBanner: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 9) {
-        Image(systemName: "questionmark.circle")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(width: 24, height: 24)
-          .background(ADEColor.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        VStack(alignment: .leading, spacing: 3) {
-          Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
-          Text("Approve or deny the whole batch. Each chat keeps its own permission level.")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+    WorkCrossMachineCardShell(
+      tint: ADEColor.warning,
+      symbol: "questionmark.circle",
+      title: title,
+      detail: "Approve or deny the whole batch. Each chat keeps its own permission level.",
+      accessibilityIdentifier: "work-cross-machine-batch-approval-banner"
+    ) {
+      // A long batch scrolls inside a bounded list, so Approve and Deny stay
+      // on screen.
+      if approval.chats.count > 5 {
+        ScrollView(.vertical) {
+          chatList
         }
-      }
-
-      VStack(alignment: .leading, spacing: 5) {
-        ForEach(approval.chats) { chat in
-          let chatTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-          VStack(alignment: .leading, spacing: 1) {
-            Text(chatTitle.isEmpty ? "Work chat" : chatTitle)
-              .font(.caption.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            Text(chat.sessionId)
-              .font(.system(size: 10, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-        }
+        .frame(maxHeight: 180)
+      } else {
+        chatList
       }
 
       if actions != nil {
         HStack(spacing: 8) {
-          actionButton("Approve", primary: true, approve: true)
-          actionButton("Deny", primary: false, approve: false)
+          actionButton("Approve", style: .primary, approve: true)
+          actionButton("Deny", style: .secondary, approve: false)
           Spacer(minLength: 0)
         }
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.8)
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("work-cross-machine-batch-approval-banner")
   }
 
-  private func actionButton(_ label: String, primary: Bool, approve: Bool) -> some View {
-    Button {
-      resolve(approve)
-    } label: {
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(primary ? Color.white : ADEColor.textPrimary)
-        .padding(.horizontal, 12)
-        .frame(minHeight: 30)
-        .background(
-          Group {
-            if primary {
-              Capsule(style: .continuous).fill(ADEColor.accent)
-            } else {
-              Capsule(style: .continuous).stroke(ADEColor.border.opacity(0.6), lineWidth: 0.8)
-            }
-          }
-        )
-        .contentShape(Capsule(style: .continuous))
+  private var chatList: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      ForEach(approval.chats) { chat in
+        let chatTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        VStack(alignment: .leading, spacing: 1) {
+          Text(chatTitle.isEmpty ? "Work chat" : chatTitle)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          Text(chat.sessionId)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
     }
-    .buttonStyle(.plain)
-    .disabled(!enabled || actions == nil || inFlight)
-    .accessibilityLabel(label)
+  }
+
+  private func actionButton(_ label: String, style: WorkCrossMachineCapsuleButton.Style, approve: Bool) -> some View {
+    WorkCrossMachineCapsuleButton(label: label, style: style, disabled: !enabled || actions == nil || inFlight) {
+      resolve(approve)
+    }
   }
 
   private func resolve(_ approve: Bool) {

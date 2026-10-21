@@ -1,4 +1,8 @@
+import { isCodedError } from "./codedError";
 import type { AgentChatCrossMachineHandoffRecord } from "./types/chat";
+
+/** The code a moved-away refusal carries, in the RPC envelope and on the error. */
+export const CHAT_MOVED_AWAY_CODE = "chat_moved_away";
 
 export type CrossMachineMoveLock = {
   handoffId: string;
@@ -19,7 +23,7 @@ export function crossMachineMoveLock(
 
 /** Stable typed refusal shared by explicit turns and automatic delivery paths. */
 export class MovedAwayChatError extends Error {
-  readonly code = "CHAT_MOVED_AWAY";
+  readonly code = CHAT_MOVED_AWAY_CODE;
   readonly sessionId: string;
   readonly targetSessionId: string;
   readonly targetMachineName: string;
@@ -36,6 +40,5 @@ export class MovedAwayChatError extends Error {
 }
 
 export function isMovedAwayChatError(error: unknown): error is MovedAwayChatError {
-  return error instanceof MovedAwayChatError
-    || (error != null && typeof error === "object" && (error as { code?: unknown }).code === "CHAT_MOVED_AWAY");
+  return error instanceof MovedAwayChatError || isCodedError(error, CHAT_MOVED_AWAY_CODE);
 }

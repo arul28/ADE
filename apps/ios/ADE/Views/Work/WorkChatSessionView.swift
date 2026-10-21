@@ -1753,7 +1753,7 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
-      if let approval = chatSummaryContext.crossMachineBatchApproval {
+      if let approval = chatSummaryContext.crossMachineBatchApproval, !approval.batchId.isEmpty {
         WorkCrossMachineBatchMoveApprovalBanner(
           approval: approval,
           enabled: !hostUnreachable,

@@ -31,6 +31,7 @@ import {
   CrossMachineSourceStaleError,
   type CrossMachineHandoffOutbox,
   type CrossMachineHandoffPersisted,
+  type CrossMachineLaneOutboxEntry,
   type CrossMachinePreparedCapsule,
   type CrossMachineMoveOutcome,
 } from "./crossMachineHandoffOrchestrator";
@@ -191,7 +192,6 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     markSource: async () => {},
     outbox: store.outbox,
     showApprovalCard: (_sessionId, card) => cards.push({ handoffId: card.handoffId, live: card.live, subtitle: card.subtitle }),
-    showBatchApprovalCard: () => {},
     noticeEnded: (_sessionId, notice) => notices.push(notice.record),
     notifyPerson: (_sessionId, record) => notified.push(record),
     onMoveOutcome: (event) => outcomes.push({ handoffId: event.handoffId, outcome: event.outcome }),
@@ -299,7 +299,7 @@ function createBatchHarness() {
   const persistedMoves = new Map<string, CrossMachineHandoffPersisted>();
   const persistedBatches = new Map<string, AgentChatCrossMachineBatchMoveRecord>();
   const preparedCapsules = new Map<string, CrossMachinePreparedCapsule>();
-  const preparedLanes = new Map<string, AgentChatCrossMachineLaneImportArgs>();
+  const preparedLanes = new Map<string, CrossMachineLaneOutboxEntry>();
   const accepted: AgentChatCrossMachineHandoffCapsule[] = [];
   const laneImportCalls: AgentChatCrossMachineLaneImportArgs[] = [];
   let loseRootLaneImportAnswer = true;
@@ -402,36 +402,41 @@ function createBatchHarness() {
       else persistedMoves.delete(sessionId);
     },
     listPersisted: () => [...persistedMoves.entries()].map(([sessionId, value]) => ({ sessionId, value })),
-    readBatch: (batchId) => persistedBatches.get(batchId) ?? null,
-    writeBatch: (batchId, record) => {
-      if (!record) {
-        persistedBatches.delete(batchId);
-        return;
-      }
-      persistedBatches.set(batchId, structuredClone(record));
-      signal(record);
+    batch: {
+      readBatch: (batchId) => persistedBatches.get(batchId) ?? null,
+      writeBatch: (batchId, record) => {
+        if (!record) {
+          persistedBatches.delete(batchId);
+          return;
+        }
+        persistedBatches.set(batchId, structuredClone(record));
+        signal(record);
+      },
+      listBatches: () => [...persistedBatches.values()],
+      listOpenBatches: () => [...persistedBatches.values()],
+      listBatchChats: async () => structuredClone(chats),
+      listBatchLanes: async () => structuredClone(lanes),
+      inspectBatchLane: async (laneId) => ({
+        originUrl: ORIGIN,
+        rawOriginUrl: ORIGIN,
+        branchRef: lanes.find((lane) => lane.laneId === laneId)!.branchRef,
+        headSha: "a".repeat(40),
+        blockers: [],
+        changes: null,
+      }),
+      prepareBatchLane: async ({ importId, lane, destinationParentLaneId }) => ({
+        importId,
+        sourceMachineName: "source machine",
+        sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
+        ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
+        branchRef: lane.branchRef,
+        headSha: "a".repeat(40),
+        originUrl: ORIGIN,
+      }),
+      validateBatchLane: async () => {},
+      interruptBatchChat: async () => {},
+      showBatchApprovalCard: () => {},
     },
-    listBatches: () => [...persistedBatches.values()],
-    listBatchChats: async () => structuredClone(chats),
-    listBatchLanes: async () => structuredClone(lanes),
-    inspectBatchLane: async (laneId) => ({
-      originUrl: ORIGIN,
-      rawOriginUrl: ORIGIN,
-      branchRef: lanes.find((lane) => lane.laneId === laneId)!.branchRef,
-      headSha: "a".repeat(40),
-      blockers: [],
-      changes: null,
-    }),
-    prepareBatchLane: async ({ importId, lane, destinationParentLaneId, sourceMachineName }) => ({
-      importId,
-      sourceMachineName,
-      sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
-      ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
-      branchRef: lane.branchRef,
-      headSha: "a".repeat(40),
-      originUrl: ORIGIN,
-    }),
-    validateBatchLane: async () => {},
     inspectSource: async (sessionId) => {
       const lane = lanes.find((candidate) => candidate.laneId === chats.find((chat) => chat.sessionId === sessionId)!.laneId)!;
       return {
@@ -466,9 +471,9 @@ function createBatchHarness() {
             ...(sourceChat.parentSessionId ? { orchestrationParentSessionId: sourceChat.parentSessionId } : {}),
             spawnKind: sourceChat.spawnKind,
           },
-          sourceLane: args.sourceLane,
-          ...(args.destinationParentLaneId ? { destinationParentLaneId: args.destinationParentLaneId } : {}),
-          ...(args.parentLink ? { parentLink: args.parentLink } : {}),
+          sourceLane: args.batchMove?.sourceLane,
+          ...(args.batchMove?.destinationParentLaneId ? { destinationParentLaneId: args.batchMove.destinationParentLaneId } : {}),
+          ...(args.batchMove?.parentLink ? { parentLink: args.batchMove.parentLink } : {}),
           ...(args.batchMove ? { batchMove: args.batchMove } : {}),
           target: { targetModelId: args.targetModelId },
           brief: "Continue the task.",
@@ -485,7 +490,6 @@ function createBatchHarness() {
     markSource: async () => {},
     outbox,
     showApprovalCard: () => {},
-    showBatchApprovalCard: () => {},
     noticeEnded: () => {},
     logger: { info: () => {}, warn: () => {} },
   });
@@ -516,8 +520,7 @@ describe("cross-machine move orchestrator", () => {
       sessionIds: ["chat-parent", "chat-other"],
       mode: "fork",
       includeChanges: false,
-      requestedBy: "user",
-    });
+    }, { requestedBy: "user" });
 
     const partial = await h.waitFor(started.batchId, (record) => record.state === "partial");
     const stateById = Object.fromEntries(partial.items.map((item) => [item.id, item.state]));

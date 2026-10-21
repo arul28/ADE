@@ -61,7 +61,11 @@ import type { createAdeCliService } from "../../desktop/src/main/services/cli/ad
 import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
 import { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
 import { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
-import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
+import {
+  planNewLaneEnvironment,
+  runDefaultLaneEnvironmentSetup,
+  runLaneEnvironmentSetup,
+} from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
@@ -2432,6 +2436,20 @@ export async function createAdeRuntime(args: {
         ...(typeof args !== "string" && args.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: args.crossMachineHandoffTransport }
           : {}),
+        // A lane a batch move imported here gets the same setup a new lane
+        // does: the default lane template, else the project's lane env config.
+        runCrossMachineLaneSetup: async (laneId) => {
+          await runDefaultLaneEnvironmentSetup(
+            {
+              laneService,
+              projectConfigService,
+              portAllocationService,
+              laneEnvironmentService,
+              laneTemplateService,
+            },
+            laneId,
+          );
+        },
         // An agent asked to move a chat, or an agent-started or queued move
         // ended while the person may be away.
         notifyCrossMachineHandoff: ({ sessionId, record, title }) => {

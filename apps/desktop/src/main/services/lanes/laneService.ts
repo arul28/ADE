@@ -6540,7 +6540,12 @@ export function createLaneService({
 
         // Preserve a remote lane tree by recording the parent directly. This
         // import intentionally uses the given branch as-is and never rebases.
-        const baseRef = args.baseBranch?.trim() || defaultBaseRef;
+        // A primary parent is a root lane, as in `createChild`; a lane parent
+        // is also the base its status is counted against.
+        const recordedParentLaneId = parent && parent.lane_type !== "primary" ? parent.id : null;
+        const baseRef = args.baseBranch?.trim()
+          || (parent && parent.lane_type !== "primary" ? parent.branch_ref : null)
+          || defaultBaseRef;
         const laneColor = allocateLaneColorForProject();
 
         db.run("begin immediate");
@@ -6553,7 +6558,7 @@ export function createLaneService({
               )
               values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
             `,
-            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, laneColor, now]
+            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, recordedParentLaneId, laneColor, now]
           );
 
           const racedAdoptionRows = db.all<{ id: string }>(

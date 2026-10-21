@@ -3082,7 +3082,6 @@ describe("createAgentChatService", () => {
         source.crossMachineArrival = {
           handoffId: "first-arrival",
           originSessionId: "original-chat",
-          importedThroughSeq: 7,
           localSequenceAtArrival: 2,
         };
         const rolloutDir = path.join(process.env.CODEX_HOME, "sessions", "2026", "07", "12");
@@ -3876,7 +3875,7 @@ describe("createAgentChatService", () => {
       const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
 
       await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
-        .rejects.toMatchObject({ code: "CROSS_MACHINE_RETURN_REFUSED", reason: "lane_blocked" });
+        .rejects.toMatchObject({ code: "cross_machine_return_refused", reason: "lane_blocked" });
 
       const persistedMove = values.get(`agent-chat-cross-machine-move:v1:${original.id}`) as {
         record: NonNullable<Parameters<typeof crossMachineMoveLock>[0]>;

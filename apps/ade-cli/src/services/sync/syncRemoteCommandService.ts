@@ -54,14 +54,16 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
+import {
+  decodeCrossMachineDestinationPreflightArgs,
+} from "../../../../desktop/src/shared/crossMachineHandoff";
 import type {
   PrSnapshotHydration,
   PrSummary,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
-  AgentChatCrossMachineLaneImportArgs,
-  AgentChatStartCrossMachineBatchMoveArgs,
+  AgentChatCrossMachineBatchMoveArgs,
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatArchiveArgs,
@@ -77,7 +79,6 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
-  AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatDroidPermissionMode,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
@@ -384,6 +385,7 @@ import {
   parseCursorConfigValues,
 } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
 import {
+  runDefaultLaneEnvironmentSetup,
   runLaneEnvironmentSetup,
   type LaneEnvironmentSetupDeps,
 } from "../../../../desktop/src/main/services/lanes/laneEnvironmentSetup";
@@ -1282,32 +1284,6 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
   };
 }
 
-function parseCrossMachineDestinationPreflightArgs(
-  value: Record<string, unknown>,
-): AgentChatCrossMachineDestinationPreflightArgs {
-  const mode = parseHandoffMode(value.mode, "chat.preflightCrossMachineDestination");
-  const sourceProvider = asTrimmedString(value.sourceProvider);
-  return {
-    targetModelId: requireString(
-      value.targetModelId,
-      "chat.preflightCrossMachineDestination requires targetModelId.",
-    ) as AgentChatCrossMachineDestinationPreflightArgs["targetModelId"],
-    sourceBranchRef: requireString(
-      value.sourceBranchRef,
-      "chat.preflightCrossMachineDestination requires sourceBranchRef.",
-    ),
-    sourceHeadSha: requireString(
-      value.sourceHeadSha,
-      "chat.preflightCrossMachineDestination requires sourceHeadSha.",
-    ),
-    ...(mode !== undefined ? { mode } : {}),
-    ...(sourceProvider ? { sourceProvider: sourceProvider as AgentChatProvider } : {}),
-    ...(value.hasGitBundle === true ? { hasGitBundle: true } : {}),
-    ...(value.requireBatchMoveSupport === true ? { requireBatchMoveSupport: true } : {}),
-    ...(typeof value.batchLaneImportId === "string" ? { batchLaneImportId: value.batchLaneImportId } : {}),
-  };
-}
-
 function parseFastForwardCrossMachineHandoffLaneArgs(
   value: Record<string, unknown>,
 ): { laneId: string; expectedHead: string } {
@@ -1539,34 +1515,7 @@ function parseAcceptCrossMachineHandoffArgs(
   };
 }
 
-function parseCrossMachineLaneImportArgs(value: Record<string, unknown>): AgentChatCrossMachineLaneImportArgs {
-  if (!isRecord(value.sourceLane)) throw new Error("chat.importCrossMachineHandoffLane requires sourceLane.");
-  if (value.gitBundle !== undefined && !isRecord(value.gitBundle)) {
-    throw new Error("chat.importCrossMachineHandoffLane received an invalid git bundle.");
-  }
-  const parentLaneId = value.sourceLane.parentLaneId;
-  if (parentLaneId !== null && typeof parentLaneId !== "string") {
-    throw new Error("chat.importCrossMachineHandoffLane received an invalid source parent lane id.");
-  }
-  return {
-    importId: requireString(value.importId, "chat.importCrossMachineHandoffLane requires importId."),
-    sourceMachineName: requireString(value.sourceMachineName, "chat.importCrossMachineHandoffLane requires sourceMachineName."),
-    sourceLane: {
-      laneId: requireString(value.sourceLane.laneId, "chat.importCrossMachineHandoffLane requires sourceLane.laneId."),
-      parentLaneId,
-      name: requireString(value.sourceLane.name, "chat.importCrossMachineHandoffLane requires sourceLane.name."),
-    },
-    ...(value.destinationParentLaneId !== undefined
-      ? { destinationParentLaneId: requireString(value.destinationParentLaneId, "Invalid destinationParentLaneId.") }
-      : {}),
-    branchRef: requireString(value.branchRef, "chat.importCrossMachineHandoffLane requires branchRef."),
-    headSha: requireString(value.headSha, "chat.importCrossMachineHandoffLane requires headSha."),
-    originUrl: requireString(value.originUrl, "chat.importCrossMachineHandoffLane requires originUrl."),
-    ...(value.gitBundle ? { gitBundle: value.gitBundle as AgentChatCrossMachineLaneImportArgs["gitBundle"] } : {}),
-  };
-}
-
-function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): AgentChatStartCrossMachineBatchMoveArgs {
+function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): AgentChatCrossMachineBatchMoveArgs {
   const sessionIds = value.sessionIds;
   if (sessionIds !== undefined && (!Array.isArray(sessionIds) || sessionIds.some((id) => typeof id !== "string"))) {
     throw new Error("chat.startCrossMachineBatchMove requires string session ids.");
@@ -4514,8 +4463,6 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
   }, "runtime");
 }
 
-const CROSS_MACHINE_LANE_SETUP_RUNNER_ID = randomUUID();
-
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   /**
    * Run a new lane's setup without holding the reply: the default lane
@@ -4525,8 +4472,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
    */
   const startDefaultLaneSetup = (laneId: string): void => {
     if (!args.laneEnvironmentService || !args.projectConfigService) return;
-    const templateId = args.laneTemplateService?.getDefaultTemplateId() ?? null;
-    void runLaneEnvironmentSetup(
+    void runDefaultLaneEnvironmentSetup(
       {
         laneService: args.laneService,
         projectConfigService: args.projectConfigService,
@@ -4534,53 +4480,20 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
         laneEnvironmentService: args.laneEnvironmentService,
         laneTemplateService: args.laneTemplateService ?? null,
       },
-      { laneId, ...(templateId ? { templateId } : {}), includeArchived: false },
+      laneId,
     ).catch((error: unknown) => {
       args.logger.warn("sync.lane_default_setup_failed", {
         laneId,
-        templateId,
+        templateId: args.laneTemplateService?.getDefaultTemplateId() ?? null,
         error: error instanceof Error ? error.message : String(error),
       });
     });
   };
-  register("chat.importCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const chatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const imported = await chatService.importCrossMachineHandoffLane(parseCrossMachineLaneImportArgs(payload));
-    if (!args.laneEnvironmentService || !args.projectConfigService) {
-      chatService.updateCrossMachineLaneImportSetup({ importId: imported.importId, status: "not_configured" });
-      return { ...imported, setupStatus: "not_configured" as const };
-    }
-    const setupClaim = chatService.beginCrossMachineLaneImportSetup({
-      importId: imported.importId,
-      runnerId: CROSS_MACHINE_LANE_SETUP_RUNNER_ID,
-    });
-    if (!setupClaim.claimed) {
-      return { ...imported, setupStatus: setupClaim.status ?? imported.setupStatus ?? "running" };
-    }
-    const templateId = args.laneTemplateService?.getDefaultTemplateId() ?? null;
-    void runLaneEnvironmentSetup(
-      {
-        laneService: args.laneService,
-        projectConfigService: args.projectConfigService,
-        portAllocationService: args.portAllocationService,
-        laneEnvironmentService: args.laneEnvironmentService,
-        laneTemplateService: args.laneTemplateService ?? null,
-      },
-      { laneId: imported.laneId, ...(templateId ? { templateId } : {}), includeArchived: false },
-    ).then(() => {
-      chatService.updateCrossMachineLaneImportSetup({ importId: imported.importId, status: "completed" });
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      chatService.updateCrossMachineLaneImportSetup({ importId: imported.importId, status: "failed", message });
-      args.logger.warn("sync.cross_machine_batch_lane_setup_failed", {
-        importId: imported.importId,
-        laneId: imported.laneId,
-        templateId,
-        error: message,
-      });
-    });
-    return { ...imported, setupStatus: "running" as const };
-  });
+  // The raw payload goes straight to the chat service, which decodes it,
+  // imports the lane, and starts setup on a lane it created, so every
+  // transport (this command, run_ade_action) gets the same import.
+  register("chat.importCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").importCrossMachineHandoffLane(payload));
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
@@ -5337,7 +5250,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     ));
   register("chat.preflightCrossMachineDestination", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").preflightCrossMachineDestination(
-      parseCrossMachineDestinationPreflightArgs(payload),
+      decodeCrossMachineDestinationPreflightArgs(payload),
     ));
   register("chat.fastForwardCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").fastForwardCrossMachineHandoffLane(

@@ -2442,11 +2442,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
     $ ade chat move --machine "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat and its lanes on this brain
+    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
-                                                    A person's batch needs no approval.
+                                                    A person's batch needs no approval. Chats that already
+                                                    continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
@@ -4172,6 +4173,19 @@ export function findFlagName(args: string[], names: readonly string[]): string |
     if (matched) return matched;
   }
   return null;
+}
+
+/**
+ * Refuses a value flag (`names`, space-separated form) whose next token is
+ * another option. Run it before `readValue`, which would take that option as
+ * the value.
+ */
+function rejectFlagOperands(args: readonly string[], names: readonly string[]): void {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (names.includes(args[index]!) && args[index + 1]?.startsWith("--")) {
+      throw new CliUsageError(`${args[index]} requires a value.`);
+    }
+  }
 }
 
 export function readValue(args: string[], names: readonly string[]): string | null {
@@ -10084,6 +10098,9 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [listActionsStep("actions", "chat")],
     };
   if (sub === "move") {
+    // `--note --no-changes` reports the missing note instead of eating
+    // `--no-changes` and moving the changes the person asked to leave behind.
+    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -12499,18 +12516,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
 function buildScenePlan(args: string[]): CliPlan {
   // Flags with values come out first: `ade scene --theme light preview f`
-  // would otherwise read `light` as the verb.
-  // Reject an option as another flag's operand before readValue consumes it,
-  // so `--theme --width 980` reports the missing theme value instead of eating
-  // `--width` and losing the width.
-  for (let index = 0; index < args.length - 1; index += 1) {
-    if (
-      (args[index] === "--theme" || args[index] === "--width")
-      && args[index + 1]?.startsWith("--")
-    ) {
-      throw new CliUsageError(`${args[index]} requires a value.`);
-    }
-  }
+  // would otherwise read `light` as the verb. `--theme --width 980` reports
+  // the missing theme value instead of eating `--width` and losing the width.
+  rejectFlagOperands(args, ["--theme", "--width"]);
   const theme = readValue(args, ["--theme"]);
   if (theme && theme !== "dark" && theme !== "light") throw new CliUsageError("--theme is dark or light.");
   const widthRaw = readValue(args, ["--width"]);
