@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.115] - 2026-10-21
+
+### Desktop and web
+
+- Move a whole set of lanes and chats to another machine with `ade chat move --machine <machine> --all`; relationships and schedules follow, the old copy is locked, and a return continues the original chat (#1850).
+
+### iOS
+
+- Multi-chat machine moves ship in a new TestFlight build (#1850).
+
 ## [1.2.114] - 2026-10-20
 
 ### Desktop and web
@@ -2634,7 +2644,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.114...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.115...HEAD
+[1.2.115]: https://github.com/arul28/ADE/compare/v1.2.114...v1.2.115
 [1.2.114]: https://github.com/arul28/ADE/compare/v1.2.113...v1.2.114
 [1.2.113]: https://github.com/arul28/ADE/compare/v1.2.112...v1.2.113
 [1.2.112]: https://github.com/arul28/ADE/compare/v1.2.111...v1.2.112
