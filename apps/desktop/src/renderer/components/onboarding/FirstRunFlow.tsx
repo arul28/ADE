@@ -31,6 +31,7 @@ import { PortalContainerContext } from "../ui/portalContainer";
 import { FirstRunChatPicker, type ChatListState } from "./FirstRunChatPicker";
 import { firstRunAgents } from "./firstRunAgentModel";
 import "./firstRun.css";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import "./firstRunWelcome.css";
 import "./firstRunProjects.css";
 import "./firstRunDevices.css";
@@ -106,7 +107,8 @@ let discoveryPromise: Promise<OnboardingProjectDiscovery> | null = null;
 
 export function prefetchOnboardingDiscovery(options: { fresh?: boolean } = {}): Promise<OnboardingProjectDiscovery> | null {
   const discover = window.ade.app.discoverOnboardingProjects;
-  if (!discover) return null;
+  // The hosted web client has no local folders to discover.
+  if (!isAdeAvailable(discover)) return null;
   if (options.fresh || !discoveryPromise) {
     discoveryPromise = discover().catch((error: unknown) => {
       discoveryPromise = null;
@@ -162,7 +164,7 @@ export async function addFirstRunProjects(
 ): Promise<FirstRunResult> {
   const add = window.ade.app.addOnboardingProjects;
   const added = projects.filter((project) => !project.inAde);
-  if (added.length && add) {
+  if (added.length && isAdeAvailable(add)) {
     await add(added.map((project) => project.rootPath));
     window.dispatchEvent(new Event(RECENT_PROJECTS_CHANGED_EVENT));
   }
@@ -313,7 +315,7 @@ export function FirstRunProjects({
       setChatLists((current) => ({ ...current, [rootPath]: state }));
     };
     const list = window.ade.app.listOnboardingProjectChats;
-    if (!list) {
+    if (!isAdeAvailable(list)) {
       setList({ phase: "error" });
       return;
     }
@@ -347,7 +349,7 @@ export function FirstRunProjects({
     const resolve = window.ade.app.resolveOnboardingFolder;
     let candidate: OnboardingProjectCandidate | null;
     try {
-      candidate = resolve ? await resolve(folder) : folderCandidate(folder);
+      candidate = isAdeAvailable(resolve) ? await resolve(folder) : folderCandidate(folder);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       return;
