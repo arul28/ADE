@@ -6166,12 +6166,20 @@ export function createPtyService({
             })?.preset?.env ?? null,
           })
         : null;
+      // At most one read of the Project notes per launch, shared by the launch
+      // command and (for OpenCode) the session instructions attached below.
+      // Lazy, so a plain shell never reads them.
+      let projectNotesSnapshot: string | null | undefined;
+      const launchProjectNotes = (): string | null => {
+        if (projectNotesSnapshot === undefined) projectNotesSnapshot = projectNotesService?.renderPromptBlock() ?? null;
+        return projectNotesSnapshot;
+      };
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
             userMcp: runtimeUserMcp,
-            projectNotes: projectNotesService?.renderPromptBlock() ?? null,
+            projectNotes: launchProjectNotes(),
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
@@ -6891,7 +6899,7 @@ export function createPtyService({
               || initialResumeMetadata?.launch?.reasoningEffort?.trim()
               || null,
             sessionActivityGuidance,
-            projectNotes: projectNotesService?.renderPromptBlock() ?? null,
+            projectNotes: launchProjectNotes(),
             projectConfig: projectConfigService?.get().effective ?? {},
             ownerId: ptyId,
             logger,
