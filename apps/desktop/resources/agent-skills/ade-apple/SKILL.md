@@ -251,6 +251,13 @@ Name elements, not pixels.
   session, not only at launch. For a demo, `fold --sequence closed,open,tent`
   inside a recording adds a caption per pose.
 
+- 3D renders: `render --angles front,three-quarter-left --poses closed,open`
+  (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
+  of the 3D device with its live screen to the proof drawer. It needs the
+  lane's Apple pane open in ADE desktop on the device's machine (the pane
+  does the rendering); otherwise it says so. On a Duo each pose folds the
+  simulator first.
+
 Agent launches stay in the background; `apple show` brings the device up at
 any time.
 

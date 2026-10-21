@@ -382,7 +382,11 @@ fallback when the model is missing.
 slider (previews on drag, folds on release), a readout of the simulator's
 reported angle, panel and orientation, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
-app-store-shots`).
+app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
+within 4°; arrow keys stay exact. ⌥[ and ⌥] fold and unfold by the step. A
+fold to closed or open reports its posture once the guest has switched panels.
+The floating player reads the posture too, so it draws the inner panel upright
+and follows folds.
 
 ### 3D renders
 
@@ -392,6 +396,12 @@ contact sheet; a 6 s WebM turntable. For a Duo each chosen pose folds the real
 simulator and waits for its reported angle and active panel before the shot.
 Everything files to the proof drawer through the scene proof route (which takes
 PNG or WebM).
+
+`ade apple render` asks for the same thing from the CLI. The service emits
+`apple.render.request`; the first open pane for the lane to `renderAck` it
+takes the job (a pane whose video stalled reconnects first), renders, and
+answers `renderComplete` with the count filed. No pane acking within 5 s is a
+clear "open the Apple pane" error: rendering needs the desktop renderer.
 
 ## Agent discovery
 
