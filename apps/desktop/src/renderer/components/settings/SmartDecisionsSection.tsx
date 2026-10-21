@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AiChatConfig } from "../../../shared/types";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
-import type { JevAvailabilityReason, JevDayTally } from "../../../shared/types/jev";
+import type { JevAvailabilityReason } from "../../../shared/types/jev";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { showToast } from "../app/toast/toastStore";
 import { OAuthConnectModal } from "./OAuthConnectModal";
@@ -24,31 +24,6 @@ const ZEN_PROVIDER_ID = "opencode";
  * made shows in its status only after this.
  */
 const STATUS_SETTLE_MS = 61_000;
-/** Jev 1.13's paid price per input token (OpenCode Zen: $0.042 per 1M input; output is free). */
-const PAID_JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
-
-function compactCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(value);
-}
-
-/** "42 asked · 40 answered · 2 fell back · 14k tokens · about $0.0006 if paid". */
-function todayUsageText(today: JevDayTally): string {
-  const answered = (today.outcomes.ok ?? 0) + (today.outcomes.cached ?? 0);
-  const parts = [
-    `${today.wanted} asked`,
-    `${answered} answered`,
-    `${Math.max(0, today.wanted - answered)} fell back to ADE's rules`,
-  ];
-  if (today.inputTokens + today.outputTokens > 0) {
-    parts.push(`${compactCount(today.inputTokens + today.outputTokens)} tokens`);
-    const usd = today.inputTokens * PAID_JEV_USD_PER_INPUT_TOKEN;
-    parts.push(`about $${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)} at Jev's paid price`);
-  }
-  return `Today in this project: ${parts.join(" · ")}.`;
-}
 
 /**
  * "Smart decisions (OpenCode Jev)" and the composer's model hint, which asks
@@ -65,7 +40,6 @@ export function SmartDecisionsSection() {
   const { onWeb, status, saving, enabled, save } = useChatConfigToggle("smartDecisionsEnabled", { defaultOn: true });
   // Null until read, and on a machine whose ADE has no Jev.
   const [reason, setReason] = useState<JevAvailabilityReason | null>(null);
-  const [today, setToday] = useState<JevDayTally | null>(null);
   const [statusRead, setStatusRead] = useState(0);
   const [signIn, setSignIn] = useState<{ methods: OpenCodeProviderAuthMethod[] } | null>(null);
   const [opening, setOpening] = useState(false);
@@ -74,9 +48,7 @@ export function SmartDecisionsSection() {
     if (onWeb) return;
     let cancelled = false;
     void window.ade.ai.jevStatus(pin).then((jev) => {
-      if (cancelled) return;
-      setReason(jev?.reason ?? null);
-      setToday(jev?.today ?? null);
+      if (!cancelled) setReason(jev?.reason ?? null);
     });
     return () => {
       cancelled = true;
@@ -140,12 +112,7 @@ export function SmartDecisionsSection() {
               ? "Loading…"
               : status === "failed"
                 ? "Couldn't load the configuration."
-                : (
-                  <>
-                    Uses your OpenCode Zen sign-in to ask the free Jev model, for example whether a finished turn asked you something. When Jev is slow or unavailable, ADE's built-in rules decide.
-                    {today && today.wanted > 0 ? <><br />{todayUsageText(today)}</> : null}
-                  </>
-                )}
+                : "Uses your OpenCode Zen sign-in to ask the free Jev model, for example whether a finished turn asked you something. When Jev is slow or unavailable, ADE's built-in rules decide."}
           control={signedOut ? signInButton : (
             <SettingsToggle
               label="Smart decisions (OpenCode Jev)"
