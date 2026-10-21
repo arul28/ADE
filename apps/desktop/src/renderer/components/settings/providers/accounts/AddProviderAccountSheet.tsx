@@ -294,9 +294,15 @@ export function AddProviderAccountSheet({
     }).catch(() => undefined);
   }, []);
 
-  const accountName = existingInstance?.label ?? (label.trim() || "this account");
+  // The synthesized default account (still named "Default") is just "the
+  // provider" to the person signing in (first run, the provider card); an
+  // account the user named keeps its name.
+  const existingName = existingInstance
+    ? existingInstance.isDefault && existingInstance.label === "Default" ? providerLabel : existingInstance.label
+    : null;
+  const accountName = existingName ?? (label.trim() || "this account");
   const title = resuming
-    ? `Sign in to ${existingInstance?.label ?? providerLabel}`
+    ? `Sign in to ${existingName ?? providerLabel}`
     : `Add a ${providerLabel} account`;
   const step = phase === "form" ? 0 : phase === "success" ? 2 : 1;
   const host = linkHost(login?.url ?? null);

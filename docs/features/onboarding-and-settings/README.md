@@ -1904,7 +1904,17 @@ video it replaced), so a computer set up before it existed never sees it.
    headline, one sentence, the provider marks, **Get started** and **Skip
    setup**. Skip marks onboarding skipped, so no hint shows later either.
 2. **Sign in**, if this computer has no ADE session (the account is required).
-3. **Bring your projects in.** `discoverOnboardingProjects` reads the history
+3. **Connect your agents** (`FirstRunAgents.tsx`). Claude Code, Codex and
+   Cursor, each Connected (with its account) or with a **Sign in** button,
+   read from the same `ai.getStatus` Settings › Agents & Models reads (it
+   answers before any project is open). Claude Code and Codex sign in through
+   the Settings account sheet, a machine-level login that needs no project;
+   Cursor through its browser login. Other providers show as chips only when
+   already connected; the card points at Settings for the rest. Status is
+   re-read on open, after a sign-in and on window focus, never polled. While
+   this card is up, project discovery starts in the background so the next
+   card opens with its list.
+4. **Bring your projects in.** `discoverOnboardingProjects` reads the history
    of every provider ADE imports chats from: Claude Code's transcripts (one
    listing, plus the head of the newest transcript per folder for its cwd),
    Codex's thread index (one grouped query), and the rest (Cursor, Droid,
@@ -1918,19 +1928,24 @@ video it replaced), so a computer set up before it existed never sees it.
    **Import N chats** pill with its providers' marks (the draft page's import
    pill, per project), off by default. Below the list: a QR for ADE on iPhone
    and a line about signing in on another computer, shown to everyone.
-4. **Into ADE.** The chosen projects are added to recent projects and opened
+5. **Into ADE.** The chosen projects are added to recent projects and opened
    as tabs, and the first one opens. Its worktrees become lanes through the
    normal adoption on open. For each project whose pill was on,
    `useOnboardingChatImport` imports its chats from the last 30 days (up to
    25, newest first, any provider) into the lane each one ran in, or the main
    checkout's lane, the first time it opens; a session that may still be open
    in its CLI is skipped.
-5. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
+6. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
    size up from the system arrow) glides to a real control, a ring settles on
    it and a card beside it says what it is. In order: the lane chip (ADE works
    in lanes; the checkout is the primary lane), the prompt box, its
    permission/model/effort controls, the lane menu, importing chats, the chats
-   list, opening a chat, the Tools pane, back to a new chat, a new project
+   list, opening a chat (or, with no chats yet, **Send your first chat**: a
+   new chat in the primary lane with "In one sentence, what is this
+   project?" in the composer, on a cheap model the computer can run — Haiku,
+   Luna or Composer when their provider is connected, else the lowest-priced
+   runnable model the registry knows — which the user sends themselves), the
+   Tools pane, back to a new chat, a new project
    tab, the Home page and its edit tools, and Connections. Some steps ask for
    the click (the card says so, and the click moves the tour on); every card
    also has Next and Back. Nothing is dimmed or blocked. When the user goes

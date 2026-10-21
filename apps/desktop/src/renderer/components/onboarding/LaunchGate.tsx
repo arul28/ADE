@@ -6,6 +6,7 @@ import { WebSignInGate } from "./WebSignInGate";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
+import { FirstRunAgents } from "./FirstRunAgents";
 import { FirstRunProjects, FirstRunWelcome, openFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
 import "./launchGateGlass.css";
 
@@ -31,11 +32,12 @@ function WebLaunchGate({ children }: LaunchGateProps) {
   return <WebSignInGate />;
 }
 
-type FirstRunPhase = "checking" | "welcome" | "projects" | "done";
+type FirstRunPhase = "checking" | "welcome" | "agents" | "projects" | "done";
 
 /**
  * The desktop gate, in order: the welcome card (first run on this computer),
- * sign-in (until signed in), "Bring your projects in" (first run), then ADE.
+ * sign-in (until signed in), "Connect your agents" and "Bring your projects
+ * in" (first run), then ADE.
  * A computer that finished or skipped setup before only ever sees sign-in.
  */
 function DesktopLaunchGate({ children }: LaunchGateProps) {
@@ -109,14 +111,14 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   }, [accountLoading, enterAde, firstRun, launchStateLoading, resolved, status.signedIn]);
 
   const checking = launchStateLoading || firstRun === "checking" || accountLoading;
-  const step: "welcome" | "sign-in" | "projects" | null = checking
+  const step: "welcome" | "sign-in" | "agents" | "projects" | null = checking
     ? null
     : firstRun === "welcome"
       ? "welcome"
       : !status.signedIn
         ? "sign-in"
-        : firstRun === "projects"
-          ? "projects"
+        : firstRun === "agents" || firstRun === "projects"
+          ? firstRun
           : null;
   const gateMode = accountGateMode(status);
 
@@ -152,7 +154,12 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
       />
       {step === "welcome" ? (
         <div className="ade-gate-stack" data-step="welcome" key="welcome">
-          <FirstRunWelcome onStart={() => setFirstRun("projects")} onSkip={skipSetup} />
+          <FirstRunWelcome onStart={() => setFirstRun("agents")} onSkip={skipSetup} />
+        </div>
+      ) : null}
+      {step === "agents" ? (
+        <div className="ade-gate-stack" data-step="agents" key="agents">
+          <FirstRunAgents onDone={() => setFirstRun("projects")} />
         </div>
       ) : null}
       {step === "projects" ? (
@@ -165,7 +172,7 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
         <div className="ade-gate-stack" key="sign-in">
           <GlassSignInCard
             configured={status.configured !== false}
-            // During first run, signing in moves on to "Bring your projects in";
+            // During first run, signing in moves on to "Connect your agents";
             // the gate opens when setup is done.
             onSignedIn={() => {
               if (firstRunRef.current === "done") enterAde();

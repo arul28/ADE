@@ -1321,6 +1321,14 @@ function browserMockNeedsYou(): boolean {
   }
 }
 
+function browserMockNoChats(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("mockNoChats");
+  } catch {
+    return false;
+  }
+}
+
 function browserMockFirstRun(): boolean {
   try {
     return new URLSearchParams(window.location.search).has("mockFirstRun");
@@ -2013,9 +2021,10 @@ const ADE_DB_SESSIONS: any[] =
     ? ADE_DB_SNAPSHOT.sessions
     : [];
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
-const MOCK_SESSIONS: any[] = [
+// `?mockNoChats` previews a computer with no chats yet (the tour's first-chat step).
+const MOCK_SESSIONS: any[] = (browserMockNoChats() ? [] : [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
-]
+])
   .filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT))
   // `?mockNeedsYou` previews a chat waiting on the user (the "needs you" hint and row).
   .map((session) => (browserMockNeedsYou() && session.id === "mock-session-claude-1"

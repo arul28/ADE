@@ -11,6 +11,7 @@ import {
   EXTERNAL_SESSION_PROVIDER_LABELS,
   type ExternalSessionProvider,
   type OnboardingProjectCandidate,
+  type OnboardingProjectDiscovery,
 } from "../../../shared/types";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { relativeWhen } from "../../lib/format";
@@ -24,7 +25,9 @@ import "./firstRun.css";
  * ADE's first run on a computer, after (or around) sign-in:
  *
  * 1. **Welcome**: the landing page's promise in one card and one button.
- * 2. **Bring your projects in**: the git projects any coding agent ADE can
+ * 2. **Connect your agents** (`FirstRunAgents.tsx`): which coding agents can
+ *    run here, with sign-in for the ones that cannot.
+ * 3. **Bring your projects in**: the git projects any coding agent ADE can
  *    import from (Claude Code, Codex, Cursor, OpenCode…) has worked in on this
  *    computer, already found and mostly ticked. Adding them adds their tabs;
  *    the first open of each turns its worktrees into lanes. Each row with
@@ -74,6 +77,25 @@ export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSk
       </div>
     </div>
   );
+}
+
+/**
+ * One discovery per setup run, started as early as the flow knows it will
+ * need it (the agents step), so "Bring your projects in" usually opens with
+ * its list already there. `fresh` starts over (a replay from the help menu).
+ */
+let discoveryPromise: Promise<OnboardingProjectDiscovery> | null = null;
+
+export function prefetchOnboardingDiscovery(options: { fresh?: boolean } = {}): Promise<OnboardingProjectDiscovery> | null {
+  const discover = window.ade.app.discoverOnboardingProjects;
+  if (!discover) return null;
+  if (options.fresh || !discoveryPromise) {
+    discoveryPromise = discover().catch((error: unknown) => {
+      discoveryPromise = null;
+      throw error;
+    });
+  }
+  return discoveryPromise;
 }
 
 type DiscoveryState =
@@ -155,12 +177,12 @@ export function FirstRunProjects({
 
   useEffect(() => {
     let cancelled = false;
-    const discover = window.ade.app.discoverOnboardingProjects;
-    if (!discover) {
+    const discovery = prefetchOnboardingDiscovery();
+    if (!discovery) {
       setDiscovery({ phase: "unavailable" });
       return;
     }
-    void discover()
+    void discovery
       .then((result) => {
         if (cancelled) return;
         setDiscovery({ phase: "ready", machineName: result.machineName, projects: result.projects });

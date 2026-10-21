@@ -4,10 +4,17 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { GateBackdrop } from "./GateBackdrop";
-import { FirstRunProjects, FirstRunWelcome, openFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
+import { FirstRunAgents } from "./FirstRunAgents";
+import {
+  FirstRunProjects,
+  FirstRunWelcome,
+  openFirstRunProjects,
+  prefetchOnboardingDiscovery,
+  type FirstRunResult,
+} from "./FirstRunFlow";
 import "./launchGateGlass.css";
 
-type Step = "welcome" | "projects";
+type Step = "welcome" | "agents" | "projects";
 
 /**
  * First-run setup inside the running app. The launch gate runs it on a fresh
@@ -34,7 +41,11 @@ export function OnboardingBootstrap() {
         setStep("welcome");
       })
       .catch(() => undefined);
-    const replay = () => setStep("welcome");
+    const replay = () => {
+      // A replay finds projects again: some were added since the last run.
+      void prefetchOnboardingDiscovery({ fresh: true })?.catch(() => undefined);
+      setStep("welcome");
+    };
     window.addEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);
     return () => {
       cancelled = true;
@@ -61,7 +72,10 @@ export function OnboardingBootstrap() {
   useEffect(() => {
     if (!step) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") skip();
+      // Escape in a sheet opened from a card (an agent sign-in) closes that sheet, not setup.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (document.querySelectorAll('[role="dialog"][aria-modal="true"]').length > 1) return;
+      skip();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -75,7 +89,11 @@ export function OnboardingBootstrap() {
         <GateBackdrop />
         {step === "welcome" ? (
           <div className="ade-gate-stack" data-step="welcome" key="welcome">
-            <FirstRunWelcome onStart={() => setStep("projects")} onSkip={skip} />
+            <FirstRunWelcome onStart={() => setStep("agents")} onSkip={skip} />
+          </div>
+        ) : step === "agents" ? (
+          <div className="ade-gate-stack" data-step="agents" key="agents">
+            <FirstRunAgents onDone={() => setStep("projects")} />
           </div>
         ) : (
           <div className="ade-gate-stack" data-step="projects" key="projects">

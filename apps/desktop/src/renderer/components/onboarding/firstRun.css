@@ -12,6 +12,7 @@
    picture the scene shows, so their glass is a little denser. */
 .ade-fr-welcome,
 .ade-fr-projects {
+  /* .ade-fr-agents reuses the projects card's frame. */
   --gate-glass-fill: color-mix(in srgb, var(--color-bg) 74%, transparent);
 }
 
@@ -487,6 +488,143 @@
 
 .ade-gate-stack[data-step="projects"] {
   width: min(640px, 100%);
+}
+
+.ade-gate-stack[data-step="agents"] {
+  width: min(600px, 100%);
+}
+
+/* ── Connect your agents ─────────────────────────────────────── */
+
+/* One row per agent: logo, name and account, then its state on the right. */
+.ade-fr-agent-row {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+}
+
+.ade-fr-agent-row:hover {
+  background: transparent;
+}
+
+/* Agent rows have no tick, so the projects card's "not chosen" dimming never applies. */
+.ade-fr-agent-row .ade-fr-name-main {
+  opacity: 1;
+}
+
+.ade-fr-agent-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ade-fr-agent-logo {
+  background: color-mix(in srgb, var(--color-bg) 40%, transparent);
+}
+
+.ade-fr-agent-detail {
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-agent-row[data-state="connected"] .ade-fr-agent-detail {
+  color: var(--gate-text-2);
+}
+
+.ade-fr-agent-ok {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--color-fg);
+}
+
+.ade-fr-agent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 22%, transparent);
+}
+
+.ade-fr-agent-spin {
+  flex: none;
+  margin-right: 6px;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-agent-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-agent-btn:hover:not(:disabled) {
+  background: var(--gate-chip-hover);
+  transform: translateY(-1px);
+}
+
+.ade-fr-agent-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ade-fr-agent-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: 2px;
+}
+
+.ade-fr-agents-others {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px 0;
+  border-top: 1px solid var(--gate-rule);
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-agents-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--gate-chip-fill);
+  color: var(--gate-text-2);
+}
+
+.ade-fr-rows + .ade-fr-agents-more {
+  border-top: 1px solid var(--gate-rule);
+}
+
+.ade-fr-agents-more {
+  margin: 0;
+  padding: 10px 14px 12px;
+  font-size: 11.5px;
+  color: var(--gate-text-3);
 }
 
 /* Short windows: the list keeps its room; the device cells and padding give way. */

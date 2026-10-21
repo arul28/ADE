@@ -7,12 +7,15 @@ import { ONBOARDING_ANCHOR_ATTR } from "../../../onboarding/onboardingProgress";
  *
  * - `advance: "click"`: the step asks the user to click the control, and the
  *   click moves the tour on (the card still has Next, so nobody is stuck).
+ * - `advance: "action"`: the step asks for something done with the control
+ *   (press Send); its `skipIf` turning true is what moves on.
  * - `advance: "next"`: the card's Next moves on.
  * - `place`: where the card sits around the control, first fit wins.
  * - `goTo`: what "Show me" on the paused pill does when the control is not on
  *   screen (the user went elsewhere). Steps without one wait for the user.
- * - `skipIf`: checked while the control is missing; true moves past the step
- *   (no chats to open, the pane is already open, already on a new chat).
+ * - `skipIf`: checked on every scan; true moves past the step in the
+ *   direction the user was going (no chats to open, the pane is already
+ *   open, already on a new chat, the first chat was sent).
  */
 
 export type TourPlace = "above" | "below" | "right" | "left";
@@ -23,8 +26,8 @@ export type TourStepDef = {
   anchors: readonly string[];
   title: string;
   line: string;
-  advance: "click" | "next";
-  /** For click steps: what the card asks for ("Click New chat"). */
+  advance: "click" | "action" | "next";
+  /** For click and action steps: what the card asks for ("Click New chat", "Press Send"). */
   clickLabel?: string;
   place: readonly TourPlace[];
   /** Where the control lives, for "Show me". */
@@ -38,7 +41,9 @@ const anchorPresent = (id: string) => document.querySelector(`[${ONBOARDING_ANCH
 const onDraftPage = () => document.querySelector("[data-work-draft-surface]") != null;
 const toolsPaneOpen = () => document.querySelector("[data-work-tools-pane]") != null;
 /** The sessions list is up and empty: nothing to open. */
-const noChatsToOpen = () => anchorPresent("session-list") && !anchorPresent("session-row");
+export const noChatsToOpen = () => anchorPresent("session-list") && !anchorPresent("session-row");
+/** A chat is open (its header has the Tools toggle). */
+const inOpenChat = () => anchorPresent("tools-toggle");
 
 export const TOUR_STEPS: readonly TourStepDef[] = [
   {
@@ -114,6 +119,20 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     where: "Work",
   },
   {
+    // Only for someone with no chats yet; the host fills the composer in.
+    id: "first-chat",
+    anchors: ["composer"],
+    title: "Send your first chat",
+    line: "We filled in a first question. Pick a model, then press Send. Nothing runs until you do.",
+    advance: "action",
+    clickLabel: "Press Send",
+    place: ["above", "below"],
+    goTo: "draft",
+    where: "a new chat",
+    // A chat exists: either there were some already, or this one was sent.
+    skipIf: () => anchorPresent("session-row"),
+  },
+  {
     id: "open-chat",
     anchors: ["session-row"],
     title: "Open a chat",
@@ -123,7 +142,7 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     place: ["right", "below"],
     goTo: "work",
     where: "Work",
-    skipIf: noChatsToOpen,
+    skipIf: () => noChatsToOpen() || inOpenChat(),
   },
   {
     id: "tools-toggle",

@@ -25,8 +25,10 @@ import {
   type Box,
   type Frame,
 } from "./anchorGeometry";
+import { useLaneChatHandoff } from "../../../lib/laneChatHandoff";
 import { AdeTourCursorArt } from "./AdeTourCursorArt";
-import { TOUR_STEPS, type TourDestination, type TourStepDef } from "./onboardingTourSteps";
+import { FIRST_CHAT_PROMPT, pickFirstChatModel, setDraftModel, type FirstChatModel } from "./firstChat";
+import { TOUR_STEPS, noChatsToOpen, type TourDestination, type TourStepDef } from "./onboardingTourSteps";
 import "./onboardingTour.css";
 
 /**
@@ -108,6 +110,61 @@ function useGoTo(): (destination: TourDestination) => void {
   }, [navigate]);
 }
 
+type FirstChatSetup = { model: FirstChatModel | null; noAgents: boolean } | null;
+
+/** Filled once per app session: a later visit to the step keeps what the user did to the draft. */
+let firstChatSetup: FirstChatSetup = null;
+
+/**
+ * The first-chat step: once Work shows an empty chats list, start a new chat
+ * in the primary lane with the first question in its composer and a cheap
+ * model picked (`firstChat.ts`). Never sends. On the tab's own machine
+ * (`pin` null), where its lanes and its status come from.
+ */
+function useFirstChatPrefill(active: boolean): FirstChatSetup {
+  const handOff = useLaneChatHandoff(null, { startDraftInLane: true });
+  const primaryLaneId = useAppStore((state) => state.lanes.find((lane) => lane.laneType === "primary")?.id ?? null);
+  const [setup, setSetup] = useState<FirstChatSetup>(firstChatSetup);
+
+  useEffect(() => {
+    if (!active || !primaryLaneId || firstChatSetup) return undefined;
+    let cancelled = false;
+    const tick = () => {
+      // Wait for Work's chats list to say there is nothing yet.
+      if (firstChatSetup || !noChatsToOpen()) return;
+      firstChatSetup = { model: null, noAgents: false };
+      handOff({ laneId: primaryLaneId, sessionId: null, prompt: FIRST_CHAT_PROMPT });
+      void window.ade.ai.getStatus()
+        .then(async (status) => {
+          const model = pickFirstChatModel(status);
+          firstChatSetup = { model, noAgents: !(status.availableModelIds ?? []).length };
+          if (!cancelled) setSetup(firstChatSetup);
+          if (model) await setDraftModel(model.id);
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const interval = window.setInterval(tick, SCAN_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [active, handOff, primaryLaneId]);
+
+  return setup;
+}
+
+function firstChatLine(setup: FirstChatSetup): string | null {
+  if (!setup) return null;
+  if (setup.model) {
+    return `We filled in a first question on ${setup.model.label}, a quick, low-cost model. Press Send when you're ready; nothing runs until you do.`;
+  }
+  if (setup.noAgents) {
+    return "Connect an agent first: the model menu here shows what's set up, and Settings › Agents & Models adds more.";
+  }
+  return null;
+}
+
 type View =
   | { kind: "hidden" }
   | { kind: "paused" }
@@ -167,6 +224,13 @@ function TourRunner({ stepId }: { stepId: string | null }) {
         commit({ kind: "hidden" });
         return;
       }
+      // Nothing to do here (already done, or nothing to point at): carry on
+      // the way the user was going.
+      if (step.skipIf?.()) {
+        pending = null;
+        moveTo(index + directionRef.current, directionRef.current);
+        return;
+      }
       const current = viewRef.current;
       if (current.kind === "shown" && isAnchorVisible(current.anchor) && isStepAnchor(step, current.anchor)) {
         missingSince = null;
@@ -191,10 +255,6 @@ function TourRunner({ stepId }: { stepId: string | null }) {
         return;
       }
       pending = null;
-      if (step.skipIf?.()) {
-        moveTo(index + directionRef.current, directionRef.current);
-        return;
-      }
       const now = performance.now();
       missingSince ??= now;
       if (now - missingSince < PAUSE_AFTER_MS) {
@@ -214,6 +274,8 @@ function TourRunner({ stepId }: { stepId: string | null }) {
     return () => window.clearInterval(interval);
   }, [goTo, index, moveTo, step]);
 
+  const firstChat = useFirstChatPrefill(step.id === "first-chat");
+
   const skip = useCallback(() => skipOnboarding(), []);
   const showMe = useCallback(() => {
     if (step.goTo) goTo(step.goTo);
@@ -225,6 +287,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
         <TourOverlay
           key={step.id}
           step={step}
+          line={step.id === "first-chat" ? firstChatLine(firstChat) ?? step.line : step.line}
           anchor={view.anchor}
           index={index}
           onNext={next}
@@ -241,6 +304,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
 
 function TourOverlay({
   step,
+  line,
   anchor,
   index,
   onNext,
@@ -248,6 +312,8 @@ function TourOverlay({
   onSkip,
 }: {
   step: TourStepDef;
+  /** The card's sentence: the step's own, or one the host filled in (the first chat's model). */
+  line: string;
   anchor: HTMLElement;
   index: number;
   onNext: () => void;
@@ -376,7 +442,7 @@ function TourOverlay({
 
   // Keyboard users land on the card's main button once it is placed.
   useEffect(() => {
-    if (cardHeight == null || (step.advance === "click" && !last)) return;
+    if (cardHeight == null || (step.advance !== "next" && !last)) return;
     if (document.activeElement && document.activeElement !== document.body) return;
     nextRef.current?.focus({ preventScroll: true });
   }, [cardHeight, last, step.advance]);
@@ -441,9 +507,9 @@ function TourOverlay({
                 </button>
               </div>
               <h2 id={titleId} className="ade-tour-title">{step.title}</h2>
-              <p className="ade-tour-line">{step.line}</p>
+              <p className="ade-tour-line">{line}</p>
               <div className="ade-tour-actions">
-                {step.advance === "click" ? (
+                {step.advance !== "next" ? (
                   <span className="ade-tour-ask">
                     <CursorClick size={13} weight="bold" aria-hidden />
                     {step.clickLabel ?? "Click it"}
@@ -460,12 +526,12 @@ function TourOverlay({
                   <button
                     ref={nextRef}
                     type="button"
-                    className={step.advance === "click" && !last ? "kit-btn kit-btn-ghost" : "kit-btn kit-btn-primary"}
+                    className={step.advance !== "next" && !last ? "kit-btn kit-btn-ghost" : "kit-btn kit-btn-primary"}
                     data-size="sm"
                     onClick={onNext}
                   >
                     {last ? "Done" : "Next"}
-                    {step.advance === "click" || last ? null : <ArrowRight size={12} weight="bold" aria-hidden />}
+                    {step.advance !== "next" || last ? null : <ArrowRight size={12} weight="bold" aria-hidden />}
                   </button>
                 </span>
               </div>

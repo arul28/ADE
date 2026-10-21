@@ -303,6 +303,7 @@ export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
@@ -10485,6 +10486,22 @@ export function AgentChatPane({
     insertComposerDraft,
   ]);
 
+  // A draft's model, set from outside (the onboarding tour picks a cheap one
+  // for the first chat). Routed through the composer's own handler, so the
+  // usual checks apply; `handled` tells the sender a draft took it.
+  const composerModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  useEffect(() => {
+    if (!forceDraft) return undefined;
+    const onSetDraftModel = (event: Event) => {
+      const detail = (event as CustomEvent<{ modelId?: unknown; handled?: boolean }>).detail;
+      if (!detail || typeof detail.modelId !== "string" || !composerModelChangeRef.current) return;
+      composerModelChangeRef.current(detail.modelId);
+      detail.handled = true;
+    };
+    window.addEventListener("ade:agent-chat:set-draft-model", onSetDraftModel);
+    return () => window.removeEventListener("ade:agent-chat:set-draft-model", onSetDraftModel);
+  }, [forceDraft]);
+
   useEffect(() => {
     const pending = selectedSessionId
       ? takeAgentChatDraftHandoff({ sessionId: selectedSessionId })
@@ -17023,6 +17040,106 @@ export function AgentChatPane({
     : sessionRoutePick?.sessionId === selectedSessionId
       ? sessionRoutePick.presetId
       : selectedSession?.presetId ?? null;
+  // The composer's model pick, also reachable from outside for a draft
+  // (`ade:agent-chat:set-draft-model`, the onboarding tour's first chat).
+  const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
+    // A Custom pick is validated by the picker against what its
+    // harness can reach; its model is often not in this provider
+    // list at all (a DeepSeek model run in Claude Code).
+    const modelAllowed = options?.presetId
+      ? true
+      : composerConstrainModelSelection
+      ? composerAvailableModelIds.includes(nextModelId)
+      : (
+          !effectiveAvailableModelIds.length
+          || effectiveAvailableModelIds.includes(nextModelId)
+          || isKnownSelectableChatModelId(nextModelId)
+          || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
+        );
+    if (!modelAllowed) {
+      return;
+    }
+    if (isPersistentIdentitySurface && sessionMutationKind) {
+      return;
+    }
+    const previousFastMode = fastModeRef.current;
+    draftLaunchBrainRef.current = options?.presetId
+      ? { presetId: options.presetId }
+      : options?.credentialId
+        ? { credentialId: options.credentialId }
+        : {};
+    // The ref above is launch payload; this is the same choice made
+    // visible. Without it a draft picked from the Harnesses tab fell
+    // back to the model's own provider in the trigger — naming a
+    // provider the preset does not even run on.
+    setDraftHarnessPresetId(options?.presetId ?? null);
+    // A new model starts on its default context tier unless the pick
+    // came from its context chip.
+    setCopilotContextTier(options?.copilotContextTier ?? "default");
+    setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
+    const snapshot = buildModelSelectionSnapshot(nextModelId);
+    // Ordinary model selection clears the previous cloud service
+    // tier. A service-tier row selection carries the newly chosen
+    // tier through this same handler, even when it targets another
+    // model in the picker.
+    const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
+      cursorCloudSessionActive,
+      options,
+    );
+    /* A Custom pick carries its own thinking level.
+       A preset saved at High launches at High: it was chosen with
+       the model in front of the person who saved it, and reconciling
+       it against the registry row here is what silently turned
+       "High" into the model's default the moment the pick landed.
+       An ordinary model pick keeps the reconcile — there the old
+       level belongs to a model the user just left. */
+    const presetTarget = options?.presetId
+      ? resolveHarnessLaunchTarget(options.presetId, harnessPresets, modelCatalogScopeKey)
+      : null;
+    const presetEffort = presetTarget ? presetTarget.reasoningEffort ?? null : undefined;
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+      // The draft owns its thinking level and fast flag, so a model
+      // change leaves behind a value the new model may not expose.
+      // Reconcile here, before launch: the launch snapshot reads this
+      // state raw, and the main process rejects an effort the model
+      // does not advertise. This is the rule the Cursor Cloud
+      // auto-switch already applies, generalized to every draft model
+      // change.
+      const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
+        reasoningEffort,
+        fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
+      });
+      setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
+      // Ultrafast carries over only to a model that offers it too.
+      setFastModeState(
+        reconciledControls.fastMode,
+        modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+      );
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    } else if (options) {
+      if (presetEffort !== undefined) setReasoningEffort(presetEffort);
+      setFastModeState(
+        options.fastMode,
+        modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+      );
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    } else {
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    }
+    if (!selectedSessionId || turnActive) {
+      applyModelSelectionSnapshot(snapshot);
+      return;
+    }
+
+    // Keep the selection local until submit(). Submit applies the
+    // existing updateSession handoff immediately before send(), so
+    // no provider runtime is torn down or rebound while the user is
+    // still choosing a model or typing.
+    deferredComposerSessionIdRef.current = selectedSessionId;
+    applyModelSelectionSnapshot(snapshot);
+  };
+  composerModelChangeRef.current = handleComposerModelChange;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -17168,103 +17285,7 @@ export function AgentChatPane({
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
-            onModelChange={(nextModelId, options) => {
-              // A Custom pick is validated by the picker against what its
-              // harness can reach; its model is often not in this provider
-              // list at all (a DeepSeek model run in Claude Code).
-              const modelAllowed = options?.presetId
-                ? true
-                : composerConstrainModelSelection
-                ? composerAvailableModelIds.includes(nextModelId)
-                : (
-                    !effectiveAvailableModelIds.length
-                    || effectiveAvailableModelIds.includes(nextModelId)
-                    || isKnownSelectableChatModelId(nextModelId)
-                    || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
-                  );
-              if (!modelAllowed) {
-                return;
-              }
-              if (isPersistentIdentitySurface && sessionMutationKind) {
-                return;
-              }
-              const previousFastMode = fastModeRef.current;
-              draftLaunchBrainRef.current = options?.presetId
-                ? { presetId: options.presetId }
-                : options?.credentialId
-                  ? { credentialId: options.credentialId }
-                  : {};
-              // The ref above is launch payload; this is the same choice made
-              // visible. Without it a draft picked from the Harnesses tab fell
-              // back to the model's own provider in the trigger — naming a
-              // provider the preset does not even run on.
-              setDraftHarnessPresetId(options?.presetId ?? null);
-              // A new model starts on its default context tier unless the pick
-              // came from its context chip.
-              setCopilotContextTier(options?.copilotContextTier ?? "default");
-              setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
-              const snapshot = buildModelSelectionSnapshot(nextModelId);
-              // Ordinary model selection clears the previous cloud service
-              // tier. A service-tier row selection carries the newly chosen
-              // tier through this same handler, even when it targets another
-              // model in the picker.
-              const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
-                cursorCloudSessionActive,
-                options,
-              );
-              /* A Custom pick carries its own thinking level.
-                 A preset saved at High launches at High: it was chosen with
-                 the model in front of the person who saved it, and reconciling
-                 it against the registry row here is what silently turned
-                 "High" into the model's default the moment the pick landed.
-                 An ordinary model pick keeps the reconcile — there the old
-                 level belongs to a model the user just left. */
-              const presetTarget = options?.presetId
-                ? resolveHarnessLaunchTarget(options.presetId, harnessPresets, modelCatalogScopeKey)
-                : null;
-              const presetEffort = presetTarget ? presetTarget.reasoningEffort ?? null : undefined;
-              if (!selectedSessionId) {
-                draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
-                // The draft owns its thinking level and fast flag, so a model
-                // change leaves behind a value the new model may not expose.
-                // Reconcile here, before launch: the launch snapshot reads this
-                // state raw, and the main process rejects an effort the model
-                // does not advertise. This is the rule the Cursor Cloud
-                // auto-switch already applies, generalized to every draft model
-                // change.
-                const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
-                  reasoningEffort,
-                  fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
-                });
-                setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
-                // Ultrafast carries over only to a model that offers it too.
-                setFastModeState(
-                  reconciledControls.fastMode,
-                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
-                );
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              } else if (options) {
-                if (presetEffort !== undefined) setReasoningEffort(presetEffort);
-                setFastModeState(
-                  options.fastMode,
-                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
-                );
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              } else {
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              }
-              if (!selectedSessionId || turnActive) {
-                applyModelSelectionSnapshot(snapshot);
-                return;
-              }
-
-              // Keep the selection local until submit(). Submit applies the
-              // existing updateSession handoff immediately before send(), so
-              // no provider runtime is torn down or rebound while the user is
-              // still choosing a model or typing.
-              deferredComposerSessionIdRef.current = selectedSessionId;
-              applyModelSelectionSnapshot(snapshot);
-            }}
+            onModelChange={handleComposerModelChange}
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}
             onDraftChange={updateComposerDraft}
