@@ -49,6 +49,7 @@ export type AppleDuoServiceDeps<Runtime extends { key: string | null }> = {
   ) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: { warn: (event: string, fields?: Record<string, unknown>) => void };
+  captureAnalytics: (outcome: "duo_folded" | "duo_app_store_shots" | "device_rendered" | "duo_skill_added") => void;
   readPngSize: (filePath: string) => { width: number; height: number } | null;
   nowIso: () => string;
   /** Where screenshots are cached under a lane root. */
@@ -167,11 +168,13 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     }
     const runtime = deps.resolveRuntime(postureArgs);
     const deviceUdid = await deps.resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
-    return deps.enqueueControl(
+    const result = await deps.enqueueControl(
       "posture",
       () => foldAndSettle(deviceUdid, { pose, angle }),
       FOLD_CONTROL_TIMEOUT_MS,
     );
+    if (result.applied) deps.captureAnalytics("duo_folded");
+    return result;
   };
 
   const getPosture = async (postureArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> = {}): Promise<AppleDevicePosture> => {
@@ -257,6 +260,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       }
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
       await fs.promises.cp(source, target, { recursive: true, errorOnExist: false, force: false });
+      deps.captureAnalytics("duo_skill_added");
       return { skill, path: target, added: true };
     } finally {
       await fs.promises.rm(exportDir, { recursive: true, force: true }).catch(() => {});
@@ -318,6 +322,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
           });
         }
       }
+      deps.captureAnalytics("duo_app_store_shots");
       return { shots };
     }, APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS);
   };
@@ -411,6 +416,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       runtime,
       webm ? { kind: "video_recording", mimeType: "video/webm" } : { kind: "screenshot", mimeType: "image/png" },
     );
+    if (proofArtifactId) deps.captureAnalytics("device_rendered");
     return { proofArtifactId };
   };
 

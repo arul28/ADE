@@ -1,4 +1,5 @@
 import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
+import type { AppleDeviceAnalyticsOutcome } from "../../../shared/types/iosSimulator";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
@@ -207,6 +208,25 @@ export function captureMacDesktopAnalytics(args: {
     dedupeKey: `work_mac_desktop:${outcome}`,
     minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
     properties: { feature: "work", action: "mac_desktop", outcome },
+  });
+}
+
+/**
+ * One coarse fact for the Apple panel (`APPLE_DEVICE_ANALYTICS_OUTCOMES`), per
+ * outcome per installation per UTC day: the service hands over the closed
+ * outcome and nothing else. Worst case six accepted events a day, inside the
+ * existing `ade_feature_used` limits. No ceiling was raised.
+ */
+export function captureAppleDeviceAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  outcome: AppleDeviceAnalyticsOutcome;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    dedupeKey: `work_apple_device:${args.outcome}`,
+    minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+    properties: { feature: "work", action: "apple_device", outcome: args.outcome },
   });
 }
 

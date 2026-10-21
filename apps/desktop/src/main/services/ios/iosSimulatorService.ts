@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type {
   AppleRuntimeDeleteArgs,
+  AppleDeviceAnalyticsOutcome,
   AppleRuntimeInstallArgs,
   AppleRuntimePruneArgs,
   AppleDeviceAttachArgs,
@@ -469,6 +470,8 @@ type CreateIosSimulatorServiceArgs = {
    * one, rather than a second, inert service shadowing it.
    */
   recordingDeps?: Pick<SimRecordingServiceDeps, "artifactFiler" | "readOverlaySetting" | "accentColor" | "fps">;
+  /** One closed product fact per Apple panel outcome (`APPLE_DEVICE_ANALYTICS_OUTCOMES`); deduplicated by the caller. */
+  captureAnalytics?: (outcome: AppleDeviceAnalyticsOutcome) => void;
   /**
    * Run the lane-device cleanup pass and idle power-off in the background
    * (`laneDeviceMaintenance.ts`). The hosts that own a project turn it on; a
@@ -5837,6 +5840,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     fileScreenshotAsProof,
     emit,
     logger: args.logger,
+    captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
     readPngSize,
     nowIso,
     screenshotSegments: SCREENSHOT_CACHE_SEGMENTS,
@@ -6633,6 +6637,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         return response.text();
       },
       store: args.laneDeviceStore ?? null,
+      captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
     });
     return runtimeManagerInstance;
   };

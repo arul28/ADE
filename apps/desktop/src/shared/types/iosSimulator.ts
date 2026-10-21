@@ -284,6 +284,21 @@ export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
  * {@link APPLE_AGENT_ACTIONS} only), the RPC server refuses them to agent
  * callers, and automations cannot run them.
  */
+/**
+ * The Apple panel's product facts (`ade_feature_used`, `action: "apple_device"`):
+ * whether the runtime manager and the iPhone Duo surface are used at all.
+ * Closed: a seventh spelling is dropped by the analytics policy, not widened.
+ */
+export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
+  "runtime_installed",
+  "runtime_removed",
+  "duo_folded",
+  "duo_app_store_shots",
+  "device_rendered",
+  "duo_skill_added",
+] as const;
+export type AppleDeviceAnalyticsOutcome = (typeof APPLE_DEVICE_ANALYTICS_OUTCOMES)[number];
+
 export const APPLE_USER_ONLY_ACTIONS = [
   "deviceDeleteInstalled",
   /* Removing a runtime erases or moves every simulator on it. */

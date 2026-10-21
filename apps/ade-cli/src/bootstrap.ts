@@ -175,6 +175,7 @@ import {
   captureChatCompactionAnalytics,
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
+  captureAppleDeviceAnalytics,
   captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -1748,6 +1749,7 @@ export async function createAdeRuntime(args: {
       : createIosSimulatorService({
         projectRoot,
         logger,
+        captureAnalytics: (outcome) => captureAppleDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
         // Agent launches arrive at the brain, so this is the instance that most
         // needs lane-correct build roots.
         resolveLaneWorktreePath: (laneId: string): string | null => {

@@ -63,6 +63,7 @@ export type AppleRuntimeManagerDeps = {
   powerOff: (udid: string) => Promise<void>;
   /** Device lists and statuses changed. */
   invalidate: () => void;
+  captureAnalytics?: (outcome: "runtime_installed" | "runtime_removed") => void;
   /** Apple's developer releases feed (`APPLE_RELEASES_FEED_URL`), as text. */
   releasesFeed: () => Promise<string>;
   /** Where the newest-Xcode answer is kept between launches; null keeps it in memory only. */
@@ -273,6 +274,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     invalidateAll();
     emitInstall(true);
     deps.logger.info("apple.runtime_install_finished", { version: installer.install.version, phase, message });
+    if (phase === "done") deps.captureAnalytics?.("runtime_installed");
   };
 
   const readXcode = async (): Promise<Omit<AppleXcodeStatus, "latest" | "updateAvailable">> => {
@@ -634,6 +636,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     } finally {
       invalidateAll();
     }
+    if (result.deleted.length) deps.captureAnalytics?.("runtime_removed");
     return result;
   };
 
@@ -651,6 +654,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     } finally {
       invalidateAll();
     }
+    if (result.deleted.length) deps.captureAnalytics?.("runtime_removed");
     return result;
   };
 
