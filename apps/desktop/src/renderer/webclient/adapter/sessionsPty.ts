@@ -152,6 +152,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     key: string,
     args: Record<string, unknown>,
     authoritative: boolean,
+    retried = false,
   ): Promise<TerminalSessionSummary[]> {
     // A plain read can settle to an empty fallback, so an authoritative read must not join it.
     const flightKey = authoritative ? `${key}\u0000authoritative` : key;
@@ -170,9 +171,16 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       return sessions;
     })();
+    // Rows from before an invalidation are stale: read once more rather than
+    // hand them to the caller (once only, so a burst cannot loop).
+    const settle = async (): Promise<TerminalSessionSummary[]> => {
+      const sessions = await request;
+      if (generation !== sessionListGeneration && !retried) return fetchSessions(key, args, authoritative, true);
+      return sessions;
+    };
     sessionRefreshInFlight.set(flightKey, request);
     try {
-      return await request;
+      return await settle();
     } finally {
       if (sessionRefreshInFlight.get(flightKey) === request) sessionRefreshInFlight.delete(flightKey);
     }

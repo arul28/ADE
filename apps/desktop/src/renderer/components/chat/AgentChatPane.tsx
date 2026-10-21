@@ -9499,7 +9499,10 @@ export function AgentChatPane({
     // doubles the wait up to the cap; any event, a window focus, or a return to
     // the foreground resets it. Hidden windows skip the read entirely.
     let delayMs = baseIntervalMs;
-    let lastTickAtMs = Date.now();
+    // An appended event re-runs this effect, so the loop restarts right after
+    // it. Seeded one interval back, that event still counts as live delivery
+    // and the first tick skips the re-read.
+    let lastTickAtMs = Date.now() - baseIntervalMs;
     let timer: number | null = null;
     const schedule = (ms: number) => {
       timer = window.setTimeout(tick, ms);

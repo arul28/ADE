@@ -60,9 +60,10 @@ export class UnsupportedRemoteCommandError extends Error {
 export class CommandCaller {
   private readonly readCache = createCoalescingReadCache(READ_CACHE_TTL_MS);
   private readonly lastSuccessfulReads = new Map<string, unknown>();
-  // Bumped by every write, so a read that was already in flight when one
-  // landed does not store its pre-write answer as the reconnect fallback.
-  private writeEpoch = 0;
+  // Bumped by every invalidation (a write invalidates its namespace), so a read
+  // already in flight then does not store its older answer as the reconnect
+  // fallback.
+  private invalidationEpoch = 0;
   private descriptorSource: readonly SyncRemoteCommandDescriptor[] | null = null;
   private descriptorIndex = new Map<string, SyncRemoteCommandDescriptor>();
 
@@ -72,6 +73,7 @@ export class CommandCaller {
   ) {}
 
   invalidateCache(actionPrefixes?: string[]): void {
+    this.invalidationEpoch += 1;
     if (!actionPrefixes?.length) {
       this.readCache.clear();
       this.lastSuccessfulReads.clear();
@@ -139,12 +141,12 @@ export class CommandCaller {
       ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
       : null;
     const send = async (): Promise<T> => {
-      const epoch = this.writeEpoch;
+      const epoch = this.invalidationEpoch;
       const value = (await this.client.sendCommand(action, args, {
         projectId,
         timeoutMs: options.timeoutMs,
       })) as T;
-      if (readKey && epoch === this.writeEpoch) this.rememberSuccessfulRead(readKey, value);
+      if (readKey && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
       return value;
     };
 
@@ -160,7 +162,9 @@ export class CommandCaller {
         // is dropped the moment it settles, so nothing can go stale.
         // An authoritative read asks the host now, so it never takes a plain
         // read's retained answer.
-        const flightKey = options.authoritative ? `${readKey}\u0000authoritative` : readKey;
+        // A caller's timeout is part of the request: a short-timeout read never
+        // waits on a longer one.
+        const flightKey = `${readKey}\u0000${options.authoritative ? "authoritative" : ""}\u0000${options.timeoutMs ?? ""}`;
         value = await this.readCache.coalesce(flightKey, send, { ttlMs: options.cacheTtlMs ?? 0 });
       }
     } catch (error) {
@@ -190,7 +194,6 @@ export class CommandCaller {
         // A write: a read of its namespace that started before it settled, and
         // the last good answer kept for reconnects, both predate it. Later
         // callers read the host anew.
-        this.writeEpoch += 1;
         this.invalidateCache([`${action.split(".")[0]}.`]);
       }
     }

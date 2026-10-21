@@ -70,7 +70,8 @@ export function usePrCommentEdit(args: {
     cancelEdit,
     saveEdit,
     canEdit: Boolean(
-      args.commentId
+      isAdeAvailable(window.ade?.prs?.updateComment)
+        && args.commentId
         && args.author
         && args.viewerLogin
         && args.author.toLowerCase() === args.viewerLogin.toLowerCase(),

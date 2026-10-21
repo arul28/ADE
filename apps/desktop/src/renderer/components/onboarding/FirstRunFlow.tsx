@@ -163,7 +163,9 @@ export async function addFirstRunProjects(
   excludedByRoot: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): Promise<FirstRunResult> {
   const add = window.ade.app.addOnboardingProjects;
-  const added = projects.filter((project) => !project.inAde);
+  // Without the bridge (the hosted web client) nothing is added, so nothing
+  // is reported as added.
+  const added = isAdeAvailable(add) ? projects.filter((project) => !project.inAde) : [];
   if (added.length && isAdeAvailable(add)) {
     await add(added.map((project) => project.rootPath));
     window.dispatchEvent(new Event(RECENT_PROJECTS_CHANGED_EVENT));

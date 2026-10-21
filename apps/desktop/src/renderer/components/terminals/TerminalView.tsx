@@ -2552,6 +2552,7 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
         if (runtime.hydrationGeneration !== hydrationGeneration) return;
         if (!needsHydrationBackfill(runtime)) return;
         if (data.text.length > 0) {
+          runtime.hydrationBackfillEmptyStreak = 0;
           discardScheduledFrameWrites(runtime);
           flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot" });
           scheduleFit(runtime, true);

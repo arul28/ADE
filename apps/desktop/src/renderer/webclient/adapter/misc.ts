@@ -1319,6 +1319,8 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   let retryIndex = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let lastReadAt = 0;
+  // The last stats read said the host was still filling its caches.
+  let refreshing = false;
   let stopVisibility: (() => void) | null = null;
 
   // Listeners reload their own stats; the quota snapshot is what desktop
@@ -1336,14 +1338,16 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   };
   const noteStats = (stats: AdeUsageStats | null) => {
     lastReadAt = Date.now();
-    if (stats?.freshness?.state !== "refreshing") {
+    refreshing = stats?.freshness?.state === "refreshing";
+    if (!refreshing) {
       retryIndex = 0;
       return;
     }
     if (retryTimer || retryIndex >= USAGE_REFRESHING_RETRY_MS.length || listeners.size === 0) return;
     retryTimer = setTimeout(() => {
       retryTimer = null;
-      void notify();
+      // A hidden tab waits; becoming visible reads again (below).
+      if (!isPageHidden()) void notify();
     }, USAGE_REFRESHING_RETRY_MS[retryIndex++]);
   };
 
@@ -1358,7 +1362,7 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
       stopVisibility ??= observePageVisibility({
         onHidden: () => {},
         onVisible: () => {
-          if (lastReadAt && Date.now() - lastReadAt >= USAGE_STALE_ON_RETURN_MS) void notify();
+          if (refreshing || (lastReadAt && Date.now() - lastReadAt >= USAGE_STALE_ON_RETURN_MS)) void notify();
         },
       });
       return () => {
@@ -1368,6 +1372,8 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
         stopVisibility = null;
         if (retryTimer) clearTimeout(retryTimer);
         retryTimer = null;
+        // A later listener gets the full retry schedule again.
+        retryIndex = 0;
       };
     },
     // An older host without the command answers null: ADE-only counts.
