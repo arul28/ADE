@@ -999,11 +999,12 @@ export function CommandPalette({
   );
   const suggestedCommands = usePaletteSuggestions({
     open,
-    mode,
+    defaultMode: mode === "default",
     q,
     commands,
     filtered,
-    parsedWorkQuery,
+    terms: parsedWorkQuery.terms,
+    hasWorkFilters: parsedWorkQuery.filterTokens.length > 0 || parsedWorkQuery.tracked !== null,
     pathname: location.pathname,
     selectedLaneId: selectedLane?.id ?? null,
     selectedLaneName: selectedLane?.name,

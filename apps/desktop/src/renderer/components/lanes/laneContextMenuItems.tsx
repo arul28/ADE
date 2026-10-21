@@ -547,15 +547,16 @@ function LaneEmojiRow({
     }
   };
 
+  const laneEmoji = laneEmojiForDisplay(lane.emoji, lane.icon);
   return (
     <div className="flex items-center gap-2 px-3 py-1.5">
       <LaneEmojiPicker
-        value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+        value={laneEmoji}
         onChange={(next) => { void apply(next); }}
         disabled={busy}
         overlayLayer={Z_LAYERS.contextMenu}
       />
-      <span className="text-[11px] text-muted-fg">{laneEmojiForDisplay(lane.emoji, lane.icon) ?? "No emoji"}</span>
+      <span className="text-[11px] text-muted-fg">{laneEmoji ?? "No emoji"}</span>
     </div>
   );
 }

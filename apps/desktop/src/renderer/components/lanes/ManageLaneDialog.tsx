@@ -193,12 +193,13 @@ function ManageLaneRenameControls({
     );
   }
 
+  const laneEmoji = laneEmojiForDisplay(lane.emoji, lane.icon);
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <div className="mt-2 flex h-11 min-w-[12rem] flex-1 items-center gap-1 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-2 transition-colors focus-within:border-accent/40">
           <LaneEmojiPicker
-            value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+            value={laneEmoji}
             onChange={(emoji) => { void setLaneEmoji(emoji); }}
             disabled={renameBusy}
             label="Lane emoji"
@@ -206,13 +207,13 @@ function ManageLaneRenameControls({
               <button
                 type="button"
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base text-fg transition hover:bg-fg/[0.08] focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-45"
-                aria-label={laneEmojiForDisplay(lane.emoji, lane.icon)
-                  ? `Change lane emoji, current ${laneEmojiForDisplay(lane.emoji, lane.icon)}`
+                aria-label={laneEmoji
+                  ? `Change lane emoji, current ${laneEmoji}`
                   : "Choose lane emoji"}
                 title="Lane emoji"
                 disabled={renameBusy}
               >
-                {laneEmojiForDisplay(lane.emoji, lane.icon) || <span className="text-sm text-muted-fg">＋</span>}
+                {laneEmoji || <span className="text-sm text-muted-fg">＋</span>}
               </button>
             )}
           />

@@ -23,7 +23,7 @@ const STATUS_LINE_QUESTIONS = {
  * Whether a status line the agent wrote during its turn no longer matches the
  * turn's final reply. `null` when Jev did not answer: keep the line, as today.
  */
-export async function statusLineLooksStale(args: {
+async function statusLineLooksStale(args: {
   decide: JevService["decide"];
   statusLine: string;
   userMessage: string | null;
@@ -60,7 +60,7 @@ export type StatusLineStaleRegenDeps = {
  * the same refresh "Generate status line" does. No answer keeps the line.
  */
 export function createStatusLineStaleRegen(deps: StatusLineStaleRegenDeps) {
-  const { logger } = deps;
+  const { logger, decide } = deps;
   return (args: {
     sessionId: string;
     /** Read only once there is a status line to judge. */
@@ -68,7 +68,6 @@ export function createStatusLineStaleRegen(deps: StatusLineStaleRegenDeps) {
     /** True only while nothing moved: same live chat, still idle, no new turn since. */
     isUnchanged: () => boolean;
   }): void => {
-    const { decide } = deps;
     if (!decide) return;
     const { sessionId } = args;
     const statusLine = deps.readStatusLine(sessionId)?.trim();

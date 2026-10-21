@@ -20,17 +20,16 @@ import { shiftSelectedIndexForSuggestions } from "./commandPaletteSections";
 
 type UsePaletteSuggestionsArgs<C extends PaletteSuggestionCommand> = {
   open: boolean;
-  /** Suggestions only run in the palette's default mode. */
-  mode: string;
+  /** Suggestions only run in the palette's default mode, not while it browses folders or projects. */
+  defaultMode: boolean;
   q: string;
   commands: C[];
   /** The commands the typed query already matches. */
   filtered: C[];
-  parsedWorkQuery: {
-    terms: readonly string[];
-    filterTokens: readonly unknown[];
-    tracked: unknown;
-  };
+  /** The query's search words. */
+  terms: readonly string[];
+  /** The query filters Work rows (`is:`, tracked chats): a filter, not a request. */
+  hasWorkFilters: boolean;
   pathname: string;
   selectedLaneId: string | null;
   selectedLaneName: string | undefined;
@@ -50,11 +49,12 @@ type UsePaletteSuggestionsArgs<C extends PaletteSuggestionCommand> = {
  */
 export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
   open,
-  mode,
+  defaultMode,
   q,
   commands,
   filtered,
-  parsedWorkQuery,
+  terms,
+  hasWorkFilters,
   pathname,
   selectedLaneId,
   selectedLaneName,
@@ -79,7 +79,7 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
   const suggestedCommands = useMemo<C[]>(() => {
     if (
       !open ||
-      mode !== "default" ||
+      !defaultMode ||
       !suggestionResult ||
       suggestionResult.query !== q.trim() ||
       suggestionResult.context !== suggestionContext
@@ -90,7 +90,7 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
     return suggestionResult.commandIds
       .map((id) => byId.get(id))
       .filter((command): command is C => command != null);
-  }, [commands, mode, open, q, suggestionContext, suggestionResult]);
+  }, [commands, defaultMode, open, q, suggestionContext, suggestionResult]);
 
   useEffect(() => {
     const query = q.trim();
@@ -99,11 +99,10 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
       wordCount >= 3 || (wordCount >= 2 && filtered.length === 0);
     if (
       !open ||
-      mode !== "default" ||
+      !defaultMode ||
       !query ||
       !plainEnglishQuery ||
-      parsedWorkQuery.filterTokens.length > 0 ||
-      parsedWorkQuery.tracked !== null
+      hasWorkFilters
     ) {
       setSuggestionResult(null);
       return undefined;
@@ -114,7 +113,7 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
       const candidates = paletteSuggestionCandidates(
         commands,
         filtered,
-        parsedWorkQuery.terms,
+        terms,
       );
       if (candidates.length < 2) {
         setSuggestionResult(null);
@@ -239,11 +238,10 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
     filtered,
     isFocusedChat,
     pathname,
-    mode,
+    defaultMode,
     open,
-    parsedWorkQuery.filterTokens.length,
-    parsedWorkQuery.terms,
-    parsedWorkQuery.tracked,
+    hasWorkFilters,
+    terms,
     q,
     runtimePinKey,
     runtimePinRef,

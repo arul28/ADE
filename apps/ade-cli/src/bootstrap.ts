@@ -108,7 +108,8 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
-import { createJevService, jevTallyFileStore, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { createJevService, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { jevTallyFileStore } from "../../desktop/src/main/services/jev/jevTally";
 import { jevEnabled } from "../../desktop/src/shared/jevSettings";
 import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
@@ -3452,6 +3453,7 @@ export async function createAdeRuntime(args: {
       syncService = createSyncService({
         db,
         usageTrackingService,
+        jevService,
         getProxyService: () => getProxyService(),
         accountSettingsStore,
         productAnalyticsService,

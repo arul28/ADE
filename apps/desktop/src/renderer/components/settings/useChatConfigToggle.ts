@@ -16,8 +16,16 @@ type BooleanChatKey = {
  * optimistically; a failed save puts it back and says so. The hosted client
  * cannot write the host's project configuration, so there it does nothing.
  */
-export function useChatConfigToggle(key: BooleanChatKey, options: { defaultOn?: boolean } = {}) {
+export function useChatConfigToggle(
+  key: BooleanChatKey,
+  options: {
+    defaultOn?: boolean;
+    /** Show this machine's own `.ade/local.yaml` value only, for a setting the brain reads from there. */
+    localOnly?: boolean;
+  } = {},
+) {
   const defaultOn = options.defaultOn === true;
+  const localOnly = options.localOnly === true;
   const { pin } = useSettingsMachineScope();
   const pinKey = pin?.key ?? null;
   const onWeb = isWebClientMode();
@@ -32,7 +40,7 @@ export function useChatConfigToggle(key: BooleanChatKey, options: { defaultOn?: 
     void window.ade.projectConfig.get(pin)
       .then((snapshot) => {
         if (cancelled) return;
-        const value = snapshot.effective.ai?.chat?.[key];
+        const value = (localOnly ? snapshot.local : snapshot.effective).ai?.chat?.[key];
         setEnabled(defaultOn ? value !== false : value === true);
         setStatus("loaded");
       })
@@ -50,7 +58,7 @@ export function useChatConfigToggle(key: BooleanChatKey, options: { defaultOn?: 
     };
     // Keyed on the machine, not the pin object: a rebuilt pin is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, defaultOn, onWeb, pinKey]);
+  }, [key, defaultOn, localOnly, onWeb, pinKey]);
 
   const save = useCallback(async (value: boolean) => {
     if (saving) return;

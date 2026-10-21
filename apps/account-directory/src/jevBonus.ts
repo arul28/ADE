@@ -186,13 +186,17 @@ export async function handleJevBonusRequest(
     json({ error: JEV_BONUS_ERRORS.exhausted }, 429, { "retry-after": String(secondsToReset(nowMs)) }),
     reason,
   );
+  let accountClaimed = false;
   try {
     if (!(await claim(env, day, userId, dailyLimit))) return exhausted("account_cap");
+    accountClaimed = true;
     if (!(await claim(env, day, GLOBAL_ROW, limit(env.JEV_BONUS_DAILY_GLOBAL_LIMIT, DEFAULT_GLOBAL_DAILY_LIMIT)))) {
       await refund(env, day, userId);
       return exhausted("global_cap");
     }
   } catch {
+    // The account's slot was taken but the fleet claim failed: give it back.
+    if (accountClaimed) await refund(env, day, userId);
     return finish(json({ error: JEV_BONUS_ERRORS.unavailable }, 503), "budget_unavailable");
   }
 

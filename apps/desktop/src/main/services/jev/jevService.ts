@@ -41,8 +41,6 @@ import { asRecord, finiteNumberOrNull, sha256Hex } from "../shared/utils";
 import { createJevTally, type JevTallyDetails, type JevTallyStore, type JevUsage } from "./jevTally";
 import { forgetJevCredential, jevAvailability } from "./jevZenCredential";
 
-export { jevTallyFileStore, type JevTallyStore } from "./jevTally";
-
 /**
  * OpenCode's endpoints: the documented one first, then the one Jev launched
  * on. A 404 from one moves to the other, which then stays first for later
@@ -334,8 +332,9 @@ async function callJev(args: {
     return { ok: false, reason: "auth_rejected", breakerOpened: openBreaker(breaker, "auth_rejected", AUTH_BACKOFF_MS, nowMs) };
   }
   if (status === 400 || status === 413 || status === 422) {
-    // Our request is bad (too big, or refused as input): the route is not broken,
-    // and the next route would refuse it too.
+    // Refused as input: not this route being down, so no breaker. The next
+    // route still gets the call; a route that refuses a retired model looks
+    // the same as one refusing this request.
     return { ok: false, reason: "invalid_request" };
   }
   if (status < 200 || status >= 300) {
@@ -522,7 +521,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
         });
       }
       last = result;
-      if (result.reason === "timeout" || result.reason === "invalid_request") break;
+      if (result.reason === "timeout") break;
     }
     return { ...last, sent };
   };

@@ -7234,6 +7234,7 @@ function AgentChatComposerImpl({
     reasoningEffort,
     allowedModelIds: constrainModelSelection ? availableModelIds ?? null : null,
     pin: modelRuntimePin,
+    ownerBinding: composerMachineBinding,
     modelChosen: modelPickedByHandFor === handPickKey || chatHasMessages,
     hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset),
     effortPickedByHand,

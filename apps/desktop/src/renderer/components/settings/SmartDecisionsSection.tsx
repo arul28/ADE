@@ -164,6 +164,7 @@ export function SmartDecisionsSection() {
                   anchor="jev-zen-credit"
                   configKey="jevZenCreditEnabled"
                   defaultOn={false}
+                  localOnly
                   icon={Wallet}
                   title="Use my OpenCode Zen credit"
                   hint="Once the free allowance is out, spend your own OpenCode Zen balance on Jev before ADE's bonus. Jev costs about $0.04 per million input tokens: well under a cent a day."
@@ -211,15 +212,16 @@ function GroupTitle({ icon: Icon, children }: { icon: ElementType; children: Rea
 }
 
 /** One switch under Smart decisions: a group of Jev decisions (off, its features use ADE's built-in rules), or the Zen credit opt-in. */
-function GroupRow({ anchor, configKey, defaultOn = true, icon, title, hint }: {
+function GroupRow({ anchor, configKey, defaultOn = true, localOnly = false, icon, title, hint }: {
   anchor: string;
   configKey: (typeof JEV_GROUP_CONFIG_KEY)[keyof typeof JEV_GROUP_CONFIG_KEY] | "jevZenCreditEnabled";
   defaultOn?: boolean;
+  localOnly?: boolean;
   icon: ElementType;
   title: string;
   hint: string;
 }) {
-  const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn });
+  const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn, localOnly });
   return (
     <ModernRow
       anchor={anchor}

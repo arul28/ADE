@@ -10,6 +10,8 @@ import { clipHead, clipTail } from "../shared/utils";
 export const SETTLE_NUDGE_IDLE_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 const SETTLE_NUDGE_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 const SETTLE_NUDGE_START_DELAY_MS = 15 * 1000;
+/** How often the setting is re-read: switching it runs a sweep then, not at the next half hour. */
+const SETTLE_NUDGE_SETTING_CHECK_MS = 60 * 1000;
 const SETTLE_NUDGE_MAX_CALLS_PER_SWEEP = 10;
 const SETTLE_NUDGE_TRANSCRIPT_LIMIT = 200;
 const SETTLE_NUDGE_TEXT_LIMIT = 1_500;
@@ -58,11 +60,7 @@ function completedTurn(entries: AgentChatTranscriptEntry[]): CompletedTurn | nul
   return { key, userText: user.text, assistantText: assistant.text, endedAt: assistant.timestamp };
 }
 
-/** One line, at most `SETTLE_NUDGE_TEXT_LIMIT` characters with the ellipsis. */
-function clipped(text: string, keep: "head" | "tail"): string {
-  const oneLine = text.replace(/\s+/g, " ");
-  return (keep === "head" ? clipHead : clipTail)(oneLine, SETTLE_NUDGE_TEXT_LIMIT, { ellipsisCounts: true });
-}
+const oneLine = (text: string): string => text.replace(/\s+/g, " ");
 
 /** The turn of a stored verdict the row could still show; a dismissed or pending one shows nothing. */
 function showableVerdictTurnId(session: TerminalSessionSummary): string | null {
@@ -121,6 +119,8 @@ function chatCanBeJudged(chat: AgentChatSessionSummary): boolean {
 export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
   let interval: ReturnType<typeof setInterval> | null = null;
+  let settingWatch: ReturnType<typeof setInterval> | null = null;
+  let lastEnabled: boolean | null = null;
   let running = false;
   let disposed = false;
 
@@ -137,11 +137,14 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
     if (!chat || !chatCanBeJudged(chat)) return;
     const turn = completedTurn(transcript);
     if (!turn || !idleLongEnough(turn.endedAt, Date.now())) return;
-    if (candidate.settleNudgeTurnId === turn.key) return;
+    // Exactly 0 is a verdict hidden while the setting was off, never one of
+    // Jev's answers: judge that turn again now that the setting is back on.
+    if (candidate.settleNudgeTurnId === turn.key && candidate.settleNudgeDoneProbability !== 0) return;
     if (candidate.settleNudgeDismissedTurnId === turn.key) return;
 
-    const userText = clipped(turn.userText, "head");
-    const assistantText = clipped(turn.assistantText, "tail");
+    // One line each, at most `SETTLE_NUDGE_TEXT_LIMIT` characters with the ellipsis.
+    const userText = clipHead(oneLine(turn.userText), SETTLE_NUDGE_TEXT_LIMIT, { ellipsisCounts: true });
+    const assistantText = clipTail(oneLine(turn.assistantText), SETTLE_NUDGE_TEXT_LIMIT, { ellipsisCounts: true });
     if (!userText || !assistantText) return;
 
     countCall();
@@ -188,12 +191,16 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
    * has no clear call, so this overwrites each shown one with a 0 "done"
    * answer for the same turn, under the same compare-and-set as a new verdict.
    */
-  const hideStoredVerdicts = (): void => {
+  const hideStoredVerdicts = async (): Promise<void> => {
     for (const session of deps.sessionService.list({ limit: null })) {
       if (disposed) return;
       const turnId = showableVerdictTurnId(session);
       if (!turnId) continue;
       try {
+        // The setting is this machine's: a chat another machine runs keeps
+        // the verdict that machine wrote.
+        const chat = await deps.agentChatService.getSessionSummary(session.id);
+        if (!chat || chat.runtimeOwnedElsewhere != null) continue;
         deps.sessionService.setSettleNudgeVerdict({
           sessionId: session.id,
           turnId,
@@ -212,7 +219,7 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
     running = true;
     try {
       if (!deps.isEnabled()) {
-        hideStoredVerdicts();
+        await hideStoredVerdicts();
         return;
       }
       if (!deps.jevService.status().available) return;
@@ -246,13 +253,24 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
         void sweep();
       }, SETTLE_NUDGE_START_DELAY_MS);
       interval = setInterval(() => void sweep(), SETTLE_NUDGE_SWEEP_INTERVAL_MS);
+      settingWatch = setInterval(() => {
+        const enabled = deps.isEnabled();
+        if (lastEnabled != null && enabled !== lastEnabled) {
+          // A sweep already running would skip this one: try again next minute.
+          if (running) return;
+          void sweep();
+        }
+        lastEnabled = enabled;
+      }, SETTLE_NUDGE_SETTING_CHECK_MS);
     },
     dispose(): void {
       disposed = true;
       if (startupTimer) clearTimeout(startupTimer);
       if (interval) clearInterval(interval);
+      if (settingWatch) clearInterval(settingWatch);
       startupTimer = null;
       interval = null;
+      settingWatch = null;
     },
   };
 }

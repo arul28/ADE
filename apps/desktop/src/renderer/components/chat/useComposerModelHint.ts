@@ -38,8 +38,8 @@ function cached<T>(cache: Map<string, { at: number; value: Promise<T> }>, key: s
   return value;
 }
 
-function loadCatalog(pin: OpenProjectBinding | null): Promise<UserModelCatalog | null> {
-  return cached(catalogCache, pin?.key ?? "", CATALOG_TTL_MS, async () => {
+function loadCatalog(pin: OpenProjectBinding | null, scopeKey: string): Promise<UserModelCatalog | null> {
+  return cached(catalogCache, scopeKey, CATALOG_TTL_MS, async () => {
     const result = await window.ade.usage.getModelCatalog?.({}, pin).catch(() => null);
     const catalog = result?.catalog ?? null;
     return catalog?.models.length ? catalog : null;
@@ -47,8 +47,8 @@ function loadCatalog(pin: OpenProjectBinding | null): Promise<UserModelCatalog |
 }
 
 /** `off` unless Jev answers on that machine (Smart decisions on) and the hint setting allows it. */
-function hintMode(pin: OpenProjectBinding | null): Promise<HintMode> {
-  return cached(modeCache, pin?.key ?? "", STATUS_TTL_MS, async () => {
+function hintMode(pin: OpenProjectBinding | null, scopeKey: string): Promise<HintMode> {
+  return cached(modeCache, scopeKey, STATUS_TTL_MS, async () => {
     const [status, config] = await Promise.all([
       window.ade.ai.jevStatus(pin),
       window.ade.projectConfig.get(pin).catch(() => null),
@@ -88,6 +88,12 @@ export type ComposerModelHintArgs = {
   allowedModelIds: readonly string[] | null;
   /** The machine the chat runs on: its catalogue, its Jev. */
   pin: OpenProjectBinding | null;
+  /**
+   * The project tab's own runtime. An unpinned call goes to it, so the caches
+   * are keyed by it: two tabs on two machines (or two projects, whose hint
+   * settings differ) must not share one answer.
+   */
+  ownerBinding: OpenProjectBinding | null;
   /** The user picked this model by hand: it is only ever suggested a stronger model. */
   modelChosen: boolean;
   /** True whenever the picker itself could not change the model (a turn running, a locked or fixed model). */
@@ -124,6 +130,7 @@ export function useComposerModelHint({
   reasoningEffort,
   allowedModelIds,
   pin,
+  ownerBinding,
   modelChosen,
   hidden,
   effortPickedByHand,
@@ -137,6 +144,8 @@ export function useComposerModelHint({
   const seqRef = useRef(0);
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const ownerKeyRef = useRef("");
+  ownerKeyRef.current = ownerBinding?.key ?? "";
   const contextRef = useRef({ attachments, laneName, modelId, allowedModelIds });
   contextRef.current = { attachments, laneName, modelId, allowedModelIds };
   // The machine's catalogue, for the history entry a send records.
@@ -162,12 +171,13 @@ export function useComposerModelHint({
       const seq = ++seqRef.current;
       askedTextRef.current = text;
       const target = pinRef.current;
+      const scopeKey = target?.key ?? ownerKeyRef.current;
       const { attachments: files, laneName: lane, modelId: currentModelId, allowedModelIds: allowed } = contextRef.current;
       const imageCount = files.filter((file) => file.type === "image" || file.type === "image-url").length;
       void (async () => {
-        const mode = await hintMode(target);
+        const mode = await hintMode(target, scopeKey);
         if (mode === "off") return;
-        const catalog = await loadCatalog(target);
+        const catalog = await loadCatalog(target, scopeKey);
         if (!catalog || seq !== seqRef.current) return;
         catalogRef.current = catalog;
         const current = resolveCurrentModel(catalog, currentModelId);

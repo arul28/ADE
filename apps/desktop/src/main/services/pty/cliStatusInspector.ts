@@ -30,7 +30,7 @@ export const CLI_STATUS_QUESTIONS = {
   },
 } satisfies JevQuestions;
 
-export function isRecognizedShellPromptLine(line: string): boolean {
+function isRecognizedShellPromptLine(line: string): boolean {
   const text = line.trim();
   if (!text) return false;
   return /^(?:[$#%❯›➜>]|-?[A-Za-z_][\w.-]*[$#%]|[A-Za-z_][\w.-]*@[\w.-]+(?:\s+.*)?\s*[$#%]|[A-Za-z_][\w.-]*\s+.*\s*[$#%]|PS\s+.+>|[A-Za-z]:\\[^>]*>)$/u.test(text);
@@ -117,9 +117,11 @@ export function buildCliStatusRequest(
 }
 
 /** What a Jev answer means for the session; below the confidence floor, nothing. */
-export function classifyCliStatus(answer: JevAnswer | null | undefined): "waiting" | "errored" | "ignore" {
-  if (answer?.type !== "choice" || !(answer.confidence >= CLI_STATUS_CONFIDENCE_FLOOR)) return "ignore";
-  if (answer.choice === "waiting_for_input") return "waiting";
-  if (answer.choice === "errored") return "errored";
-  return "ignore";
+export function classifyCliStatus(
+  answer: JevAnswer | null | undefined,
+): { verdict: "waiting" | "errored"; confidence: number } | { verdict: "ignore" } {
+  if (answer?.type !== "choice" || !(answer.confidence >= CLI_STATUS_CONFIDENCE_FLOOR)) return { verdict: "ignore" };
+  if (answer.choice === "waiting_for_input") return { verdict: "waiting", confidence: answer.confidence };
+  if (answer.choice === "errored") return { verdict: "errored", confidence: answer.confidence };
+  return { verdict: "ignore" };
 }

@@ -770,7 +770,8 @@ type PtyEntry = {
   attentionRequested: boolean;
   /**
    * This entry raised a `cli_prompt` hand (the idle-terminal check). Output
-   * while waiting only reads the session row when this is set.
+   * while waiting only reads the session row when this is set. It mirrors
+   * that hand: every path that clears the hand clears this too.
    */
   cliPromptAttentionRaised: boolean;
   disposed: boolean;
@@ -2684,8 +2685,8 @@ export function createPtyService({
       return;
     }
 
-    const verdict = classifyCliStatus(answer);
-    if (verdict === "ignore") return;
+    const status = classifyCliStatus(answer);
+    if (status.verdict === "ignore") return;
     if (
       entry.disposed
       || entry.cliStatusLastTailHash !== tailHash
@@ -2694,13 +2695,13 @@ export function createPtyService({
 
     const currentSession = sessionService.get(entry.sessionId);
     if (!currentSession || currentSession.attentionRequestedAt) return;
-    if (verdict === "errored") {
+    if (status.verdict === "errored") {
       // The CLI row has no inferred-failure state while its PTY is still live.
       // Record the bounded classification without copying terminal text.
       logger.info("pty.cli_status_error_detected", {
         sessionId: entry.sessionId,
         toolType: entry.toolTypeHint ?? "shell",
-        confidence: answer?.type === "choice" ? answer.confidence : null,
+        confidence: status.confidence,
       });
       return;
     }
