@@ -978,7 +978,14 @@ chat pane mount, which happens either way.
   is clearly off: another model Jev is at least 0.7 sure of, or an effort
   Jev puts at least 0.7 probability on being two or more levels away. A
   model the user picked by hand is never moved to a weaker one, and no model
-  is moved up for a request Jev puts at the lowest effort. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
+  is moved up for a request Jev puts at the lowest effort. Asked only what
+  the user would pick, Jev copies them (five "say hello" chats on Opus give
+  Opus again), so a third question, `cheapest`, asks for the cheapest model
+  that does the request well, with each model's intelligence index and
+  price from the catalogue (`HintChoice.facts`). Alone it sends real work to
+  the smallest model too, so it shows (`cheaperChoice`, even over a model
+  picked by hand) only at 0.9 confidence or more, on a request Jev puts at
+  the lowest effort, for a weaker model than the current one. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
   it came from the user's similar chats or from the prompt alone. While the
   chip shows, the effort picker's trigger drops its level name below a wide
   composer (`squeezed`), keeping its bars and caret. A model the catalogue
