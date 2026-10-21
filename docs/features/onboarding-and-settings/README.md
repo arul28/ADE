@@ -600,6 +600,10 @@ Renderer — onboarding:
   `anchorGeometry.ts` (shared with the contextual hints).
 - `apps/desktop/src/renderer/onboarding/onboardingProgress.ts` — per-computer
   onboarding progress (started, skipped, the tour's step, each hint's state).
+- `apps/desktop/src/renderer/onboarding/situationalSuggestions.ts` +
+  `renderer/components/app/suggestions/` — situational suggestions (tier 3):
+  the shared rules, the card hook, the signal hooks and the send-time checks
+  (see [Situational suggestions](#situational-suggestions)).
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
   — persistent help menu in the top bar: docs link, "Show me around again",
   and one help preference (the detailed hover-tooltip toggle). Glossary,
@@ -1983,6 +1987,42 @@ due, a pager.
 To add one: create `pages/<Name>.tsx` exporting a default component that
 takes `{ close }` (call it before navigating from a "Try it" button), then add
 its entry at the top of `ANNOUNCEMENT_PAGES`.
+
+### Situational suggestions
+
+Onboarding's third tier: a small card in the bottom-right corner (the
+`suggestion` placement, see `docs/design/notices.md`) that shows a feature only
+when ADE sees a signal that it would help now. Each card says what the feature
+is, why now, one action, and **Not now**, which files it into ADE Tips under
+"Suggested for you" (start it from there, or **Don't suggest again**).
+
+The shared rules live in `renderer/onboarding/situationalSuggestions.ts`
+(`ade.suggestions.v1`, per computer): one card per signal (again only after a
+suggestion's own repeat time), at most one new card per launch and none for
+four hours after the last, nothing while the tour runs or until onboarding
+finished (or was skipped) on an earlier launch. "Not now" snoozes the kind for
+two weeks. `components/app/suggestions/useSituationalSuggestion.tsx` draws the
+card and does the Tips plumbing; `SituationalSuggestions.tsx` (mounted in
+`AppShell`) holds one small hook per signal. The lane-template suggestion
+(`useLaneDependencyBanners`) predates the helper and keeps its own storage.
+
+| Suggestion | Signal | Action |
+| --- | --- | --- |
+| Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
+| `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
+| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Secrets |
+| Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
+| The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
+| Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
+| ADE on iPhone | A week after first run, still no other machine and no paired phone (paired devices are read once, then) | Connections › Phone |
+| Stacked PRs | A lane built on another lane (not the main checkout) whose pull request is open, per Activity's PR items, while it has none | PRs |
+
+The send-time checks (`chatSendSignals.ts`, called from `AgentChatPane`'s
+submit) read only the typed text, in one O(text) pass, so they work for a chat
+on any machine; tracker connections are checked only for chats on the tab's
+machine, the one Settings connects. Nothing polls: the other signals read push
+feeds the shell already holds. Preview each one in the browser mock with
+`?mockSuggestion=<id>` and the flags documented in `browserMock.ts`.
 
 ### Machine layer (one-time per machine)
 

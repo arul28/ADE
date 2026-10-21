@@ -28,7 +28,15 @@ import {
 } from "./anchorGeometry";
 import { useLaneChatHandoff } from "../../../lib/laneChatHandoff";
 import { AdeTourCursorArt } from "./AdeTourCursorArt";
-import { FIRST_CHAT_PROMPT, pickFirstChatModel, setDraftModel, type FirstChatModel } from "./firstChat";
+import {
+  FIRST_CHAT_PROMPT,
+  pickFirstChatModel,
+  restoreRememberedLaunch,
+  setDraftModel,
+  snapshotRememberedLaunch,
+  type FirstChatModel,
+  type RememberedLaunchSnapshot,
+} from "./firstChat";
 import {
   TOUR_FINISH_ID,
   TOUR_STEPS,
@@ -194,6 +202,9 @@ let firstChatSetup: FirstChatSetup = null;
  * model picked (`firstChat.ts`). Never sends. On the tab's own machine
  * (`pin` null), where its lanes and its status come from.
  */
+/** What the composer remembered before the first chat; put back when the step ends. */
+let rememberedLaunch: RememberedLaunchSnapshot | null = null;
+
 function useFirstChatPrefill(active: boolean): FirstChatSetup {
   const handOff = useLaneChatHandoff(null, { startDraftInLane: true });
   const primaryLaneId = useAppStore((state) => state.lanes.find((lane) => lane.laneType === "primary")?.id ?? null);
@@ -207,6 +218,7 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
       // Wait for Work's chats list to say there is nothing yet.
       if (firstChatSetup || !noChatsToOpen()) return;
       firstChatSetup = { model: null, noAgents: false };
+      rememberedLaunch ??= snapshotRememberedLaunch();
       watch?.dispose();
       handOff({ laneId: primaryLaneId, sessionId: null, prompt: FIRST_CHAT_PROMPT });
       void window.ade.ai.getStatus()
@@ -224,6 +236,13 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
       watch?.dispose();
     };
   }, [active, handOff, primaryLaneId]);
+
+  // The step is over (sent, skipped or left): the user's own model is the default again.
+  useEffect(() => {
+    if (active || !rememberedLaunch) return;
+    restoreRememberedLaunch(rememberedLaunch);
+    rememberedLaunch = null;
+  }, [active]);
 
   return setup;
 }

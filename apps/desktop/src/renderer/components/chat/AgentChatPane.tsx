@@ -446,6 +446,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
 import { recordStarPillMessageSent, recordStarPillThreadCreated } from "../../lib/starPillActivity";
+import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
   setComposerDraftPresence,
@@ -13714,10 +13715,12 @@ export function AgentChatPane({
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
-      if (await sendToContinuedChat()) {
-        clearPromptSuggestionForSession(selectedSessionId);
-        return;
-      }
+    }
+    // Situational suggestions read the typed text here, once, and keep none of it.
+    noteChatSendForSuggestions(draft, { projectRoot, pin: chatRuntimePinRef.current });
+    if (selectedSessionId && await sendToContinuedChat()) {
+      clearPromptSuggestionForSession(selectedSessionId);
+      return;
     }
     clearPromptSuggestionForSession(selectedSessionId);
     if (draft.trim().length || attachments.length) recordStarPillMessageSent();

@@ -17,6 +17,7 @@ import {
 } from "../../../shared/types";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { relativeWhen } from "../../lib/format";
+import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { queueChatImports } from "../../onboarding/pendingChatImports";
 import { useAppStore } from "../../state/appStore";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -144,6 +145,7 @@ export async function addFirstRunProjects(
   const add = window.ade.app.addOnboardingProjects;
   if (!projects.length || !add) return { rootPaths: [] };
   await add(projects.map((project) => project.rootPath));
+  window.dispatchEvent(new Event(RECENT_PROJECTS_CHANGED_EVENT));
   queueChatImports(
     projects
       .filter((project) => project.recentChatCount > 0 && importRoots.has(project.rootPath))

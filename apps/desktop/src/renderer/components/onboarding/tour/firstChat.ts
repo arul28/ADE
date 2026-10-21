@@ -61,3 +61,46 @@ export async function setDraftModel(modelId: string, timeoutMs = 4_000): Promise
   }
   return false;
 }
+
+/**
+ * The composer remembers the last launched model and controls
+ * (`ade.chat.last*` keys in `AgentChatPane`). The first chat runs on a cheap
+ * model the user did not pick, so the tour puts their own choice back once
+ * the step is over: new chats keep starting on what they had before.
+ */
+const REMEMBERED_LAUNCH_PREFIX = "ade.chat.last";
+
+export type RememberedLaunchSnapshot = Map<string, string | null>;
+
+export function snapshotRememberedLaunch(): RememberedLaunchSnapshot {
+  const snapshot: RememberedLaunchSnapshot = new Map();
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(REMEMBERED_LAUNCH_PREFIX)) snapshot.set(key, window.localStorage.getItem(key));
+    }
+  } catch {
+    // Storage unavailable: nothing to restore later either.
+  }
+  return snapshot;
+}
+
+/** Puts every `ade.chat.last*` key back as it was, removing ones the first chat added. */
+export function restoreRememberedLaunch(snapshot: RememberedLaunchSnapshot): void {
+  try {
+    const current: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(REMEMBERED_LAUNCH_PREFIX)) current.push(key);
+    }
+    for (const key of current) {
+      if (!snapshot.has(key)) window.localStorage.removeItem(key);
+    }
+    for (const [key, value] of snapshot) {
+      if (value === null) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // Storage unavailable: the composer keeps the cheap model as last used.
+  }
+}

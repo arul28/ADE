@@ -1,5 +1,16 @@
 import { useSyncExternalStore } from "react";
-import { Stack, type Icon } from "@phosphor-icons/react";
+import {
+  At,
+  DeviceMobile,
+  Gauge,
+  GitPullRequest,
+  Key,
+  LinkSimple,
+  Repeat,
+  SquaresFour,
+  Stack,
+  type Icon,
+} from "@phosphor-icons/react";
 
 /**
  * Situational suggestions (tier 3 of onboarding) that the user postponed with
@@ -16,9 +27,23 @@ import { Stack, type Icon } from "@phosphor-icons/react";
  *   for any project, and
  * - `start` for the scope it can start right now (the open project), so Tips
  *   can start it with the same pin and data the suggestion card would use.
+ *
+ * Every suggestion but the lane template goes through
+ * `components/app/suggestions/useSituationalSuggestion.tsx`, which does this
+ * registering and keeps the shared rules (one at a time, a cooldown, never
+ * during onboarding) in `situationalSuggestions.ts`.
  */
 
-export type AdeSuggestionId = "lane-template";
+export type AdeSuggestionId =
+  | "lane-template"
+  | "usage-low"
+  | "machine-mention"
+  | "chat-secret"
+  | "issue-tracker"
+  | "parallel-chats"
+  | "repeat-prompt"
+  | "pair-phone"
+  | "stacked-prs";
 
 export type AdeSuggestionDefinition = {
   id: AdeSuggestionId;
@@ -38,6 +63,69 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
     why: "This repo has packages, and new lanes start without them. A template installs or copies them each time.",
     icon: Stack,
     actionLabel: "Set one up with an agent",
+  },
+  "usage-low": {
+    id: "usage-low",
+    title: "A second account keeps your chats going",
+    why: "A plan here was nearly used up. With another account signed in, "
+      + "new chats can start on the one with room left.",
+    icon: Gauge,
+    actionLabel: "Add an account",
+  },
+  "machine-mention": {
+    id: "machine-mention",
+    title: "@ in a chat sends work to another machine",
+    why: "Another machine is connected. Type @ in any chat and pick it to start the work there.",
+    icon: At,
+    actionLabel: "Try it in a new chat",
+  },
+  "chat-secret": {
+    id: "chat-secret",
+    title: "ADE secrets keep keys out of your chats",
+    why: "A message you sent looked like it had a key or password in it. "
+      + "Saved as a secret, agents can use it without it sitting in a transcript.",
+    icon: Key,
+    actionLabel: "Open Secrets",
+  },
+  "issue-tracker": {
+    id: "issue-tracker",
+    title: "A connected tracker turns issue links into issues",
+    why: "You sent a link to an issue in a tracker ADE is not connected to. "
+      + "Connected, agents can read the issue and lanes can link to it.",
+    icon: LinkSimple,
+    actionLabel: "Connect it",
+  },
+  "parallel-chats": {
+    id: "parallel-chats",
+    title: "The grid shows every running chat side by side",
+    why: "Three or more chats are running at once. "
+      + "The grid lets you watch and answer each one without switching.",
+    icon: SquaresFour,
+    actionLabel: "Open the grid",
+  },
+  "repeat-prompt": {
+    id: "repeat-prompt",
+    title: "Automations send a prompt for you",
+    why: "You sent the same prompt three times this week. "
+      + "An automation can send it on a schedule or when something happens.",
+    icon: Repeat,
+    actionLabel: "Open Automations",
+  },
+  "pair-phone": {
+    id: "pair-phone",
+    title: "ADE on your iPhone keeps up with your chats",
+    why: "It has been a week and only this computer is connected. "
+      + "On your phone you can follow chats, answer them and hear when one needs you.",
+    icon: DeviceMobile,
+    actionLabel: "Pair your phone",
+  },
+  "stacked-prs": {
+    id: "stacked-prs",
+    title: "Stacked pull requests review a lane built on another",
+    why: "A lane here is built on a lane with an open pull request. "
+      + "Its PR can target that branch, so each one is reviewed on its own.",
+    icon: GitPullRequest,
+    actionLabel: "Open PRs",
   },
 };
 

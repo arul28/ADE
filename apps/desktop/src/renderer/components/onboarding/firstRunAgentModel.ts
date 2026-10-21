@@ -86,7 +86,8 @@ function notConnected(agent: FirstRunAgent, connection: AiProviderConnectionStat
 /**
  * One agent's status, by the Settings tiles' rules: Claude by its SDK binary
  * and auth, Muse by runtime and sign-in, OpenCode by its own binary and
- * catalog, everyone else by their connection row's `runtimeAvailable`.
+ * catalog, everyone else by their connection row's `runtimeAvailable` — plus
+ * the model picker's `availableProviders` flag for any of them.
  */
 export function firstRunAgentStatus(
   agent: FirstRunAgent,
@@ -98,6 +99,17 @@ export function firstRunAgentStatus(
     return failed ? notConnected(agent, null) : { state: "checking", detail: "Checking…" };
   }
   const connection = agent.id === "opencode" ? null : status.providerConnections?.[agent.id] ?? null;
+  // The model picker's own "can run here" flag. Setup asks one question — can
+  // this agent chat now? — so a provider ADE already offers models for counts
+  // as connected even where Settings still wants more (Cursor signed in with
+  // OAuth but no verified API key).
+  //
+  // Before any project is open the status comes from the machine-level
+  // fallback, which never probes a runtime, so `runtimeAvailable` can read
+  // false for an installed, signed-in agent. ADE's own copy present plus a
+  // saved sign-in is the honest "ready" here.
+  const runnable = (status.availableProviders as Partial<Record<string, unknown>> | undefined)?.[agent.id] === true
+    || (connection?.runtimeDetected === true && connection.authAvailable === true);
   switch (agent.id) {
     case "claude": {
       const claude = status.availableProviders?.claude;
@@ -118,12 +130,12 @@ export function firstRunAgentStatus(
       };
     }
     case "muse":
-      if (connection?.runtimeAvailable && connection.authAvailable) {
+      if ((connection?.runtimeAvailable && connection.authAvailable) || runnable) {
         return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
       }
       return notConnected(agent, connection);
     default:
-      if (connection?.runtimeAvailable) {
+      if (connection?.runtimeAvailable || runnable) {
         return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
       }
       return notConnected(agent, connection);

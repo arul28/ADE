@@ -268,7 +268,9 @@ export const TOUR_STEPS: readonly TourStepDef[] = [
     anchors: ["home-edit-tools"],
     title: "Add, move and resize",
     line: "Add widgets, pick a card look, save layouts. Drag a widget to move it and pull its corner to resize.",
-    advance: "next",
+    // Asks for Done, so the tour never leaves Home stuck in edit mode.
+    ask: { label: "Press Done when you're finished", icon: "click" },
+    advance: "action",
     place: ["below", "left"],
     goTo: "home",
     where: "Home",

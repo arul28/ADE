@@ -66,6 +66,7 @@ import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
+import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
@@ -1118,6 +1119,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           navigate={navigate}
         />
       ) : null}
+      <SituationalSuggestions
+        enabled={!showWelcome && Boolean(project?.rootPath)}
+        projectRoot={project?.rootPath ?? null}
+        projectBinding={projectBinding}
+        lanes={lanes}
+        githubStatus={githubStatus}
+        navigate={navigate}
+      />
 
       <div className="flex-1 flex min-h-0">
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>

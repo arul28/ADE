@@ -148,6 +148,12 @@ event, and it is never urgent, so it has its own quiet presentation:
   on the card) or turn it off for good ("Don't suggest again", the owner's
   `registerSuggestionKind` handler). Add a new suggestion to `ADE_SUGGESTIONS`
   in that file so the card and the Tips row share one title and one line.
+- **The shared rules.** A new suggestion goes through
+  `useSituationalSuggestion` (`components/app/suggestions/`), which does the
+  registering above and applies the rules every suggestion shares
+  (`renderer/onboarding/situationalSuggestions.ts`): once per signal, one new
+  card per launch, a four-hour cooldown after any card, and nothing during
+  onboarding. The owner passes only its signal and its action.
 
 ```tsx
 useAppBanner(
