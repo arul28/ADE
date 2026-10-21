@@ -44,6 +44,7 @@ import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
 import { computerUseEntryWroteImage } from "./chatComputerUseRows";
 import { imageViewLocalPath } from "../../../shared/chatImageUrls";
 import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
+import { foldQuietNoticeLines, type QuietNoticeSibling } from "./quietNoticeLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -650,6 +651,11 @@ export type ChatTranscriptRenderEnvelope = {
    */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
   /**
+   * Other receipts drawn on this line's `+N`, in transcript order. Set only by
+   * `foldQuietNoticeLines`. Render-side only, like `repeatCount`.
+   */
+  quietNoticeSiblings?: QuietNoticeSibling[];
+  /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
    * row still sorts on it but must not show it as a clock (subagent drill-in).
@@ -692,6 +698,8 @@ export type ChatTranscriptGroupedEnvelope = {
   imageViewSiblings?: CodexImageViewRenderEvent[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `spawnCompletionSiblings`. */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `quietNoticeSiblings`. */
+  quietNoticeSiblings?: QuietNoticeSibling[];
   /**
    * On a `done` row: the turn ended at a usage limit, so its turn-end line
    * says so and the error row is not drawn. Set only by `foldTurnFailureRows`.
@@ -4240,7 +4248,7 @@ function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem));
+  return foldQuietNoticeLines(foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem)));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

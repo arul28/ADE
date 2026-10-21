@@ -2354,7 +2354,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });
 
-  it("keeps non-rate-limit, non-warning notice details in collapsible cards", () => {
+  it("draws a receipt notice as one quiet line whose detail opens on click", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -2368,9 +2368,58 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("hook")).toBeTruthy();
     expect(screen.getByText("Hook stderr captured")).toBeTruthy();
-    expect(screen.getByRole("button")).toBeTruthy();
+    // No kind chip and no card chrome; the row is the sentence.
+    expect(screen.queryByText("hook")).toBeNull();
+    const row = screen.getByTestId("quiet-notice");
+    const button = within(row).getByRole("button");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(button);
+    expect(screen.getByText("Long hook output remains behind a disclosure.")).toBeTruthy();
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("opens a group of receipts even when none of them carries a detail", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "system_notice", noticeKind: "info", message: "Session entered plan mode" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Message queued — will be sent when the current turn completes.",
+        },
+      },
+    ]);
+
+    const row = screen.getByTestId("quiet-notice");
+    expect(screen.getByText("+1")).toBeTruthy();
+    expect(screen.queryByText("Message queued — will be sent when the current turn completes.")).toBeNull();
+    fireEvent.click(within(row).getByRole("button"));
+    expect(screen.getByText("Message queued — will be sent when the current turn completes.")).toBeTruthy();
+  });
+
+  it("keeps a title-only detail visible when the row opens", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session entered plan mode",
+          detail: { title: "Plan mode entered" },
+        },
+      },
+    ]);
+
+    fireEvent.click(within(screen.getByTestId("quiet-notice")).getByRole("button"));
+    expect(screen.getByText("Plan mode entered")).toBeTruthy();
   });
 
   it("draws a warning notice as one compact line that expands to the full message and detail", () => {
