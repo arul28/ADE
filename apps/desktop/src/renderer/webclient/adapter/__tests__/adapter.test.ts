@@ -25,6 +25,7 @@ import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account
 import { stableCacheKey } from "../infra/cacheKey";
 import { createCoalescingReadCache } from "../infra/coalescingReadCache";
 import { createProjectState } from "../infra/projectState";
+import { isAdeAvailable, isAdeUnavailableError } from "../../../lib/adeAvailability";
 
 const project: ProjectInfo = {
   rootPath: "/repo",
@@ -1070,7 +1071,10 @@ describe("createAdeWebAdapter", () => {
       getAccessToken: vi.fn(async () => "account-token"),
       getRelayBaseUrls: () => ["wss://relay.example"],
     } as unknown as BrowserAccountClient;
-    const open = vi.fn(() => ({}));
+    // A real browser returns null from window.open when "noopener" is in the
+    // features string, so the adapter opens blank and cuts the opener itself.
+    const tab = { opener: {} as unknown, location: { href: "about:blank" }, close: vi.fn() };
+    const open = vi.fn(() => tab);
     vi.stubGlobal("window", {
       location: { origin: "https://app.ade-app.dev", hostname: "app.ade-app.dev" },
       open,
@@ -1124,11 +1128,9 @@ describe("createAdeWebAdapter", () => {
         projectId: "0b3d2f61-9a44-4a1c-9c65-6a4e0a3f9a11",
         rootPath: "/Users/arul/Projects/Studio",
       }]);
-      expect(open).toHaveBeenCalledWith(
-        "https://app.ade-app.dev/work?sessionId=session-studio",
-        "_blank",
-        "noopener,noreferrer",
-      );
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(tab.opener).toBeNull();
+      expect(tab.location.href).toBe("https://app.ade-app.dev/work?sessionId=session-studio");
       // A new tab owns the destination, so the current one must not move.
       expect(navigations).toEqual([]);
     } finally {
@@ -3112,18 +3114,63 @@ describe("createAdeWebAdapter", () => {
     expect(fake.terminalUnsubscribeCalls).toEqual(["session-1"]);
   });
 
-  it("keeps unknown namespaces harmless and logs once per missing leaf", async () => {
+  it("shares one host request between identical reads, but a read after a write asks the host again", async () => {
+    fake.descriptors = descriptors(["usage.getModelPriceOverrides", "usage.setModelPriceOverride"]);
+    const pending: Array<(value: unknown) => void> = [];
+    const sendCommand = fake.sendCommand.bind(fake);
+    fake.sendCommand = (action, args, opts) => {
+      if (action !== "usage.getModelPriceOverrides") return sendCommand(action, args, opts);
+      fake.commandCalls.push({ action, args, opts: opts ?? {} });
+      return new Promise((resolve) => pending.push(resolve));
+    };
+    const reads = () => fake.commandCalls.filter((call) => call.action === "usage.getModelPriceOverrides").length;
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    // Two surfaces asking at once cost one round-trip and see the same answer.
+    const first = adapter.ade.usage.getModelPriceOverrides();
+    const second = adapter.ade.usage.getModelPriceOverrides();
+    await flushMicrotasks();
+    expect(reads()).toBe(1);
+
+    // A write lands while that read is still out. A read made after it must not
+    // join the older request, whose answer predates the write.
+    await adapter.ade.usage.setModelPriceOverride({ modelId: "m", inputPerMillion: 1 } as never);
+    const afterWrite = adapter.ade.usage.getModelPriceOverrides();
+    await flushMicrotasks();
+    expect(reads()).toBe(2);
+
+    pending[0]!({ before: true });
+    pending[1]!({ after: true });
+    await expect(first).resolves.toEqual({ before: true });
+    await expect(second).resolves.toEqual({ before: true });
+    await expect(afterWrite).resolves.toEqual({ after: true });
+    adapter.dispose();
+  });
+
+  it("reports a missing member as unavailable: its calls reject, feature checks fail, subscriptions are inert", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const adapter = createAdeWebAdapter(fake.asClient());
+    const mystery = (adapter.ade as never as {
+      mystery: { doThing: () => Promise<unknown>; onThing: (cb: () => void) => () => void };
+    }).mystery;
 
-    await expect((adapter.ade as never as { mystery: { doThing: () => Promise<unknown> } }).mystery.doThing()).resolves.toBeNull();
-    await expect((adapter.ade as never as { mystery: { doThing: () => Promise<unknown> } }).mystery.doThing()).resolves.toBeNull();
-    const unsubscribe = (adapter.ade as never as { mystery: { onThing: (cb: () => void) => () => void } }).mystery.onThing(() => undefined);
-
+    // A missing member must never read as a real empty answer.
+    await expect(mystery.doThing()).rejects.toSatisfy(isAdeUnavailableError);
+    await expect(mystery.doThing()).rejects.toThrow("ade.mystery.doThing");
+    const unsubscribe = mystery.onThing(() => undefined);
     expect(typeof unsubscribe).toBe("function");
+    expect(() => unsubscribe()).not.toThrow();
+
+    // Feature checks see the gap, the whole missing namespace included; real members pass.
+    expect(isAdeAvailable(mystery)).toBe(false);
+    expect(isAdeAvailable(mystery.doThing)).toBe(false);
+    expect(isAdeAvailable(adapter.ade.app)).toBe(true);
+    expect(isAdeAvailable(adapter.ade.app.openExternal)).toBe(true);
+
     expect(debug).toHaveBeenCalledTimes(2);
-    expect(debug).toHaveBeenNthCalledWith(1, "[ade-web] unimplemented:", "ade.mystery", "doThing");
-    expect(debug).toHaveBeenNthCalledWith(2, "[ade-web] unimplemented:", "ade.mystery", "onThing");
+    expect(debug).toHaveBeenNthCalledWith(1, "[ade-web] unimplemented:", "ade.mystery.doThing");
+    expect(debug).toHaveBeenNthCalledWith(2, "[ade-web] unimplemented:", "ade.mystery.onThing");
 
     adapter.dispose();
   });

@@ -223,6 +223,10 @@ The entire signed-out → machine → project funnel is a custom `WebWorkspaceHu
   in this view" state (the UI's own missing-bridge affordances never trip because the stub object exists). Worth a
   sweep: log-audit `[ade-web] unimplemented:` debug output across the app and triage each hit into implement / hide /
   honest-refusal. Candidate generator for future WS-F items.
+  **Resolved (PR #1863):** missing members now reject with `AdeUnavailableError`
+  and report unavailable to `isAdeAvailable`; the renderer's feature checks and
+  the call sites that would hang or crash were gated, and `usage.onUpdate` is
+  synthesized from stats freshness.
 
 ### C12 — Hidden-tab surfacing on web (audit complete; product decision + fixes)
 Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real gate is `TabNav.tsx:299`

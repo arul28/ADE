@@ -458,10 +458,7 @@ describe("AppShell AI provider status", () => {
     expect(invalidateSessionListCache).toHaveBeenCalledWith({
       projectRoot: project.rootPath,
     });
-    expect(listSessionsCached).toHaveBeenCalledWith(
-      { limit: 150 },
-      { force: true },
-    );
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
     expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
     expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
   });
@@ -502,10 +499,7 @@ describe("AppShell AI provider status", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(listSessionsCached).toHaveBeenCalledWith(
-      { limit: 150 },
-      { force: true },
-    );
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
     expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
     expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
   });
@@ -909,10 +903,7 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(getStatusMock).not.toHaveBeenCalled();
-    expect(listSessionsCached).toHaveBeenCalledWith(
-      { limit: 150 },
-      { force: true },
-    );
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
     expect(vi.mocked(listSessionsCached).mock.calls.some(
       ([args]) => (args as { status?: string } | undefined)?.status === "running",
     )).toBe(false);
