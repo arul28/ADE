@@ -201,6 +201,8 @@ import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
+import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
+import { quietNoticeIcon } from "./quietNoticeIcon";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
@@ -861,14 +863,22 @@ function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): bo
   );
 }
 
-function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
+function renderNoticeDetail(
+  detail: string | AgentChatNoticeDetail,
+  options?: { omitTitle?: boolean; quiet?: boolean },
+): React.ReactNode {
+  // A quiet line's detail is the second level of the row, so it reads a step
+  // below the message rather than above it (the card's detail is its content).
+  const textClass = options?.quiet
+    ? "text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/50"
+    : "text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60";
   if (typeof detail === "string") {
-    return <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">{detail}</div>;
+    return <div className={`whitespace-pre-wrap break-words ${textClass}`}>{detail}</div>;
   }
 
   return (
-    <div className="space-y-3 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">
-      {detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
+    <div className={`space-y-3 ${textClass}`}>
+      {!options?.omitTitle && detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
       {detail.summary?.trim() ? <div className="whitespace-pre-wrap break-words">{detail.summary.trim()}</div> : null}
       {detail.metrics?.length ? (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -1239,6 +1249,8 @@ type RenderEnvelope = {
   imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
   /** Other children's finished-turn notices on this line; see ChatTranscriptRenderEnvelope. */
   spawnCompletionSiblings?: SpawnCompletionSibling[];
+  /** Other receipts drawn on this line's `+N`; see ChatTranscriptRenderEnvelope. */
+  quietNoticeSiblings?: QuietNoticeSibling[];
   /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
   endedAtUsageLimit?: boolean;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
@@ -1424,6 +1436,112 @@ function WebSearchResultList({ results, resultsTotal, isFailed }: WebSearchResul
 /** Drops the `⚠` a provider already put in front of a warning; the row draws its own icon. */
 function stripLeadingWarningGlyph(message: string): string {
   return message.replace(/^\s*\u26A0\uFE0F?\s*/u, "").trim() || message.trim();
+}
+
+/**
+ * A receipt notice as one muted line: a glyph that says what happened, the
+ * message, and — when there is a detail — a chevron that opens it. No box, no
+ * `INFO` chip; a status that changed nothing is not an answer.
+ *
+ * Neighbouring receipts from the same turn share the line (`+N`), which is what
+ * keeps a turn's queue chatter from stacking four identical-looking rows.
+ */
+function QuietNoticeRow({
+  event,
+  siblings,
+}: {
+  event: SystemNoticeEvent;
+  siblings?: readonly QuietNoticeSibling[];
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const entries = useMemo(
+    () => [{ key: "lead", event }, ...(siblings ?? [])],
+    [event, siblings],
+  );
+  const grouped = entries.length > 1;
+  // A group must open even with no details: the other messages are the point.
+  const expandable = grouped || entries.some((entry) => hasNoticeDetail(entry.event.detail));
+  const Icon = quietNoticeIcon(event);
+  const extraCount = entries.length - 1;
+  const summary = (
+    <>
+      <Icon size={12} weight="regular" className="shrink-0 text-fg/35" aria-hidden />
+      <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
+        {event.message}
+      </span>
+      {extraCount > 0 ? (
+        <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/28">
+          +{extraCount}
+        </span>
+      ) : null}
+      {expandable ? (
+        <CaretRight
+          size={9}
+          weight="bold"
+          className={cn(
+            "shrink-0 text-fg/20 transition-[transform,color] group-hover:text-fg/35",
+            open && "rotate-90",
+          )}
+          aria-hidden
+        />
+      ) : null}
+    </>
+  );
+  const summaryClass = "flex min-w-0 max-w-full items-center gap-2 text-left font-sans";
+  return (
+    <div
+      className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] flex-col"
+      data-testid="quiet-notice"
+      data-notice-count={entries.length}
+    >
+      {expandable ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          title={grouped ? `${entries.length} notices in this turn` : undefined}
+          onClick={() => setOpen((value) => !value)}
+          className={cn(
+            "group -ml-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-fg/[0.03]",
+            summaryClass,
+          )}
+        >
+          {summary}
+        </button>
+      ) : (
+        <div
+          className={summaryClass}
+          title={grouped ? `${entries.length} notices in this turn` : undefined}
+        >
+          {summary}
+        </div>
+      )}
+      {open ? (
+        <div
+          id={panelId}
+          className="ml-[18px] space-y-1.5 border-l border-fg/[0.08] pb-1 pl-3 pt-1"
+        >
+          {(grouped ? entries : entries.slice(0, 1)).map((entry) => (
+            <div key={entry.key} className="space-y-1">
+              {grouped ? (
+                <div className="flex min-w-0 items-center gap-2 text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
+                  <QuietEntryIcon event={entry.event} />
+                  <span className="min-w-0 truncate">{entry.event.message}</span>
+                </div>
+              ) : null}
+              {entry.event.detail ? renderNoticeDetail(entry.event.detail, { omitTitle: true, quiet: true }) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function QuietEntryIcon({ event }: { event: SystemNoticeEvent }) {
+  const Icon = quietNoticeIcon(event);
+  return <Icon size={10} weight="regular" className="shrink-0 text-fg/30" aria-hidden />;
 }
 
 /**
@@ -3664,6 +3782,14 @@ function renderEvent(
           {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
         </div>
       );
+    }
+
+    // ── Receipts: one quiet line ──
+    // Nothing to act on, so no card and no kind chip: a semantic glyph, the
+    // message, and the detail behind a click. Neighbouring receipts share the
+    // line (`+N`), folded in `filterVisibleTranscriptRows`.
+    if (isQuietNoticeEvent(event)) {
+      return <QuietNoticeRow event={event} siblings={envelope.quietNoticeSiblings} />;
     }
 
     if (hasDetail) {
