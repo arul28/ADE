@@ -275,8 +275,12 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
   // ---------------------------------------------------------------------------
   // Lane setup for a batch's imported lanes
 
-  /** One per service instance: a setup claimed by a process that died is taken over. */
-  const laneSetupRunnerId = randomUUID();
+  /**
+   * One per service instance: a setup claimed by a process that died is taken
+   * over. Made on first use, so a brain that never imports a lane spends none.
+   */
+  let laneSetupRunnerIdValue: string | null = null;
+  const laneSetupRunnerId = (): string => (laneSetupRunnerIdValue ??= randomUUID());
 
   const beginLaneSetup = (importId: string): { claimed: boolean; status: AgentChatCrossMachineLaneSetupStatus } => {
     const record = readLaneImport(importId);
@@ -284,13 +288,13 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
     if (record.setupStatus && record.setupStatus !== "running") {
       return { claimed: false, status: record.setupStatus };
     }
-    if (record.setupStatus === "running" && record.setupRunnerId === laneSetupRunnerId) {
+    if (record.setupStatus === "running" && record.setupRunnerId === laneSetupRunnerId()) {
       return { claimed: false, status: "running" };
     }
     persistLaneImport({
       ...record,
       setupStatus: "running",
-      setupRunnerId: laneSetupRunnerId,
+      setupRunnerId: laneSetupRunnerId(),
       updatedAt: nowIso(),
     });
     return { claimed: true, status: "running" };
