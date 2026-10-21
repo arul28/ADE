@@ -829,6 +829,7 @@ export function ProjectWelcomePage() {
                 primary
                 label="Add project"
                 tour="project.welcomeAddButton"
+                onboardingAnchor="add-project"
                 disabled={webMode && !activeWebMachine}
                 title={
                   webMode && !activeWebMachine

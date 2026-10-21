@@ -1960,6 +1960,30 @@ video it replaced), so a computer set up before it existed never sees it.
 Everything here runs on, and reads, the computer ADE is opening on. The
 hosted web client has no first run; it controls other computers.
 
+### What's new pages
+
+Free-form announcements the owner writes as features land
+(`renderer/components/announcements/`). A page is any React component in
+`pages/`, with one entry in `announcementPages.ts`
+(`{ id, revision, title, Page }`); nothing about its layout is fixed. The
+modal (`AnnouncementsHost`) adds only a close button and, when several are
+due, a pager.
+
+- **Once per page per computer**, keyed by `id` + `revision` in this
+  renderer's localStorage (`ade.announcements.seen.v1`). A new entry shows on
+  every computer that has not seen it; bump `revision` to show an edited page
+  again; remove the entry to retire it. Not tied to releases.
+- **When:** inside a project (never on Home), a few seconds after it opens,
+  with no dialog, setup screen or tour up, and only once onboarding finished
+  or was skipped before this launch, so a new user meets them on a later
+  visit. A page counts as seen once it is on screen.
+- **Reopen:** Help › What's new and the command palette ("What's new") show
+  every page.
+
+To add one: create `pages/<Name>.tsx` exporting a default component that
+takes `{ close }` (call it before navigating from a "Try it" button), then add
+its entry at the top of `ANNOUNCEMENT_PAGES`.
+
 ### Machine layer (one-time per machine)
 
 Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in

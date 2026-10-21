@@ -400,6 +400,7 @@ export function RecentProjectRow({
   return (
     <div
       className="ade-welcome-row"
+      data-onboarding-anchor="project-row"
       data-ade-stale={web?.stale ? "true" : undefined}
       data-open={isOpen ? "true" : undefined}
       data-dim={!busy && offline ? "true" : undefined}

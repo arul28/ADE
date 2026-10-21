@@ -175,6 +175,39 @@ h6 {
   opacity: 0.82;
 }
 
+/* The project tab strip scrolls sideways once its tabs reach their minimum
+   width (TopBar). Whichever edge hides tabs fades out, so a clipped tab reads
+   as "more this way" rather than as a broken tab. TopBar sets the attributes. */
+.ade-shell-project-tab-strip {
+  --tab-strip-fade-start: 0px;
+  --tab-strip-fade-end: 0px;
+}
+
+.ade-shell-project-tab-strip[data-overflow-start] {
+  --tab-strip-fade-start: 24px;
+}
+
+.ade-shell-project-tab-strip[data-overflow-end] {
+  --tab-strip-fade-end: 24px;
+}
+
+.ade-shell-project-tab-strip:is([data-overflow-start], [data-overflow-end]) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--tab-strip-fade-start),
+    #000 calc(100% - var(--tab-strip-fade-end)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--tab-strip-fade-start),
+    #000 calc(100% - var(--tab-strip-fade-end)),
+    transparent 100%
+  );
+}
+
 .ade-shell-project-tab {
   --project-tab-accent: var(--color-accent);
   height: var(--shell-project-tab-height);

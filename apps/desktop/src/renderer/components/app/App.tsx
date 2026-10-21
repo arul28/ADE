@@ -39,6 +39,7 @@ import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
+import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
@@ -1589,6 +1590,8 @@ export function App() {
               render nothing unless onboarding is on. */}
           <OnboardingTourHost />
           <OnboardingHintHost />
+          {/* "What's new" pages: once per computer, inside a project, after onboarding. */}
+          <AnnouncementsHost />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}

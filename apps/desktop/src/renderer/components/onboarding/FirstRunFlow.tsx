@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
+  ArrowsOut,
   Check,
   CircleNotch,
   Desktop,
   FolderSimple,
   Plus,
+  X,
 } from "@phosphor-icons/react";
 import {
   EXTERNAL_SESSION_PROVIDER_LABELS,
@@ -19,6 +21,7 @@ import { queueChatImports } from "../../onboarding/pendingChatImports";
 import { useAppStore } from "../../state/appStore";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { AdeQrCode } from "../ui/AdeQrCode";
+import { firstRunAgents } from "./firstRunAgentModel";
 import "./firstRun.css";
 
 /**
@@ -29,11 +32,11 @@ import "./firstRun.css";
  *    run here, with sign-in for the ones that cannot.
  * 3. **Bring your projects in**: the git projects any coding agent ADE can
  *    import from (Claude Code, Codex, Cursor, OpenCode…) has worked in on this
- *    computer, already found and mostly ticked. Adding them adds their tabs;
- *    the first open of each turns its worktrees into lanes. Each row with
- *    recent chats has its own "Import chats" pill (the draft page's import
- *    pill, per project); the ones turned on bring their chats in on that
- *    first open (`useOnboardingChatImport`).
+ *    computer, already found and mostly ticked. Adding them adds them to
+ *    Home's recent projects; the first open of each turns its worktrees into
+ *    lanes. Each row with recent chats has its own "Import N chats?" toggle;
+ *    the ones turned on bring their chats in on that first open
+ *    (`useOnboardingChatImport`).
  *
  * Both cards sit on the launch gate's glass (`.ade-gate` tokens), so they read
  * as one flow with the sign-in card between them.
@@ -42,9 +45,8 @@ import "./firstRun.css";
 /** Chats active in this window come in with their project. Matches the main-side count. */
 export const FIRST_RUN_CHAT_WINDOW_MS = 30 * 24 * 3_600_000;
 
-const WELCOME_PROVIDERS = ["claude", "codex", "cursor", "opencode", "gemini", "droid"] as const;
-
 export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSkip: () => void }) {
+  const agents = useMemo(() => firstRunAgents(), []);
   return (
     <div className="ade-glass-card ade-fr-welcome" data-testid="first-run-welcome">
       <span className="ade-glass-mark">
@@ -59,13 +61,20 @@ export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSk
         Run Claude, Codex, Cursor and more side by side, each chat in its own lane, on every computer
         and phone you sign in to.
       </p>
-      <div className="ade-fr-providers" aria-hidden="true">
-        {WELCOME_PROVIDERS.map((family, index) => (
-          <span key={family} className="ade-fr-provider" style={{ animationDelay: `${180 + index * 45}ms` }}>
-            <ProviderLogo family={family} size={18} />
-          </span>
+      <ul className="ade-fr-providers" aria-label="Coding agents ADE runs">
+        {agents.map((agent, index) => (
+          <li
+            key={agent.id}
+            className="ade-fr-provider"
+            data-logo={agent.logo}
+            title={agent.label}
+            aria-label={agent.label}
+            style={{ animationDelay: `${180 + index * 30}ms` }}
+          >
+            <ProviderLogo family={agent.logo} size={16} />
+          </li>
         ))}
-      </div>
+      </ul>
       <div className="ade-fr-welcome-actions">
         <button type="button" className="ade-glass-primary ade-fr-cta" onClick={onStart} autoFocus>
           Get started
@@ -121,7 +130,7 @@ function folderCandidate(rootPath: string): OnboardingProjectCandidate {
   };
 }
 
-/** What setup added: every root, in the order shown, the first being the one to open. */
+/** What setup added: every root, in the order shown. */
 export type FirstRunResult = { rootPaths: string[] };
 
 /**
@@ -145,18 +154,19 @@ export async function addFirstRunProjects(
 }
 
 /**
- * Shows the added projects as tabs in this window and opens the first one,
- * unless a project is already open (a replay from the help menu), which stays.
+ * Where setup lands: ADE's own start, never a project. With no project open
+ * (a first run) that is Home, whose recent projects already list what setup
+ * added, so nothing more happens here. A replay over an open project keeps it
+ * open and adds the new ones as tabs beside it, unopened.
  */
-export function openFirstRunProjects(result: FirstRunResult): void {
-  const [first] = result.rootPaths;
-  if (!first) return;
+export function showFirstRunProjects(result: FirstRunResult): void {
+  if (!result.rootPaths.length) return;
   const store = useAppStore.getState();
+  if (!store.project) return;
   store.setOpenProjectTabRoots((current) => [
     ...current,
     ...result.rootPaths.filter((rootPath) => !current.includes(rootPath)),
   ]);
-  if (!store.project) void window.ade.project.switchToPath(first).catch(() => undefined);
 }
 
 export function FirstRunProjects({
@@ -213,18 +223,18 @@ export function FirstRunProjects({
   }, []);
 
   // Importing a project's chats means adding the project too.
-  const toggleImport = useCallback((rootPath: string) => {
+  const setImport = useCallback((rootPath: string, on: boolean) => {
     setImporting((current) => {
       const next = new Set(current);
-      if (next.has(rootPath)) {
-        next.delete(rootPath);
-      } else {
-        next.add(rootPath);
-        setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
-      }
+      if (on) next.add(rootPath);
+      else next.delete(rootPath);
       return next;
     });
+    if (on) setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
   }, []);
+  const [qrOpen, setQrOpen] = useState(false);
+  const openQr = useCallback(() => setQrOpen(true), []);
+  const closeQr = useCallback(() => setQrOpen(false), []);
 
   const allSelected = projects.length > 0 && chosen.length === projects.length;
   const toggleAll = useCallback(() => {
@@ -300,7 +310,7 @@ export function FirstRunProjects({
                   checked={selected.has(project.rootPath)}
                   importing={importing.has(project.rootPath)}
                   onToggle={toggle}
-                  onToggleImport={toggleImport}
+                  onSetImport={setImport}
                   index={index}
                 />
               ))}
@@ -318,7 +328,7 @@ export function FirstRunProjects({
         </button>
       </section>
 
-      <DevicesStrip />
+      <DevicesStrip onExpandQr={openQr} />
 
       {error ? <div className="ade-glass-error">{error}</div> : null}
 
@@ -346,6 +356,8 @@ export function FirstRunProjects({
           {busy ? null : <ArrowRight size={16} weight="bold" className="ade-glass-primary-arrow" />}
         </button>
       </footer>
+
+      {qrOpen ? <PhoneQrLightbox onClose={closeQr} /> : null}
     </div>
   );
 }
@@ -355,14 +367,14 @@ function ProjectRow({
   checked,
   importing,
   onToggle,
-  onToggleImport,
+  onSetImport,
   index,
 }: {
   project: OnboardingProjectCandidate;
   checked: boolean;
   importing: boolean;
   onToggle: (rootPath: string) => void;
-  onToggleImport: (rootPath: string) => void;
+  onSetImport: (rootPath: string, on: boolean) => void;
   index: number;
 }) {
   const icon = useProjectIcon(project.rootPath);
@@ -371,6 +383,9 @@ function ProjectRow({
     project.lastActiveAt ? relativeWhen(new Date(project.lastActiveAt).toISOString()) : null,
   ].filter(Boolean);
   const chats = project.recentChatCount;
+  const chatsLabel = pluralize(chats, "chat", "chats");
+  // A project left out brings no chats, whatever its toggle said before.
+  const importOn = importing && checked;
   return (
     <div
       className="ade-fr-row"
@@ -397,19 +412,27 @@ function ProjectRow({
         {meta.length ? <span className="ade-fr-meta">{meta.join(" · ")}</span> : null}
       </button>
       {chats > 0 ? (
+        // A yes/no choice, not an action: it reads as a question while off and
+        // as a ticked "Importing" while on, and nothing imports until Add.
         <button
           type="button"
-          className="ade-fr-import-pill"
-          data-on={importing ? "true" : undefined}
-          aria-pressed={importing}
-          aria-label={`Import ${pluralize(chats, "recent chat", "recent chats")} from ${providerList(project.providers)}`}
-          title={
-            importing
-              ? "These chats come in when the project first opens. Click to leave them out."
-              : `Bring the last 30 days of chats in, each in the lane it ran in.`
+          role="checkbox"
+          className="ade-fr-import"
+          data-on={importOn ? "true" : undefined}
+          aria-checked={importOn}
+          aria-label={
+            `Import ${pluralize(chats, "recent chat", "recent chats")} from ${providerList(project.providers)}`
           }
-          onClick={() => onToggleImport(project.rootPath)}
+          title={
+            importOn
+              ? "These chats come in when the project first opens. Click to leave them out."
+              : "Bring the last 30 days of chats in when the project first opens, each in the lane it ran in."
+          }
+          onClick={() => onSetImport(project.rootPath, !importOn)}
         >
+          <span className="ade-fr-import-box" aria-hidden="true">
+            <Check size={10} weight="bold" />
+          </span>
           <span className="ade-fr-import-marks" aria-hidden="true">
             {project.providers.slice(0, MAX_ROW_MARKS).map((provider) => (
               <ProviderLogo key={provider} family={provider} size={13} />
@@ -419,8 +442,7 @@ function ProjectRow({
             ) : null}
           </span>
           <span className="ade-fr-import-label">
-            {importing ? <Check size={11} weight="bold" aria-hidden="true" /> : null}
-            {importing ? pluralize(chats, "chat", "chats") : `Import ${pluralize(chats, "chat", "chats")}`}
+            {importOn ? `Importing ${chatsLabel}` : `Import ${chatsLabel}?`}
           </span>
         </button>
       ) : null}
@@ -454,17 +476,29 @@ function useProjectIcon(rootPath: string): string | null {
   return icon;
 }
 
+const PHONE_QR_TITLE = "Install ADE on your iPhone";
+
 /**
  * The cross-machine half of tier one, shown to everyone: ADE is the same on
- * every device you sign in to. A QR for the phone, one line for a computer.
+ * every device you sign in to. A QR for the phone (click for a bigger one),
+ * one line for a computer.
  */
-function DevicesStrip() {
+function DevicesStrip({ onExpandQr }: { onExpandQr: () => void }) {
   return (
     <section className="ade-fr-devices" aria-label="Your other devices">
       <div className="ade-fr-device">
-        <span className="ade-fr-qr">
-          <AdeQrCode value={ADE_MOBILE_TESTFLIGHT_URL} title="Install ADE on your iPhone" size={58} />
-        </span>
+        <button
+          type="button"
+          className="ade-fr-qr"
+          aria-label="Show a larger QR code for ADE on iPhone"
+          title="Show larger"
+          onClick={onExpandQr}
+        >
+          <AdeQrCode value={ADE_MOBILE_TESTFLIGHT_URL} title={PHONE_QR_TITLE} size={58} />
+          <span className="ade-fr-qr-zoom" aria-hidden="true">
+            <ArrowsOut size={11} weight="bold" />
+          </span>
+        </button>
         <span className="ade-fr-device-text">
           <span className="ade-fr-device-title">Your phone</span>
           <span className="ade-fr-device-sub">Scan to get ADE for iPhone.</span>
@@ -480,5 +514,63 @@ function DevicesStrip() {
         </span>
       </div>
     </section>
+  );
+}
+
+/**
+ * The phone QR, big enough to scan from across a desk, over the projects card's
+ * own glass. Escape, the close button or a click outside the code closes it.
+ * Escape is caught before setup's own Escape-to-skip (`OnboardingBootstrap`)
+ * sees it, so closing the code never skips setup.
+ */
+function PhoneQrLightbox({ onClose }: { onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    // Capture on window runs before setup's bubble-phase listener on window.
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      opener?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="ade-fr-qr-lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label="ADE for iPhone"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="ade-fr-qr-panel">
+        <button
+          ref={closeRef}
+          type="button"
+          className="ade-fr-qr-close"
+          aria-label="Close"
+          onClick={onClose}
+        >
+          <X size={13} weight="bold" />
+        </button>
+        <span className="ade-fr-qr-big">
+          <AdeQrCode value={ADE_MOBILE_TESTFLIGHT_URL} title={PHONE_QR_TITLE} size={196} />
+        </span>
+        <span className="ade-fr-qr-caption">
+          <span className="ade-fr-device-title">ADE for iPhone</span>
+          <span className="ade-fr-device-sub">Point your iPhone camera at the code to install it.</span>
+        </span>
+      </div>
+    </div>
   );
 }

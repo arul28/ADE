@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
+import { openWhatsNew } from "../announcements/AnnouncementsHost";
 import { restartOnboarding } from "../../onboarding/onboardingProgress";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -834,6 +835,14 @@ export function CommandPalette({
         },
       },
       {
+        id: "help-whats-new",
+        title: "What's new",
+        hint: "Recent features, one page each",
+        group: "Help",
+        keywords: ["help", "new", "release", "features", "changelog", "announcements"],
+        run: () => openWhatsNew(),
+      },
+      {
         id: "help-ade-tips",
         title: "ADE Tips",
         hint: "What ADE can do, one line each",
@@ -895,6 +904,7 @@ export function CommandPalette({
           command.id === "project-clone" ||
           command.id === "project-remote" ||
           command.id === "go-project" ||
+          command.id === "help-whats-new" ||
           command.id === "help-ade-tips" ||
           command.id === "help-show-around" ||
           command.id === "ping",

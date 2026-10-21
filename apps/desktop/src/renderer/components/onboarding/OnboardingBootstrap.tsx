@@ -8,8 +8,8 @@ import { FirstRunAgents } from "./FirstRunAgents";
 import {
   FirstRunProjects,
   FirstRunWelcome,
-  openFirstRunProjects,
   prefetchOnboardingDiscovery,
+  showFirstRunProjects,
   type FirstRunResult,
 } from "./FirstRunFlow";
 import "./launchGateGlass.css";
@@ -66,7 +66,7 @@ export function OnboardingBootstrap() {
 
   const finish = useCallback((result: FirstRunResult) => {
     close("completed");
-    openFirstRunProjects(result);
+    showFirstRunProjects(result);
   }, [close]);
 
   useEffect(() => {

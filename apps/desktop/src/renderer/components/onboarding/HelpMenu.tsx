@@ -10,6 +10,7 @@ import { fgTint } from "../lanes/laneDesignTokens";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { restartOnboarding } from "../../onboarding/onboardingProgress";
 import { openAdeTips } from "./tips/AdeTipsDialog";
+import { openWhatsNew } from "../announcements/AnnouncementsHost";
 
 type MenuPosition = { top?: number; bottom?: number; left?: number; right?: number } | null;
 
@@ -96,6 +97,11 @@ export function HelpMenu({
     openAdeTips();
   }, [close]);
 
+  const handleOpenWhatsNew = useCallback(() => {
+    close();
+    openWhatsNew();
+  }, [close]);
+
   // A fresh start: every first-run hint comes back, and the welcome flow
   // (which listens for this event) shows again.
   const handleShowAround = useCallback(() => {
@@ -152,6 +158,7 @@ export function HelpMenu({
                 fontSize: 12.5,
               }}
             >
+              <MenuItem onClick={handleOpenWhatsNew}>What's new</MenuItem>
               <MenuItem onClick={handleOpenTips}>ADE Tips</MenuItem>
               <MenuItem onClick={handleShowAround}>Show me around again</MenuItem>
               <MenuItem onClick={handleOpenDocs}>

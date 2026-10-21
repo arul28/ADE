@@ -43,6 +43,52 @@ export function findVisibleAnchor(id: string): HTMLElement | null {
   return null;
 }
 
+/** Laid out with a size: not inside a hidden tab, a collapsed pane or `display: none`. */
+export function hasBox(node: Element): boolean {
+  const rect = node.getBoundingClientRect();
+  return rect.width >= 1 && rect.height >= 1;
+}
+
+/** Whether a control marked `id` is laid out anywhere on the page (hidden tabs stay mounted at zero size). */
+export function anchorShown(id: string): boolean {
+  for (const node of document.querySelectorAll(`[${ONBOARDING_ANCHOR_ATTR}="${id}"]`)) {
+    if (hasBox(node)) return true;
+  }
+  return false;
+}
+
+/** Whether `node` lies outside the window or outside a scrolling or clipping ancestor. */
+function isClippedAway(node: HTMLElement): boolean {
+  const rect = node.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return true;
+  for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+    const style = window.getComputedStyle(parent);
+    if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+    const box = parent.getBoundingClientRect();
+    if (x < box.left || x > box.right || y < box.top || y > box.bottom) return true;
+  }
+  return false;
+}
+
+/**
+ * A control marked with one of `ids` that is on this page, laid out and not
+ * hidden, yet out of view: past the window's edge, or clipped by a scrolling
+ * row (a tab bar too narrow for its tabs). Covered controls do not count: a
+ * page behind another one is not "out of view", it is elsewhere.
+ */
+export function findOutOfViewAnchor(ids: readonly string[]): HTMLElement | null {
+  for (const id of ids) {
+    for (const node of document.querySelectorAll<HTMLElement>(`[${ONBOARDING_ANCHOR_ATTR}="${id}"]`)) {
+      if (!hasBox(node)) continue;
+      if (typeof node.checkVisibility === "function" && !node.checkVisibility({ visibilityProperty: true })) continue;
+      if (isClippedAway(node)) return node;
+    }
+  }
+  return null;
+}
+
 /**
  * The box a ring goes around. Usually the anchor's own; an anchor marked
  * `data-onboarding-anchor-fit="content"` (a row that stretches past its

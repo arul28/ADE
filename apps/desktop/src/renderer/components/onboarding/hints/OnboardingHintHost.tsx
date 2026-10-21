@@ -17,6 +17,7 @@ import {
 } from "../../../onboarding/onboardingProgress";
 import { ONBOARDING_HINTS, type OnboardingHintDef } from "./onboardingHintDefs";
 import { AdeTourCursorArt } from "../tour/AdeTourCursorArt";
+import { watchTourDom, type TourWatch } from "../tour/tourWatch";
 import {
   anchorRadius,
   findVisibleAnchor,
@@ -40,11 +41,12 @@ import "./onboardingHints.css";
  *
  * Cost: while onboarding is off (almost every user, almost all the time) the
  * host renders nothing and holds only the progress subscription. While it is
- * on, one 1s scan looks for anchors; once every hint is finished the scan
- * stops with it.
+ * on, it looks for anchors when the page changes (`watchTourDom`, at most once
+ * a second, never while the window is hidden); once every hint is finished
+ * the watch stops with it.
  */
 
-/** How often the scan looks for anchors, and how long one must stay before its hint starts. */
+/** At most how often the host looks for anchors, and how long one must stay before its hint starts. */
 const SCAN_INTERVAL_MS = 1_000;
 const SETTLE_MS = 900;
 /** Ring padding around the control. */
@@ -132,6 +134,7 @@ function OnboardingHintScanner({ openKey }: { openKey: string }) {
   }, [openIds]);
 
   useEffect(() => {
+    let watch: TourWatch | null = null;
     const commit = (next: ActiveHint | null) => {
       const current = activeRef.current;
       if (current === next || (current && next && current.def === next.def && current.anchor === next.anchor)) return;
@@ -139,7 +142,6 @@ function OnboardingHintScanner({ openKey }: { openKey: string }) {
       setActive(next);
     };
     const scan = () => {
-      if (document.hidden) return;
       const current = activeRef.current;
       const next = pickHint(openIds, current);
       if (!next) {
@@ -157,15 +159,18 @@ function OnboardingHintScanner({ openKey }: { openKey: string }) {
       const pending = pendingRef.current;
       if (!pending || pending.id !== next.def.id) {
         pendingRef.current = { id: next.def.id, since: now };
+        watch?.scheduleCheck(SETTLE_MS);
         return;
       }
-      if (now - pending.since < SETTLE_MS) return;
+      if (now - pending.since < SETTLE_MS) {
+        watch?.scheduleCheck(SETTLE_MS - (now - pending.since));
+        return;
+      }
       pendingRef.current = null;
       commit(next);
     };
-    scan();
-    const interval = window.setInterval(scan, SCAN_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    watch = watchTourDom(scan, { minIntervalMs: SCAN_INTERVAL_MS });
+    return () => watch?.dispose();
   }, [openIds]);
 
   const activeId = active?.def.id ?? null;

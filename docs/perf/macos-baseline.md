@@ -67,6 +67,21 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work area: re-renders | 30 per 12 s | 2 per 12 s | 5 per 12 s |
 | React commits on Work while a chat streams | — | 5.3/s | 10/s |
 
+### Onboarding tour
+
+The guided tour after first-run setup (`components/onboarding/tour/`). Mac
+Studio dev build on its own socket, CDP 9233, 1.1× zoom, nothing streaming,
+2026-10-21 on the `ade/onboarding-tiers-planning` branch; not the baseline
+machine. `cdp.mjs metrics` and `gpu-trace.mjs`, 4 s windows from a Next click.
+
+| Metric | Before (first tour) | Baseline | Ceiling |
+|---|---|---|---|
+| Step change between read steps: frames drawn / GPU | 187–217/s, 183–212 ms/s | 38/s, 35 ms/s | 60/s, 60 ms/s |
+| Step change into a do-it step (pulse + click): frames drawn / GPU | — | 71/s, 76 ms/s | 100/s, 110 ms/s |
+| Step change: main-thread work | 14–19 ms/s | 16–20 ms/s | 30 ms/s |
+| Card showing, idle: main-thread work | 2.9 ms/s | 2.4 ms/s | 5 ms/s |
+| Paused pill, idle: main-thread work | 4.5 ms/s | 2.5 ms/s | 5 ms/s |
+
 ### Processes (CPU and memory)
 
 Measured with `process-cpu.sh` over 15 s on Work, idle, with 2 chats

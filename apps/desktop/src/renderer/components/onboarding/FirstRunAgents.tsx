@@ -1,88 +1,38 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, CircleNotch, SignIn } from "@phosphor-icons/react";
-import type { AiProviderConnectionStatus, AiSettingsStatus } from "../../../shared/types";
-import { EXTERNAL_SESSION_PROVIDER_LABELS } from "../../../shared/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, CircleNotch, GearSix, SignIn } from "@phosphor-icons/react";
+import type { AiSettingsStatus } from "../../../shared/types";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { useAccountSignInSheet } from "../settings/providers/accounts/AddProviderAccountSheet";
 import { useDefaultProviderInstance } from "../settings/providers/accounts/useProviderInstances";
+import type { SettingsProviderId } from "../settings/providers/types";
 import { prefetchOnboardingDiscovery } from "./FirstRunFlow";
+import {
+  firstRunAgents,
+  firstRunAgentStatus,
+  type FirstRunAgent,
+  type FirstRunAgentStatus,
+} from "./firstRunAgentModel";
 import "./firstRun.css";
 
 /**
- * First-run step 3, "Connect your agents": which coding agents can run on this
- * computer right now, with a way to sign in to the ones that cannot.
+ * First-run step 3, "Connect your agents": every coding agent ADE runs, with
+ * its real status on this computer and a way to sign in where setup can.
  *
  * It reads the same status Settings › Agents & Models reads (`ai.getStatus`,
  * which answers before any project is open) and signs in through the same
  * flows: Claude Code and Codex through the account sheet (a machine-level
  * login, no project or terminal needed), Cursor through its browser login.
- * Every other provider shows up here only when it is already connected; the
- * rest are set up in Settings, which this card says.
+ * The rest sign in with a terminal login or a key, and a terminal needs an
+ * open project, so the card lists them under "Set up in Settings" instead of
+ * offering a button that cannot work yet.
  *
- * The status is re-read when the card opens, after a sign-in finishes, and
- * when the window regains focus (back from a browser login). No polling.
+ * Tiles with a status worth acting on (connected, or signable here) sit in
+ * the top grid; the rest sit below in a compact one. The status is re-read
+ * when the card opens, after a sign-in finishes, and when the window regains
+ * focus (back from a browser login). No polling.
  */
 
-type AgentId = "claude" | "codex" | "cursor";
-type AgentState = "checking" | "connected" | "sign-in";
-
-type AgentRow = {
-  id: AgentId;
-  label: string;
-  state: AgentState;
-  /** Under the name: the account when connected, how to sign in otherwise. */
-  detail: string;
-};
-
-/** The three ADE signs in to from here, in the order the welcome card lists them. */
-const PRIMARY_AGENTS: ReadonlyArray<{ id: AgentId; label: string; signInLine: string }> = [
-  { id: "claude", label: "Claude Code", signInLine: "Sign in with your Claude account" },
-  { id: "codex", label: "Codex", signInLine: "Sign in with ChatGPT" },
-  { id: "cursor", label: "Cursor", signInLine: "Sign in with your Cursor account" },
-];
-
-/** Other providers worth a chip when they are already connected. */
-const OTHER_AGENTS = ["droid", "pi", "muse", "copilot", "qwen", "kimi", "grok", "devin", "antigravity"] as const;
-type OtherAgentId = (typeof OTHER_AGENTS)[number];
-
-const OTHER_LABELS: Record<OtherAgentId, string> = {
-  droid: EXTERNAL_SESSION_PROVIDER_LABELS.droid,
-  pi: EXTERNAL_SESSION_PROVIDER_LABELS.pi,
-  muse: EXTERNAL_SESSION_PROVIDER_LABELS.muse,
-  copilot: EXTERNAL_SESSION_PROVIDER_LABELS.copilot,
-  qwen: EXTERNAL_SESSION_PROVIDER_LABELS.qwen,
-  kimi: EXTERNAL_SESSION_PROVIDER_LABELS.kimi,
-  grok: EXTERNAL_SESSION_PROVIDER_LABELS.grok,
-  devin: "Devin",
-  antigravity: "Antigravity",
-};
-
-function accountLine(connection: AiProviderConnectionStatus | null | undefined): string | null {
-  const parts = [connection?.accountPlan, connection?.accountEmail].filter(
-    (part): part is string => typeof part === "string" && part.trim().length > 0,
-  );
-  return parts.length ? parts.join(" · ") : null;
-}
-
-/** Same rules as the Settings tiles: Claude by its SDK auth, the rest by their connection row. */
-function agentRows(status: AiSettingsStatus | null, failed: boolean): AgentRow[] {
-  return PRIMARY_AGENTS.map(({ id, label, signInLine }) => {
-    // A failed read still offers sign-in; only a read in flight is "Checking".
-    if (!status) return failed ? { id, label, state: "sign-in", detail: signInLine } : { id, label, state: "checking", detail: "Checking…" };
-    const connection = status.providerConnections?.[id] ?? null;
-    const connected = id === "claude"
-      ? Boolean(status.availableProviders?.claude?.binary.present && status.availableProviders.claude.auth.ready)
-      : connection?.runtimeAvailable === true || status.availableProviders?.[id] === true;
-    if (connected) return { id, label, state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
-    return { id, label, state: "sign-in", detail: signInLine };
-  });
-}
-
-function connectedOthers(status: AiSettingsStatus | null): OtherAgentId[] {
-  if (!status) return [];
-  const available = status.availableProviders as Partial<Record<OtherAgentId, unknown>> | undefined;
-  return OTHER_AGENTS.filter((id) => status.providerConnections?.[id]?.runtimeAvailable === true || available?.[id] === true);
-}
+type AgentTile = { agent: FirstRunAgent; status: FirstRunAgentStatus };
 
 export function FirstRunAgents({
   onDone,
@@ -94,6 +44,9 @@ export function FirstRunAgents({
   const [machineName, setMachineName] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const loadingRef = useRef(false);
+  // The top grid's order, fixed at the first answer, so a sign-in changes a
+  // tile in place instead of reshuffling the grid under the pointer.
+  const [order, setOrder] = useState<SettingsProviderId[] | null>(null);
 
   const refresh = useCallback(async () => {
     if (loadingRef.current) return;
@@ -129,10 +82,37 @@ export function FirstRunAgents({
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  const rows = agentRows(status, failed);
-  const others = connectedOthers(status);
-  const connectedCount = rows.filter((row) => row.state === "connected").length + others.length;
-  const checking = status == null && !failed;
+  const agents = useMemo(() => firstRunAgents(), []);
+  const tiles = useMemo<AgentTile[]>(
+    () => agents.map((agent) => ({ agent, status: firstRunAgentStatus(agent, status, failed) })),
+    [agents, failed, status],
+  );
+
+  const settled = status != null || failed;
+  useEffect(() => {
+    if (!settled || order) return;
+    // Connected first, then the ones setup can sign in to, each in the list's own order.
+    const rank = (tile: AgentTile) => (tile.status.state === "connected" ? 0 : 1);
+    setOrder([...tiles].sort((a, b) => rank(a) - rank(b)).map((tile) => tile.agent.id));
+  }, [order, settled, tiles]);
+
+  const { primary, later } = useMemo(() => {
+    const position = (id: SettingsProviderId) => {
+      const index = order?.indexOf(id) ?? -1;
+      return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    };
+    // While the first read is in flight, the agents only Settings can sign in
+    // wait below already, so most tiles do not jump when it lands.
+    const below = (tile: AgentTile) =>
+      tile.status.state === "later" || (tile.status.state === "checking" && tile.agent.signIn === "settings");
+    const top = tiles
+      .filter((tile) => !below(tile))
+      .sort((a, b) => position(a.agent.id) - position(b.agent.id));
+    return { primary: top, later: tiles.filter(below) };
+  }, [order, tiles]);
+
+  const connectedCount = tiles.filter((tile) => tile.status.state === "connected").length;
+  const checking = !settled;
 
   return (
     <div className="ade-glass-card ade-fr-projects ade-fr-agents" data-testid="first-run-agents">
@@ -140,33 +120,60 @@ export function FirstRunAgents({
         <span className="ade-fr-eyebrow">{machineName ? `Set up ${machineName}` : "Set up this computer"}</span>
         <h1 className="ade-fr-title">Connect your agents</h1>
         <p className="ade-fr-sub">
-          ADE runs the coding agents you already use, on your own accounts. Connect one to start chatting; you can add
-          more any time.
+          ADE runs the coding agents you already use, on your own accounts. Connect one to start chatting; you can
+          add more any time.
         </p>
       </header>
 
       <section className="ade-fr-list" aria-label="Coding agents on this computer">
-        <div className="ade-fr-rows" role="list">
-          {rows.map((row, index) => (
-            <AgentRowView key={row.id} row={row} index={index} onChanged={refresh} />
-          ))}
+        <div className="ade-fr-list-head">
+          <span>{checking ? "Checking this computer…" : `${agents.length} agents ADE can run`}</span>
+          {checking ? null : (
+            <span className="ade-fr-agents-count">
+              <span
+                className="ade-fr-agent-dot"
+                data-state={connectedCount ? "connected" : "idle"}
+                aria-hidden="true"
+              />
+              {connectedCount} connected
+            </span>
+          )}
         </div>
-        {others.length ? (
-          <div className="ade-fr-agents-others">
-            <span>Also ready</span>
-            {others.map((id) => (
-              <span key={id} className="ade-fr-agents-chip">
-                <ProviderLogo family={id} size={12} />
-                {OTHER_LABELS[id]}
-              </span>
+
+        <div className="ade-fr-agents-scroll">
+          <div className="ade-fr-agents-grid" role="list" aria-label="Agents">
+            {primary.map((tile, index) => (
+              <AgentTileView key={tile.agent.id} tile={tile} index={index} onChanged={refresh} />
             ))}
           </div>
-        ) : null}
-        <p className="ade-fr-agents-more">
-          {others.length
-            ? "Add or manage agents any time in Settings › Agents & Models."
-            : "OpenCode, Droid, Pi, Copilot and more are in Settings › Agents & Models."}
-        </p>
+
+          {later.length ? (
+            <div className="ade-fr-agents-later">
+              <div className="ade-fr-agents-later-head">
+                <GearSix size={12} weight="bold" aria-hidden="true" />
+                <span>
+                  Set up in <b>Settings › Agents &amp; Models</b> once ADE opens. These sign in through their own
+                  login.
+                </span>
+              </div>
+              <div className="ade-fr-agents-later-grid" role="list" aria-label="Agents to set up in Settings">
+                {later.map((tile, index) => (
+                  <span
+                    key={tile.agent.id}
+                    className="ade-fr-later-tile"
+                    data-logo={tile.agent.logo}
+                    role="listitem"
+                    title={`${tile.agent.label}: ${tile.status.detail}`}
+                    style={{ animationDelay: `${120 + Math.min(index, 10) * 25}ms` }}
+                  >
+                    <ProviderLogo family={tile.agent.logo} size={15} />
+                    <span className="ade-fr-later-name">{tile.agent.label}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <footer className="ade-fr-foot">
@@ -174,11 +181,7 @@ export function FirstRunAgents({
           Skip
         </button>
         <span className="ade-fr-summary" aria-live="polite">
-          {checking
-            ? null
-            : connectedCount
-              ? `${connectedCount} connected`
-              : "Connect one to start a chat"}
+          {checking ? null : connectedCount ? null : "Connect one to start a chat"}
         </span>
         <button type="button" className="ade-glass-primary ade-fr-cta" onClick={onDone} disabled={checking}>
           {checking ? <CircleNotch size={15} weight="bold" className="animate-spin" /> : null}
@@ -190,35 +193,38 @@ export function FirstRunAgents({
   );
 }
 
-function AgentRowView({ row, index, onChanged }: { row: AgentRow; index: number; onChanged: () => void }) {
+function AgentTileView({ tile, index, onChanged }: { tile: AgentTile; index: number; onChanged: () => void }) {
+  const { agent, status } = tile;
   return (
     <div
-      className="ade-fr-row ade-fr-agent-row"
+      className="ade-fr-agent-tile"
       role="listitem"
-      data-state={row.state}
-      style={{ animationDelay: `${index * 45}ms` }}
+      data-state={status.state}
+      style={{ animationDelay: `${Math.min(index, 10) * 35}ms` }}
     >
-      <span className="ade-fr-agent-main">
-        <span className="ade-fr-icon ade-fr-agent-logo" aria-hidden="true">
-          <ProviderLogo family={row.id} size={18} />
-        </span>
-        <span className="ade-fr-name">
-          <span className="ade-fr-name-main">{row.label}</span>
-          <span className="ade-fr-agent-detail">{row.detail}</span>
+      <span className="ade-fr-agent-logo" data-logo={agent.logo} aria-hidden="true">
+        <ProviderLogo family={agent.logo} size={18} />
+      </span>
+      <span className="ade-fr-agent-text">
+        <span className="ade-fr-agent-name">{agent.label}</span>
+        <span className="ade-fr-agent-detail" title={status.detail}>
+          {status.state === "connected" ? (
+            <>
+              <span className="ade-fr-agent-dot" data-state="connected" aria-hidden="true" />
+              <span className="ade-fr-agent-detail-text">{status.detail}</span>
+            </>
+          ) : (
+            <span className="ade-fr-agent-detail-text">{status.detail}</span>
+          )}
         </span>
       </span>
-      {row.state === "connected" ? (
-        <span className="ade-fr-agent-ok">
-          <span className="ade-fr-agent-dot" aria-hidden="true" />
-          Connected
-        </span>
-      ) : row.state === "checking" ? (
+      {status.state === "checking" ? (
         <CircleNotch size={14} weight="bold" className="animate-spin ade-fr-agent-spin" aria-label="Checking" />
-      ) : row.id === "cursor" ? (
+      ) : status.state !== "sign-in" ? null : agent.signIn === "cursor" ? (
         <CursorSignInButton onChanged={onChanged} />
-      ) : (
-        <AccountSignInButton provider={row.id} label={row.label} onChanged={onChanged} />
-      )}
+      ) : agent.id === "claude" || agent.id === "codex" ? (
+        <AccountSignInButton provider={agent.id} label={agent.label} onChanged={onChanged} />
+      ) : null}
     </div>
   );
 }
@@ -266,7 +272,7 @@ function CursorSignInButton({ onChanged }: { onChanged: () => void }) {
     try {
       await window.ade.ai.cursorAuthLogin();
     } catch {
-      // The card stays on "Sign in"; Settings shows the full error.
+      // The tile stays on "Sign in"; Settings shows the full error.
     } finally {
       setBusy(false);
       onChanged();

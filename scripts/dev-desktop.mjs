@@ -29,6 +29,7 @@ function usage() {
     "  --auto                     Use dev socket and let desktop create runtime if missing. Default.",
     "  --attach                   Require an existing dev runtime before launching desktop.",
     "  --project-root <path>      Project to auto-open. Defaults to the primary checkout for ADE worktrees.",
+    "  --home                     Open on Home with no project, as an installed ADE does (first-run checks).",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --clean                    Use desktop dev:clean instead of dev.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",
@@ -43,6 +44,7 @@ function parseArgs(argv) {
     socketPath: null,
     clean: false,
     skipRuntimeBuild: false,
+    home: false,
     remoteDebuggingPort: null,
     forwardedDebugFlags: [],
   };
@@ -54,6 +56,10 @@ function parseArgs(argv) {
     }
     if (arg === "--attach") {
       options.mode = "attach";
+      continue;
+    }
+    if (arg === "--home") {
+      options.home = true;
       continue;
     }
     if (arg === "--clean") {
@@ -229,10 +235,11 @@ async function main() {
     if (options.forwardedDebugFlags.length) {
       appControlDebugEnv.ADE_APP_CONTROL_DEBUG_FLAGS = options.forwardedDebugFlags.join(" ");
     }
-    await runNpm(
-      ["--prefix", "apps/desktop", "run", desktopScript],
-      { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv },
-    );
+    const desktopEnv = { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv };
+    // `--home`: no startup project, so the window opens on Home the way an
+    // installed ADE does. The runtime above still uses the project root.
+    if (options.home) desktopEnv.ADE_PROJECT_ROOT = "";
+    await runNpm(["--prefix", "apps/desktop", "run", desktopScript], desktopEnv);
   } finally {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);

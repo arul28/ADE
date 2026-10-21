@@ -1329,9 +1329,35 @@ function browserMockNoChats(): boolean {
   }
 }
 
+/** Setup finished or skipped in this page load; `?mockFirstRun` stops forcing it after that. */
+let browserMockFirstRunEnded = false;
+
 function browserMockFirstRun(): boolean {
+  if (browserMockFirstRunEnded) return false;
   try {
     return new URLSearchParams(window.location.search).has("mockFirstRun");
+  } catch {
+    return false;
+  }
+}
+
+/** `?mockManyTabs` opens a crowd of project tabs to preview the tab strip's overflow. */
+function browserMockManyTabs(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has("mockManyTabs");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `?mockFirstRun&mockGate`: a fresh computer. No project is open and nothing
+ * is in recents yet, so setup lands on Home with only what it added.
+ */
+function browserMockFreshComputer(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.has("mockFirstRun") && params.has("mockGate");
   } catch {
     return false;
   }
@@ -4464,6 +4490,39 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     ];
   }
 
+  // First-run preview: a realistic mix on "Connect your agents" (Claude and
+  // Copilot connected, Codex and Cursor waiting for a sign-in, Droid and Kimi
+  // installed but signed out, the rest not set up), so every tile shape shows.
+  if (browserMockFirstRun() && !BROWSER_MOCK_DEMO) {
+    const connection = (provider: string, state: "connected" | "signed-out" | "missing", extra = {}) => ({
+      ...BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
+      provider,
+      authAvailable: state === "connected",
+      runtimeDetected: state !== "missing",
+      runtimeAvailable: state === "connected",
+      ...extra,
+    });
+    BROWSER_MOCK_AI_STATUS.availableProviders.claude.auth = { ready: true, mode: "subscription", detail: "Claude Max" };
+    BROWSER_MOCK_AI_STATUS.opencodeBinaryInstalled = true;
+    BROWSER_MOCK_AI_STATUS.opencodeProviders = [
+      { id: "opencode", name: "OpenCode Zen", connected: true, signedIn: false, modelCount: 6 },
+    ];
+    BROWSER_MOCK_AI_STATUS.providerConnections = {
+      claude: connection("claude", "connected", { accountPlan: "Claude Max", accountEmail: "arul@example.com" }),
+      codex: connection("codex", "signed-out"),
+      cursor: connection("cursor", "missing"),
+      droid: connection("droid", "signed-out"),
+      copilot: connection("copilot", "connected", { accountEmail: "arul28" }),
+      muse: connection("muse", "missing"),
+      pi: connection("pi", "missing"),
+      qwen: connection("qwen", "missing"),
+      kimi: connection("kimi", "signed-out"),
+      grok: connection("grok", "missing"),
+      devin: connection("devin", "missing"),
+      antigravity: connection("antigravity", "missing"),
+    };
+  }
+
   // A demo quota fixture, so the Limits surface in the browser preview renders
   // the shape it renders in the app: two providers, several windows, and more
   // than one account pooled across machines.
@@ -4522,6 +4581,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     { rootPath: "/Users/ada/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/dotfiles.git" },
     { rootPath: "/Users/ada/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
   ];
+  if (browserMockFreshComputer()) BROWSER_MOCK_RECENT_PROJECTS.length = 0;
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     accounts: [
       {
@@ -5545,8 +5605,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
         updateAvailable: false,
       }),
-      getProject: resolved(MOCK_PROJECT),
-      getWindowSession: resolved({
+      getProject: resolved(browserMockFreshComputer() ? null : MOCK_PROJECT),
+      getWindowSession: resolved(browserMockFreshComputer() ? {
+        windowId: 1,
+        project: null,
+        binding: null,
+        openProjectTabs: [],
+      } : {
         windowId: 1,
         project: MOCK_PROJECT,
         binding: {
@@ -5556,6 +5621,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           displayName: MOCK_PROJECT.name,
         },
         openProjectTabs: [MOCK_PROJECT],
+        ...(browserMockManyTabs()
+          ? {
+              openProjectTabRoots: [
+                MOCK_PROJECT.rootPath,
+                ...BROWSER_MOCK_RECENT_PROJECTS
+                  .filter((entry) => entry.kind === "local")
+                  .map((entry) => entry.rootPath),
+                "/Users/ada/Projects/analytics-pipeline",
+                "/Users/ada/Projects/billing-service",
+                "/Users/ada/Projects/marketing-site",
+              ],
+            }
+          : {}),
       }),
       getWelcomeVideoState: async () => {
         const state = readBrowserMockWelcomeVideoState();
@@ -5581,8 +5659,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ],
         };
       },
-      addOnboardingProjects: async () => [],
+      // Setup's projects join recents (newest first), as the main process does.
+      addOnboardingProjects: async (rootPaths: string[]) => {
+        const added = rootPaths
+          .filter((rootPath) => !BROWSER_MOCK_RECENT_PROJECTS.some((entry) => entry.rootPath === rootPath))
+          .map((rootPath) => ({
+            rootPath,
+            displayName: rootPath.split("/").filter(Boolean).pop() ?? rootPath,
+            lastOpenedAt: new Date().toISOString(),
+            exists: true,
+            kind: "local",
+            gitOriginUrl: null,
+          }));
+        BROWSER_MOCK_RECENT_PROJECTS.unshift(...added);
+        return BROWSER_MOCK_RECENT_PROJECTS;
+      },
       markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
+        browserMockFirstRunEnded = true;
         const current = readBrowserMockWelcomeVideoState();
         const next = {
           ...current,

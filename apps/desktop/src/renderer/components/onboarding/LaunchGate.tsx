@@ -7,7 +7,7 @@ import { accountGateMode, accountSessionState, useAccountStatus } from "../../li
 import { isWebClientMode } from "../../lib/webClientMode";
 import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
 import { FirstRunAgents } from "./FirstRunAgents";
-import { FirstRunProjects, FirstRunWelcome, openFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
+import { FirstRunProjects, FirstRunWelcome, showFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
 import "./launchGateGlass.css";
 
 type LaunchGateProps = { children: ReactNode };
@@ -81,9 +81,9 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
     void window.ade.app.resolveLaunchGate().catch(() => undefined);
     const setupResult = setupResultRef.current;
     setupResultRef.current = null;
-    // The projects setup added become tabs; the first one opens, and each
-    // one's first open brings its chats in.
-    if (setupResult) openFirstRunProjects(setupResult);
+    // ADE opens on Home, where the projects setup added are in the recent
+    // list; none opens by itself, and each one's first open brings its chats in.
+    if (setupResult) showFirstRunProjects(setupResult);
   }, []);
 
   const skipSetup = useCallback(() => {
