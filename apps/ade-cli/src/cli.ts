@@ -13803,7 +13803,13 @@ function buildIosSimulatorPlan(
     kind: "execute" as const,
     label,
     steps: [
-      iosStep("result", method, collectGenericObjectArgs(args, payload)),
+      // `--lane` was consumed into `claimArgs` above, so the generic flag
+      // pass cannot see it: carry it here, or `stream-stop --lane X` (and
+      // every other subcommand that does not re-add it) ran laneless.
+      iosStep("result", method, collectGenericObjectArgs(args, {
+        ...(laneId ? { laneId } : {}),
+        ...payload,
+      })),
     ],
   });
   if (sub === "actions")

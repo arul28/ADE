@@ -219,7 +219,7 @@ export function useAppleDeviceStream({
    * the unmount path — which runs after the props are gone — stops the stream
    * it actually started rather than whatever the last render happened to name.
    */
-  const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }) => {
+  const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }, immediate = false) => {
     const key = leaseKeyRef.current;
     if (!key) return;
     const epoch = leaseEpochRef.current ?? undefined;
@@ -228,6 +228,12 @@ export function useAppleDeviceStream({
     leaseEpochRef.current = null;
     leaseRuntimePinRef.current = null;
     if (!releaseAppleStreamLease(key, epoch).last) return;
+    if (immediate) {
+      void window.ade.iosSimulator
+        .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
+        .catch(() => {});
+      return;
+    }
     window.setTimeout(() => {
       // Somebody took the lane's stream up in the meantime, on this device or
       // another one (a swap): theirs now. The stop is lane-scoped, so it would
@@ -436,6 +442,18 @@ export function useAppleDeviceStream({
   scopeRef.current = { laneId, chatSessionId };
   useEffect(() => () => {
     releaseLease(scopeRef.current);
+  }, [releaseLease]);
+
+  /*
+   * A reload or a closed window tears the page down before the stop's grace
+   * timer can fire, and no viewer is left to stop the capture: it ran on in
+   * the helper with nobody watching. The page going away is final, so the
+   * stop goes now. (A renderer crash still skips this.)
+   */
+  useEffect(() => {
+    const onPageHide = () => releaseLease(scopeRef.current, true);
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
   }, [releaseLease]);
 
   const noteFrame = useCallback(() => {
