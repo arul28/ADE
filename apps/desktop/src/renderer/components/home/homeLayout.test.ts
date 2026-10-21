@@ -246,6 +246,7 @@ describe("adding home widgets", () => {
     }
     expect(outcomes.size).toBe(types.length);
     expect(outcomes.has("widget_now_playing")).toBe(true);
+    expect(outcomes.has("widget_tips")).toBe(true);
     useHomeLayoutStore.getState().reset();
   });
 });

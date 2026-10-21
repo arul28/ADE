@@ -51,16 +51,22 @@ describe("ProjectSidebar footer", () => {
     delete (window as { __adeWebClient?: boolean }).__adeWebClient;
   });
 
-  it("keeps CTO and History, and puts help and a settings cog at the end", () => {
+  it("opens Help and toggles the detailed-tooltip preference", () => {
+    const initialPreference = useAppStore.getState().smartTooltipsEnabled;
     renderSidebar("/work");
-    const footerButtons = [...document.querySelectorAll(".ade-project-sidebar-footer button")];
-    expect(footerButtons.map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
-      "CTO",
-      "History",
-      "Help menu",
-      "Settings",
-    ]);
-    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-current")).toBeNull();
+    const helpButton = screen.getByRole("button", { name: "Help menu" });
+
+    fireEvent.click(helpButton);
+
+    expect(screen.getByRole("menu", { name: "Help" })).toBeTruthy();
+    expect(helpButton.getAttribute("aria-expanded")).toBe("true");
+    const preference = screen.getByRole("menuitemcheckbox");
+    expect(preference.getAttribute("aria-checked")).toBe(String(initialPreference));
+
+    fireEvent.click(preference);
+    expect(useAppStore.getState().smartTooltipsEnabled).toBe(!initialPreference);
+    fireEvent.click(preference);
+    expect(useAppStore.getState().smartTooltipsEnabled).toBe(initialPreference);
   });
 
   it("opens Settings from the cog, and marks it active on the settings route", () => {

@@ -214,6 +214,7 @@ export function FirstRunProjects({
   const [gateEl, setGateEl] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discoveryRetry, setDiscoveryRetry] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,12 +236,15 @@ export function FirstRunProjects({
         );
       })
       .catch(() => {
-        if (!cancelled) setDiscovery({ phase: "ready", machineName: "this computer", projects: [] });
+        if (!cancelled) {
+          console.warn("[onboarding] project discovery failed");
+          setDiscovery({ phase: "unavailable" });
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [discoveryRetry]);
 
   const projects = discovery.phase === "ready" ? discovery.projects : [];
   const machineName = discovery.phase === "ready" ? discovery.machineName : null;
@@ -428,7 +432,15 @@ export function FirstRunProjects({
                   index={index}
                 />
               ))}
-          {discovery.phase !== "loading" && !projects.length ? (
+          {discovery.phase === "unavailable" ? (
+            <div className="ade-fr-empty">
+              <span>Couldn't load projects from this computer.</span>
+              <button type="button" className="ade-fr-text-btn" onClick={() => setDiscoveryRetry((value) => value + 1)}>
+                Try again
+              </button>
+            </div>
+          ) : null}
+          {discovery.phase === "ready" && !projects.length ? (
             <div className="ade-fr-empty">
               <FolderSimple size={18} />
               <span>Choose a folder with a git repository to start.</span>
