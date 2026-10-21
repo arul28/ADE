@@ -295,6 +295,9 @@ function addClaudeLineage(record: ExternalSessionDiscoveryRecord, ids: Array<str
   if (lineage.size) record.lineageIds = [...lineage];
 }
 
+/** Older session files read for ancestors of the recent ones when listing stops at `updatedSinceMs`. */
+const CLAUDE_OLDER_ANCESTOR_SCAN_LIMIT = 200;
+
 export async function discoverClaudeSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
@@ -346,7 +349,14 @@ export async function discoverClaudeSessions(
       // only listed member while an older imported ancestor still needs to be
       // recognized by the import ledger.
       if (processedCandidates.length) {
-        for (const olderCandidate of orderedCandidates.slice(candidateIndex)) {
+        // Bounded: an ancestor is never longer than its continuation, and only
+        // the newest older files can be the ancestors of a recent leaf worth
+        // the reads (each signature reads a few small windows of the file).
+        const largestRecent = Math.max(...processedCandidates.map((entry) => entry.candidate.size));
+        const olderCandidates = orderedCandidates
+          .slice(candidateIndex, candidateIndex + CLAUDE_OLDER_ANCESTOR_SCAN_LIMIT)
+          .filter((older) => older.size <= largestRecent);
+        for (const olderCandidate of olderCandidates) {
           const olderSignature = claudeChainSignature(olderCandidate);
           if (!olderSignature.chainKey) continue;
           for (const recent of processedCandidates) {

@@ -4,9 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseOnboardingDiscoveryResponse } from "../onboarding/onboardingDiscoveryWorker";
 import { discoverOnboardingProjects, terminateOnboardingDiscoveryWorkers } from "../onboarding/onboardingDiscoveryClient";
-import {
-  runJsonChildProcess,
-} from "./jsonChildProcess";
+import { runJsonChildProcess, type JsonChildProcessSet } from "./jsonChildProcess";
 
 let tempDir: string | null = null;
 
@@ -51,7 +49,8 @@ process.stdin.resume(); setInterval(() => {}, 1000);`,
     const previousWorkerPath = process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH;
     process.env.ADE_ONBOARDING_DISCOVERY_WORKER_PATH = workerPath;
     const warning = vi.fn();
-    let watcher: fs.FSWatcher | null = null;
+    // Assigned inside the promise below; the cast keeps TS from narrowing it to null.
+    let watcher = null as fs.FSWatcher | null;
     const childStarted = new Promise<void>((resolve, reject) => {
       watcher = fs.watch(tempDir!, () => {
         if (fs.existsSync(markerPath)) {
