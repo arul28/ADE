@@ -1,5 +1,5 @@
 import React from "react";
-import { LANE_CLASSIC_COLORS, LANE_MORE_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, laneColorName, type LaneColor } from "./laneColorPalette";
 import { fgTint } from "./laneDesignTokens";
 
 type Props = {
@@ -38,15 +38,7 @@ export function LaneColorPicker({
         usedColorOwners={usedColorOwners}
         onChange={onChange}
         swatchSize={swatchSize}
-      />
-      <SwatchGroup
-        label="More"
-        colors={LANE_MORE_COLORS}
-        selected={selected}
-        usedColors={usedColors}
-        usedColorOwners={usedColorOwners}
-        onChange={onChange}
-        swatchSize={swatchSize}
+        trailing={<CustomSwatch value={value ?? null} onChange={onChange} swatchSize={swatchSize} />}
       />
     </div>
   );
@@ -60,6 +52,7 @@ function SwatchGroup({
   usedColorOwners,
   onChange,
   swatchSize,
+  trailing,
 }: {
   label: string;
   colors: readonly LaneColor[];
@@ -68,6 +61,7 @@ function SwatchGroup({
   usedColorOwners?: Map<string, string>;
   onChange: (color: string) => void;
   swatchSize: number;
+  trailing?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -99,8 +93,62 @@ function SwatchGroup({
             />
           );
         })}
+        {trailing}
       </div>
     </div>
+  );
+}
+
+/**
+ * Any colour at all, through the system colour panel. Filled with the lane's
+ * colour when that colour is not one of the named swatches. The pick is saved
+ * once, on the panel's `change`, not on every step of a drag.
+ */
+function CustomSwatch({
+  value,
+  onChange,
+  swatchSize,
+}: {
+  value: string | null;
+  onChange: (color: string) => void;
+  swatchSize: number;
+}) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const onChangeRef = React.useRef(onChange);
+  onChangeRef.current = onChange;
+  const custom = value && /^#[0-9a-f]{6}$/i.test(value) && !laneColorName(value) ? value : null;
+  React.useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const commit = () => onChangeRef.current(input.value);
+    input.addEventListener("change", commit);
+    return () => input.removeEventListener("change", commit);
+  }, []);
+  return (
+    <label
+      title={custom ? `Custom colour ${custom}` : "Custom colour"}
+      style={{
+        position: "relative",
+        width: swatchSize,
+        height: swatchSize,
+        borderRadius: 9999,
+        cursor: "pointer",
+        background: custom ?? "conic-gradient(#ef4444, #facc15, #22c55e, #22d3ee, #2563eb, #e879f9, #ef4444)",
+        outline: custom ? "2px solid var(--color-accent, #fff)" : "none",
+        outlineOffset: 2,
+        boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
+        display: "inline-flex",
+        overflow: "hidden",
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="color"
+        aria-label="Custom colour"
+        defaultValue={custom ?? "#7dd3fc"}
+        style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", border: "none", padding: 0 }}
+      />
+    </label>
   );
 }
 

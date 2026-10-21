@@ -534,7 +534,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
     setCreateMode("primary");
-    setCreateSelectedColor(null);
+    // The colour is not cleared here: closing already cleared it, and the
+    // dialog's own effect picks a free one on open. Clearing it again here, in
+    // the same commit as that pick, left every new lane with no colour.
     setCreateSelectedEmoji(null);
     setSuggestedEmoji(null);
     createEmojiUserPickedRef.current = false;

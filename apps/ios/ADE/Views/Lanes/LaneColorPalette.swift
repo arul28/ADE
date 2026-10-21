@@ -32,18 +32,6 @@ enum LaneColorPalette {
     LanePaletteColor(hex: "#2563eb", name: "Bright Blue"),
     LanePaletteColor(hex: "#4f46e5", name: "Indigo"),
     LanePaletteColor(hex: "#7c3aed", name: "Bright Violet"),
-    LanePaletteColor(hex: "#fb7185", name: "Rose"),
-    LanePaletteColor(hex: "#38bdf8", name: "Sky"),
-    LanePaletteColor(hex: "#818cf8", name: "Periwinkle"),
-    LanePaletteColor(hex: "#86efac", name: "Mint"),
-    LanePaletteColor(hex: "#fdba74", name: "Peach"),
-    LanePaletteColor(hex: "#94a3b8", name: "Slate"),
-    LanePaletteColor(hex: "#be123c", name: "Crimson"),
-    LanePaletteColor(hex: "#15803d", name: "Forest"),
-    LanePaletteColor(hex: "#0369a1", name: "Ocean"),
-    LanePaletteColor(hex: "#a21caf", name: "Plum"),
-    LanePaletteColor(hex: "#a16207", name: "Bronze"),
-    LanePaletteColor(hex: "#d6d3d1", name: "Sand"),
   ]
 
   static let fallbacks: [String] = Array(entries.prefix(8)).map(\.hex)
@@ -92,11 +80,29 @@ enum LaneColorPalette {
   /// matching desktop's `ALLOCATABLE_LANE_COLORS`.
   static let allocatable: [LanePaletteColor] = entries.filter { $0.hex.lowercased() != "#a78bfa" }
 
-  /// A free colour, or a random one once every colour is taken: a new lane always has one.
+  /// The first palette colour no open lane uses, then the first unused generated
+  /// one, matching desktop's `nextAvailableLaneColor`: a new lane always has one.
   static func nextAvailableColor(amongLanes lanes: [LaneSummary]) -> String? {
     let used = colorsInUse(amongLanes: lanes)
-    return allocatable.first(where: { !used.contains($0.hex.lowercased()) })?.hex
-      ?? allocatable.randomElement()?.hex
+    if let free = allocatable.first(where: { !used.contains($0.hex.lowercased()) }) { return free.hex }
+    for index in 0..<512 where !used.contains(generatedColor(index)) {
+      return generatedColor(index)
+    }
+    return generatedColor(used.count)
+  }
+
+  /// Desktop's `generatedLaneColor`: hues a golden angle apart, at the palette's
+  /// saturation and lightness, as lowercase hex.
+  static func generatedColor(_ index: Int) -> String {
+    let hue = (Double(index) * 137.508 + 17).truncatingRemainder(dividingBy: 360)
+    let saturation = 0.72, lightness = 0.62
+    let a = saturation * min(lightness, 1 - lightness)
+    func channel(_ n: Double) -> String {
+      let k = (n + hue / 30).truncatingRemainder(dividingBy: 12)
+      let value = lightness - a * max(-1, min(k - 3, 9 - k, 1))
+      return String(format: "%02x", Int((value * 255).rounded()))
+    }
+    return "#\(channel(0))\(channel(8))\(channel(4))"
   }
 
   static func accent(forLane lane: LaneSummary?, fallbackIndex: Int = 0) -> Color? {
