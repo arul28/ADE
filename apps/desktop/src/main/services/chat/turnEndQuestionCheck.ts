@@ -313,8 +313,15 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
         if (hasBackgroundWork) raise(sessionId, turnId, classification.question, "rules");
         return;
       }
-      // Background work already reads Working, so a clear progress note adds nothing.
-      if (classification.verdict === "not_ask" && hasBackgroundWork) return;
+      if (classification.verdict === "not_ask" && hasBackgroundWork) {
+        // The rules read a progress note, and the row already reads Working.
+        // A note can still ask ("…running. I need to know X before I merge."),
+        // so Jev, when it answers, gets the last word; the cheap model does not.
+        if (!deps.decide) return;
+        pendingTurnBySession.set(sessionId, turnId);
+        void runTiebreak({ facts, turnId, provider: null, replyText: reply.text, unsure: true });
+        return;
+      }
       // The cheap model keeps today's scope: unsure endings of background-work turns.
       const provider = hasBackgroundWork ? adeBackgroundUtilityProvider(facts.provider) : null;
       if (!deps.decide && !provider) return;

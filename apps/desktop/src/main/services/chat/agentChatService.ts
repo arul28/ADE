@@ -1350,6 +1350,7 @@ import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
   buildSessionIntelligenceModelCandidates,
+  extractLatestAssistantParagraphs,
   formatConversationTranscript,
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
@@ -1358,6 +1359,7 @@ import {
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
+import { statusLineLooksStale } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
   mapCursorSdkMessageToChatEvents,
@@ -20532,6 +20534,38 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The agent wrote its own status line during the turn, so ADE kept it. Ask
+   * Jev, once, whether the turn's final reply has moved past it; if so, run
+   * the same refresh "Generate status line" does. No answer keeps the line.
+   */
+  const checkAgentWrittenStatusLine = (managed: ManagedChatSession): void => {
+    if (!jevDecide) return;
+    const sessionId = managed.session.id;
+    const statusLine = sessionService.get(sessionId)?.statusNote?.trim();
+    if (!statusLine) return;
+    const entries = collectConversationEntries(managed);
+    const reply = extractLatestAssistantParagraphs(entries);
+    if (!reply.trim()) return;
+    const userMessage = [...entries].reverse().find((entry) => entry.role === "user")?.text ?? null;
+    const idleSinceAt = managed.session.idleSinceAt;
+    void statusLineLooksStale({ decide: jevDecide, statusLine, userMessage, reply })
+      .then((stale) => {
+        if (stale !== true || managed.deleted) return;
+        // Only while nothing moved: no new turn since, and the same line.
+        if (managed.session.status !== "idle" || managed.session.idleSinceAt !== idleSinceAt) return;
+        if (sessionService.get(sessionId)?.statusNote?.trim() !== statusLine) return;
+        logger.info("agent_chat.status_line_stale", { sessionId });
+        return regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }).then(() => undefined);
+      })
+      .catch((error) => {
+        logger.warn("agent_chat.status_line_check_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
   const maybeRefreshIdleStatusLine = (
     managed: ManagedChatSession,
     turnStartedAt: string | null | undefined,
@@ -20542,7 +20576,10 @@ export function createAgentChatService(args: {
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);
       const turnMs = Date.parse(turnStartedAt);
-      if (Number.isFinite(noteMs) && Number.isFinite(turnMs) && noteMs >= turnMs) return;
+      if (Number.isFinite(noteMs) && Number.isFinite(turnMs) && noteMs >= turnMs) {
+        checkAgentWrittenStatusLine(managed);
+        return;
+      }
     }
     void regenerateSessionMetadata({
       sessionId: managed.session.id,

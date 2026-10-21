@@ -6,12 +6,22 @@ import {
   RENDERER_GONE_UNKNOWN_REASON,
 } from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
+import { JEV_FEATURES } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
   ProductAnalyticsPropertyValue,
 } from "../../../shared/types/productAnalytics";
+
+/** The `jev` daily summary row's counters (`captureDailyJevAnalytics`); numbers only. */
+const JEV_DAILY_PROPERTIES = [
+  "jev_wanted_count", "jev_ok_count", "jev_cached_count", "jev_not_signed_in_count", "jev_breaker_skip_count",
+  "jev_busy_count", "jev_rate_limited_count", "jev_auth_rejected_count", "jev_timeout_count", "jev_network_count",
+  "jev_http_error_count", "jev_bad_response_count", "jev_breaker_open_count", "jev_unsent_input_token_estimate",
+  "jev_latency_avg_ms", "jev_slow_count",
+  ...JEV_FEATURES.map((feature) => `jev_sent_${feature}`),
+];
 
 export const DEFAULT_DAILY_BUDGET = 200;
 export const DEDUPE_CACHE_LIMIT = 1_000;
@@ -115,6 +125,7 @@ const NUMBER_PROPERTIES = new Set([
   "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed", "blocked_ms",
   "failing_minutes", "attempt",
   "time_since_install_seconds",
+  ...JEV_DAILY_PROPERTIES,
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
@@ -320,6 +331,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
     "push_operations", "pr_landings", "files_changed", "artifacts_captured", "automation_runs", "worker_runs",
     "active_days", "current_streak_days", "token_count", "input_token_count", "output_token_count", "call_count",
     "duration_ms", "provider_count", "model_count", "error_count",
+    ...JEV_DAILY_PROPERTIES,
   ]),
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
   ade_update_install_aborted: new Set(["reason"]),
@@ -525,7 +537,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "local", "remote",
   ]),
   release_channel: new Set(["stable", "beta", "development", "unknown"]),
-  summary_kind: new Set(["overall", "client", "provider", "model"]),
+  summary_kind: new Set(["overall", "client", "provider", "model", "jev"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
   // Derived from the normalizer's own enum so the two cannot drift. Deliberately
   // not folded into `reason`: that key is pinned to the auto-update abort set,

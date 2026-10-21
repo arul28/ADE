@@ -7,7 +7,15 @@
  */
 
 /** Who is asking. Closed so the summary log can count per feature; extend it here. */
-export const JEV_FEATURES = ["turn_end", "cli_status", "settle_nudge", "palette", "lane_emoji", "model_hint"] as const;
+export const JEV_FEATURES = [
+  "turn_end",
+  "cli_status",
+  "settle_nudge",
+  "palette",
+  "lane_emoji",
+  "model_hint",
+  "status_line",
+] as const;
 export type JevFeature = (typeof JEV_FEATURES)[number];
 
 /**
@@ -97,4 +105,36 @@ export type JevStatus = {
   inFlight: number;
   /** Since this brain started, per feature and outcome. */
   counts: Partial<Record<JevFeature, Partial<Record<JevOutcome, number>>>>;
+  /** This project's tally for the current local day; null before its first call. */
+  today: JevDayTally | null;
+};
+
+/**
+ * One local day of Jev use in one project, kept so ADE can see what Jev would
+ * cost to pay for. Numbers only: no state text, questions or answers.
+ */
+export type JevDayTally = {
+  /** Machine-local calendar day, `YYYY-MM-DD`. */
+  day: string;
+  /** `decide()` calls that would reach Jev if it were up and signed in (the setting is on). */
+  wanted: number;
+  /** Requests actually sent. */
+  sent: number;
+  /** Sent requests that returned no usable answer. */
+  failed: number;
+  /** Every outcome, sent or not, as in `counts`. */
+  outcomes: Partial<Record<JevOutcome, number>>;
+  /** Requests sent, per feature. */
+  sentByFeature: Partial<Record<JevFeature, number>>;
+  /** Tokens Jev reported for sent requests. */
+  inputTokens: number;
+  outputTokens: number;
+  /** Estimated input tokens for wanted calls that were never sent (signed out, breaker, busy). */
+  unsentInputTokensEstimate: number;
+  /** Times the breaker opened. */
+  breakerOpens: number;
+  /** Answered requests, total and over one second. */
+  latencyTotalMs: number;
+  latencyCount: number;
+  slowCount: number;
 };

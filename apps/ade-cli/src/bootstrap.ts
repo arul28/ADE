@@ -108,7 +108,7 @@ import {
   publishLinearLaneCard,
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
-import { createJevService, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { createJevService, jevTallyFileStore, type JevService } from "../../desktop/src/main/services/jev/jevService";
 import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
@@ -164,6 +164,7 @@ import {
   type UsageProductAnalyticsExporter,
 } from "../../desktop/src/main/services/analytics/usageProductAnalyticsExporter";
 import {
+  captureDailyJevAnalytics,
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
 } from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
@@ -250,6 +251,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -1438,6 +1440,9 @@ export async function createAdeRuntime(args: {
       logger,
       isEnabled: () => projectConfigService.get().effective.ai?.chat?.smartDecisionsEnabled !== false,
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+      tallyStore: jevTallyFileStore(
+        path.join(resolveMachineAdeLayout().adeDir, "jev", `tallies-${sha256Hex(projectId).slice(0, 16)}.json`),
+      ),
     });
     teardown.push(() => jevService.dispose());
 
@@ -3315,6 +3320,13 @@ export async function createAdeRuntime(args: {
               captureDailyUsageAnalytics({
                 analytics: productAnalyticsService,
                 stats,
+                projectId,
+                reportDay: target.day,
+                occurredAt: target.occurredAt,
+              });
+              captureDailyJevAnalytics({
+                analytics: productAnalyticsService,
+                tally: jevService.tallyForDay(target.day),
                 projectId,
                 reportDay: target.day,
                 occurredAt: target.occurredAt,
