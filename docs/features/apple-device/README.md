@@ -377,6 +377,7 @@ minimized" for that chat.
 | `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
 | `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
 | `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream, and which lanes have a viewer on this machine. |
+| `apps/desktop/src/main/services/ios/appleStreamPacing.ts` | Per-viewer pacing from acks and the lane's adaptive encoder cap. |
 | `apps/desktop/src/main/services/ios/recording/simRecordingService.ts` | Recording rules: auto-record, caps, orphan recovery, filing each recording as proof. |
 | `apps/desktop/src/main/services/ios/recording/appleRecordingsStore.ts` | The on-disk layout `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/<id>.mp4` plus the `<id>.json` sidecar. Every walk of that layout goes through it. |
 | `apps/desktop/src/main/services/chat/laneAppleDeviceDirective.ts` | The turn-time hint that tells an agent its lane has a device. |
@@ -397,11 +398,12 @@ minimized" for that chat.
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
 | `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
-| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift` | The phone's full-screen viewer: View only / Control, the speed readout. |
-| `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, Control blockers and the tap→screen probe. |
-| `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock and the acking stream socket. |
 | `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
+| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's full-screen viewer (View only / Control, the speed readout) and the model that owns its ticket, socket, decoder and mode. |
+| `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
+| `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
+| `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container. See [inspector.md](./inspector.md). |
 
 ## CLI
@@ -637,11 +639,16 @@ a second WebSocket that carries the helper's records unchanged. The ticket
 carries the transport's pixel size and its POINT size; a viewer needs both to
 turn a touch into a tap.
 
-A viewer that sends `{t:"ack",n}` (records received so far) is **paced**.
-Over the tunnel relay the socket the brain writes to is a loopback pipe, so its
-`bufferedAmount` cannot show a queue building on the way to the phone; the
-acks can. The relay keeps the send time of every unacked record and compares
-the oldest one's age with the best round trip of the last 5–10 s:
+A remote viewer that joins a stream that is already running gets the cached
+config and keyframe at once, then no delta frames until a fresh keyframe,
+which the relay asks for: the deltas in between reference frames it never saw.
+
+A viewer that sends `{t:"ack",n}` (records received so far) is **paced**
+(`appleStreamPacing.ts`). Over the tunnel relay the socket the brain writes to
+is a loopback pipe, so its `bufferedAmount` cannot show a queue building on the
+way to the phone; the acks can. The relay keeps the send time of every record
+and compares the oldest unacked one's age with the best round trip of the last
+5–10 s. Nothing is paced until a round trip has been measured.
 
 - Past `APPLE_STREAM_LAG_BUDGET_MS` (250 ms) the viewer stops getting delta
   frames. Once it is back within 60 ms it resumes at a keyframe; the relay
@@ -651,24 +658,19 @@ the oldest one's age with the best round trip of the last 5–10 s:
   cannot decode.
 - Each stall lowers the lane's encoder cap to 60% (at most every 2 s, never
   under 400 kb/s); 15 s without a stall raises it by a quarter, every 10 s, up
-  to the configured cap. The cap is the lane's, so it also applies to the
-  Mac's own view while a remote viewer is attached, as the remote cap already
-  did.
+  to the configured cap. The change goes through `capLiveStream`, which only
+  re-caps the capture that is running and never starts one. The cap is the
+  lane's, so it also applies to the Mac's own view while a remote viewer is
+  attached, as the remote cap already did. When the paced viewers leave and
+  an unpaced one still watches, the configured cap comes back.
 - About once a second the relay answers with `{t:"stats"}`: `rttMs`,
   `baseRttMs`, `lagMs`, `skipped`, `bitrateKbps`.
 
 A viewer that never acks (the web client and desktops today, older phones) is
-forwarded every record, exactly as before.
-
-Measured by `scripts/perf/service/apple-stream-pacing.bench.mts` (the relay over
-a simulated link; 2.5 Mb/s encoder, 60 fps, keyframes 20× a delta), second
-half of a 30 s run:
-
-| Link | Not paced | Paced |
-|---|---|---|
-| 1 Mb/s, 40 ms one way | p50 36 s, still growing | p50 51 ms, p90 54 ms, p99 221 ms |
-| 600 kb/s, 120 ms | — | p50 133 ms, p90 184 ms |
-| 5 Mb/s, 20 ms | — | p50 30 ms, no skips, cap untouched |
+forwarded every record. The measured effect is the "Apple stream relay" row in
+[the performance baseline](../../perf/macos-baseline.md#brain-and-services)
+(`scripts/perf/service/apple-stream-pacing.bench.mts`): on a 1 Mb/s link a
+paced viewer stays about 50 ms behind, an unpaced one tens of seconds.
 
 ### The phone: watch and control
 
@@ -703,7 +705,12 @@ Calls are never queued or retried.
 On the host, `apple.input` stamps `source: "user"` (a person's tap never
 starts an agent's auto-recording) and reads the owner from memory
 (`getControlOwner`) instead of a full status read, which ran `simctl` on most
-taps because the status throttle is 500 ms.
+taps because the status throttle is 500 ms. Remote input (`apple.input`, and
+the input methods behind `apple.invoke`) drives only the lane's own claimed
+device (`getClaimedDevice`), named explicitly to the service: a lane with no
+device is refused with `APPLE_NO_LANE_DEVICE` instead of falling back to the
+first booted iPhone, which could be another lane's screen. The desktop pane
+keeps that fallback.
 
 A lane on another machine: `apple.*` commands route by the lane's namespaced
 id, and the video socket resolves the ticket against **that** machine's live

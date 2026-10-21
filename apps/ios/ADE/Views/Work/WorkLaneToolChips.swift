@@ -209,10 +209,7 @@ func appleDeviceChipModelName(_ name: String) -> String {
 /// evidence the device is on, so both read as off. The host fills a missing
 /// name with the udid; that is not a name, so the family ("iPhone") stands in.
 func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
-  guard let device = status?.device,
-        let udid = device.udid, !udid.isEmpty,
-        status?.laneDevice?.udid == udid
-  else { return nil }
+  guard appleStatusShowsLaneDevice(status), let device = status?.device, let udid = device.udid else { return nil }
   let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
   guard booted || status?.stream?.running == true else { return nil }
   let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,7 +309,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func refresh(laneId: String, syncService: SyncService) async {
     let readTools = syncService.supportsWorkToolsState
     // Asked of the lane's own machine: a lane on another Mac answers there.
-    let readApple = syncService.supportsAppleAction("apple.status", laneId: laneId)
+    let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil

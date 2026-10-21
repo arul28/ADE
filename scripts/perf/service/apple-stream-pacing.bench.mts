@@ -4,7 +4,9 @@
 // viewer acks, like the phone) and not paced (no acks, like the web client).
 // Prints the delay from the relay's send to the viewer's receipt for the second
 // half of each run, when the pacing has settled, plus skips, cap changes and
-// any delta frame that reached the viewer ahead of a keyframe (must be 0).
+// any delta frame the viewer could not decode (must be 0). Every frame carries
+// its sequence number, so a delta after a gap — a skip — counts as one unless
+// a keyframe came first.
 // A new loopback reader makes the fake helper open with a keyframe, as the
 // real helper's encoder rebuild does. DURATION_MS sets each run (default 30 s).
 import {
@@ -27,13 +29,14 @@ const scenarios: Scenario[] = [
   { paced: true, linkKbps: 5_000, oneWayMs: 20 },
 ];
 
-function record(type: number, size: number, keyframe: boolean): Uint8Array {
-  const bytes = new Uint8Array(12 + size);
+function record(type: number, size: number, keyframe: boolean, seq = 0): Uint8Array {
+  const bytes = new Uint8Array(12 + Math.max(size, 4));
   const view = new DataView(bytes.buffer);
   view.setUint32(0, 0xade1f00d);
   view.setUint8(4, type);
   view.setUint8(5, keyframe ? 1 : 0);
-  view.setUint32(8, size);
+  view.setUint32(8, Math.max(size, 4));
+  view.setUint32(12, seq);
   return bytes;
 }
 
@@ -79,6 +82,7 @@ async function run({ paced, linkKbps, oneWayMs }: Scenario): Promise<Record<stri
   let wireFreeAt = 0;
   let received = 0;
   let awaitingKeyframe = true;
+  let lastSeq = 0;
   let undecodable = 0;
   let skipped = 0;
   const socket = {
@@ -101,6 +105,9 @@ async function run({ paced, linkKbps, oneWayMs }: Scenario): Promise<Record<stri
     }
     received += 1;
     if (data[4] === 2) {
+      const seq = new DataView(data.buffer, data.byteOffset).getUint32(12);
+      if (seq !== lastSeq + 1) awaitingKeyframe = true;
+      lastSeq = seq;
       if (data[5]! & 1) awaitingKeyframe = false;
       else if (awaitingKeyframe) undecodable += 1;
       if (sentAt - started > durationMs / 2) lateDelays.push(Date.now() - sentAt);
@@ -116,6 +123,7 @@ async function run({ paced, linkKbps, oneWayMs }: Scenario): Promise<Record<stri
   await relay.attach(socket, { ticket: ticket.ticket, token: ticket.token });
   feed!(record(1, 0, false));
   let lastKeyframeAt = 0;
+  let seq = 0;
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
       const now = Date.now();
@@ -128,7 +136,8 @@ async function run({ paced, linkKbps, oneWayMs }: Scenario): Promise<Record<stri
       forceKeyframe = false;
       if (keyframe) lastKeyframeAt = now;
       const deltaBytes = Math.round((encoderKbps * 1_000) / 8 / fps);
-      feed!(record(2, keyframe ? deltaBytes * keyframeFactor : deltaBytes, keyframe));
+      seq += 1;
+      feed!(record(2, keyframe ? deltaBytes * keyframeFactor : deltaBytes, keyframe, seq));
     }, 1_000 / fps);
   });
   // Let the link drain, however far behind it is, so the slowest frame counts.

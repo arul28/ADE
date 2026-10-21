@@ -3550,10 +3550,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const getControlOwner = (ownerArgs: { laneId?: string | null } = {}): string | null => {
     const runtime = resolveRuntime(ownerArgs);
-    return runtime.activeSession?.chatSessionId
-      ?? hub(runtime).getDeviceSession()?.chatSessionId
-      ?? null;
+    // Trimmed and fallen through like the status projection: a blank app
+    // claim must not hide a device session's.
+    return runtime.activeSession?.chatSessionId?.trim()
+      || hub(runtime).getDeviceSession()?.chatSessionId?.trim()
+      || null;
   };
+
+  /**
+   * The device this lane holds a claim on, or null; never the "first booted
+   * iPhone" fallback. Remote input targets only this, so a tap sent for a
+   * lane with no device of its own cannot land on another lane's screen.
+   */
+  const getClaimedDevice = (claimArgs: { laneId?: string | null } = {}): string | null =>
+    claimedDeviceUdid(resolveRuntime(claimArgs));
 
   /** Invalidate a lane's cached status after a state change. */
   const invalidateStatus = (runtime: LaneRuntime): void => {
@@ -5551,6 +5561,35 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
+   * Re-cap a capture that is already running, and nothing else.
+   *
+   * The relay's pacing lowers and restores a lane's cap while remote viewers
+   * watch. `startStream` would resolve the device again (a `simctl` read) and,
+   * when the capture stopped meanwhile or the lane's session moved to another
+   * device, start one: a capture nobody stops, or on the wrong device. This
+   * touches only the encoder of the capture that is running now.
+   */
+  const capLiveStream = async (capArgs: {
+    laneId: string;
+    bitrateKbps: number;
+  }): Promise<IosSimulatorStreamStatus | null> => {
+    const lane = laneKey(capArgs.laneId);
+    const runtime = lane ? runtimes.get(lane) : null;
+    if (!runtime) return null;
+    const status = runtime.streamStatus;
+    if (!status.running || !status.deviceUdid) return status;
+    if (status.helperPid !== (helperClient?.pid() ?? null)) return status;
+    const bitrateKbps = clampStreamBitrateKbps(capArgs.bitrateKbps);
+    if (bitrateKbps == null || (status.bitrateKbps ?? null) === bitrateKbps) return status;
+    return applyLiveBitrateCap(runtime, {
+      udid: status.deviceUdid,
+      fps: clampStreamFps(status.targetFps),
+      scale: 1,
+      bitrateKbps,
+    }, nextCapGeneration(runtime));
+  };
+
+  /**
    * The relay's last remote viewer left and the capture keeps running for a
    * viewer on this machine: take the remote cap off, so the local view is
    * back at full quality instead of the phone's bitrate until it restarts.
@@ -6591,6 +6630,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   return guardAgentDeviceActions({
     getStatus,
     getControlOwner,
+    getClaimedDevice,
     claim,
     listDevices,
     listLaunchTargets,
@@ -6617,6 +6657,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     setRemoteViewerProbe,
     /** The relay's last remote viewer left; a local one still watches. */
     liftStreamBitrateCap,
+    capLiveStream,
     frame,
     tap,
     pressButton,
@@ -6685,7 +6726,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),

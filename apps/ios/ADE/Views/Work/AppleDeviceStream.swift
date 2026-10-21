@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SwiftUI
 import UIKit
 
 // MARK: - Wire models
@@ -108,6 +109,17 @@ struct AppleStreamTicket: Codable, Equatable {
   var pointWidth: Double?
   var pointHeight: Double?
   var expiresAt: String?
+
+  /// Frame size in pixels, when the host sent a real one.
+  var pixelSize: CGSize? { Self.size(width, height) }
+
+  /// Screen size in points, when the host sent one.
+  var pointSize: CGSize? { Self.size(pointWidth, pointHeight) }
+
+  private static func size(_ width: Double?, _ height: Double?) -> CGSize? {
+    guard let width, let height, width > 0, height > 0 else { return nil }
+    return CGSize(width: width, height: height)
+  }
 }
 
 /// What the relay says about this viewer's link, about once a second.
@@ -117,22 +129,13 @@ struct AppleStreamTicket: Codable, Equatable {
 struct AppleStreamNetworkStats: Equatable {
   /// The last record's round trip, Mac to phone and back.
   var rttMs: Double?
-  /// The best round trip lately; what the link costs with nothing queued.
-  var baseRttMs: Double?
-  /// How far the oldest unacked record is behind `baseRttMs`.
-  var lagMs: Double?
   /// Frames the relay skipped to keep this viewer current.
   var skipped: Int?
-  /// The encoder cap the relay is running this lane at.
-  var bitrateKbps: Double?
 
   init?(control object: [String: Any]) {
     guard object["t"] as? String == "stats" else { return nil }
     rttMs = (object["rttMs"] as? NSNumber)?.doubleValue
-    baseRttMs = (object["baseRttMs"] as? NSNumber)?.doubleValue
-    lagMs = (object["lagMs"] as? NSNumber)?.doubleValue
     skipped = (object["skipped"] as? NSNumber)?.intValue
-    bitrateKbps = (object["bitrateKbps"] as? NSNumber)?.doubleValue
   }
 }
 
@@ -163,6 +166,19 @@ func appleDeviceOwnerLabel(_ owner: AppleDeviceStatusOwner?) -> String? {
     return title
   }
   return "a chat in this lane"
+}
+
+/// Whether the device the status shows is the one this lane holds.
+///
+/// For a lane with no device the host reports any booted iPhone, so `device`
+/// alone could be another lane's or the user's own simulator. Only a match
+/// with `laneDevice` makes it this lane's to drive.
+func appleStatusShowsLaneDevice(_ status: AppleDeviceStatus?) -> Bool {
+  guard
+    let shown = status?.device?.udid, !shown.isEmpty,
+    let held = status?.laneDevice?.udid
+  else { return false }
+  return shown == held
 }
 
 func appleDeviceFamilySymbol(_ family: String?) -> String {
@@ -588,6 +604,68 @@ final class AppleStreamDecoder {
   }
 }
 
+// MARK: - Layer host
+
+/// Hosts the decoder's `AVSampleBufferDisplayLayer`.
+///
+/// The layer belongs to the decoder, not to this view: SwiftUI rebuilds a
+/// representable freely, and a layer recreated on a rebuild would drop the
+/// format description and stall until the next keyframe.
+struct AppleStreamLayerView: UIViewRepresentable {
+  let layer: AVSampleBufferDisplayLayer
+
+  func makeUIView(context: Context) -> AppleStreamLayerHostView {
+    let view = AppleStreamLayerHostView()
+    view.install(layer)
+    return view
+  }
+
+  func updateUIView(_ uiView: AppleStreamLayerHostView, context: Context) {
+    uiView.install(layer)
+  }
+}
+
+final class AppleStreamLayerHostView: UIView {
+  private weak var installed: AVSampleBufferDisplayLayer?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .black
+    isUserInteractionEnabled = false
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  func install(_ next: AVSampleBufferDisplayLayer) {
+    guard installed !== next else { return }
+    installed?.removeFromSuperlayer()
+    layer.addSublayer(next)
+    installed = next
+    setNeedsLayout()
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    // No implicit animation: the layer is resized on rotation and on the first
+    // frame, and an animated bounds change makes the picture visibly swim.
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    installed?.frame = bounds
+    CATransaction.commit()
+  }
+}
+
+/// Bitrate as the stream stats say it. Sub-megabit reads in kb/s because "0.8 Mb/s"
+/// is a worse answer than "800 kb/s" for the number people are watching drop.
+func appleStreamBitrateLabel(kbps: Double) -> String {
+  guard kbps > 0 else { return "0 kb/s" }
+  if kbps < 1000 { return "\(Int(kbps.rounded())) kb/s" }
+  return String(format: "%.1f Mb/s", kbps / 1000)
+}
+
 // MARK: - Socket
 
 /// The binary stream socket.
@@ -612,8 +690,6 @@ final class AppleStreamSocket: NSObject {
   private var visible = true
   /// Records received on this socket; what an ack reports.
   private var received = 0
-  /// Bytes received on this socket, for the viewer's bitrate readout.
-  private(set) var receivedBytes = 0
 
   var onOpen: (() -> Void)?
   var onRecord: ((AppleStreamRecord) -> Void)?
@@ -625,7 +701,6 @@ final class AppleStreamSocket: NSObject {
     closed = false
     parser.reset()
     received = 0
-    receivedBytes = 0
     var request = URLRequest(url: url)
     if let token, !token.isEmpty {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -704,7 +779,6 @@ final class AppleStreamSocket: NSObject {
   }
 
   private func ingest(_ data: Data) {
-    receivedBytes += data.count
     do {
       let records = try parser.push(data)
       guard !records.isEmpty else { return }

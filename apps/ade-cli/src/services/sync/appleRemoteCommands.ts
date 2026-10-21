@@ -31,8 +31,10 @@ import {
 /** The slice of the simulator service these commands need. */
 export type AppleDeviceRemoteService = {
   getStatus(args: { laneId?: string | null }): Promise<unknown>;
-  /** The claiming chat from memory; `getStatus` is the fallback without it. */
-  getControlOwner?(args: { laneId?: string | null }): string | null;
+  /** The claiming chat, from memory: the guard reads it on every gesture. */
+  getControlOwner(args: { laneId?: string | null }): string | null;
+  /** The lane's own device (its claim), never a fallback to another booted one. */
+  getClaimedDevice(args: { laneId?: string | null }): string | null;
   startStream(args: {
     laneId?: string | null;
     chatSessionId?: string | null;
@@ -40,6 +42,7 @@ export type AppleDeviceRemoteService = {
   }): Promise<unknown>;
   stopStream(args: { laneId?: string | null }): Promise<unknown>;
   tap(args: {
+    deviceUdid?: string | null;
     laneId?: string | null;
     chatSessionId?: string | null;
     x: number;
@@ -47,12 +50,14 @@ export type AppleDeviceRemoteService = {
     source?: "user" | "agent";
   }): Promise<unknown>;
   typeText(args: {
+    deviceUdid?: string | null;
     laneId?: string | null;
     chatSessionId?: string | null;
     text: string;
     source?: "user" | "agent";
   }): Promise<unknown>;
   drag(args: {
+    deviceUdid?: string | null;
     laneId?: string | null;
     chatSessionId?: string | null;
     source?: "user" | "agent";
@@ -63,6 +68,7 @@ export type AppleDeviceRemoteService = {
     durationMs?: number | null;
   }): Promise<unknown>;
   scroll(args: {
+    deviceUdid?: string | null;
     laneId?: string | null;
     chatSessionId?: string | null;
     source?: "user" | "agent";
@@ -71,8 +77,20 @@ export type AppleDeviceRemoteService = {
     anchorX?: number | null;
     anchorY?: number | null;
   }): Promise<unknown>;
-  tapElement(args: { laneId?: string | null; chatSessionId?: string | null; ref?: string; label?: string }): Promise<unknown>;
-  openUrl(args: { laneId?: string | null; chatSessionId?: string | null; url: string }): Promise<unknown>;
+  tapElement(args: {
+    laneId?: string | null;
+    deviceUdid?: string | null;
+    chatSessionId?: string | null;
+    ref?: string;
+    label?: string;
+  }): Promise<unknown>;
+  openUrl(args: {
+    deviceUdid?: string | null;
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    url: string;
+    source?: "user" | "agent";
+  }): Promise<unknown>;
   deviceCreate(args: { laneId: string; from?: string | null; runtime?: string | null; deviceType?: string | null; name?: string | null }): Promise<unknown>;
   deviceAttach(args: { laneId: string; simulator: string }): Promise<unknown>;
   deviceList(args: { laneId?: string | null; installed?: boolean; disk?: boolean; runtimes?: boolean }): Promise<unknown>;
@@ -105,6 +123,25 @@ export type AppleStreamTicketIssuer = {
 };
 
 export const APPLE_OWNED_BY_OTHER_SESSION_CODE = "APPLE_OWNED_BY_OTHER_SESSION" as const;
+export const APPLE_NO_LANE_DEVICE_CODE = "APPLE_NO_LANE_DEVICE" as const;
+
+/**
+ * `apple.invoke` methods that put input on the screen. Like `apple.input`,
+ * they drive only the lane's own device.
+ */
+const APPLE_INVOKE_INPUT_METHODS: ReadonlySet<string> = new Set([
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "selectPoint",
+  "tapElement",
+  "fillElement",
+  "openUrl",
+]);
 
 export class AppleOwnedByOtherSessionError extends Error {
   readonly code = APPLE_OWNED_BY_OTHER_SESSION_CODE;
@@ -282,10 +319,9 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
  * than treated as the owner.
  */
 export function assertAppleInputAllowed(
-  status: Pick<AppleStatusPayload, "owner">,
+  owner: string | null,
   chatSessionId: string | null,
 ): void {
-  const owner = status.owner?.chatSessionId ?? null;
   if (!owner) return;
   if (chatSessionId && chatSessionId === owner) return;
   throw new AppleOwnedByOtherSessionError(owner);
@@ -319,11 +355,6 @@ const APPLE_UNGUARDED_METHODS: ReadonlySet<string> = new Set([
   "listPreviewTargets",
   "getPreviewCapability",
 ]);
-
-function ownerOf(chatSessionId: string | null): AppleStatusPayload["owner"] {
-  const owner = asString(chatSessionId);
-  return owner ? { chatSessionId: owner, chatTitle: null } : null;
-}
 
 export type AppleRemoteCommandHandler = (payload: Record<string, unknown>) => Promise<unknown>;
 
@@ -375,24 +406,34 @@ export function createAppleRemoteCommandHandlers(deps: {
     }
   };
 
-  const statusFor = async (laneId: string): Promise<AppleStatusPayload> =>
-    buildAppleStatusPayload(laneId, await service.getStatus({ laneId }));
-
   const laneOf = (payload: Record<string, unknown>, action: string): string =>
     requireString(payload.laneId, `${action} requires laneId.`);
 
-  const guarded = async (
+  const guarded = (
     payload: Record<string, unknown>,
     action: string,
-  ): Promise<{ laneId: string; chatSessionId: string | null }> => {
+  ): { laneId: string; chatSessionId: string | null } => {
     const laneId = laneOf(payload, action);
     const chatSessionId = asString(payload.chatSessionId);
-    // The in-memory owner when the service has it: this runs once per tap.
-    const status = service.getControlOwner
-      ? { owner: ownerOf(service.getControlOwner({ laneId })) }
-      : await statusFor(laneId);
-    assertAppleInputAllowed(status, chatSessionId);
+    // From memory, not a status read: this runs once per remote tap.
+    assertAppleInputAllowed(asString(service.getControlOwner({ laneId })), chatSessionId);
     return { laneId, chatSessionId };
+  };
+
+  /**
+   * The device remote input may touch: the lane's own, named explicitly so
+   * the service never falls back to "the first booted iPhone", which can be
+   * another lane's screen. A lane with no device gets no input.
+   */
+  const laneDeviceFor = (laneId: string): string => {
+    const deviceUdid = asString(service.getClaimedDevice({ laneId }));
+    if (!deviceUdid) {
+      throw Object.assign(
+        new Error(`${APPLE_NO_LANE_DEVICE_CODE}: this lane has no simulator of its own, so remote input has nothing to drive.`),
+        { code: APPLE_NO_LANE_DEVICE_CODE },
+      );
+    }
+    return deviceUdid;
   };
 
   return [
@@ -442,12 +483,14 @@ export function createAppleRemoteCommandHandlers(deps: {
       action: "apple.input" as SyncRemoteCommandAction,
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
-        const { laneId, chatSessionId } = await guarded(payload, "apple.input");
+        const { laneId, chatSessionId } = guarded(payload, "apple.input");
+        const deviceUdid = laneDeviceFor(laneId);
         const kind = requireString(payload.kind, "apple.input requires a kind.");
         switch (kind) {
           case "tap":
             await service.tap({
               laneId,
+              deviceUdid,
               chatSessionId,
               source: "user",
               x: requireFiniteNumber(payload.x, "x"),
@@ -457,6 +500,7 @@ export function createAppleRemoteCommandHandlers(deps: {
           case "type":
             await service.typeText({
               laneId,
+              deviceUdid,
               chatSessionId,
               source: "user",
               text: requireString(payload.text, "apple.input type requires text."),
@@ -465,6 +509,7 @@ export function createAppleRemoteCommandHandlers(deps: {
           case "drag":
             await service.drag({
               laneId,
+              deviceUdid,
               chatSessionId,
               source: "user",
               startX: requireFiniteNumber(payload.startX, "startX"),
@@ -477,6 +522,7 @@ export function createAppleRemoteCommandHandlers(deps: {
           case "scroll":
             await service.scroll({
               laneId,
+              deviceUdid,
               chatSessionId,
               source: "user",
               direction: requireString(payload.direction, "apple.input scroll requires a direction."),
@@ -488,6 +534,7 @@ export function createAppleRemoteCommandHandlers(deps: {
           case "tap-element":
             await service.tapElement({
               laneId,
+              deviceUdid,
               chatSessionId,
               ...(asString(payload.ref) ? { ref: asString(payload.ref)! } : {}),
               ...(asString(payload.label) ? { label: asString(payload.label)! } : {}),
@@ -496,7 +543,9 @@ export function createAppleRemoteCommandHandlers(deps: {
           case "open-url":
             await service.openUrl({
               laneId,
+              deviceUdid,
               chatSessionId,
+              source: "user",
               url: requireString(payload.url, "apple.input open-url requires url."),
             });
             return { ok: true };
@@ -532,12 +581,14 @@ export function createAppleRemoteCommandHandlers(deps: {
           ? requireString(payload.laneId, `apple.invoke '${method}' requires laneId.`)
           : asString(payload.laneId);
         if (laneId && guardedMethod) {
-          assertAppleInputAllowed(await statusFor(laneId), chatSessionId);
+          assertAppleInputAllowed(asString(service.getControlOwner({ laneId })), chatSessionId);
         }
         const methodArgs = isRecord(payload.args) ? payload.args : {};
+        const inputDevice = laneId && APPLE_INVOKE_INPUT_METHODS.has(method) ? laneDeviceFor(laneId) : null;
         return invoke({
           ...methodArgs,
           ...(laneId ? { laneId } : {}),
+          ...(inputDevice ? { deviceUdid: inputDevice } : {}),
           ...(chatSessionId ? { chatSessionId } : {}),
         });
       },
@@ -583,7 +634,7 @@ export function createAppleRemoteCommandHandlers(deps: {
       action: "apple.recordStart" as SyncRemoteCommandAction,
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
-        const { laneId, chatSessionId } = await guarded(payload, "apple.recordStart");
+        const { laneId, chatSessionId } = guarded(payload, "apple.recordStart");
         return service.recordStart({ laneId, chatSessionId, label: asString(payload.label) });
       },
     },
@@ -591,7 +642,7 @@ export function createAppleRemoteCommandHandlers(deps: {
       action: "apple.recordStop" as SyncRemoteCommandAction,
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
-        const { laneId, chatSessionId } = await guarded(payload, "apple.recordStop");
+        const { laneId, chatSessionId } = guarded(payload, "apple.recordStop");
         return service.recordStop({ laneId, chatSessionId, keep: payload.keep !== false });
       },
     },

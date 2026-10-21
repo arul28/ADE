@@ -3401,7 +3401,7 @@ the host reports any booted iPhone on the Mac, so the chip needs
 `apple.status`'s `laneDevice.udid` to match the device shown (a host that
 sends no `laneDevice` shows no simulator chip). Each
 read is gated on its own action (`supportsWorkToolsState`,
-`supportsAppleDeviceStatus`), and the chips are hidden in personal chats
+`supportsAppleDeviceStatus(laneId:)`, asked of the lane's own machine), and the chips are hidden in personal chats
 and while the composer is input-locked, like the PR chip. Each chip opens
 one surface. The simulator opens `AppleDeviceViewer` (View only by default;
 hold Control to drive it — see

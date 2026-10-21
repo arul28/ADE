@@ -27,10 +27,8 @@ func appleDeviceControlBlocker(
   owner: AppleDeviceStatusOwner?,
   streaming: Bool
 ) -> String? {
-  guard hostSupportsControl else {
-    return "Update ADE on your Mac to control its simulator from here."
-  }
-  guard let pointMetrics, pointMetrics.width > 0, pointMetrics.height > 0 else {
+  // Both are an older Mac: no input commands, or a ticket without points.
+  guard hostSupportsControl, let pointMetrics, pointMetrics.width > 0, pointMetrics.height > 0 else {
     return "Update ADE on your Mac to control its simulator from here."
   }
   guard ownsDevice else {
@@ -43,19 +41,6 @@ func appleDeviceControlBlocker(
     return "Control turns on once the picture is live."
   }
   return nil
-}
-
-/// Whether the device the status shows is the one this lane holds.
-///
-/// For a lane with no device the host reports any booted iPhone, so `device`
-/// alone could be another lane's or the user's own simulator. Only a match
-/// with `laneDevice` makes it this lane's to drive.
-func appleStatusShowsLaneDevice(_ status: AppleDeviceStatus?) -> Bool {
-  guard
-    let shown = status?.device?.udid, !shown.isEmpty,
-    let held = status?.laneDevice?.udid
-  else { return false }
-  return shown == held
 }
 
 /// The claim that keeps this viewer from driving, or nil when there is none.
@@ -167,6 +152,49 @@ enum AppleDeviceTouchMapping {
 
 // MARK: - Gestures
 
+/// What one control leaves the phone as. Device POINTS throughout.
+enum AppleDeviceInput: Equatable {
+  case tap(CGPoint)
+  case drag(from: CGPoint, to: CGPoint, durationMs: Int)
+  case type(String)
+  /// A hardware button, by the helper's name (`home`, `lock`, …).
+  case button(String)
+
+  /// The sync command that carries it: `apple.input` for touches and text,
+  /// the allowlisted `apple.invoke pressButton` for a button. Both carry the
+  /// viewer's chat, which the host's ownership guard reads.
+  func command(laneId: String, chatSessionId: String?) -> (action: String, args: [String: Any]) {
+    var args: [String: Any] = ["laneId": laneId]
+    if let chatSessionId { args["chatSessionId"] = chatSessionId }
+    switch self {
+    case .tap(let point):
+      args["kind"] = "tap"
+      args["x"] = Self.round(point.x)
+      args["y"] = Self.round(point.y)
+    case .drag(let from, let to, let durationMs):
+      args["kind"] = "drag"
+      args["startX"] = Self.round(from.x)
+      args["startY"] = Self.round(from.y)
+      args["endX"] = Self.round(to.x)
+      args["endY"] = Self.round(to.y)
+      args["durationMs"] = durationMs
+    case .type(let text):
+      args["kind"] = "type"
+      args["text"] = text
+    case .button(let name):
+      args["method"] = "pressButton"
+      args["args"] = ["name": name]
+      return ("apple.invoke", args)
+    }
+    return ("apple.input", args)
+  }
+
+  /// Device points to a tenth: finer than any finger, and short on the wire.
+  private static func round(_ value: CGFloat) -> Double {
+    (Double(value) * 10).rounded() / 10
+  }
+}
+
 /// One finger on the picture, turned into ONE `apple.input` call.
 ///
 /// The same rule as the desktop's `useAppleDeviceInput`: a press that did not
@@ -195,28 +223,16 @@ struct AppleDeviceGesture: Equatable {
     travel = max(travel, hypot(point.x - start.x, point.y - start.y))
   }
 
-  /// The `apple.input` payload for the finished gesture, in device points.
-  func payload(endingAt point: CGPoint, at date: Date) -> [String: Any] {
+  /// The finished gesture.
+  func input(endingAt point: CGPoint, at date: Date) -> AppleDeviceInput {
     var finished = self
     finished.move(to: point)
-    let end = finished.last
     if finished.travel <= Self.tapSlopPoints {
-      return ["kind": "tap", "x": Self.round(end.x), "y": Self.round(end.y)]
+      return .tap(finished.last)
     }
     let elapsed = date.timeIntervalSince(startedAt) * 1_000
-    return [
-      "kind": "drag",
-      "startX": Self.round(start.x),
-      "startY": Self.round(start.y),
-      "endX": Self.round(end.x),
-      "endY": Self.round(end.y),
-      "durationMs": Int(min(Self.maxDragMs, max(Self.minDragMs, elapsed)).rounded()),
-    ]
-  }
-
-  /// Device points to a tenth: finer than any finger, and short on the wire.
-  private static func round(_ value: CGFloat) -> Double {
-    (Double(value) * 10).rounded() / 10
+    let durationMs = Int(min(Self.maxDragMs, max(Self.minDragMs, elapsed)).rounded())
+    return .drag(from: start, to: finished.last, durationMs: durationMs)
   }
 }
 
@@ -241,15 +257,15 @@ struct AppleTapLatencyProbe {
   static let burstGap: TimeInterval = 0.1
   static let window: TimeInterval = 2
 
-  private(set) var pendingSince: Date?
+  private var pendingSince: Date?
   /// Whether the stream was at its idle floor when the gesture left, which is
   /// the only time a burst means "this gesture changed the screen".
   private var idleAtSend = false
   private var lastFrameAt: Date?
   private var lastGap: TimeInterval?
   /// Exponential average of recent delta-frame sizes.
-  private(set) var averageBytes: Double = 0
-  private(set) var samples: [Double] = []
+  private var averageBytes: Double = 0
+  private var samples: [Double] = []
 
   /// A gesture just left the phone.
   mutating func gestureSent(at date: Date) {

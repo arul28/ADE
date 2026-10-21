@@ -5360,6 +5360,12 @@ struct SyncRemoteCommandPolicy: Codable, Equatable {
   var requiresApproval: Bool?
   var localOnly: Bool?
   var queueable: Bool?
+
+  /// Whether a paired phone may call it: open to viewers, or to the owner's
+  /// own controller devices.
+  var allowsPhone: Bool {
+    viewerAllowed || controllerAllowed == true
+  }
 }
 
 struct SyncRemoteCommandDescriptor: Codable, Equatable, Identifiable {
