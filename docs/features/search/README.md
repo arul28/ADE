@@ -117,8 +117,9 @@ Desktop ⌘K command palette:
   universal-search seam: `useUniversalSearch` (debounced `window.ade.search`
   query), the `KindIcon` / highlight helpers, and the `SearchResultRow` entity
   rows grouped by kind (`ENTITY_KIND_ORDER` / `ENTITY_KIND_LABEL`).
-- `apps/desktop/src/renderer/components/app/CommandPalette.tsx` and
-  `commandPaletteThreads.tsx` — host the flat-index interleaving of command,
+- `apps/desktop/src/renderer/components/app/CommandPalette.tsx`,
+  `commandPaletteLanePr.ts`, and `commandPaletteThreads.tsx` — host the
+  flat-index interleaving of command,
   thread, and entity results, and `activateResult`'s `kind → navigate` switch
   (chat/terminal/pr/lane/commit/branch/file/linear/artifact → the matching tab,
   relying on the deep-link navigate listener to focus the target). Thread entries
@@ -131,7 +132,25 @@ Desktop ⌘K command palette:
   free-text terms. Opening a chat from a message hit leaves the words for that
   chat's find bar (`setPendingChatFind`, dropped after 10 s). The palette keeps
   focus from snapping back when it closes into a find bar. The keyboard index
-  resolves commands in their rendered (grouped) order.
+  resolves commands in their rendered (grouped) order. When a lane is selected,
+  it adds an exact **Open PR #N: title** command from the same lane PR selector
+  and route builder as the Lanes badge; with no lane PR, it offers a creation
+  command prefilled for that lane. Both commands enter regular word matching
+  and Jev's candidates. PR reads remain on the active project binding and use
+  the existing event-driven lane PR source; the palette adds no poller.
+- Queries with at least three words (or two words with no direct command match)
+  ask Jev (`usePaletteSuggestions.ts`, candidates and descriptions in
+  `commandPaletteSuggestions.ts`) to rank up to 20 likely commands after a 500 ms pause (20 picked
+  the same command as 40 on 30 test queries, for 26% fewer tokens). The
+  `Suggested` group appears above normal results when
+  the top command probability is at least 0.35 and each shown command is above
+  0.15. Suggestions use the same command rows and still require an explicit
+  click or Enter; command confirmations stay in force. The request includes
+  the current tab and focused lane/chat context, uses the palette's runtime
+  pin, and caches results per query in a small in-memory LRU. Jev errors,
+  unavailable service, or answers below the probability floor leave the normal
+  word-matched palette in place. Adding the group preserves the selected normal
+  row's keyboard target.
 - `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
   palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
   (a colored tile per command id, with Work tool marks from

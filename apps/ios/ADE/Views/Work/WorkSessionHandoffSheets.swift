@@ -622,7 +622,7 @@ struct WorkAutoHandoffSheet: View {
           Picker("Lane", selection: $form.targetLaneId) {
             Text("Choose a lane").tag("")
             ForEach(laneOptions) { lane in
-              Text(lane.name).tag(lane.id)
+              Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name)").tag(lane.id)
             }
           }
           .pickerStyle(.menu)

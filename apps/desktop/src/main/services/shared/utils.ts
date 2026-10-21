@@ -1166,6 +1166,30 @@ export function clipText(value: string, maxLength: number): string {
   return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+type ClipEndOptions = {
+  /** The ellipsis counts toward `maxChars`, so a clipped result is exactly `maxChars` long. Default: it is added on top. */
+  ellipsisCounts?: boolean;
+};
+
+function clipKeepCount(length: number, maxChars: number, options?: ClipEndOptions): number | null {
+  if (length <= maxChars) return null;
+  return Math.max(0, options?.ellipsisCounts ? maxChars - 1 : maxChars);
+}
+
+/** Trim, then keep the start of text longer than `maxChars`, ending with `…`. */
+export function clipHead(text: string, maxChars: number, options?: ClipEndOptions): string {
+  const trimmed = text.trim();
+  const keep = clipKeepCount(trimmed.length, maxChars, options);
+  return keep === null ? trimmed : `${trimmed.slice(0, keep)}…`;
+}
+
+/** Trim, then keep the end of text longer than `maxChars`, starting with `…`. */
+export function clipTail(text: string, maxChars: number, options?: ClipEndOptions): string {
+  const trimmed = text.trim();
+  const keep = clipKeepCount(trimmed.length, maxChars, options);
+  return keep === null ? trimmed : `…${trimmed.slice(trimmed.length - keep)}`;
+}
+
 // ── Secret detection helpers ────────────────────────────────────────
 
 const ENV_REF_PATTERN = /^\$\{env:[A-Z0-9_]+\}$/;

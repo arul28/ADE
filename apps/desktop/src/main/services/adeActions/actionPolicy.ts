@@ -834,6 +834,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   keybindings: ["get", "set"],
   ai: [
     "getStatus",
+    // The shared Jev helper: a typed question to OpenCode Zen's free decision
+    // model, null on any failure. Renderer features on any machine call it.
+    "jevDecide",
+    "jevStatus",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
     "museBinaryStatus",
@@ -1084,9 +1088,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "forceRefresh",
     "getAdeUsageStats",
     "getCostBreakdown",
+    "getModelCatalog",
     "getModelDetail",
     "getModelPriceOverrides",
     "getModelRoutes",
+    "getModelSheet",
     "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",
@@ -1344,6 +1350,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
+  /*
+   * Project notes are written by agents, on purpose and without prompts: the
+   * whole point is that an agent saves what it had to work out. The caps live
+   * in the service, and the user sees every note read-only in Settings, which
+   * is the check on agent-written text that reaches future prompts.
+   */
+  project_notes: ["list", "add", "edit", "remove", "renderPromptBlock"],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

@@ -118,6 +118,8 @@ import {
   type ModelChipSegment,
 } from "./composerModelChip";
 import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
+import { ComposerModelHintChip } from "./ComposerModelHintChip";
+import { useComposerModelHint } from "./useComposerModelHint";
 import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
@@ -2476,6 +2478,7 @@ function AgentChatComposerImpl({
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
+  chatHasMessages = false,
 }: {
   surfaceMode?: ChatSurfaceMode;
   /**
@@ -3416,6 +3419,26 @@ function AgentChatComposerImpl({
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
   const chatRuntimePin = useChatRuntimeScope().pin;
+  // Which chat (or the draft) had its model picked by hand: Jev's hint then
+  // keeps that model and suggests only an effort. A model the draft opened
+  // with (a saved default) was not picked here, so it still gets model hints.
+  const [modelPickedByHandFor, setModelPickedByHandFor] = useState<string | null>(null);
+  const handPickKey = sessionId ?? "draft";
+  // Every new chat is "draft": arriving at one starts it unpicked.
+  useEffect(() => {
+    if (handPickKey === "draft") setModelPickedByHandFor((current) => (current === "draft" ? null : current));
+  }, [handPickKey]);
+  const handleModelPickerChange = useCallback((nextModelId: string, options?: ModelPickerSelection) => {
+    // The fast-mode switch reports the same model; that is not a model pick.
+    if (nextModelId !== modelId) setModelPickedByHandFor(handPickKey);
+    onModelChange(nextModelId, options);
+  }, [handPickKey, modelId, onModelChange]);
+  // Bumped per effort picked by hand; the hint chip stands down for that prompt.
+  const [effortPickedByHand, setEffortPickedByHand] = useState(0);
+  const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
+    setEffortPickedByHand((count) => count + 1);
+    onReasoningEffortChange(effort);
+  }, [onReasoningEffortChange]);
   const chatRuntimePinRef = useRef(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
@@ -7222,6 +7245,26 @@ function AgentChatComposerImpl({
     }
   }, [composerMachineBinding, scheduleRequest]);
 
+  const modelHint = useComposerModelHint({
+    draft,
+    attachments,
+    laneName: scheduledSendContext?.laneName ?? null,
+    chatHasHistory: chatHasMessages,
+    modelId,
+    reasoningEffort,
+    allowedModelIds: constrainModelSelection ? availableModelIds ?? null : null,
+    pin: modelRuntimePin,
+    ownerBinding: composerMachineBinding,
+    modelChosen: modelPickedByHandFor === handPickKey || chatHasMessages,
+    hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset),
+    effortPickedByHand,
+    onModelChange,
+    onReasoningEffortChange,
+  });
+  // Read at send time: the latest advice, without re-creating the submit callback.
+  const recordModelHintSendRef = useRef(modelHint.recordSend);
+  recordModelHintSendRef.current = modelHint.recordSend;
+
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking && !pendingRedirectActive) {
       return;
@@ -7278,6 +7321,7 @@ function AgentChatComposerImpl({
       if (!busy && !singleModelReady && !linkedCloudReply) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
+    if (!linkedCloudReply) recordModelHintSendRef.current();
     onSubmit();
   }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
@@ -8318,7 +8362,7 @@ function AgentChatComposerImpl({
               <>
                 <ModelPicker
                   value={modelId}
-                  onChange={onModelChange}
+                  onChange={handleModelPickerChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   activePresetId={activeHarnessPresetId}
                   openRequestKey={modelPickerOpenRequestKey}
@@ -8351,7 +8395,8 @@ function AgentChatComposerImpl({
                 <ReasoningEffortPicker
                   modelId={modelId}
                   reasoningEffort={reasoningEffort}
-                  onChange={onReasoningEffortChange}
+                  squeezed={modelHint.chip != null}
+                  onChange={handleReasoningEffortPickerChange}
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
@@ -8362,6 +8407,7 @@ function AgentChatComposerImpl({
                   copilotAutoTierPending={copilotAutoTierPending}
                   {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}
                 />
+                <ComposerModelHintChip chip={modelHint.chip} />
               </>
             ) : null}
             {/* The harness a Custom pick runs in, next to the model it applies

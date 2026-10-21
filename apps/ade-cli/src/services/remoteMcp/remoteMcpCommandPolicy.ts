@@ -52,11 +52,11 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "built-in-browser", "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "coord",
   "coordinator", "create", "cursor", "desk", "diff", "diffs", "disk", "doctor", "drafts", "electron", "file",
   "files", "gh", "git", "github", "harness", "harnesses", "health", "help", "history", "init", "ios", "ios-sim",
-  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "new",
-  "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider", "providers",
-  "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen", "search",
-  "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill", "skills",
-  "status", "storage", "sync", "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui",
+  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "models", "new",
+  "note", "notes", "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider",
+  "providers", "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen",
+  "search", "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill",
+  "skills", "status", "storage", "sync", "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui",
   "update", "updates", "usage", "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
@@ -87,6 +87,8 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["terminal", new Set(["list", "read", "active"])],
   ["history", new Set(["list", "show", "commits"])],
   ["drafts", new Set(["list", "show"])],
+  ["notes", new Set(["list", "ls"])],
+  ["note", new Set(["list", "ls"])],
   ["session", new Set(["show", "actions"])],
   ["linear", new Set(["issue", "issues"])],
   ["jira", new Set(["status", "list", "issue", "projects"])],
@@ -111,6 +113,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["providers", new Set(["actions"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
+  ["models", new Set(["catalog", "sheet"])],
   ["proxy", new Set(["status"])],
   ["actions", new Set(["list"])],
 ]);

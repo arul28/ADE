@@ -712,6 +712,8 @@ export type FormatterId =
   | "usage-prices"
   | "router-efficiency"
   | "router-shadow"
+  | "models-catalog"
+  | "models-sheet"
   | "update-status"
   | "notify"
   | "remote-mcp";
@@ -1212,6 +1214,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
+    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -1237,6 +1240,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
         | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
+    $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | rename | default
@@ -2077,6 +2081,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
+    $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
@@ -2684,6 +2689,30 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   The target is always explicit: name --target or --new-chat --lane, or the command fails.
   Output is a readable table by default; --text is one line per row; --json is structured.
+`,
+  notes: `${ADE_BANNER}
+  Project notes
+
+  Short facts earlier agents learned about working on this project in ADE: how
+  to build or launch its app, a dev-server port, an ADE quirk here. Every new
+  agent session on this project gets them in its prompt. They live in the
+  project's ADE database and reach every machine with the project.
+
+    $ ade notes list --text                         Project notes plus this machine's
+    $ ade notes list --section iOS --text           One section
+    $ ade notes add --section iOS --scope machine "Build with the ADE scheme on the iPhone 17 Pro simulator"
+                                                    Save one fact (--scope defaults to project)
+    $ ade notes edit <id> "New text"                Rewrite a note; --section and --scope move it
+    $ ade notes rm <id>                             Remove a stale or wrong note
+
+  Scopes:
+    project   True on any machine with this project.
+    machine   True only on this computer. Pick it when unsure.
+
+  Limits (enforced; a write past one is refused with what to merge or remove):
+    one line of at most 200 characters per note, 8 notes per section, and a
+    prompt block of at most 3072 bytes. Ids may be shortened to a unique prefix.
+  Users can read every note in Settings > Agents > Agent notes.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -3619,6 +3648,34 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
   reads a local registry snapshot instead of the account directory.
 `,
+  models: `${ADE_BANNER}
+  Your model catalogue
+
+  Every model this machine can run (the models each harness lists), joined
+  with its model registry profile: Intelligence Index and every per-eval
+  score, domain and personality indices, modalities, license, speed, list
+  prices, Coding Agent Index rows and linked speech leaderboard rows. Each
+  model says how you reach it: the harness, and who bills it (a plan, a
+  metered channel, or free). Read-only: it starts nothing. Registry data is
+  based on Artificial Analysis (artificialanalysis.ai).
+
+    $ ade models catalog --text                     One line per model, best Intelligence Index first
+    $ ade models catalog --provider opencode --text One harness
+    $ ade models catalog                            Full profiles as JSON
+
+  The model sheet organizes the same models by the kind of task they suit:
+  a 0-1 score per task kind (question, research, review, small edit, feature,
+  debugging, refactor, writing, vision) from weighted benchmarks, the
+  best effort per kind, speed and cost tiers, and plain-English notes: what
+  each model family is good for and what to avoid it for.
+
+    $ ade models sheet --text                       Task-kind table, then each family in words
+    $ ade models sheet --provider claude --text     One harness
+    $ ade models sheet                              The sheet as JSON
+
+  Env: ADE_MODEL_REGISTRY_FILE=<path> reads a local registry snapshot instead
+  of the account directory.
+`,
   archive: `${ADE_BANNER}
   Archived lanes, chats, and shells
 
@@ -3636,8 +3693,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Unarchive items (needs the CTO role)
 
   Each item reports done or failed on its own; the command exits non-zero when
-  any item failed. Deleting is yours alone: do it in Settings → Archive on the
-  desktop, the web client, or the phone. Agents and automations can't delete.
+  any item failed. Deleting is yours alone: do it in Project → Storage &
+  cleanup → Archive on desktop or web. Agents and automations can't delete.
 `,
   health: `${ADE_BANNER}
   Project health
@@ -3658,10 +3715,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
-  volume's free space, mirroring the desktop Settings storage dashboard. The
-  snapshot is read-only; compression is lossless and safe. Maintenance runs the
-  policy-driven ledger sweep (prune/compress/vacuum). Target-scoped cleanup
-  (which deletes files) is intentionally left to the action bridge.
+  volume's free space, like Settings → Project → Storage & cleanup on the
+  desktop. The snapshot is read-only; compression is lossless and safe.
+  Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
+  Target-scoped cleanup (which deletes files) is left to the action bridge.
 
     $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
     $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
@@ -6430,6 +6487,7 @@ function buildLanePlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, {
             laneId,
             color: readValue(args, ["--color"]),
+            emoji: readValue(args, ["--emoji"]),
             icon: readValue(args, ["--icon"]),
           }),
         ),
@@ -12130,6 +12188,147 @@ function buildDraftsPlan(args: string[]): CliPlan {
   }
 }
 
+/**
+ * `ade notes`: Project notes, the short facts every ADE agent on this project
+ * gets in its prompt. The runtime that owns the lane holds them (the
+ * `project_notes` action domain); the caps are enforced there, so a refused
+ * write comes back as the action's error, with what to merge or remove.
+ */
+function buildNotesPlan(args: string[]): CliPlan {
+  const sub = firstStandalonePositional(args) ?? "list";
+  const notesStep = (action: string, input: JsonObject = {}): InvocationStep =>
+    actionStep("result", "project_notes", action, input);
+  const readScope = (): "project" | "machine" | null => {
+    const raw = readValue(args, ["--scope"]);
+    if (raw == null) return null;
+    const scope = raw.trim().toLowerCase();
+    if (scope !== "project" && scope !== "machine") {
+      throw new CliUsageError(`--scope must be project or machine, not '${raw}'.`);
+    }
+    return scope;
+  };
+  // The chat or CLI session this ran inside, recorded as the note's author.
+  const sessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  const confirm = (verb: string) => (result: unknown): string => {
+    const note = unwrapActionEnvelope(result);
+    const record: JsonObject = isRecord(note) ? note : {};
+    const scope = asString(record.scope) === "machine" ? " (this machine)" : "";
+    return `${verb} note ${asString(record.id) ?? ""} [${asString(record.section) ?? ""}${scope}]: ${asString(record.body) ?? ""}`;
+  };
+  switch (sub) {
+    case "list":
+    case "ls": {
+      const section = readValue(args, ["--section"]);
+      const scope = readScope();
+      return {
+        kind: "execute",
+        label: "notes list",
+        steps: [notesStep("list", { ...(section ? { section } : {}), ...(scope ? { scope } : {}) })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: (result) => formatProjectNotesLines(result),
+        tableText: (result) => formatProjectNotesTable(result),
+      };
+    }
+    case "add": {
+      const section = requireValue(readValue(args, ["--section"]), "--section <area>");
+      const scope = readScope();
+      const body = requireValue(
+        readValue(args, ["--body", "--note"]) ?? (standalonePositionals(args).join(" ").trim() || null),
+        "the note text",
+      );
+      return {
+        kind: "execute",
+        label: "notes add",
+        steps: [notesStep("add", { section, body, ...(scope ? { scope } : {}), ...(sessionId ? { sessionId } : {}) })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Saved"),
+        tableText: confirm("Saved"),
+      };
+    }
+    case "edit": {
+      // Flags first, so `edit --section iOS <id>` cannot take the flag's value as the id.
+      const section = readValue(args, ["--section"]);
+      const scope = readScope();
+      const bodyFlag = readValue(args, ["--body", "--note"]);
+      const id = requireValue(firstStandalonePositional(args), "a note id");
+      const body = bodyFlag ?? (standalonePositionals(args).join(" ").trim() || null);
+      if (!section && !scope && !body) {
+        throw new CliUsageError("ade notes edit <id> needs new text, --section or --scope.");
+      }
+      return {
+        kind: "execute",
+        label: "notes edit",
+        steps: [notesStep("edit", {
+          id,
+          ...(body ? { body } : {}),
+          ...(section ? { section } : {}),
+          ...(scope ? { scope } : {}),
+          ...(sessionId ? { sessionId } : {}),
+        })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Updated"),
+        tableText: confirm("Updated"),
+      };
+    }
+    case "rm":
+    case "remove":
+    case "delete": {
+      const id = requireValue(firstStandalonePositional(args), "a note id");
+      return {
+        kind: "execute",
+        label: "notes rm",
+        steps: [notesStep("remove", { id })],
+        shapeResult: (values) => unwrapActionEnvelope(values.result),
+        formatText: confirm("Removed"),
+        tableText: confirm("Removed"),
+      };
+    }
+    default:
+      throw new CliUsageError(`Unknown notes subcommand '${sub}'. Run 'ade help notes'.`);
+  }
+}
+
+function projectNoteRows(result: unknown): JsonObject[] {
+  const record = isRecord(result) ? result : {};
+  return Array.isArray(record.notes) ? record.notes.filter(isRecord) : [];
+}
+
+function projectNotesFooter(result: unknown): string {
+  const record = isRecord(result) ? result : {};
+  const limits = isRecord(record.limits) ? record.limits : {};
+  const bytes = typeof record.renderedBytes === "number" ? record.renderedBytes : null;
+  const cap = typeof limits.maxRenderedBytes === "number" ? limits.maxRenderedBytes : null;
+  return bytes != null && cap != null ? `Prompt block: ${bytes} of ${cap} bytes.` : "";
+}
+
+function formatProjectNotesLines(result: unknown): string {
+  const rows = projectNoteRows(result);
+  if (rows.length === 0) return ["Project notes\n(no notes)", projectNotesFooter(result)].filter(Boolean).join("\n");
+  return [
+    ...rows.map((note) => {
+      const scope = asString(note.scope) === "machine" ? " (this machine)" : "";
+      return `${asString(note.id) ?? ""}  [${asString(note.section) ?? ""}${scope}] ${asString(note.body) ?? ""}`;
+    }),
+    projectNotesFooter(result),
+  ].filter(Boolean).join("\n");
+}
+
+function formatProjectNotesTable(result: unknown): string {
+  const table = renderTable(
+    ["id", "section", "scope", "note", "updated"],
+    projectNoteRows(result).map((note) => [
+      asString(note.id) ?? "",
+      asString(note.section) ?? "",
+      asString(note.scope) ?? "",
+      asString(note.body) ?? "",
+      (asString(note.updatedAt) ?? "").slice(0, 10),
+    ]),
+    "Project notes\n(no notes)",
+    { fullColumns: ["id", "note"] },
+  );
+  return [table, projectNotesFooter(result)].filter(Boolean).join("\n");
+}
+
 function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
   return {
     key: "result",
@@ -17573,6 +17772,26 @@ function buildRouterPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown router command '${sub}'. Use routes, pick, shadow, efficiency, or refresh.`);
 }
 
+function buildModelsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "catalog";
+  const provider = readValue(args, ["--provider"]);
+  if (sub === "sheet") {
+    return {
+      kind: "execute",
+      label: "models sheet",
+      formatter: "models-sheet",
+      steps: [actionStep("result", "usage", "getModelSheet", provider ? { provider } : {})],
+    };
+  }
+  if (sub !== "catalog" && sub !== "list") throw new CliUsageError(`Unknown models command '${sub}'. Use catalog or sheet.`);
+  return {
+    kind: "execute",
+    label: "models catalog",
+    formatter: "models-catalog",
+    steps: [actionStep("result", "usage", "getModelCatalog", provider ? { provider } : {})],
+  };
+}
+
 function buildUsagePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "snapshot";
   if (sub === "actions")
@@ -17912,7 +18131,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Settings → Archive (desktop, web, or phone). The command line can list and restore them.",
+      "Delete archived items in ADE: Project → Storage & cleanup → Archive (desktop or web). The command line can list and restore them.",
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
@@ -20062,6 +20281,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--droid-permission-mode",
   "--duration-sec",
   "--enabled",
+  "--emoji",
   "--event",
   "--end-x",
   "--end-y",
@@ -20719,6 +20939,8 @@ function buildCliPlan(
   // is deliberately no `ade sends`.
   if (primary === "drafts")
     return buildDraftsPlan(args);
+  if (primary === "notes" || primary === "note")
+    return buildNotesPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
@@ -20796,6 +21018,7 @@ function buildCliPlan(
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "router") return buildRouterPlan(args);
+  if (primary === "models") return buildModelsPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
   if (primary === "health") return buildHealthPlan(args);
@@ -25263,7 +25486,7 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout, isMachineAdeHome },
+    { resolveMachineAdeLayout, isSyncCapableAdeHome },
     { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
@@ -25380,10 +25603,10 @@ async function runServe(
     });
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
-  const isMachineSecretsHome = isMachineAdeHome(path.dirname(layout.secretsDir));
-  const syncEnabled = !readFlag(args, ["--no-sync"]) && isMachineSecretsHome;
-  if (!isMachineSecretsHome && !readFlag(args, ["--no-sync"])) {
-    process.stderr.write("ADE: sync disabled because ADE_HOME is not the machine's default home.\n");
+  const syncCapableHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
+  const syncEnabled = !readFlag(args, ["--no-sync"]) && syncCapableHome;
+  if (!syncCapableHome && !readFlag(args, ["--no-sync"])) {
+    process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
   }
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
@@ -26085,7 +26308,7 @@ async function runServe(
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
-      hostStartupEnabled: isMachineSecretsHome,
+      hostStartupEnabled: syncCapableHome,
       // The machine's own brain may claim the cluster record for any project it
       // serves, including before that project is selected as the host.
       mayClaimCluster: syncEnabled,
@@ -28593,6 +28816,156 @@ function formatRouterEfficiency(value: unknown): string {
  * would have picked. The source counts say how each fact was known, so a
  * guessed effort or kind shows up instead of hiding in the picks.
  */
+function formatModelsCatalog(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const catalog = isRecord(result.catalog) ? result.catalog : {};
+  const registry = isRecord(result.registry) ? result.registry : {};
+  const models = Array.isArray(catalog.models) ? catalog.models.filter(isRecord) : [];
+  const fixed = (input: unknown, digits: number): string =>
+    typeof input === "number" && Number.isFinite(input) ? input.toFixed(digits) : "";
+  const billing = (input: unknown): string => {
+    if (!isRecord(input)) return "";
+    if (input.kind === "plan") return `plan ${String(input.plan ?? "")}`;
+    if (input.kind === "metered") return `metered ${String(input.channel ?? "")}`;
+    return String(input.kind ?? "");
+  };
+  const rows = models.map((entry) => {
+    const profile = isRecord(entry.profile) ? entry.profile : {};
+    const price = isRecord(profile.price) ? profile.price : {};
+    const modalities = isRecord(profile.modalities) ? profile.modalities : null;
+    const io = modalities
+      ? `${(Array.isArray(modalities.input) ? modalities.input : []).join("+")} → ${(Array.isArray(modalities.output) ? modalities.output : []).join("+")}`
+      : "";
+    const evals = isRecord(profile.evals) ? Object.keys(profile.evals).length : 0;
+    const efforts = Array.isArray(entry.efforts)
+      ? entry.efforts.filter(isRecord).map((effort) => `${String(effort.effort ?? "-")}${effort.isDefault ? "*" : ""}`).join(" ")
+      : "";
+    return [
+      String(entry.harness ?? ""),
+      String(entry.modelId ?? ""),
+      billing(entry.billing),
+      String(profile.slug ?? "—"),
+      fixed(profile.intelligenceIndex, 1),
+      String(evals || ""),
+      io,
+      fixed(profile.outputTokensPerSecond, 0),
+      price.input != null || price.output != null ? `${fixed(price.input, 2)}/${fixed(price.output, 2)}` : "",
+      efforts,
+      String(profile.profile ?? ""),
+    ];
+  });
+  const sources = isRecord(catalog.sources) ? catalog.sources : {};
+  const sourceLine = Object.entries(sources)
+    .filter(([, status]) => isRecord(status))
+    .map(([name, status]) => {
+      const entry = status as Record<string, unknown>;
+      return `${name} ${entry.ok ? "ok" : `failed (${String(entry.error ?? "")})`}`;
+    })
+    .join(", ");
+  return [
+    renderKeyValues("Your model catalogue", [
+      ["models", `${models.length} (${Number(catalog.unmatched ?? 0)} without a registry profile)`],
+      ["registry", `${String(catalog.generatedAt ?? "none")} (${String(registry.source ?? "")})`],
+      ["sources", sourceLine],
+    ]),
+    "",
+    renderTable(
+      ["harness", "model", "billing", "registry variant", "index", "evals", "modalities", "tok/s", "$/M in/out", "efforts (*default)", "data"],
+      rows,
+      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      { fullColumns: ["model", "registry variant"] },
+    ),
+    "",
+    String(catalog.attribution ?? ""),
+  ].join("\n");
+}
+
+/**
+ * The model sheet: one row per model family with its task-kind scores and
+ * tiers, then each family in words (summary, best for, avoid for, notes) with
+ * the routes that reach it.
+ */
+function formatModelsSheet(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const sheet = isRecord(result.sheet) ? result.sheet : {};
+  const registry = isRecord(result.registry) ? result.registry : {};
+  const families = Array.isArray(sheet.families) ? sheet.families.filter(isRecord) : [];
+  const kinds = Array.isArray(sheet.kinds) ? sheet.kinds.map(String) : [];
+  const short: Record<string, string> = {
+    question: "ask", research: "rsrch", review: "review", small_edit: "edit", feature: "feat",
+    debugging: "debug", refactor: "refac", writing: "write", vision: "vision",
+  };
+  const score = (input: unknown): string => (typeof input === "number" ? input.toFixed(2) : "—");
+  const billing = (input: unknown): string => {
+    if (!isRecord(input)) return "";
+    if (input.kind === "plan") return `plan ${String(input.plan ?? "")}`;
+    if (input.kind === "metered") return `metered ${String(input.channel ?? "")}`;
+    return String(input.kind ?? "");
+  };
+  const modelsOf = (family: JsonObject): JsonObject[] => (Array.isArray(family.models) ? family.models.filter(isRecord) : []);
+  const rows = families.map((family) => {
+    const scores = isRecord(family.kinds) ? family.kinds : {};
+    const harnesses = [...new Set(modelsOf(family).map((model) => `${String(model.harness ?? "")} ${billing(model.billing).split(" ")[0]}`))];
+    return [
+      String(family.name ?? family.family ?? ""),
+      ...kinds.map((kind) => score(scores[kind])),
+      String(family.speed ?? "—"),
+      String(family.cost ?? "—"),
+      harnesses.join(", "),
+    ];
+  });
+  const blocks = families.map((family) => {
+    const notes = isRecord(family.notes) ? family.notes : {};
+    const list = (input: unknown): string[] => (Array.isArray(input) ? input.map(String) : []);
+    const kindList = (input: unknown): string => (Array.isArray(input) ? input.filter(isRecord) : [])
+      .map((entry) => `${short[String(entry.kind)] ?? String(entry.kind)} (${String(entry.why ?? "")})`)
+      .join("; ");
+    const models = modelsOf(family).map((model) => {
+      const best = isRecord(model.bestEffort) ? model.bestEffort : {};
+      const bestText = Object.entries(best).map(([kind, effort]) => `${short[kind] ?? kind} ${String(effort)}`).join(", ");
+      const match = isRecord(model.match) ? model.match : null;
+      return [
+        `    ${String(model.harness ?? "")} ${String(model.modelId ?? "")}`,
+        billing(model.billing),
+        model.defaultEffort ? `default ${String(model.defaultEffort)}` : "",
+        model.scoredEffort !== model.defaultEffort && model.scoredSlug ? `scored at ${String(model.scoredEffort ?? "-")}` : "",
+        bestText ? `best: ${bestText}` : "",
+        match ? `match: ${String(match.relation ?? "")} (${String(match.confidence ?? "")})` : "",
+        match?.availabilityDoubt ? "may not be usable on your plan" : "",
+      ].filter(Boolean).join(" · ");
+    });
+    const lines = [
+      `${String(family.name ?? "")}${family.family ? ` [${String(family.family)}]` : ""} — ${String(notes.summary ?? "")}`,
+      kindList(notes.bestFor) ? `  best for    ${kindList(notes.bestFor)}` : "",
+      kindList(notes.avoidFor) ? `  avoid for   ${kindList(notes.avoidFor)}` : "",
+      list(notes.strengths).length ? `  strengths   ${list(notes.strengths).join("; ")}` : "",
+      list(notes.weaknesses).length ? `  weaknesses  ${list(notes.weaknesses).join("; ")}` : "",
+      ...list(notes.notes).map((note) => `  note        ${note}`),
+      ...models,
+    ];
+    return lines.filter(Boolean).join("\n");
+  });
+  const unmatched = families.filter((family) => !family.family).length;
+  return [
+    renderKeyValues("Your model sheet", [
+      ["families", `${families.length} (${unmatched} without registry data)`],
+      ["registry", `${String(sheet.generatedAt ?? "none")} (${String(registry.source ?? "")})`],
+      ["scores", "0-1 per task kind vs current models, at high effort where measured; — = not enough data"],
+    ]),
+    "",
+    renderTable(
+      ["family", ...kinds.map((kind) => short[kind] ?? kind), "speed", "cost", "you run it via"],
+      rows,
+      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      { fullColumns: ["family"] },
+    ),
+    "",
+    blocks.join("\n\n"),
+    "",
+    String(sheet.attribution ?? ""),
+  ].join("\n");
+}
+
 function formatRouterShadow(value: unknown): string {
   const summary = isRecord(value) ? value : {};
   const num = (input: unknown): number => (typeof input === "number" && Number.isFinite(input) ? input : 0);
@@ -32881,6 +33254,10 @@ function formatTextOutput(
       return formatRouterEfficiency(value);
     case "router-shadow":
       return formatRouterShadow(value);
+    case "models-catalog":
+      return formatModelsCatalog(value);
+    case "models-sheet":
+      return formatModelsSheet(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":

@@ -9,6 +9,12 @@ import {
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
 } from "../../../shared/types/iosSimulator";
+import {
+  createAppleStreamBitrateAdapter,
+  createAppleStreamViewerPacer,
+  type AppleStreamBitrateAdapter,
+  type AppleStreamViewerPacer,
+} from "./appleStreamPacing";
 
 /**
  * Brain-side forwarder for the Apple device video stream.
@@ -40,11 +46,25 @@ import {
  * is noise, so the last config record and the last keyframe access unit are
  * cached and replayed to a viewer the moment it attaches. Without this a second
  * viewer stared at black until the encoder's next IDR.
+ *
+ * A viewer that joins a running stream gets that still and then waits for
+ * a fresh keyframe, which the relay asks for: the deltas after the cached one
+ * reference frames the viewer never saw.
+ *
+ * **A viewer that acks is paced** (`appleStreamPacing.ts`): one that falls
+ * behind skips delta frames and resumes at a keyframe, and the lane's encoder
+ * cap follows the slowest paced link. A viewer that never acks (the web
+ * client, older phones) is forwarded everything.
  */
 
 export const APPLE_STREAM_PATH_PREFIX = "/apple/stream/";
 export const APPLE_STREAM_TICKET_TTL_MS = 60_000;
 export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
+
+/** Keyframe probes per lane, at most one this often. */
+const KEYFRAME_REQUEST_MIN_INTERVAL_MS = 1_000;
+/** A keyframe probe that never sees a byte is abandoned after this. */
+const KEYFRAME_PROBE_TIMEOUT_MS = 3_000;
 
 /** A ticket, as the requester receives it over the JSON sync channel. */
 export type AppleStreamTicket = {
@@ -57,6 +77,9 @@ export type AppleStreamTicket = {
   codec: string | null;
   width: number | null;
   height: number | null;
+  /** Device POINTS, so a viewer can turn a touch on the picture into a tap. */
+  pointWidth: number | null;
+  pointHeight: number | null;
   expiresAt: string;
 };
 
@@ -71,7 +94,8 @@ export type AppleStreamSource = {
 
 /** Just enough of a `ws` socket to forward records onto it. */
 export type AppleStreamViewerSocket = {
-  send(data: Uint8Array): void;
+  /** Binary for a record, text for the relay's own `{t:"stats"}` notes. */
+  send(data: Uint8Array | string): void;
   close(code?: number, reason?: string): void;
   on(event: "message", listener: (data: unknown, isBinary?: boolean) => void): void;
   on(event: "close" | "error", listener: (...args: unknown[]) => void): void;
@@ -102,6 +126,14 @@ export type AppleStreamRelayDeps = {
   /** Absolute `ws://host:port` prefix for the ticket URL, when known. */
   publicOrigin?: () => string | null;
   connect?: (source: AppleStreamSource) => AppleStreamUpstream;
+  /**
+   * The configured remote cap, the ceiling adaptive pacing may climb back to.
+   * Without it (or `applyBitrateCap`) pacing still skips frames but never
+   * touches the encoder.
+   */
+  bitrateCapKbps?: () => number | null;
+  /** Re-cap the lane's live encoder. The helper rebuilds it, starting with a keyframe. */
+  applyBitrateCap?: (args: { laneId: string; bitrateKbps: number }) => Promise<unknown>;
   now?: () => number;
   logger?: {
     debug?: (event: string, data?: Record<string, unknown>) => void;
@@ -115,6 +147,8 @@ export type AppleStreamRelay = {
     codec?: string | null;
     width?: number | null;
     height?: number | null;
+    pointWidth?: number | null;
+    pointHeight?: number | null;
   }): AppleStreamTicket;
   /** The ticket id in `/apple/stream/<id>`, or null when the url is not ours. */
   ticketFromUrl(url: string | null | undefined): string | null;
@@ -149,6 +183,9 @@ type Viewer = {
   laneId: string;
   visible: boolean;
   closed: boolean;
+  pacer: AppleStreamViewerPacer;
+  /** Joined a running stream: deltas wait for the next keyframe. */
+  awaitingKeyframe: boolean;
 };
 
 type LaneStream = {
@@ -156,10 +193,15 @@ type LaneStream = {
   viewers: Set<Viewer>;
   upstream: AppleStreamUpstream | null;
   opening: Promise<void> | null;
+  /** The loopback body the upstream reads, kept for keyframe probes. */
+  source: AppleStreamSource | null;
   /** Whole framed records, kept so a late joiner can decode immediately. */
-  configRecord: Uint8Array | null;
-  keyframeRecord: Uint8Array | null;
+  configRecord: AppleStreamRecord | null;
+  keyframeRecord: AppleStreamRecord | null;
   buffer: Uint8Array;
+  lastKeyframeRequestAt: number;
+  keyframeProbe: AppleStreamUpstream | null;
+  bitrate: AppleStreamBitrateAdapter;
 };
 
 /**
@@ -315,25 +357,142 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       viewers: new Set(),
       upstream: null,
       opening: null,
+      source: null,
       configRecord: null,
       keyframeRecord: null,
       buffer: new Uint8Array(0),
+      lastKeyframeRequestAt: 0,
+      keyframeProbe: null,
+      bitrate: createAppleStreamBitrateAdapter({
+        now,
+        ceilingKbps: () => deps.bitrateCapKbps?.() ?? null,
+        apply: (kbps) => applyBitrateCap(created, kbps),
+      }),
     };
     lanes.set(laneId, created);
     return created;
   };
 
-  const sendTo = (viewer: Viewer, bytes: Uint8Array): void => {
-    if (viewer.closed || !viewer.visible) return;
+  const sendRaw = (viewer: Viewer, data: Uint8Array | string): boolean => {
     try {
-      viewer.socket.send(bytes);
+      viewer.socket.send(data);
+      return true;
     } catch (error) {
       warn("apple.stream_send_failed", {
         laneId: viewer.laneId,
         error: error instanceof Error ? error.message : String(error),
       });
       dropViewer(viewer, 1011, "send failed");
+      return false;
     }
+  };
+
+  /**
+   * Ask the helper for a keyframe by attaching a second loopback reader.
+   *
+   * The helper rebuilds its encoder for every reader that attaches, and a new
+   * encoder opens with an IDR that every reader receives — this one included,
+   * which is all the relay wanted. There is no "send a keyframe" command, and
+   * this needs none.
+   */
+  const requestKeyframe = (stream: LaneStream): void => {
+    const source = stream.source;
+    if (!source || !stream.upstream || stream.keyframeProbe || disposed) return;
+    const at = now();
+    if (at - stream.lastKeyframeRequestAt < KEYFRAME_REQUEST_MIN_INTERVAL_MS) return;
+    stream.lastKeyframeRequestAt = at;
+    let probe: AppleStreamUpstream;
+    try {
+      probe = connect(source);
+    } catch (error) {
+      warn("apple.stream_keyframe_probe_failed", {
+        laneId: stream.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    stream.keyframeProbe = probe;
+    const finish = (error?: Error): void => {
+      clearTimeout(timer);
+      if (error) {
+        warn("apple.stream_keyframe_probe_failed", { laneId: stream.laneId, error: error.message });
+      }
+      if (stream.keyframeProbe !== probe) return;
+      stream.keyframeProbe = null;
+      try {
+        probe.close();
+      } catch {
+        // Already ended.
+      }
+    };
+    const timer = setTimeout(() => finish(), KEYFRAME_PROBE_TIMEOUT_MS);
+    timer.unref?.();
+    probe.onData(() => finish());
+    probe.onEnd(finish);
+    debug("apple.stream_keyframe_requested", { laneId: stream.laneId });
+  };
+
+  /**
+   * Re-cap the lane's running capture for pacing. Never while no upstream is
+   * up: a cap sent to a capture the relay is closing could start a new one.
+   */
+  const applyBitrateCap = (stream: LaneStream, kbps: number): void => {
+    if (!deps.applyBitrateCap || !stream.upstream || disposed) return;
+    debug("apple.stream_bitrate_adapted", { laneId: stream.laneId, bitrateKbps: kbps });
+    void Promise.resolve(deps.applyBitrateCap({ laneId: stream.laneId, bitrateKbps: kbps })).catch((error: unknown) => {
+      warn("apple.stream_bitrate_adapt_failed", {
+        laneId: stream.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /**
+   * The paced viewers left and someone unpaced still watches: the lowered cap
+   * was for a link that is gone. With nobody watching, `releaseIfIdle` lifts
+   * the remote cap itself.
+   */
+  const restoreCapIfUnpaced = (stream: LaneStream): void => {
+    const watching = [...stream.viewers].filter((viewer) => viewer.visible && !viewer.closed);
+    if (watching.length === 0) return;
+    if (watching.some((viewer) => viewer.pacer.acking)) return;
+    stream.bitrate.restore();
+  };
+
+  const sendTo = (stream: LaneStream, viewer: Viewer, record: AppleStreamRecord): void => {
+    if (viewer.closed || !viewer.visible) return;
+    if (record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT) {
+      if (viewer.awaitingKeyframe) {
+        if (!record.keyframe) {
+          requestKeyframe(stream);
+          return;
+        }
+        viewer.awaitingKeyframe = false;
+      }
+      const admission = viewer.pacer.admit(record.keyframe);
+      if (admission.stalled) {
+        debug("apple.stream_viewer_skipping", { laneId: stream.laneId });
+        stream.bitrate.stalled();
+      }
+      if (!admission.send) {
+        if (viewer.pacer.wantsKeyframe) requestKeyframe(stream);
+        return;
+      }
+    }
+    if (!sendRaw(viewer, record.bytes)) return;
+    viewer.pacer.recordSent();
+  };
+
+  /** `{t:"ack",n}`: the viewer has received `n` records on this socket. */
+  const onAck = (stream: LaneStream, viewer: Viewer, received: number): void => {
+    if (viewer.closed || !viewer.visible) return;
+    if (!viewer.pacer.ack(received)) return;
+    // An idle simulator may send nothing for seconds, so a viewer that caught
+    // up asks for its keyframe here rather than waiting on the next frame.
+    if (viewer.pacer.wantsKeyframe) requestKeyframe(stream);
+    stream.bitrate.maybeRaise();
+    const stats = viewer.pacer.takeStats(stream.bitrate.kbps);
+    if (stats) sendRaw(viewer, stats);
   };
 
   const onUpstreamChunk = (stream: LaneStream, chunk: Uint8Array): void => {
@@ -352,18 +511,31 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     stream.buffer = split.rest;
     for (const record of split.records) {
       if (record.type === IOS_VIDEO_RECORD_TYPE_CONFIG) {
-        stream.configRecord = record.bytes;
+        stream.configRecord = record;
       } else if (record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT && record.keyframe) {
-        stream.keyframeRecord = record.bytes;
+        stream.keyframeRecord = record;
       }
-      for (const viewer of [...stream.viewers]) sendTo(viewer, record.bytes);
+      for (const viewer of [...stream.viewers]) sendTo(stream, viewer, record);
     }
   };
 
   const closeUpstream = (stream: LaneStream): void => {
     const upstream = stream.upstream;
+    const probe = stream.keyframeProbe;
     stream.upstream = null;
+    stream.keyframeProbe = null;
     stream.buffer = new Uint8Array(0);
+    // The next upstream is a new capture, opened on its own keyframe: the old
+    // start would only show a stale picture and cost an encoder rebuild.
+    stream.configRecord = null;
+    stream.keyframeRecord = null;
+    // It also starts at the configured cap, so pacing starts over.
+    stream.bitrate.forget();
+    try {
+      probe?.close();
+    } catch {
+      // Already ended.
+    }
     if (!upstream) return;
     try {
       upstream.close();
@@ -388,6 +560,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     const open = (async () => {
       const source = await deps.openSource({ laneId: stream.laneId });
       if (disposed || stream.viewers.size === 0) return;
+      stream.source = source;
       const upstream = connect(source);
       stream.upstream = upstream;
       upstream.onData((chunk) => onUpstreamChunk(stream, chunk));
@@ -395,6 +568,8 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         if (stream.upstream !== upstream) return;
         stream.upstream = null;
         stream.buffer = new Uint8Array(0);
+        stream.configRecord = null;
+        stream.keyframeRecord = null;
         if (error) {
           warn("apple.stream_upstream_ended", { laneId: stream.laneId, error: error.message });
         }
@@ -439,16 +614,27 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     } catch {
       // Already closing.
     }
-    if (stream) releaseIfIdle(stream);
+    if (!stream) return;
+    releaseIfIdle(stream);
+    restoreCapIfUnpaced(stream);
   }
 
+  /**
+   * The cached config and keyframe at once, so a viewer that joins or comes
+   * back has a picture, then no deltas until a fresh keyframe: the deltas
+   * after the cached one reference frames it never saw. A viewer that opened
+   * the lane finds nothing cached and reads the upstream from its start.
+   */
   const primeViewer = (stream: LaneStream, viewer: Viewer): void => {
-    if (stream.configRecord) sendTo(viewer, stream.configRecord);
-    if (stream.keyframeRecord) sendTo(viewer, stream.keyframeRecord);
+    if (!stream.configRecord && !stream.keyframeRecord) return;
+    if (stream.configRecord) sendTo(stream, viewer, stream.configRecord);
+    if (stream.keyframeRecord) sendTo(stream, viewer, stream.keyframeRecord);
+    viewer.awaitingKeyframe = true;
+    requestKeyframe(stream);
   };
 
   return {
-    issue({ laneId, codec = null, width = null, height = null }) {
+    issue({ laneId, codec = null, width = null, height = null, pointWidth = null, pointHeight = null }) {
       pruneTickets();
       const trimmed = laneId.trim();
       if (!trimmed) throw new Error("apple.streamTicket requires a laneId.");
@@ -474,6 +660,8 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         codec,
         width,
         height,
+        pointWidth,
+        pointHeight,
         expiresAt: new Date(expiresAtMs).toISOString(),
       };
     },
@@ -509,7 +697,14 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       // Single use: a replayed ticket must not resume someone else's view.
       tickets.delete(ticket);
       const stream = laneStream(pending.laneId);
-      const viewer: Viewer = { socket, laneId: pending.laneId, visible: true, closed: false };
+      const viewer: Viewer = {
+        socket,
+        laneId: pending.laneId,
+        visible: true,
+        closed: false,
+        pacer: createAppleStreamViewerPacer(now),
+        awaitingKeyframe: false,
+      };
       stream.viewers.add(viewer);
 
       socket.on("message", (data: unknown, isBinary?: boolean) => {
@@ -522,21 +717,28 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
               ? Buffer.from(data).toString("utf8")
               : null;
         if (!text) return;
-        let parsed: { t?: unknown };
+        let parsed: { t?: unknown; n?: unknown };
         try {
-          parsed = JSON.parse(text) as { t?: unknown };
+          parsed = JSON.parse(text) as { t?: unknown; n?: unknown };
         } catch {
+          return;
+        }
+        if (parsed.t === "ack") {
+          if (typeof parsed.n === "number") onAck(stream, viewer, parsed.n);
           return;
         }
         if (parsed.t === "hidden") {
           if (!viewer.visible) return;
           viewer.visible = false;
           releaseIfIdle(stream);
+          restoreCapIfUnpaced(stream);
           return;
         }
         if (parsed.t === "visible") {
           if (viewer.visible || viewer.closed) return;
           viewer.visible = true;
+          // What was out while hidden says nothing about the link now.
+          viewer.pacer.reset();
           void ensureUpstream(stream).then(() => primeViewer(stream, viewer));
         }
       });
@@ -545,9 +747,6 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       socket.on("error", onGone);
 
       await ensureUpstream(stream);
-      // After the upstream is up, not before: a viewer that joins an already
-      // running lane gets the cached config and keyframe immediately, and one
-      // that opened the lane gets nothing here because nothing has arrived yet.
       primeViewer(stream, viewer);
       return true;
     },
@@ -633,6 +832,8 @@ export type AppleStreamOwningService = {
    * drop the remote bitrate cap so the local view is back at full quality.
    */
   liftStreamBitrateCap?: (args: { laneId: string }) => Promise<unknown>;
+  /** Re-cap the capture that is running now, and never start one. Pacing uses it. */
+  capLiveStream?: (args: { laneId: string; bitrateKbps: number }) => Promise<unknown>;
 };
 
 /**
@@ -664,10 +865,15 @@ export function createAppleStreamRelayForService(deps: {
   publicOrigin?: AppleStreamRelayDeps["publicOrigin"];
 }): AppleStreamRelay {
   const startedLanes = new Set<string>();
+  const capLiveStream = deps.service.capLiveStream;
   const relay = createAppleStreamRelay({
     logger: deps.logger,
     connect: deps.connect,
     publicOrigin: deps.publicOrigin,
+    bitrateCapKbps: deps.remoteBitrateKbpsCap,
+    // Not `startStream`: that resolves the device again and starts a capture
+    // when none is running, which a cap change must never do.
+    applyBitrateCap: capLiveStream ? (args) => capLiveStream(args) : undefined,
     // Fall back to the service's own tracker, so the brain (which passes no
     // registry) still sees a desktop renderer that joined a remote-started
     // capture.

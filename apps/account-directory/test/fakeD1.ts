@@ -151,6 +151,8 @@ export class FakeD1Database {
   approvalRateLimits = new Map<string, { window_started_at: number; attempts: number }>();
   /** `diagnostics_upload_days`: the fleet-wide diagnostics budget, one row per UTC day. */
   diagnosticsUploadDays = new Map<string, number>();
+  /** `jev_bonus_days`, keyed `${day}|${user_id}`: Jev bonus calls per account per UTC day. */
+  jevBonusDays = new Map<string, number>();
   private rateLimitReadBarrier: {
     remaining: number;
     promise: Promise<void>;
@@ -488,6 +490,10 @@ export class FakeD1Database {
     if (normalized.includes("from model_registry_refresh_claim")) {
       return (this.modelRegistryClaim ? { failures: this.modelRegistryClaim.failures } : null) as T | null;
     }
+    if (normalized.includes("from jev_bonus_days")) {
+      const count = this.jevBonusDays.get(`${String(values[0])}|${String(values[1])}`);
+      return (count === undefined ? null : { count }) as T | null;
+    }
     if (normalized.includes("from usage_research_daily")) {
       const [installId, day] = values;
       const row = this.usageResearchRows.get(`${installId}|${day}`);
@@ -563,6 +569,38 @@ export class FakeD1Database {
     if (usageResearch !== null) return usageResearch;
     const modelRegistry = this.runModelRegistry(normalized, values);
     if (modelRegistry !== null) return modelRegistry;
+    if (normalized.includes("insert into jev_bonus_days")) {
+      // The cap is the upsert's `where count < ?`: read off the statement so a
+      // worker that drops it, or checks in a separate read, fails here.
+      const [day, userId, limit] = values;
+      const key = `${String(day)}|${String(userId)}`;
+      const stored = this.jevBonusDays.get(key);
+      if (stored === undefined) {
+        this.jevBonusDays.set(key, 1);
+        return 1;
+      }
+      if (/where\s+count\s*<\s*\?/.test(normalized) && stored >= Number(limit)) return 0;
+      this.jevBonusDays.set(key, stored + 1);
+      return 1;
+    }
+    if (normalized.includes("update jev_bonus_days")) {
+      const [day, userId] = values;
+      const key = `${String(day)}|${String(userId)}`;
+      const stored = this.jevBonusDays.get(key);
+      if (stored === undefined || (/count\s*>\s*0/.test(normalized) && stored <= 0)) return 0;
+      this.jevBonusDays.set(key, stored - 1);
+      return 1;
+    }
+    if (normalized.includes("delete from jev_bonus_days")) {
+      const cutoff = String(values[0]);
+      let changes = 0;
+      for (const key of [...this.jevBonusDays.keys()]) {
+        if (key.split("|")[0]! >= cutoff) continue;
+        this.jevBonusDays.delete(key);
+        changes += 1;
+      }
+      return changes;
+    }
     if (normalized.includes("insert into diagnostics_upload_days")) {
       // The fleet budget claim. Mirrors the upsert's `where count < ?` exactly,
       // because that predicate IS the cap: a worker that drops it (or checks the

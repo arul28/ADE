@@ -654,6 +654,8 @@ ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --no-parent -
 ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # required for parented spawns; use subagent for any result the parent will join/read/review, peer only for fire-and-forget work
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
+ade notes list --text                          # project notes included in new agent prompts
+ade notes add --section iOS "Build with the ADE scheme"
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --no-parent --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
@@ -883,7 +885,7 @@ ade storage actions --text                           # raw storage service actio
 ade archive list --text                              # archived lanes, chats, and shells, newest first (archived rows are hidden from chat/terminal lists unless --include-archived)
 ade archive list --kind chat --older-than 14 --text  # archived chats from 14+ days ago
 ade archive summary --text                           # counts per kind and what is 14+ days old
-ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Settings → Archive — the CLI refuses `ade archive delete`
+ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Project → Storage & cleanup → Archive
 ade chat list --include-archived --text              # archived chats too
 ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text

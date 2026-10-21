@@ -63,7 +63,15 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
+When the optional CLI-status decision classifies an idle terminal as errored
+with high confidence, `pty.cli_status_error_detected` records only the session
+id, tool type, and confidence. It does not copy terminal text. The live CLI row
+has no separate inferred-failure state, so this line is diagnostic only and is
+not a product-analytics event.
+
 The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics.
+
+`brain.jsonl` carries the brain process's own machine events. Everything a **project runtime** inside the brain logs goes to that project's `<project>/.ade/transcripts/logs/ade-cli.jsonl` (the `logger` `createAdeRuntime` builds in `apps/ade-cli/src/bootstrap.ts`, rotating to `ade-cli.1.jsonl`), not to the desktop's `main.jsonl`. That includes every chat-service event (`agent_chat.*`, among them the `agent_chat.turn_end_question_*` lines) and the Jev helper's `jev.*` events, because chats run in the brain. Look there first when a chat-side event seems missing.
 
 The desktop main process has a structured logger **from process start**: `apps/desktop/src/main/services/logging/machineLogger.ts` writes `~/.ade/runtime/desktop-main.jsonl` (same format, same `createFileLogger`, same 10 MiB rotation to `desktop-main.1.jsonl`), and `main.ts` opens it in its first executable statement, before the `ade://` claim and the single-instance lock. Its location is chosen for who can *read* it: `resolveMachineAdeLayout` is the resolver `ade report-issue` uses, so a headless report on a machine where the desktop will not start finds the file by construction, and each channel's `ADE_HOME` keeps its own. Electron's `userData` — where `local-runtime.jsonl` and `ade-update.jsonl` still live — is a per-platform, per-productName directory the CLI would have to guess, which is why those two remain desktop-only sources in a report.
 
@@ -670,6 +678,20 @@ scripts enumerate event names, not `action` or `outcome` values), and the
 dashboard spec is untouched until a product question needs it. The
 orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
 which carry session and handoff ids, are not PostHog events.
+
+### Jev decisions
+
+The shared Jev helper (`apps/desktop/src/main/services/jev/jevService.ts`) writes local operational lines to the project runtime's `ade-cli.jsonl`. The OpenCode Zen token, the ADE account bearer, the asked state and the answers are never logged. Its only PostHog fact is one `ade_daily_usage_summary` row per project and completed day with `summary_kind: "jev"` (`captureDailyJevAnalytics`): counts only, at most one a day per project under the daily summary's dedupe, never a prompt, a model, or a route's URL. It carries `call_count`, `error_count`, `input_token_count`, `output_token_count`, `jev_wanted_count`, `jev_ok_count`, `jev_cached_count`, `jev_answered_free_count`, `jev_answered_zen_credit_count`, `jev_answered_bonus_count` (answers per route), one count per fallback reason, `jev_breaker_open_count`, `jev_unsent_input_token_estimate`, `jev_latency_avg_ms`, `jev_slow_count` and `jev_sent_<feature>` per feature.
+
+- `jev.summary` (info) — at most once per 10 minutes, and only after a window with traffic (plus once on runtime teardown): `windowMinutes` and `features`, a map from feature (`turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`, `model_hint`, `status_line`) to the count of each outcome in the window (`ok`, `cached`, or a fallback reason: `disabled`, `breaker_open` (every route spent or down), `busy`, `invalid_request`, `timeout`, `network`, `rate_limited`, `auth_rejected`, `http_error`, `bad_response`) and `p50Ms`/`p95Ms` of network calls that answered. This is the line that shows whether Jev ever ran.
+- `jev.breaker_opened` (warn) — `feature` of the call that tripped it, `route` (`free`, `zen_credit`, `bonus`; each route has its own breaker), `reason` (`rate_limited`, `auth_rejected`, `transient`), `trigger` (the failure), and `until` (ISO).
+- `jev.decide_failed` (warn) — an unexpected throw inside the helper, with `error`; the caller still got `null`.
+
+`ade actions run ai.jevStatus` returns the same counts since the runtime started, with availability and breaker state.
+
+The turn-end check (`chat/turnEndQuestionCheck.ts`) logs `agent_chat.turn_end_question_tiebreak` (info) for every Jev/cheap-model decision with `sessionId`, `turnId`, `provider` (the cheap-model provider or null), `jev` (`ask`, `not_ask`, `unsure`, `no_answer`), `decidedBy` (`jev` or `model`), `asksUser`, `awaitingOwnWork`, `stillOpen` and `durationMs`; `agent_chat.turn_end_question_raised` (info) with `decidedBy` `rules`, `jev` or `model`; `agent_chat.turn_end_question_tiebreak_failed` (warn) when the cheap model throws; and `agent_chat.turn_end_awaiting_own_work` (info, `sessionId`) when a chat is marked as waiting on its own work.
+
+The composer's model hint (`chat/useComposerModelHint.ts`) logs `renderer.model_hint.outcome` (info) through the renderer's debug-event bridge, so it lands in the desktop's project `main.jsonl` on the machine whose window showed it. One line per hint the user saw: `outcome` (`accept` = clicked, `dismiss` = the ×, `ignore` = the prompt was sent or cleared with the hint still up), `fromModel`/`fromEffort` (the pick at the time), `toModel`/`toEffort` (the suggestion), `effortOnly`, and `fromHistory` (whether Jev had the user's similar chats). No prompt text. Hints replaced while typing log nothing. The history the hint reads (the user's recent new chats) lives in the window's localStorage (`ade.modelHint.history.v1`, see the chat composer docs), not in this log. A taken or dismissed chip is also one `ade_feature_used` event: `feature: "model_hint"`, `action` the kind of chip (`hint_model`, `hint_effort`, `hint_cheaper`), `outcome` `hint_accepted` or `hint_dismissed`, `source: "renderer_route"`, deduplicated to one per kind and answer per installation per UTC day (at most 6 a day, inside the existing `ade_feature_used` 140-a-day and 30-a-minute limits; no ceiling raised). Never the prompt, a model, or an effort. The bonus Worker (`apps/account-directory/src/jevBonus.ts`) logs one `jev_bonus_request` line per call: status, reason, TypeSafe's status, token counts and duration, never the question or the answer.
 
 ### Provider accounts, credentials, presets, proxy, and chat decisions
 
@@ -1445,6 +1467,8 @@ untouched — no card asks that question yet.
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
+
+Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 

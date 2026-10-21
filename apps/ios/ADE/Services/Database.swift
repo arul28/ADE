@@ -59,6 +59,7 @@ final class DatabaseService {
     let isEditProtected: Bool
     let color: String?
     let icon: LaneIcon?
+    let emoji: String?
     let tags: [String]
     let folder: String?
     let createdAt: String
@@ -573,6 +574,7 @@ final class DatabaseService {
         isEditProtected: sqlite3_column_int(statement, 9) == 1,
         color: stringValue(statement, index: 10),
         icon: stringValue(statement, index: 11).flatMap(LaneIcon.init(rawValue:)),
+        emoji: laneEmoji(fromStoredIcon: stringValue(statement, index: 11)),
         tags: decodeJson(stringValue(statement, index: 12), as: [String].self) ?? [],
         folder: stringValue(statement, index: 13),
         createdAt: stringValue(statement, index: 14) ?? "",
@@ -643,6 +645,7 @@ final class DatabaseService {
           ),
           color: row.color,
           icon: row.icon,
+          emoji: row.emoji,
           tags: row.tags,
           folder: row.folder,
           createdAt: row.createdAt,
@@ -801,7 +804,7 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 12)
           }
-          if let icon = lane.icon?.rawValue {
+          if let icon = lane.icon?.rawValue ?? lane.emoji {
             try bindText(icon, to: statement, index: 13)
           } else {
             sqlite3_bind_null(statement, 13)
@@ -3065,8 +3068,8 @@ final class DatabaseService {
       columnName: "last_turn_failed_at",
       definition: "text"
     )
-    // Settle override + snooze visibility overlay. Must mirror the desktop
-    // schema (kvDb.ts) exactly: `terminal_sessions` replicates through
+    // Settle override, the optional per-turn Jev hint, and snooze visibility
+    // overlay. Must mirror the desktop schema (kvDb.ts): `terminal_sessions` replicates through
     // cr-sqlite, and a column the phone does not know about surfaces as a
     // changeset-apply error here rather than failing on desktop. All nullable
     // with no unique index — `crsql_as_crr` rejects non-PK unique indices.
@@ -3078,6 +3081,21 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "settle_source",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_turn_id",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_done_probability",
+      definition: "real"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_nudge_dismissed_turn_id",
       definition: "text"
     )
     try ensureColumn(
@@ -4193,6 +4211,17 @@ final class DatabaseService {
   private func stringValue(_ statement: OpaquePointer, index: Int32) -> String? {
     guard let raw = sqlite3_column_text(statement, index) else { return nil }
     return String(cString: raw)
+  }
+
+  private func laneEmoji(fromStoredIcon value: String?) -> String? {
+    switch value {
+    case "star": return "⭐"
+    case "flag": return "🚩"
+    case "bolt": return "⚡"
+    case "shield": return "🛡️"
+    case "tag": return "🏷️"
+    default: return value
+    }
   }
 
   /// A `group_concat(..., char(10))` column as trimmed ids; nil when empty.

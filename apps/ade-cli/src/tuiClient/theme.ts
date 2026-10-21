@@ -251,7 +251,7 @@ const LANE_ICON_GLYPH: Record<string, string> = {
 
 export function laneIconGlyph(icon: string | null | undefined): string {
   if (!icon) return "⎇";
-  return LANE_ICON_GLYPH[icon] ?? "⎇";
+  return LANE_ICON_GLYPH[icon] ?? icon;
 }
 
 export const theme = {

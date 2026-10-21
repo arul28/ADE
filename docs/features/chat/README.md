@@ -48,7 +48,10 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/shared/composerAtMenuRanking.ts`, `apps/desktop/src/shared/slashCommandSections.ts` | `@` / `/` menu rankers used by `ChatCommandMenu` (and the same scorers by the ade-code TUI). `composerAtMenuRanking` mixes files, chats, lanes, and terminals onto one score so a better entity is not buried under vaguely matching files (file rows keep the full path as the title and the basename as a subtitle). `slashCommandSections` ranks `/` rows on the same tiers (exact > prefix > word-prefix > substring, scattered letters only when nothing better matches, so `/test` ranks `test` first) and classifies each row as a command, a skill (`plugin:x`), or an MCP prompt (`server:name`) so the menu can group them. |
 | `apps/desktop/src/shared/modelPermissions.ts` | The canonical per-provider permission vocabulary a model chip and the composer footer share: each provider's own modes and labels (Claude `default`→"Manual" … `bypassPermissions`→"Bypass", Codex presets, OpenCode, Cursor modes, Droid tiers), the default for a fresh chip, and the map from a stored value (native or a legacy generic one) back to the `--permissions` word the CLI accepts. |
 | `apps/desktop/src/main/services/chat/claudePlanMode.ts` | Plan-mode transitions for Claude sessions, extracted from `agentChatService.ts` so the invariant is unit-testable. Entering plan mode sets `claudePermissionMode = "plan"` and stashes the suspended access mode in `claudePrePlanAccessMode` (persisted and rehydrated with the session); leaving restores it. `isSessionInPlanMode` is the single predicate the `ExitPlanMode` gate uses. Moving the access mode is what makes plan mode real: while it stayed on the pre-plan value, a `bypassPermissions` session read as bypass throughout, so the composer chip never left Bypass and the gate auto-approved the plan with no card. See [Agent Routing](agent-routing.md#interaction-mode). |
-| `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending to the provider's cheap model (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet). Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
+| `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending first to Jev (`ai.jevDecide`, feature `turn_end`, background priority, any provider): `asksUser` ≥ 0.8 raises, ≤ 0.2 does not, anything between or a `null` answer falls through to the provider's cheap model exactly as before (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet; Claude, Codex and Cursor only). The same single Jev request also asks `waitingOnOwnWork`; at ≥ 0.8, when the turn ended with live background work or a live chat it launched and no hand went up, the chat's summary carries `awaitingOwnWorkAt` (in brain memory only, cleared by the next turn start or user message, refetched through a transient `session_meta_updated`), which the Work fold reads as Waiting. Turns with only live child chats get the Jev question too, but never a hand-raise or a cheap-model call. Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
+| `apps/desktop/src/main/services/jev/jevService.ts`, `jevTally.ts`, `jevZenCredential.ts`; `shared/jevSettings.ts` | The Jev decision helper (see [Jev decisions](#jev-decisions)): the route chain (free, Zen credit, ADE bonus) with a breaker per route, the per-day tally (`jevTally.ts`), the OpenCode Zen sign-in reader for the Zen credit route (`jevZenCredential.ts`), and which Smart decisions switch gates each feature (`jevSettings.ts`). |
+| `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev-backed chat checks: the awaiting-own-work marker set at turn end, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, never on the ADE bonus; a switched-off setting hides this machine's verdicts within a minute). |
+| `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check's request (last 40 lines, each capped at 200 characters, 4 KB in all, run through `redactSecrets`) and verdict; `ptyService.ts` decides when to ask and raises the `cli_prompt` hand. |
 | `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | ADE's next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`). After a completed turn with no open card, no subagent parent and no running background work, one helper call (fresh OS temp dir, 15s, fails quiet) returns `{suggestion}`, sanitized to one line of at most 120 characters; it is emitted as the live-only `prompt_suggestion` event only if no user message or turn start came first. `sanitizePromptSuggestion` also collapses native Claude suggestions to one line. See [Next prompt suggestions](#next-prompt-suggestions). |
 | `apps/desktop/src/main/services/chat/parentWakeBatcher.ts` | `createParentWakeBatcher`: holds an idle parent's wake while a sibling subagent is still running (up to `PARENT_WAKE_BATCH_HOLD_MS`, 15 s), so children that finish together wake it once; a busy parent takes each result inline at once. Each child's promise settles with its batch's delivery, and batched children's completion rows are written only after the wake landed. See [Spawn types and completion reporting](#spawn-types-and-completion-reporting). |
 | `apps/desktop/src/main/services/chat/chatLaunchDefaults.ts` | Machine launch defaults: the last model and permission/effort config a person chose, stored at `<ADE home>/chat-launch-defaults.json` and served by `chat.getLaunchDefaults` to every client. Only a person's top-level Work chat writes it; agents, the CTO, spawned and automation chats never do. See [Agent Routing](agent-routing.md#machine-launch-defaults). |
@@ -230,6 +233,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/renderer/lib/workSessionRequests.ts` | The two requests a chat-actions-pane shell row makes of the Work surface — `focusWorkSession` and `openWorkSessionMenu` — as window events (`ade:work:select-session`, `ade:work:open-session-menu`) so the listeners stay in `TerminalsPage`, which already owns `focusSession` and the Work tab's single `SessionContextMenu`. Events, not props, because a pane-mounted menu would be a second host whose handlers drift. Both carry the row's binding so the action lands on the machine that owns the shell. |
 | `apps/desktop/src/renderer/components/chat/spawnNavigation.ts` | One canonical `navigateToSpawnedChat(sessionId, laneId?, binding?)` helper that dispatches the `ade:work:select-session` window event (behind a try/catch, no-op on a falsy id). `binding` pins the jump to the chat's machine; left out or null, it stays on this tab's machine. Every spawn surface routes through it: the inline `SubagentSpawnCard`, `spawn_wake_divider`, the completion lines, spawned-chat rows in `ChatSubagentsPanel`, the `AgentChatPane` parent-thread breadcrumb, and the `SessionCard` lineage glyph. `TerminalsPage` resolves an omitted lane from the loaded session list before focusing the target, so cross-lane jumps land on the correct lane. A chat not loaded yet is focused once the refreshed list renders (`pendingSessionFocusRef` / `applySessionFocus`). |
 | `apps/desktop/src/renderer/components/chat/spawnCompletionLines.ts` | Presentation fold for `spawn_completed` notices, run by `filterVisibleTranscriptRows` over the rows the list draws. `foldSpawnCompletionLines` keeps each child's newest notice (its `repeatCount` becomes the turns across the thread) and puts neighbouring notices on one line (`spawnCompletionSiblings`, drawn as "N chats finished their turns: A ×3 · B"). `spawnCompletionNoticeOf` parses each event once; `findSpawnCompletionLine` finds the row showing a child's turns, which `chatListScrollAnchoring.ts` uses for a deep link to an older notice. A notice with no child id keeps its own row. |
+| `apps/desktop/src/renderer/components/chat/quietNoticeLines.ts` + `quietNoticeIcon.ts` | Receipt notices as the transcript draws them, and the fold that keeps a turn's chatter from stacking. `isQuietNoticeEvent` is the single predicate behind both decisions: a notice is a receipt when its kind is `info` / `config` / `hook` / `file_persist` and it carries no error or warning severity and no dedicated row status (model switch, spawn, host sleep, reset credit, voice, continuity/disk-pressure detail). `foldQuietNoticeLines`, run by `filterVisibleTranscriptRows` next to `foldSpawnCompletionLines`, puts neighbouring receipts from the same turn on one line (`quietNoticeSiblings`, drawn as `+N`) and ends the run at any other row, a different turn id, or a non-receipt notice; the first notice keeps the row key, and an ungrouped row is returned unchanged so an untouched transcript keeps its identity. `quietNoticeIcon.ts` picks the glyph from the durable signals first (`detail.permissionModeTransition`, then `status`, then `noticeKind`) and falls back to an ordered message-pattern table only for older transcripts; the maps are `Map`s, not object literals, so a wire value like `constructor` misses instead of resolving a prototype member. `AgentChatMessageList.renderEvent` draws the row: one muted line with the message, the count, and a chevron that opens every member's detail under a hairline rule; warnings, sign-in, limit-reached usage, errors, reset credits, spawn cards, host sleep and continuity recovery keep their own treatment. |
 | `apps/desktop/src/shared/sessionSpawnNesting.ts` | One Work by-lane filing rule: same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`) nest under the parent; peers stay top-level; demote un-nests; quiet parents pull up not-done children; grandchildren flatten into the root parent's one drawer. Owns `isChatToolType` so filing can tell a chat from a tracked CLI subagent without importing the renderer. Desktop, ADE Code, and the iOS Swift mirror consult this so they cannot disagree. `ade chat list` stays flat. |
 | `apps/desktop/src/renderer/components/chat/ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The chat progress drawer and the source inventory for every provider. `ChatActionsDrawerPanel` is one scroll with no tab strip and no placeholder areas. It takes a list of sections (progress, proof, Droid mission, sources) and shows each only once it has content, with dividers only between rendered sections. With nothing to show it prints one short line. A pinned `footer` holds `ChatAccountNote.tsx`: the provider logo and the account the chat runs on — the latest turn's reported `account` (email, API key name, or local endpoint), else the chat's `instanceId` resolved against the provider-account registry (an absent id is pinned once to the account holding the thread, else the default). A turn reported on a different account than the chat's current one is ignored. The row shows only the email (or key name / endpoint); label and plan are in its hover title. On Claude and Codex, with another signed-in account available, the row opens the account switcher (see [Provider accounts](#provider-accounts)). A provider with no reported identity renders nothing. The header's progress icon is its only control. Sources lists what the chat drew on, grouped Cited → Web → Files → Apps, from `shared/chatSources.ts` (`chatSources.ts` here re-exports it); it has no scroller or empty state of its own and can be narrowed to one turn from the thread's `N sources` chip. HTTP(S) rows open in ADE's built-in browser; internal `node_repl` plumbing and unsafe protocols are excluded. See transcript-and-turns.md → Sources. |
 | `apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx` | Git / PR quick-action toolbar above the composer. The PR badge renders only when the lane already has a pull request (open, merged, or closed). Clicking it opens the lane's PR Work tool. There is no header create-PR handoff. When the chat PR pane or compact PR menu opens, it asks `prReadCache.refreshLinkedPrCoalesced` for a targeted `prs.refresh({ prIds })` so the badge picks up merged/closed/check transitions without broad GitHub polling. An unmapped lane PR (a `github_pr_projections`-derived summary with `pr.unmapped === true` and a synthetic `gh:` id) has no DB row to refresh or fetch checks for, so both the live refresh and `getChecks` are skipped for it. The toolbar is a **status strip only** — the manual PR-sync (↻) control lives in the PR pane's title bar, so surfaces that render the toolbar without a PR pane heal through reconcile-on-focus and `prs-updated` instead. It takes an optional `runtimePin` — the CLI session header renders it with its own pin and no `ChatRuntimeScopeProvider` above it, so it derives its scope with `useChatRuntimeScopeForPin(runtimePin, laneId)` rather than from context. A lane's PR row lives in its own machine's database, so a chat on another machine reads and subscribes through that machine's runtime rather than showing the bare create-PR button for a session that already has one. Effects key on the pin's `key`, not the object, which is rebuilt on every cross-machine merge. Under a pin the unpinned `diff.getChanges` status read is skipped and PR *creation* is withheld — see [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read). |
@@ -4548,6 +4552,93 @@ config service):
   without a native suggestion (Settings › Chat › Next prompt). Defaults to
   **false**. Per project and per machine, read on the machine that runs the
   chat. See [Next prompt suggestions](#next-prompt-suggestions).
+- `ai.chat.smartDecisionsEnabled` -- "Smart decisions (Jev)" in Settings ›
+  Chat (`SmartDecisionsSection.tsx`). Jev needs no sign-in: OpenCode's free
+  Jev answers first and the ADE bonus after it (see
+  [Jev decisions](#jev-decisions)). Defaults to **true**. Off makes every
+  `ai.jevDecide` answer `null` with no network call, so every feature uses
+  its built-in rules.
+- `ai.chat.jevZenCreditEnabled` -- "Use my OpenCode Zen credit", the last
+  row under Smart decisions: once the free allowance is out, Jev is paid
+  from the user's own Zen balance (`jev-1.13`) before the ADE bonus.
+  Defaults to **false**. Without a Zen sign-in (or with an expired one) the
+  row offers **Sign in to OpenCode**, the same `OAuthConnectModal` the
+  Providers page uses for the `opencode` provider, on the settings page's
+  machine pin; after it connects the row shows the switch and re-reads
+  `ai.jevStatus` once the brain's one-minute sign-in cache has expired.
+- Smart decisions groups -- shown under the master switch while it is on
+  (no sign-in needed), one row each with an icon, a switch and what it
+  decides; each defaults to **true**, and off answers `null` for its
+  features with no network call (`jevEnabled` in `shared/jevSettings.ts`,
+  read per call by `jevService`):
+  - `ai.chat.smartChatStatusEnabled` -- "Waiting on you": `turn_end`,
+    `cli_status`, `status_line`. Its option `ai.chat.smartPlainTerminalsEnabled`
+    (default **true**, "Also check plain terminals") decides whether
+    `cli_status` also reads plain terminals, not only agent CLIs; their last
+    screen is sent with secrets removed (`redactSecrets`) and at most 4 KB
+    (`cliStatusInspector.ts`).
+  - `ai.chat.smartSettleNudgeEnabled` -- "Settle finished chats":
+    `settle_nudge`.
+  - `ai.chat.modelHintMode` -- "Model and effort hint": `model_hint`. The
+    switch sets `off`; while on, its option row picks `model_and_effort`
+    (default) or `effort_only`, and switching back on restores the last
+    one. See the composer's model hint in
+    [Composer and UI](composer-and-ui.md#composer).
+  - `ai.chat.smartPaletteEnabled` -- "⌘K suggestions": `palette`.
+  - `ai.chat.smartLaneEmojiEnabled` -- "Lane emoji": `lane_emoji`.
+
+### Jev decisions
+
+`apps/desktop/src/main/services/jev/jevService.ts` is the one helper every
+feature uses to ask the Jev decision model a typed question (`noul` yes/no,
+`choice`, `score`; types in `shared/types/jev.ts`).
+`decide({ feature, state, questions, priority, timeoutMs? })` answers every
+question asked or `null`, and `null` means "use your existing logic": it is
+returned for every failure (turned off, every route spent or down, call cap
+reached, timeout, network, non-2xx, bad JSON, a missing answer, or a
+choice/score outside the criteria). It never throws and no Jev failure is
+ever shown to the user. `score` answers are normalized to the criterion index,
+its label, and one probability per criterion.
+
+- **Routes.** One call tries them in order inside one time budget
+  (`callRoutes`, `JEV_ROUTES`), and a route that is rate-limited, refused or
+  broken hands the same call to the next while at least 300 ms are left; a
+  timeout ends the chain.
+  1. `free`: OpenCode's `jev-1.13-free`, with no key. Its allowance is per
+     network (measured: about 220 calls a day), shared by every Jev feature
+     and every ADE on that network, and resets at midnight UTC.
+  2. `zen_credit`: OpenCode's paid `jev-1.13` on the user's own Zen balance,
+     only with `ai.chat.jevZenCreditEnabled` and an unexpired Zen sign-in
+     (`jevAvailability`: the `credential` row `integration_id = 'opencode'`,
+     active first, else newest, in `opencode.db`, searched in
+     `openCodeDataDirs()` order, read-only with `busy_timeout = 0`, cached
+     60 s; ADE never refreshes the token).
+  3. `bonus`: the account directory's `POST /jev/systemone` with the signed-in
+     ADE account's bearer; the Worker forwards to TypeSafe's Jev API with
+     ADE's key, capped per account per UTC day (300 by default). The account
+     token is fetched within the call's remaining time. Settle checks never
+     use it (a chat idle for hours can wait for the free reset), and
+     background features stop using it once the Worker's
+     `x-ade-jev-remaining` says 20 or fewer calls are left today, so the
+     last ones go to interactive questions, mostly the model hint. See the
+     account directory README, "Jev bonus".
+- **Resilience.** Timeouts default to 1500 ms (`interactive`) and 4000 ms
+  (`background`). Each route has its own breaker: 429 backs off until
+  `retry-after` (the free allowance and the bonus cap both name midnight UTC)
+  or 5 min; 401/402/403 back off 30 min; two consecutive 5xx/timeout/network
+  failures 1 min doubling to 15 min; any 200 resets that route. Four calls in
+  flight at most, of which background may use three; a background call over
+  the cap is dropped, never queued. Identical questions share one call and a
+  10-minute LRU cache (128 entries) keyed by a hash of state and questions.
+  Breakers, cap and cache are per brain process; counts are per project
+  runtime, and the day tally counts answers per route (`answeredByRoute`).
+- **Reach.** `ai.jevDecide` and `ai.jevStatus` are ADE actions (read, reachable
+  remotely); the renderer calls `window.ade.ai.jevDecide(request, pin)` and
+  `window.ade.ai.jevStatus(pin)`, routed to the pinned machine, and both answer
+  `null` instead of throwing. `feature` is a closed union (`JEV_FEATURES`):
+  `turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`,
+  `model_hint`, `status_line`. A feature whose Smart decisions group is off
+  answers `null` (outcome `disabled`) before any route is tried.
 
 ### Next prompt suggestions
 

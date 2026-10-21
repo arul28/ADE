@@ -1293,12 +1293,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [clearDeeplinkViewOverride, setProjectViewState],
   );
 
-  // A finished row counts as seen once the user has LEFT it since it finished:
-  // leaving covers everything it showed, including output that landed while it
-  // was open. Opening alone does not stamp, so clicking a finished row in the
-  // inbox never folds its lane out from under the cursor. A layout effect, so
-  // the stamp lands before paint and the lane does not flicker for a frame. A
-  // row left by switching projects is stamped into the project it belongs to.
+  // A row counts as seen once the user has LEFT it since it finished: leaving
+  // covers everything it showed, including output that landed while it was
+  // open. Opening alone does not stamp, so clicking a row in the inbox never
+  // folds its lane out from under the cursor. `workLaneFocus.ts` reads the stamp
+  // for a failed turn — the one kind of finish that still asks for the user; a
+  // clean finish does not consult it at all. A layout effect, so the stamp lands
+  // before paint and the lane does not flicker for a frame. A row left by
+  // switching projects is stamped into the project it belongs to.
   const lastSelectionRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
     projectStateKey: null,
     sessionId: null,
@@ -1730,6 +1732,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const bindingKey = activeChatLaunchBindingKeyRef.current;
       const awaitingHostRow = chatLaunchAwaitingHostRowOn(bindingKey);
       const readStartedAtMs = Date.now();
+      // `sessions.list` leaves archived rows to the caller. Work shows live work
+      // only: a lane's archive archives its shells and CLIs too.
       const rows = (
         await listSessionsCached(
           { limit: 500 },
@@ -1737,7 +1741,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             ? { force: true }
             : undefined,
         )
-      );
+      ).filter((session) => !session.archivedAt);
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }

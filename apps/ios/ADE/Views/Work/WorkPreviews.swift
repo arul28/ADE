@@ -1322,6 +1322,10 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
+  /// The simulator viewer, watching and controlling, over a drawn stand-in
+  /// picture. See `AppleDeviceViewerPreview`.
+  case appleViewer = "apple-viewer"
+  case appleViewerControl = "apple-viewer-control"
   /// The real chat, idle past its prompt cache, with the Compact first chip
   /// floating above the composer.
   case compactFirst = "compact-first"
@@ -1454,6 +1458,14 @@ struct ADEPreviewScreenHost: View {
         artifactContent: WorkProofPreviewData.content,
         initialArtifactId: "proof-1",
         onLoadArtifact: { _, _ in }
+      )
+    case .appleViewer, .appleViewerControl:
+      AppleDeviceViewer(
+        laneId: WorkProofPreviewData.laneId,
+        preview: AppleDeviceViewerPreview(
+          status: WorkProofPreviewData.toolChipsAppleStatus,
+          mode: screen == .appleViewerControl ? .controlling : .watching
+        )
       )
     case .lanesMachines:
       LanesAcrossMachinesPreviewHost()

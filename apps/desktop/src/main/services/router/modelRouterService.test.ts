@@ -176,7 +176,7 @@ describe("route catalog", () => {
     ["claude-opus-5-5-20260101", "claude-opus-5-5"],
     ["claude-haiku-4-5", "claude-4-5-haiku"],
     ["glm-5p3", "glm-5-3"],
-    ["deepseek-flash", "deepseek-v4-1-flash"],
+    ["deepseek-flash", "deepseek-v4-1-flash-1017"],
     ["some-model-free", "some-model"],
   ])("maps ADE model id %s to registry family %s", (modelId, family) => {
     expect(registryFamilyForModelId(modelId)).toBe(family);
@@ -652,7 +652,7 @@ function replaySnapshot(): ModelRegistrySnapshot {
     [
       model(OPUS, 60, 6, 800),
       model(SONNET, 58, 2, 400),
-      model("deepseek-v4-1-flash", 40, 0.1, 300),
+      model("deepseek-v4-1-flash-1017", 40, 0.1, 300),
     ],
     [agentRow("Claude Code", OPUS, 0.70), agentRow("Claude Code", SONNET, 0.69)],
   );

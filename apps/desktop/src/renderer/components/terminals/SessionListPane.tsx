@@ -102,7 +102,7 @@ import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
-import { iconGlyph } from "../lanes/laneIconGlyph";
+import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
@@ -1111,13 +1111,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** By-lane only: fold lanes with nothing waiting on the user into a Working shelf. */
   workFoldBusyLanes?: boolean;
   setWorkFoldBusyLanes?: (enabled: boolean) => void;
-  /** Focus grid: the work area shows every chat that waits for the user. */
+  /** Focus grid: the work area shows every chat that needs the user. */
   workFocusGrid?: boolean;
   setWorkFocusGrid?: (enabled: boolean) => void;
   /**
-   * The chats that wait for the user while Focus is on, in list order
+   * The chats that need the user while Focus is on, in list order
    * (`workFocusQueue`). Reported up so the Focus grid shows exactly what the
-   * sidebar left unfolded.
+   * sidebar refuses to fold away.
    */
   onFocusQueueChange?: (items: readonly WorkFocusQueueItem[]) => void;
   /** Focus grid with the sidebar open: each waiting chat's page mark. */
@@ -1688,7 +1688,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [foldBusyLanesActive, laneFocusByLaneId, workPinnedLaneIdSet]);
 
   /**
-   * The Focus grid's chats: what Focus left unfolded and that waits for the
+   * The Focus grid's chats: the rows that hold a lane out and so wait on the
    * user, after the user's own filters. Empty while Focus is off.
    */
   const focusQueueIds = useMemo(() => {
@@ -1699,6 +1699,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       filingBuckets,
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
+      seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
       busySubagentParentIds,
       nowMs: stallNowMs,
@@ -1713,6 +1714,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
     busySubagentParentIds,
+    workSeenAtBySessionId,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1934,6 +1936,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedForeignLaneIds,
     filingBucketsFor: filingBucketsForForeignSessions,
     foreignNesting: unfilteredForeignNestingByCompositeId,
+    seenAtBySessionId: workSeenAtBySessionId,
     nowMs: stallNowMs,
     onChange: onFocusQueueChange,
   });
@@ -3220,7 +3223,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
         style={{ color: laneHeaderTint.text ?? (laneAccent ? toneText(laneAccent) : "var(--color-muted-fg)") }}
       >
-        {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
+        <LaneEmojiGlyph
+          emoji={lane.emoji}
+          icon={lane.icon}
+          fallback={<LaneIcon size={12} weight="regular" />}
+        />
       </span>
     );
     const lanePrs = boundMachineLanePrs(prsByLaneId, lane.id);
@@ -3764,6 +3771,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           </StickyGroupHeader>
         );
       })}
+      {/* Archiving a lane archives its sessions, so this block only holds a
+          chat restored on its own from the Archive while its lane stays
+          archived (or one a peer on an older ADE left behind). */}
       {archivedLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const trimmedLaneName = (list[0]?.laneName ?? "").trim();
@@ -3783,8 +3793,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               className="mx-1.5 mb-1.5 border-l border-fg/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
               data-testid="archived-lane-explanation"
             >
-              This lane is archived, so the lane list leaves it out. Its chats are kept. Manage the lane under
-              Settings › This computer › Archive.
+              This lane is archived, but these chats are not. Restore the lane under Settings › This computer ›
+              Archive, or archive the chats.
             </div>
             {renderHandoffCards(laneHandoffJobs)}
             {renderLaneSessionLists(laneId, list)}

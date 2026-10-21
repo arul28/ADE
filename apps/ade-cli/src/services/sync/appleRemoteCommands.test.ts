@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  APPLE_NO_LANE_DEVICE_CODE,
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
   assertAppleInputAllowed,
   buildAppleStatusPayload,
@@ -20,9 +21,22 @@ const RAW_STATUS = {
 function service(overrides: Partial<AppleDeviceRemoteService> = {}): AppleDeviceRemoteService {
   return {
     getStatus: vi.fn(async () => RAW_STATUS),
-    startStream: vi.fn(async () => ({ transport: { url: "http://127.0.0.1:1/s", token: "t", codec: "avc1", width: 393, height: 852 } })),
+    getControlOwner: vi.fn(() => "chat-owner"),
+    getClaimedDevice: vi.fn(() => "UDID-1"),
+    startStream: vi.fn(async () => ({
+      transport: {
+        url: "http://127.0.0.1:1/s",
+        token: "t",
+        codec: "avc1",
+        width: 1179,
+        height: 2556,
+        pointWidth: 393,
+        pointHeight: 852,
+      },
+    })),
     stopStream: vi.fn(async () => ({})),
     tap: vi.fn(async () => ({ ok: true })),
+    touch: vi.fn(async () => ({ ok: true })),
     typeText: vi.fn(async () => ({ ok: true })),
     drag: vi.fn(async () => ({ ok: true })),
     tapElement: vi.fn(async () => ({ ok: true })),
@@ -44,8 +58,10 @@ function handlersFor(target = service()) {
     token: "tok",
     ticket: "abc",
     codec: "avc1",
-    width: 393,
-    height: 852,
+    width: 1179,
+    height: 2556,
+    pointWidth: 393,
+    pointHeight: 852,
     expiresAt: "2026-01-01T00:00:00.000Z",
   }));
   const entries = createAppleRemoteCommandHandlers({
@@ -96,25 +112,22 @@ describe("buildAppleStatusPayload", () => {
 });
 
 describe("assertAppleInputAllowed", () => {
-  const owned = buildAppleStatusPayload("lane-a", RAW_STATUS);
-
   it("lets the owning chat drive", () => {
-    expect(() => assertAppleInputAllowed(owned, "chat-owner")).not.toThrow();
+    expect(() => assertAppleInputAllowed("chat-owner", "chat-owner")).not.toThrow();
   });
 
   it("refuses another chat with the cooperative error", () => {
-    expect(() => assertAppleInputAllowed(owned, "chat-other"))
+    expect(() => assertAppleInputAllowed("chat-owner", "chat-other"))
       .toThrow(new RegExp(APPLE_OWNED_BY_OTHER_SESSION_CODE));
   });
 
   it("refuses an anonymous remote caller rather than treating it as the owner", () => {
-    expect(() => assertAppleInputAllowed(owned, null))
+    expect(() => assertAppleInputAllowed("chat-owner", null))
       .toThrow(new RegExp(APPLE_OWNED_BY_OTHER_SESSION_CODE));
   });
 
   it("lets anyone drive an unclaimed device", () => {
-    const unclaimed = buildAppleStatusPayload("lane-a", { ...RAW_STATUS, activeSession: null });
-    expect(() => assertAppleInputAllowed(unclaimed, null)).not.toThrow();
+    expect(() => assertAppleInputAllowed(null, null)).not.toThrow();
   });
 });
 
@@ -180,8 +193,17 @@ describe("apple.* remote command handlers", () => {
       chatSessionId: null,
       bitrateKbps: 1000,
     });
-    expect(issue).toHaveBeenCalledWith({ laneId: "lane-a", codec: "avc1", width: 393, height: 852 });
-    expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
+    // The point size rides along: a phone needs it to turn a touch into a tap.
+    expect(issue).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      codec: "avc1",
+      width: 1179,
+      height: 2556,
+      pointWidth: 393,
+      pointHeight: 852,
+    });
+    // A runtime that takes a live finger says so, so the viewer streams it.
+    expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok", liveTouch: true });
   });
 
   it("a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
@@ -205,7 +227,58 @@ describe("apple.* remote command handlers", () => {
       x: 10,
       y: 20,
     });
-    expect(target.tap).toHaveBeenCalledWith({ laneId: "lane-a", chatSessionId: "chat-owner", x: 10, y: 20 });
+    // The lane's own device, named, and a person's input, so it never starts
+    // an agent's auto-recording.
+    expect(target.tap).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      deviceUdid: "UDID-1",
+      chatSessionId: "chat-owner",
+      source: "user",
+      x: 10,
+      y: 20,
+    });
+    await byAction.get("apple.input")!.handler({
+      laneId: "lane-a",
+      chatSessionId: "chat-owner",
+      kind: "touch",
+      phase: "move",
+      x: 11,
+      y: 21,
+    });
+    expect(target.touch).toHaveBeenCalledWith({
+      laneId: "lane-a",
+      deviceUdid: "UDID-1",
+      chatSessionId: "chat-owner",
+      source: "user",
+      phase: "move",
+      x: 11,
+      y: 21,
+    });
+  });
+
+  it("drives only the lane's own device: none means no input, and a named one is overridden", async () => {
+    const pressButton = vi.fn(async () => ({ ok: true }));
+    const bare = handlersFor(service({ getControlOwner: vi.fn(() => null), getClaimedDevice: vi.fn(() => null), pressButton } as never));
+    // An unclaimed lane passes the ownership guard, so the device check is
+    // what keeps the tap off whatever iPhone happens to be booted.
+    await expect(bare.byAction.get("apple.input")!.handler({ laneId: "lane-b", kind: "tap", x: 1, y: 2 }))
+      .rejects.toThrow(new RegExp(APPLE_NO_LANE_DEVICE_CODE));
+    await expect(bare.byAction.get("apple.invoke")!.handler({
+      laneId: "lane-b",
+      method: "pressButton",
+      args: { name: "home" },
+    })).rejects.toThrow(new RegExp(APPLE_NO_LANE_DEVICE_CODE));
+    expect(bare.target.tap).not.toHaveBeenCalled();
+    expect(pressButton).not.toHaveBeenCalled();
+
+    const owned = handlersFor(service({ pressButton } as never));
+    await owned.byAction.get("apple.invoke")!.handler({
+      laneId: "lane-a",
+      chatSessionId: "chat-owner",
+      method: "pressButton",
+      args: { name: "home", deviceUdid: "ANOTHER-LANES-DEVICE" },
+    });
+    expect(pressButton).toHaveBeenCalledWith(expect.objectContaining({ name: "home", deviceUdid: "UDID-1" }));
   });
 
   it("refuses input from a chat that does not own the device", async () => {

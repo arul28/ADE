@@ -3047,6 +3047,42 @@ function env(
   return { sessionId: "session-1", timestamp, event };
 }
 
+describe("quiet notice folding", () => {
+  it("puts adjacent receipts from one turn on one line, and only those", () => {
+    let seq = 0;
+    const at = () => `2026-06-01T10:00:${String(seq++).padStart(2, "0")}.000Z`;
+    const receipt = (message: string, turnId = "turn-1") => ({
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      message,
+      turnId,
+    }) satisfies AgentChatEventEnvelope["event"];
+    const rows = filterVisibleTranscriptRows(collapseChatTranscriptEvents([
+      env(at(), receipt("Session entered plan mode")),
+      env(at(), receipt("Message queued — will be sent when the current turn completes.")),
+      // A warning is its own row and ends the run.
+      env(at(), { type: "system_notice", noticeKind: "warning", severity: "warning", message: "Config ignored.", turnId: "turn-1" }),
+      // A new turn never joins the previous line.
+      env(at(), receipt("Claude recalled 2 memories.", "turn-2")),
+      env(at(), receipt("Reconnected to the original thread.", "turn-2")),
+    ]));
+
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "system_notice",
+      "system_notice",
+      "system_notice",
+    ]);
+    expect(rows[0]?.quietNoticeSiblings?.map((sibling) => sibling.event.message)).toEqual([
+      "Message queued — will be sent when the current turn completes.",
+    ]);
+    expect(rows[1]?.quietNoticeSiblings).toBeUndefined();
+    expect(rows[2]?.quietNoticeSiblings?.map((sibling) => sibling.event.message)).toEqual([
+      "Reconnected to the original thread.",
+    ]);
+  });
+});
+
 describe("spawn_completed notice folding", () => {
   // Each sibling TURN emits its own notice, distinguished by `childTurnId` —
   // that is why the byte-identical system-notice dedupe upstream never caught

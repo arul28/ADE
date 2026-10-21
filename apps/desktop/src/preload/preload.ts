@@ -13,6 +13,7 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type {
   JiraComment,
   JiraConnectArgs,
@@ -151,6 +152,7 @@ import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure
 // recording record is unit 2C's shape and re-declaring it here is how the two
 // drift.
 import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
+import type { UserModelCatalog } from "../main/services/router/modelCatalog";
 import type {
   ArchiveActionArgs,
   ArchiveActionResult,
@@ -195,6 +197,8 @@ import type {
   ProviderInstanceCreateResult,
   ProviderInstanceGetSettingsArgs,
   ProviderInstanceListArgs,
+  ProjectNotesListArgs,
+  ProjectNotesListResult,
   ProviderInstanceLoginCommand,
   ProviderInstanceLoginCommandArgs,
   ProviderInstanceRefreshArgs,
@@ -5454,6 +5458,20 @@ const adeBridge = {
       ),
   },
   ai: {
+    // The shared Jev helper on the machine `pin` names. `null` is the normal
+    // "use your fallback" answer, so a lost connection or an older brain
+    // without the action reads the same as a failed call and never throws.
+    jevDecide: <Q extends JevQuestions>(
+      request: JevDecideRequest<Q>,
+      pin?: OpenProjectBinding | null,
+    ): Promise<JevAnswers<Q> | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevAnswers<Q> | null>(pin, "ai", "jevDecide", { args: request }, async () => null)
+        .then((answers) => answers ?? null)
+        .catch(() => null),
+    jevStatus: (pin?: OpenProjectBinding | null): Promise<JevStatus | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevStatus | null>(pin, "ai", "jevStatus", {}, async () => null)
+        .then((status) => status ?? null)
+        .catch(() => null),
     getStatus: async (args?: {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
@@ -6608,6 +6626,15 @@ const adeBridge = {
     getModelDetail: async (args: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> =>
       callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetModelDetail, args),
+      ),
+    // The models the machine `pin` names can run, with their registry
+    // profiles. No local IPC: without a runtime there is no catalogue.
+    getModelCatalog: async (
+      args: { provider?: string } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ catalog: UserModelCatalog } | null> =>
+      callPinnedOrBoundRuntimeActionOr<{ catalog: UserModelCatalog } | null>(
+        pin, "usage", "getModelCatalog", { args }, async () => null,
       ),
     // Machine-level (this computer's `gh` login), so main answers it directly.
     getGithubContributions: async (): Promise<GithubContributionCalendar | null> =>
@@ -10988,6 +11015,19 @@ const adeBridge = {
     setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxyMutationResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
+      ),
+  },
+  projectNotes: {
+    list: async (
+      args: ProjectNotesListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectNotesListResult> =>
+      callPinnedOrBoundRuntimeActionOr<ProjectNotesListResult>(
+        pin,
+        "project_notes",
+        "list",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.projectNotesList, args),
       ),
   },
   providerInstances: {

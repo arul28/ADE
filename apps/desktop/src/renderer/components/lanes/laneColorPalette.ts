@@ -45,7 +45,8 @@ export function colorsInUse(lanes: readonly LaneSummary[], excludeLaneId?: strin
   return used;
 }
 
-export function nextAvailableColor(lanes: readonly LaneSummary[]): string | null {
+/** A colour no open lane uses; there is always one. */
+export function nextAvailableColor(lanes: readonly LaneSummary[]): string {
   return nextAvailableLaneColor(colorsInUse(lanes));
 }
 

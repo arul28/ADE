@@ -9,6 +9,8 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
+import type { JevService } from "../jev/jevService";
+import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -103,6 +105,7 @@ import {
   backgroundUtilityModelId,
 } from "../../../shared/backgroundUtilityModel";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import type { JevAnswer } from "../../../shared/types/jev";
 import {
   claudeAccountPromptCacheEnv,
   providerInstanceEnvPatch,
@@ -162,6 +165,12 @@ import {
 } from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
+import {
+  buildCliStatusRequest,
+  classifyCliStatus,
+  CLI_STATUS_QUESTIONS,
+  cliStatusScreenTextFromOutputTail,
+} from "./cliStatusInspector";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
@@ -218,7 +227,11 @@ function normalizeStartupCommandDelayMs(value: unknown): number {
 export function materializeRuntimeCliLaunch(
   runtimeCliLaunch: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>,
   laneWorktreePath: string,
-  options: { sessionActivityReportingEnabled?: boolean; userMcp?: TrackedCliUserMcp | null } = {},
+  options: {
+    sessionActivityReportingEnabled?: boolean;
+    userMcp?: TrackedCliUserMcp | null;
+    projectNotes?: string | null;
+  } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
   if (!isLaunchProfile(provider) || provider === "shell") {
@@ -250,6 +263,7 @@ export function materializeRuntimeCliLaunch(
       : {}),
     sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
     ...(options.userMcp ? { userMcp: options.userMcp } : {}),
+    ...(options.projectNotes ? { projectNotes: options.projectNotes } : {}),
   });
 }
 
@@ -760,6 +774,12 @@ type PtyEntry = {
   lastRuntimeSignalState: TerminalRuntimeState;
   lastRuntimeSignalPreview: string | null;
   attentionRequested: boolean;
+  /**
+   * This entry raised a `cli_prompt` hand (the idle-terminal check). Output
+   * while waiting only reads the session row when this is set. It mirrors
+   * that hand: every path that clears the hand clears this too.
+   */
+  cliPromptAttentionRaised: boolean;
   disposed: boolean;
   createdAt: number;
   cleanupPaths: string[];
@@ -791,6 +811,8 @@ type PtyEntry = {
   agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
+  shellPromptVisible: boolean;
+  cliStatusLastTailHash: string | null;
   runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
@@ -2435,12 +2457,14 @@ export function piForkParentIdFromCommand(command: string | null | undefined): s
 
 export function createPtyService({
   projectRoot,
+  projectNotesService,
   transcriptsDir,
   laneService,
   sessionService,
   processRegistry,
   aiIntegrationService,
   projectConfigService,
+  jevService,
   getLaneRuntimeEnv,
   getSessionLinearEnv,
   getAdeCliAgentEnv,
@@ -2451,19 +2475,23 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
-  onSessionUserInput,
+  onSessionAttentionRequested,
+  onSessionAttentionResolved,
   diskPressureMonitor,
   releaseChatBrowser,
   loadPty,
   disposePtyBackend
 }: {
   projectRoot: string;
+  /** The Project notes block a new tracked CLI is started with (read once, at launch). */
+  projectNotesService?: Pick<ProjectNotesService, "renderPromptBlock"> | null;
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  jevService?: JevService | null;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   /**
    * Per-session Linear context env (`ADE_LINEAR_ISSUE_IDS`,
@@ -2488,7 +2516,8 @@ export function createPtyService({
     lastOutputPreview: string | null;
     at: string;
   }) => void;
-  onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
+  onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
+  onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   /**
    * A tracked agent CLI with no owning chat ended: let go of anything it held
@@ -2624,6 +2653,85 @@ export function createPtyService({
     }
     return rows;
   };
+
+  async function inspectIdleTerminal(entry: PtyEntry): Promise<void> {
+    if (!jevService || entry.disposed || entry.shellPromptVisible) return;
+    if (runtimeStates.get(entry.sessionId)?.state !== "idle") return;
+
+    const session = sessionService.get(entry.sessionId);
+    if (!session || session.status !== "running" || session.attentionRequestedAt) return;
+    const isTrackedCli = entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint);
+    // A plain terminal's screen goes out only when the user keeps plain terminals in the check.
+    if (!isTrackedCli && projectConfigService?.get().effective.ai?.chat?.smartPlainTerminalsEnabled === false) return;
+    const screenText = entry.terminalSnapshot
+      ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
+        .map((row) => stripAnsi(row.text))
+        .join("\n")
+      : cliStatusScreenTextFromOutputTail(readRecentOutputTail(entry));
+    const request = buildCliStatusRequest(screenText, {
+      isTrackedCli,
+      toolTypeHint: entry.toolTypeHint,
+      resumeCommand: entry.resumeCommand,
+    });
+    if (!request) return;
+    const { state, lastLine } = request;
+
+    // Hash exactly what is sent, so an unchanged screen is asked about once.
+    const tailHash = createHash("sha256").update(request.tail).digest("hex");
+    if (entry.cliStatusLastTailHash === tailHash) return;
+    // Remember even null/low-confidence answers. An unchanged screen gets one
+    // Jev attempt per session, including when the optional service is down.
+    entry.cliStatusLastTailHash = tailHash;
+
+    let answer: JevAnswer | null = null;
+    try {
+      const answers = await jevService.decide({
+        feature: "cli_status",
+        priority: "background",
+        state,
+        questions: CLI_STATUS_QUESTIONS,
+      });
+      answer = answers?.status ?? null;
+    } catch {
+      // Jev is optional. A failure is exactly the old idle behavior.
+      return;
+    }
+
+    const status = classifyCliStatus(answer);
+    if (status.verdict === "ignore") return;
+    if (
+      entry.disposed
+      || entry.cliStatusLastTailHash !== tailHash
+      || runtimeStates.get(entry.sessionId)?.state !== "idle"
+    ) return;
+
+    const currentSession = sessionService.get(entry.sessionId);
+    if (!currentSession || currentSession.attentionRequestedAt) return;
+    if (status.verdict === "errored") {
+      // The CLI row has no inferred-failure state while its PTY is still live.
+      // Record the bounded classification without copying terminal text.
+      logger.info("pty.cli_status_error_detected", {
+        sessionId: entry.sessionId,
+        toolType: entry.toolTypeHint ?? "shell",
+        confidence: status.confidence,
+      });
+      return;
+    }
+
+    const promptLine = lastLine ? tailString(lastLine, 160) : "Terminal input is required";
+    const message = `Waiting for input: ${promptLine}`;
+    const raised = onSessionAttentionRequested
+      ? onSessionAttentionRequested({ sessionId: entry.sessionId, message, source: "cli_prompt" })
+      : sessionService.requestAttention(entry.sessionId, message, "cli_prompt");
+    if (!raised) return;
+
+    entry.attentionRequested = true;
+    entry.cliPromptAttentionRaised = true;
+    if (runtimeStates.get(entry.sessionId)?.state !== "waiting-input") {
+      setRuntimeState(entry.sessionId, "waiting-input");
+      emitRuntimeSignalThrottled(entry, "waiting-input");
+    }
+  }
 
   const createTerminalSnapshotMirror = (cols: number, rows: number): TerminalSnapshotMirror | null => {
     try {
@@ -3116,6 +3224,7 @@ export function createPtyService({
           // ignore callback failures
         }
       }
+      if (live) void inspectIdleTerminal(live).catch(() => {});
     }, 12_500);
   };
 
@@ -6043,12 +6152,14 @@ export function createPtyService({
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       clearTrackedCliTurnStartMarkers(entry.sessionId);
       entry.attentionRequested = false;
-      onSessionUserInput?.({ laneId: entry.laneId, sessionId: entry.sessionId });
+      onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
       return;
     }
     if (entry.attentionRequested) {
       entry.attentionRequested = false;
+      entry.cliPromptAttentionRaised = false;
       sessionService.clearAttentionRequest(entry.sessionId);
+      onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
     }
   };
 
@@ -6157,11 +6268,20 @@ export function createPtyService({
             })?.preset?.env ?? null,
           })
         : null;
+      // At most one read of the Project notes per launch, shared by the launch
+      // command and (for OpenCode) the session instructions attached below.
+      // Lazy, so a plain shell never reads them.
+      let projectNotesSnapshot: string | null | undefined;
+      const launchProjectNotes = (): string | null => {
+        if (projectNotesSnapshot === undefined) projectNotesSnapshot = projectNotesService?.renderPromptBlock() ?? null;
+        return projectNotesSnapshot;
+      };
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
             userMcp: runtimeUserMcp,
+            projectNotes: launchProjectNotes(),
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
@@ -6881,6 +7001,7 @@ export function createPtyService({
               || initialResumeMetadata?.launch?.reasoningEffort?.trim()
               || null,
             sessionActivityGuidance,
+            projectNotes: launchProjectNotes(),
             projectConfig: projectConfigService?.get().effective ?? {},
             ownerId: ptyId,
             logger,
@@ -7101,6 +7222,7 @@ export function createPtyService({
         lastRuntimeSignalState: "running",
         lastRuntimeSignalPreview: null,
         attentionRequested: false,
+        cliPromptAttentionRaised: false,
         disposed: false,
         createdAt: Date.now(),
         cleanupPaths,
@@ -7119,6 +7241,8 @@ export function createPtyService({
         agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
+        shellPromptVisible: false,
+        cliStatusLastTailHash: null,
         runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
         sessionHandleCaptureTimer: null,
@@ -7283,10 +7407,26 @@ export function createPtyService({
         enqueuePtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
-        const markerState = runtimeStateFromOsc133Chunk(data, prevState);
-        const runtimeState = markerState === prevState && prevState === "idle" && data.length > 0
+        // Only a `cli_prompt` hand this entry raised can be cleared by output,
+        // so skip the session-row read for every other waiting state.
+        const attentionAtStart = prevState === "waiting-input" && entry.cliPromptAttentionRaised
+          ? sessionService.get(sessionId)
+          : null;
+        const markerState = runtimeStateFromOsc133Chunk(data, prevState, (marker) => {
+          if (marker === "A") entry.shellPromptVisible = true;
+          else if (marker === "B" || marker === "C") entry.shellPromptVisible = false;
+        });
+        const runtimeState = markerState === prevState
+          && (prevState === "idle" || attentionAtStart?.attentionSource === "cli_prompt")
+          && data.length > 0
           ? "running"
           : markerState;
+        if (runtimeState === "running" && attentionAtStart?.attentionSource === "cli_prompt") {
+          sessionService.clearAttentionRequest(sessionId, "cli_prompt");
+          entry.attentionRequested = false;
+          entry.cliPromptAttentionRaised = false;
+          onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId });
+        }
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);

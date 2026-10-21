@@ -159,6 +159,7 @@ import type { createAgentChatService } from "../../../../desktop/src/main/servic
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
+import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
@@ -464,10 +465,10 @@ const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
   SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
 
 /**
- * Host-authoritative columns on `terminal_sessions`: settlement outcome and
- * agent activity reports. The host decides settlement through `sessionService`,
- * which can weigh it against live work; agent activity reports are also written
- * there with a host timestamp.
+ * Host-authoritative columns: on `terminal_sessions`, settlement outcome and
+ * agent activity reports; on `lanes`, `icon` (see its entry). The host decides
+ * settlement through `sessionService`, which can weigh it against live work;
+ * agent activity reports are also written there with a host timestamp.
  *
  * A phone must not author them over CRR. `terminal_sessions` replicates, so a
  * phone's optimistic write carries no host decision and merges in regardless of
@@ -491,6 +492,11 @@ const HOST_AUTHORITATIVE_COLUMNS_BY_TABLE = new Map<string, ReadonlySet<string>>
     "activity_status_json",
     "activity_status_changed_at",
   ])],
+  // A lane's emoji lives in `icon`, and its summary sends only the five
+  // legacy icons there. A phone build that predates emoji upserts NULL from
+  // that summary, which would erase the emoji on every machine. Phones change
+  // a lane's look through the `lanes.updateAppearance` command instead.
+  ["lanes", new Set(["icon"])],
 ]);
 
 const isHostAuthoritativeColumn = (change: CrsqlChangeRow): boolean =>
@@ -1128,6 +1134,7 @@ type SyncHostServiceArgs = {
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
   >;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  jevService?: Pick<JevService, "decide" | "status"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -2360,6 +2367,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
+    jevService: args.jevService,
     accountSettingsStore: args.accountSettingsStore,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,

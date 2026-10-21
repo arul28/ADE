@@ -83,10 +83,6 @@
   transition: transform 120ms ease;
 }
 .cl-dot:hover > i, .cl-dot[data-state="open"] > i { transform: scale(1.15); }
-.cl-dot > i[data-empty="true"] {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-fg) 35%, transparent);
-}
 .cl-dot:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); }
 
 /* ── Mode switch: New branch · Import branch · Child lane ─────────────────── */

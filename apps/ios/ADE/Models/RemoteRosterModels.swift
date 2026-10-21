@@ -254,6 +254,7 @@ struct RemoteRosterLane: Codable, Equatable, Identifiable {
   var name: String
   var color: String?
   var icon: String?
+  var emoji: String? = nil
   var laneType: String?
   var branchRef: String?
   /// Why a running chat in this lane waits rather than works: the lane's open
@@ -687,6 +688,7 @@ extension RemoteRosterLane {
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: color,
       icon: icon.flatMap(LaneIcon.init(rawValue:)),
+      emoji: emoji,
       tags: [],
       folder: nil,
       linearIssue: nil,

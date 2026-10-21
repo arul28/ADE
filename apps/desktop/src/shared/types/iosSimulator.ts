@@ -1363,6 +1363,8 @@ export type IosSimulatorPushArgs = IosSimulatorDeviceArgs & {
 
 export type IosSimulatorOpenUrlArgs = IosSimulatorDeviceArgs & {
   url: string;
+  /** A deeplink a person opened from a viewer never starts an auto-recording. */
+  source?: AppleInputSource;
 };
 
 export type IosSimulatorAppLifecycleArgs = IosSimulatorDeviceArgs & {

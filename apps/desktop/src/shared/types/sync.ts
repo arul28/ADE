@@ -1176,6 +1176,7 @@ export type SyncRosterLane = {
   name: string;
   color?: string | null;
   icon?: string | null;
+  emoji?: string | null;
   laneType?: string | null;
   branchRef?: string | null;
   /**
@@ -2474,6 +2475,7 @@ export type SyncRemoteCommandAction =
   | "usage.consumeResetCredit"
   | "usage.getCostBreakdown"
   | "usage.getModelDetail"
+  | "usage.getModelCatalog"
   | "usage.getModelPriceOverrides"
   | "usage.setModelPriceOverride"
   | "proxy.status"
@@ -2790,6 +2792,8 @@ export type SyncRemoteCommandAction =
   | "projectConfig.get"
   | "projectConfig.save"
   | "ai.getStatus"
+  | "ai.jevDecide"
+  | "ai.jevStatus"
   | "ai.updateConfig"
   | "ai.deleteApiKey"
   | "ai.listCursorCloudRepositories"

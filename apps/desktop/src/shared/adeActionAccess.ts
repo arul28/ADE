@@ -219,7 +219,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
+      "getStatus", "jevDecide", "jevStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -404,8 +404,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   usage: {
     read: [
-      "getAdeUsageStats", "getCostBreakdown", "getModelDetail", "getModelPriceOverrides",
-      "getModelRoutes", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
+      "getAdeUsageStats", "getCostBreakdown", "getModelCatalog", "getModelDetail", "getModelPriceOverrides",
+      "getModelRoutes", "getModelSheet", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
       "getUsageSnapshot",
     ],
     write: [
@@ -632,6 +632,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced", "loginStart",
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
+  },
+  project_notes: {
+    read: ["list", "renderPromptBlock"],
+    write: ["add", "edit", "remove"],
   },
 };
 

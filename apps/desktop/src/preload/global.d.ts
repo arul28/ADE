@@ -1,4 +1,5 @@
 import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
@@ -155,6 +156,8 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  ProjectNotesListArgs,
+  ProjectNotesListResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -1627,6 +1630,14 @@ declare global {
         exportEnv: () => Promise<ProjectSecretsExportResult>;
       };
       ai: {
+        /**
+         * Ask Jev (OpenCode Zen's free decision model) on the machine `pin`
+         * names. `null` on any failure: not signed in, turned off, rate
+         * limited, slow, or an unusable answer. Use your existing logic then.
+         */
+        jevDecide: <Q extends JevQuestions>(request: JevDecideRequest<Q>, pin?: OpenProjectBinding | null) => Promise<JevAnswers<Q> | null>;
+        /** The helper's availability, breaker and counts; `null` when that machine cannot say. */
+        jevStatus: (pin?: OpenProjectBinding | null) => Promise<JevStatus | null>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;
@@ -2096,6 +2107,15 @@ declare global {
         getModelDetail?: (
           args: import("../shared/types").GetAdeUsageModelDetailArgs,
         ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        /**
+         * Every model the machine `pin` names can run, with its registry
+         * profile. Null without a runtime. Optional on the bridge: an older
+         * preload or web host may not expose it.
+         */
+        getModelCatalog?: (
+          args?: { provider?: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ catalog: import("../main/services/router/modelCatalog").UserModelCatalog } | null>;
         getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
         /**
          * This machine's GitHub contribution calendar (the profile's year of
@@ -3928,6 +3948,10 @@ declare global {
         signIn: (args: SubscriptionProxySignInArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxySignInResult>;
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
+      };
+      /** Project notes agents saved, read-only here; `pin` picks the machine. */
+      projectNotes: {
+        list: (args?: ProjectNotesListArgs, pin?: OpenProjectBinding | null) => Promise<ProjectNotesListResult>;
       };
       providerInstances: {
         list: (

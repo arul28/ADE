@@ -25,6 +25,8 @@ import type { Logger } from "../logging/logger";
 import { isSubagentSpawnToolName } from "../chat/sessionActivityDetector";
 import { getErrorMessage } from "../shared/utils";
 import { estimateQuotaBurnRates } from "../usage/quotaBurnRate";
+import { buildUserModelCatalog, emptyUserModelCatalog, type UserModelCatalog } from "./modelCatalog";
+import { buildModelSheet, type ModelSheet } from "./modelSheet";
 import type { ModelRegistryStatus, ModelRegistryStore } from "./modelRegistryStore";
 import {
   buildModelRoutes,
@@ -204,12 +206,17 @@ export type RouterPreviewArgs = {
 };
 
 export type RouterRoutesArgs = { provider?: string; limit?: number };
+export type ModelCatalogArgs = { provider?: string };
 
 export type ModelRouterService = {
   /** Folds a chat event in. Sync, never throws. */
   observe(sessionId: string, event: AgentChatEvent, session: RouterSessionFacts): void;
   preview(args: RouterPreviewArgs): Promise<RouterPick & { plans: Record<string, PlanState> }>;
   routes(args?: RouterRoutesArgs): Promise<{ registry: ModelRegistryStatus; routes: ModelRoute[] }>;
+  /** Every model this machine can run, with its full registry profile and how it is billed. */
+  catalog(args?: ModelCatalogArgs): Promise<{ registry: ModelRegistryStatus; catalog: UserModelCatalog }>;
+  /** The catalogue organized by task kind: scores, tiers, and plain-English notes per family. */
+  sheet(args?: ModelCatalogArgs): Promise<{ registry: ModelRegistryStatus; sheet: ModelSheet | null }>;
   shadowSummary(args?: { days?: number }): Promise<RouterShadowSummary>;
   efficiency(args?: { days?: number }): Promise<RouterEfficiencyReport>;
   refreshRegistry(options?: { force?: boolean }): Promise<ModelRegistryStatus>;
@@ -635,6 +642,28 @@ export function createModelRouterService(args: {
       const filtered = input.provider ? routes.filter((route) => route.harness === input.provider) : routes;
       const sorted = [...filtered].sort((a, b) => (b.quality.score ?? -1) - (a.quality.score ?? -1));
       return { registry: args.registry.status(), routes: input.limit ? sorted.slice(0, input.limit) : sorted };
+    },
+
+    async catalog(input = {}) {
+      await args.registry.refresh();
+      await loadCatalog();
+      const snapshot = args.registry.getSnapshot();
+      const models = (catalog?.models ?? []).filter((model) => !input.provider || model.provider === input.provider);
+      return {
+        registry: args.registry.status(),
+        catalog: snapshot ? buildUserModelCatalog(models, snapshot) : emptyUserModelCatalog(),
+      };
+    },
+
+    async sheet(input = {}) {
+      await args.registry.refresh();
+      await loadCatalog();
+      const snapshot = args.registry.getSnapshot();
+      const models = (catalog?.models ?? []).filter((model) => !input.provider || model.provider === input.provider);
+      return {
+        registry: args.registry.status(),
+        sheet: snapshot ? buildModelSheet(snapshot, buildUserModelCatalog(models, snapshot)) : null,
+      };
     },
 
     async shadowSummary(input = {}) {

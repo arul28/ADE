@@ -6,6 +6,7 @@ import {
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
+import { totalBackgroundWork } from "../../../shared/sessionCanonicalState";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -49,6 +50,10 @@ import {
  */
 export const SESSION_ACTION_BUTTON_CLASS =
   "inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg focus-visible:bg-fg/[0.06] focus-visible:text-fg";
+
+const SETTLE_NUDGE_CONFIDENCE_FLOOR = 0.85;
+const SETTLE_NUDGE_BUTTON_CLASS =
+  "inline-flex cursor-pointer items-center gap-1 rounded-full border border-emerald-300/25 bg-emerald-400/10 px-2 text-emerald-200 transition-colors hover:bg-emerald-400/15 hover:text-emerald-100 focus-visible:bg-emerald-400/15 focus-visible:text-emerald-100";
 
 export function SessionStatusSlot({
   session,
@@ -116,6 +121,22 @@ export function SessionStatusSlot({
     // ADE's explicit `ask`; keep its session card dismissible as well.
     || session.attentionSource === "provider_structured";
   const canSettle = settled || (!isActivelyRunning && canDismissNeedsYou);
+  const settleNudgeTurnId = session.settleNudgeTurnId ?? null;
+  const showSettleNudge = Boolean(
+    actionsEnabled
+    && !settled
+    && !snoozed
+    && canSettle
+    && settleNudgeTurnId
+    && session.settleNudgeDoneProbability != null
+    && session.settleNudgeDoneProbability >= SETTLE_NUDGE_CONFIDENCE_FLOOR
+    && session.settleNudgeDismissedTurnId !== settleNudgeTurnId
+    && !session.attentionRequestedAt
+    && !session.pendingInputItemId
+    && !isActivelyRunning
+    && (session.activeBackgroundTaskCount ?? 0) <= 0
+    && totalBackgroundWork(session.backgroundWork) === 0,
+  );
 
   return (
     <span
@@ -132,7 +153,7 @@ export function SessionStatusSlot({
           "pointer-events-none self-center whitespace-nowrap tabular-nums transition-opacity",
           "group-focus-within/status-slot:absolute group-focus-within/status-slot:right-0 group-focus-within/status-slot:opacity-0",
           "group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
-          snoozeMenuOpen && "absolute right-0 opacity-0",
+          (snoozeMenuOpen || showSettleNudge) && "absolute right-0 opacity-0",
           compact ? "text-[10px]" : "text-[11px]",
         )}
       >
@@ -155,7 +176,7 @@ export function SessionStatusSlot({
             "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity",
             "focus-within:static focus-within:opacity-100",
             "group-hover/v2-row:static group-hover/v2-row:opacity-100",
-            snoozeMenuOpen && "static opacity-100",
+            (snoozeMenuOpen || showSettleNudge) && "static opacity-100",
           )}
         >
           <SessionSnoozeControl
@@ -168,10 +189,10 @@ export function SessionStatusSlot({
           {canSettle ? (
             <button
               type="button"
-              aria-label={settled ? "Un-settle session" : "Settle session"}
-              title={settled ? "Un-settle session" : "Settle session"}
-              data-testid="session-settle-button"
-              className={cn(SESSION_ACTION_BUTTON_CLASS, "-mr-1")}
+              aria-label={showSettleNudge ? "Looks finished; settle session" : settled ? "Un-settle session" : "Settle session"}
+              title={showSettleNudge ? "Looks finished · Settle" : settled ? "Un-settle session" : "Settle session"}
+              data-testid={showSettleNudge ? "session-settle-nudge" : "session-settle-button"}
+              className={cn(showSettleNudge ? SETTLE_NUDGE_BUTTON_CLASS : SESSION_ACTION_BUTTON_CLASS, "-mr-1")}
               disabled={settlePending}
               onClick={(event) => {
                 event.preventDefault();
@@ -189,7 +210,7 @@ export function SessionStatusSlot({
               ) : (
                 <Check size={13} weight="bold" aria-hidden />
               )}
-              {compact ? null : <span>{settled ? "Un-settle" : "Settle"}</span>}
+              {showSettleNudge ? <span>Looks finished · Settle</span> : compact ? null : <span>{settled ? "Un-settle" : "Settle"}</span>}
             </button>
           ) : null}
         </span>

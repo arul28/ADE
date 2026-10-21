@@ -23,6 +23,7 @@ import {
 import { Button } from "../ui/Button";
 import { Banner } from "../ui/notice/Banner";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { LaneEmojiGlyph } from "./LaneEmojiGlyph";
 import type {
   LaneDeleteEvent,
   LaneDeleteProgress,
@@ -43,6 +44,8 @@ import {
 } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
+import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -126,6 +129,22 @@ function ManageLaneRenameControls({
   const canSave = Boolean(trimmedDraft) && !unchanged && !duplicateLane && !renameBusy;
   const canRename = lane.laneType !== "primary";
 
+  const setLaneEmoji = async (emoji: string | null) => {
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      const args = { laneId: lane.id, emoji };
+      await (runtimePin
+        ? window.ade.lanes.updateAppearance(args, runtimePin)
+        : window.ade.lanes.updateAppearance(args));
+      await onRenamed?.();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : "Failed to update lane emoji");
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const cancelEdit = () => {
     setEditing(false);
     setDraftName(lane.name);
@@ -174,27 +193,49 @@ function ManageLaneRenameControls({
     );
   }
 
+  const laneEmoji = laneEmojiForDisplay(lane.emoji, lane.icon);
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <input
-          type="text"
-          value={draftName}
-          autoFocus
-          aria-label="Lane name"
-          className={`${INPUT_CLASS_NAME} min-w-[12rem] flex-1 text-sm`}
-          onChange={(event) => setDraftName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void saveRename();
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              cancelEdit();
-            }
-          }}
-        />
+        <div className="mt-2 flex h-11 min-w-[12rem] flex-1 items-center gap-1 rounded-lg border border-fg/[0.06] bg-fg/[0.03] px-2 transition-colors focus-within:border-accent/40">
+          <LaneEmojiPicker
+            value={laneEmoji}
+            onChange={(emoji) => { void setLaneEmoji(emoji); }}
+            disabled={renameBusy}
+            label="Lane emoji"
+            trigger={(
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base text-fg transition hover:bg-fg/[0.08] focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-45"
+                aria-label={laneEmoji
+                  ? `Change lane emoji, current ${laneEmoji}`
+                  : "Choose lane emoji"}
+                title="Lane emoji"
+                disabled={renameBusy}
+              >
+                {laneEmoji || <span className="text-sm text-muted-fg">＋</span>}
+              </button>
+            )}
+          />
+          <input
+            type="text"
+            value={draftName}
+            autoFocus
+            aria-label="Lane name"
+            className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-fg outline-none"
+            onChange={(event) => setDraftName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void saveRename();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelEdit();
+              }
+            }}
+          />
+        </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
             type="button"
@@ -238,7 +279,12 @@ function ManageLaneHeaderDetails({
         <div className="max-h-[min(28vh,160px)] space-y-1.5 overflow-y-auto pr-1">
           {lanes.map((lane) => (
             <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <LaneIcon size={11} className="shrink-0 text-muted-fg/60" />
+              <LaneEmojiGlyph
+                emoji={lane.emoji}
+                icon={lane.icon}
+                className="shrink-0 text-[11px] leading-none"
+                fallback={<LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
+              />
               <span className="font-semibold text-fg">{lane.name}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>
@@ -1277,6 +1323,22 @@ function AppearanceSection({
     }
   };
 
+  const applyEmoji = async (next: string | null) => {
+    setError(null);
+    setBusy(true);
+    try {
+      const args = { laneId: lane.id, emoji: next };
+      await (runtimePin
+        ? window.ade.lanes.updateAppearance(args, runtimePin)
+        : window.ade.lanes.updateAppearance(args));
+      await onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set emoji");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       <div className="flex items-center justify-between gap-3">
@@ -1294,6 +1356,18 @@ function AppearanceSection({
           usedColors={used}
           usedColorOwners={usedOwners}
         />
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <LaneEmojiPicker
+          value={laneEmojiForDisplay(lane.emoji, lane.icon)}
+          label="Lane emoji"
+          disabled={disabled || busy}
+          onChange={(next) => { void applyEmoji(next); }}
+        />
+        <div>
+          <div className="text-xs font-medium text-fg/80">Lane emoji</div>
+          <div className="text-[11px] text-muted-fg/65">Shown beside the lane name.</div>
+        </div>
       </div>
       {error ? (
         <div className="mt-2 text-xs text-red-300">{error}</div>

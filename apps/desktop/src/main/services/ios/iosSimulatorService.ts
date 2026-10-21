@@ -3603,6 +3603,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return inflight;
   };
 
+  /**
+   * The chat holding the lane's device, from memory alone.
+   *
+   * The same two claims `getStatus` reports (an app session first, then a
+   * bare device session), without its `simctl` device list. A remote tap
+   * checks ownership on every gesture, and the status throttle is 500 ms, so
+   * reading the owner through `getStatus` put a `simctl` round trip in front
+   * of most taps from a phone.
+   */
+  const getControlOwner = (ownerArgs: { laneId?: string | null } = {}): string | null => {
+    const runtime = resolveRuntime(ownerArgs);
+    // Trimmed and fallen through like the status projection: a blank app
+    // claim must not hide a device session's.
+    return runtime.activeSession?.chatSessionId?.trim()
+      || hub(runtime).getDeviceSession()?.chatSessionId?.trim()
+      || null;
+  };
+
+  /**
+   * The device this lane holds a claim on, or null; never the "first booted
+   * iPhone" fallback. Remote input targets only this, so a tap sent for a
+   * lane with no device of its own cannot land on another lane's screen.
+   */
+  const getClaimedDevice = (claimArgs: { laneId?: string | null } = {}): string | null =>
+    claimedDeviceUdid(resolveRuntime(claimArgs));
+
   /** Invalidate a lane's cached status after a state change. */
   const invalidateStatus = (runtime: LaneRuntime): void => {
     runtime.cachedStatus = { ...runtime.cachedStatus, computedAt: 0 };
@@ -5604,6 +5630,35 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
+   * Re-cap a capture that is already running, and nothing else.
+   *
+   * The relay's pacing lowers and restores a lane's cap while remote viewers
+   * watch. `startStream` would resolve the device again (a `simctl` read) and,
+   * when the capture stopped meanwhile or the lane's session moved to another
+   * device, start one: a capture nobody stops, or on the wrong device. This
+   * touches only the encoder of the capture that is running now.
+   */
+  const capLiveStream = async (capArgs: {
+    laneId: string;
+    bitrateKbps: number;
+  }): Promise<IosSimulatorStreamStatus | null> => {
+    const lane = laneKey(capArgs.laneId);
+    const runtime = lane ? runtimes.get(lane) : null;
+    if (!runtime) return null;
+    const status = runtime.streamStatus;
+    if (!status.running || !status.deviceUdid) return status;
+    if (status.helperPid !== (helperClient?.pid() ?? null)) return status;
+    const bitrateKbps = clampStreamBitrateKbps(capArgs.bitrateKbps);
+    if (bitrateKbps == null || (status.bitrateKbps ?? null) === bitrateKbps) return status;
+    return applyLiveBitrateCap(runtime, {
+      udid: status.deviceUdid,
+      fps: clampStreamFps(status.targetFps),
+      scale: 1,
+      bitrateKbps,
+    }, nextCapGeneration(runtime));
+  };
+
+  /**
    * The relay's last remote viewer left and the capture keeps running for a
    * viewer on this machine: take the remote cap off, so the local view is
    * back at full quality instead of the phone's bitrate until it restarts.
@@ -5760,6 +5815,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     return enqueueControl("tap", async () => {
+      // Whoever taps now, a live finger still held on this lane comes up first.
+      await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
@@ -6023,6 +6080,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const durationMs = input.durationMs;
     const deltaValue = input.delta;
     return enqueueControl("drag", async () => {
+      await liftLiveTouch(runtime.key, "drag", runtime.laneId);
       if (durationMs != null && !Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
       // `delta` was idb's step size and the helper owns its own stepping now.
       // Still validated rather than ignored: a caller passing a nonsense delta
@@ -6031,6 +6089,123 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
+      return { ok: true };
+    });
+  };
+
+  /**
+   * A finger held on a device by a live viewer, per lane: where it started,
+   * where it is, and the timer that lifts it if the viewer goes quiet.
+   */
+  type LiveTouch = {
+    udid: string;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    release: ReturnType<typeof setTimeout>;
+  };
+  const liveTouches = new Map<string, LiveTouch>();
+
+  /**
+   * A held finger the viewer stops updating is lifted after this. The viewer
+   * repeats a still finger's point well inside it, so only a viewer that is
+   * gone (a phone off the network mid-gesture) gets here, and one slow round
+   * trip does not.
+   */
+  const LIVE_TOUCH_IDLE_RELEASE_MS = 4_000;
+
+  const sendTouch = (udid: string, phase: "begin" | "move" | "end", x: number, y: number): Promise<unknown> =>
+    helper().send({ type: "touch", udid, phase, x, y });
+
+  /** Lift a lane's held finger, if any. Best-effort: the device may be gone. */
+  const liftLiveTouch = async (laneKey: string, reason: string, laneId: string | null): Promise<void> => {
+    const held = liveTouches.get(laneKey);
+    if (!held) return;
+    clearTimeout(held.release);
+    liveTouches.delete(laneKey);
+    await sendTouch(held.udid, "end", held.x, held.y).catch((error: unknown) => {
+      args.logger.warn("apple.live_touch_lift_failed", {
+        laneId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const armLiveTouchRelease = (laneKey: string, runtime: LaneRuntime): ReturnType<typeof setTimeout> => {
+    const timer = setTimeout(() => {
+      if (disposed) return;
+      void enqueueControl("touch-release", async () => {
+        if (liveTouches.get(laneKey)?.release !== timer) return;
+        args.logger.warn("apple.live_touch_released", { laneId: runtime.laneId, reason: "idle" });
+        await liftLiveTouch(laneKey, "idle", runtime.laneId);
+      }).catch(() => null);
+    }, LIVE_TOUCH_IDLE_RELEASE_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    return timer;
+  };
+
+  /**
+   * One phase of a live finger (`begin`, `move`, `end`), sent as a person's
+   * finger does it, so the device moves under the finger instead of replaying
+   * the gesture once it lifts.
+   *
+   * At most one finger per lane. A `begin` while one is held lifts the old one
+   * first; a `move` or `end` with none held (it was already lifted for being
+   * idle) does nothing. A `move` to the point already held only keeps the
+   * finger alive. The held state changes before the helper is called, so a
+   * send that fails or outlives its timeout cannot leave a finger without its
+   * release timer or bring back one that was lifted. Input is noted once, when
+   * the finger lifts.
+   */
+  const touch = async (input: {
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    deviceUdid?: string | null;
+    phase: "begin" | "move" | "end";
+    x: number;
+    y: number;
+    source?: AppleInputSource;
+  }): Promise<{ ok: true }> => {
+    assertDarwin();
+    const phase: unknown = input.phase;
+    if (phase !== "begin" && phase !== "move" && phase !== "end") {
+      throw new Error("touch phase must be begin, move or end.");
+    }
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
+    const x = normalizeCoordinate(input.x, "x");
+    const y = normalizeCoordinate(input.y, "y");
+    const laneKey = runtime.key;
+    return enqueueControl("touch", async () => {
+      if (phase === "begin") {
+        await liftLiveTouch(laneKey, "replaced", runtime.laneId);
+        liveTouches.set(laneKey, {
+          udid: deviceUdid,
+          startX: x,
+          startY: y,
+          x,
+          y,
+          release: armLiveTouchRelease(laneKey, runtime),
+        });
+        runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+        await sendTouch(deviceUdid, "begin", x, y);
+        return { ok: true };
+      }
+      const held = liveTouches.get(laneKey);
+      if (!held) return { ok: true };
+      clearTimeout(held.release);
+      if (phase === "move") {
+        const still = held.x === x && held.y === y;
+        liveTouches.set(laneKey, { ...held, x, y, release: armLiveTouchRelease(laneKey, runtime) });
+        if (!still) await sendTouch(held.udid, "move", x, y);
+        return { ok: true };
+      }
+      liveTouches.delete(laneKey);
+      await sendTouch(held.udid, "end", x, y);
+      const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source });
       return { ok: true };
     });
   };
@@ -6704,6 +6879,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   return guardAgentDeviceActions({
     getStatus,
+    getControlOwner,
+    getClaimedDevice,
     claim,
     listDevices,
     listLaunchTargets,
@@ -6730,8 +6907,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     setRemoteViewerProbe,
     /** The relay's last remote viewer left; a local one still watches. */
     liftStreamBitrateCap,
+    capLiveStream,
     frame,
     tap,
+    /** A live finger's begin/move/end, for a person driving from a viewer. */
+    touch,
     pressButton,
     rotate,
     /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
@@ -6817,7 +6997,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
@@ -6922,6 +7102,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       disposed = true;
       maintenance?.stop();
       runtimeManagerInstance?.dispose();
+      for (const held of liveTouches.values()) clearTimeout(held.release);
+      liveTouches.clear();
       for (const runtime of runtimes.values()) {
         runtime.hub?.dispose();
         runtime.hub = null;

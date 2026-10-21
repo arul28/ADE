@@ -42,6 +42,11 @@ export type ReasoningEffortPickerProps = {
   copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
   copilotAutoTierPending?: boolean;
+  /**
+   * Space is tight (a hint chip sits beside the picker): below a wide
+   * composer the trigger shows only its bars and caret, no level name.
+   */
+  squeezed?: boolean;
 };
 
 export function reasoningChipLabel(
@@ -220,6 +225,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   copilotAutoTier,
   onCopilotAutoTierChange,
   copilotAutoTierPending = false,
+  squeezed = false,
 }: ReasoningEffortPickerProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -580,6 +586,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           disabled={disabled}
           open={open}
           ultra={isUltraActive}
+          squeezed={squeezed}
           className={cn(triggerClassName, className)}
         />
       </Popover.Trigger>
@@ -732,13 +739,14 @@ type TriggerProps = {
   disabled: boolean;
   open: boolean;
   ultra: boolean;
+  squeezed: boolean;
   className?: string;
 };
 
 const ReasoningEffortTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ReasoningEffortTrigger(
-      { label, shortLabel, tone, tiers, activeIndex, compact, disabled, open, ultra, className, ...rest },
+      { label, shortLabel, tone, tiers, activeIndex, compact, disabled, open, ultra, squeezed, className, ...rest },
       ref,
     ) {
       return (
@@ -751,7 +759,7 @@ const ReasoningEffortTrigger = memo(
           data-reasoning-ultra={ultra ? "true" : undefined}
           disabled={disabled}
           aria-label="Reasoning effort"
-          title="Reasoning effort"
+          title={squeezed ? `Reasoning effort: ${label}` : "Reasoning effort"}
           aria-haspopup="dialog"
           aria-expanded={open}
           className={cn(
@@ -775,8 +783,14 @@ const ReasoningEffortTrigger = memo(
             )}
             style={{ color: toneText(tone.color) }}
           >
-            <span className="hidden @sm:inline">{label}</span>
-            <span className="@sm:hidden">{shortLabel}</span>
+            {squeezed ? (
+              <span className="hidden @3xl:inline">{label}</span>
+            ) : (
+              <>
+                <span className="hidden @sm:inline">{label}</span>
+                <span className="@sm:hidden">{shortLabel}</span>
+              </>
+            )}
           </span>
           <CaretDown
             size={compact ? 9 : 10}

@@ -8734,6 +8734,13 @@ describe("inbound changeset_batch guards", () => {
     return change;
   }
 
+  function makeLaneChange(cid: string, dbVersion: number, seq: number, val: string | null): CrsqlChangeRow {
+    const change = makePeerChange("lanes", dbVersion, seq, val as string);
+    change.cid = cid;
+    change.pk = "lane-1";
+    return change;
+  }
+
   function createGuardHost(projectRoot: string, applyChanges: ReturnType<typeof vi.fn>) {
     const base = createHostArgs(projectRoot, []);
     return createSyncHostService({
@@ -8971,6 +8978,11 @@ describe("inbound changeset_batch guards", () => {
             makeTerminalSessionChange("title", 5, 4, "renamed from phone"),
             makeTerminalSessionChange("activity_status_json", 6, 5, '{"value":"testing"}'),
             makeTerminalSessionChange("activity_status_changed_at", 7, 6, "2026-08-10T00:01:00.000Z"),
+            // A phone that predates lane emoji writes NULL into `lanes.icon`
+            // from a lane summary; the emoji lives there, so it is dropped.
+            // Other lane columns from the phone still apply.
+            makeLaneChange("icon", 8, 7, null),
+            makeLaneChange("color", 9, 8, "#22d3ee"),
           ],
         },
       }));
@@ -8978,10 +8990,14 @@ describe("inbound changeset_batch guards", () => {
       const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
       const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
       expect(ackPayload.ok).toBe(true);
-      expect(ackPayload.appliedCount).toBe(2);
+      expect(ackPayload.appliedCount).toBe(3);
       expect(applyChanges).toHaveBeenCalledTimes(1);
       const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
-      expect(appliedRows.map((row) => row.cid)).toEqual(["snoozed_until", "title"]);
+      expect(appliedRows.map((row) => `${row.table}.${row.cid}`)).toEqual([
+        "terminal_sessions.snoozed_until",
+        "terminal_sessions.title",
+        "lanes.color",
+      ]);
     } finally {
       try {
         peer?.ws.close();

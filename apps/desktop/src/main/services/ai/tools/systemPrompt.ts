@@ -180,6 +180,11 @@ export function buildCodingAgentSystemPrompt(args: {
   adeSkillRoots?: readonly string[];
   /** Provider-gated status advice; omitted unless this session can run ADE CLI. */
   sessionActivityGuidance?: string | null;
+  /**
+   * The Project notes block, snapshotted when the session started. Last in
+   * the prompt, so a changed note leaves every section above it cached.
+   */
+  projectNotes?: string | null;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -239,7 +244,7 @@ export function buildCodingAgentSystemPrompt(args: {
     // second copy only dilutes the lines below, which are ADE's own.
     "## Working in ADE",
     "Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
-    "When the user asks a question while you work, answer it in visible text. The user does not see your thinking unless they expand it.",
+    "Your thinking is not your reply: the user sees it only as a collapsed thought, if at all. Anything they need to read or act on (answers to their questions, requests for them, and your final summary) must go in your visible reply text, written in full, never only in your thinking.",
     "",
     "## Tool Use Rules",
     ...(toolNames.length ? [`Available tools: ${toolNames.join(", ")}.`] : []),
@@ -296,6 +301,7 @@ export function buildCodingAgentSystemPrompt(args: {
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]
       : []),
+    ...(args.projectNotes?.trim() ? ["", args.projectNotes.trim()] : []),
   ].join("\n");
 }
 

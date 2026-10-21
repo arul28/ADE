@@ -1244,6 +1244,9 @@ export function decodeForeignSessions(result: unknown): TerminalSessionSummary[]
     if (!isRecord(candidate)) continue;
     if (typeof candidate.id !== "string" || !candidate.id.trim()) continue;
     if (typeof candidate.laneId !== "string" || !candidate.laneId.trim()) continue;
+    // Work lists live work; the remote's archived rows (its archived lanes'
+    // shells and CLIs) stay out, as they do for this machine's rows.
+    if (typeof candidate.archivedAt === "string" && candidate.archivedAt) continue;
     const session = candidate as unknown as TerminalSessionSummary;
     // Older/partial remote runtimes can omit the chat projection fields. A
     // persisted chat remains `status: "running"` between turns, so an absent

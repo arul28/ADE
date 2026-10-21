@@ -71,7 +71,7 @@ export type HealthDataParts = { storage?: boolean; diagnostics?: boolean; report
 const ALL_PARTS: HealthDataParts = { storage: true, diagnostics: true, report: true };
 
 /**
- * What the project and service pages read (Project → Lanes and Location,
+ * What the project and service pages read (Project → Lanes, Storage & cleanup and Location,
  * Computer → ADE service), loaded once when the page opens and again on
  * demand (Measure again, Check again, after a cleanup). No polling.
  *

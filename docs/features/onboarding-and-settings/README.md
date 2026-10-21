@@ -85,9 +85,12 @@ Main process:
   attention list. A failed source read adds a "couldn't check" row with Check
   again; a capability missing on an older build is simply absent.
 - `apps/desktop/src/renderer/components/settings/lanes/LanesSettingsPage.tsx`
-  and `lanes/LaneList.tsx` — Project → Lanes views and lane list. The desktop
-  has Lanes, Space, Archive and Rules tabs; the web client shows Archive and
-  Rules. Hash links and Settings search switch to the view containing a card.
+  and `lanes/LaneList.tsx` — Project → Lanes (Your lanes, Rules) and Project →
+  Storage & cleanup (Space, Archive, Rules), one view at a time; the web client
+  shows only the Rules and Archive views, and a page left with one view drops
+  its tab strip. Hash links and Settings search switch to the view containing
+  a card. Project → Agents (Agent notes, PR chat transcripts) is a plain
+  section list in `settingsTabContent.tsx`.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — project-move start
   forwards `copyDependencies`; disk pressure falls back to this computer's ADE
   storage root when no local project monitor is available.
@@ -182,7 +185,7 @@ Main process:
   archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
   by the service, the Settings page, the reminder, ADE Code, and `ade archive`.
 - `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
-  per-machine Settings → Archive tab: the list split at the two-week line, the
+  Project → Storage & cleanup → Archive page: the list split at the two-week line, the
   selection bar, restore, and delete. Deleting batches non-lane items together
   and at most five lanes per request, then offers a single forced retry by name
   for lanes with uncommitted changes.
@@ -972,7 +975,11 @@ Renderer — settings:
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.
 - `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
-  — toggles `prTranscriptGists.enabled` in project local config.
+  — toggles `prTranscriptGists.enabled` in project local config under Project
+  → Agents.
+- `apps/desktop/src/renderer/components/settings/AgentNotesSection.tsx` — the
+  read-only Project → Agents list of project notes visible to agents on the
+  project machine. Notes are written with `ade notes`.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — About (version, runtime); rendered in General.
 - `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
@@ -1209,7 +1216,7 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
   `settings/storage/StorageCleanupDialog.tsx`, `StorageDiagnostics.tsx`,
   `StorageMaintenanceJournal.tsx`, `storageView.ts`, and `storageUiConstants.ts`
-  — Settings > Storage. Uses plain language to explain lane cleanup rules,
+  — Project → Storage & cleanup. Uses plain language to explain lane cleanup rules,
   automatic safety checks, and the difference between Archive (files stay),
   Archive & Reclaim (lane/branch/chat stay; managed files are removed), and
   Delete. Its review table lists archived lanes, orphaned worktrees,
@@ -1583,8 +1590,11 @@ Renderer — settings:
   `<adeHome>/router/registry.json`; `modelRouterService` logs decisions and
   outcomes to `<adeHome>/usage/router-shadow-*.jsonl` and changes no turn;
   `routerEfficiency` replays every ledger thread at its free switch points and
-  sums the shadow log's subagents for `ade router efficiency`. The wire contract
-  is `apps/desktop/src/shared/routerRegistry.ts`.
+  sums the shadow log's subagents for `ade router efficiency`; `modelCatalog`
+  joins the runnable models with their full registry profiles for
+  `ade models catalog`; `modelSheet` scores those models per task kind and
+  adds curated words for `ade models sheet`. The wire contract is
+  `apps/desktop/src/shared/routerRegistry.ts`.
 - `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
   ledger row after the turn, from Cursor's dashboard events and Factory
   session credits.
@@ -2040,7 +2050,7 @@ nothing needs attention. It gathers problems in the renderer
 |---|---|---|
 | **Overview** | — | Needs attention, At a glance |
 | **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
-| **Project** | The open project (routed to the machine that owns it) | Lanes (Lanes, Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Project** | The open project (routed to the machine that owns it) | Lanes (Your lanes, Rules), Agents (Agent notes, PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
 
 General and the old Diagnostics/Health page are gone; every entry kept its
@@ -2067,12 +2077,17 @@ because its callback cannot reach it, and the API key path is shown instead.
 Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
 integration banner, a PR's GitHub notice) landing on the tab's machine.
 
-Section pages use one-column blocks. Project → Lanes is a four-tab page:
-**Lanes** lists active lanes with All, Stale, Has changes and Running count
-tiles; **Space** shows lane and ADE storage; **Archive** manages archived
-lanes; **Rules** holds lane storage, session lifecycle and lane-start rules.
-The hosted web client shows Archive and Rules only. Links and Settings search
-switch to the tab containing the destination. Bulk archive re-reads git state
+Section pages use one-column blocks. Project → Lanes has two views: **Your
+lanes** lists active lanes with All, Stale, Has changes and Running count
+tiles, and **Rules** holds the new lane base, rebase and lane templates.
+Project → Storage & cleanup has three: **Space** shows lane and ADE storage and
+the cleanup history, **Archive** manages archived lanes, chats and shells, and
+**Rules** holds archiving idle lanes, session lifecycle and project files.
+Project → Agents lists agent notes and PR chat transcripts. The hosted web
+client shows only the Rules and Archive views. Links and Settings search
+switch to the page and view containing the destination; legacy `?tab=storage`,
+`?tab=archive`, `?tab=disk` and `?tab=session-lifecycle` open Storage &
+cleanup. Bulk archive re-reads git state
 before applying the merged-PR exception, then skips dirty, active or unpushed
 lanes. A machine change clears the previous machine's lane, storage and health
 data before loading the new machine. Disk pressure remains available in
@@ -2115,13 +2130,14 @@ The pages themselves:
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web). There is no analytics or diagnostics consent switch. **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
-| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
+| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
-| Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
+| Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes. Legacy `?tab=lane-templates` lands here. |
+| Agents (Project) | `AgentNotesSection.tsx`, `PrChatTranscriptsSection.tsx` | What agents keep about the project: the read-only list of project notes (`ade notes`) and PR transcript gists. Legacy `?tab=agent-notes` and `?tab=notes` land here; the PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
-| Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk-usage and lane-storage dashboard, cleanup history, the archive, rules for archiving idle lanes, session lifecycle, and project files. Rule fields show the value actually in force with an explicit "Inherited" marker. Legacy `?tab=storage`, `?tab=disk`, `?tab=space`, `?tab=archive` and `?tab=session-lifecycle` land here; `?tab=diagnostics` opens Computer → ADE service. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows render in two shapes: the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) keeps one meter row per account, while Settings > Usage's This machine / This project scope draws the same snapshot as radial `UsageLimitGauges`. The rest of that page is the retrospective cross-client dashboard.
@@ -2845,7 +2861,7 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 
 Archiving **hides** a lane, chat, or shell; ADE never deletes one on its own.
 The archive is the one place the three kinds are listed together, so it has a
-per-machine Settings tab (Settings → Archive), an `ade archive` CLI, an ADE Code
+Project → Storage & cleanup → Archive page, an `ade archive` CLI, an ADE Code
 weekly notice, and a weekly desktop banner that all read the same
 `archive.list` / `archive.summary` result.
 

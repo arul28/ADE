@@ -1,4 +1,5 @@
 import type { AdeUsageStats } from "../../../shared/types";
+import { JEV_FEATURES, type JevDayTally } from "../../../shared/types/jev";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -178,4 +179,60 @@ export function captureDailyUsageAnalytics(args: {
   }
 
   return accepted;
+}
+
+/**
+ * One `jev` row per project and completed day in which a chat feature wanted
+ * Jev: how often it was wanted, sent, answered and why it fell back, and the
+ * tokens it used. Counts only, so the cost of paying for Jev can be worked
+ * out from real use. Rides the daily summary's own dedupe and budget: at most
+ * one event a day per project.
+ */
+export function captureDailyJevAnalytics(args: {
+  analytics: ProductAnalyticsService;
+  tally: JevDayTally | null;
+  projectId: string;
+  reportDay: string;
+  occurredAt: string;
+}): boolean {
+  const tally = args.tally;
+  if (!tally || tally.wanted <= 0) return false;
+  const outcome = (key: keyof JevDayTally["outcomes"]): number => tally.outcomes[key] ?? 0;
+  const perFeature: Record<string, number> = {};
+  for (const feature of JEV_FEATURES) perFeature[`jev_sent_${feature}`] = tally.sentByFeature[feature] ?? 0;
+  const result = args.analytics.captureInternal({
+    event: "ade_daily_usage_summary",
+    surface: "api",
+    projectId: args.projectId,
+    occurredAt: args.occurredAt,
+    dedupeKey: `daily-usage:${args.projectId}:${args.reportDay}:jev`,
+    minimumIntervalMs: 24 * 60 * 60 * 1_000,
+    properties: {
+      summary_kind: "jev",
+      call_count: tally.sent,
+      error_count: tally.failed,
+      input_token_count: tally.inputTokens,
+      output_token_count: tally.outputTokens,
+      jev_wanted_count: tally.wanted,
+      jev_ok_count: outcome("ok"),
+      jev_cached_count: outcome("cached"),
+      jev_answered_free_count: tally.answeredByRoute.free ?? 0,
+      jev_answered_zen_credit_count: tally.answeredByRoute.zen_credit ?? 0,
+      jev_answered_bonus_count: tally.answeredByRoute.bonus ?? 0,
+      jev_breaker_skip_count: outcome("breaker_open"),
+      jev_busy_count: outcome("busy"),
+      jev_rate_limited_count: outcome("rate_limited"),
+      jev_auth_rejected_count: outcome("auth_rejected"),
+      jev_timeout_count: outcome("timeout"),
+      jev_network_count: outcome("network"),
+      jev_http_error_count: outcome("http_error"),
+      jev_bad_response_count: outcome("bad_response"),
+      jev_breaker_open_count: tally.breakerOpens,
+      jev_unsent_input_token_estimate: tally.unsentInputTokensEstimate,
+      jev_latency_avg_ms: tally.latencyCount > 0 ? Math.round(tally.latencyTotalMs / tally.latencyCount) : 0,
+      jev_slow_count: tally.slowCount,
+      ...perFeature,
+    },
+  });
+  return result.accepted;
 }

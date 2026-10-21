@@ -322,7 +322,7 @@ export function BootHero({
   worktreeAvailable?: boolean;
 }) {
   const laneColor = theme.lane(lane ?? null);
-  const laneGlyph = laneIconGlyph(lane?.icon ?? null);
+  const laneGlyph = laneIconGlyph(lane?.emoji ?? lane?.icon ?? null);
   const trimmedProject = projectName.trim();
   const projectLabel = trimmedProject || "—";
   const branchLabel = lane?.branchRef?.trim() || "—";

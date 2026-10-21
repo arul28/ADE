@@ -1,0 +1,2483 @@
+{
+  "$comment": "Plain-English notes per model registry family, for the model sheet (modelSheet.ts). Written 2026-10-20 from the registry snapshot of that day; each claim's benchmark is in `basis`. Families: every family runnable on the owner's machine plus the 40 current families with the highest Intelligence Index. Scores refresh with each snapshot; these words do not, so re-check them when a family's numbers move.",
+  "families": {
+    "claude-opus-5-5": {
+      "summary": "The strongest all-round model you can run: top-tier at hard coding, debugging, refactors and research, at a premium price.",
+      "strengths": [
+        "Hard multi-file features, refactors and debugging",
+        "Research over long material",
+        "Understanding screenshots and diagrams"
+      ],
+      "weaknesses": [
+        "Expensive per task, especially at max effort",
+        "Slow to start answering at high effort"
+      ],
+      "bestFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.57-0.60, tied for the best you can run"
+        },
+        {
+          "kind": "refactor",
+          "why": "strong agent work plus long-context reading"
+        },
+        {
+          "kind": "research",
+          "why": "near the top on Humanity's Last Exam and long-context reasoning"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "overkill: a cheaper model does trivial edits as well"
+        },
+        {
+          "kind": "question",
+          "why": "pays premium prices for a one-line answer"
+        }
+      ],
+      "notes": [
+        "High effort is the sweet spot: max costs about 3x more per task for a few points.",
+        "First answer token can take 30 s or more at high effort."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.57 (high), 0.60 (max)",
+        "HLE 0.56, AA-LCR 0.83",
+        "Claude Code Coding Agent Index 0.66 (max)",
+        "MMMU-Pro 0.86",
+        "$1.82 per index task at high, $5.98 at max"
+      ]
+    },
+    "gpt-6-astra": {
+      "summary": "OpenAI's frontier model: excellent at debugging, features and knowledge questions, priced at the top of the market.",
+      "strengths": [
+        "Knowledge questions with few made-up facts",
+        "Feature work and debugging in Codex",
+        "Image understanding"
+      ],
+      "weaknesses": [
+        "Very high list price ($10/$50 per million tokens)",
+        "Slow first answer token"
+      ],
+      "bestFor": [
+        {
+          "kind": "debugging",
+          "why": "high Terminal-Bench and Codex agent score"
+        },
+        {
+          "kind": "feature",
+          "why": "Codex agent score 0.62 at max"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price"
+        },
+        {
+          "kind": "writing",
+          "why": "writing scores trail its coding scores"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price"
+        }
+      ],
+      "notes": [
+        "The Ultrafast route is the same model served faster at a higher price."
+      ],
+      "basis": [
+        "Omniscience accuracy 0.61, hallucination rate 0.45 (high)",
+        "GPQA 0.95",
+        "Terminal-Bench 4.0 0.54 (high)",
+        "Codex Coding Agent Index 0.62 (max)",
+        "Price $10/$50 per M tokens"
+      ]
+    },
+    "gpt-6-1-sol": {
+      "summary": "Near-frontier coding and research at a mid price: the value pick among OpenAI's large models, strongest in Codex.",
+      "strengths": [
+        "Feature work and debugging in Codex at every effort",
+        "Research and long-context reading",
+        "Good price for its quality"
+      ],
+      "weaknesses": [
+        "Slow at max effort",
+        "Writing trails its coding"
+      ],
+      "bestFor": [
+        {
+          "kind": "feature",
+          "why": "Codex agent scores 0.57-0.63 across all efforts"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench close to the frontier at a quarter of the cost"
+        },
+        {
+          "kind": "research",
+          "why": "strong HLE and long-context reasoning"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "writing",
+          "why": "lower writing score than coding"
+        }
+      ],
+      "notes": [
+        "Medium effort scores almost as well as max in Codex at half the cost.",
+        "The Ultrafast route is the same model served faster."
+      ],
+      "basis": [
+        "Codex Coding Agent Index 0.61 (medium), 0.63 (xhigh)",
+        "Terminal-Bench 4.0 0.52 (high)",
+        "HLE 0.51, AA-LCR 0.82",
+        "$0.32 per index task at high"
+      ]
+    },
+    "claude-fable-5-1": {
+      "summary": "Anthropic's top-tier Fable model: superb at research and refactors, strong at coding, but the most expensive per task.",
+      "strengths": [
+        "Research and long-context reasoning",
+        "Refactors and feature work",
+        "Knowledge questions"
+      ],
+      "weaknesses": [
+        "Most expensive per task of all runnable models",
+        "Slow per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.56 and long-context 0.84"
+        },
+        {
+          "kind": "refactor",
+          "why": "strong agent and long-context scores"
+        },
+        {
+          "kind": "feature",
+          "why": "Claude Code agent score 0.62 at max"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "far too costly for small changes"
+        },
+        {
+          "kind": "question",
+          "why": "costly for quick answers"
+        }
+      ],
+      "notes": [
+        "No image-understanding score published."
+      ],
+      "basis": [
+        "HLE 0.56, AA-LCR 0.84 (high)",
+        "Terminal-Bench 4.0 0.52",
+        "Claude Code Coding Agent Index 0.62 (max)",
+        "$3.91 per index task at high, $7.63 at max"
+      ]
+    },
+    "gemini-3-8-flash": {
+      "summary": "A fast-ish, mid-priced Google model that is strong at questions, research and images but weak at agentic coding.",
+      "strengths": [
+        "Knowledge questions and research",
+        "Images, audio and video input",
+        "Long documents"
+      ],
+      "weaknesses": [
+        "Agentic coding and debugging",
+        "Wordy, slop-prone prose"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "GPQA 0.95 and good knowledge accuracy"
+        },
+        {
+          "kind": "research",
+          "why": "long-context 0.81"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.86"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench only 0.20"
+        },
+        {
+          "kind": "feature",
+          "why": "weak agentic coding"
+        }
+      ],
+      "notes": [
+        "Accepts speech and video as input."
+      ],
+      "basis": [
+        "GPQA 0.95, Omniscience accuracy 0.55",
+        "MMMU-Pro 0.86",
+        "Terminal-Bench 4.0 0.20",
+        "PersonalityBench slop 74"
+      ]
+    },
+    "claude-fable-5": {
+      "summary": "The previous Fable: still strong at research and review, but superseded by Fable 5.1 and very expensive.",
+      "strengths": [
+        "Research",
+        "Code review"
+      ],
+      "weaknesses": [
+        "Most expensive per task",
+        "Superseded; data no longer current"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.55, long-context 0.82"
+        },
+        {
+          "kind": "review",
+          "why": "high review score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "too costly for small changes"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; numbers are from its last measurement.",
+        "Prefer Claude Fable 5.1."
+      ],
+      "basis": [
+        "HLE 0.55, AA-LCR 0.82",
+        "Terminal-Bench 4.0 0.42",
+        "$8.75 per index task"
+      ]
+    },
+    "gemini-4-argon": {
+      "summary": "Google's frontier model: at or near the top for code review, debugging and refactors, with very few made-up facts; slow and premium per task.",
+      "strengths": [
+        "Code review and debugging",
+        "Refactors and feature work",
+        "Rarely makes things up"
+      ],
+      "weaknesses": [
+        "Slow: about 12 minutes per index task",
+        "Only one effort level"
+      ],
+      "bestFor": [
+        {
+          "kind": "review",
+          "why": "the best review score among runnable models"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.57"
+        },
+        {
+          "kind": "refactor",
+          "why": "ties the best refactor score you can run"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "slow for a quick answer"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill: top score, but a cheaper, faster model does a small edit as well"
+        }
+      ],
+      "notes": [
+        "The lowest hallucination rate among frontier models.",
+        "Slow first answer token (about 48 s)."
+      ],
+      "basis": [
+        "Omniscience hallucination rate 0.15",
+        "Terminal-Bench 4.0 0.57, SciCode 0.62",
+        "Antigravity CLI Coding Agent Index 0.64",
+        "721 s per index task"
+      ]
+    },
+    "claude-opus-5": {
+      "summary": "The previous Opus: strong at research and review but replaced by Opus 5.5, which is better and cheaper per task.",
+      "strengths": [
+        "Research",
+        "Code review"
+      ],
+      "weaknesses": [
+        "Superseded by Opus 5.5",
+        "Expensive and slow"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.53, long-context 0.79"
+        },
+        {
+          "kind": "review",
+          "why": "solid review score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "costly for small changes"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; numbers are from its last measurement.",
+        "Prefer Claude Opus 5.5."
+      ],
+      "basis": [
+        "HLE 0.53, AA-LCR 0.79 (high)",
+        "Terminal-Bench 4.0 0.46",
+        "Claude Code Coding Agent Index 0.60 (max)"
+      ]
+    },
+    "kimi-k3": {
+      "summary": "An open-weights model with the best long-context reading of any runnable model; good at research, weak at shell-driven coding and slow.",
+      "strengths": [
+        "Research over very long material",
+        "Knowledge questions",
+        "Image understanding"
+      ],
+      "weaknesses": [
+        "Debugging and terminal work",
+        "Slow: about 18 minutes per index task"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.89, the highest runnable"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.81"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench only 0.13"
+        },
+        {
+          "kind": "feature",
+          "why": "weak agentic coding"
+        },
+        {
+          "kind": "question",
+          "why": "slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "slow for quick tasks"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "AA-LCR 0.89, HLE 0.47",
+        "Terminal-Bench 4.0 0.13",
+        "1085 s per index task"
+      ]
+    },
+    "muse-wonder": {
+      "summary": "Meta's new frontier model: near the top for review, edits, features, debugging and the best writing among runnable models; premium price.",
+      "strengths": [
+        "Writing and documents",
+        "Code review and feature work",
+        "Debugging"
+      ],
+      "weaknesses": [
+        "Premium price per task",
+        "Makes up facts more often than the best"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "the best writing score you can run (GDPval 0.64)"
+        },
+        {
+          "kind": "review",
+          "why": "high review score"
+        },
+        {
+          "kind": "feature",
+          "why": "Muse Code agent score 0.64"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy only 0.41"
+        }
+      ],
+      "notes": [
+        "Eight days old; your Cursor listing may not be usable on your plan.",
+        "Fast output (161 tokens/s) but a slow first token."
+      ],
+      "basis": [
+        "GDPval 0.64",
+        "Terminal-Bench 4.0 0.52",
+        "Muse Code Coding Agent Index 0.64",
+        "Omniscience accuracy 0.41",
+        "$4.52 per index task"
+      ]
+    },
+    "minimax-m3-1-flash": {
+      "summary": "A brand-new, very cheap model that is good at research and long documents but often makes things up and is slow per task.",
+      "strengths": [
+        "Research over long documents",
+        "Very cheap per task",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Makes up facts often",
+        "Debugging and terminal work",
+        "Slow per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.80 and HLE 0.48 for a few cents"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.79"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "hallucination rate 0.93: confident wrong answers"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.26"
+        }
+      ],
+      "notes": [
+        "Released 2026-10-19; free routes may be time-limited."
+      ],
+      "basis": [
+        "HLE 0.48, AA-LCR 0.80",
+        "Omniscience hallucination rate 0.93",
+        "Terminal-Bench 4.0 0.26",
+        "$0.22 per index task"
+      ]
+    },
+    "qwen3-8-flash-next": {
+      "summary": "A cheap Qwen model that writes and reviews decently, handles images, and is very slow per task.",
+      "strengths": [
+        "Writing",
+        "Image input",
+        "Cheap"
+      ],
+      "weaknesses": [
+        "Very slow per task",
+        "Weak at terminal-driven coding"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.56"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.80"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.25"
+        },
+        {
+          "kind": "question",
+          "why": "knowledge accuracy only 0.25"
+        }
+      ],
+      "notes": [
+        "Matched to qwen3.8-flash by identical price; the names differ.",
+        "Open weights.",
+        "About 25 minutes per index task."
+      ],
+      "basis": [
+        "GDPval 0.56",
+        "MMMU-Pro 0.80",
+        "Terminal-Bench 4.0 0.25",
+        "1518 s per index task"
+      ]
+    },
+    "gemini-3-1-pro-preview": {
+      "summary": "An older Google Pro preview: good at questions and research, fast, but weak at agentic coding and writing.",
+      "strengths": [
+        "Knowledge questions",
+        "Research",
+        "Fast per task"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Writing"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "GPQA 0.94"
+        },
+        {
+          "kind": "research",
+          "why": "long-context 0.82"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "feature",
+          "why": "Terminal-Bench 0.04"
+        },
+        {
+          "kind": "writing",
+          "why": "GDPval only 0.15"
+        }
+      ],
+      "notes": [
+        "Preview model; superseded by newer Gemini releases."
+      ],
+      "basis": [
+        "GPQA 0.94, AA-LCR 0.82",
+        "Terminal-Bench 4.0 0.04",
+        "GDPval 0.15",
+        "142 s per index task"
+      ]
+    },
+    "gemini-3-7-flash": {
+      "summary": "A deprecated fast Gemini Flash: good research per dollar, weak at agentic coding.",
+      "strengths": [
+        "Research",
+        "Fast output"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Superseded by Gemini 3.8 Flash"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.48, long-context 0.82"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.14"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer Gemini 3.8 Flash."
+      ],
+      "basis": [
+        "HLE 0.48, AA-LCR 0.82",
+        "Terminal-Bench 4.0 0.14",
+        "284 tokens/s"
+      ]
+    },
+    "muse-spark-1-3": {
+      "summary": "Meta's mid-tier model: strong writing and questions, decent coding, fast output.",
+      "strengths": [
+        "Writing",
+        "Knowledge questions",
+        "Fast output"
+      ],
+      "weaknesses": [
+        "Hard debugging",
+        "Slow first token"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.59"
+        },
+        {
+          "kind": "review",
+          "why": "solid review score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.33"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price"
+        }
+      ],
+      "notes": [
+        "Contributor routes on OpenCode Go are much cheaper than Zen.",
+        "First answer token about 80 s."
+      ],
+      "basis": [
+        "GDPval 0.59, GPQA 0.94",
+        "Terminal-Bench 4.0 0.33",
+        "Muse Code Coding Agent Index 0.54 (max)",
+        "First answer token 80 s"
+      ]
+    },
+    "step-5-preview": {
+      "summary": "An open-weights preview with balanced scores: decent at everything, best at research and review, mid-priced.",
+      "strengths": [
+        "Research and long context",
+        "Code review",
+        "Open weights"
+      ],
+      "weaknesses": [
+        "Slow per task",
+        "Not top at anything"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.88"
+        },
+        {
+          "kind": "review",
+          "why": "good review score"
+        },
+        {
+          "kind": "debugging",
+          "why": "ITBench SRE 0.56"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.42"
+        }
+      ],
+      "notes": [
+        "Preview release.",
+        "Open weights."
+      ],
+      "basis": [
+        "AA-LCR 0.88, HLE 0.46",
+        "Terminal-Bench 4.0 0.33",
+        "ITBench SRE 0.56",
+        "Claude Code Coding Agent Index 0.51"
+      ]
+    },
+    "gpt-5-6-sol": {
+      "summary": "The previous Sol: good at research, decent coding; replaced by GPT-6.1 Sol.",
+      "strengths": [
+        "Research",
+        "Fast per task at high effort"
+      ],
+      "weaknesses": [
+        "Superseded by GPT-6.1 Sol"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.46, long-context 0.82"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.21"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer GPT-6.1 Sol."
+      ],
+      "basis": [
+        "HLE 0.46, AA-LCR 0.82",
+        "Terminal-Bench 4.0 0.21",
+        "Codex Coding Agent Index 0.55 (max)"
+      ]
+    },
+    "gpt-5-6-terra": {
+      "summary": "A fast, cheap OpenAI model for questions and research; not for agentic coding.",
+      "strengths": [
+        "Fast first token",
+        "Research",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Agentic coding and debugging",
+        "Makes up facts often"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.39, long-context 0.78"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.79"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.02"
+        },
+        {
+          "kind": "feature",
+          "why": "weak agentic coding"
+        }
+      ],
+      "notes": [
+        "Answers start in about 2.5 s."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.02",
+        "Omniscience hallucination rate 0.90",
+        "First answer token 2.5 s",
+        "$0.34 per index task"
+      ]
+    },
+    "mimo-v2-6-pro": {
+      "summary": "An open-weights model with near-frontier refactor and review scores at a very low price, but very slow per task.",
+      "strengths": [
+        "Refactors and review",
+        "Research",
+        "Extremely cheap per task"
+      ],
+      "weaknesses": [
+        "Very slow per task",
+        "Makes up facts"
+      ],
+      "bestFor": [
+        {
+          "kind": "refactor",
+          "why": "long-context 0.86 and good agent scores"
+        },
+        {
+          "kind": "review",
+          "why": "high review score"
+        },
+        {
+          "kind": "research",
+          "why": "HLE 0.49"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.35"
+        }
+      ],
+      "notes": [
+        "About 20 minutes per index task.",
+        "Open weights; takes images, speech and video."
+      ],
+      "basis": [
+        "AA-LCR 0.86, HLE 0.49",
+        "Terminal-Bench 4.0 0.35, SciCode 0.61",
+        "$0.13 per index task",
+        "1210 s per index task"
+      ]
+    },
+    "gpt-5-3-codex": {
+      "summary": "An older Codex coding model with few current benchmarks; Codex Spark is a smaller, faster sibling.",
+      "strengths": [
+        "Instruction following",
+        "Long-context reading"
+      ],
+      "weaknesses": [
+        "Few current benchmarks",
+        "Old (February 2026)"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.83"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "hallucination rate 0.89"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis has no Terminal-Bench or SciCode figure for it, so no coding score."
+      ],
+      "basis": [
+        "AA-LCR 0.83, IFBench 0.75",
+        "Omniscience hallucination rate 0.89"
+      ]
+    },
+    "gpt-5-5": {
+      "summary": "An older OpenAI model, now deprecated: fine at research, weak at agentic coding, expensive.",
+      "strengths": [
+        "Research"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Expensive for its quality"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.45, long-context 0.84"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.09"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "HLE 0.45, AA-LCR 0.84",
+        "Terminal-Bench 4.0 0.09",
+        "$1.54 per index task"
+      ]
+    },
+    "grok-4-6": {
+      "summary": "A deprecated Grok: good research, middling coding; replaced by Grok 4.7.",
+      "strengths": [
+        "Research"
+      ],
+      "weaknesses": [
+        "Superseded by Grok 4.7"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.43, GPQA 0.95"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.21"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "GPQA 0.95",
+        "Terminal-Bench 4.0 0.21",
+        "Grok Build Coding Agent Index 0.47 (xhigh)"
+      ]
+    },
+    "grok-4-7": {
+      "summary": "xAI's current model: excellent writing with almost no slop, middling coding, slow and premium per task.",
+      "strengths": [
+        "Writing with little slop",
+        "Knowledge questions"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Slow and costly per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.60 and very little slop"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.25"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price; slow for quick tasks"
+        }
+      ],
+      "notes": [],
+      "basis": [
+        "GDPval 0.60, PersonalityBench slop 7",
+        "Terminal-Bench 4.0 0.25",
+        "Grok Build Coding Agent Index 0.56 (xhigh)",
+        "$2.73 per index task"
+      ]
+    },
+    "mistral-large-4": {
+      "summary": "Mistral's preview flagship: balanced mid-pack scores, decent refactors, slow per task.",
+      "strengths": [
+        "Refactors and review",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Knowledge questions",
+        "Slow per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "refactor",
+          "why": "long-context 0.81"
+        },
+        {
+          "kind": "review",
+          "why": "decent review score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.26"
+        },
+        {
+          "kind": "research",
+          "why": "HLE 0.35"
+        }
+      ],
+      "notes": [
+        "Preview release."
+      ],
+      "basis": [
+        "AA-LCR 0.81",
+        "Omniscience accuracy 0.26",
+        "Terminal-Bench 4.0 0.27",
+        "908 s per index task"
+      ]
+    },
+    "gpt-6-luna": {
+      "summary": "OpenAI's tiny, fast, very cheap model: fine for quick questions and simple text, poor at debugging and agentic coding.",
+      "strengths": [
+        "Very cheap and fast",
+        "Image input",
+        "Concise, low-slop prose"
+      ],
+      "weaknesses": [
+        "Debugging and agentic coding",
+        "Makes up facts often"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "fast and nearly free for simple lookups"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.78"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.05"
+        },
+        {
+          "kind": "feature",
+          "why": "Codex agent score 0.41 even at max"
+        }
+      ],
+      "notes": [
+        "Costs about 3 cents per index task at high effort."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.05 (high)",
+        "Omniscience hallucination rate 0.84",
+        "Codex Coding Agent Index 0.41 (max)",
+        "$0.03 per index task"
+      ]
+    },
+    "gpt-6-sol": {
+      "summary": "The September GPT-6 Sol, replaced weeks later by GPT-6.1 Sol: fast, mid-priced, decent coding.",
+      "strengths": [
+        "Fast per task",
+        "Research"
+      ],
+      "weaknesses": [
+        "Superseded by GPT-6.1 Sol"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.84"
+        },
+        {
+          "kind": "refactor",
+          "why": "decent refactor score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.26"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer GPT-6.1 Sol."
+      ],
+      "basis": [
+        "AA-LCR 0.84",
+        "Terminal-Bench 4.0 0.26",
+        "Codex Coding Agent Index 0.57 (max)",
+        "99 s per index task"
+      ]
+    },
+    "minimax-m3": {
+      "summary": "An open-weights model with strong instruction following and very few made-up facts, weak at agentic coding.",
+      "strengths": [
+        "Following instructions exactly",
+        "Few made-up facts",
+        "Writing"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "IFBench 0.83"
+        },
+        {
+          "kind": "small_edit",
+          "why": "follows the brief closely"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "feature",
+          "why": "Terminal-Bench 0.02"
+        },
+        {
+          "kind": "debugging",
+          "why": "weak at terminal work"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "IFBench 0.83",
+        "Omniscience hallucination rate 0.18",
+        "Terminal-Bench 4.0 0.02"
+      ]
+    },
+    "muse-spark-1-2": {
+      "summary": "The previous Muse Spark: very fast output, good research; replaced by Muse Spark 1.3.",
+      "strengths": [
+        "Very fast output",
+        "Research"
+      ],
+      "weaknesses": [
+        "Superseded"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.45"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.07"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer Muse Spark 1.3."
+      ],
+      "basis": [
+        "HLE 0.45",
+        "Terminal-Bench 4.0 0.07",
+        "303 tokens/s"
+      ]
+    },
+    "qwen3-7-plus": {
+      "summary": "A cheap older Qwen: good instruction following and image input, weak at coding.",
+      "strengths": [
+        "Cheap",
+        "Instruction following",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Writing quality"
+      ],
+      "bestFor": [
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.80"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "feature",
+          "why": "Terminal-Bench 0.01"
+        },
+        {
+          "kind": "writing",
+          "why": "GDPval 0.13"
+        },
+        {
+          "kind": "question",
+          "why": "slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "slow for quick tasks"
+        }
+      ],
+      "notes": [],
+      "basis": [
+        "MMMU-Pro 0.80, IFBench 0.78",
+        "Terminal-Bench 4.0 0.01",
+        "GDPval 0.13"
+      ]
+    },
+    "claude-sonnet-5-5": {
+      "summary": "Anthropic's balanced workhorse: good at coding, debugging and refactors at a mid price, with a big jump at higher effort.",
+      "strengths": [
+        "Feature work, debugging and refactors",
+        "Good value at high effort",
+        "Fast output"
+      ],
+      "weaknesses": [
+        "Not top-tier at research",
+        "Max effort is slow and expensive"
+      ],
+      "bestFor": [
+        {
+          "kind": "feature",
+          "why": "Claude Code agent score 0.55 at high, 0.68 at max"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.44"
+        },
+        {
+          "kind": "refactor",
+          "why": "solid refactor score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "research",
+          "why": "research trails the frontier"
+        }
+      ],
+      "notes": [
+        "Max effort reaches frontier scores but costs about 6x high per task.",
+        "Strong in Claude Code at every effort."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.44 (high)",
+        "Claude Code Coding Agent Index 0.55 (high), 0.68 (max)",
+        "$0.88 per index task at high, $5.46 at max"
+      ]
+    },
+    "glm-5-3": {
+      "summary": "Z AI's open-weights flagship: solid at every coding kind and writing, slow and fairly costly per task.",
+      "strengths": [
+        "Small edits and debugging",
+        "Writing",
+        "Open weights"
+      ],
+      "weaknesses": [
+        "Slow per task",
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.58"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.42"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.34"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
+        }
+      ],
+      "notes": [
+        "Open weights; text only."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.42, SciCode 0.59",
+        "GDPval 0.58",
+        "Opencode Coding Agent Index 0.54",
+        "$2.01 per index task"
+      ]
+    },
+    "gemini-3-5-flash-lite": {
+      "summary": "Google's smallest, fastest model: very cheap, good for quick questions and images, not for coding.",
+      "strengths": [
+        "Very fast output",
+        "Cheap",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Coding of any kind",
+        "Research"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "answers in seconds for little money"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.79"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "SciCode 0.41"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.01"
+        }
+      ],
+      "notes": [
+        "454 tokens/s."
+      ],
+      "basis": [
+        "454 tokens/s, 47 s per index task",
+        "MMMU-Pro 0.79",
+        "Terminal-Bench 4.0 0.01"
+      ]
+    },
+    "grok-4-5": {
+      "summary": "An older, deprecated Grok: good research, weak coding.",
+      "strengths": [
+        "Research"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Superseded"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "GPQA 0.93"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.11"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "GPQA 0.93",
+        "Terminal-Bench 4.0 0.11"
+      ]
+    },
+    "qwen3-8-max": {
+      "summary": "The August Qwen3.8 Max snapshot: good research, very slow and expensive per task.",
+      "strengths": [
+        "Research"
+      ],
+      "weaknesses": [
+        "Very slow per task",
+        "Expensive per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "GPQA 0.93"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "slow and costly"
+        }
+      ],
+      "notes": [
+        "This August snapshot is superseded by 0902; ADE now routes qwen3.8-max to the newer family."
+      ],
+      "basis": [
+        "GPQA 0.93",
+        "Terminal-Bench 4.0 0.19",
+        "1265 s per index task"
+      ]
+    },
+    "mimo-v2-6-flash": {
+      "summary": "A very cheap open-weights model with decent writing, slow per task.",
+      "strengths": [
+        "Extremely cheap",
+        "Writing"
+      ],
+      "weaknesses": [
+        "Slow per task",
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.55"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.27"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.23"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "GDPval 0.55",
+        "Omniscience accuracy 0.27",
+        "$0.06 per index task",
+        "1157 s per index task"
+      ]
+    },
+    "deepseek-v4-1-flash": {
+      "summary": "The September DeepSeek V4.1 Flash: cheap, fast output, decent at review and refactors.",
+      "strengths": [
+        "Cheap and fast output",
+        "Review and refactors"
+      ],
+      "weaknesses": [
+        "Hard debugging"
+      ],
+      "bestFor": [
+        {
+          "kind": "review",
+          "why": "good review score for its price"
+        },
+        {
+          "kind": "refactor",
+          "why": "AA-LCR 0.84"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.27"
+        }
+      ],
+      "notes": [
+        "This September snapshot is superseded by 1017; ADE now routes deepseek-v4.1-flash to the newer family.",
+        "Open weights."
+      ],
+      "basis": [
+        "AA-LCR 0.84",
+        "Terminal-Bench 4.0 0.27",
+        "222 tokens/s, $0.27 per index task"
+      ]
+    },
+    "glm-5-2": {
+      "summary": "The previous GLM, deprecated: good instruction following, weak agentic coding.",
+      "strengths": [
+        "Instruction following"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Superseded by GLM-5.3"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "GPQA 0.89"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.01"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer GLM-5.3."
+      ],
+      "basis": [
+        "IFBench 0.73",
+        "Terminal-Bench 4.0 0.01"
+      ]
+    },
+    "deepseek-v4-pro": {
+      "summary": "DeepSeek's larger model: good at research, middling coding, and makes up facts very often.",
+      "strengths": [
+        "Research",
+        "Cheap in Codex"
+      ],
+      "weaknesses": [
+        "Makes up facts very often",
+        "Agentic coding"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "HLE 0.41, AA-LCR 0.80"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "hallucination rate 0.95"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.14"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "Omniscience hallucination rate 0.95",
+        "Terminal-Bench 4.0 0.14",
+        "Codex Coding Agent Index 0.43 (max, $0.24 per task)"
+      ]
+    },
+    "glm-5-3-flash": {
+      "summary": "A cheap open-weights GLM that keeps most of GLM-5.3's coding and writing at a seventh of the cost; slow per task.",
+      "strengths": [
+        "Writing",
+        "Review and debugging for the price",
+        "Cheap"
+      ],
+      "weaknesses": [
+        "Slow per task",
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.57"
+        },
+        {
+          "kind": "review",
+          "why": "good review score"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.33"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.28"
+        }
+      ],
+      "notes": [
+        "Open weights; a free route exists on OpenCode."
+      ],
+      "basis": [
+        "GDPval 0.57",
+        "Terminal-Bench 4.0 0.33",
+        "ITBench SRE 0.51",
+        "$0.28 per index task"
+      ]
+    },
+    "gpt-5-6-luna": {
+      "summary": "The previous Luna, deprecated: tiny, fast, cheap; replaced by GPT-6 Luna.",
+      "strengths": [
+        "Cheap and fast"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Superseded"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "cheap quick answers"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.03"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer GPT-6 Luna."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.03",
+        "$0.04 per index task"
+      ]
+    },
+    "grok-build-0-1-0616": {
+      "summary": "xAI's coding-agent model as measured in June; few benchmarks published.",
+      "strengths": [
+        "Cheap list price"
+      ],
+      "weaknesses": [
+        "Few benchmarks",
+        "Measured in June; may have changed"
+      ],
+      "bestFor": [],
+      "avoidFor": [],
+      "notes": [
+        "Artificial Analysis no longer lists it as current; matched to grok-build-0.1 by identical price."
+      ],
+      "basis": [
+        "HLE 0.38, AA-LCR 0.75",
+        "Price $1/$2 per M tokens"
+      ]
+    },
+    "mimo-v2-5-pro": {
+      "summary": "An older MiMo, deprecated: cheap, good instruction following, weak agentic coding.",
+      "strengths": [
+        "Cheap",
+        "Instruction following"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Superseded by MiMo-V2.6-Pro"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.80"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.00"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer MiMo-V2.6-Pro."
+      ],
+      "basis": [
+        "IFBench 0.80",
+        "Terminal-Bench 4.0 0.00"
+      ]
+    },
+    "claude-opus-4-7": {
+      "summary": "An old Opus, deprecated: expensive and outclassed by Opus 5.5.",
+      "strengths": [],
+      "weaknesses": [
+        "Old and expensive",
+        "Few current benchmarks"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "Opus 5.5 or Sonnet 5.5 do it better for less"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "Intelligence Index 40.7 (max) vs 57.6 for Opus 5.5",
+        "Price $5/$25 per M tokens"
+      ]
+    },
+    "claude-haiku-5-5": {
+      "summary": "Anthropic's small model: cheap and fast, fine for quick questions and simple writing, weak at hard coding.",
+      "strengths": [
+        "Cheap and fast",
+        "Quick questions",
+        "Concise prose"
+      ],
+      "weaknesses": [
+        "Debugging and feature work",
+        "Refactors"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "fast and cheap"
+        },
+        {
+          "kind": "writing",
+          "why": "low slop, GDPval 0.46"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "feature",
+          "why": "Claude Code agent score 0.35 at high"
+        },
+        {
+          "kind": "refactor",
+          "why": "weak refactor score"
+        }
+      ],
+      "notes": [
+        "About 8 cents per index task at high effort."
+      ],
+      "basis": [
+        "Claude Code Coding Agent Index 0.35 (high), 0.41 (xhigh)",
+        "Terminal-Bench 4.0 0.22",
+        "179 tokens/s, $0.08 per index task"
+      ]
+    },
+    "claude-sonnet-5": {
+      "summary": "The previous Sonnet, deprecated: replaced by Sonnet 5.5, which is much better at the same price.",
+      "strengths": [],
+      "weaknesses": [
+        "Superseded by Sonnet 5.5",
+        "Weak agentic coding"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.05"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer Claude Sonnet 5.5."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.05",
+        "Intelligence Index 31.7 (high) vs 46.8 for Sonnet 5.5"
+      ]
+    },
+    "kimi-k2-7-code": {
+      "summary": "An older Kimi coding model: decent instruction following, weak at modern agentic coding.",
+      "strengths": [
+        "Instruction following"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Makes up facts"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.79"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.01"
+        },
+        {
+          "kind": "review",
+          "why": "low review score"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.01",
+        "Omniscience hallucination rate 0.82",
+        "IFBench 0.63"
+      ]
+    },
+    "qwen3-6-plus": {
+      "summary": "An old Qwen, deprecated: few current benchmarks.",
+      "strengths": [],
+      "weaknesses": [
+        "Old",
+        "Few benchmarks"
+      ],
+      "bestFor": [],
+      "avoidFor": [],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "Intelligence Index 27.0"
+      ]
+    },
+    "gpt-5-4-mini": {
+      "summary": "An old small OpenAI model, deprecated: fast output, weak at coding.",
+      "strengths": [
+        "Fast output"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Old"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.02"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it; GPT-6 Luna is cheaper and newer."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.02",
+        "244 tokens/s"
+      ]
+    },
+    "reflection-beam": {
+      "summary": "Reflection's new open-weights model: very fast with a quick first token, but weak at coding.",
+      "strengths": [
+        "Very fast",
+        "Quick first token"
+      ],
+      "weaknesses": [
+        "Agentic coding, debugging and refactors",
+        "Writing"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "answers in seconds"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "refactor",
+          "why": "bottom fifth of current models"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.03"
+        }
+      ],
+      "notes": [
+        "Open weights; the free route may be time-limited.",
+        "Released 2026-10-16."
+      ],
+      "basis": [
+        "345 tokens/s, first token 6.6 s",
+        "Terminal-Bench 4.0 0.03",
+        "Mirror Coding Agent Index 0.28"
+      ]
+    },
+    "gpt-5-4-nano": {
+      "summary": "An old tiny OpenAI model, deprecated: cheap, weak at everything but simple text.",
+      "strengths": [
+        "Cheap"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Old"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.01"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.01",
+        "Intelligence Index 20.7"
+      ]
+    },
+    "hy3": {
+      "summary": "Tencent's open-weights model: very cheap, fine for questions, weak at coding.",
+      "strengths": [
+        "Very cheap"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Writing"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "GPQA 0.90 for pennies"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.01"
+        },
+        {
+          "kind": "writing",
+          "why": "GDPval 0.28"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "GPQA 0.90",
+        "Terminal-Bench 4.0 0.01",
+        "$0.07 per index task"
+      ]
+    },
+    "mimo-v2-5-0424": {
+      "summary": "An old MiMo, deprecated: cheap, weak at coding.",
+      "strengths": [
+        "Cheap"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Old"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.00"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.00"
+      ]
+    },
+    "nemotron-3-ultra-550b-a55b": {
+      "summary": "NVIDIA's large open-weights model: fast, follows instructions well, weak at agentic coding.",
+      "strengths": [
+        "Instruction following",
+        "Fast per task",
+        "Few made-up facts"
+      ],
+      "weaknesses": [
+        "Agentic coding and debugging",
+        "Research"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "IFBench 0.81"
+        },
+        {
+          "kind": "question",
+          "why": "low hallucination rate"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "feature",
+          "why": "Terminal-Bench 0.01"
+        },
+        {
+          "kind": "debugging",
+          "why": "weak at terminal work"
+        }
+      ],
+      "notes": [
+        "Open weights; free on OpenCode Zen."
+      ],
+      "basis": [
+        "IFBench 0.81",
+        "Omniscience hallucination rate 0.30",
+        "Terminal-Bench 4.0 0.01",
+        "148 s per index task"
+      ]
+    },
+    "nemotron-3-5-super-vl": {
+      "summary": "NVIDIA's very fast, cheap open-weights vision-language model: quick answers, weak at coding.",
+      "strengths": [
+        "Very fast",
+        "Cheap",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Slop-prone prose"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "428 tokens/s and a 5.5 s first token"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.00"
+        },
+        {
+          "kind": "small_edit",
+          "why": "weak code skills"
+        }
+      ],
+      "notes": [
+        "Open weights; free on OpenCode."
+      ],
+      "basis": [
+        "428 tokens/s",
+        "Terminal-Bench 4.0 0.00",
+        "PersonalityBench slop 65"
+      ]
+    },
+    "longcat-2-0": {
+      "summary": "An open-weights model with a long context but weak scores across the board.",
+      "strengths": [
+        "Long context window"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Writing",
+        "Makes up facts"
+      ],
+      "bestFor": [],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "bottom fifth on small edits"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.00"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.00",
+        "Omniscience hallucination rate 0.75",
+        "Intelligence Index 19.1"
+      ]
+    },
+    "gemini-3-flash-preview": {
+      "summary": "An old Gemini Flash preview, deprecated: few current benchmarks.",
+      "strengths": [
+        "Fast output"
+      ],
+      "weaknesses": [
+        "Old",
+        "Few benchmarks"
+      ],
+      "bestFor": [],
+      "avoidFor": [],
+      "notes": [
+        "Artificial Analysis no longer lists it."
+      ],
+      "basis": [
+        "Intelligence Index 17.9 (non-reasoning)"
+      ]
+    },
+    "nemotron-3-5-lightning": {
+      "summary": "NVIDIA's tiny, very fast model: cheap quick answers only.",
+      "strengths": [
+        "Very fast",
+        "Very cheap"
+      ],
+      "weaknesses": [
+        "Coding of any kind",
+        "Research"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "fast and nearly free"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "bottom tenth on small edits"
+        },
+        {
+          "kind": "debugging",
+          "why": "bottom tenth on debugging"
+        }
+      ],
+      "notes": [
+        "Open weights; free on OpenCode."
+      ],
+      "basis": [
+        "312 tokens/s, $0.08 per index task",
+        "SciCode 0.32",
+        "Intelligence Index 12.9"
+      ]
+    },
+    "claude-4-5-haiku": {
+      "summary": "An old Haiku, deprecated: superseded by Claude Haiku 5.5.",
+      "strengths": [],
+      "weaknesses": [
+        "Old",
+        "Few benchmarks"
+      ],
+      "bestFor": [],
+      "avoidFor": [],
+      "notes": [
+        "Artificial Analysis no longer lists it; prefer Claude Haiku 5.5."
+      ],
+      "basis": [
+        "Intelligence Index 16.9 vs 37.8 for Haiku 5.5 (high)"
+      ]
+    },
+    "muse-wonder-full": {
+      "summary": "Meta's largest Muse: the top scores on review, edits, features, debugging and writing of any current model; not offered in your harnesses.",
+      "strengths": [
+        "Code review, features and debugging",
+        "Writing"
+      ],
+      "weaknesses": [
+        "Makes up facts more than the best",
+        "No published price or speed"
+      ],
+      "bestFor": [
+        {
+          "kind": "feature",
+          "why": "Muse Code agent score 0.68"
+        },
+        {
+          "kind": "writing",
+          "why": "GDPval 0.68"
+        },
+        {
+          "kind": "review",
+          "why": "top review score"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.43"
+        }
+      ],
+      "notes": [
+        "Not runnable in your harnesses today."
+      ],
+      "basis": [
+        "Terminal-Bench 4.0 0.57, SciCode 0.63",
+        "GDPval 0.68",
+        "Muse Code Coding Agent Index 0.68"
+      ]
+    },
+    "qwen3-8-max-0902": {
+      "summary": "Qwen3.8 Max 0902 is balanced across coding and writing, with strong image understanding; it is extremely slow and premium per task.",
+      "strengths": [
+        "Vision (MMMU-Pro 0.83)",
+        "Solid review and refactor scores",
+        "Balanced coding and writing"
+      ],
+      "weaknesses": [
+        "Extremely slow: 34 minutes per index task",
+        "Premium cost: $5.41 per index task"
+      ],
+      "bestFor": [
+        {
+          "kind": "review",
+          "why": "task-kind score 0.77"
+        },
+        {
+          "kind": "research",
+          "why": "task-kind score 0.75"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.83"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "overkill for quick questions; slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits; slow for quick tasks: 34 minutes per index task"
+        }
+      ],
+      "notes": [
+        "Artificial Analysis lists one 0902 build with no effort label; every advertised route effort uses this measured build without effort scaling.",
+        "First answer token took 53 s on a long prompt."
+      ],
+      "basis": [
+        "Intelligence Index 45.4",
+        "Terminal-Bench 4.0 0.39, SciCode 0.52, AA-LCR 0.80",
+        "GDPval 0.58, MMMU-Pro 0.83",
+        "2045 s and $5.41 per index task; 40 tokens/s"
+      ]
+    },
+    "deepseek-v4-1-flash-1017": {
+      "summary": "DeepSeek V4.1 Flash 1017 improves on the September build at a mid price, with strong research and refactor scores but frequent made-up facts.",
+      "strengths": [
+        "Long-context research (AA-LCR 0.83)",
+        "Fast output and a 10.7 s first token",
+        "Improved Terminal-Bench and SciCode scores over September",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Frequent made-up facts",
+        "Agentic coding is not frontier-level"
+      ],
+      "bestFor": [
+        {
+          "kind": "research",
+          "why": "AA-LCR 0.83 and task-kind score 0.77"
+        },
+        {
+          "kind": "refactor",
+          "why": "task-kind score 0.74"
+        },
+        {
+          "kind": "review",
+          "why": "task-kind score 0.72"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "Omniscience hallucination rate 0.67"
+        }
+      ],
+      "notes": [
+        "Open weights.",
+        "The 1017 build is now the route used for deepseek-v4.1-flash and deepseek-flash."
+      ],
+      "basis": [
+        "Intelligence Index 45.1, Terminal-Bench 4.0 0.34, SciCode 0.56",
+        "AA-LCR 0.83, GDPval 0.62",
+        "Omniscience hallucination rate 0.67",
+        "209 tokens/s, 10.7 s first token, $0.26 per index task"
+      ]
+    },
+    "ling-3-1-flash": {
+      "summary": "InclusionAI's open-weights Flash: fast and solid on writing and refactors.",
+      "strengths": [
+        "Fast",
+        "Writing",
+        "Refactors"
+      ],
+      "weaknesses": [
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.56"
+        },
+        {
+          "kind": "refactor",
+          "why": "AA-LCR 0.83"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.29"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "GDPval 0.56, AA-LCR 0.83",
+        "216 tokens/s"
+      ]
+    },
+    "qwen3-8-2-4t-a95b": {
+      "summary": "Alibaba's huge open-weights Qwen: good at writing and questions, weak at terminal work, very slow.",
+      "strengths": [
+        "Writing",
+        "Knowledge questions"
+      ],
+      "weaknesses": [
+        "Debugging",
+        "Very slow per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "writing",
+          "why": "GDPval 0.55"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.11"
+        },
+        {
+          "kind": "question",
+          "why": "overkill for quick questions at a premium price; slow for quick tasks"
+        },
+        {
+          "kind": "small_edit",
+          "why": "overkill for small edits at a premium price; slow for quick tasks"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "GDPval 0.55, GPQA 0.94",
+        "Terminal-Bench 4.0 0.11",
+        "1436 s per index task"
+      ]
+    },
+    "muse-spark-open": {
+      "summary": "Meta's open-weights Muse: good questions and images with few made-up facts, weak at coding, slop-prone prose.",
+      "strengths": [
+        "Knowledge questions",
+        "Image input",
+        "Open weights"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Slop-prone prose"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "low hallucination rate"
+        },
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.81"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "refactor",
+          "why": "weak refactor score"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.08"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "Omniscience hallucination rate 0.24",
+        "MMMU-Pro 0.81",
+        "Terminal-Bench 4.0 0.08",
+        "PersonalityBench slop 87"
+      ]
+    },
+    "agnes-2-5-pro-beta": {
+      "summary": "A cheap beta model with decent review and long-context reading; no coding benchmarks.",
+      "strengths": [
+        "Long context",
+        "Cheap"
+      ],
+      "weaknesses": [
+        "No coding benchmarks",
+        "Knowledge questions"
+      ],
+      "bestFor": [
+        {
+          "kind": "review",
+          "why": "AA-LCR 0.83"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.17"
+        }
+      ],
+      "notes": [
+        "Beta."
+      ],
+      "basis": [
+        "AA-LCR 0.83",
+        "Omniscience accuracy 0.17"
+      ]
+    },
+    "deepseek-v4-flash-vision": {
+      "summary": "DeepSeek's vision model: fast, image input, makes up facts very often.",
+      "strengths": [
+        "Image input",
+        "Fast"
+      ],
+      "weaknesses": [
+        "Makes up facts very often",
+        "Agentic coding"
+      ],
+      "bestFor": [
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.75"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "hallucination rate 0.91"
+        }
+      ],
+      "notes": [],
+      "basis": [
+        "MMMU-Pro 0.75",
+        "Omniscience hallucination rate 0.91",
+        "202 tokens/s"
+      ]
+    },
+    "jt-4-1-flash-236b-a21b": {
+      "summary": "China Mobile's Flash model: good at questions, weak at coding; no speed or price data.",
+      "strengths": [
+        "Knowledge questions"
+      ],
+      "weaknesses": [
+        "Agentic coding"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "knowledge accuracy 0.49"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.03"
+        }
+      ],
+      "notes": [],
+      "basis": [
+        "Omniscience accuracy 0.49",
+        "Terminal-Bench 4.0 0.03"
+      ]
+    },
+    "qwen3-8-27b": {
+      "summary": "A small open-weights Qwen: decent review and images, slop-prone and slow.",
+      "strengths": [
+        "Small and open",
+        "Image input"
+      ],
+      "weaknesses": [
+        "Agentic coding",
+        "Slop-prone prose",
+        "Slow per task"
+      ],
+      "bestFor": [
+        {
+          "kind": "vision",
+          "why": "MMMU-Pro 0.76"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.06"
+        }
+      ],
+      "notes": [
+        "Open weights; runs locally on a large GPU."
+      ],
+      "basis": [
+        "MMMU-Pro 0.76",
+        "Terminal-Bench 4.0 0.06",
+        "PersonalityBench slop 83"
+      ]
+    },
+    "motif-3": {
+      "summary": "An open-weights model with decent questions and review; no coding or speed data.",
+      "strengths": [
+        "Few made-up facts"
+      ],
+      "weaknesses": [
+        "No coding benchmarks"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "low hallucination rate"
+        }
+      ],
+      "avoidFor": [],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "Omniscience hallucination rate 0.28",
+        "Intelligence Index 33.6"
+      ]
+    },
+    "k2-horizon-375b-a23b": {
+      "summary": "An extremely fast, free open-weights model: quick answers in seconds, weak at coding, very slop-prone.",
+      "strengths": [
+        "Extremely fast",
+        "Free"
+      ],
+      "weaknesses": [
+        "Coding",
+        "Slop-prone prose"
+      ],
+      "bestFor": [
+        {
+          "kind": "question",
+          "why": "1115 tokens/s and a 4 s first token"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 0.02"
+        },
+        {
+          "kind": "writing",
+          "why": "slop 94"
+        }
+      ],
+      "notes": [
+        "Open weights."
+      ],
+      "basis": [
+        "1115 tokens/s, 36 s per index task",
+        "Terminal-Bench 4.0 0.02",
+        "PersonalityBench slop 94"
+      ]
+    },
+    "nex-n2-pro": {
+      "summary": "An open-weights Qwen derivative: decent small edits, makes up facts very often.",
+      "strengths": [
+        "Instruction following"
+      ],
+      "weaknesses": [
+        "Makes up facts very often"
+      ],
+      "bestFor": [
+        {
+          "kind": "small_edit",
+          "why": "IFBench 0.66"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "question",
+          "why": "hallucination rate 0.95"
+        }
+      ],
+      "notes": [
+        "Open weights; based on Qwen3.5-397B-A17B."
+      ],
+      "basis": [
+        "IFBench 0.66",
+        "Omniscience hallucination rate 0.95"
+      ]
+    }
+  }
+}

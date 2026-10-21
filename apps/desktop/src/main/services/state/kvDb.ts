@@ -2920,6 +2920,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       last_turn_failed_at text,
       settle_override text,
       settle_source text,
+      settle_nudge_turn_id text,
+      settle_nudge_done_probability real,
+      settle_nudge_dismissed_turn_id text,
       snoozed_until text,
       snoozed_at text,
       woke_at text,
@@ -2949,8 +2952,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table terminal_sessions add column attention_message text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_source text");
   safeAddColumn(db, "alter table terminal_sessions add column last_turn_failed_at text");
-  // Explicit settle override ('settled' | 'active' | null), plus the snooze visibility overlay
-  // (snoozed_until / snoozed_at) and its "woke" marker. All nullable with NO
+  // Explicit settle override ('settled' | 'active' | null), the optional
+  // per-turn Jev settle nudge, and the snooze visibility overlay
+  // (snoozed_until / snoozed_at) with its "woke" marker. All nullable with NO
   // unique index: `terminal_sessions` replicates to iOS through cr-sqlite and
   // `crsql_as_crr` rejects any non-PK unique index. The same columns exist in
   // apps/ios/ADE/Resources/DatabaseBootstrap.sql + Database.swift's
@@ -2958,6 +2962,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // surfaces as changeset-apply errors on the phone.
   safeAddColumn(db, "alter table terminal_sessions add column settle_override text");
   safeAddColumn(db, "alter table terminal_sessions add column settle_source text");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_turn_id text");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_done_probability real");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_nudge_dismissed_turn_id text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_until text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_at text");
   safeAddColumn(db, "alter table terminal_sessions add column woke_at text");
@@ -4731,6 +4738,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
+
+  // Project notes: short facts agents learned about working on this project in
+  // ADE, injected into every new agent session (projectNotesService.ts).
+  // Per-project (the DB instance is the scope) and CRR-replicated on purpose,
+  // so a fact saved on one machine reaches every machine with the project; the
+  // repo cannot carry them because main is never pushed from a lane.
+  // `scope = 'machine'` rows hold for one machine only: `machine_id` is that
+  // machine's account machine key, and other machines keep but never show them.
+  // PK-only (a CRR may not carry another UNIQUE index); deletes are ordinary
+  // CRR tombstones. Caps are enforced in the service, not here.
+  db.run(`
+    create table if not exists project_agent_notes (
+      id text primary key,
+      scope text not null default 'project',
+      machine_id text,
+      section text not null default '',
+      body text not null default '',
+      created_at text not null default '',
+      updated_at text not null default '',
+      updated_by text
+    )
+  `);
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

@@ -567,8 +567,8 @@ final class AppleDeviceStreamTests: XCTestCase {
           "commandRouting": ["actions": [Self.descriptor("work.listSessions")]] as [String: Any],
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsAppleDeviceStatus)
-      XCTAssertFalse(service.supportsAppleDeviceStream)
+      XCTAssertFalse(service.supportsAppleDeviceStatus(laneId: "lane-1"))
+      XCTAssertFalse(service.supportsAppleDeviceStream(laneId: "lane-1"))
 
       do {
         _ = try await service.fetchAppleDeviceStatus(laneId: "lane-1")
@@ -599,8 +599,8 @@ final class AppleDeviceStreamTests: XCTestCase {
           "mobileCompatibility": ["mode": "full", "missingActions": [String]()] as [String: Any],
         ] as [String: Any],
       ])
-      XCTAssertTrue(service.supportsAppleDeviceStatus)
-      XCTAssertFalse(service.supportsAppleDeviceStream)
+      XCTAssertTrue(service.supportsAppleDeviceStatus(laneId: "lane-1"))
+      XCTAssertFalse(service.supportsAppleDeviceStream(laneId: "lane-1"))
     }
   }
 
@@ -621,12 +621,85 @@ final class AppleDeviceStreamTests: XCTestCase {
       ])
 
       XCTAssertEqual(service.hostCompatibilityMode, .full)
-      XCTAssertTrue(service.supportsAppleDeviceStatus)
-      XCTAssertTrue(service.supportsAppleDeviceStream)
-      // The phone is view-only, so both must be reachable by a viewer device.
+      XCTAssertTrue(service.supportsAppleDeviceStatus(laneId: "lane-1"))
+      XCTAssertTrue(service.supportsAppleDeviceStream(laneId: "lane-1"))
+      // Watching must be reachable by a viewer device.
       XCTAssertTrue(service.supportsViewerRemoteAction("apple.status"))
       XCTAssertTrue(service.supportsViewerRemoteAction("apple.streamTicket"))
+      // Without the input commands there is no Control switch to offer.
+      XCTAssertFalse(service.supportsAppleDeviceControl(laneId: "lane-1"))
     }
+  }
+
+  @MainActor
+  func testControlNeedsBothInputCommandsCallableFromThePhone() throws {
+    // `apple.input` and `apple.invoke` are controller-only on the host: the
+    // owner's phone may call them, a viewer-only reading would hide Control.
+    try withService { service in
+      let controller: [String: Any] = ["viewerAllowed": false, "controllerAllowed": true]
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+        "features": [
+          "commandRouting": ["actions": [
+            ["action": "apple.input", "policy": controller] as [String: Any],
+          ]] as [String: Any],
+        ] as [String: Any],
+      ])
+      XCTAssertFalse(service.supportsAppleDeviceControl(laneId: "lane-1"))
+
+      try service.applyHelloPayloadForTesting([
+        "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+        "features": [
+          "commandRouting": ["actions": [
+            ["action": "apple.input", "policy": controller] as [String: Any],
+            ["action": "apple.invoke", "policy": controller] as [String: Any],
+          ]] as [String: Any],
+        ] as [String: Any],
+      ])
+      XCTAssertTrue(service.supportsAppleDeviceControl(laneId: "lane-1"))
+    }
+  }
+
+  // MARK: - Touch to device point
+
+  func testATouchLandsOnTheSameDevicePointWhateverWayThePictureIsDrawn() {
+    // The helper divides every touch by its own point metrics, so a touch is
+    // a fraction of the RAW frame times those metrics. A point drawn on the
+    // phone must come back to the device point it shows, upright or turned.
+    let pixels = CGSize(width: 1206, height: 2622)
+    let points = CGSize(width: 402, height: 874)
+    let metrics = AppleDeviceTouchMapping.pointMetrics(configPixels: pixels, ticketPixels: pixels, ticketPoints: points)
+    XCTAssertEqual(metrics, points)
+    let target = CGPoint(x: 200, y: 406)
+    let fx = target.x / points.width
+    let fy = target.y / points.height
+    let container = CGSize(width: 393, height: 700)
+
+    let upright = AppleDeviceTouchMapping.pictureRect(container: container, content: pixels, rotation: .upright)!
+    let drawnUpright = CGPoint(x: upright.minX + fx * upright.width, y: upright.minY + fy * upright.height)
+    // Turned clockwise, the raw frame's (fx, fy) is drawn at (1 - fy, fx).
+    let turned = AppleDeviceTouchMapping.pictureRect(container: container, content: pixels, rotation: .clockwise)!
+    XCTAssertGreaterThan(turned.width, turned.height)
+    let drawnTurned = CGPoint(x: turned.minX + (1 - fy) * turned.width, y: turned.minY + fx * turned.height)
+
+    for (drawn, rect, rotation) in [(drawnUpright, upright, AppleDisplayRotation.upright), (drawnTurned, turned, .clockwise)] {
+      let fraction = AppleDeviceTouchMapping.frameFraction(of: drawn, in: rect, rotation: rotation)!
+      let point = AppleDeviceTouchMapping.devicePoint(frameFraction: fraction, metrics: points)
+      XCTAssertEqual(point.x, target.x, accuracy: 0.01)
+      XCTAssertEqual(point.y, target.y, accuracy: 0.01)
+    }
+
+    // A Duo fold re-sends the helper's metrics in the config record; the
+    // ticket's points-per-pixel carries them over. A host without points
+    // gives no metrics at all, which keeps Control off.
+    let folded = AppleDeviceTouchMapping.pointMetrics(
+      configPixels: CGSize(width: 1398, height: 2034),
+      ticketPixels: CGSize(width: 2100, height: 2034),
+      ticketPoints: CGSize(width: 700, height: 678)
+    )
+    XCTAssertEqual(folded?.width ?? 0, 466, accuracy: 0.01)
+    XCTAssertEqual(folded?.height ?? 0, 678, accuracy: 0.01)
+    XCTAssertNil(AppleDeviceTouchMapping.pointMetrics(configPixels: pixels, ticketPixels: pixels, ticketPoints: nil))
   }
 
   // MARK: - Helpers

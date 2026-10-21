@@ -97,6 +97,7 @@ import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./sy
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
+import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
@@ -147,6 +148,7 @@ type SyncServiceArgs = {
   /** False when this runtime has no RPC endpoint that accepts activity reports. */
   sessionActivityReportingEnabled?: boolean;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  jevService?: Pick<JevService, "decide" | "status"> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -968,6 +970,7 @@ export function createSyncService(args: SyncServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
+    jevService: args.jevService,
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
@@ -1180,6 +1183,7 @@ export function createSyncService(args: SyncServiceArgs) {
       cursorCloudFleetService: args.cursorCloudFleetService,
       cloudAgentsService: args.cloudAgentsService,
       aiIntegrationService: args.aiIntegrationService,
+      jevService: args.jevService,
       accountSettingsStore: args.accountSettingsStore,
       pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,

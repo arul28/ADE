@@ -958,6 +958,67 @@ chat pane mount, which happens either way.
   GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
+- **Model hint (Jev).** `useComposerModelHint` (in
+  `useComposerModelHint.ts`, drawn by `ComposerModelHintChip.tsx`) suggests a model and effort for a new chat's
+  first prompt; a chat that already has turns gets none. It asks only after
+  700 ms without typing, for a prompt of at least three words or 12
+  characters (`isModelHintPrompt`: "say hi back" counts, "fix it" does not),
+  and not again until the text has changed by 10% or more; an answer about
+  older text never shows under newer text. One interactive `ai.jevDecide`
+  call (feature `model_hint`, `modelHint.ts`) sends the prompt, this user's
+  recent new chats with the same provider and the same model maker (up to 5,
+  newest first, only on models still offered: model · effort and the prompt's start, from
+  `modelHintHistory.ts`), and two `choice` questions: which model of that
+  provider for that maker (`hintChoices`: the current model, every model in
+  the history, and the four strongest others; only image models when images
+  are attached; none asked under `effort_only`), and which effort. Two small
+  questions cost half the tokens of one over every model × effort pair,
+  pick as well, and are harder to talk into a pick from inside the prompt.
+  Jev answers what this user would want. The chip shows only when the pick
+  is clearly off: another model Jev is at least 0.7 sure of, or an effort
+  Jev puts at least 0.7 probability on being two or more levels away. A
+  model the user picked by hand is never moved to a weaker one, and no model
+  is moved up for a request Jev puts at the lowest effort. Asked only what
+  the user would pick, Jev copies them (five "say hello" chats on Opus give
+  Opus again), so a third question, `cheapest`, asks for the cheapest model
+  that does the request well, with each model's intelligence index and
+  price from the catalogue (`HintChoice.facts`). Alone it sends real work to
+  the smallest model too, so it shows (`cheaperChoice`, even over a model
+  picked by hand) only at 0.9 confidence or more, on a request Jev puts at
+  the lowest effort, for a weaker model than the current one, and when a
+  fourth question, `wouldTake` (noul), puts at least 0.5 on this user taking
+  a cheaper model for this request. Jev answers it from the user's last five
+  answers to cheaper-model chips, sent with the request
+  (`readCheaperHintOutcomes`): after one dismissal of "Haiku?" for small
+  requests it falls to about 0.3 and the chip stops; three acceptances keep
+  it near 0.85. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
+  it came from the user's similar chats or from the prompt alone. While the
+  chip shows, the effort picker's trigger drops its level name below a wide
+  composer (`squeezed`), keeping its bars and caret. A model the catalogue
+  lists only in another harness (Claude Code's Haiku 4.5) borrows that
+  entry. A click applies the model through the picker's `onModelChange`,
+  then the effort through `onReasoningEffortChange`; the × or an effort
+  picked by hand hides it for this prompt. It never changes anything by
+  itself, and is hidden while a turn runs, when the picker is locked, for a
+  Custom (preset) pick, and in parallel launch. It needs Smart decisions
+  (`ai.chat.smartDecisionsEnabled`) and Settings ›
+  Chat › Smart decisions › **Model and effort hint**
+  (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
+  or `off` when its switch is off). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
+  minutes and 1 minute) and every call goes to the composer's
+  `modelRuntimePin`.
+- **Cheaper-model answers.** `modelHintHistory.ts` also keeps the user's last
+  20 answers to cheaper-model chips (`ade.modelHint.cheaperOutcomes.v1` in
+  localStorage): provider, maker, the suggestion, accepted or dismissed, and
+  the prompt's first 100 characters. A chip left alone is not recorded: it
+  says nothing about what the user wants.
+- **Model hint history.** `modelHintHistory.ts` keeps the last 100 new chats
+  the user sent from the composer in the window's localStorage
+  (`ade.modelHint.history.v1`), because it describes the person, not a
+  machine or a project: provider, model maker, model, effort, and the first
+  100 characters of the prompt. Chats agents start never pass through the
+  composer, so they are not in it. The prompt starts are sent to Jev with
+  later prompts.
 - **Voice dictation.** Dictation types for you. It is not the Codex voice
   conversation button. When voice input is enabled and the bundled
   model is installed, a mic button appears beside Send. Capture is
