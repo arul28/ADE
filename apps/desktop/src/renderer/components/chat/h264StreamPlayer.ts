@@ -186,6 +186,11 @@ async function* readHttpBody(
  * the same byte-stream parser reads both transports. `{t:"visible"}` on open
  * and `{t:"hidden"}` on teardown are what let the brain stop encoding for a
  * viewer that went away, which is the whole point of the control direction.
+ *
+ * Every record is acked (`{t:"ack",n}`, records received on this socket), as
+ * it arrives and before it is decoded: the relay times the acks to see a queue
+ * building between the Mac and this viewer, and skips to a keyframe instead
+ * of letting the picture fall seconds behind.
  */
 async function* readSocket(
   url: string,
@@ -197,6 +202,7 @@ async function* readSocket(
   const queue: Uint8Array[] = [];
   let notify: (() => void) | null = null;
   let ended: Error | null | undefined;
+  let received = 0;
   const wake = (): void => {
     const resume = notify;
     notify = null;
@@ -205,6 +211,12 @@ async function* readSocket(
   socket.onmessage = (event: MessageEvent) => {
     if (typeof event.data === "string") return;
     queue.push(new Uint8Array(event.data as ArrayBuffer));
+    received += 1;
+    try {
+      socket.send(JSON.stringify({ t: "ack", n: received }));
+    } catch {
+      // A lost ack only makes the relay think this viewer is a little behind.
+    }
     wake();
   };
   socket.onopen = () => {

@@ -1426,6 +1426,8 @@ Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It 
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
+Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
+
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
 ### Public marketing site

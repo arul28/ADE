@@ -11,6 +11,7 @@ import {
 } from "./windowsPortHolders";
 import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
+import { adeHomeForChannel } from "../projects/machineLayout";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -566,11 +567,7 @@ function legacyOwner(
     : commandLine && /\bADE Alpha\b|ADE Alpha\.app/i.test(commandLine)
       ? "ADE Alpha"
       : "ADE";
-  const adeHome = channel === "beta"
-    ? path.join(os.homedir(), ".ade-beta")
-    : channel === "alpha"
-      ? path.join(os.homedir(), ".ade-alpha")
-      : path.join(os.homedir(), ".ade");
+  const adeHome = adeHomeForChannel(channel);
   const now = new Date().toISOString();
   return {
     id: `legacy-${pid}-${port}`,
@@ -855,11 +852,6 @@ export function assertNoSyncHostSingletonConflict(deps: SyncHostSingletonDeps = 
   if (conflict) throw new SyncHostSingletonConflictError(conflict);
 }
 
-function defaultAdeHomeForChannel(channel: string | null): string {
-  if (channel === "beta") return path.join(os.homedir(), ".ade-beta");
-  if (channel === "alpha") return path.join(os.homedir(), ".ade-alpha");
-  return path.join(os.homedir(), ".ade");
-}
 
 // The mobile sync singleton is machine-wide across channels, so a stable
 // brain hosting sync must never be reaped by a beta install (and vice
@@ -882,7 +874,7 @@ export function isSameChannelSyncHostOwner(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
-  const currentAdeHome = env.ADE_HOME?.trim() || defaultAdeHomeForChannel(currentChannel);
+  const currentAdeHome = env.ADE_HOME?.trim() || adeHomeForChannel(currentChannel);
   if (owner.adeHome) {
     return adeHomeComparisonKey(owner.adeHome) === adeHomeComparisonKey(currentAdeHome);
   }

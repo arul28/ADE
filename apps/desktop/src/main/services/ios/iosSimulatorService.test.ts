@@ -2297,6 +2297,61 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("a live finger reaches the helper as it moves, and one the viewer abandons is lifted", async () => {
+    // A phone can drop off the network with a finger down. The host must lift
+    // it, or the device stays touched until someone notices.
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-live-touch-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const helper = fakeSimHelper();
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => projectRoot,
+    });
+    const touches = () => helper.sent
+      .filter((command) => command.type === "touch")
+      .map((command) => `${String(command.phase)} ${String(command.x)},${String(command.y)}`);
+
+    try {
+      const lane = { deviceUdid: "device-1", laneId: "lane-a", source: "user" as const };
+      await service.touch({ ...lane, phase: "begin", x: 100, y: 600 });
+      await service.touch({ ...lane, phase: "move", x: 100, y: 400 });
+      await service.touch({ ...lane, phase: "end", x: 100, y: 200 });
+      expect(touches()).toEqual(["begin 100,600", "move 100,400", "end 100,200"]);
+
+      // A move after the finger lifted changes nothing.
+      await service.touch({ ...lane, phase: "move", x: 50, y: 50 });
+      expect(touches()).toHaveLength(3);
+
+      // A finger held still: the viewer repeats its point, which keeps it down
+      // past the idle limit and costs the helper nothing.
+      await service.touch({ ...lane, phase: "begin", x: 10, y: 20 });
+      for (let beat = 0; beat < 4; beat += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await vi.advanceTimersByTimeAsync(1_000);
+        // eslint-disable-next-line no-await-in-loop
+        await service.touch({ ...lane, phase: "move", x: 10, y: 20 });
+      }
+      expect(touches().slice(3)).toEqual(["begin 10,20"]);
+
+      // The viewer goes quiet with the finger down: lifted where it last was.
+      await vi.advanceTimersByTimeAsync(4_001);
+      expect(touches().slice(3)).toEqual(["begin 10,20", "end 10,20"]);
+      await expect(service.touch({ ...lane, phase: "wiggle" as never, x: 1, y: 1 })).rejects.toThrow(/begin, move or end/);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("presses helper buttons without recording overlay input, and refuses shake", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-button-`);
@@ -3112,6 +3167,33 @@ describe("iosSimulatorService boot contract", () => {
       // Lifted, not stopped: the Mac keeps watching the same capture.
       expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
       relay.dispose();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("capLiveStream re-caps the running capture and never starts one", async () => {
+    // Pacing changes the cap while a viewer may be leaving. A cap that started
+    // a capture would leave the helper encoding for nobody on the user's Mac.
+    const { service, helper, dispose } = setup();
+    try {
+      const before = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 900 });
+      expect(helper.sent.slice(before).some((command) => command.type === "capture-start")).toBe(false);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const running = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 900 });
+      expect(helper.sent.slice(running)).toEqual([
+        expect.objectContaining({ type: "capture-start", udid: "device-1", bitrateKbps: 900 }),
+      ]);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(900);
+
+      await service.stopStream({ laneId: "lane-a" });
+      const stopped = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 600 });
+      expect(helper.sent.slice(stopped).some((command) => command.type === "capture-start")).toBe(false);
     } finally {
       dispose();
     }

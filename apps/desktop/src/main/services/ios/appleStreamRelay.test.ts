@@ -56,19 +56,19 @@ function fakeUpstream(): AppleStreamUpstream & { push(chunk: Uint8Array): void; 
 }
 
 function fakeSocket(): AppleStreamViewerSocket & {
-  sent: Uint8Array[];
+  sent: Array<Uint8Array | string>;
   emit(event: "message" | "close" | "error", ...args: unknown[]): void;
   closeCode: number | null;
 } {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
-  const sent: Uint8Array[] = [];
+  const sent: Array<Uint8Array | string> = [];
   let closeCode: number | null = null;
   return {
     sent,
     get closeCode() {
       return closeCode;
     },
-    send: (data: Uint8Array) => {
+    send: (data: Uint8Array | string) => {
       sent.push(data);
     },
     close: (code?: number) => {
@@ -192,11 +192,20 @@ describe("createAppleStreamRelay forwarding", () => {
     expect(Buffer.from(socket.sent[1]!)).toEqual(Buffer.from(keyframeRecord));
   });
 
-  it("primes a late joiner with the cached config and keyframe", async () => {
-    const { relay, upstream } = harness();
+  it("primes a late joiner with the cached start, then holds deltas until a fresh keyframe", async () => {
+    // A fresh upstream per connect: the second one is the keyframe probe.
+    const upstreams: Array<ReturnType<typeof fakeUpstream>> = [];
+    const { relay } = harness({
+      connect: () => {
+        const next = fakeUpstream();
+        upstreams.push(next);
+        return next;
+      },
+    });
     const first = relay.issue({ laneId: "lane-a" });
     const firstSocket = fakeSocket();
     await relay.attach(firstSocket, { ticket: first.ticket, token: first.token });
+    const upstream = upstreams[0]!;
     upstream.push(configRecord);
     upstream.push(keyframeRecord);
     upstream.push(deltaRecord);
@@ -207,6 +216,66 @@ describe("createAppleStreamRelay forwarding", () => {
     expect(secondSocket.sent.map((bytes) => Buffer.from(bytes))).toEqual([
       Buffer.from(configRecord),
       Buffer.from(keyframeRecord),
+    ]);
+    // The deltas after the cached keyframe reference frames this viewer never
+    // saw: it waits, and the relay asks the helper for a keyframe.
+    expect(upstreams).toHaveLength(2);
+    upstream.push(deltaRecord);
+    expect(secondSocket.sent).toHaveLength(2);
+    upstream.push(keyframeRecord);
+    upstream.push(deltaRecord);
+    expect(secondSocket.sent.slice(2).map((bytes) => Buffer.from(bytes))).toEqual([
+      Buffer.from(keyframeRecord),
+      Buffer.from(deltaRecord),
+    ]);
+    // The viewer that was there all along never stopped.
+    expect(firstSocket.sent).toHaveLength(6);
+  });
+
+  it("paces a viewer that acks: skips deltas when it falls behind, lowers the cap, resumes on a keyframe", async () => {
+    const upstreams: Array<ReturnType<typeof fakeUpstream>> = [];
+    const applyBitrateCap = vi.fn(async () => {});
+    const { relay, advance } = harness({
+      connect: () => {
+        const next = fakeUpstream();
+        upstreams.push(next);
+        return next;
+      },
+      bitrateCapKbps: () => 2_500,
+      applyBitrateCap,
+    });
+    const ticket = relay.issue({ laneId: "lane-a" });
+    const socket = fakeSocket();
+    await relay.attach(socket, { ticket: ticket.ticket, token: ticket.token });
+    const upstream = upstreams[0]!;
+    const records = () => socket.sent.filter((data): data is Uint8Array => typeof data !== "string");
+    const ack = (n: number) => socket.emit("message", JSON.stringify({ t: "ack", n }), false);
+
+    upstream.push(configRecord);
+    upstream.push(keyframeRecord);
+    advance(40);
+    ack(2);
+    upstream.push(deltaRecord);
+    expect(records()).toHaveLength(3);
+
+    // No ack for 400 ms on a 40 ms link: the viewer is behind, so deltas stop
+    // and the lane's cap comes down.
+    advance(400);
+    upstream.push(deltaRecord);
+    upstream.push(deltaRecord);
+    expect(records()).toHaveLength(3);
+    expect(applyBitrateCap).toHaveBeenCalledWith({ laneId: "lane-a", bitrateKbps: 1_500 });
+
+    // Caught up: a keyframe is asked for, deltas still wait for it.
+    ack(3);
+    expect(upstreams).toHaveLength(2);
+    upstream.push(deltaRecord);
+    expect(records()).toHaveLength(3);
+    upstream.push(keyframeRecord);
+    upstream.push(deltaRecord);
+    expect(records().slice(3).map((bytes) => Buffer.from(bytes))).toEqual([
+      Buffer.from(keyframeRecord),
+      Buffer.from(deltaRecord),
     ]);
   });
 
@@ -239,9 +308,13 @@ describe("createAppleStreamRelay forwarding", () => {
     socket.emit("message", JSON.stringify({ t: "visible" }), false);
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     expect(relay.visibleViewerCount("lane-a")).toBe(1);
-    // The resumed viewer is re-primed so it can decode without waiting for an IDR.
+    // A new capture, read from its own start: nothing stale from the old one.
     expect(openSource).toHaveBeenCalledTimes(2);
-    expect(socket.sent.length).toBeGreaterThan(0);
+    expect(socket.sent).toHaveLength(0);
+    upstream.push(configRecord);
+    upstream.push(keyframeRecord);
+    upstream.push(deltaRecord);
+    expect(socket.sent).toHaveLength(3);
   });
 
   it("asks the service to stop capture when the last remote viewer hides and no local viewer is watching", async () => {
