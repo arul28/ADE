@@ -12,14 +12,17 @@
  * does the request well, with each model's intelligence and price. Alone it
  * sends real work to the smallest model too, so it speaks only when Jev is
  * near certain and puts the request at the lowest effort: on 160 real chats
- * it fired twice, both times on a model the user then picked.
+ * it fired twice, both times on a model the user then picked. A fourth
+ * question reads the user's answers to past cheaper-model chips: three
+ * dismissals of "Haiku?" for small requests and Jev says they would not take
+ * it again; three acceptances and it says they would.
  *
  * Every gap (Jev null or unsure, no catalogue, no choices) is "no hint": the
  * composer stays exactly as it was.
  */
-import type { JevChoiceAnswer, JevChoiceQuestion, JevDecideRequest } from "../../../shared/types/jev";
+import type { JevChoiceAnswer, JevDecideRequest, JevNoulAnswer, JevQuestion } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
-import type { ModelHintHistoryEntry } from "./modelHintHistory";
+import type { CheaperHintOutcome, ModelHintHistoryEntry } from "./modelHintHistory";
 
 /** A prompt worth reading: this many words, or this many characters (one long word, a path). */
 const MIN_PROMPT_WORDS = 3;
@@ -39,12 +42,16 @@ const MIN_CONFIDENCE = 0.7;
  * feature on the network, so the short end wins.
  */
 const HISTORY_LINES = 5;
+/** Past cheaper-model chip answers sent to Jev, newest first. */
+const OUTCOME_LINES = 5;
 /** Models offered besides the current one and the ones in the history: the strongest few. */
 const EXTRA_MODELS = 4;
 /** Effort levels apart before an effort-only hint shows. */
 const EFFORT_LEVELS_TO_SPEAK = 2;
 /** The cheapest-model answer needs this, on a request Jev puts at the lowest effort. */
 const CHEAPER_CONFIDENCE = 0.9;
+/** …and Jev's probability that this user would take a cheaper model at least this. */
+const WOULD_TAKE_CHEAPER = 0.5;
 
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
 function effortRank(effort: string | null): number {
@@ -111,7 +118,7 @@ export type HintChoice = {
   modelId: string;
   displayName: string;
   effort: string | null;
-  /** "intelligence 38/100, $0.1/$0.5 per million tokens": what the cheapest-model question weighs. */
+  /** "intelligence 38, $0.1/$0.5 per M tokens": what the cheapest-model question weighs. */
   facts: string;
 };
 
@@ -119,8 +126,8 @@ function modelFacts(model: UserCatalogModel): string {
   const intelligence = model.profile?.intelligenceIndex;
   const price = model.price;
   return [
-    intelligence != null ? `intelligence ${Math.round(intelligence)}/100` : null,
-    price?.input != null && price.output != null ? `$${price.input}/$${price.output} per million tokens` : null,
+    intelligence != null ? `intelligence ${Math.round(intelligence)}` : null,
+    price?.input != null && price.output != null ? `$${price.input}/$${price.output} per M tokens` : null,
   ].filter(Boolean).join(", ") || "no published numbers";
 }
 
@@ -174,6 +181,8 @@ export type ModelHintContext = {
   provider: string;
   maker: string;
   history: readonly ModelHintHistoryEntry[];
+  /** This user's answers to past cheaper-model chips, newest first. */
+  outcomes: readonly CheaperHintOutcome[];
   choices: readonly HintChoice[];
 };
 
@@ -195,10 +204,13 @@ export function buildModelHintRequest(context: ModelHintContext) {
     history.length
       ? `This user's recent new chats with ${context.maker} models in ${context.provider}, newest first (model · effort: what it was about):\n${history.map(historyLine).join("\n")}`
       : `This user has no recent new chats with ${context.maker} models in ${context.provider}.`,
+    ...(context.outcomes.length
+      ? ["", `Cheaper-model suggestions this user saw recently, newest first (suggested → what they did: request):\n${context.outcomes.slice(0, OUTCOME_LINES).map((outcome) => `- ${outcome.suggested} → ${outcome.outcome}: ${outcome.gist}`).join("\n")}`]
+      : []),
   ];
   // Two small questions instead of one over every model × effort pair: half
   // the input tokens, as accurate, and harder to talk into a pick.
-  const questions: Record<string, JevChoiceQuestion> = {};
+  const questions: Record<string, JevQuestion> = {};
   const models = new Map(context.choices.map((choice) => [shortName(choice.displayName), choice.displayName]));
   if (models.size >= 2) {
     questions.model = {
@@ -210,6 +222,10 @@ export function buildModelHintRequest(context: ModelHintContext) {
       type: "choice",
       instructions: "Pick the cheapest model that will do this request well. The user's past requests show how demanding they are; a request that any of these models can do needs no stronger one.",
       criteria: Object.fromEntries(context.choices.map((choice) => [shortName(choice.displayName), `${choice.displayName}: ${choice.facts}`])),
+    };
+    questions.wouldTake = {
+      type: "noul",
+      instructions: "Would this user take a cheaper model for this request if ADE suggested it? Their past answers to such suggestions are the best evidence: if they dismissed cheaper models for requests like this one, they would not; if they accepted, they would. With no past answers, judge by whether the request is small.",
     };
   }
   const efforts = effortsOf(context.choices);
@@ -234,7 +250,7 @@ function effortsOf(choices: readonly HintChoice[]): string[] {
     .sort((a, b) => effortRank(a) - effortRank(b));
 }
 
-export type ModelHintAnswers = Partial<Record<"model" | "effort" | "cheapest", JevChoiceAnswer>>;
+export type ModelHintAnswers = Partial<Record<"model" | "effort" | "cheapest", JevChoiceAnswer>> & { wouldTake?: JevNoulAnswer };
 
 type Picked = { choice: HintChoice; modelConfidence: number; effortProbabilities: Record<string, number> | null };
 
@@ -263,6 +279,8 @@ export type ModelHint = {
   /** True when only the effort differs from the current selection. */
   effortOnly: boolean;
   direction: "up" | "down";
+  /** A cheaper model for a small request, from the cheapest-model question; its outcome is remembered. */
+  cheaper: boolean;
   reason: string;
 };
 
@@ -280,6 +298,7 @@ function cheaperChoice(
 ): HintChoice | null {
   const cheapest = answers?.cheapest;
   if (!cheapest || cheapest.confidence < CHEAPER_CONFIDENCE || effortRank(picked.effort) > effortRank("low")) return null;
+  if ((answers?.wouldTake?.noul ?? 0) < WOULD_TAKE_CHEAPER) return null;
   const options = choices.filter((choice) => shortName(choice.displayName) === cheapest.choice);
   const target = catalog.models.find((model) => model.modelId === options[0]?.modelId);
   if (!target || target.modelId === current.modelId || strength(target) < 0 || strength(target) >= strength(current)) return null;
@@ -322,6 +341,7 @@ export function hintFromAnswer(args: {
       effort: cheaper.effort,
       effortOnly: false,
       direction: "down",
+      cheaper: true,
       reason: "A small request: a cheaper model does it as well",
     };
   }
@@ -343,6 +363,7 @@ export function hintFromAnswer(args: {
       displayName: current.displayName,
       effort: choice.effort,
       effortOnly: true,
+      cheaper: false,
       direction: effortRank(choice.effort) > effortRank(currentEffort) ? "up" : "down",
       reason,
     };
@@ -361,6 +382,7 @@ export function hintFromAnswer(args: {
     displayName: choice.displayName,
     effort: choice.effort,
     effortOnly: false,
+    cheaper: false,
     direction,
     reason,
   };

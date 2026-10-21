@@ -17,7 +17,7 @@ import {
   type ModelHint,
   type ModelHintAnswers,
 } from "./modelHint";
-import { readModelHintHistory, recordModelHintHistory } from "./modelHintHistory";
+import { readCheaperHintOutcomes, readModelHintHistory, recordCheaperHintOutcome, recordModelHintHistory } from "./modelHintHistory";
 
 const DEBOUNCE_MS = 700;
 /** Text that moved less than this share since the last ask keeps that answer. */
@@ -183,6 +183,7 @@ export function useComposerModelHint({
         if (!current) return;
         const maker = makerOf(current);
         const history = readModelHintHistory(current.harness, maker);
+        const outcomes = readCheaperHintOutcomes(current.harness, maker);
         const choices = hintChoices({
           catalog,
           current,
@@ -200,6 +201,7 @@ export function useComposerModelHint({
           provider: PROVIDER_LABEL[current.harness] ?? current.harness,
           maker,
           history,
+          outcomes,
           choices,
         }), target);
         if (seq !== seqRef.current) return;
@@ -260,6 +262,17 @@ export function useComposerModelHint({
       effortOnly: shown.hint.effortOnly,
       fromHistory: answered?.fromHistory ?? false,
     });
+    // Jev reads what the user did with cheaper-model chips; a chip left alone says nothing.
+    const current = answered ? resolveCurrentModel(answered.catalog, shown.from.modelId) : null;
+    if (shown.hint.cheaper && outcome !== "ignore" && current) {
+      recordCheaperHintOutcome({
+        harness: current.harness,
+        maker: makerOf(current),
+        suggested: shown.hint.effort ? `${shown.hint.displayName.replace(/^Claude\s+/, "")} · ${shown.hint.effort}` : shown.hint.displayName,
+        outcome: outcome === "accept" ? "accepted" : "dismissed",
+        prompt: textRef.current,
+      });
+    }
   };
 
   // An emptied composer is a sent (or cleared) prompt: a hint still up was ignored.

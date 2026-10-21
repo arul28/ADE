@@ -985,7 +985,13 @@ chat pane mount, which happens either way.
   price from the catalogue (`HintChoice.facts`). Alone it sends real work to
   the smallest model too, so it shows (`cheaperChoice`, even over a model
   picked by hand) only at 0.9 confidence or more, on a request Jev puts at
-  the lowest effort, for a weaker model than the current one. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
+  the lowest effort, for a weaker model than the current one, and when a
+  fourth question, `wouldTake` (noul), puts at least 0.5 on this user taking
+  a cheaper model for this request. Jev answers it from the user's last five
+  answers to cheaper-model chips, sent with the request
+  (`readCheaperHintOutcomes`): after one dismissal of "Haiku?" for small
+  requests it falls to about 0.3 and the chip stops; three acceptances keep
+  it near 0.85. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
   it came from the user's similar chats or from the prompt alone. While the
   chip shows, the effort picker's trigger drops its level name below a wide
   composer (`squeezed`), keeping its bars and caret. A model the catalogue
@@ -995,12 +1001,17 @@ chat pane mount, which happens either way.
   picked by hand hides it for this prompt. It never changes anything by
   itself, and is hidden while a turn runs, when the picker is locked, for a
   Custom (preset) pick, and in parallel launch. It needs Smart decisions
-  (`ai.chat.smartDecisionsEnabled`), an OpenCode Zen sign-in, and Settings ›
+  (`ai.chat.smartDecisionsEnabled`) and Settings ›
   Chat › Smart decisions › **Model and effort hint**
   (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
   or `off` when its switch is off). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
   minutes and 1 minute) and every call goes to the composer's
   `modelRuntimePin`.
+- **Cheaper-model answers.** `modelHintHistory.ts` also keeps the user's last
+  20 answers to cheaper-model chips (`ade.modelHint.cheaperOutcomes.v1` in
+  localStorage): provider, maker, the suggestion, accepted or dismissed, and
+  the prompt's first 100 characters. A chip left alone is not recorded: it
+  says nothing about what the user wants.
 - **Model hint history.** `modelHintHistory.ts` keeps the last 100 new chats
   the user sent from the composer in the window's localStorage
   (`ade.modelHint.history.v1`), because it describes the person, not a

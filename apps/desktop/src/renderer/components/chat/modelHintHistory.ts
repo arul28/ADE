@@ -63,3 +63,60 @@ export function recordModelHintHistory(entry: Omit<ModelHintHistoryEntry, "at" |
     // Best effort: without storage Jev reads the prompt alone.
   }
 }
+
+const OUTCOMES_KEY = "ade.modelHint.cheaperOutcomes.v1";
+const MAX_OUTCOMES = 20;
+
+/**
+ * What the user did with a "cheaper model" chip: taken or dismissed (a chip
+ * left alone says nothing). Jev reads these to judge whether this user takes
+ * a cheaper model for a request like the next one, so it stops offering one
+ * the user keeps turning down, and keeps offering one they take.
+ */
+export type CheaperHintOutcome = {
+  at: number;
+  harness: string;
+  maker: string;
+  /** "Haiku 5.5 · low". */
+  suggested: string;
+  outcome: "accepted" | "dismissed";
+  /** The prompt's start, on one line. */
+  gist: string;
+};
+
+function isOutcome(value: unknown): value is CheaperHintOutcome {
+  const entry = value as CheaperHintOutcome;
+  return Boolean(entry)
+    && typeof entry.at === "number" && Number.isFinite(entry.at)
+    && typeof entry.harness === "string"
+    && typeof entry.maker === "string"
+    && typeof entry.suggested === "string"
+    && (entry.outcome === "accepted" || entry.outcome === "dismissed")
+    && typeof entry.gist === "string";
+}
+
+function readAllOutcomes(): CheaperHintOutcome[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(OUTCOMES_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isOutcome).slice(-MAX_OUTCOMES) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** This user's answers to cheaper-model chips with this provider and maker, newest first. */
+export function readCheaperHintOutcomes(harness: string, maker: string): CheaperHintOutcome[] {
+  return readAllOutcomes().filter((entry) => entry.harness === harness && entry.maker === maker).reverse();
+}
+
+export function recordCheaperHintOutcome(entry: Omit<CheaperHintOutcome, "at" | "gist"> & { prompt: string }): void {
+  const gist = entry.prompt.replace(/\s+/g, " ").trim().slice(0, GIST_CHARS);
+  if (!gist) return;
+  const { prompt: _prompt, ...rest } = entry;
+  const next = [...readAllOutcomes(), { ...rest, gist, at: Date.now() }].slice(-MAX_OUTCOMES);
+  try {
+    window.localStorage.setItem(OUTCOMES_KEY, JSON.stringify(next));
+  } catch {
+    // Best effort: without storage the cheaper-model chip judges by the request alone.
+  }
+}
