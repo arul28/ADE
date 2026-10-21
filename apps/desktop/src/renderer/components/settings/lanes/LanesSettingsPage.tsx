@@ -1,6 +1,6 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Archive, ArrowClockwise, GitBranch, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, GitBranch, HardDrives, Notebook, SlidersHorizontal } from "@phosphor-icons/react";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
@@ -11,6 +11,7 @@ import { ProjectSection } from "../ProjectSection";
 import { LaneBehaviorSection } from "../LaneBehaviorSection";
 import { PrChatTranscriptsSection } from "../PrChatTranscriptsSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
+import { AgentNotesSection } from "../AgentNotesSection";
 import { HealthSpace } from "../health/HealthSpace";
 import { HealthCleanups } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
@@ -25,7 +26,7 @@ import "../machineSettings.css";
 import "../health/health.css";
 import "./lanes.css";
 
-type ViewId = "lanes" | "space" | "archive" | "rules";
+type ViewId = "lanes" | "space" | "archive" | "rules" | "notes";
 
 type View = {
   id: ViewId;
@@ -55,6 +56,7 @@ const VIEWS: readonly View[] = [
       "lane-templates",
     ],
   },
+  { id: "notes", label: "Agent notes", icon: <Notebook size={13} weight="duotone" />, anchors: ["agent-notes"] },
 ];
 
 /** The hosted web client can reach only the archive and the lane rules. */
@@ -67,10 +69,10 @@ function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | 
 }
 
 /**
- * Settings → Project → Lanes, as four views under one tab strip: the lanes
+ * Settings → Project → Lanes, as five views under one tab strip: the lanes
  * themselves (stale ones first, with a safe bulk archive), the space they and
- * ADE's data take, the archive, and the rules for how lanes start, settle and
- * get archived. One view shows at a time, so the page is never a long scroll
+ * ADE's data take, the archive, the rules for how lanes start, settle and get
+ * archived, and the notes agents saved about working on the project. One view shows at a time, so the page is never a long scroll
  * of folded sections; a link or a settings search that names a card switches
  * to the view that holds it.
  *
@@ -197,6 +199,8 @@ export function LanesSettingsPage() {
         );
       case "archive":
         return <ArchiveSection />;
+      case "notes":
+        return <AgentNotesSection />;
       case "rules":
         return (
           <>

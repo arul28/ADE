@@ -8383,6 +8383,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       signOut: async () => ({ ok: true as const }),
       setDisabled: async () => ({ ok: true as const }),
     },
+    projectNotes: {
+      list: async () => ({
+        notes: [],
+        machineId: null,
+        renderedBytes: 0,
+        limits: { maxNoteChars: 200, maxSectionChars: 32, maxNotesPerSection: 8, maxRenderedBytes: 3072 } as const,
+      }),
+    },
     providerInstances: {
       list: async (args?: { provider?: "claude" | "codex" }) =>
         mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),

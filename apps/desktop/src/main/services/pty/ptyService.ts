@@ -9,6 +9,7 @@ import * as HeadlessXterm from "@xterm/headless";
 import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
+import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -218,7 +219,11 @@ function normalizeStartupCommandDelayMs(value: unknown): number {
 export function materializeRuntimeCliLaunch(
   runtimeCliLaunch: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>,
   laneWorktreePath: string,
-  options: { sessionActivityReportingEnabled?: boolean; userMcp?: TrackedCliUserMcp | null } = {},
+  options: {
+    sessionActivityReportingEnabled?: boolean;
+    userMcp?: TrackedCliUserMcp | null;
+    projectNotes?: string | null;
+  } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
   if (!isLaunchProfile(provider) || provider === "shell") {
@@ -250,6 +255,7 @@ export function materializeRuntimeCliLaunch(
       : {}),
     sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
     ...(options.userMcp ? { userMcp: options.userMcp } : {}),
+    ...(options.projectNotes ? { projectNotes: options.projectNotes } : {}),
   });
 }
 
@@ -2435,6 +2441,7 @@ export function piForkParentIdFromCommand(command: string | null | undefined): s
 
 export function createPtyService({
   projectRoot,
+  projectNotesService,
   transcriptsDir,
   laneService,
   sessionService,
@@ -2458,6 +2465,8 @@ export function createPtyService({
   disposePtyBackend
 }: {
   projectRoot: string;
+  /** The Project notes block a new tracked CLI is started with (read once, at launch). */
+  projectNotesService?: Pick<ProjectNotesService, "renderPromptBlock"> | null;
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -6162,6 +6171,7 @@ export function createPtyService({
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
             userMcp: runtimeUserMcp,
+            projectNotes: projectNotesService?.renderPromptBlock() ?? null,
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
@@ -6881,6 +6891,7 @@ export function createPtyService({
               || initialResumeMetadata?.launch?.reasoningEffort?.trim()
               || null,
             sessionActivityGuidance,
+            projectNotes: projectNotesService?.renderPromptBlock() ?? null,
             projectConfig: projectConfigService?.get().effective ?? {},
             ownerId: ptyId,
             logger,

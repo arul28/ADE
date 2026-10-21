@@ -823,6 +823,8 @@ import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
+  ProjectNotesListArgs,
+  ProjectNotesListResult,
   ProviderInstance,
   ProviderInstanceCreateResult,
   ProviderInstanceLoginCommand,
@@ -1024,6 +1026,7 @@ import type { CursorCloudIngressService } from "../automations/cursorCloudIngres
 import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { CloudAgentsService } from "../chat/cloudAgentsService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
+import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import { createSessionBoardMoveActions } from "../adeActions/sessionBoardMove";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -1375,6 +1378,7 @@ export type AppContext = {
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  projectNotesService?: ProjectNotesService | null;
   adeProjectService?: AdeProjectService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -7076,6 +7080,12 @@ export function registerIpc({
     return value;
   };
 
+  ipcMain.handle(IPC.projectNotesList, async (_event, arg: unknown): Promise<ProjectNotesListResult> => {
+    const service = getCtx().projectNotesService;
+    if (!service) throw new Error("Project notes are not available for this project.");
+    return service.list(isRecord(arg) ? (arg as ProjectNotesListArgs) : {});
+  });
+
   ipcMain.handle(IPC.providerInstancesList, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
     const provider = providerInstanceArgs(arg).provider;
     return getMachineProviderInstanceStore().list(
@@ -9065,6 +9075,7 @@ export function registerIpc({
     return launchAgentChatCli(withoutRendererRuntimeActor(arg), {
       laneService: ctx.laneService,
       ptyService: ctx.ptyService,
+      projectNotesService: ctx.projectNotesService ?? null,
       logger: ctx.logger,
     });
   });

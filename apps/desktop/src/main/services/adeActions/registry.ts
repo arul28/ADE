@@ -809,6 +809,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
+        projectNotesService: runtime.projectNotesService ?? null,
       }),
     listSessions: (args?: unknown) => {
       const record = asActionRecord(args);
@@ -4191,6 +4192,7 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+    project_notes: toService(runtime.projectNotesService),
   };
 }
 

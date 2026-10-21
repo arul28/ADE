@@ -1077,6 +1077,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Templates",
   },
   {
+    id: "lanes-git.agent-notes",
+    label: "Agent notes",
+    keywords: ["notes", "agent", "memory", "knowledge", "prompt", "facts", "ade notes"],
+    tab: "lanes-git",
+    anchor: "agent-notes",
+    scope: "account-repo",
+    web: "hidden",
+    group: "Agent notes",
+  },
+  {
     id: "lanes-git.pr-chat-transcripts",
     label: "PR chat transcripts",
     keywords: ["pull request", "transcript", "attach", "review"],

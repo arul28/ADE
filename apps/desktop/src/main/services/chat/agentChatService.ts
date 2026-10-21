@@ -1180,6 +1180,7 @@ import {
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
+import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import {
   buildContinuityCapturePrompt,
   buildContinuitySnapshot,
@@ -9994,9 +9995,10 @@ function buildAdeGuidanceForLane(
   laneWorktreePath: string,
   session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
   opts?: SpawnSelfReportGuidanceOpts,
+  projectNotes?: string | null,
 ): string {
   const base = buildAdeCliAgentGuidance(adePromptAgentSkillRoots({ cwd: laneWorktreePath }));
-  return [base, buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
+  return [base, projectNotes?.trim() || null, buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -10016,6 +10018,8 @@ function buildCodexDeveloperInstructions(args: {
   sessionActivityGuidance?: string | null;
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
+  /** The session's Project notes snapshot. */
+  projectNotes?: string | null;
 }): string {
   if (args.session.surface === "personal") {
     return resolvePersonalPromptFor(
@@ -10037,6 +10041,7 @@ function buildCodexDeveloperInstructions(args: {
     sessionActivityGuidance: args.collaborationMode === "default"
       ? args.sessionActivityGuidance
       : null,
+    projectNotes: args.projectNotes,
   });
   const spawnGuidance = buildSpawnSelfReportGuidance(args.session, args.spawnGuidance);
   return [base, args.linearDirective, spawnGuidance].filter(Boolean).join("\n\n");
@@ -10057,6 +10062,8 @@ function buildOpenCodeSystemPrompt(args: {
   >;
   spawnGuidance?: SpawnSelfReportGuidanceOpts;
   sessionActivityGuidance?: string | null;
+  /** The session's Project notes snapshot. */
+  projectNotes?: string | null;
 }): string {
   if (args.session.surface === "personal") {
     return resolvePersonalPromptFor(args.session, args.laneWorktreePath, args.sessionActivityGuidance);
@@ -10072,6 +10079,7 @@ function buildOpenCodeSystemPrompt(args: {
     runtime: "opencode",
     adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
     sessionActivityGuidance: args.sessionActivityGuidance,
+    projectNotes: args.projectNotes,
   });
   // OpenCode's `subagent` tool has no directory argument: the child inherits
   // this session's directory, and the only path the child ever reads is the
@@ -10114,6 +10122,7 @@ function buildCodexCollaborationMode(
   linearDirective?: string | null,
   spawnGuidance?: SpawnSelfReportGuidanceOpts,
   sessionActivityGuidance?: string | null,
+  projectNotes?: string | null,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -10139,6 +10148,7 @@ function buildCodexCollaborationMode(
             linearDirective,
             spawnGuidance,
             sessionActivityGuidance: mode === "default" ? sessionActivityGuidance : null,
+            projectNotes,
           }),
     },
   };
@@ -10906,6 +10916,8 @@ export function createAgentChatService(args: {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /** Facts agents saved about this project; a session reads them once, when it starts. */
+  projectNotesService?: Pick<ProjectNotesService, "renderPromptBlock"> | null;
   linearIssueTracker?: IssueTracker | null;
   githubService?: Pick<GithubService, "getIssue" | "getStatus"> | null;
   jiraService?: Pick<ReturnType<typeof createJiraService>, "getConnectionStatus" | "getIssue"> | null;
@@ -11228,6 +11240,7 @@ export function createAgentChatService(args: {
     fileService,
     ctoStateService,
     ctoMemoryService,
+    projectNotesService,
     linearIssueTracker,
     githubService,
     getSearchService,
@@ -11546,6 +11559,21 @@ export function createAgentChatService(args: {
       });
       return null;
     }
+  };
+
+  // The Project notes block, read once per session and kept for its life: a
+  // prompt that changed under a running session would throw away the
+  // provider's prompt cache, and notes saved mid-session reach the next one.
+  // Personal chats have no project, so they get none.
+  const projectNotesBySession = new Map<string, string | null>();
+  const projectNotesForSession = (
+    session: Pick<AgentChatSession, "id" | "surface">,
+  ): string | null => {
+    if (!projectNotesService || isPersonalSession(session)) return null;
+    if (projectNotesBySession.has(session.id)) return projectNotesBySession.get(session.id) ?? null;
+    const block = projectNotesService.renderPromptBlock() || null;
+    projectNotesBySession.set(session.id, block);
+    return block;
   };
 
   // Resolve the system-prompt directive for a session's attached Linear issues,
@@ -17606,6 +17634,7 @@ export function createAgentChatService(args: {
       : [
           buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
+            projectNotes: projectNotesForSession(managed.session),
             mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
             permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
             interactive: true,
@@ -26914,6 +26943,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    projectNotesBySession.delete(managed.session.id);
     clearAcceptedStartWatch(managed.session.id);
     claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
@@ -28192,6 +28222,7 @@ export function createAgentChatService(args: {
         resolveSessionLinearDirective(managed.session.id),
         spawnSelfReportOpts(managed.session),
         buildSessionActivityGuidance(managed.session, true),
+        projectNotesForSession(managed.session),
       );
       if (
         requestedCollaborationMode === "plan"
@@ -32824,6 +32855,7 @@ export function createAgentChatService(args: {
 
     const harnessPrompt = buildCodingAgentSystemPrompt({
       cwd: managed.laneWorktreePath,
+      projectNotes: projectNotesForSession(managed.session),
       mode: "coding",
       permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
       interactive: true,
@@ -33988,6 +34020,7 @@ export function createAgentChatService(args: {
             managed.laneWorktreePath,
             managed.session,
             spawnSelfReportOpts(managed.session),
+            projectNotesForSession(managed.session),
           ),
         );
         if (acpLaneGuidance) prompt = `${acpLaneGuidance}\n\n${prompt}`;
@@ -35261,6 +35294,7 @@ export function createAgentChatService(args: {
           managed.laneWorktreePath,
           managed.session,
           spawnSelfReportOpts(managed.session),
+          projectNotesForSession(managed.session),
         );
         if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
       }
@@ -35696,6 +35730,7 @@ export function createAgentChatService(args: {
   ): string => buildOpenCodeSystemPrompt({
     laneWorktreePath: managed.laneWorktreePath,
     session: managed.session,
+    projectNotes: projectNotesForSession(managed.session),
     spawnGuidance: spawnSelfReportOpts(managed.session),
     sessionActivityGuidance: buildOpenCodeSessionActivityGuidance(
       managed.session,
@@ -43162,6 +43197,7 @@ export function createAgentChatService(args: {
         linearDirective: resolveSessionLinearDirective(managed.session.id),
         spawnGuidance: spawnSelfReportOpts(managed.session),
         sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
+        projectNotes: projectNotesForSession(managed.session),
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
@@ -44021,6 +44057,7 @@ export function createAgentChatService(args: {
         ? null
         : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
+          projectNotes: projectNotesForSession(managed.session),
           mode: managed.session.interactionMode === "plan" ? "planning" : "coding",
           permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
           interactive: true,
@@ -52095,6 +52132,7 @@ export function createAgentChatService(args: {
               managed.laneWorktreePath,
               managed.session,
               spawnSelfReportOpts(managed.session),
+              projectNotesForSession(managed.session),
             )
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
@@ -54822,6 +54860,7 @@ export function createAgentChatService(args: {
               managed.laneWorktreePath,
               managed.session,
               spawnSelfReportOpts(managed.session),
+              projectNotesForSession(managed.session),
             ),
           ].filter((part) => part.trim().length > 0).join("\n\n"),
         );
@@ -56979,6 +57018,7 @@ export function createAgentChatService(args: {
           : [
               buildCodingAgentSystemPrompt({
                 cwd: managed.laneWorktreePath,
+                projectNotes: projectNotesForSession(managed.session),
                 mode: "coding",
                 permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
                 interactive: true,
@@ -57541,6 +57581,7 @@ export function createAgentChatService(args: {
       ? resolvePersonalPromptFor(managed.session, managed.laneWorktreePath, droidActivityGuidance)
       : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
+          projectNotes: projectNotesForSession(managed.session),
           mode: droidInteractionMode === "spec" ? "planning" : "coding",
           permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
           interactive: true,
@@ -58323,6 +58364,7 @@ export function createAgentChatService(args: {
                 linearDirective: resolveSessionLinearDirective(managed.session.id),
                 spawnGuidance: spawnSelfReportOpts(managed.session),
                 sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
+                projectNotes: projectNotesForSession(managed.session),
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
@@ -62332,6 +62374,7 @@ export function createAgentChatService(args: {
               linearDirective: resolveSessionLinearDirective(managed.session.id),
               spawnGuidance: spawnSelfReportOpts(managed.session),
               sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
+              projectNotes: projectNotesForSession(managed.session),
             }),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
@@ -64466,6 +64509,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    projectNotesBySession.delete(sessionId);
     clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
@@ -71299,6 +71343,7 @@ export function createAgentChatService(args: {
             collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
             spawnGuidance: spawnSelfReportOpts(managed.session),
             sessionActivityGuidance: buildCodexSessionActivityGuidance(managed),
+            projectNotes: projectNotesForSession(managed.session),
           }),
           ...codexServiceTierArgs(managed.session),
           ...codexPolicyArgs(codexPolicy),
