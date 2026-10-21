@@ -588,12 +588,16 @@ Renderer — onboarding:
   again" or a reload during setup. See [First run on a computer](#first-run-on-a-computer).
 - `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
   — finds the projects for that card from every importable provider's
-  history, without spawning git (`app.discoverOnboardingProjects`).
-  `app.addOnboardingProjects` adds the chosen ones to recent projects.
+  history, without spawning git (`app.discoverOnboardingProjects`), and lists
+  one project's importable chats for the import picker
+  (`app.listOnboardingProjectChats`). `app.addOnboardingProjects` adds the
+  chosen ones to recent projects. All three run only on this computer.
+- `apps/desktop/src/renderer/components/onboarding/FirstRunChatPicker.tsx` —
+  the per-chat picker behind an import pill's count.
 - `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
   + `renderer/onboarding/pendingChatImports.ts` — the first open of each added
   project whose import pill was on imports its chats from the last 30 days as
-  ADE chats.
+  ADE chats, minus the ones left out in the picker.
 - `apps/desktop/src/renderer/components/onboarding/tour/` — the guided tour:
   `onboardingTourSteps.ts` (the steps and the `data-onboarding-anchor` each
   points at), `OnboardingTourHost.tsx` (cursor, ring, card, paused pill) and
@@ -1930,15 +1934,33 @@ video it replaced), so a computer set up before it existed never sees it.
    the last 30 days starts ticked. Each row shows its worktrees (they open as
    lanes) and when it was last active; a row with recent chats also has an
    **Import N chats** pill with its providers' marks (the draft page's import
-   pill, per project), off by default. Below the list: a QR for ADE on iPhone
-   and a line about signing in on another computer, shown to everyone.
+   pill, per project), off by default. The pill has two targets. Its box (and
+   the marks) turns the import on for every chat or off. Its count opens a
+   picker of those chats (`FirstRunChatPicker`), read on first open through
+   `app.listOnboardingProjectChats` and kept for the card's life: each chat
+   with its provider, title or opening prompt, the lane folder it ran in,
+   when it was last active and its prompt count, each with its own box, plus
+   Select all / none and "5 of 7 chats". Unticking chats narrows the import
+   and the pill reads **Importing 5 of 7 chats** (its box shows a dash).
+   Unticking the last one turns the import off; ticking one while it is off
+   turns it on with just that chat. The box always means all or nothing, so
+   turning it on again brings every chat back. The list reads Claude and
+   Codex for that project's folders (Claude stops at the window's edge by
+   file time) and filters discovery's own read of the other providers, one
+   provider at a time under the same 2.5s budget. Escape closes the picker,
+   never setup. Below the list: a QR for ADE on iPhone and a line about
+   signing in on another computer, shown to everyone.
 5. **Into ADE.** The chosen projects are added to recent projects and opened
    as tabs, and the first one opens. Its worktrees become lanes through the
    normal adoption on open. For each project whose pill was on,
    `useOnboardingChatImport` imports its chats from the last 30 days (up to
    25, newest first, any provider) into the lane each one ran in, or the main
    checkout's lane, the first time it opens; a session that may still be open
-   in its CLI is skipped.
+   in its CLI is skipped. Chats left out in the picker are stored with the
+   queued entry as `provider:sessionId` keys (`excludedKeys`, the importer's
+   own ids) and skipped; an entry without the list imports everything. It is
+   a list of what to leave out, so a chat that starts after setup still comes
+   in.
 6. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
    size up from the system arrow) glides to a real control, a ring settles on
    it and a card beside it says what it is. In order: the lane chip (ADE works
@@ -1963,6 +1985,10 @@ video it replaced), so a computer set up before it existed never sees it.
 
 Everything here runs on, and reads, the computer ADE is opening on. The
 hosted web client has no first run; it controls other computers.
+
+To walk all of it as a new user without touching your own ADE, run
+`npm run dev:desktop -- --first-run` (see
+[local development](../../development/local-development.md#walk-first-run-setup-as-a-new-user)).
 
 ### What's new pages
 

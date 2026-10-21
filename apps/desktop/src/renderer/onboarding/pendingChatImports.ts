@@ -14,7 +14,19 @@ export type PendingChatImport = {
   /** Import chats active at or after this time. */
   sinceMs: number;
   addedAt: number;
+  /**
+   * Chats the user left out in setup's picker, as `chatImportKey`s. Absent
+   * (every entry stored before the picker existed) means none: every chat in
+   * the window comes in. A list of what to leave out, not what to bring, so a
+   * chat that starts after setup still comes in with its project.
+   */
+  excludedKeys?: string[];
 };
+
+/** How setup and the import name one chat: the importer's own provider + session id. */
+export function chatImportKey(provider: string, sessionId: string): string {
+  return `${provider}:${sessionId}`;
+}
 
 type PendingChatImports = Record<string, PendingChatImport>;
 
@@ -26,7 +38,14 @@ function read(): PendingChatImports {
     for (const [rootPath, value] of Object.entries(parsed as Record<string, unknown>)) {
       const entry = value as Partial<PendingChatImport> | null;
       if (entry && typeof entry.sinceMs === "number" && typeof entry.addedAt === "number") {
-        out[rootPath] = { sinceMs: entry.sinceMs, addedAt: entry.addedAt };
+        const excludedKeys = Array.isArray(entry.excludedKeys)
+          ? entry.excludedKeys.filter((key): key is string => typeof key === "string")
+          : [];
+        out[rootPath] = {
+          sinceMs: entry.sinceMs,
+          addedAt: entry.addedAt,
+          ...(excludedKeys.length ? { excludedKeys } : null),
+        };
       }
     }
     return out;
@@ -43,11 +62,17 @@ function write(next: PendingChatImports): void {
   }
 }
 
-export function queueChatImports(rootPaths: string[], sinceMs: number): void {
-  if (!rootPaths.length) return;
+export function queueChatImports(
+  entries: ReadonlyArray<{ rootPath: string; excludedKeys?: Iterable<string> | null }>,
+  sinceMs: number,
+): void {
+  if (!entries.length) return;
   const next = read();
   const now = Date.now();
-  for (const rootPath of rootPaths) next[rootPath] = { sinceMs, addedAt: now };
+  for (const { rootPath, excludedKeys } of entries) {
+    const excluded = excludedKeys ? [...excludedKeys] : [];
+    next[rootPath] = { sinceMs, addedAt: now, ...(excluded.length ? { excludedKeys: excluded } : null) };
+  }
   write(next);
 }
 

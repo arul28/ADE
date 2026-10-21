@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowsOut,
+  CaretDown,
   Check,
   CircleNotch,
   Desktop,
@@ -18,10 +19,12 @@ import {
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { relativeWhen } from "../../lib/format";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
-import { queueChatImports } from "../../onboarding/pendingChatImports";
+import { chatImportKey, queueChatImports } from "../../onboarding/pendingChatImports";
 import { useAppStore } from "../../state/appStore";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { AdeQrCode } from "../ui/AdeQrCode";
+import { PortalContainerContext } from "../ui/portalContainer";
+import { FirstRunChatPicker, type ChatListState } from "./FirstRunChatPicker";
 import { firstRunAgents } from "./firstRunAgentModel";
 import "./firstRun.css";
 
@@ -35,9 +38,10 @@ import "./firstRun.css";
  *    import from (Claude Code, Codex, Cursor, OpenCode…) has worked in on this
  *    computer, already found and mostly ticked. Adding them adds them to
  *    Home's recent projects; the first open of each turns its worktrees into
- *    lanes. Each row with recent chats has its own "Import N chats?" toggle;
- *    the ones turned on bring their chats in on that first open
- *    (`useOnboardingChatImport`).
+ *    lanes. Each row with recent chats has its own "Import N chats?" pill:
+ *    its box turns the import on or off, its count opens a picker of those
+ *    chats (`FirstRunChatPicker`) to leave some out. The ones turned on bring
+ *    their chats in on that first open (`useOnboardingChatImport`).
  *
  * Both cards sit on the launch gate's glass (`.ade-gate` tokens), so they read
  * as one flow with the sign-in card between them.
@@ -137,13 +141,15 @@ export type FirstRunResult = { rootPaths: string[] };
 
 /**
  * Adds the chosen projects to this computer's recent projects and queues the
- * chats of the ones whose import pill is on for each one's next open.
+ * chats of the ones whose import pill is on for each one's next open, minus
+ * the chats left out in the picker (`excludedByRoot`, `chatImportKey`s).
  * Projects already in ADE (`inAde`) are not added again; their chats can
  * still be queued.
  */
 export async function addFirstRunProjects(
   projects: OnboardingProjectCandidate[],
   importRoots: ReadonlySet<string>,
+  excludedByRoot: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): Promise<FirstRunResult> {
   const add = window.ade.app.addOnboardingProjects;
   const added = projects.filter((project) => !project.inAde);
@@ -154,7 +160,7 @@ export async function addFirstRunProjects(
   queueChatImports(
     projects
       .filter((project) => project.recentChatCount > 0 && importRoots.has(project.rootPath))
-      .map((project) => project.rootPath),
+      .map((project) => ({ rootPath: project.rootPath, excludedKeys: excludedByRoot.get(project.rootPath) })),
     Date.now() - FIRST_RUN_CHAT_WINDOW_MS,
   );
   return { rootPaths: added.map((project) => project.rootPath) };
@@ -189,6 +195,14 @@ export function FirstRunProjects({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** Projects whose import pill is on: their recent chats come in on first open. */
   const [importing, setImporting] = useState<Set<string>>(new Set());
+  /** Per project whose import is on: the chats left out in its picker (`chatImportKey`s). */
+  const [excluded, setExcluded] = useState<Map<string, Set<string>>>(new Map());
+  /** Each project's chat list, read the first time its picker opens and kept for the card's life. */
+  const [chatLists, setChatLists] = useState<Record<string, ChatListState>>({});
+  const [pickerRoot, setPickerRoot] = useState<string | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  /** The gate root: the picker portals there so it keeps the gate's glass tokens and escapes the scrolling rows. */
+  const [gateEl, setGateEl] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -243,16 +257,64 @@ export function FirstRunProjects({
     });
   }, []);
 
-  // Importing a new project's chats means adding the project too.
-  const setImport = useCallback((rootPath: string, on: boolean, inAde: boolean) => {
+  useLayoutEffect(() => {
+    setGateEl(cardRef.current?.closest<HTMLElement>(".ade-gate") ?? null);
+  }, []);
+
+  /**
+   * A project's import choice: `null` is off, a set is on with those chats
+   * left out (empty: all of them). The pill's box only ever says all or
+   * nothing, so turning it on clears what the picker left out; the picker
+   * narrows from there. Importing a new project's chats means adding the
+   * project too.
+   */
+  const setChatSelection = useCallback((rootPath: string, inAde: boolean, leftOut: ReadonlySet<string> | null) => {
     setImporting((current) => {
+      if (current.has(rootPath) === (leftOut !== null)) return current;
       const next = new Set(current);
-      if (on) next.add(rootPath);
+      if (leftOut) next.add(rootPath);
       else next.delete(rootPath);
       return next;
     });
-    if (on && !inAde) setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
+    setExcluded((current) => {
+      if (!current.has(rootPath) && !leftOut?.size) return current;
+      const next = new Map(current);
+      if (leftOut?.size) next.set(rootPath, new Set(leftOut));
+      else next.delete(rootPath);
+      return next;
+    });
+    if (leftOut && !inAde) setSelected((picked) => (picked.has(rootPath) ? picked : new Set(picked).add(rootPath)));
   }, []);
+  const setImport = useCallback(
+    (rootPath: string, on: boolean, inAde: boolean) => setChatSelection(rootPath, inAde, on ? new Set() : null),
+    [setChatSelection],
+  );
+
+  const chatListsRef = useRef(chatLists);
+  chatListsRef.current = chatLists;
+  const loadChats = useCallback((rootPath: string) => {
+    const existing = chatListsRef.current[rootPath];
+    if (existing && existing.phase !== "error") return;
+    const setList = (state: ChatListState) => {
+      chatListsRef.current = { ...chatListsRef.current, [rootPath]: state };
+      setChatLists((current) => ({ ...current, [rootPath]: state }));
+    };
+    const list = window.ade.app.listOnboardingProjectChats;
+    if (!list) {
+      setList({ phase: "error" });
+      return;
+    }
+    setList({ phase: "loading" });
+    void list(rootPath).then(
+      (chats) => setList({ phase: "ready", chats }),
+      () => setList({ phase: "error" }),
+    );
+  }, []);
+  const togglePicker = useCallback((rootPath: string) => {
+    setPickerRoot((current) => (current === rootPath ? null : rootPath));
+    loadChats(rootPath);
+  }, [loadChats]);
+  const closePicker = useCallback(() => setPickerRoot(null), []);
   const [qrOpen, setQrOpen] = useState(false);
   const openQr = useCallback(() => setQrOpen(true), []);
   const closeQr = useCallback(() => setQrOpen(false), []);
@@ -281,21 +343,23 @@ export function FirstRunProjects({
     setBusy(true);
     setError(null);
     try {
-      onDone(await addFirstRunProjects([...chosen, ...importingInAde], importing));
+      onDone(await addFirstRunProjects([...chosen, ...importingInAde], importing, excluded));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setBusy(false);
     }
-  }, [chosen, importing, importingInAde, onDone]);
+  }, [chosen, excluded, importing, importingInAde, onDone]);
 
   const chatTotal = [...chosen, ...importingInAde].reduce(
-    (sum, project) => sum + (importing.has(project.rootPath) ? project.recentChatCount : 0),
+    (sum, project) => sum + (importing.has(project.rootPath)
+      ? importCounts(project, chatLists[project.rootPath], excluded.get(project.rootPath)).included
+      : 0),
     0,
   );
   const laneTotal = chosen.reduce((sum, project) => sum + project.laneCount, 0);
 
   return (
-    <div className="ade-glass-card ade-fr-projects" data-testid="first-run-projects">
+    <div ref={cardRef} className="ade-glass-card ade-fr-projects" data-testid="first-run-projects">
       <header className="ade-fr-head">
         <span className="ade-fr-eyebrow">{machineName ? `Set up ${machineName}` : "Set up this computer"}</span>
         <h1 className="ade-fr-title">Bring your projects in</h1>
@@ -337,8 +401,15 @@ export function FirstRunProjects({
                   project={project}
                   checked={project.inAde || selected.has(project.rootPath)}
                   importing={importing.has(project.rootPath)}
+                  excluded={excluded.get(project.rootPath)}
+                  chatList={chatLists[project.rootPath]}
+                  pickerOpen={pickerRoot === project.rootPath}
+                  gateEl={gateEl}
                   onToggle={toggle}
                   onSetImport={setImport}
+                  onSetChatSelection={setChatSelection}
+                  onTogglePicker={togglePicker}
+                  onClosePicker={closePicker}
                   index={index}
                 />
               ))}
@@ -388,31 +459,72 @@ export function FirstRunProjects({
   );
 }
 
+/**
+ * How many of a project's chats the pill counts. Until its picker has read
+ * the list, discovery's count stands in; once read, the list is the truth
+ * (it drops empty and ADE-made sessions discovery's quick count includes).
+ */
+function importCounts(
+  project: OnboardingProjectCandidate,
+  chatList: ChatListState | undefined,
+  excluded: ReadonlySet<string> | undefined,
+): { total: number; included: number } {
+  if (chatList?.phase === "ready" && chatList.chats.length) {
+    const total = chatList.chats.length;
+    const left = excluded?.size
+      ? chatList.chats.filter((chat) => excluded.has(chatImportKey(chat.provider, chat.id))).length
+      : 0;
+    return { total, included: total - left };
+  }
+  return { total: project.recentChatCount, included: project.recentChatCount - (excluded?.size ?? 0) };
+}
+
 function ProjectRow({
   project,
   checked,
   importing,
+  excluded,
+  chatList,
+  pickerOpen,
+  gateEl,
   onToggle,
   onSetImport,
+  onSetChatSelection,
+  onTogglePicker,
+  onClosePicker,
   index,
 }: {
   project: OnboardingProjectCandidate;
   checked: boolean;
   importing: boolean;
+  excluded: ReadonlySet<string> | undefined;
+  chatList: ChatListState | undefined;
+  pickerOpen: boolean;
+  gateEl: HTMLElement | null;
   onToggle: (rootPath: string) => void;
   onSetImport: (rootPath: string, on: boolean, inAde: boolean) => void;
+  onSetChatSelection: (rootPath: string, inAde: boolean, leftOut: ReadonlySet<string> | null) => void;
+  onTogglePicker: (rootPath: string) => void;
+  onClosePicker: () => void;
   index: number;
 }) {
   const icon = useProjectIcon(project.rootPath);
+  const pillRef = useRef<HTMLSpanElement | null>(null);
+  const pickRef = useRef<HTMLButtonElement | null>(null);
   const meta = [
     project.laneCount ? pluralize(project.laneCount, "lane", "lanes") : null,
     project.lastActiveAt ? relativeWhen(new Date(project.lastActiveAt).toISOString()) : null,
   ].filter(Boolean);
-  const chats = project.recentChatCount;
-  const chatsLabel = pluralize(chats, "chat", "chats");
   // A project left out brings no chats, whatever its toggle said before.
   // (One already in ADE is never left out.)
   const importOn = importing && checked;
+  const { total, included } = importCounts(project, chatList, importOn ? excluded : undefined);
+  const chatsLabel = pluralize(total, "chat", "chats");
+  const narrowed = importOn && included < total;
+  const onSelectionChange = useCallback(
+    (leftOut: ReadonlySet<string> | null) => onSetChatSelection(project.rootPath, project.inAde, leftOut),
+    [onSetChatSelection, project.inAde, project.rootPath],
+  );
   return (
     <div
       className="ade-fr-row"
@@ -444,40 +556,77 @@ function ProjectRow({
           <span className="ade-fr-meta">{meta.join(" · ")}</span>
         ) : null}
       </button>
-      {chats > 0 ? (
-        // A yes/no choice, not an action: it reads as a question while off and
+      {project.recentChatCount > 0 ? (
+        // Two targets in one pill. The box (with the provider marks) is a
+        // yes/no choice, not an action: it reads as a question while off and
         // as a ticked "Importing" while on, and nothing imports until Add.
-        <button
-          type="button"
-          role="checkbox"
+        // The count opens the picker to leave single chats out.
+        <span
+          ref={pillRef}
           className="ade-fr-import"
           data-on={importOn ? "true" : undefined}
-          aria-checked={importOn}
-          aria-label={
-            `Import ${pluralize(chats, "recent chat", "recent chats")} from ${providerList(project.providers)}`
-          }
-          title={
-            importOn
-              ? "These chats come in when the project first opens. Click to leave them out."
-              : "Bring the last 30 days of chats in when the project first opens, each in the lane it ran in."
-          }
-          onClick={() => onSetImport(project.rootPath, !importOn, project.inAde)}
+          data-open={pickerOpen ? "true" : undefined}
         >
-          <span className="ade-fr-import-box" aria-hidden="true">
-            <Check size={10} weight="bold" />
-          </span>
-          <span className="ade-fr-import-marks" aria-hidden="true">
-            {project.providers.slice(0, MAX_ROW_MARKS).map((provider) => (
-              <ProviderLogo key={provider} family={provider} size={13} />
-            ))}
-            {project.providers.length > MAX_ROW_MARKS ? (
-              <span className="ade-fr-marks-more">+{project.providers.length - MAX_ROW_MARKS}</span>
-            ) : null}
-          </span>
-          <span className="ade-fr-import-label">
-            {importOn ? `Importing ${chatsLabel}` : `Import ${chatsLabel}?`}
-          </span>
-        </button>
+          <button
+            type="button"
+            role="checkbox"
+            className="ade-fr-import-toggle"
+            aria-checked={importOn ? (narrowed ? "mixed" : true) : false}
+            aria-label={`Import ${pluralize(total, "recent chat", "recent chats")} from ${providerList(project.providers)}`}
+            title={
+              importOn
+                ? "These chats come in when the project first opens. Click to leave them all out."
+                : "Bring the last 30 days of chats in when the project first opens, each in the lane it ran in."
+            }
+            onClick={() => onSetImport(project.rootPath, !importOn, project.inAde)}
+          >
+            <span className="ade-fr-import-box" aria-hidden="true">
+              {narrowed ? <span className="ade-fr-import-dash" /> : <Check size={10} weight="bold" />}
+            </span>
+            <span className="ade-fr-import-marks" aria-hidden="true">
+              {project.providers.slice(0, MAX_ROW_MARKS).map((provider) => (
+                <ProviderLogo key={provider} family={provider} size={13} />
+              ))}
+              {project.providers.length > MAX_ROW_MARKS ? (
+                <span className="ade-fr-marks-more">+{project.providers.length - MAX_ROW_MARKS}</span>
+              ) : null}
+            </span>
+          </button>
+          <button
+            ref={pickRef}
+            type="button"
+            className="ade-fr-import-pick"
+            aria-haspopup="dialog"
+            aria-expanded={pickerOpen}
+            aria-label={`Choose which of ${project.name}'s ${chatsLabel} to import`}
+            title="See these chats and choose which come in"
+            onClick={() => onTogglePicker(project.rootPath)}
+          >
+            <span className="ade-fr-import-label">
+              {importOn
+                ? narrowed
+                  ? `Importing ${included} of ${chatsLabel}`
+                  : `Importing ${chatsLabel}`
+                : `Import ${chatsLabel}?`}
+            </span>
+            <CaretDown size={10} weight="bold" className="ade-fr-import-caret" aria-hidden="true" />
+          </button>
+        </span>
+      ) : null}
+      {pickerOpen ? (
+        <PortalContainerContext.Provider value={gateEl}>
+          <FirstRunChatPicker
+            projectName={project.name}
+            rootPath={project.rootPath}
+            anchorRef={pillRef}
+            returnFocusRef={pickRef}
+            chatList={chatList}
+            importOn={importOn}
+            excluded={importOn ? excluded : undefined}
+            onChange={onSelectionChange}
+            onClose={onClosePicker}
+          />
+        </PortalContainerContext.Provider>
       ) : null}
     </div>
   );

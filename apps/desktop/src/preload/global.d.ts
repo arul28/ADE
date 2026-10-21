@@ -174,6 +174,7 @@ import type {
   StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
+  OnboardingProjectChat,
   OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -1250,6 +1251,8 @@ declare global {
         discoverOnboardingProjects?: () => Promise<OnboardingProjectDiscovery>;
         /** First-run setup: add these checkouts as project tabs without opening them. Desktop only. */
         addOnboardingProjects?: (rootPaths: string[]) => Promise<RecentProjectSummary[]>;
+        /** First-run setup: one project's chats from the last 30 days on this computer, for the import picker. Desktop only. */
+        listOnboardingProjectChats?: (rootPath: string) => Promise<OnboardingProjectChat[]>;
         getLaunchGateState: () => Promise<{ resolved: boolean }>;
         resolveLaunchGate: () => Promise<{ resolved: true }>;
         setWindowProjectTabs: (

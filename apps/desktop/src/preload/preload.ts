@@ -252,6 +252,7 @@ import type {
   StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
+  OnboardingProjectChat,
   OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -4677,6 +4678,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appDiscoverOnboardingProjects),
     addOnboardingProjects: async (rootPaths: string[]): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.appAddOnboardingProjects, { rootPaths }),
+    listOnboardingProjectChats: async (rootPath: string): Promise<OnboardingProjectChat[]> =>
+      ipcRenderer.invoke(IPC.appListOnboardingProjectChats, { rootPath }),
     getLaunchGateState: async (): Promise<{ resolved: boolean }> =>
       ipcRenderer.invoke(IPC.appGetLaunchGateState),
     resolveLaunchGate: async (): Promise<{ resolved: true }> =>

@@ -330,7 +330,10 @@ export async function discoverClaudeSessions(
   // Continuation chains cross project directories — a session moved with `/cd`
   // lands in another slug — so chains are tracked globally, not per project dir.
   const chainIndex = new Map<string, ClaudeChain>();
+  const updatedSince = lookupId ? null : args.updatedSinceMs ?? null;
   for (const candidate of newestById.values()) {
+    // Newest first, so the first file older than the hint ends the list.
+    if (updatedSince != null && candidate.mtimeMs < updatedSince) break;
     const scan = claudeScanRecords(candidate.filePath);
     const jsonl = scan.combined;
     if (isClaudeSdkOriginTranscript(scan.prefix)) continue;

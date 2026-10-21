@@ -42,6 +42,7 @@ export const IPC = {
   appMarkWelcomeVideoSeen: "ade.app.markWelcomeVideoSeen",
   appDiscoverOnboardingProjects: "ade.app.discoverOnboardingProjects",
   appAddOnboardingProjects: "ade.app.addOnboardingProjects",
+  appListOnboardingProjectChats: "ade.app.listOnboardingProjectChats",
   appGetLaunchGateState: "ade.app.getLaunchGateState",
   appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",

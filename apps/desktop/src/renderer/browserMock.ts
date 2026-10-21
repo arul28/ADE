@@ -5792,6 +5792,46 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ],
         };
       },
+      // One project's recent chats for setup's import picker: a few per
+      // project, mixed providers, some in worktrees, newest first.
+      listOnboardingProjectChats: async (rootPath: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 420));
+        const hour = 3_600_000;
+        const now = Date.now();
+        const seeds: Record<string, Array<[ExternalSessionProvider, string | null, string | null, number, number | null]>> = {
+          ADE: [
+            ["claude", "Split the import pill into a toggle and a chat picker", null, 2 * hour, 34],
+            ["codex", "Tighten PR detail header on iOS", "ios-pr-header", 5 * hour, 12],
+            ["claude", "Why does the Apple pane show a stuck loader after the device boots?", "apple-sim", 26 * hour, 118],
+            ["codex", "Measure lane status polling cost and drop the second git status", null, 3 * 24 * hour, 9],
+            ["claude", null, "relay-backoff", 6 * 24 * hour, 3],
+            ["codex", "Release notes generator for v1.2.80", null, 11 * 24 * hour, 21],
+            ["claude", "Windows path cases for the session importer", "win-paths", 19 * 24 * hour, null],
+          ],
+          Versic: [
+            ["cursor", "Lane sidebar keyboard navigation", null, 3 * hour, 14],
+            ["claude", "Port the billing webhooks to the new queue", "billing-queue", 30 * hour, 52],
+            ["opencode", "Speed up the search index rebuild", null, 2 * 24 * hour, 8],
+            ["codex", "Fix flaky checkout e2e on CI", "ci-checkout", 4 * 24 * hour, 17],
+            ["claude", "Draft the onboarding email sequence copy", null, 9 * 24 * hour, 6],
+            ["cursor", null, null, 15 * 24 * hour, 2],
+          ],
+          fleet: [
+            ["claude", "Add a health check to the fleet agent", null, 5 * 24 * hour, 11],
+            ["claude", "Rotate the staging TLS certs", null, 8 * 24 * hour, 4],
+            ["claude", "Explain the deploy lock and when it is released", "deploy-lock", 21 * 24 * hour, 7],
+          ],
+        };
+        const name = rootPath.split("/").filter(Boolean).pop() ?? rootPath;
+        return (seeds[name] ?? []).map(([provider, title, worktree, ageMs, messageCount], index) => ({
+          id: `${name.toLowerCase()}-${provider}-${index}`,
+          provider,
+          title,
+          cwd: worktree ? `${rootPath}/.ade/worktrees/${worktree}` : rootPath,
+          lastActiveAt: now - ageMs,
+          messageCount,
+        }));
+      },
       // Setup's projects join recents (newest first), as the main process does.
       addOnboardingProjects: async (rootPaths: string[]) => {
         const added = rootPaths

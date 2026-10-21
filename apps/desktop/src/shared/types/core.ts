@@ -195,6 +195,23 @@ export type OnboardingProjectDiscovery = {
   projects: OnboardingProjectCandidate[];
 };
 
+/**
+ * One chat setup's import would bring in for a project: a provider session
+ * from the last 30 days that ran in the project or one of its worktrees.
+ * `provider` + `id` are the importer's own identity (`externalSessions.list`
+ * rows), so a choice made in setup matches the session at import time.
+ */
+export type OnboardingProjectChat = {
+  id: string;
+  provider: ExternalSessionProvider;
+  /** The provider's title, else the opening prompt on one line; null when neither exists. */
+  title: string | null;
+  cwd: string | null;
+  lastActiveAt: number;
+  /** User prompts, when the provider's history gives it cheaply. */
+  messageCount: number | null;
+};
+
 export type PtyProcessResourceUsageSnapshot = {
   activePtyCount: number;
   ptyProcessCount: number;

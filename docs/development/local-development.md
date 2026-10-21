@@ -141,6 +141,7 @@ Dev command matrix:
 npm run dev:desktop          # refresh shared dev runtime, then launch desktop
 npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
+npm run dev:desktop -- --first-run  # walk setup as a brand-new user, isolated from your ADE (below)
 npm run dev:code:web          # `ade code` in the browser (PTY + inspector WebSocket)
 npm run dev:code:attach      # terminal TUI only; fail if dev runtime is not already running
 npm run dev:runtime          # runtime only in the foreground
@@ -148,6 +149,30 @@ npm run dev:all              # start shared dev runtime, then run desktop/code a
 npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
+
+### Walk first-run setup as a new user
+
+`npm run dev:desktop -- --first-run` is the one sanctioned exception to "share
+`~/.ade`". It runs the dev app the way a brand-new user meets ADE: the welcome
+card, Connect your agents, Bring your projects in, the tour, and nothing it does
+reaches your ADE.
+
+- Its own ADE home, `~/.ade-dev-first-run`: project registry, personal chats,
+  launch defaults, provider sign-ins, machine identity and account session.
+  Every launch empties it **except its account sign-in**, so setup finds no
+  project already in ADE and no saved choice.
+- Its own brain socket (`ade-runtime-first-run`, unless `--socket`), sync off,
+  fresh Electron app data, and Home with no project open (`--home`).
+- Shared, on purpose: the agents' own history (`~/.claude`, `~/.codex`, …),
+  which setup reads to find projects, and the provider CLIs' own logins. A
+  project you open from it is still the real repo and its project database, so
+  use a scratch project when the tour sends its first chat.
+
+Sign it in once, as its own device: through the app's sign-in card, or
+`ADE_HOME=~/.ade-dev-first-run ade --socket /tmp/ade-runtime-first-run.sock login`.
+Never copy `~/.ade/secrets` into it: a copied session shares a refresh token
+with your ADE, and whichever rotates it first signs the other out. The launcher
+refuses to reset the home while a brain is still listening on its socket.
 
 Browser preview of the desktop renderer (UI work without Electron):
 

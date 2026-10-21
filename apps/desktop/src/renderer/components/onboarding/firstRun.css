@@ -224,7 +224,8 @@
 }
 
 .ade-fr-row-main:focus-visible,
-.ade-fr-import:focus-visible,
+.ade-fr-import-toggle:focus-visible,
+.ade-fr-import-pick:focus-visible,
 .ade-fr-qr:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
   outline-offset: -2px;
@@ -233,28 +234,26 @@
 /* A project's "Import N chats?" choice. Off it is a quiet outlined question
    with an empty box; on it fills violet, the box ticks and the words turn to
    "Importing", so it reads as a yes/no setting and never as a button that
-   imports right away. */
+   imports right away. It is two targets in one pill: the box and marks
+   toggle the import, the count (with its caret) opens the chat picker. */
 .ade-fr-import {
   flex: 0 0 auto;
   display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  align-items: stretch;
   height: 28px;
-  padding: 0 11px 0 7px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--color-fg) 16%, transparent);
   background: transparent;
   color: var(--gate-text-2);
-  font-family: var(--font-sans);
   font-size: 11.5px;
   font-weight: 550;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.ade-fr-import:hover {
+.ade-fr-import:hover,
+.ade-fr-import[data-open="true"] {
   border-color: color-mix(in srgb, #a78bfa 55%, transparent);
   background: color-mix(in srgb, #8b5cf6 8%, transparent);
   color: var(--color-fg);
@@ -270,8 +269,65 @@
   color: var(--color-fg);
 }
 
+.ade-fr-import-toggle,
+.ade-fr-import-pick {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.ade-fr-import-toggle {
+  gap: 6px;
+  padding: 0 6px 0 7px;
+  border-radius: 999px 0 0 999px;
+}
+
+/* The count: its own target, set off from the box by a hairline. */
+.ade-fr-import-pick {
+  position: relative;
+  gap: 5px;
+  padding: 0 9px 0 8px;
+  border-radius: 0 999px 999px 0;
+}
+
+.ade-fr-import-pick::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-fg) 16%, transparent);
+}
+
+.ade-fr-import[data-on="true"] .ade-fr-import-pick::before {
+  background: color-mix(in srgb, #a78bfa 55%, transparent);
+}
+
+.ade-fr-import-toggle:hover,
+.ade-fr-import-pick:hover,
+.ade-fr-import[data-open="true"] .ade-fr-import-pick {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-fr-import-caret {
+  opacity: 0.7;
+  transition: transform 160ms ease;
+}
+
+.ade-fr-import[data-open="true"] .ade-fr-import-caret {
+  transform: rotate(180deg);
+}
+
 /* The checkbox inside the pill: the affordance that makes it a toggle. */
-.ade-fr-import-box {
+.ade-fr-import-box,
+.ade-fr-chat-box {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -284,14 +340,24 @@
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.ade-fr-import:hover .ade-fr-import-box {
+.ade-fr-import-toggle:hover .ade-fr-import-box,
+.ade-fr-chat:hover .ade-fr-chat-box {
   border-color: color-mix(in srgb, #a78bfa 80%, transparent);
 }
 
-.ade-fr-import[data-on="true"] .ade-fr-import-box {
+.ade-fr-import[data-on="true"] .ade-fr-import-box,
+.ade-fr-chat[data-on="true"] .ade-fr-chat-box {
   border-color: #8b5cf6;
   background: #8b5cf6;
   color: #ffffff;
+}
+
+/* Some chats left out in the picker: the box shows a dash, not a tick. */
+.ade-fr-import-dash {
+  width: 7px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
 }
 
 .ade-fr-import-marks {
@@ -307,6 +373,191 @@
 .ade-fr-import-label {
   display: inline-flex;
   align-items: center;
+}
+
+/* ── The chat picker ─────────────────────────────────────────
+   Portalled into the gate (outside the card), so it carries the card's
+   glass itself: the same edge, tint and lit rim, a little more opaque so
+   rows stay legible over the card underneath. */
+.ade-fr-picker {
+  width: min(360px, calc(100vw - 32px));
+  border-radius: 16px;
+  border: 1px solid var(--gate-glass-edge);
+  background:
+    linear-gradient(180deg, var(--gate-glass-tint-top), var(--gate-glass-tint-bottom)),
+    color-mix(in srgb, var(--color-bg) 78%, transparent);
+  backdrop-filter: blur(28px) saturate(1.3);
+  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  box-shadow: inset 0 1px 0 var(--gate-glass-highlight), var(--gate-glass-shadow);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  text-align: left;
+  overflow: hidden;
+  animation: ade-fr-picker-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-picker-panel {
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.ade-fr-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--gate-rule);
+  font-size: 11.5px;
+}
+
+.ade-fr-picker-title {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-fr-picker-count {
+  flex: 1 1 auto;
+  color: var(--gate-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Short enough to open below a pill in the card's middle rows on a small
+   window, so it rarely has to flip or slide over its own pill. */
+.ade-fr-picker-rows {
+  max-height: min(288px, 38vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ade-fr-chat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px 7px 9px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.ade-fr-chat:hover {
+  background: var(--gate-chip-fill);
+}
+
+.ade-fr-chat:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: -2px;
+}
+
+.ade-fr-chat-logo {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+}
+
+.ade-fr-chat-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ade-fr-chat-title {
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-chat-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--gate-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ade-fr-chat-sub > span + span::before {
+  content: "·";
+  margin-right: 6px;
+}
+
+.ade-fr-chat-sub > .ade-fr-chat-folder::before {
+  margin-right: 3px;
+}
+
+.ade-fr-chat-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.ade-fr-chat-when {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding-top: 1px;
+  font-size: 11px;
+  color: var(--gate-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.ade-fr-chat:not([data-on="true"]) .ade-fr-chat-title,
+.ade-fr-chat:not([data-on="true"]) .ade-fr-chat-logo {
+  opacity: 0.72;
+}
+
+.ade-fr-picker-skeleton {
+  height: 42px;
+  margin: 2px 0;
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-fg) 6%, transparent) 50%,
+    transparent 100%
+  ) 0 0 / 200% 100%;
+  animation: ade-fr-skeleton 1.4s ease-in-out infinite;
+}
+
+.ade-fr-picker-note,
+.ade-fr-picker-foot {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--gate-text-2);
+}
+
+.ade-fr-picker-foot {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--gate-rule);
+  font-size: 11px;
+  color: var(--gate-text-3);
 }
 
 .ade-fr-row--skeleton {
@@ -969,6 +1220,11 @@
   to { opacity: 1; }
 }
 
+@keyframes ade-fr-picker-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
 @keyframes ade-fr-skeleton {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
@@ -981,7 +1237,9 @@
   .ade-fr-agent-tile,
   .ade-fr-later-tile,
   .ade-fr-qr-lightbox,
-  .ade-fr-qr-panel {
+  .ade-fr-qr-panel,
+  .ade-fr-picker,
+  .ade-fr-picker-skeleton {
     animation: none;
   }
 }
@@ -992,6 +1250,8 @@ html[data-motion="reduced"] .ade-fr-row--skeleton,
 html[data-motion="reduced"] .ade-fr-agent-tile,
 html[data-motion="reduced"] .ade-fr-later-tile,
 html[data-motion="reduced"] .ade-fr-qr-lightbox,
-html[data-motion="reduced"] .ade-fr-qr-panel {
+html[data-motion="reduced"] .ade-fr-qr-panel,
+html[data-motion="reduced"] .ade-fr-picker,
+html[data-motion="reduced"] .ade-fr-picker-skeleton {
   animation: none;
 }

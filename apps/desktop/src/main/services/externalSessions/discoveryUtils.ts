@@ -40,6 +40,12 @@ export type ExternalSessionDiscoveryArgs = {
   sessionId?: string | null;
   limit?: number | null;
   scopeRoots?: string[] | null;
+  /**
+   * A hint, not a filter: a discoverer that can tell a session's last activity
+   * cheaply (a file time) may skip older ones without reading them. Callers
+   * still filter on time themselves; discoverers that cannot tell ignore it.
+   */
+  updatedSinceMs?: number | null;
   logger?: {
     warn?: (message: string, fields?: Record<string, unknown>) => void;
     info?: (message: string, fields?: Record<string, unknown>) => void;

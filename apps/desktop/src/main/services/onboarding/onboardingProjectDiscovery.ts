@@ -5,6 +5,7 @@ import {
   EXTERNAL_SESSION_PROVIDERS,
   type ExternalSessionProvider,
   type OnboardingProjectCandidate,
+  type OnboardingProjectChat,
   type OnboardingProjectDiscovery,
 } from "../../../shared/types";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
@@ -19,10 +20,15 @@ import { claudeConfigDir } from "../externalSessions/discoverClaude";
 import { EXTERNAL_SESSION_DISCOVERERS } from "../externalSessions/discoverers";
 import {
   closeExternalSessionDb,
+  cwdIsInScope,
+  isAdeContinuityPrompt,
+  isAdeProbeSession,
   isUuidLike,
   normalizeProviderCwd,
   openExternalSessionDb,
   resolveHomeDir,
+  type ExternalSessionDiscoveryArgs,
+  type ExternalSessionDiscoveryRecord,
 } from "../externalSessions/discoveryUtils";
 import { resolveDeviceDisplayNameSettled } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
@@ -207,6 +213,35 @@ function collectCodexActivity(activity: Map<string, FolderActivity>, now: number
 }
 
 /**
+ * One provider's importer discoverer, given at most `OTHER_PROVIDER_BUDGET_MS`.
+ * A provider that is not installed returns nothing; one that errors or runs
+ * past the budget is left out and logged, never holding up setup.
+ */
+async function discoverWithinBudget(
+  provider: ExternalSessionProvider,
+  args: ExternalSessionDiscoveryArgs,
+  logger?: DiscoveryLogger,
+): Promise<ExternalSessionDiscoveryRecord[]> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), OTHER_PROVIDER_BUDGET_MS);
+  });
+  try {
+    const records = await Promise.race([EXTERNAL_SESSION_DISCOVERERS[provider](args), budget]);
+    if (records === null) logger?.warn?.("onboarding.provider_discovery_slow", { provider });
+    return records ?? [];
+  } catch (error) {
+    logger?.warn?.("onboarding.provider_discovery_failed", {
+      provider,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Every other provider: its importer discoverer, unscoped, newest sessions
  * first. Sessions are grouped by their cwd the same way Claude's and Codex's
  * are. A provider that is not installed returns nothing; one that errors or
@@ -218,28 +253,11 @@ async function collectOtherProviderActivity(
   logger?: DiscoveryLogger,
 ): Promise<void> {
   const providers = EXTERNAL_SESSION_PROVIDERS.filter((provider) => provider !== "claude" && provider !== "codex");
-  const results = await Promise.all(providers.map(async (provider) => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const budget = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), OTHER_PROVIDER_BUDGET_MS);
-    });
-    try {
-      const records = await Promise.race([
-        EXTERNAL_SESSION_DISCOVERERS[provider]({ limit: OTHER_PROVIDER_SESSION_LIMIT, scopeRoots: null, logger }),
-        budget,
-      ]);
-      if (records === null) logger?.warn?.("onboarding.provider_discovery_slow", { provider });
-      return { provider, records: records ?? [] };
-    } catch (error) {
-      logger?.warn?.("onboarding.provider_discovery_failed", {
-        provider,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { provider, records: [] };
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }));
+  const results = await Promise.all(providers.map(async (provider) => ({
+    provider,
+    records: await discoverWithinBudget(provider, { limit: OTHER_PROVIDER_SESSION_LIMIT, scopeRoots: null, logger }, logger),
+  })));
+  rememberOtherProviderChats(results.flatMap(({ records }) => records), now);
   for (const { provider, records } of results) {
     const byCwd = new Map<string, { cwd: string; chats: number; recentChats: number; lastActiveAt: number }>();
     for (const record of records) {
@@ -388,6 +406,8 @@ export async function discoverOnboardingProjects(args: {
   }
   // New projects first, so ones already in ADE never crowd them past the cap.
   projects.sort((a, b) => Number(a.inAde) - Number(b.inAde) || (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+  const shown = projects.slice(0, MAX_CANDIDATES);
+  await countImportableChats(shown, now, args.logger);
 
   args.logger?.info?.("onboarding.projects_discovered", {
     folders: activity.size,
@@ -396,5 +416,155 @@ export async function discoverOnboardingProjects(args: {
   });
   // The name the user gave this computer (macOS ComputerName), not its network hostname.
   const machineName = (await resolveDeviceDisplayNameSettled()).replace(/\.(local|lan|home)$/i, "").trim();
-  return { machineName: machineName || "this computer", projects: projects.slice(0, MAX_CANDIDATES) };
+  return { machineName: machineName || "this computer", projects: shown };
+}
+
+/** Total time discovery spends replacing its rough chat counts with the import's own list. */
+const IMPORTABLE_COUNT_BUDGET_MS = 4_000;
+
+/**
+ * The folder scan counts every session file, including ADE's own probes and
+ * context restores, and none from lanes since removed, so its number is not
+ * what the import brings in. Each shown project's count, providers and
+ * suggestion come from `listOnboardingProjectChats` instead (the list the
+ * card's picker shows, so the two always agree), one project at a time
+ * within a total budget; a project past the budget keeps its rough count
+ * until its picker opens. The lists are kept for the picker.
+ */
+async function countImportableChats(
+  projects: OnboardingProjectCandidate[],
+  now: number,
+  logger?: DiscoveryLogger,
+): Promise<void> {
+  const started = Date.now();
+  for (const project of projects) {
+    if (Date.now() - started > IMPORTABLE_COUNT_BUDGET_MS) break;
+    const chats = await listOnboardingProjectChats({ rootPath: project.rootPath, logger, now });
+    project.recentChatCount = chats.length;
+    project.suggested = chats.length >= SUGGESTED_MIN_RECENT_CHATS;
+    if (chats.length) {
+      const providers = new Set(chats.map((chat) => chat.provider));
+      project.providers = EXTERNAL_SESSION_PROVIDERS.filter((provider) => providers.has(provider));
+    }
+  }
+}
+
+/** Newest sessions read per provider for one project's chat list. */
+const PROJECT_CHAT_SESSION_LIMIT = 50;
+/** Rows the setup card's chat menu shows for one project. */
+const PROJECT_CHAT_LIMIT = 100;
+const PROJECT_CHAT_TITLE_MAX = 140;
+/** How long discovery's read of the other providers answers the chat menus. Setup is a few minutes at most. */
+const OTHER_PROVIDER_CHATS_TTL_MS = 10 * 60_000;
+
+function chatTitle(record: ExternalSessionDiscoveryRecord): string | null {
+  const title = record.title?.replace(/\s+/gu, " ").trim();
+  if (title) return title;
+  const opening = record.preview?.replace(/\s+/gu, " ").trim();
+  if (!opening) return null;
+  return opening.length > PROJECT_CHAT_TITLE_MAX ? `${opening.slice(0, PROJECT_CHAT_TITLE_MAX - 1).trimEnd()}…` : opening;
+}
+
+/**
+ * A discovered session as a chat setup would import: active in the window,
+ * with a user prompt, and not one of ADE's own probes or context restores
+ * (the rows the importer's list drops too). Null otherwise.
+ */
+function importableChat(record: ExternalSessionDiscoveryRecord, since: number): OnboardingProjectChat | null {
+  const at = record.updatedAt ?? record.createdAt ?? 0;
+  if (!Number.isFinite(at) || at < since) return null;
+  if (record.messageCount === 0 || isAdeProbeSession(record)) return null;
+  if (isAdeContinuityPrompt(record.preview) || isAdeContinuityPrompt(record.title)) return null;
+  return {
+    id: record.id,
+    provider: record.provider,
+    title: chatTitle(record),
+    cwd: record.cwd,
+    lastActiveAt: at,
+    messageCount: record.messageCount ?? null,
+  };
+}
+
+/**
+ * Discovery already reads every provider but Claude and Codex through the
+ * importer's discoverers (machine-wide, newest first). Their importable chats
+ * from the window are kept, slimmed, so each project's chat menu filters them
+ * by folder instead of reading those stores again: Cursor alone is ~0.6s of
+ * synchronous reads on the main thread.
+ */
+let otherProviderChats: { at: number; chats: OnboardingProjectChat[] } | null = null;
+
+function rememberOtherProviderChats(records: ExternalSessionDiscoveryRecord[], now: number): void {
+  const since = now - ONBOARDING_RECENT_CHAT_WINDOW_MS;
+  const chats: OnboardingProjectChat[] = [];
+  for (const record of records) {
+    const chat = importableChat(record, since);
+    if (chat) chats.push(chat);
+  }
+  otherProviderChats = { at: now, chats };
+}
+
+/** Lets IPC and paints through between providers: most discoverers read synchronously. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * The chats setup's import would bring in for one project, for the card's
+ * per-chat picker: sessions from every importable provider that ran in the
+ * project or one of its linked worktrees in the last 30 days, newest first.
+ *
+ * Runs before any project is open, so it scopes the importer's own
+ * discoverers to the project's folders instead of asking a project's session
+ * service; the ids are the importer's, so a choice made here matches at
+ * import. Claude and Codex are read for this project (Claude stops at the
+ * window's edge by file time); the other providers come from discovery's
+ * recent read when there is one. Each provider gets discovery's budget, one at
+ * a time, yielding between them. Whether a chat is already imported is only
+ * known once the project opens; the import skips those then.
+ */
+export async function listOnboardingProjectChats(args: {
+  rootPath: string;
+  logger?: DiscoveryLogger;
+  now?: number;
+}): Promise<OnboardingProjectChat[]> {
+  const now = args.now ?? Date.now();
+  const rootPath = path.resolve(args.rootPath);
+  const listed = projectChatLists.get(pathKey(rootPath));
+  if (listed && now - listed.at <= OTHER_PROVIDER_CHATS_TTL_MS) return listed.chats;
+  const chats = await readProjectChats(rootPath, now, args.logger);
+  projectChatLists.set(pathKey(rootPath), { at: now, chats });
+  return chats;
+}
+
+/** Each project's list as discovery or the picker last read it, for the same setup session. */
+const projectChatLists = new Map<string, { at: number; chats: OnboardingProjectChat[] }>();
+
+async function readProjectChats(rootPath: string, now: number, logger?: DiscoveryLogger): Promise<OnboardingProjectChat[]> {
+  if (!fs.existsSync(rootPath)) return [];
+  const scopeRoots = [...new Set([rootPath, realpathIfExists(rootPath), ...listLinkedLaneWorktreeRoots(rootPath)])];
+  const since = now - ONBOARDING_RECENT_CHAT_WINDOW_MS;
+  const cached = otherProviderChats && now - otherProviderChats.at <= OTHER_PROVIDER_CHATS_TTL_MS ? otherProviderChats : null;
+  const providers = cached
+    ? EXTERNAL_SESSION_PROVIDERS.filter((provider) => provider === "claude" || provider === "codex")
+    : EXTERNAL_SESSION_PROVIDERS;
+
+  const chats: OnboardingProjectChat[] = cached
+    ? cached.chats.filter((chat) => chat.lastActiveAt >= since && cwdIsInScope(chat.cwd, scopeRoots))
+    : [];
+  for (const provider of providers) {
+    await yieldToEventLoop();
+    const records = await discoverWithinBudget(
+      provider,
+      { limit: PROJECT_CHAT_SESSION_LIMIT, scopeRoots, updatedSinceMs: since, logger },
+      logger,
+    );
+    for (const record of records) {
+      if (!cwdIsInScope(record.cwd, scopeRoots)) continue;
+      const chat = importableChat(record, since);
+      if (chat) chats.push(chat);
+    }
+  }
+  chats.sort((a, b) => b.lastActiveAt - a.lastActiveAt || `${a.provider}:${a.id}`.localeCompare(`${b.provider}:${b.id}`));
+  return chats.slice(0, PROJECT_CHAT_LIMIT);
 }

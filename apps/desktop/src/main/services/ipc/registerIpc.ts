@@ -218,6 +218,7 @@ import type {
   BatchAssessmentResult,
   AppInfo,
   AppWelcomeVideoState,
+  OnboardingProjectChat,
   OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -1006,7 +1007,7 @@ import {
 } from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, upsertRecentProject } from "../state/globalState";
-import { discoverOnboardingProjects } from "../onboarding/onboardingProjectDiscovery";
+import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingProjectDiscovery";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -4690,15 +4691,26 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
-  // First-run setup on this computer. Both run here and only here: setup is
-  // the first open of ADE on a machine, and it reads that machine's own Claude
-  // Code and Codex history. The web client and other machines never call them.
+  // First-run setup on this computer. All three run here and only here: setup
+  // is the first open of ADE on a machine, and it reads that machine's own
+  // coding-agent history. The web client and other machines never call them.
   ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> => {
     const knownRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
       .filter((entry) => !entry.remote)
       .map((entry) => entry.rootPath);
     return discoverOnboardingProjects({ knownRoots, logger: getCtx().logger });
   });
+
+  // One project's importable chats on this computer, for setup's per-chat
+  // picker. Read when the picker opens, before any project is open.
+  ipcMain.handle(
+    IPC.appListOnboardingProjectChats,
+    async (_event, arg: { rootPath?: unknown } = {}): Promise<OnboardingProjectChat[]> => {
+      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) return [];
+      return listOnboardingProjectChats({ rootPath, logger: getCtx().logger });
+    },
+  );
 
   ipcMain.handle(
     IPC.appAddOnboardingProjects,
