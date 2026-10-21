@@ -4608,8 +4608,12 @@ its label, and one probability per criterion.
   3. `bonus`: the account directory's `POST /jev/systemone` with the signed-in
      ADE account's bearer; the Worker forwards to TypeSafe's Jev API with
      ADE's key, capped per account per UTC day (300 by default). The account
-     token is fetched within the call's remaining time. See the account
-     directory README, "Jev bonus".
+     token is fetched within the call's remaining time. Settle checks never
+     use it (a chat idle for hours can wait for the free reset), and
+     background features stop using it once the Worker's
+     `x-ade-jev-remaining` says 20 or fewer calls are left today, so the
+     last ones go to interactive questions, mostly the model hint. See the
+     account directory README, "Jev bonus".
 - **Resilience.** Timeouts default to 1500 ms (`interactive`) and 4000 ms
   (`background`). Each route has its own breaker: 429 backs off until
   `retry-after` (the free allowance and the bonus cap both name midnight UTC)
