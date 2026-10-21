@@ -10,6 +10,7 @@ import Foundation
 /// Electron main process.
 public actor SimHelperRuntime {
     private var sessions: [String: DeviceSession] = [:]
+    private let postureWatchers = DevicePostureWatchers()
     private let emit: @Sendable (SimHelperEvent) -> Void
     /// How a new session learns its device's geometry. Injected so a test can
     /// build sessions without CoreSimulator; production always asks it.
@@ -48,7 +49,12 @@ public actor SimHelperRuntime {
         }
     }
 
+    private func emitPosture(udid: String, state: DevicePosture.State) {
+        emit(.postureChanged(udid: udid, state: state.payload))
+    }
+
     public func shutdown() async {
+        await postureWatchers.stopAll()
         let all = Array(sessions.values)
         sessions.removeAll()
         for session in all {
@@ -187,6 +193,26 @@ public actor SimHelperRuntime {
                 // state ADE should show, not an error it should retry.
                 emit(.ok(id: id, payload: ["applied": applied]))
 
+            case let .posture(_, udid, pose, angle):
+                let applied = await DevicePosture.apply(udid: udid, pose: pose, angle: angle)
+                // Reported, not thrown: "this device has no hinge" is a state.
+                emit(.ok(id: id, payload: ["applied": applied]))
+
+            case let .postureGet(_, udid):
+                emit(.ok(id: id, payload: await DevicePosture.read(udid: udid).payload))
+
+            case let .postureWatch(_, udid, enabled):
+                if enabled {
+                    let watching = await postureWatchers.start(udid: udid) { [weak self] state in
+                        guard let self else { return }
+                        Task { await self.emitPosture(udid: udid, state: state) }
+                    }
+                    emit(.ok(id: id, payload: ["watching": watching]))
+                } else {
+                    await postureWatchers.stop(udid: udid)
+                    emit(.ok(id: id, payload: ["watching": false]))
+                }
+
             case let .axDescribe(_, udid):
                 let json = try await offMainThread {
                     SimFrameworks.load()
@@ -249,6 +275,7 @@ public actor SimHelperRuntime {
                 // best effort around every power change, usually for a device
                 // this helper has never driven.
                 let reset = await resetDevice(udid)
+                await postureWatchers.stop(udid: udid)
                 emit(.ok(id: id, payload: ["reset": reset]))
 
             case .quit:

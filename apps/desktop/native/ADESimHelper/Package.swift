@@ -33,8 +33,21 @@ let package = Package(
         ),
     ],
     targets: [
+        // Vendored from expo/expo-device-hub (serve-sim): the C, Objective-C
+        // and assembly shim that calls CoreDevice's private Swift API for the
+        // iPhone Duo's hinge, pose and active display. See
+        // Sources/ADESimHelperCore/Vendor/serve-sim/VENDORED.md.
+        .target(
+            name: "CoreDeviceShim",
+            linkerSettings: [.linkedFramework("Foundation"), .linkedFramework("IOKit")]
+        ),
+        // Vendored with it: the pure policy types the CoreDevice bridge uses.
+        .target(
+            name: "StreamingPolicy"
+        ),
         .target(
             name: "ADESimHelperCore",
+            dependencies: ["CoreDeviceShim", "StreamingPolicy"],
             // Provenance files live beside the code they describe so a reader
             // who opens the vendored directory cannot miss the licence. SwiftPM
             // treats unknown files in a source directory as an error, so they
