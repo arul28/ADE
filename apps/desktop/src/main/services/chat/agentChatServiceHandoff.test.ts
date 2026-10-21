@@ -3142,7 +3142,8 @@ describe("createAgentChatService", () => {
               },
             },
           },
-          envelope(5, "after-arrival", "Work completed on the destination"),
+          envelope(5, "after-arrival-old", "A".repeat(8_000)),
+          envelope(6, "after-arrival-new", "B".repeat(6_000)),
         ]);
 
         const prepared = await service.prepareCrossMachineHandoff({
@@ -3163,7 +3164,8 @@ describe("createAgentChatService", () => {
           "base64",
         )).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as AgentChatEventEnvelope);
         expect(returned.map((item) => item.event.type === "user_message" ? item.event.messageId : null)).toEqual([
-          "after-arrival",
+          "after-arrival-old",
+          "after-arrival-new",
         ]);
         expect(returned.some((item) =>
           item.event.type === "system_notice" && item.event.status === "cross_machine_handoff_arrived",
@@ -3179,6 +3181,7 @@ describe("createAgentChatService", () => {
         expect(briefReturn.capsule.returnTo).toMatchObject({ sessionId: "original-chat", arrivalHandoffId: "first-arrival" });
         expect(briefReturn.capsule.brief).not.toContain("Continue from the brief");
         expect(briefReturn.capsule.brief).not.toContain("Arrived from MacBook");
+        expect(briefReturn.capsule.brief).toMatch(/transcript excerpt was shortened to fit the handoff brief/i);
       });
 
       it("packages an ADE-originated Codex rollout for fork (no external-import originator filter)", async () => {
@@ -4202,6 +4205,50 @@ describe("createAgentChatService", () => {
         .toBe(returnedClaudePointer?.sessionId);
       expect(values.get(receiptKey)).toMatchObject({ state: "complete" });
       expect(sessionService.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a mismatched fork provider before changing the original lane", async () => {
+      installCrossMachineDestinationLaneGitFixture({ branchRef: "feature/selected" });
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+      };
+      const { service } = createService({ db, getLocalMachineKey: () => "machine-a" });
+      const original = await service.createSession({
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      seedContinuedCrossMachineMove(values, original.id);
+      const capsule = makeForkCapsule();
+      capsule.handoffId = "return-provider-mismatch";
+      capsule.source.sessionId = "arrived-session";
+      capsule.source.machineKey = "machine-b";
+      capsule.source.branchRef = "feature/selected";
+      capsule.origin = {
+        machineKey: "machine-a",
+        machineName: "Mac Studio",
+        sessionId: original.id,
+        laneId: "lane-2",
+      };
+      capsule.returnTo = {
+        sessionId: original.id,
+        laneId: "lane-2",
+        arrivalHandoffId: "original-handoff",
+      };
+      const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
+
+      await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))
+        .rejects.toMatchObject({ code: "cross_machine_return_refused", reason: "provider_mismatch" });
+      expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) =>
+        gitArgs.join(" ") === `merge --ff-only ${HANDOFF_TEST_SHA}`,
+      )).toBe(false);
+      const persistedMove = values.get(`agent-chat-cross-machine-move:v1:${original.id}`) as {
+        record: NonNullable<Parameters<typeof crossMachineMoveLock>[0]>;
+      };
+      expect(crossMachineMoveLock(persistedMove.record)).not.toBeNull();
     });
 
     it.each([

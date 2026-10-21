@@ -6349,6 +6349,8 @@ export type DraftEntry = {
   firedAt?: string | null;
   /** Why a scheduled draft is blocked or missed, for the Needs-you row. */
   lastError?: string | null;
+  /** When this send first paused because its target chat continued on another machine. */
+  moveAwayHeldAt?: string | null;
 };
 
 /** Plain drafts keep the original 20-row ceiling. */

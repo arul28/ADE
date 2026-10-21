@@ -10132,6 +10132,9 @@ function buildChatPlan(args: string[]): CliPlan {
     const whenBusy = readFlag(args, ["--interrupt"]) ? "interrupt" : "wait";
     const note = readValue(args, ["--note"]);
     const sessionIds = standalonePositionals(args);
+    if (args.length > 0) {
+      throw new CliUsageError(`chat move contains unrecognized arguments: ${args.join(" ")}`);
+    }
     if (allWorkOnThisMachine && sessionIds.length > 0) {
       throw new CliUsageError("Use --all or list session ids, not both.");
     }

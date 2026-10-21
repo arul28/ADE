@@ -16765,6 +16765,9 @@ export function createAgentChatService(args: {
       "",
       "## Important decisions and preserved context",
       ...(preservedContext.length ? preservedContext.map((line) => `- ${line}`) : ["- No explicit summary was available, so rely on the transcript excerpt below."]),
+      ...(transcript.truncated
+        ? ["- The transcript excerpt was shortened to fit the handoff brief; omitted text may contain additional context."]
+        : []),
       ...(summaryLines.length && !preservedContext.some((line) => line.includes(summaryLines[0]!))
         ? summaryLines.map((line) => `- Recent summary note: ${line}`)
         : []),
@@ -16814,6 +16817,7 @@ export function createAgentChatService(args: {
       "## Files, commands, and errors to preserve",
       "## Next action or open issue",
       "Keep the brief concrete, factual, and concise. Do not invent missing details.",
+      "If the transcript excerpt is marked incomplete, preserve that caveat in the brief.",
       "",
       `Previous model: ${resolveSessionModelDescriptor(args.managed.session)?.displayName ?? args.managed.session.model}`,
       `New model: ${args.targetDescriptor.displayName}`,
@@ -16822,6 +16826,7 @@ export function createAgentChatService(args: {
       trimLine(args.sourceSession.summary) ? `Existing summary: ${trimLine(args.sourceSession.summary)}` : null,
       trimLine(args.sourceSession.completion?.summary) ? `Completion summary: ${trimLine(args.sourceSession.completion?.summary)}` : null,
       args.sourceSession.completion?.blockerDescription ? `Current blocker: ${trimLine(args.sourceSession.completion.blockerDescription)}` : null,
+      args.transcript.truncated ? "Transcript excerpt incomplete: some text was shortened to fit the handoff brief." : null,
       transcriptText.length ? `Transcript excerpt:\n${transcriptText}` : null,
       args.artifacts.commands.length ? `Recent commands:\n${args.artifacts.commands.map((line) => `- ${line}`).join("\n")}` : null,
       args.artifacts.fileChanges.length ? `Recent file changes:\n${args.artifacts.fileChanges.map((line) => `- ${line}`).join("\n")}` : null,
@@ -48924,6 +48929,7 @@ export function createAgentChatService(args: {
       : rawTranscript.entries;
     const briefEntries = selectedBriefEntries.slice(-12);
     let remainingBriefChars = 12_000;
+    let charTruncated = false;
     const boundedBriefEntries: AgentChatTranscriptEntry[] = [];
     for (let index = briefEntries.length - 1; index >= 0; index -= 1) {
       const entry = briefEntries[index]!;
@@ -48934,6 +48940,7 @@ export function createAgentChatService(args: {
         remainingBriefChars -= entryChars;
       } else {
         boundedBriefEntries.push(boundTranscriptEntry(entry, remainingBriefChars));
+        charTruncated = true;
         remainingBriefChars = 0;
       }
     }
@@ -48946,7 +48953,9 @@ export function createAgentChatService(args: {
       })),
       ...(returnSuffix ? {
         totalEntries: selectedBriefEntries.length,
-        truncated: briefEntries.length < selectedBriefEntries.length || boundedBriefEntries.length < briefEntries.length,
+        truncated: briefEntries.length < selectedBriefEntries.length
+          || boundedBriefEntries.length < briefEntries.length
+          || charTruncated,
       } : {}),
     };
     const rawArtifacts = collectHandoffArtifacts(briefEnvelopes);
@@ -63746,6 +63755,7 @@ export function createAgentChatService(args: {
       throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
     }
     const chatBacked = isChatToolType(row.toolType);
+    if (chatBacked) assertChatNotMovedAway(normalizedSessionId, "scheduled_work");
     const summary = chatBacked ? await summarizeSessionRow(row) : null;
     if (row.archivedAt || summary?.status === "ended") {
       throw new Error(`Agent session '${normalizedSessionId}' is ended or archived.`);
@@ -71860,6 +71870,14 @@ export function createAgentChatService(args: {
       status,
       firedAt: outcome.status === "sent" ? outcome.firedAt : null,
       lastError: outcome.status === "sent" ? null : outcome.error,
+      ...(outcome.status === "retry" && outcome.resumeScheduledAt
+        ? { scheduledAt: outcome.resumeScheduledAt }
+        : {}),
+      moveAwayHeldAt: outcome.status === "retry"
+        ? Object.hasOwn(outcome, "moveAwayHeldAt")
+          ? outcome.moveAwayHeldAt ?? null
+          : entry.moveAwayHeldAt ?? null
+        : null,
     };
     if (claimToken) {
       setDraftStatusIfSending(store, entry.id, patch, claimToken);

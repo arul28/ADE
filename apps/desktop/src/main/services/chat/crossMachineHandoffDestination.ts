@@ -938,6 +938,20 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
         return refuse("lane_mismatch", "The original project now points at a different Git repository.");
       }
 
+      if (capsule.mode === "fork" && !receiptStep("provider_replaced")) {
+        const targetDescriptor = getModelById(capsule.target.targetModelId)
+          ?? resolveModelAlias(capsule.target.targetModelId);
+        if (
+          !capsule.forkTransport
+          || !targetDescriptor
+          || resolveProviderGroupForModel(targetDescriptor) !== managed.session.provider
+          || capsule.source.provider !== managed.session.provider
+          || capsule.forkTransport.provider !== managed.session.provider
+        ) {
+          return refuse("provider_mismatch", "The returned provider history cannot resume the original chat's provider.");
+        }
+      }
+
       if (!receiptStep("lane_ready")) {
         // The returned work never lands in this machine's primary checkout:
         // a bundle or a fast-forward would rewrite the person's own copy. One
@@ -998,17 +1012,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
 
       if (!receiptStep("provider_replaced")) {
         if (capsule.mode === "fork") {
-          const targetDescriptor = getModelById(capsule.target.targetModelId)
-            ?? resolveModelAlias(capsule.target.targetModelId);
-          if (
-            !capsule.forkTransport
-            || !targetDescriptor
-            || resolveProviderGroupForModel(targetDescriptor) !== managed.session.provider
-            || capsule.source.provider !== managed.session.provider
-            || capsule.forkTransport.provider !== managed.session.provider
-          ) {
-            return refuse("provider_mismatch", "The returned provider history cannot resume the original chat's provider.");
-          }
           await deps.chat.materializeFork({
             capsule,
             handoffId,

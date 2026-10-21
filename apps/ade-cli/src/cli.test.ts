@@ -5190,6 +5190,26 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("rejects unknown options in batch chat moves while keeping listed session ids", () => {
+    const listedSessions = expectExecutePlan(buildCliPlan([
+      "chat", "move", "--machine", "Studio", "session-1",
+    ]));
+    expect(listedSessions.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "startCrossMachineBatchMove",
+        args: { machine: "Studio", sessionIds: ["session-1"] },
+      },
+    });
+
+    for (const args of [
+      ["chat", "move", "--machine", "Studio", "--all", "--no-change"],
+      ["chat", "move", "--machine", "Studio", "session-1", "--mystery"],
+    ]) {
+      expect(() => buildCliPlan(args)).toThrow(/chat move contains unrecognized arguments/);
+    }
+  });
+
   it.each([
     ["ask", ["q"], "requestSessionAttention", { message: "q" }],
     ["note", ["working"], "setSessionStatusNote", { note: "working" }],

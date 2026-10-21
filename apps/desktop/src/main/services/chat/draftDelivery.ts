@@ -14,7 +14,12 @@ export type DraftDeliveryOutcome =
   | { status: "sent"; firedAt: string }
   | { status: "blocked"; error: string }
   | { status: "missed"; error: string }
-  | { status: "retry"; error: string }
+  | {
+    status: "retry";
+    error: string;
+    moveAwayHeldAt?: string | null;
+    resumeScheduledAt?: string;
+  }
   /**
    * Another pass already owns this send. Never written back to the row — the
    * runtime that owns it must not have its claim recorded over.
@@ -113,20 +118,45 @@ export async function deliverDraft(
   const targetSessionId = draft.targetKind === "existing" ? draft.targetSessionId?.trim() : null;
   // A move-away lock pauses the draft before lateness rules run: even a strict
   // draft must remain pending so it can deliver if the chat returns here.
-  if (targetSessionId && deps.targetChatExists(targetSessionId) && deps.isChatMovedAway?.(targetSessionId)) {
-    return { status: "retry", error: "This chat continues on another machine." };
+  const targetMovedAway = Boolean(
+    targetSessionId
+    && deps.targetChatExists(targetSessionId)
+    && deps.isChatMovedAway?.(targetSessionId),
+  );
+  if (targetMovedAway) {
+    return {
+      status: "retry",
+      error: "This chat continues on another machine.",
+      moveAwayHeldAt: draft.moveAwayHeldAt ?? new Date(nowMs).toISOString(),
+    };
   }
   const fireAt = draft.scheduledAt ? Date.parse(draft.scheduledAt) : Number.NaN;
-  const latenessMs = Number.isFinite(fireAt) ? nowMs - fireAt : 0;
+  const heldAt = draft.moveAwayHeldAt ? Date.parse(draft.moveAwayHeldAt) : Number.NaN;
+  // Move the deadline once by the time spent waiting after the schedule was
+  // due. The retry write clears the marker, so later retries consume the
+  // remaining strict/grace window instead of shifting the deadline again.
+  const resumeScheduledAt = Number.isFinite(fireAt) && Number.isFinite(heldAt)
+    ? new Date(fireAt + Math.max(0, nowMs - Math.max(heldAt, fireAt))).toISOString()
+    : null;
+  const withResumeSchedule = (outcome: DraftDeliveryOutcome): DraftDeliveryOutcome => {
+    if (outcome.status !== "retry" || !resumeScheduledAt) return outcome;
+    return {
+      ...outcome,
+      moveAwayHeldAt: outcome.moveAwayHeldAt ?? null,
+      resumeScheduledAt,
+    };
+  };
+  const effectiveFireAt = resumeScheduledAt ? Date.parse(resumeScheduledAt) : fireAt;
+  const latenessMs = Number.isFinite(effectiveFireAt) ? nowMs - effectiveFireAt : 0;
 
   const late = isLate(latenessMs, draft);
   if (late) return late;
 
   if (!deps.attachmentsReady(draft)) {
-    return {
+    return withResumeSchedule({
       status: "retry",
       error: "Waiting for this send's images to reach this machine.",
-    };
+    });
   }
 
   const attachments = draft.attachments ?? [];
@@ -154,14 +184,24 @@ export async function deliverDraft(
         return { status: "blocked", error: "The chat this send was aimed at is gone. Pick another target." };
       }
       if (deps.isChatMovedAway?.(sessionId)) {
-        return { status: "retry", error: "This chat continues on another machine." };
+        return withResumeSchedule({
+          status: "retry",
+          error: "This chat continues on another machine.",
+          moveAwayHeldAt: new Date(nowMs).toISOString(),
+        });
       }
       await deps.sendToChat({ sessionId, text: draft.text, attachments });
     }
     return { status: "sent", firedAt: new Date(nowMs).toISOString() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (isMovedAwayChatError(error)) return { status: "retry", error: message };
+    if (isMovedAwayChatError(error)) {
+      return withResumeSchedule({
+        status: "retry",
+        error: message,
+        moveAwayHeldAt: new Date(nowMs).toISOString(),
+      });
+    }
     deps.logger.warn("draft.deliver_failed", { draftId: draft.id, message });
     if (error instanceof DraftDeliveryUnsupportedError) {
       // Retrying cannot help; surface it so the row says why.
@@ -169,6 +209,6 @@ export async function deliverDraft(
     }
     // A throw is a transport/session problem, not a decision — keep the send
     // armed and try again rather than losing the message.
-    return { status: "retry", error: message };
+    return withResumeSchedule({ status: "retry", error: message });
   }
 }

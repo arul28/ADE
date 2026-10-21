@@ -378,6 +378,61 @@ describe("draftService", () => {
       expect(stored?.fired_at).toBeTruthy();
     });
 
+    it("keeps a cross-machine pause through retries and clears it after delivery", () => {
+      const created = createDraft(db, { text: "send after return", schedule: schedule() });
+      const heldAt = "2026-10-09T12:00:00.000Z";
+
+      const firstClaim = claimScheduledDraft(db, created.id);
+      expect(firstClaim).toBeTruthy();
+      expect(setDraftStatusIfSending(db, created.id, {
+        status: "scheduled",
+        lastError: "This chat continues on another machine.",
+        moveAwayHeldAt: heldAt,
+      }, firstClaim!)).toBe(true);
+      expect(getDraft(db, created.id)?.moveAwayHeldAt).toBe(heldAt);
+
+      const retryClaim = claimScheduledDraft(db, created.id);
+      expect(retryClaim).toBeTruthy();
+      expect(setDraftStatusIfSending(db, created.id, {
+        status: "scheduled",
+        lastError: "Waiting for this send's images to reach this machine.",
+      }, retryClaim!)).toBe(true);
+      expect(getDraft(db, created.id)?.moveAwayHeldAt).toBe(heldAt);
+
+      const resumedClaim = claimScheduledDraft(db, created.id);
+      expect(resumedClaim).toBeTruthy();
+      const resumedScheduledAt = new Date().toISOString();
+      expect(setDraftStatusIfSending(db, created.id, {
+        status: "scheduled",
+        lastError: null,
+        scheduledAt: resumedScheduledAt,
+        moveAwayHeldAt: null,
+      }, resumedClaim!)).toBe(true);
+      expect(getDraft(db, created.id)).toMatchObject({
+        scheduledAt: resumedScheduledAt,
+        moveAwayHeldAt: null,
+      });
+
+      const unclaimedResumeAt = new Date(Date.parse(resumedScheduledAt) + 1_000).toISOString();
+      setDraftStatus(db, created.id, {
+        status: "scheduled",
+        scheduledAt: unclaimedResumeAt,
+        moveAwayHeldAt: null,
+      });
+      expect(getDraft(db, created.id)).toMatchObject({
+        scheduledAt: unclaimedResumeAt,
+        moveAwayHeldAt: null,
+      });
+
+      const deliveryClaim = claimScheduledDraft(db, created.id);
+      expect(deliveryClaim).toBeTruthy();
+      expect(setDraftStatusIfSending(db, created.id, {
+        status: "sent",
+        moveAwayHeldAt: null,
+      }, deliveryClaim!)).toBe(true);
+      expect(getDraft(db, created.id)?.moveAwayHeldAt).toBeNull();
+    });
+
     // Machine keys reach this host from three different places, so a row
     // targeted at "  StUdIo  " must still fire on a host named "studio".
     it("matches a target machine key regardless of casing or padding", () => {
