@@ -966,16 +966,19 @@ chat pane mount, which happens either way.
   and not again until the text has changed by 10% or more; an answer about
   older text never shows under newer text. One interactive `ai.jevDecide`
   call (feature `model_hint`, `modelHint.ts`) sends the prompt, this user's
-  recent new chats with the same provider and the same model maker (up to 10,
+  recent new chats with the same provider and the same model maker (up to 5,
   newest first, only on models still offered: model · effort and the prompt's start, from
-  `modelHintHistory.ts`), and one `choice` question over that provider's
-  model × effort options for that maker (`hintChoices`: the current model,
-  every model in the history, and the four strongest others; only image
-  models when images are attached; only the current model under
-  `effort_only`). Jev picks what this user would want. The chip shows only
-  when the pick is clearly off: another model, or an effort two or more
-  levels away; a model the user picked by hand is never moved to a weaker
-  one. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
+  `modelHintHistory.ts`), and two `choice` questions: which model of that
+  provider for that maker (`hintChoices`: the current model, every model in
+  the history, and the four strongest others; only image models when images
+  are attached; none asked under `effort_only`), and which effort. Two small
+  questions cost half the tokens of one over every model × effort pair,
+  pick as well, and are harder to talk into a pick from inside the prompt.
+  Jev answers what this user would want. The chip shows only when the pick
+  is clearly off: another model Jev is at least 0.7 sure of, or an effort
+  Jev puts at least 0.7 probability on being two or more levels away. A
+  model the user picked by hand is never moved to a weaker one, and no model
+  is moved up for a request Jev puts at the lowest effort. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
   it came from the user's similar chats or from the prompt alone. While the
   chip shows, the effort picker's trigger drops its level name below a wide
   composer (`squeezed`), keeping its bars and caret. A model the catalogue
@@ -988,8 +991,7 @@ chat pane mount, which happens either way.
   (`ai.chat.smartDecisionsEnabled`), an OpenCode Zen sign-in, and Settings ›
   Chat › Smart decisions › **Suggest a model and effort while typing**
   (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
-  or `off`). Any failure (Jev null or under 0.7 confidence, no catalogue)
-  shows nothing. The catalogue and the setting are cached per machine (10
+  or `off`). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
   minutes and 1 minute) and every call goes to the composer's
   `modelRuntimePin`.
 - **Model hint history.** `modelHintHistory.ts` keeps the last 100 new chats

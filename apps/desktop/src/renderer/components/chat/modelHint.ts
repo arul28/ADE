@@ -1,17 +1,17 @@
 /**
  * Jev's model and effort hint for a new chat.
  *
- * Jev gets the prompt, this user's recent new chats with the same provider and
- * the same model maker (what each was about, and the model and effort it
- * started on), and the model × effort choices that provider offers for that
- * maker. It picks the one this user would want. Matching a request to how a
- * person already works is reading, which Jev does well; there are no
- * benchmark numbers to weigh.
+ * Jev gets the prompt and this user's recent new chats with the same provider
+ * and the same model maker (what each was about, and the model and effort it
+ * started on), and answers two small questions: which of that provider's
+ * models for that maker, and which effort, this user would want. Matching a
+ * request to how a person already works is reading, which Jev does well;
+ * there are no benchmark numbers to weigh.
  *
  * Every gap (Jev null or unsure, no catalogue, no choices) is "no hint": the
  * composer stays exactly as it was.
  */
-import type { JevAnswers, JevDecideRequest } from "../../../shared/types/jev";
+import type { JevChoiceAnswer, JevChoiceQuestion, JevDecideRequest } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
 import type { ModelHintHistoryEntry } from "./modelHintHistory";
 
@@ -20,17 +20,19 @@ const MIN_PROMPT_WORDS = 3;
 const MIN_PROMPT_CHARS = 12;
 const STATE_PROMPT_CHARS = 2_000;
 /**
- * Below this the pick reads as no answer. On 160 of the author's real new
- * chats, 0.7 kept 8 of 9 chips right; 0.5 showed 14 with 6 the user ignored.
+ * Below this the pick reads as no answer: for another model, Jev's confidence
+ * in that model; for an effort alone, its probability that the effort is
+ * `EFFORT_LEVELS_TO_SPEAK` or more levels off. On 160 of the author's real
+ * new chats about 70% of the chips shown matched what the user then picked.
  */
 const MIN_CONFIDENCE = 0.7;
 /**
  * History lines sent to Jev, newest first. In the same test, 5 to 15 lines
- * picked equally well, none was far worse, and 30 drifted to older habits.
- * Free Jev has a daily allowance shared by every Jev feature on the network,
- * so the shorter end wins.
+ * picked equally well and 30 drifted to older habits; with no history Jev
+ * stays unsure and silent. Free Jev has a daily allowance shared by every Jev
+ * feature on the network, so the short end wins.
  */
-const HISTORY_LINES = 10;
+const HISTORY_LINES = 5;
 /** Models offered besides the current one and the ones in the history: the strongest few. */
 const EXTRA_MODELS = 4;
 /** Effort levels apart before an effort-only hint shows. */
@@ -97,7 +99,7 @@ function levelsOf(model: UserCatalogModel): Array<string | null> {
   return [...new Set(model.efforts.map((level) => level.effort))].sort((a, b) => effortRank(a) - effortRank(b));
 }
 
-export type HintChoice = { key: string; modelId: string; displayName: string; effort: string | null };
+export type HintChoice = { modelId: string; displayName: string; effort: string | null };
 
 /**
  * The model × effort choices Jev picks from: models of the current one's
@@ -134,7 +136,7 @@ export function hintChoices(args: {
     if (seenNames.has(name)) continue;
     seenNames.add(name);
     for (const effort of levelsOf(model)) {
-      choices.push({ key: effort ? `${name} · ${effort}` : name, modelId: model.modelId, displayName: model.displayName, effort });
+      choices.push({ modelId: model.modelId, displayName: model.displayName, effort });
     }
   }
   return choices;
@@ -170,25 +172,60 @@ export function buildModelHintRequest(context: ModelHintContext) {
       ? `This user's recent new chats with ${context.maker} models in ${context.provider}, newest first (model · effort: what it was about):\n${history.map(historyLine).join("\n")}`
       : `This user has no recent new chats with ${context.maker} models in ${context.provider}.`,
   ];
+  // Two small questions instead of one over every model × effort pair: half
+  // the input tokens, as accurate, and harder to talk into a pick.
+  const questions: Record<string, JevChoiceQuestion> = {};
+  const models = new Map(context.choices.map((choice) => [shortName(choice.displayName), choice.displayName]));
+  if (models.size >= 2) {
+    questions.model = {
+      type: "choice",
+      instructions: "Pick the model this user would want for the new request, judging from how they chose for similar past requests.",
+      criteria: Object.fromEntries(models),
+    };
+  }
+  const efforts = effortsOf(context.choices);
+  if (efforts.length >= 2) {
+    questions.effort = {
+      type: "choice",
+      instructions:
+        "Pick the effort this user would want for the new request, judging from how they chose for similar past requests: keep their usual effort for real work, lower only for a request as small as their past small ones, higher only for one clearly harder.",
+      criteria: Object.fromEntries(efforts.map((effort) => [effort, `${effort} effort`])),
+    };
+  }
   return {
     feature: "model_hint",
     state: lines.filter((line) => line != null).join("\n"),
-    questions: {
-      pick: {
-        type: "choice",
-        instructions:
-          "Pick the model and effort this user would want for the new request, judging from how they chose for similar past requests. Follow their habits: if they use a strong model and high effort for real work, keep that; go lower only for a request as small as their past small ones, and higher only for one clearly harder than what they usually pick for. With no similar past request, pick what fits the request.",
-        criteria: Object.fromEntries(context.choices.map((choice) => [
-          choice.key,
-          `${choice.displayName}${choice.effort ? ` at ${choice.effort} effort` : ""}`,
-        ])),
-      },
-    },
+    questions,
     priority: "interactive",
   } satisfies JevDecideRequest;
 }
 
-export type ModelHintAnswers = JevAnswers<ReturnType<typeof buildModelHintRequest>["questions"]>;
+function effortsOf(choices: readonly HintChoice[]): string[] {
+  return [...new Set(choices.flatMap((choice) => (choice.effort ? [choice.effort] : [])))]
+    .sort((a, b) => effortRank(a) - effortRank(b));
+}
+
+export type ModelHintAnswers = Partial<Record<"model" | "effort", JevChoiceAnswer>>;
+
+type Picked = { choice: HintChoice; modelConfidence: number; effortProbabilities: Record<string, number> | null };
+
+/** The choice the two answers name; null when either is missing. */
+function pickedChoice(answers: ModelHintAnswers, choices: readonly HintChoice[]): Picked | null {
+  const modelAsked = new Set(choices.map((choice) => choice.modelId)).size >= 2;
+  const effortAsked = effortsOf(choices).length >= 2;
+  if ((modelAsked && !answers.model) || (effortAsked && !answers.effort)) return null;
+  // Without a model question the only model is the current one, first in `choices`.
+  const modelId = answers.model
+    ? choices.find((choice) => shortName(choice.displayName) === answers.model!.choice)?.modelId
+    : choices[0]?.modelId;
+  const options = choices.filter((choice) => choice.modelId === modelId);
+  if (!options.length) return null;
+  const want = answers.effort?.choice ?? null;
+  // The nearest level the model has: Jev answers over every model's levels.
+  const choice = options.find((option) => option.effort === want)
+    ?? [...options].sort((a, b) => Math.abs(effortRank(a.effort) - effortRank(want)) - Math.abs(effortRank(b.effort) - effortRank(want)))[0]!;
+  return { choice, modelConfidence: answers.model?.confidence ?? 1, effortProbabilities: answers.effort?.probabilities ?? null };
+}
 
 export type ModelHint = {
   modelId: string;
@@ -208,7 +245,8 @@ function strength(model: UserCatalogModel | null | undefined): number {
  * Jev's pick as a hint, or null. Shown only when the pick is clearly off from
  * the current one: another model, or an effort `EFFORT_LEVELS_TO_SPEAK` or
  * more levels away. A model the user picked by hand is never moved to a
- * weaker one; it can still be moved up.
+ * weaker one; it can still be moved up, but not for a request Jev puts at
+ * the lowest effort.
  */
 export function hintFromAnswer(args: {
   answers: ModelHintAnswers | null;
@@ -219,10 +257,9 @@ export function hintFromAnswer(args: {
   modelChosen: boolean;
   fromHistory: boolean;
 }): ModelHint | null {
-  const pick = args.answers?.pick;
-  if (!pick || pick.confidence < MIN_CONFIDENCE) return null;
-  const choice = args.choices.find((entry) => entry.key === pick.choice);
-  if (!choice) return null;
+  const picked = args.answers ? pickedChoice(args.answers, args.choices) : null;
+  if (!picked) return null;
+  const { choice } = picked;
   const { current, currentEffort } = args;
   const reason = args.fromHistory
     ? "From how you picked for similar new chats"
@@ -231,8 +268,15 @@ export function hintFromAnswer(args: {
   if (choice.modelId === current.modelId) {
     const levels = levelsOf(current);
     if (currentEffort == null || choice.effort == null || choice.effort === currentEffort) return null;
-    const gap = Math.abs(levels.indexOf(choice.effort) - levels.indexOf(currentEffort));
-    if (levels.indexOf(currentEffort) < 0 || gap < EFFORT_LEVELS_TO_SPEAK) return null;
+    const from = levels.indexOf(currentEffort);
+    const to = levels.indexOf(choice.effort);
+    if (from < 0 || Math.abs(to - from) < EFFORT_LEVELS_TO_SPEAK) return null;
+    // Sure the effort is that far off on that side, not merely sure of one level.
+    const farOff = levels.reduce((sum, level, index) => {
+      const apart = (index - from) * Math.sign(to - from);
+      return apart >= EFFORT_LEVELS_TO_SPEAK && level ? sum + (picked.effortProbabilities?.[level] ?? 0) : sum;
+    }, 0);
+    if (farOff < MIN_CONFIDENCE) return null;
     return {
       modelId: current.modelId,
       displayName: current.displayName,
@@ -243,9 +287,14 @@ export function hintFromAnswer(args: {
     };
   }
 
+  // Another model needs Jev sure of the model; the effort shown is its best level.
+  if (picked.modelConfidence < MIN_CONFIDENCE) return null;
   const target = args.catalog.models.find((model) => model.modelId === choice.modelId);
   const direction = strength(target) >= strength(current) ? "up" : "down";
   if (direction === "down" && args.modelChosen) return null;
+  // A stronger model at the lowest effort is habit, not need: the request is
+  // small enough for the model already picked.
+  if (direction === "up" && effortRank(choice.effort) <= effortRank("low")) return null;
   return {
     modelId: choice.modelId,
     displayName: choice.displayName,
