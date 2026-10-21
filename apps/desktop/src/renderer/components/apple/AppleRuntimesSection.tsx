@@ -12,6 +12,7 @@ import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { cn } from "../ui/cn";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
 import { appleRuntimeInstallActive } from "./useAppleRuntimes";
+import { showToast } from "../app/toast/toastStore";
 
 /** The Mac App Store page for Xcode. */
 const XCODE_APP_STORE_URL = "macappstore://apps.apple.com/app/xcode/id497799835";
@@ -70,7 +71,22 @@ async function confirmRemoval(input: {
       && candidate.deviceTypes.some((type) => type.identifier === typeId)));
   };
   const stranded = simulators.filter((simulator) => !canMove(simulator.udid, simulator.deviceTypeIdentifier));
-  const yours = simulators.filter((simulator) => !simulator.ade);
+  // A lane's device always moves and is never erased behind its lane, so one
+  // no newer runtime runs blocks the removal outright: say so instead of
+  // offering a dialog whose every answer fails.
+  const strandedLaneDevices = stranded.filter((simulator) => simulator.laneHeld);
+  if (strandedLaneDevices.length) {
+    showToast({
+      id: "apple-runtime-remove-blocked",
+      tone: "warning",
+      title: `Can't remove ${input.entries.length === 1 ? input.entries[0]!.name : "these runtimes"} yet`,
+      message: `${strandedLaneDevices.map((simulator) => simulator.name).join(", ")} belongs to a lane and no newer runtime runs its model. Delete it from that lane first.`,
+    });
+    return null;
+  }
+  // Every simulator no lane holds (the person's, and ADE leftovers) follows
+  // the move-or-erase choice.
+  const choosable = simulators.filter((simulator) => !simulator.laneHeld);
   const bytes = input.entries.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
   const freed = bytes ? gigabytes(bytes) : null;
   const result = await checkboxConfirmDialog({
@@ -78,7 +94,7 @@ async function confirmRemoval(input: {
     destructive: true,
     confirmLabel: freed ? `Remove · free ${freed}` : "Remove",
     message: simulators.length
-      ? `${simulators.length} simulator${simulators.length === 1 ? "" : "s"} run on ${input.entries.length === 1 ? "it" : "them"}. ADE's own devices move to the newest runtime that runs their model.`
+      ? `${simulators.length} simulator${simulators.length === 1 ? "" : "s"} run on ${input.entries.length === 1 ? "it" : "them"}. Lane devices move to the newest runtime that runs their model.`
       : "No simulators use it.",
     children: simulators.length ? (
       <ul className="max-h-40 min-w-0 list-disc overflow-y-auto pl-5 font-sans text-[12px] leading-5 text-fg/80">
@@ -93,18 +109,19 @@ async function confirmRemoval(input: {
         ))}
       </ul>
     ) : undefined,
-    checkboxes: yours.length
+    checkboxes: choosable.length
       ? [{
         key: "move",
         label: stranded.length
-          ? "Move my simulators to a newer runtime (keeps their apps and data). Ones no newer runtime runs stop the removal; uncheck to erase everything instead."
-          : "Move my simulators to a newer runtime (keeps their apps and data). Unchecked erases them.",
-        defaultChecked: true,
+          ? "Move the simulators to a newer runtime (keeps their apps and data). Ones no newer runtime runs stop the removal; uncheck to erase them instead."
+          : "Move the simulators to a newer runtime (keeps their apps and data). Unchecked erases them.",
+        // Nothing stranded can move, so erasing is the only answer that works.
+        defaultChecked: !choosable.every((simulator) => stranded.includes(simulator)),
       }]
       : [],
   });
   if (!result.confirmed) return null;
-  return yours.length && !result.checked.move ? "erase" : "upgrade";
+  return choosable.length && !result.checked.move ? "erase" : "upgrade";
 }
 
 /**

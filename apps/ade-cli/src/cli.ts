@@ -14922,8 +14922,10 @@ function buildIosSimulatorPlan(
     // the lane renders it and files the proof.
     const listOf = <T extends string>(flag: string[], valid: readonly T[], fallback: T[]): T[] => {
       const raw = readValue(args, flag);
-      if (!raw) return fallback;
+      if (raw == null) return fallback;
+      // An explicit empty list is a mistake, not a request for the defaults.
       const values = raw.split(",").map((value) => value.trim());
+      if (values.every((value) => !value)) throw new CliUsageError(`ios-sim render: ${flag[0]} needs at least one value.`);
       const bad = values.find((value) => !(valid as readonly string[]).includes(value));
       if (bad !== undefined) throw new CliUsageError(`ios-sim render: '${bad}' is not one of ${valid.join(", ")}.`);
       return values as T[];
