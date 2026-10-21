@@ -26,7 +26,7 @@ export function MusicNowPlayingBar({
   const disabled = !authorized || !nowPlaying;
 
   return (
-    <footer className="ade-music-bar ade-chat-scene-plane" data-testid="music-now-playing-bar">
+    <footer className="ade-music-bar ade-chat-scene-plane" data-testid="music-now-playing-bar" data-onboarding-anchor="music-player">
       <MusicArtBackdrop artwork={nowPlaying?.artwork} className="is-bar" />
       <div className="ade-music-bar-now">
         <button

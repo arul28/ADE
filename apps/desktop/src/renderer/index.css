@@ -175,6 +175,39 @@ h6 {
   opacity: 0.82;
 }
 
+/* The project tab strip scrolls sideways once its tabs reach their minimum
+   width (TopBar). Whichever edge hides tabs fades out, so a clipped tab reads
+   as "more this way" rather than as a broken tab. TopBar sets the attributes. */
+.ade-shell-project-tab-strip {
+  --tab-strip-fade-start: 0px;
+  --tab-strip-fade-end: 0px;
+}
+
+.ade-shell-project-tab-strip[data-overflow-start] {
+  --tab-strip-fade-start: 24px;
+}
+
+.ade-shell-project-tab-strip[data-overflow-end] {
+  --tab-strip-fade-end: 24px;
+}
+
+.ade-shell-project-tab-strip:is([data-overflow-start], [data-overflow-end]) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--tab-strip-fade-start),
+    #000 calc(100% - var(--tab-strip-fade-end)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--tab-strip-fade-start),
+    #000 calc(100% - var(--tab-strip-fade-end)),
+    transparent 100%
+  );
+}
+
 .ade-shell-project-tab {
   --project-tab-accent: var(--color-accent);
   height: var(--shell-project-tab-height);
@@ -591,12 +624,24 @@ h6 {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 55%, transparent);
 }
 
-/* The settings cog sits alone at the far end of the footer. */
+/* Help and the settings cog sit together at the far end of the footer. */
+.ade-project-sidebar-footer-help,
 .ade-project-sidebar-footer-settings {
   justify-content: center;
   width: 26px;
-  margin-left: auto;
   padding: 0;
+}
+
+.ade-project-sidebar-footer-help {
+  margin-left: auto;
+}
+
+.ade-project-sidebar-footer-help + .ade-project-sidebar-footer-settings {
+  margin-left: 0;
+}
+
+.ade-project-sidebar-footer-settings {
+  margin-left: auto;
 }
 
 /* Settings sidebar header: app tools, then who you are. */
@@ -5077,98 +5122,6 @@ button, [role="button"] {
 
 .ade-fade-in {
   animation: ade-fade-slide-up 0.3s ease-out both;
-}
-
-/*
-   Welcome card (onboarding): split-hero layout.
-*/
-
-/* Card-specific entrance that preserves vertical centering (the global
-   dialog keyframe drops the -50% Y offset, which jumps a tall card). */
-.ade-welcome-card[data-state="open"] {
-  animation: ade-welcome-card-in 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-@keyframes ade-welcome-card-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.97); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-}
-
-.ade-welcome-card__glow {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 220px;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(120% 140% at 18% -20%, var(--color-accent-glow-strong, rgba(168, 130, 255, 0.22)), transparent 60%),
-    radial-gradient(90% 120% at 100% -10%, rgba(124, 58, 237, 0.16), transparent 55%);
-}
-
-.ade-welcome-card__body {
-  display: grid;
-  grid-template-columns: 1.55fr 1fr;
-  gap: 28px;
-  align-items: stretch;
-}
-
-.ade-welcome-card__surfaces {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-}
-
-.ade-welcome-card__tile {
-  animation: ade-welcome-tile-in 380ms cubic-bezier(0.2, 0, 0, 1) both;
-  transition: transform 160ms ease;
-}
-.ade-welcome-card__tile:hover {
-  transform: translateY(-3px);
-}
-
-.ade-welcome-card__qr {
-  transition: transform 180ms ease;
-}
-.ade-welcome-card__qr:hover {
-  transform: scale(1.06);
-}
-
-.ade-welcome-card__play {
-  transition: transform 160ms ease, box-shadow 160ms ease;
-}
-.ade-welcome-card__poster:hover .ade-welcome-card__play {
-  transform: translate(-50%, -50%) scale(1.08);
-}
-
-@keyframes ade-welcome-tile-in {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@media (max-width: 720px) {
-  .ade-welcome-card__body { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 640px) {
-  .ade-welcome-card__surfaces {
-    grid-template-columns: 1fr;
-    gap: 12px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ade-welcome-card[data-state="open"] { animation: none; }
-  .ade-welcome-card__tile,
-  .ade-welcome-card__qr,
-  .ade-welcome-card__play {
-    animation: none !important;
-    transition: none !important;
-  }
-  .ade-welcome-card__tile:hover { transform: none; }
-  .ade-welcome-card__qr:hover { transform: none; }
-  .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
 
 /* New-lane launches. A launched chat's sidebar row slides in once; the

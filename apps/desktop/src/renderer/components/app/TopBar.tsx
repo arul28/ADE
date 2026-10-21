@@ -118,6 +118,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { AccountAvatar } from "../account/AccountAvatar";
 import { useAccountStatus } from "../../lib/account";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -377,6 +378,7 @@ function ShellConnectionChip({
   onClick,
   trailing,
   layout = "chip",
+  onboardingAnchor,
 }: {
   label: string;
   icon: React.ReactNode;
@@ -386,6 +388,8 @@ function ShellConnectionChip({
   onClick: () => void;
   trailing?: React.ReactNode;
   layout?: "chip" | "menu-row";
+  /** Marks the control for the onboarding tour (`data-onboarding-anchor`). */
+  onboardingAnchor?: string;
 }) {
   return (
     <button
@@ -395,6 +399,7 @@ function ShellConnectionChip({
           ? HEADER_STATUS_MENU_ROW_CLASS
           : "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium text-muted-fg/75 transition-colors duration-150 hover:text-fg/90",
       )}
+      data-onboarding-anchor={onboardingAnchor}
       data-variant={layout === "chip" ? "ghost" : undefined}
       role={layout === "menu-row" ? "menuitem" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -1537,6 +1542,23 @@ export function TopBar({
     && !isSettingsTabOpen
     && (remoteBinding != null || project?.rootPath != null);
 
+  // Which tab is in front, and how many there are: when either changes the
+  // strip re-checks its clipped edges and scrolls the active tab into view.
+  const tabStripLayoutKey = [
+    tabGroups.length,
+    remoteBinding?.key ?? project?.rootPath ?? "",
+    personalChatsRouteActive,
+    browserRouteActive,
+    musicRouteActive,
+    hubRouteActive,
+    personalChatsTabOpen,
+    browserTabOpen,
+    musicTabOpen,
+    isSettingsTabOpen,
+    isNewTabOpen,
+  ].join("|");
+  useProjectTabStripOverflow(tabStripRef, tabStripLayoutKey);
+
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
       target: RemoteRuntimeTarget,
@@ -1976,6 +1998,7 @@ export function TopBar({
     : (
       <ShellConnectionChip
         label="Connections"
+        onboardingAnchor="connections"
         connected={anyConnectionActive}
         title="Machines, mobile, and web clients"
         ariaExpanded={connectionsOpen}
@@ -2089,259 +2112,285 @@ export function TopBar({
       {/* Divider */}
       <div className="ade-shell-header-divider h-3 w-px shrink-0" />
 
-      {/* Project tabs — the container stays draggable, only interactive elements opt out */}
-      <div
-        ref={tabStripRef}
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
-      >
-        {tabGroups.length > 0 ||
-        isNewTabOpen ||
-        isSettingsTabOpen ||
-        personalChatsTabOpen ||
-        browserTabOpen ||
-        musicTabOpen ? (
-          <>
-            {tabGroups.map((group) => {
-              const machine = activeMachineForGroup(group);
-              if (!machine) return null;
-              if (!machine.isLocal) {
-                const remoteTab =
-                  openRemoteProjectTabs.find(
-                    (entry) => entry.key === machine.bindingKey,
-                  )
-                  ?? (machine.binding?.kind === "remote" ? machine.binding : null);
-                if (!remoteTab) return null;
-                const isCurrentRemote = remoteBinding?.key === remoteTab.key;
-                const remoteTabState = remoteConnectionState(remoteTab.targetId);
-                const remoteTabConnecting = remoteTabState === "connecting";
-                const remoteTabDisconnected =
-                  remoteTabState === "error" || remoteTabState === "idle";
-                const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
-                const remoteTabKey = tabOrderKey(group);
+      {/* Project tabs, then the new-tab buttons pinned after them: the tabs
+          shrink to their minimum width and then scroll sideways behind the
+          buttons, so the buttons never leave the bar. Both containers stay
+          draggable; only interactive elements opt out. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <div
+          ref={tabStripRef}
+          className={cn(
+            "ade-shell-project-tab-strip relative flex min-w-0 items-center gap-1",
+            "overflow-x-auto scrollbar-none",
+          )}
+        >
+          {tabGroups.length > 0 ||
+          isNewTabOpen ||
+          isSettingsTabOpen ||
+          personalChatsTabOpen ||
+          browserTabOpen ||
+          musicTabOpen ? (
+            <>
+              {tabGroups.map((group) => {
+                const machine = activeMachineForGroup(group);
+                if (!machine) return null;
+                if (!machine.isLocal) {
+                  const remoteTab =
+                    openRemoteProjectTabs.find(
+                      (entry) => entry.key === machine.bindingKey,
+                    )
+                    ?? (machine.binding?.kind === "remote" ? machine.binding : null);
+                  if (!remoteTab) return null;
+                  const isCurrentRemote = remoteBinding?.key === remoteTab.key;
+                  const remoteTabState = remoteConnectionState(remoteTab.targetId);
+                  const remoteTabConnecting = remoteTabState === "connecting";
+                  const remoteTabDisconnected =
+                    remoteTabState === "error" || remoteTabState === "idle";
+                  const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
+                  const remoteTabKey = tabOrderKey(group);
+                  return (
+                    <div
+                      key={group.id}
+                      role="button"
+                      tabIndex={0}
+                      {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
+                      onPointerDown={(event) => {
+                        if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
+                      }}
+                      onContextMenu={(event) => openTabMenu(event, group.id)}
+                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
+                      data-remote-state={remoteTabState}
+                      aria-current={isCurrentRemote ? "true" : undefined}
+                      // A project tab looks the same wherever its checkout
+                      // lives. The machine is in the tooltip; only a connection
+                      // problem, which stops the tab from loading, is marked.
+                      className={cn(
+                        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] items-center gap-1.5 px-2.5",
+                        "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
+                        "cursor-pointer",
+                        isCurrentRemote && "font-semibold",
+                      )}
+                      style={
+                        {
+                          WebkitAppRegion: "no-drag",
+                          ...projectTabDrag.tabDragStyle(remoteTabKey),
+                        } as React.CSSProperties
+                      }
+                      title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
+                      onClick={() => {
+                        if (projectTabDrag.isDragClick()) return;
+                        handleSwitchRemoteProject(remoteTab);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          handleSwitchRemoteProject(remoteTab);
+                        }
+                      }}
+                    >
+                      <ProjectTabIcon
+                        rootPath={remoteTab.rootPath}
+                        isCurrent={isCurrentRemote}
+                        animate={false}
+                        disabled={false}
+                        iconDataUrlOverride={
+                          hostIconByKey.get(remoteTab.key) ?? remoteTab.iconDataUrl ?? null
+                        }
+                      />
+                      <span className="min-w-0 flex-1 truncate text-center text-[12px]">
+                        {remoteTab.displayName}
+                      </span>
+                      {remoteTabConnecting ? (
+                        <CircleNotch
+                          size={11}
+                          weight="bold"
+                          className="shrink-0 animate-spin text-amber-300"
+                          aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                        />
+                      ) : remoteTabDisconnected ? (
+                        <WarningCircle
+                          size={11}
+                          weight="fill"
+                          className="shrink-0 text-red-300"
+                          aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                        />
+                      ) : null}
+                      <button
+                        type="button"
+                        className={cn(
+                          "ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
+                          "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
+                        )}
+                        data-variant="ghost"
+                        disabled={isProjectBusy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCloseRemoteTab(remoteTab);
+                        }}
+                        title="Close project"
+                      >
+                        <X size={13} weight="regular" />
+                      </button>
+                    </div>
+                  );
+                }
+
+                const idx = projectTabs.findIndex(
+                  (entry) => entry.rootPath === machine.rootPath,
+                );
+                const rp = idx === -1 ? null : projectTabs[idx];
+                if (!rp) return null;
+                const isCurrent =
+                  !remoteBinding && project?.rootPath === rp.rootPath;
+                const isMissing = !rp.exists;
+                const isRelocating = relocatingPath === rp.rootPath;
+                const isSwitchTarget =
+                  projectTransition?.kind === "switching" &&
+                  projectTransition.rootPath === rp.rootPath;
+                const isClosingTarget =
+                  projectTransition?.kind === "closing" && isCurrent;
+                const localTabKey = tabOrderKey(group);
+                const canDragTab = !isMissing && !isRelocating && !isProjectBusy;
+                const projectAccentColor =
+                  projectAccentColors[rp.rootPath] ?? null;
+                const projectTabStyle = {
+                  WebkitAppRegion: "no-drag",
+                  ...(projectAccentColor
+                    ? { "--project-tab-accent": projectAccentColor }
+                    : {}),
+                } as React.CSSProperties;
+                let projectTabState: string | undefined;
+                if (isRelocating) projectTabState = "open";
+                else if (isMissing) projectTabState = "missing";
+                // While the Chats machine tab is the foreground surface, the
+                // bound project tab stays rendered but must not also read active.
+                else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
+                const indicator = terminalAttention?.indicator;
+                const localTabPress = pressActivation(() => {
+                  if (projectTabDrag.isDragClick()) return;
+                  if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
+                }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
                 return (
                   <div
                     key={group.id}
-                    role="button"
-                    tabIndex={0}
-                    {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
+                    role={isMissing ? undefined : "button"}
+                    tabIndex={isMissing ? -1 : 0}
+                    data-state={projectTabState}
+                    data-tour={
+                      isCurrent && workspaceProjectOpen
+                        ? "project.activeTab"
+                        : undefined
+                    }
+                    aria-current={isCurrent ? "true" : undefined}
+                    aria-disabled={
+                      isRelocating || isProjectBusy ? true : undefined
+                    }
+                    {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
                     onPointerDown={(event) => {
-                      if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
+                      if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                      localTabPress.onPointerDown(event);
                     }}
                     onContextMenu={(event) => openTabMenu(event, group.id)}
-                    data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
-                    data-remote-state={remoteTabState}
-                    aria-current={isCurrentRemote ? "true" : undefined}
-                    // A project tab looks the same wherever its checkout
-                    // lives. The machine is in the tooltip; only a connection
-                    // problem, which stops the tab from loading, is marked.
                     className={cn(
-                      "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
+                      "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] items-center gap-1.5 px-2.5",
                       "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                      "cursor-pointer",
-                      isCurrentRemote && "font-semibold",
+                      !isMissing && "cursor-pointer",
+                      isCurrent && "font-semibold",
+                      isRelocating && "pointer-events-none opacity-80",
+                      (isSwitchTarget || isClosingTarget) &&
+                        "pointer-events-none opacity-80",
                     )}
-                    style={
-                      {
-                        WebkitAppRegion: "no-drag",
-                        ...projectTabDrag.tabDragStyle(remoteTabKey),
-                      } as React.CSSProperties
-                    }
-                    title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={() => {
-                      if (projectTabDrag.isDragClick()) return;
-                      handleSwitchRemoteProject(remoteTab);
-                    }}
+                    style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
+                    onClick={localTabPress.onClick}
                     onKeyDown={(event) => {
+                      if (isMissing) return;
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        handleSwitchRemoteProject(remoteTab);
+                        handleSwitchProject(rp.rootPath);
                       }
                     }}
+                    title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                   >
                     <ProjectTabIcon
-                      rootPath={remoteTab.rootPath}
-                      isCurrent={isCurrentRemote}
-                      animate={false}
-                      disabled={false}
-                      iconDataUrlOverride={
-                        hostIconByKey.get(remoteTab.key) ?? remoteTab.iconDataUrl ?? null
-                      }
+                      rootPath={rp.rootPath}
+                      isCurrent={isCurrent}
+                      animate={isSwitchTarget || isClosingTarget}
+                      disabled={isMissing}
+                      onAccentColorChange={handleProjectAccentColorChange}
                     />
-                    <span className="min-w-0 flex-1 truncate text-center text-[12px]">
-                      {remoteTab.displayName}
-                    </span>
-                    {remoteTabConnecting ? (
+                    {isSwitchTarget || isClosingTarget ? (
                       <CircleNotch
-                        size={11}
+                        size={12}
                         weight="bold"
-                        className="shrink-0 animate-spin text-amber-300"
-                        aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
-                      />
-                    ) : remoteTabDisconnected ? (
-                      <WarningCircle
-                        size={11}
-                        weight="fill"
-                        className="shrink-0 text-red-300"
-                        aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                        className="shrink-0 animate-spin opacity-80"
                       />
                     ) : null}
-                    <button
-                      type="button"
-                      className={cn(
-                        "ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
-                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
-                      )}
-                      data-variant="ghost"
-                      disabled={isProjectBusy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCloseRemoteTab(remoteTab);
-                      }}
-                      title="Close project"
-                    >
-                      <X size={13} weight="regular" />
-                    </button>
-                  </div>
-                );
-              }
-
-              const idx = projectTabs.findIndex(
-                (entry) => entry.rootPath === machine.rootPath,
-              );
-              const rp = idx === -1 ? null : projectTabs[idx];
-              if (!rp) return null;
-              const isCurrent =
-                !remoteBinding && project?.rootPath === rp.rootPath;
-              const isMissing = !rp.exists;
-              const isRelocating = relocatingPath === rp.rootPath;
-              const isSwitchTarget =
-                projectTransition?.kind === "switching" &&
-                projectTransition.rootPath === rp.rootPath;
-              const isClosingTarget =
-                projectTransition?.kind === "closing" && isCurrent;
-              const localTabKey = tabOrderKey(group);
-              const canDragTab = !isMissing && !isRelocating && !isProjectBusy;
-              const projectAccentColor =
-                projectAccentColors[rp.rootPath] ?? null;
-              const projectTabStyle = {
-                WebkitAppRegion: "no-drag",
-                ...(projectAccentColor
-                  ? { "--project-tab-accent": projectAccentColor }
-                  : {}),
-              } as React.CSSProperties;
-              let projectTabState: string | undefined;
-              if (isRelocating) projectTabState = "open";
-              else if (isMissing) projectTabState = "missing";
-              // While the Chats machine tab is the foreground surface, the
-              // bound project tab stays rendered but must not also read active.
-              else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
-              const indicator = terminalAttention?.indicator;
-              const localTabPress = pressActivation(() => {
-                if (projectTabDrag.isDragClick()) return;
-                if (!isMissing) tabSwitchRef.current = handleSwitchProject(rp.rootPath);
-              }, tabSwitchesOnPress && canDragTab && !isCurrent && projectInfoByRoot[rp.rootPath] != null);
-              return (
-                <div
-                  key={group.id}
-                  role={isMissing ? undefined : "button"}
-                  tabIndex={isMissing ? -1 : 0}
-                  data-state={projectTabState}
-                  data-tour={
-                    isCurrent && workspaceProjectOpen
-                      ? "project.activeTab"
-                      : undefined
-                  }
-                  aria-current={isCurrent ? "true" : undefined}
-                  aria-disabled={
-                    isRelocating || isProjectBusy ? true : undefined
-                  }
-                  {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
-                  onPointerDown={(event) => {
-                    if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
-                    localTabPress.onPointerDown(event);
-                  }}
-                  onContextMenu={(event) => openTabMenu(event, group.id)}
-                  className={cn(
-                    "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
-                    "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                    !isMissing && "cursor-pointer",
-                    isCurrent && "font-semibold",
-                    isRelocating && "pointer-events-none opacity-80",
-                    (isSwitchTarget || isClosingTarget) &&
-                      "pointer-events-none opacity-80",
-                  )}
-                  style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
-                  onClick={localTabPress.onClick}
-                  onKeyDown={(event) => {
-                    if (isMissing) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      handleSwitchProject(rp.rootPath);
-                    }
-                  }}
-                  title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
-                >
-                  <ProjectTabIcon
-                    rootPath={rp.rootPath}
-                    isCurrent={isCurrent}
-                    animate={isSwitchTarget || isClosingTarget}
-                    disabled={isMissing}
-                    onAccentColorChange={handleProjectAccentColorChange}
-                  />
-                  {isSwitchTarget || isClosingTarget ? (
-                    <CircleNotch
-                      size={12}
-                      weight="bold"
-                      className="shrink-0 animate-spin opacity-80"
-                    />
-                  ) : null}
-                  {isCurrent && indicator != null && indicator !== "none" ? (
+                    {isCurrent && indicator != null && indicator !== "none" ? (
+                      <span
+                        title={
+                          indicator === "running-needs-attention"
+                            ? `${terminalAttention.needsAttentionCount} running terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                            : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
+                        }
+                        className={cn(
+                          "ade-status-dot h-1.5 w-1.5 shrink-0",
+                          indicator === "running-needs-attention"
+                            ? "ade-status-dot-warning"
+                            : "ade-status-dot-active",
+                        )}
+                      />
+                    ) : null}
                     <span
-                      title={
-                        indicator === "running-needs-attention"
-                          ? `${terminalAttention.needsAttentionCount} running terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
-                          : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
-                      }
                       className={cn(
-                        "ade-status-dot h-1.5 w-1.5 shrink-0",
-                        indicator === "running-needs-attention"
-                          ? "ade-status-dot-warning"
-                          : "ade-status-dot-active",
+                        "min-w-0 flex-1 truncate text-center",
+                        isMissing && "line-through",
                       )}
-                    />
-                  ) : null}
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate text-center",
-                      isMissing && "line-through",
-                    )}
-                  >
-                    {rp.displayName}
-                  </span>
-                  {isMissing ? (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
+                    >
+                      {rp.displayName}
+                    </span>
+                    {isMissing ? (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
+                        <button
+                          type="button"
+                          className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                          data-variant="ghost"
+                          data-state={isRelocating ? "open" : undefined}
+                          disabled={isRelocating || isProjectBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isRelocating || isProjectBusy) return;
+                            handleRelocate(rp.rootPath);
+                          }}
+                          title="Relocate project"
+                        >
+                          <FolderOpen
+                            size={13}
+                            weight="regular"
+                            className={cn(isRelocating && "animate-pulse")}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                          data-variant="ghost"
+                          disabled={isProjectBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isProjectBusy) return;
+                            handleRemoveTab(rp.rootPath);
+                          }}
+                          title="Remove from list"
+                        >
+                          <Trash size={13} weight="regular" />
+                        </button>
+                      </span>
+                    ) : (
                       <button
                         type="button"
-                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
-                        data-variant="ghost"
-                        data-state={isRelocating ? "open" : undefined}
-                        disabled={isRelocating || isProjectBusy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (isRelocating || isProjectBusy) return;
-                          handleRelocate(rp.rootPath);
-                        }}
-                        title="Relocate project"
-                      >
-                        <FolderOpen
-                          size={13}
-                          weight="regular"
-                          className={cn(isRelocating && "animate-pulse")}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                        className={cn(
+                          "ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
+                          "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
+                        )}
                         data-variant="ghost"
                         disabled={isProjectBusy}
                         onClick={(e) => {
@@ -2349,159 +2398,142 @@ export function TopBar({
                           if (isProjectBusy) return;
                           handleRemoveTab(rp.rootPath);
                         }}
-                        title="Remove from list"
+                        title="Remove project"
                       >
-                        <Trash size={13} weight="regular" />
+                        <X size={13} weight="regular" />
                       </button>
-                    </span>
+                    )}
+                  </div>
+                );
+              })}
+              {personalChatsTabOpen ? (
+                <ShellNavTab
+                  active={personalChatsRouteActive}
+                  label="Chats"
+                  onActivate={() => {
+                    if (!personalChatsRouteActive) onNavigate?.("/chats");
+                  }}
+                  onClose={() => {
+                    closePersonalChatsTab();
+                    if (personalChatsRouteActive) {
+                      onNavigate?.("/work", { replace: true });
+                    }
+                  }}
+                  closeTitle="Close chats"
+                >
+                  <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
+                </ShellNavTab>
+              ) : null}
+              {browserTabOpen ? (
+                <ShellNavTab
+                  active={browserRouteActive}
+                  label="Browser"
+                  onActivate={() => {
+                    if (!browserRouteActive) onNavigate?.("/browser");
+                  }}
+                  onClose={() => {
+                    setBrowserTabOpen(false);
+                    if (browserRouteActive) {
+                      onNavigate?.("/work", { replace: true });
+                    }
+                  }}
+                  closeTitle="Close browser"
+                >
+                  <Globe size={15} weight="duotone" className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1 truncate text-center text-[12px]">Browser</span>
+                </ShellNavTab>
+              ) : null}
+              {musicTabOpen ? (
+                <ShellNavTab
+                  active={musicRouteActive}
+                  label="Music"
+                  className="relative max-w-[220px]"
+                  onActivate={() => {
+                    if (!musicRouteActive) onNavigate?.("/music");
+                  }}
+                  onClose={() => {
+                    // The tab is the player: closing it turns the music off.
+                    closeMusicTab();
+                    setMusicTabOpen(false);
+                    if (musicRouteActive) {
+                      onNavigate?.("/work", { replace: true });
+                    }
+                  }}
+                  closeTitle="Close Music"
+                >
+                  <MusicTabContent active={musicRouteActive} />
+                </ShellNavTab>
+              ) : null}
+              {isSettingsTabOpen && (
+                <ShellNavTab
+                  active
+                  label="Settings"
+                  // Its own content is already in front; activating closes nothing.
+                  onActivate={() => {}}
+                  onClose={() => {
+                    setStandaloneSettingsOpen(false);
+                    onNavigate?.("/work", { replace: true });
+                  }}
+                  closeTitle="Close settings"
+                >
+                  <GearSix size={15} weight="duotone" className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1 truncate text-center text-[12px]">Settings</span>
+                </ShellNavTab>
+              )}
+              {isNewTabOpen && (
+                <ShellNavTab
+                  active={!machineRouteActive && !isSettingsTabOpen}
+                  label="New Tab"
+                  onActivate={() => {
+                    if (machineRouteActive) onNavigate?.("/work");
+                  }}
+                  onClose={() => {
+                    if (isProjectBusy) return;
+                    cancelNewTab();
+                    // With no project, fall back to the first machine tab still open.
+                    const machineTabRoute = hasProject
+                      ? null
+                      : ([
+                        [personalChatsTabOpen, "/chats"],
+                        [browserTabOpen, "/browser"],
+                        [musicTabOpen, "/music"],
+                      ] as const).find(([open]) => open)?.[1];
+                    if (machineTabRoute) onNavigate?.(machineTabRoute);
+                  }}
+                  closeTitle="Close new tab"
+                  closeDisabled={isProjectBusy}
+                >
+                  {projectTransition?.kind === "opening" ? (
+                    <CircleNotch
+                      size={13}
+                      weight="bold"
+                      className="animate-spin"
+                    />
                   ) : (
-                    <button
-                      type="button"
-                      className={cn(
-                        "ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
-                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
-                      )}
-                      data-variant="ghost"
-                      disabled={isProjectBusy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isProjectBusy) return;
-                        handleRemoveTab(rp.rootPath);
-                      }}
-                      title="Remove project"
-                    >
-                      <X size={13} weight="regular" />
-                    </button>
+                    <img
+                      src="./logo.png"
+                      alt=""
+                      style={{ height: 16, width: 34, objectFit: "contain" }}
+                      draggable={false}
+                    />
                   )}
-                </div>
-              );
-            })}
-            {personalChatsTabOpen ? (
-              <ShellNavTab
-                active={personalChatsRouteActive}
-                label="Chats"
-                onActivate={() => {
-                  if (!personalChatsRouteActive) onNavigate?.("/chats");
-                }}
-                onClose={() => {
-                  closePersonalChatsTab();
-                  if (personalChatsRouteActive) {
-                    onNavigate?.("/work", { replace: true });
-                  }
-                }}
-                closeTitle="Close chats"
-              >
-                <ChatCircleDots size={15} weight="duotone" className="shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Chats</span>
-              </ShellNavTab>
-            ) : null}
-            {browserTabOpen ? (
-              <ShellNavTab
-                active={browserRouteActive}
-                label="Browser"
-                onActivate={() => {
-                  if (!browserRouteActive) onNavigate?.("/browser");
-                }}
-                onClose={() => {
-                  setBrowserTabOpen(false);
-                  if (browserRouteActive) {
-                    onNavigate?.("/work", { replace: true });
-                  }
-                }}
-                closeTitle="Close browser"
-              >
-                <Globe size={15} weight="duotone" className="shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Browser</span>
-              </ShellNavTab>
-            ) : null}
-            {musicTabOpen ? (
-              <ShellNavTab
-                active={musicRouteActive}
-                label="Music"
-                className="relative max-w-[220px]"
-                onActivate={() => {
-                  if (!musicRouteActive) onNavigate?.("/music");
-                }}
-                onClose={() => {
-                  // The tab is the player: closing it turns the music off.
-                  closeMusicTab();
-                  setMusicTabOpen(false);
-                  if (musicRouteActive) {
-                    onNavigate?.("/work", { replace: true });
-                  }
-                }}
-                closeTitle="Close Music"
-              >
-                <MusicTabContent active={musicRouteActive} />
-              </ShellNavTab>
-            ) : null}
-            {isSettingsTabOpen && (
-              <ShellNavTab
-                active
-                label="Settings"
-                // Its own content is already in front; activating closes nothing.
-                onActivate={() => {}}
-                onClose={() => {
-                  setStandaloneSettingsOpen(false);
-                  onNavigate?.("/work", { replace: true });
-                }}
-                closeTitle="Close settings"
-              >
-                <GearSix size={15} weight="duotone" className="shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 truncate text-center text-[12px]">Settings</span>
-              </ShellNavTab>
-            )}
-            {isNewTabOpen && (
-              <ShellNavTab
-                active={!machineRouteActive && !isSettingsTabOpen}
-                label="New Tab"
-                onActivate={() => {
-                  if (machineRouteActive) onNavigate?.("/work");
-                }}
-                onClose={() => {
-                  if (isProjectBusy) return;
-                  cancelNewTab();
-                  // With no project, fall back to the first machine tab still open.
-                  const machineTabRoute = hasProject
-                    ? null
-                    : ([
-                      [personalChatsTabOpen, "/chats"],
-                      [browserTabOpen, "/browser"],
-                      [musicTabOpen, "/music"],
-                    ] as const).find(([open]) => open)?.[1];
-                  if (machineTabRoute) onNavigate?.(machineTabRoute);
-                }}
-                closeTitle="Close new tab"
-                closeDisabled={isProjectBusy}
-              >
-                {projectTransition?.kind === "opening" ? (
-                  <CircleNotch
-                    size={13}
-                    weight="bold"
-                    className="animate-spin"
-                  />
-                ) : (
-                  <img
-                    src="./logo.png"
-                    alt=""
-                    style={{ height: 16, width: 34, objectFit: "contain" }}
-                    draggable={false}
-                  />
-                )}
-                <span className="min-w-0 flex-1 truncate text-[12px]">
-                  {projectTransition?.kind === "opening"
-                    ? "Opening…"
-                    : "New Tab"}
-                </span>
-              </ShellNavTab>
-            )}
-          </>
-        ) : null}
+                  <span className="min-w-0 flex-1 truncate text-[12px]">
+                    {projectTransition?.kind === "opening"
+                      ? "Opening…"
+                      : "New Tab"}
+                  </span>
+                </ShellNavTab>
+              )}
+            </>
+          ) : null}
+        </div>
 
         {/* Add project button */}
         <button
           type="button"
           data-tour="project.addProject"
+          data-onboarding-anchor="new-tab"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
             "transition-[background-color,color,border-color,box-shadow] duration-150",

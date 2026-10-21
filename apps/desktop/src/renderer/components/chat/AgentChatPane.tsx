@@ -181,6 +181,7 @@ import {
   useThreadComments,
 } from "./threadCommentsStore";
 import { ClaudeModUi } from "./ClaudeModUi";
+import { registerDraftModelSetter } from "./draftModelSeam";
 import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
@@ -303,6 +304,7 @@ export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
@@ -445,6 +447,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
 import { recordStarPillMessageSent, recordStarPillThreadCreated } from "../../lib/starPillActivity";
+import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
   setComposerDraftPresence,
@@ -505,7 +508,10 @@ import {
   CLAUDE_SESSION_QUOTA_CARD_VARIANT,
   CLAUDE_SESSION_QUOTA_FORK_NOTE,
 } from "../../../shared/claudeSessionQuota";
-import { summarizeNativeControls as summarizeNativeLaunchControls } from "../../lib/nativeLaunchControls";
+import {
+  defaultNativeControls,
+  summarizeNativeControls as summarizeNativeLaunchControls,
+} from "../../lib/nativeLaunchControls";
 import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
@@ -2044,35 +2050,6 @@ function composerDraftStorageKeys(scope: {
   return [...new Set(keys)];
 }
 
-function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
-  if (profile === "persistent_identity") {
-    return {
-      interactionMode: "default",
-      claudePermissionMode: "bypassPermissions",
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
-      opencodePermissionMode: "full-auto",
-      droidPermissionMode: "auto-high",
-      musePermissionMode: "allowAll",
-      cursorModeId: "full-auto",
-      cursorConfigValues: {},
-    };
-  }
-  return {
-    interactionMode: "default",
-    claudePermissionMode: "default",
-    codexApprovalPolicy: "on-request",
-    codexSandbox: "workspace-write",
-    codexConfigSource: "flags",
-    opencodePermissionMode: "edit",
-    droidPermissionMode: "auto-low",
-    musePermissionMode: "onRequest",
-    cursorModeId: "agent",
-    cursorConfigValues: {},
-  };
-}
-
 type ChatRuntimeProviderKey =
   | "claude"
   | "codex"
@@ -2931,6 +2908,24 @@ type LaunchConfigSessionSource = Pick<
   | "cursorModeId"
   | "cursorConfigValues"
 >;
+
+/** The permission ladder family a chat runtime provider belongs to; null for providers off the ladder. */
+function permissionLadderFamilyForProvider(provider: string): PermissionLadderFamily | null {
+  switch (provider) {
+    case "claude": return "claude";
+    case "codex": return "codex";
+    case "opencode": return "opencode";
+    case "droid": return "droid";
+    case "muse": return "muse";
+    case "cursor": return "cursor";
+    // Every ACP provider shares one permission round-trip, grok included.
+    case "qwen":
+    case "kimi":
+    case "grok":
+    case "copilot": return "acp";
+    default: return null;
+  }
+}
 
 function nativeControlsFromLaunchSource(
   source: Partial<LaunchConfigSessionSource>,
@@ -4076,7 +4071,8 @@ export function AgentChatPane({
   const draftLaunchConfigLaneScopeId = forceDraft ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
   const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
-  const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
+  // Full access on every provider unless the lane remembers another choice.
+  const initialNativeControls = useMemo(() => defaultNativeControls(), []);
   const lastLaunchConfigStorageKeys = useMemo(() => {
     const [primary, migration] = launchConfigStorageKeys({
       bindingKey: projectBinding?.key ?? null,
@@ -6892,8 +6888,19 @@ export function AgentChatPane({
 
   const modelCatalogScopeKeyRef = useRef(modelCatalogScopeKey);
   modelCatalogScopeKeyRef.current = modelCatalogScopeKey;
+  // Families whose permission controls carry a deliberate choice in this
+  // composer (picked, or restored with the launch config); the permission
+  // ladder below never overwrites them.
+  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
     setModelId(config.modelId);
+    // The restored model's own permissions were chosen when it launched. With
+    // full access as the default, "equals the default" no longer tells a
+    // restored choice from an untouched one, so mark it.
+    const restoredFamily = permissionLadderFamilyForProvider(
+      resolveChatRuntimeProvider(resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current)),
+    );
+    if (restoredFamily) visitedLadderFamiliesRef.current.add(restoredFamily);
     // Every caller of this hydrates a DRAFT, so the same rule as a draft model
     // change applies: a persisted thinking level or fast flag must not survive a
     // model that no longer exposes that control. Without this, a stale stored
@@ -10112,15 +10119,19 @@ export function AgentChatPane({
     pendingEventQueueRef.current = [];
   }, []);
 
+  // "Last used" is what the person chose: a model ADE set on a draft (the
+  // tour's first chat, `draftKeepsMachineDefaultsRef`) is not written.
   useEffect(() => {
     if (!preferencesReady) return;
     if (!modelId.trim().length) return;
+    if (draftKeepsMachineDefaultsRef.current) return;
     writeLastUsedModelId(modelId);
     writeLastPresetSelection(modelId, draftHarnessPresetId);
   }, [modelId, draftHarnessPresetId, preferencesReady]);
 
   useEffect(() => {
     if (!preferencesReady) return;
+    if (draftKeepsMachineDefaultsRef.current) return;
     writeLastUsedReasoningEffort({
       laneId,
       modelId,
@@ -10485,6 +10496,27 @@ export function AgentChatPane({
     insertComposerDraft,
   ]);
 
+  /**
+   * The draft's model was set by ADE, not picked: neither the machine's
+   * remembered launch defaults nor this composer's own "last used" keys
+   * (`ade.chat.last*`) take it. A model the person picks clears this.
+   */
+  const draftKeepsMachineDefaultsRef = useRef(false);
+  // A draft's model, set from outside (the onboarding tour picks a cheap one
+  // for the first chat; `draftModelSeam.ts`). Routed through the composer's
+  // own handler, so the usual checks apply.
+  const composerModelChangeRef = useRef<((modelId: string) => void) | null>(null);
+  useEffect(() => {
+    if (!forceDraft) return undefined;
+    return registerDraftModelSetter((pick) => {
+      if (!composerModelChangeRef.current) return false;
+      composerModelChangeRef.current(pick.modelId);
+      // After the pick above, which clears the flag as a person's pick would.
+      draftKeepsMachineDefaultsRef.current = !pick.rememberLaunchDefaults;
+      return true;
+    });
+  }, [forceDraft]);
+
   useEffect(() => {
     const pending = selectedSessionId
       ? takeAgentChatDraftHandoff({ sessionId: selectedSessionId })
@@ -10709,25 +10741,11 @@ export function AgentChatPane({
   // Only families the user has not visited in this composer are overwritten.
   // An exact earlier choice (Droid's `agi`, say) is remembered and restored,
   // which is why the visited set exists.
-  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(() => {
-    const provider = resolveChatRuntimeProvider(selectedModelDesc);
-    switch (provider) {
-      case "claude": return "claude";
-      case "codex": return "codex";
-      case "opencode": return "opencode";
-      case "droid": return "droid";
-      case "muse": return "muse";
-      case "cursor": return "cursor";
-      // Every ACP provider shares one permission round-trip, grok included.
-      case "qwen":
-      case "kimi":
-      case "grok":
-      case "copilot": return "acp";
-      default: return null;
-    }
-  }, [selectedModelDesc]);
+  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(
+    () => permissionLadderFamilyForProvider(resolveChatRuntimeProvider(selectedModelDesc)),
+    [selectedModelDesc],
+  );
   const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
-  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
   useEffect(() => {
     const next = activeLadderFamily;
     const previous = previousLadderFamilyRef.current;
@@ -10737,11 +10755,12 @@ export function AgentChatPane({
     if (!previous || previous === next) return;
     if (visitedLadderFamiliesRef.current.has(next)) return;
 
-    // Never overwrite a family that already carries a deliberate choice. The
-    // target's controls differ from this surface's defaults when the user set
-    // them, or when they were restored from the remembered launch config —
-    // switching the model must not discard either. Only a family still sitting
-    // on its untouched default inherits the level.
+    // Never overwrite a family that already carries a deliberate choice: one
+    // the user set (its controls differ from this surface's defaults) or the
+    // one a remembered launch config restored (in the visited set, since a
+    // restored full-access choice equals the full-access default). Switching
+    // the model must not discard either. Only a family still sitting on its
+    // untouched default inherits the level.
     const targetIsUntouched = (() => {
       switch (next) {
         case "claude": return claudePermissionMode === initialNativeControls.claudePermissionMode;
@@ -11177,6 +11196,9 @@ export function AgentChatPane({
       // machine's preset list and key store, so nothing resolved travels.
       ...draftLaunchBrainRef.current,
       ...nativeControlPayload,
+      // A draft ADE configured (the tour's first chat) leaves the machine's
+      // remembered model alone; a model the person picks clears this.
+      ...(draftKeepsMachineDefaultsRef.current ? { rememberLaunchDefaults: false } : {}),
     };
     return {
       createArgs,
@@ -11223,7 +11245,12 @@ export function AgentChatPane({
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
       recordStarPillThreadCreated();
-      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+      if (draftKeepsMachineDefaultsRef.current) {
+        // ADE's pick launched once; the next draft here remembers again.
+        draftKeepsMachineDefaultsRef.current = false;
+      } else {
+        rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+      }
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -12243,7 +12270,12 @@ export function AgentChatPane({
         const built = buildChatCreateArgs(prepared);
         provider = built.provider;
         // Same "remember what I launched with" write the direct create path makes.
-        rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        if (draftKeepsMachineDefaultsRef.current) {
+          // ADE's pick launched once; the next draft here remembers again.
+          draftKeepsMachineDefaultsRef.current = false;
+        } else {
+          rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        }
         chat = {
           create: built.createArgs,
           message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode),
@@ -13706,10 +13738,12 @@ export function AgentChatPane({
         setError(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
         return;
       }
-      if (await sendToContinuedChat()) {
-        clearPromptSuggestionForSession(selectedSessionId);
-        return;
-      }
+    }
+    // Situational suggestions read the typed text here, once, and keep none of it.
+    noteChatSendForSuggestions(draft, { projectRoot, pin: chatRuntimePinRef.current });
+    if (selectedSessionId && await sendToContinuedChat()) {
+      clearPromptSuggestionForSession(selectedSessionId);
+      return;
     }
     clearPromptSuggestionForSession(selectedSessionId);
     if (draft.trim().length || attachments.length) recordStarPillMessageSent();
@@ -16692,6 +16726,7 @@ export function AgentChatPane({
       }}
       title={chatActionsOpen ? "Close chat progress" : "Open chat progress"}
       aria-label={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
+      data-onboarding-anchor="chat-actions"
       aria-pressed={chatActionsOpen}
     >
       <TreeStructure size={16} weight="bold" />
@@ -17023,6 +17058,107 @@ export function AgentChatPane({
     : sessionRoutePick?.sessionId === selectedSessionId
       ? sessionRoutePick.presetId
       : selectedSession?.presetId ?? null;
+  // The composer's model pick, also reachable from outside for a draft
+  // (`draftModelSeam.ts`, the onboarding tour's first chat).
+  const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
+    draftKeepsMachineDefaultsRef.current = false;
+    // A Custom pick is validated by the picker against what its
+    // harness can reach; its model is often not in this provider
+    // list at all (a DeepSeek model run in Claude Code).
+    const modelAllowed = options?.presetId
+      ? true
+      : composerConstrainModelSelection
+      ? composerAvailableModelIds.includes(nextModelId)
+      : (
+          !effectiveAvailableModelIds.length
+          || effectiveAvailableModelIds.includes(nextModelId)
+          || isKnownSelectableChatModelId(nextModelId)
+          || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
+        );
+    if (!modelAllowed) {
+      return;
+    }
+    if (isPersistentIdentitySurface && sessionMutationKind) {
+      return;
+    }
+    const previousFastMode = fastModeRef.current;
+    draftLaunchBrainRef.current = options?.presetId
+      ? { presetId: options.presetId }
+      : options?.credentialId
+        ? { credentialId: options.credentialId }
+        : {};
+    // The ref above is launch payload; this is the same choice made
+    // visible. Without it a draft picked from the Harnesses tab fell
+    // back to the model's own provider in the trigger — naming a
+    // provider the preset does not even run on.
+    setDraftHarnessPresetId(options?.presetId ?? null);
+    // A new model starts on its default context tier unless the pick
+    // came from its context chip.
+    setCopilotContextTier(options?.copilotContextTier ?? "default");
+    setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
+    const snapshot = buildModelSelectionSnapshot(nextModelId);
+    // Ordinary model selection clears the previous cloud service
+    // tier. A service-tier row selection carries the newly chosen
+    // tier through this same handler, even when it targets another
+    // model in the picker.
+    const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
+      cursorCloudSessionActive,
+      options,
+    );
+    /* A Custom pick carries its own thinking level.
+       A preset saved at High launches at High: it was chosen with
+       the model in front of the person who saved it, and reconciling
+       it against the registry row here is what silently turned
+       "High" into the model's default the moment the pick landed.
+       An ordinary model pick keeps the reconcile — there the old
+       level belongs to a model the user just left. */
+    const presetTarget = options?.presetId
+      ? resolveHarnessLaunchTarget(options.presetId, harnessPresets, modelCatalogScopeKey)
+      : null;
+    const presetEffort = presetTarget ? presetTarget.reasoningEffort ?? null : undefined;
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+      // The draft owns its thinking level and fast flag, so a model
+      // change leaves behind a value the new model may not expose.
+      // Reconcile here, before launch: the launch snapshot reads this
+      // state raw, and the main process rejects an effort the model
+      // does not advertise. This is the rule the Cursor Cloud
+      // auto-switch already applies, generalized to every draft model
+      // change.
+      const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
+        reasoningEffort,
+        fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
+      });
+      setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
+      // Ultrafast carries over only to a model that offers it too.
+      setFastModeState(
+        reconciledControls.fastMode,
+        modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+      );
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    } else if (options) {
+      if (presetEffort !== undefined) setReasoningEffort(presetEffort);
+      setFastModeState(
+        options.fastMode,
+        modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
+      );
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    } else {
+      setCursorCloudServiceTier(nextCursorCloudTier);
+    }
+    if (!selectedSessionId || turnActive) {
+      applyModelSelectionSnapshot(snapshot);
+      return;
+    }
+
+    // Keep the selection local until submit(). Submit applies the
+    // existing updateSession handoff immediately before send(), so
+    // no provider runtime is torn down or rebound while the user is
+    // still choosing a model or typing.
+    deferredComposerSessionIdRef.current = selectedSessionId;
+    applyModelSelectionSnapshot(snapshot);
+  };
+  composerModelChangeRef.current = handleComposerModelChange;
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -17168,103 +17304,7 @@ export function AgentChatPane({
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
-            onModelChange={(nextModelId, options) => {
-              // A Custom pick is validated by the picker against what its
-              // harness can reach; its model is often not in this provider
-              // list at all (a DeepSeek model run in Claude Code).
-              const modelAllowed = options?.presetId
-                ? true
-                : composerConstrainModelSelection
-                ? composerAvailableModelIds.includes(nextModelId)
-                : (
-                    !effectiveAvailableModelIds.length
-                    || effectiveAvailableModelIds.includes(nextModelId)
-                    || isKnownSelectableChatModelId(nextModelId)
-                    || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
-                  );
-              if (!modelAllowed) {
-                return;
-              }
-              if (isPersistentIdentitySurface && sessionMutationKind) {
-                return;
-              }
-              const previousFastMode = fastModeRef.current;
-              draftLaunchBrainRef.current = options?.presetId
-                ? { presetId: options.presetId }
-                : options?.credentialId
-                  ? { credentialId: options.credentialId }
-                  : {};
-              // The ref above is launch payload; this is the same choice made
-              // visible. Without it a draft picked from the Harnesses tab fell
-              // back to the model's own provider in the trigger — naming a
-              // provider the preset does not even run on.
-              setDraftHarnessPresetId(options?.presetId ?? null);
-              // A new model starts on its default context tier unless the pick
-              // came from its context chip.
-              setCopilotContextTier(options?.copilotContextTier ?? "default");
-              setSessionRoutePick(selectedSessionId ? { sessionId: selectedSessionId, presetId: options?.presetId ?? null } : null);
-              const snapshot = buildModelSelectionSnapshot(nextModelId);
-              // Ordinary model selection clears the previous cloud service
-              // tier. A service-tier row selection carries the newly chosen
-              // tier through this same handler, even when it targets another
-              // model in the picker.
-              const nextCursorCloudTier = resolveCursorCloudServiceTierOnModelChange(
-                cursorCloudSessionActive,
-                options,
-              );
-              /* A Custom pick carries its own thinking level.
-                 A preset saved at High launches at High: it was chosen with
-                 the model in front of the person who saved it, and reconciling
-                 it against the registry row here is what silently turned
-                 "High" into the model's default the moment the pick landed.
-                 An ordinary model pick keeps the reconcile — there the old
-                 level belongs to a model the user just left. */
-              const presetTarget = options?.presetId
-                ? resolveHarnessLaunchTarget(options.presetId, harnessPresets, modelCatalogScopeKey)
-                : null;
-              const presetEffort = presetTarget ? presetTarget.reasoningEffort ?? null : undefined;
-              if (!selectedSessionId) {
-                draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
-                // The draft owns its thinking level and fast flag, so a model
-                // change leaves behind a value the new model may not expose.
-                // Reconcile here, before launch: the launch snapshot reads this
-                // state raw, and the main process rejects an effort the model
-                // does not advertise. This is the rule the Cursor Cloud
-                // auto-switch already applies, generalized to every draft model
-                // change.
-                const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
-                  reasoningEffort,
-                  fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
-                });
-                setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
-                // Ultrafast carries over only to a model that offers it too.
-                setFastModeState(
-                  reconciledControls.fastMode,
-                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
-                );
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              } else if (options) {
-                if (presetEffort !== undefined) setReasoningEffort(presetEffort);
-                setFastModeState(
-                  options.fastMode,
-                  modelSupportsUltrafast(snapshot.nextDesc) ? fastTierRef.current : null,
-                );
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              } else {
-                setCursorCloudServiceTier(nextCursorCloudTier);
-              }
-              if (!selectedSessionId || turnActive) {
-                applyModelSelectionSnapshot(snapshot);
-                return;
-              }
-
-              // Keep the selection local until submit(). Submit applies the
-              // existing updateSession handoff immediately before send(), so
-              // no provider runtime is torn down or rebound while the user is
-              // still choosing a model or typing.
-              deferredComposerSessionIdRef.current = selectedSessionId;
-              applyModelSelectionSnapshot(snapshot);
-            }}
+            onModelChange={handleComposerModelChange}
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}
             onDraftChange={updateComposerDraft}
@@ -18314,6 +18354,7 @@ export function AgentChatPane({
                                 value={draftShelfLaneValue}
                                 onChange={handleShelfLaneChange}
                                 onCreateLane={() => setNewLaneDialogOpen(true)}
+                                onboardingAnchor="lane-picker"
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
@@ -18421,6 +18462,7 @@ export function AgentChatPane({
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!importTargetLane}
                                         data-draft-import-session
+                                        data-onboarding-anchor="import-button"
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
                                       >

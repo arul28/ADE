@@ -68,6 +68,7 @@ export function HistoryLanePicker({
               WORK_TOOL_CHROME_FOCUS,
             )}
             data-testid="history-lane-picker"
+            data-onboarding-anchor="history-lane-picker"
           >
             {current
               ? (

@@ -156,7 +156,7 @@ function MusicPageContent() {
     return (
       <MusicFrame>
         <div className="ade-music-center">
-          <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unsupported">
+          <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-unsupported" data-onboarding-anchor="music-setup">
             <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
             <h1>Music isn't available here</h1>
             <p>{message ?? `${providerName} is available on Windows and macOS.`}</p>
@@ -179,7 +179,7 @@ function MusicPageContent() {
     return (
       <MusicFrame>
         <div className="ade-music-center">
-          <section className={`ade-music-gate ade-chat-scene-plane${provider === "spotify" ? " is-setup" : ""}`} data-testid="music-unavailable">
+          <section className={`ade-music-gate ade-chat-scene-plane${provider === "spotify" ? " is-setup" : ""}`} data-testid="music-unavailable" data-onboarding-anchor="music-setup">
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
             <h1>{`${providerName} isn't available right now`}</h1>
             <p>{message ?? "ADE couldn't reach its music service."}</p>
@@ -305,7 +305,7 @@ function MusicFrame({ children, pageRef }: { children: React.ReactNode; pageRef?
   return (
     <div ref={pageRef} className="ade-chat-scene ade-music relative flex h-full min-h-0 flex-col text-fg" data-testid="music-page">
       <ChatSceneBackdrop />
-      <div className="ade-music-frame">{children}</div>
+      <div className="ade-music-frame" data-onboarding-anchor="music-page">{children}</div>
     </div>
   );
 }

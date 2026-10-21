@@ -59,6 +59,7 @@ import type {
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
+import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -171,10 +172,17 @@ export function ProjectWelcomePage() {
 
   useEffect(() => {
     if (webMode) return;
-    window.ade.project
-      .listRecent()
-      .then(setRecentProjects)
-      .catch(() => {});
+    const load = () => {
+      window.ade.project
+        .listRecent()
+        .then(setRecentProjects)
+        .catch(() => {});
+    };
+    load();
+    // First-run setup can add projects while Home is already showing (a
+    // replay from the help menu).
+    window.addEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
+    return () => window.removeEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
   }, [webMode]);
 
   useEffect(() => {
@@ -829,6 +837,7 @@ export function ProjectWelcomePage() {
                 primary
                 label="Add project"
                 tour="project.welcomeAddButton"
+                onboardingAnchor="add-project"
                 disabled={webMode && !activeWebMachine}
                 title={
                   webMode && !activeWebMachine
@@ -868,6 +877,7 @@ export function ProjectWelcomePage() {
                 <button
                   type="button"
                   className="ade-home-action ade-home-customize"
+                  data-onboarding-anchor="home-customize"
                   aria-label="Customize home page"
                   title="Customize home page"
                   onClick={() => setEditingHome(true)}

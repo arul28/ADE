@@ -49,7 +49,7 @@ const CODEX_SESSION_META_MAX_BYTES = 64 * 1024;
 const CODEX_RECENT_SCAN_FLOOR = 1000;
 
 /** Codex's own thread store. Present since the multi-agent rewrite; absent on older installs. */
-const CODEX_STATE_DB_BASENAME = "state_5.sqlite";
+export const CODEX_STATE_DB_BASENAME = "state_5.sqlite";
 /** Upper bound on rows pulled from `threads` in one discovery pass. */
 const CODEX_STATE_DB_ROW_CEILING = 20_000;
 /** DB text columns only ever feed a clipped preview, so read a bounded prefix of each. */
@@ -263,7 +263,8 @@ function collectRecentCodexSessionCandidates(
   return sortFileCandidatesByMtime(collectCodexSessionCandidates(root, sessionId), limit);
 }
 
-function codexHomeDir(args: ExternalSessionDiscoveryArgs): string {
+/** Codex's home folder: `CODEX_HOME` when set, else `~/.codex`. */
+export function codexHomeDir(args: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env"> = {}): string {
   const env = args.env ?? (args.homeDir ? undefined : process.env);
   const configured = typeof env?.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
   return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
@@ -633,10 +634,31 @@ function codexThreadRow(value: unknown): CodexThreadRow | null {
  * subagent, and the DB knows about children whose own `session_meta` carries no
  * parent id at all. `archived` rollouts move out of `sessions/`, so excluding
  * them here matches what the file scan can see.
- *
+ */
+export const CODEX_TOP_LEVEL_THREAD_WHERE = `t.archived = 0
+       AND NOT EXISTS (
+             SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id
+           )`;
+
+/**
+ * The row-level checks `codexSeedsFromStateDb` runs in JS (`agentRole`,
+ * `isImportableCodexSource`), as SQL over `threads t`, for callers that only
+ * aggregate rows (first-run discovery's per-folder counts). Keep the two in
+ * step: no agent role, and a source that is absent or a string other than
+ * `exec`/`vscode` (case-insensitive), never a JSON object or array.
+ */
+export const CODEX_IMPORTABLE_THREAD_WHERE = `${CODEX_TOP_LEVEL_THREAD_WHERE}
+       AND COALESCE(t.agent_role, '') = ''
+       AND (t.source IS NULL
+            OR (lower(t.source) NOT IN ('exec', 'vscode')
+                AND substr(t.source, 1, 1) NOT IN ('{', '[')))`;
+
+/**
  * `*_ms` columns arrived in a later migration and backfill to 0 for rows the
  * triggers never touched, hence the COALESCE onto the second-resolution ones.
  */
+export const CODEX_THREAD_UPDATED_AT_MS_SQL = "COALESCE(NULLIF(t.updated_at_ms, 0), t.updated_at * 1000)";
+
 function codexThreadRowsSql(exactLookup: boolean): string {
   return `
     SELECT t.id AS id,
@@ -646,12 +668,9 @@ function codexThreadRowsSql(exactLookup: boolean): string {
            t.agent_role AS agentRole,
            t.name AS name,
            COALESCE(NULLIF(t.created_at_ms, 0), t.created_at * 1000) AS createdAtMs,
-           COALESCE(NULLIF(t.updated_at_ms, 0), t.updated_at * 1000) AS updatedAtMs
+           ${CODEX_THREAD_UPDATED_AT_MS_SQL} AS updatedAtMs
       FROM threads t
-     WHERE t.archived = 0
-       AND NOT EXISTS (
-             SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id
-           )
+     WHERE ${CODEX_TOP_LEVEL_THREAD_WHERE}
        ${exactLookup ? "AND t.id = ?" : ""}
      ORDER BY updatedAtMs DESC, t.id DESC
      LIMIT ?

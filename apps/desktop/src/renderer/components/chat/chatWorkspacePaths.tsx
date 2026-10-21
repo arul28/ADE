@@ -300,18 +300,32 @@ function loadMediaWorkspaces(pin: OpenProjectBinding | null): Promise<FilesWorks
   return pending;
 }
 
-/** Resolve media using the same lane selection rules as opening a chat file link. */
-export async function resolveWorkspaceMediaTarget(args: {
+export type MediaPathClass =
+  | { kind: "resolved"; target: { workspaceId: string; relativePath: string } }
+  /** An absolute path no root of this project holds (a file in /tmp, another repo). */
+  | { kind: "outside" }
+  /** Not readable here for any other reason: it does not parse, or no root list to read it against. */
+  | { kind: "unavailable" };
+
+/**
+ * Where a media path in a chat lives: resolved with the same lane selection
+ * rules as opening a chat file link, else `outside` when it is an absolute
+ * path that no root holds, read against a root list that loaded with at least
+ * one root. A path that does not parse, a relative one that did not resolve,
+ * or an empty root list (a machine still answering, or a failed read) is
+ * `unavailable`, not `outside`.
+ */
+export async function classifyMediaPath(args: {
   path: string | WorkspacePathLocation;
   laneId: string | null;
   pin: OpenProjectBinding | null;
-}): Promise<{ workspaceId: string; relativePath: string } | null> {
+}): Promise<MediaPathClass> {
   const path = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
-  if (!path) return null;
+  if (!path) return { kind: "unavailable" };
   const key = `${machineCacheKey(args.pin)}\0${args.laneId ?? ""}\0${normalizePath(path.path)}`;
   const cached = resolvedMediaTargets.get(key);
   if (cached) {
-    if (cached.expiresAt > Date.now()) return cached.target;
+    if (cached.expiresAt > Date.now()) return { kind: "resolved", target: cached.target };
     resolvedMediaTargets.delete(key);
   }
 
@@ -323,13 +337,21 @@ export async function resolveWorkspaceMediaTarget(args: {
     workspaces,
     fallbackLaneId: args.laneId,
   });
-  if (!target) return null;
   // An absolute path uses the root it matched, which may be an external
   // workspace with no lane; a relative one belongs to the chat's lane.
-  const workspace = target.workspace
-    ?? workspaces.find((candidate) => candidate.laneId === target.laneId)
-    ?? workspaces.find((candidate) => candidate.kind === "primary");
-  if (!workspace) return null;
+  const workspace = target
+    ? target.workspace
+      ?? workspaces.find((candidate) => candidate.laneId === target.laneId)
+      ?? workspaces.find((candidate) => candidate.kind === "primary")
+    : undefined;
+  if (!target || !workspace) {
+    const candidate = normalizePath(path.path);
+    const absolute = candidate.startsWith("/") || isWindowsAbsolutePath(candidate);
+    const outside = absolute
+      && workspaces.length > 0
+      && !workspaces.some((root) => isPathEqualOrDescendant(candidate, normalizePath(root.rootPath)));
+    return { kind: outside ? "outside" : "unavailable" };
+  }
   const resolved = { workspaceId: workspace.id, relativePath: target.openFilePath };
   if (resolvedMediaTargets.size >= RESOLVED_MEDIA_TARGETS_MAX) {
     // Maps iterate in insertion order, so the first key is the oldest entry.
@@ -337,7 +359,7 @@ export async function resolveWorkspaceMediaTarget(args: {
     if (oldest !== undefined) resolvedMediaTargets.delete(oldest);
   }
   resolvedMediaTargets.set(key, { target: resolved, expiresAt: Date.now() + 30_000 });
-  return resolved;
+  return { kind: "resolved", target: resolved };
 }
 
 export function resetFilesWorkspaceCacheForTests(): void {

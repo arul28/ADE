@@ -52,7 +52,8 @@ export type HomeWidgetType =
   | "heatmap"
   | "shipped"
   | "feed"
-  | "nowPlaying";
+  | "nowPlaying"
+  | "tips";
 
 /**
  * The stored size: S is Compact, M and W are Regular (stored as the shape the
@@ -97,7 +98,7 @@ export type HomeLayout = {
 };
 
 const WIDGET_TYPES = new Set<HomeWidgetType>([
-  "projects", "running", "activity", "limits", "prs", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "feed", "nowPlaying",
+  "projects", "running", "activity", "limits", "prs", "clock", "pomodoro", "clipboard", "machine", "heatmap", "shipped", "feed", "nowPlaying", "tips",
 ]);
 
 export function defaultHomeLayout(): HomeLayout {

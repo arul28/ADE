@@ -1,13 +1,13 @@
 import type { CSSProperties } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
+import { publicAssetUrl } from "../../lib/publicAssetUrl";
 
 /**
  * ADE's QR code: dark on white, with the ADE mark cut into the middle (hence
  * error-correction level H). Draw it on a white surface; `AdeQrCodeTile` is
  * that surface for a code that sits in a card.
  *
- * The welcome card (`WelcomeVideoGate`) still draws the same tile inline.
+ * First-run setup draws it inline, on its own white inset.
  */
 export function AdeQrCode({ value, title, size }: { value: string; title: string; size: number }) {
   const markSize = Math.round(size * (32 / 148));

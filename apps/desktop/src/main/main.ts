@@ -7883,6 +7883,18 @@ app.whenReady().then(async () => {
     }
   };
 
+  /** A wedged first-run discovery child would otherwise outlive ADE's quit. */
+  const terminateOnboardingDiscoveryWorkersBestEffort = (): void => {
+    try {
+      const { terminateOnboardingDiscoveryWorkers } = require(
+        "./services/onboarding/onboardingDiscoveryClient",
+      );
+      terminateOnboardingDiscoveryWorkers();
+    } catch {
+      // ignore if module not loaded
+    }
+  };
+
   const disposeSharedTranscriptionService = (): void => {
     try {
       sharedTranscriptionService?.dispose();
@@ -8009,6 +8021,7 @@ app.whenReady().then(async () => {
     // exit on their own once this process is gone.
     void disposeAllCursorSdkConnections().catch(() => {});
     terminateLoginImportWorkersBestEffort();
+    terminateOnboardingDiscoveryWorkersBestEffort();
   };
 
   /**

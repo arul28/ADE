@@ -1081,7 +1081,7 @@ function ModeSwitcherPills({
   onShowDraftKind: (kind: WorkDraftKind) => void;
 }) {
   return (
-    <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1">
+    <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1" data-onboarding-anchor="draft-mode-switch">
       {MODE_OPTIONS.map((opt) => {
         const active = draftKind === opt.kind;
         const Icon = opt.Icon;

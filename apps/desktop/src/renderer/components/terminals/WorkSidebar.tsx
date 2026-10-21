@@ -685,6 +685,7 @@ export function WorkSidebar({
       // The Work page's keyboard template reaches this pane with `T`; the
       // marker is how it finds the element to focus.
       data-work-tools-pane=""
+      data-onboarding-anchor="tools-pane"
       // Focusable only programmatically (`selectTool`), and never ringed for
       // it: this is a focus fallback, not a stop on the tab order.
       tabIndex={-1}

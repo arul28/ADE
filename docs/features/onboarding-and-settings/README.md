@@ -579,16 +579,52 @@ Renderer — onboarding:
   ADE Code say the same thing. The shell bar, the Connections pane and the
   Machines list share the flow and both copy modules. `AccountPage` re-exports
   `describeThisComputerMissing` for existing tests.
-- `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
-  — one-time app-level welcome card backed by global app state. It
-  uses the website's canonical hero assets and the privacy-enhanced YouTube
-  player, links to GitHub and the docs site, and includes an ADE Mobile
-  TestFlight QR/download/copy panel. The Help menu can replay it
-  without resetting setup.
-- `apps/desktop/src/renderer/public/welcome/` — website-synchronized bundled
-  hero screenshots and icon assets consumed by the welcome card.
+- `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
+  `firstRun.css` (shared frame and motion) with one stylesheet per step
+  (`firstRunWelcome.css`, `firstRunAgents.css`, `firstRunProjects.css`,
+  `firstRunDevices.css`) — first-run setup on a computer: the welcome card (the
+  website's "Every AI coding tool" promise, one button, Skip setup) and "Bring
+  your projects in" (the git projects found on this computer, the phone QR and
+  the "another computer" line). `FirstRunSteps.tsx` holds the step machine
+  (`useFirstRunSteps`) and the card renderer both hosts share:
+  `LaunchGate.tsx` runs it around sign-in; `OnboardingBootstrap.tsx` shows it
+  again over the app for "Show me around again" or a reload during setup, and
+  leaves out "Connect your agents" when the front tab is a project on another
+  machine (that card reads and signs in on the tab's machine). See
+  [First run on a computer](#first-run-on-a-computer).
+- `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
+  — finds the projects for that card from every importable provider's
+  history, without spawning git (`app.discoverOnboardingProjects`), and lists
+  one project's importable chats for the import picker
+  (`app.listOnboardingProjectChats`). Both read in a child process
+  (`onboardingDiscoveryClient.ts`, `ELECTRON_RUN_AS_NODE`), because the
+  providers' discoverers read synchronously and held Electron main for up to
+  2.7 s; the chat lists come back with each answer and are kept in main for
+  the setup session. `app.resolveOnboardingFolder` turns a folder picked with
+  "Add another folder" into the project it belongs to (a subfolder into its
+  checkout, a lane or worktree into its project), or refuses one outside a git
+  checkout. `app.addOnboardingProjects` adds the chosen ones to the front of
+  recent projects without evicting any (the list may pass its cap of 24 until
+  later opens trim it). All four run only on this computer. The 30-day window
+  is `shared/onboardingChatWindow.ts`.
+- `apps/desktop/src/renderer/components/onboarding/FirstRunChatPicker.tsx` —
+  the per-chat picker behind an import pill's count.
+- `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
+  + `renderer/onboarding/pendingChatImports.ts` — the first open of each added
+  project whose import pill was on imports its chats from the last 30 days as
+  ADE chats, minus the ones left out in the picker.
+- `apps/desktop/src/renderer/components/onboarding/tour/` — the guided tour:
+  `onboardingTourSteps.ts` (the steps and the `data-onboarding-anchor` each
+  points at), `OnboardingTourHost.tsx` (cursor, ring, card, paused pill) and
+  `anchorGeometry.ts` (shared with the contextual hints).
+- `apps/desktop/src/renderer/onboarding/onboardingProgress.ts` — per-computer
+  onboarding progress (started, skipped, the tour's step, each hint's state).
+- `apps/desktop/src/renderer/onboarding/situationalSuggestions.ts` +
+  `renderer/components/app/suggestions/` — situational suggestions (tier 3):
+  the shared rules, the card hook, the signal hooks and the send-time checks
+  (see [Situational suggestions](#situational-suggestions)).
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
-  — persistent help menu in the top bar: docs link, welcome video replay,
+  — persistent help menu in the top bar: docs link, "Show me around again",
   and one help preference (the detailed hover-tooltip toggle). Glossary,
   help chips, and did-you-know hints were removed; `SmartTooltip`
   hover detail is the single surviving help surface.
@@ -1883,6 +1919,202 @@ banner):
 
 Onboarding covers two layers.
 
+### First run on a computer
+
+What a person sees the first time ADE opens on a computer. It runs once per
+computer (not per project) and is stored in that computer's global app state
+(`welcomeVideo.completedAt` / `dismissedAt`, the key kept from the welcome
+video it replaced), so a computer set up before it existed never sees it.
+
+1. **Welcome.** One card on the launch gate's glass: the landing page's
+   headline, one sentence, the provider marks, **Get started** and **Skip
+   setup**. Skip marks onboarding skipped, so no hint shows later either.
+2. **Sign in**, if this computer has no ADE session (the account is required).
+3. **Connect your agents** (`FirstRunAgents.tsx`). Claude Code, Codex and
+   Cursor, each Connected (with its account) or with a **Sign in** button,
+   read from the same `ai.getStatus` Settings › Agents & Models reads (it
+   answers before any project is open). Claude Code and Codex sign in through
+   the Settings account sheet, a machine-level login that needs no project;
+   Cursor through its browser login. Other providers show as chips only when
+   already connected; the card points at Settings for the rest. Status is
+   re-read on open, after a sign-in and on window focus, never polled. While
+   this card is up, project discovery starts in the background so the next
+   card opens with its list.
+4. **Bring your projects in.** `discoverOnboardingProjects` reads the history
+   of every provider ADE imports chats from: Claude Code's transcripts (one
+   listing, plus the head of the newest transcript per folder for its cwd),
+   Codex's thread index (one grouped query), and the rest (Cursor, Droid,
+   OpenCode, Pi, Copilot…) through the importer's own discoverers, capped at
+   the newest 300 sessions each with a 2.5s budget per provider. It maps each
+   folder to its git project (an ADE lane or linked worktree counts toward
+   its main checkout), drops scratch, temp, Downloads and projects already in
+   ADE, and returns them newest first. If discovery fails, setup reports that
+   it couldn't load the projects and offers a retry instead of showing an
+   empty result. A project with at least two chats in the last 30 days starts
+   ticked. Each row shows its worktrees (they open as
+   lanes) and when it was last active; a row with recent chats also has an
+   **Import N chats** pill with its providers' marks (the draft page's import
+   pill, per project), off by default. The pill has two targets. Its box (and
+   the marks) turns the import on for every chat or off. Its count opens a
+   picker of those chats (`FirstRunChatPicker`), read on first open through
+   `app.listOnboardingProjectChats` and kept for the card's life: each chat
+   with its provider, title or opening prompt, the lane folder it ran in,
+   when it was last active and its prompt count, each with its own box, plus
+   Select all / none and "5 of 7 chats". Unticking chats narrows the import
+   and the pill reads **Importing 5 of 7 chats** (its box shows a dash).
+   Unticking the last one turns the import off; ticking one while it is off
+   turns it on with just that chat. The box always means all or nothing, so
+   turning it on again brings every chat back. The list reads Claude and
+   Codex for that project's folders (Claude stops at the window's edge by
+   file time) and filters discovery's own read of the other providers, one
+   provider at a time under the same 2.5s budget. Escape closes the picker,
+   never setup. Below the list: a QR for ADE on iPhone and a line about
+   signing in on another computer, shown to everyone.
+5. **Into ADE.** The chosen projects are added to recent projects and opened
+   as tabs, and the first one opens. Its worktrees become lanes through the
+   normal adoption on open. For each project whose pill was on,
+   `useOnboardingChatImport` imports its chats from the last 30 days (up to
+   25, newest first, any provider) into the lane each one ran in, or the main
+   checkout's lane, the first time it opens; a session that may still be open
+   in its CLI is skipped. Chats left out in the picker are stored with the
+   queued entry as `provider:sessionId` keys (`excludedKeys`, the importer's
+   own ids) and skipped; an entry without the list imports everything. It is
+   a list of what to leave out, so a chat that starts after setup still comes
+   in.
+6. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
+   size up from the system arrow) glides to a real control, a ring settles on
+   it and a card beside it says what it is. In order: the lane chip (ADE works
+   in lanes; the checkout is the primary lane), the prompt box, its
+   permission/model/effort controls, the lane menu, importing chats, the chats
+   list, opening a chat (or, with no chats yet, **Send your first chat**: a
+   new chat in the primary lane with "In one sentence, what is this
+   project?" in the composer, on a cheap model the computer can run — Haiku,
+   Luna or Composer when their provider is connected, else the lowest-priced
+   runnable model the registry knows — which the user sends themselves; ADE
+   set that model, so it is not saved as the machine's or the composer's
+   last-used model, while a model the user picks there is), the
+   Tools pane, back to a new chat, a new project
+   tab, the Home page and its edit tools, and Connections. Some steps ask for
+   the click (the card says so, and the click moves the tour on); every card
+   also has Next and Back. Nothing is dimmed or blocked. When the user goes
+   elsewhere the card steps aside and a **Tour paused** pill offers **Show
+   me**; the step comes back when its control is on screen again, across
+   reloads. A step with nothing to point at (no chats to open, the Tools pane
+   already open) is passed over. **Skip tour** ends it and every hint;
+   "Show me around again" in the help menu or the command palette starts it
+   over. Contextual hints (`hints/`, today only "This chat needs you") wait
+   until the tour is finished.
+
+Everything here runs on, and reads, the computer ADE is opening on. The
+hosted web client has no first run; it controls other computers.
+
+To walk all of it as a new user without touching your own ADE, run
+`npm run dev:desktop -- --first-run` (see
+[local development](../../development/local-development.md#walk-first-run-setup-as-a-new-user)).
+
+### What's new pages
+
+Free-form announcements the owner writes as features land
+(`renderer/components/announcements/`). A page is any React component in
+`pages/`, with one entry in `announcementPages.ts`
+(`{ id, revision, title, Page }`); nothing about its layout is fixed. The
+modal (`AnnouncementsHost`) adds only a close button and, when several are
+due, a pager.
+
+- **Once per page per computer**, keyed by `id` + `revision` in this
+  renderer's localStorage (`ade.announcements.seen.v1`). A new entry shows on
+  every computer that has not seen it; bump `revision` to show an edited page
+  again; remove the entry to retire it. Not tied to releases.
+- **When:** inside a project (never on Home), a few seconds after it opens,
+  with no dialog, setup screen or tour up, and only once onboarding finished
+  or was skipped before this launch, so a new user meets them on a later
+  visit. A page counts as seen once it is on screen.
+- **Reopen:** Help › What's new and the command palette ("What's new") show
+  every page.
+
+To add one: create `pages/<Name>.tsx` exporting a default component that
+takes `{ close }` (call it before navigating from a "Try it" button), then add
+its entry at the top of `ANNOUNCEMENT_PAGES`.
+
+### ADE Tips
+
+Onboarding's second tier: every feature worth knowing, browsed from Help ›
+ADE Tips, the command palette, the home screen's ADE Tips widget or the
+tour's last card (`renderer/onboarding/adeTips.ts` holds the tips;
+`components/onboarding/tips/` draws them). One group at a time, as a wall of
+tiles: the group's own tile, screenshot tiles for its headline features
+(each tip's `size` and `shot` in `adeTips.ts`, listed in wall order, pack each
+group with no holes in four columns and in two) and icon tiles for the rest. Suggestions the user
+postponed sit first, under **For you**.
+
+Every tip has **Try it**. It goes where the feature lives (a page of the open
+project, a Settings card, a new chat, Home in a new tab, the Connections
+panel, Music) and then the spotlight (`components/onboarding/spotlight/`)
+rings the control there with one line on what to do, using the tour's
+geometry, page watch and layer. It waits up to a few seconds for the control
+to appear, fades after six seconds or on any click or Escape, and leaves the
+user where they landed if the control never shows. A tip that lives inside a
+chat (rewind, comments, PR watch) rings the open chat's control when there is
+one, else a chat row with "Open a chat and…". With no project open, a project
+tip goes Home and rings the projects ("Open a project first"). All of it is
+navigation in the front window: no call reaches a machine.
+
+Tips also come to the user now and then (`useFeatureTipCard`): a while into a
+project session, one tip they have not tried shows as the corner card ("Tip",
+Try it, Not now), in this computer's own random order. It shares the corner
+with situational suggestions (one card at a time, never during onboarding,
+and not within half an hour of a suggestion) but keeps its own pace: up to
+three a day, two hours apart, each tip once, and trying a tip from ADE Tips or
+the Home widget counts too. It never uses up a suggestion's once-per-launch
+slot. ADE Tips' header turns them off.
+
+To test tiers 2 and 3 without waiting days: `npm run dev:desktop -- --first-run
+--keep` reopens the isolated app as a returning user, and in dev builds the
+command palette has **Dev: Suggestions test mode** (no cooldown, no
+once-per-launch or per-day, no snooze; answer a card and the next can show)
+and **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
+
+### Situational suggestions
+
+Onboarding's third tier: a small card in the bottom-right corner (the
+`suggestion` placement, see `docs/design/notices.md`) that shows a feature only
+when ADE sees a signal that it would help now. Each card says what the feature
+is, why now, one action, and **Not now**, which files it into ADE Tips under
+"Suggested for you" (start it from there, or **Don't suggest again**).
+
+The shared rules live in `renderer/onboarding/situationalSuggestions.ts`
+(`ade.suggestions.v1`, per computer): one card per signal (again only after a
+suggestion's own repeat time), at most one new card per launch and none for
+four hours after the last, nothing while the tour runs or until onboarding
+finished (or was skipped) on an earlier launch. "Not now" snoozes the kind for
+two weeks. `components/app/suggestions/useSituationalSuggestion.tsx` draws the
+card and does the Tips plumbing; `SituationalSuggestions.tsx` (mounted in
+`AppShell`) holds one small hook per signal. The lane-template suggestion
+(`useLaneDependencyBanners`) goes through the same helper, with two
+differences: it comes back for a project after two weeks while it still
+applies, and "Don't suggest again" turns it off for that project only
+(`neverPerScope`). Its answers from before the shared rules
+(`ade.laneTemplateSuggestion.v1`) are folded into `ade.suggestions.v1` on
+first read.
+
+| Suggestion | Signal | Action |
+| --- | --- | --- |
+| Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
+| `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
+| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Secrets |
+| Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
+| The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
+| Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
+| ADE on iPhone | A week after first run, still no other machine and no paired phone (paired devices are read once, then) | Connections › Phone |
+| Stacked PRs | A lane built on another lane (not the main checkout) whose pull request is open, per Activity's PR items, while it has none | PRs |
+
+The send-time checks (`chatSendSignals.ts`, called from `AgentChatPane`'s
+submit) read only the typed text, in one O(text) pass, so they work for a chat
+on any machine; tracker connections are checked only for chats on the tab's
+machine, the one Settings connects. Nothing polls: the other signals read push
+feeds the shell already holds. Preview each one in the browser mock with
+`?mockSuggestion=<id>` and the flags documented in `browserMock.ts`.
+
 ### Machine layer (one-time per machine)
 
 Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in
@@ -1919,7 +2151,10 @@ the General settings tab via `AdeCliSection`:
    `apps/ade-cli/src/serviceManager/` (launchd / systemd / Windows per-user startup).
    The result is exposed as `LocalRuntimeStatus.serviceInstall` and
    `serviceHealth` (`unsupported | not_installed | installed | running |
-   error | unknown`).
+   error | unknown`). On macOS both launch agents (the brain and its
+   watchdog) carry `AssociatedBundleIdentifiers` naming the channel's ADE
+   app, so the system's "can run in the background" notice and Login Items
+   show ADE's name and icon instead of the signing developer's name.
 4. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop

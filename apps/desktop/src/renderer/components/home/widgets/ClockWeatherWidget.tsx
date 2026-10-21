@@ -18,9 +18,8 @@ import "../homeWidgets.css";
  *
  * The clock repaints once a minute, on the minute. Weather is
  * Open-Meteo (free, no key) for a place the user types, or until they do, the
- * city in the system time zone's name: no location prompt, no precise
- * position, and only a city name and the place's rounded coordinates leave
- * the machine. Main caches each place for 15 minutes; this card asks every 30
+ * city this computer's internet address is in (falling back to the city in
+ * the system time zone's name): no location prompt and no precise position. Main caches each place for 15 minutes; this card asks every 30
  * while it is on screen. Glyphs hold still off screen. A gallery preview
  * shows a sample day and reads nothing.
  */
@@ -35,12 +34,14 @@ function readPlace(value: unknown): PlaceSetting | null {
 }
 
 /**
- * A coarse place with no prompt: the city in the system time zone's name
- * ("America/New_York" → New York), looked up once and kept per time zone.
- * Only that city name leaves the machine, the same as a typed search. A zone
- * with no city in it (UTC, Etc/GMT+5) gives nothing, and the card asks.
+ * A coarse place with no prompt: the city this computer's internet address
+ * is in (`weather.locate`), or when that fails, the city in the system time
+ * zone's name ("America/New_York" → New York). Kept a few hours per time
+ * zone, so a laptop that travels catches up. A zone with no city in it (UTC,
+ * Etc/GMT+5) and no address lookup gives nothing, and the card asks.
  */
-const AUTO_PLACE_KEY = "ade.home.weather.autoPlace.v1";
+const AUTO_PLACE_KEY = "ade.home.weather.autoPlace.v2";
+const AUTO_PLACE_TTL_MS = 6 * 3_600_000;
 let autoPlaceRequest: { zone: string; promise: Promise<PlaceSetting | null> } | null = null;
 
 function systemTimeZone(): string | null {
@@ -60,8 +61,9 @@ function timeZoneCity(zone: string): string | null {
 
 function readAutoPlace(zone: string): PlaceSetting | null {
   try {
-    const raw = JSON.parse(window.localStorage.getItem(AUTO_PLACE_KEY) ?? "null") as { zone?: unknown; place?: unknown } | null;
-    return raw && raw.zone === zone ? readPlace(raw.place) : null;
+    const raw = JSON.parse(window.localStorage.getItem(AUTO_PLACE_KEY) ?? "null") as { zone?: unknown; place?: unknown; at?: unknown } | null;
+    if (!raw || raw.zone !== zone || typeof raw.at !== "number" || Date.now() - raw.at > AUTO_PLACE_TTL_MS) return null;
+    return readPlace(raw.place);
   } catch {
     return null;
   }
@@ -72,13 +74,18 @@ function lookUpAutoPlace(zone: string): Promise<PlaceSetting | null> {
   const city = timeZoneCity(zone);
   const bridge = window.ade?.home?.weather;
   const promise = (async () => {
-    if (!city || !bridge) return null;
-    const result = await bridge.search(city).catch(() => null);
-    if (!result?.ok || result.places.length === 0) return null;
-    const picked = result.places.find((entry) => entry.timezone === zone) ?? result.places[0]!;
+    if (!bridge) return null;
+    let picked: HomeWeatherPlace | null = null;
+    const located = await bridge.locate?.().catch(() => null);
+    if (located?.ok) picked = located.place;
+    else if (city) {
+      const result = await bridge.search(city).catch(() => null);
+      if (result?.ok && result.places.length) picked = result.places.find((entry) => entry.timezone === zone) ?? result.places[0]!;
+    }
+    if (!picked) return null;
     const place: PlaceSetting = { name: picked.name, detail: picked.detail, latitude: picked.latitude, longitude: picked.longitude };
     try {
-      window.localStorage.setItem(AUTO_PLACE_KEY, JSON.stringify({ zone, place }));
+      window.localStorage.setItem(AUTO_PLACE_KEY, JSON.stringify({ zone, place, at: Date.now() }));
     } catch {
       // Storage full or blocked: it is looked up again next launch.
     }
@@ -93,7 +100,7 @@ function useAutoPlace(enabled: boolean): { place: PlaceSetting | null; settled: 
   const zone = systemTimeZone();
   const [state, setState] = useState<{ place: PlaceSetting | null; settled: boolean }>(() => {
     const cached = enabled && zone ? readAutoPlace(zone) : null;
-    return { place: cached, settled: Boolean(cached) || !enabled || !zone || !timeZoneCity(zone) };
+    return { place: cached, settled: Boolean(cached) || !enabled || !zone };
   });
   useEffect(() => {
     if (!enabled || !zone || state.settled) return undefined;
@@ -158,7 +165,16 @@ function useMinuteClock(active: boolean): Date {
   return now;
 }
 
-function PlacePicker({ onPick, onCancel }: { onPick: (place: HomeWeatherPlace) => void; onCancel?: () => void }) {
+function PlacePicker({
+  onPick,
+  onCancel,
+  onUseLocation,
+}: {
+  onPick: (place: HomeWeatherPlace) => void;
+  onCancel?: () => void;
+  /** Back to the place found automatically; shown once a place was picked. */
+  onUseLocation?: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<HomeWeatherPlace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +226,12 @@ function PlacePicker({ onPick, onCancel }: { onPick: (place: HomeWeatherPlace) =
         <button type="submit" className="kit-btn" disabled={busy || query.trim().length < 2}>{busy ? "…" : "Find"}</button>
         {onCancel ? <button type="button" className="kit-btn kit-btn-ghost" onClick={onCancel}>Cancel</button> : null}
       </div>
+      {onUseLocation ? (
+        <button type="button" className="kit-btn kit-btn-ghost ade-hw-use-location" onClick={onUseLocation}>
+          <MapPin size={12} weight="fill" aria-hidden />
+          Use my location
+        </button>
+      ) : null}
       {error ? <div className="ade-hw-note" role="alert">{error}</div> : null}
       {results && results.length === 0 ? <div className="ade-hw-note">No places match.</div> : null}
       {results && results.length > 0 ? (
@@ -246,11 +268,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
 
   const lat = place?.latitude;
   const lon = place?.longitude;
-  useEffect(() => {
-    setWeather(null);
-    setError(null);
-  }, [lat, lon]);
-  usePolling(async () => {
+  const readWeather = useCallback(async () => {
     if (!bridge || lat == null || lon == null) return;
     const result = await bridge.get({ latitude: lat, longitude: lon });
     if (result.ok) {
@@ -259,7 +277,20 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
     } else {
       setError("Weather is unavailable right now.");
     }
-  }, 30 * 60_000, !preview && visible && lat != null && lon != null && Boolean(bridge));
+  }, [bridge, lat, lon]);
+  const readActive = !preview && visible && lat != null && lon != null && Boolean(bridge);
+  // A new place reads its weather now: the poll below owns the first read and
+  // then repeats only every half hour, so on its own a change sat on "Reading".
+  const placeKey = lat == null || lon == null ? null : `${lat},${lon}`;
+  const shownPlaceRef = useRef(placeKey);
+  useEffect(() => {
+    if (shownPlaceRef.current === placeKey) return;
+    shownPlaceRef.current = placeKey;
+    setWeather(null);
+    setError(null);
+    if (readActive) void readWeather();
+  }, [placeKey, readActive, readWeather]);
+  usePolling(readWeather, 30 * 60_000, readActive);
   const weather = preview ? previewWeather(now) : liveWeather;
 
   const deg = (celsius: number | null | undefined) =>
@@ -286,7 +317,7 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
     >
       <WelcomeCardHead icon={CloudSun} title="Weather">
         {place && !picking ? (
-          <button type="button" className="ade-wx2-place" title={chosen ? "Change place" : "From your time zone. Change place"} onClick={() => setPicking(true)}>
+          <button type="button" className="ade-wx2-place" title={chosen ? "Change place" : "Near this computer (from its internet address). Change place"} onClick={() => setPicking(true)}>
             <MapPin size={11} weight="fill" aria-hidden />
             <span>{place.name}</span>
           </button>
@@ -310,6 +341,10 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
         ) : showPicker ? (
           <PlacePicker
             onCancel={place ? () => setPicking(false) : undefined}
+            onUseLocation={chosen ? () => {
+              updateSettings(item.id, { place: null });
+              setPicking(false);
+            } : undefined}
             onPick={(picked) => {
               updateSettings(item.id, { place: { name: picked.name, detail: picked.detail, latitude: picked.latitude, longitude: picked.longitude } });
               setPicking(false);

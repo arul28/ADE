@@ -52,7 +52,7 @@ wall of utilities.
 
 | Class | Use |
 |---|---|
-| `.kit-card` | The box. Rounded `--radius-lg`, hairline `--kit-card-edge`, translucent `--kit-card-bg`. Frosted on an image scene. |
+| `.kit-card` | The box. Rounded `--radius-lg`, hairline `--kit-card-edge`, translucent `--kit-card-bg`. Frosted on an image scene. `data-float="true"` makes a small card that floats over other UI rather than a scene (an onboarding hint beside a control): always frosted, more opaque, lifted. One blur per card, so keep it to small cards. |
 | `.kit-card-head` | 40px header: icon, label, `.kit-card-head-count`, then `.kit-card-head-action` on the right. `data-compact="true"` makes it a 28px row for a one-line card that sits on another surface. |
 | `.kit-card-body` | Body padding. `data-flush="true"` for edge-to-edge lists. |
 | `.kit-eyebrow` | 10px mono uppercase label with wide tracking. Section kickers, column labels. |

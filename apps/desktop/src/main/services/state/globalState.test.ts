@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   persistableRemoteProjectBinding,
   persistableRemoteProjectIconDataUrl,
+  addRecentProjectsWithoutEviction,
   readGlobalState,
   readGlobalStateForUpdate,
   recentProjectKey,
@@ -172,6 +173,55 @@ describe("upsertRecentProject", () => {
     const next = upsertRecentProject(state, { rootPath: "/projects/new", displayName: "New" });
 
     expect(next.recentProjects?.some((p) => p.rootPath === "/projects/p29" && p.pinned)).toBe(true);
+  });
+});
+
+describe("addRecentProjectsWithoutEviction", () => {
+  it("front-loads fitting setup projects and preserves existing recents through overflow", () => {
+    const state: GlobalState = {
+      lastProjectRoot: "/projects/existing",
+      recentProjects: [
+        { rootPath: "/projects/existing", displayName: "Existing", lastOpenedAt: "2026-04-01T00:00:00.000Z" },
+      ],
+    };
+
+    const next = addRecentProjectsWithoutEviction(state, [
+      { rootPath: "/projects/setup", displayName: "Setup" },
+    ]);
+
+    expect(next.lastProjectRoot).toBe(state.lastProjectRoot);
+    expect(next.recentProjects?.map((entry) => entry.rootPath)).toEqual([
+      "/projects/setup",
+      "/projects/existing",
+    ]);
+    expect(state.recentProjects).toHaveLength(1);
+
+    const recentProjects = Array.from({ length: 24 }, (_, index) => ({
+      rootPath: `/projects/existing-${index}`,
+      displayName: `Existing ${index}`,
+      lastOpenedAt: `2026-04-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+    }));
+    const overflowState: GlobalState = {
+      lastProjectRoot: "/projects/existing-0",
+      recentProjects,
+    };
+
+    const setup = addRecentProjectsWithoutEviction(overflowState, [
+      { rootPath: "/projects/setup-a", displayName: "Setup A" },
+      { rootPath: "/projects/setup-b", displayName: "Setup B" },
+    ]);
+    expect(setup.lastProjectRoot).toBe(overflowState.lastProjectRoot);
+    expect(setup.recentProjects?.map((entry) => entry.rootPath)).toEqual([
+      ...recentProjects.map((entry) => entry.rootPath),
+      "/projects/setup-a",
+      "/projects/setup-b",
+    ]);
+    expect(upsertRecentProject(setup, { rootPath: "/projects/opened", displayName: "Opened" })
+      .recentProjects?.map((entry) => entry.rootPath))
+      .toEqual([
+        "/projects/opened",
+        ...recentProjects.slice(0, 23).map((entry) => entry.rootPath),
+      ]);
   });
 });
 

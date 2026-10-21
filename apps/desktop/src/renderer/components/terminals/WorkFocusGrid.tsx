@@ -417,6 +417,7 @@ export function WorkFocusPill({
       data-grid={on && grid ? "true" : undefined}
       data-disabled={disabled ? "true" : undefined}
       data-testid="work-focus-pill"
+      data-onboarding-anchor="work-focus"
     >
       <SmartTooltip
         content={{

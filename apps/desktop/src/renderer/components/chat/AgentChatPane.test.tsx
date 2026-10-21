@@ -6922,14 +6922,14 @@ describe("AgentChatPane submit recovery", () => {
         mode: "brief",
         handoffNote: "Prioritize the drawer regression before broad cleanup.",
         reasoningEffort: "xhigh",
-        permissionMode: "default",
-        claudePermissionMode: "default",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
+        permissionMode: "full-auto",
+        claudePermissionMode: "bypassPermissions",
+        opencodePermissionMode: "full-auto",
+        droidPermissionMode: "auto-high",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-        cursorModeId: "agent",
+        cursorModeId: "full-auto",
         cursorConfigValues: {},
       }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
@@ -9742,7 +9742,7 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
       provider: "codex",
-      permissionMode: "default",
+      permissionMode: "full-auto",
       initialPrompt: expect.stringContaining("Run the unified CLI launch."),
     }));
     expect(launchArgs).not.toHaveProperty("command");

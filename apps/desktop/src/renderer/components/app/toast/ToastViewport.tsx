@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { Z_LAYERS } from "../../ui/zLayers";
+import { AppSuggestionCard, useVisibleAppSuggestion } from "../../ui/notice/AppSuggestionStack";
 import { TOAST_MOTION_PROPS, ToastStack } from "./ToastStack";
 
 /** Distance from the content area's bottom and right edges. */
@@ -18,10 +19,13 @@ const MAX_WIDTH_PX = 380;
  * Always mounted (so exit animations can play) and `pointer-events: none`, so
  * the empty corner never swallows clicks; every card re-enables its own.
  *
- * Order, top to bottom: store toasts (oldest first), then the `slot` (the live
- * Launches panel), which sits closest to the corner.
+ * Order, top to bottom: store toasts (oldest first), then the one situational
+ * suggestion (`useAppBanner(..., { placement: "suggestion" })`), which stays
+ * put while toasts come and go above it, then the `slot` (the live Launches
+ * panel), which sits closest to the corner.
  */
 export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: string }) {
+  const suggestion = useVisibleAppSuggestion();
   return (
     <div
       data-testid="toast-viewport"
@@ -40,6 +44,13 @@ export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: s
       }}
     >
       <ToastStack />
+      <AnimatePresence initial={false}>
+        {suggestion ? (
+          <motion.div key={`suggestion:${suggestion.id}`} {...TOAST_MOTION_PROPS}>
+            <AppSuggestionCard entry={suggestion} />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
       <AnimatePresence initial={false}>
         {slot ? (
           <motion.div key={slotKey ?? "slot"} {...TOAST_MOTION_PROPS}>

@@ -86,6 +86,7 @@ export function ConnectButton({ compact = false }: { compact?: boolean }) {
       onClick={() => void musicActions.connect()}
       disabled={busy}
       data-testid="music-connect"
+      data-onboarding-anchor="music-connect"
     >
       {busy ? <CircleNotch size={14} className="animate-spin" /> : <MusicNotes size={14} weight="fill" />}
       {connecting ? `Waiting for ${providerName}…` : hostStarting ? "Starting…" : `Connect ${providerName}`}

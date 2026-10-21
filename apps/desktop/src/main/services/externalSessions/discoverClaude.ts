@@ -295,6 +295,9 @@ function addClaudeLineage(record: ExternalSessionDiscoveryRecord, ids: Array<str
   if (lineage.size) record.lineageIds = [...lineage];
 }
 
+/** Older session files read for ancestors of the recent ones when listing stops at `updatedSinceMs`. */
+const CLAUDE_OLDER_ANCESTOR_SCAN_LIMIT = 200;
+
 export async function discoverClaudeSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
@@ -330,7 +333,43 @@ export async function discoverClaudeSessions(
   // Continuation chains cross project directories — a session moved with `/cd`
   // lands in another slug — so chains are tracked globally, not per project dir.
   const chainIndex = new Map<string, ClaudeChain>();
-  for (const candidate of newestById.values()) {
+  const processedCandidates: Array<{
+    candidate: ClaudeSessionCandidate;
+    signature: ClaudeChainSignature;
+    recordIndex: number;
+  }> = [];
+  const updatedSince = lookupId ? null : args.updatedSinceMs ?? null;
+  const orderedCandidates = [...newestById.values()];
+  for (let candidateIndex = 0; candidateIndex < orderedCandidates.length; candidateIndex += 1) {
+    const candidate = orderedCandidates[candidateIndex]!;
+    // Newest first, so the first file older than the hint ends the list.
+    if (updatedSince != null && candidate.mtimeMs < updatedSince) {
+      // Keep the cheap continuation metadata from older files even though their
+      // transcripts are outside the requested window. A recent leaf can be the
+      // only listed member while an older imported ancestor still needs to be
+      // recognized by the import ledger.
+      if (processedCandidates.length) {
+        // Bounded: an ancestor is never longer than its continuation, and only
+        // the newest older files can be the ancestors of a recent leaf worth
+        // the reads (each signature reads a few small windows of the file).
+        const largestRecent = Math.max(...processedCandidates.map((entry) => entry.candidate.size));
+        const olderCandidates = orderedCandidates
+          .slice(candidateIndex, candidateIndex + CLAUDE_OLDER_ANCESTOR_SCAN_LIMIT)
+          .filter((older) => older.size <= largestRecent);
+        for (const olderCandidate of olderCandidates) {
+          const olderSignature = claudeChainSignature(olderCandidate);
+          if (!olderSignature.chainKey) continue;
+          for (const recent of processedCandidates) {
+            if (
+              recent.signature.chainKey !== olderSignature.chainKey
+              || !isClaudeContinuationPrefix(olderCandidate, olderSignature, recent.candidate)
+            ) continue;
+            addClaudeLineage(records[recent.recordIndex]!, [olderCandidate.id, ...olderSignature.ancestorIds]);
+          }
+        }
+      }
+      break;
+    }
     const scan = claudeScanRecords(candidate.filePath);
     const jsonl = scan.combined;
     if (isClaudeSdkOriginTranscript(scan.prefix)) continue;
@@ -389,6 +428,11 @@ export async function discoverClaudeSessions(
         records[listedAncestor.recordIndex] = record;
         listedAncestor.candidate = candidate;
         listedAncestor.signature = signature;
+        const processed = processedCandidates.find((entry) => entry.recordIndex === listedAncestor.recordIndex);
+        if (processed) {
+          processed.candidate = candidate;
+          processed.signature = signature;
+        }
         continue;
       }
       // Diverging members are real forks. Both stay listed.
@@ -396,7 +440,11 @@ export async function discoverClaudeSessions(
 
     if (signature) addClaudeLineage(record, signature.ancestorIds);
     records.push(record);
-    if (chain && signature) chain.members.push({ candidate, signature, recordIndex: records.length - 1 });
+    if (signature) {
+      const recordIndex = records.length - 1;
+      processedCandidates.push({ candidate, signature, recordIndex });
+      if (chain) chain.members.push({ candidate, signature, recordIndex });
+    }
     if (records.length >= limit) break;
   }
 

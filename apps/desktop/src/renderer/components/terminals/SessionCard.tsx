@@ -1537,6 +1537,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
          actually selects, and a keyboard path that pressed the wrapper would do
          nothing at all. */
       data-session-row-action=""
+      data-onboarding-anchor="session-row"
       /* A native <button> cannot legally host the status slot's snooze/settle
          buttons, and the swap only works with those controls in flow. t3code's
          row makes the same trade. */
@@ -1730,6 +1731,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         needsYouJustChanged && "motion-safe:animate-[ade-session-needs-you_900ms_ease-out_1]",
       )}
       data-needs-you-pulse={needsYouJustChanged ? "true" : undefined}
+      data-onboarding-anchor={canonicalPhase === "needs_you" ? "needs-you" : undefined}
       // Stable row anchor. ADE Web mounts this same component and has to locate
       // the row from outside React — for its coarse-pointer styling and for the
       // long-press bridge that stands in for `contextmenu`, which iOS Safari

@@ -373,7 +373,7 @@ export function ConnectionsPanel({
         ))}
       </div>
 
-      <div style={{ overflowY: "auto", padding: 12 }}>
+      <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor={`connections-${tab}`}>
         {tab === "machines" ? (
           <RemoteTargetList
             onDisconnectRequested={onDisconnectRequested}

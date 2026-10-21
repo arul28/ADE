@@ -2062,6 +2062,7 @@ describe("product analytics producers", () => {
     ["tab_opened", "tab_browser"],
     ["tab_opened", "tab_music"],
     ["widget_added", "widget_now_playing"],
+    ["widget_added", "widget_tips"],
     ["widget_added", "widget_clipboard"],
     ["music_connected", "completed"],
     ["music_connected", "cancelled"],

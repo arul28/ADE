@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { machineIdForBinding } from "../../shared/machineIdentity";
-import { selectActiveProjectStateKey, useAppStore } from "../state/appStore";
+import { selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../state/appStore";
 import { queueAgentChatDraftHandoff } from "./agentChatDraftHandoff";
 import { navigateToAppTarget } from "./openExternal";
 import { chatDraftMachineId, openStartChatDraft } from "./workDraft";
@@ -53,8 +53,6 @@ export function useLaneChatHandoff(
 ): (args: LaneChatHandoffArgs) => void {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((state) => state.projectBinding);
-  const setWorkViewState = useAppStore((state) => state.setWorkViewState);
-  const selectLane = useAppStore((state) => state.selectLane);
   const startDraftInLane = options.startDraftInLane === true;
   return useCallback((args: LaneChatHandoffArgs) => {
     const prompt = args.prompt ?? null;
@@ -78,12 +76,16 @@ export function useLaneChatHandoff(
       queueAgentChatDraftHandoff({ draftTargetId: `work:draft:${args.laneId}:chat` }, prompt);
     }
     const draftMachineId = pin ? chatDraftMachineId(machineIdForBinding(pin), machineIdForBinding(projectBinding)) : null;
+    // The project's own store, which Work reads. A caller outside the project
+    // surface (the app shell: suggestions, the onboarding tour) holds the
+    // root store, and a draft written there never reaches Work.
+    const projectStore = workViewStoreForProject(projectStateKey);
     if (projectStateKey) {
-      openStartChatDraft(setWorkViewState, projectStateKey, args.laneId, draftMachineId);
+      openStartChatDraft(projectStore.getState().setWorkViewState, projectStateKey, args.laneId, draftMachineId);
     }
     // A foreign lane id is not in this tab's lane list; selecting it would
     // steal the local selection without making the draft find that lane.
-    if (!draftMachineId) selectLane(args.laneId);
+    if (!draftMachineId) projectStore.getState().selectLane(args.laneId);
     navigateToAppTarget({ kind: "work" });
-  }, [pin, projectBinding, projectStateKey, selectLane, setWorkViewState, startDraftInLane]);
+  }, [pin, projectBinding, projectStateKey, startDraftInLane]);
 }

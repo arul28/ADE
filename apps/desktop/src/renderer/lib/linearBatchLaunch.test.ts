@@ -491,7 +491,7 @@ describe("runBatchLaunch", () => {
       issue: makeIssue({ id: "a" }),
       config: makeConfig({
         modelId: "openai/gpt-5.5",
-        nativeControls: defaultNativeControls("persistent_identity"),
+        nativeControls: defaultNativeControls(),
       }),
     }];
 

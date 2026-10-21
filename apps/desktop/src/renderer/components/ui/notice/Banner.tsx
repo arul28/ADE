@@ -9,18 +9,23 @@ import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTon
  * through this component, so they read as one family: a card surface, a
  * tone-tinted icon tile (or a logo), sans type, pill actions, a quiet ×.
  *
- * Three layouts, one look:
- * - `docked`   an app-level state that lasts (signed out, update stuck, relay
- *              down). In flow under the top bar; pushes content, never covers it.
- * - `floating` a short, one-line prompt you act on or wave away (a link in the
- *              clipboard). Top center, over the app.
- * - `inline`   a banner about one surface (a lane needs a rebase), placed by
- *              that surface inside its own layout.
+ * Four layouts, one look:
+ * - `docked`     an app-level state that lasts (signed out, update stuck, relay
+ *                down). In flow under the top bar; pushes content, never covers it.
+ * - `floating`   a short, one-line prompt you act on or wave away (a link in the
+ *                clipboard). Top center, over the app.
+ * - `inline`     a banner about one surface (a lane needs a rebase), placed by
+ *                that surface inside its own layout.
+ * - `suggestion` a situational suggestion: ADE saw a signal that a feature
+ *                would help now. A small card in the bottom-right corner
+ *                (`AppSuggestionStack`): a quiet eyebrow, a title that says
+ *                what the feature is, one "why now" line, one primary action
+ *                and "Not now".
  *
  * Feature code never styles a banner; it picks a tone, an icon, words, actions.
  */
 
-export type BannerLayout = "docked" | "floating" | "inline";
+export type BannerLayout = "docked" | "floating" | "inline" | "suggestion";
 
 export type BannerDismiss =
   | false
@@ -54,6 +59,15 @@ export type BannerModel = {
   extra?: ReactNode;
   /** Inline failure line under the text ("Rebase failed: …"). */
   error?: string;
+  /** The quiet label above a `suggestion` card's title. Defaults to "Suggestion". */
+  eyebrow?: string;
+  /**
+   * `suggestion` only: the card's colour (its glow, icon tile and eyebrow), a
+   * hex. A tip card wears its ADE Tips group's hue; defaults to ADE violet.
+   */
+  hue?: string;
+  /** `suggestion` only: a screenshot of the feature, peeking out of the card's corner. */
+  art?: { src: string; alt: string };
 };
 
 export function isDurableDismiss(
@@ -78,6 +92,7 @@ export function Banner({
   /** `data-testid` on the banner's root. */
   testId?: string;
 }): JSX.Element {
+  if (layout === "suggestion") return <SuggestionCard model={model} style={style} testId={testId} />;
   const tokens = noticeTone(model.tone);
   const floating = layout === "floating";
   // Docked banners share the inline wrapping row: in a narrow window the
@@ -200,5 +215,64 @@ export function Banner({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The `suggestion` layout, drawn like a tile on ADE Tips' wall
+ * (`.ade-suggest-card` in `notice.css`): a rounded plane with a hairline and a
+ * lit top edge, the card's hue glowing from a corner, a big tinted icon, the
+ * eyebrow in the serif italic, and, when there is one, a screenshot of the
+ * feature coming out of the bottom-right corner beside the actions. Not a
+ * state and not an alarm: the tone shows only on the primary action. The
+ * owner passes exactly two actions, the primary and "Not now"; "Not now" is
+ * the dismissal, so the card draws no ×.
+ */
+function SuggestionCard({
+  model,
+  style,
+  testId,
+}: {
+  model: BannerModel;
+  style?: CSSProperties;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <section
+      role="status"
+      aria-label={model.ariaLabel ?? (typeof model.title === "string" ? model.title : "Suggestion")}
+      data-testid={testId}
+      data-notice-tone={model.tone}
+      data-banner-id={model.id}
+      data-banner-layout="suggestion"
+      data-has-art={model.art ? "true" : undefined}
+      className="ade-suggest-card"
+      style={{ ...(model.hue ? ({ "--suggest-hue": model.hue } as CSSProperties) : null), ...style }}
+    >
+      <div className="ade-suggest-head">
+        <span className="ade-suggest-icon" aria-hidden>
+          {model.busy ? <NoticeIcon tone={model.tone} busy size="sm" /> : model.icon ?? <NoticeIcon tone={model.tone} size="sm" />}
+        </span>
+        <span className="ade-suggest-eyebrow">{model.eyebrow ?? "Suggestion"}</span>
+      </div>
+      <div className="ade-suggest-text">
+        <span className="ade-suggest-title">{model.title}</span>
+        {model.detail ? <span className="ade-suggest-detail">{model.detail}</span> : null}
+        {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+        {model.error ? (
+          <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
+            {model.error}
+          </span>
+        ) : null}
+      </div>
+      <div className="ade-suggest-foot">
+        <NoticeActions actions={model.actions} tone={model.tone} size="md" />
+        {model.art ? (
+          <div className="ade-suggest-art">
+            <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }

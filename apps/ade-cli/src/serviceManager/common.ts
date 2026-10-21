@@ -156,6 +156,20 @@ export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env):
 
 export const ADE_RUNTIME_SERVICE_NAME = resolveRuntimeServiceName();
 
+/**
+ * The ADE app a launch agent belongs to, for the plist's
+ * `AssociatedBundleIdentifiers`. Without it macOS (13+) cannot tie the agent
+ * to an app and names the signing team instead: the "Software from “<the
+ * developer's name>” can run in the background" notification, and an
+ * unlabelled row in Login Items. With it, both show ADE's name and icon.
+ */
+export function resolveAssociatedAppBundleId(env: NodeJS.ProcessEnv = process.env): string {
+  const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  if (channel === "alpha") return "com.ade.desktop.alpha";
+  if (channel === "beta") return "com.ade.desktop.beta";
+  return "com.ade.desktop";
+}
+
 export type ServiceManagerProcessResult = {
   status: number | null;
   stdout?: string | Buffer | null;

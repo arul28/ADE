@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  resolveAssociatedAppBundleId,
   BACKGROUND_ITEM_BLOCKED_MESSAGE,
   currentUid,
   type BackgroundItemStatus,
@@ -305,6 +306,10 @@ export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.home
 <dict>
   <key>Label</key>
   <string>${ADE_RUNTIME_SERVICE_NAME}</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>${escapeXml(resolveAssociatedAppBundleId({ ...process.env, ...command.env }))}</string>
+  </array>
   <key>ProgramArguments</key>
 ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${line}`).join("\n")}
   <key>RunAtLoad</key>

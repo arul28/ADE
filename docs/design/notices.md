@@ -8,7 +8,7 @@ its own folder. Do not build a one-off version in a feature folder.
 
 | Primitive | Where |
 |---|---|
-| `Banner`, `useAppBanner`, `useAppBanners`, `APP_BANNER_PRIORITY`, `AppBannerHost` | `apps/desktop/src/renderer/components/ui/notice/` |
+| `Banner`, `useAppBanner`, `useAppBanners`, `APP_BANNER_PRIORITY`, `AppBannerHost`, `AppSuggestionCard` | `apps/desktop/src/renderer/components/ui/notice/` |
 | `showToast`, `updateToast`, `dismissToast` | `components/app/toast/toastStore.ts` (rendered as `ToastCard` in `ToastViewport`) |
 | `confirmDialog`, `promptDialog`, `Dialog`, `DialogHost` | `components/ui/dialog/` |
 | `HeaderSheet` | `components/app/HeaderSheet.tsx` |
@@ -24,6 +24,7 @@ its own folder. Do not build a one-off version in a feature folder.
 |---|---|
 | An app-wide state that lasts: signed out, update stuck, relay down, integration broken | `useAppBanner(model)` (docked, the default) |
 | A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` (`updatePrompt` keeps a ready-to-install update ahead of generic prompts) |
+| A feature that would help right now, because ADE saw a signal: a lane template once a repo with packages has lanes | `useAppBanner(model, { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion })` (see [Suggestions](#suggestions)) |
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
 | A short state of the chat a composer writes to: settled, snoozed, the lane is on another branch | `<StatusChip tone ...>` inside the composer's one `<StatusStrip>` (chips sit side by side; the explanation goes in `tooltip`) |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
@@ -114,7 +115,68 @@ Within a band, the more urgent tone wins, then the banner registered first.
 | 50 | `integration` | An integration the user can fix (GitHub, AI provider, relay). |
 | 55 | `updatePrompt` | A downloaded update is ready to install and should stay ahead of generic prompts. |
 | 60 | `prompt` | Short floating prompts. |
+| 80 | `suggestion` | Situational suggestions (placement `suggestion`). |
 | 100 | `default` | Everything else. |
+
+## Suggestions
+
+A suggestion is onboarding's third tier: ADE shows a feature only when it
+sees a signal that the feature would help now. It is not a state and not an
+event, and it is never urgent, so it has its own quiet presentation:
+`Banner` with `layout="suggestion"`, registered with
+`useAppBanner(model, { placement: "suggestion", priority: APP_BANNER_PRIORITY.suggestion })`.
+
+- **Where.** One small card in the bottom-right corner, rendered by the toast
+  viewport (`ToastViewport`), which owns that corner. Toasts come and go above
+  it; the live Launches panel sits below it. That corner covers no header, tab
+  or composer and pushes nothing, and it is where ADE already puts things you
+  may glance at and ignore. One suggestion shows at a time; the rest wait. It
+  also waits while a modal or a first-chat onboarding hint is up.
+- **What it says.** A quiet eyebrow (`eyebrow`, default "Suggestion"), a title
+  that says what the feature **is** ("Lane templates make new lanes ready to
+  work"), one "why now" line in `detail`, then two actions: the primary
+  (`variant: "solid"`) and "Not now" (`variant: "secondary"`). No ×: "Not now"
+  is the dismissal.
+- **How it looks.** A tile from ADE Tips' wall (`.ade-suggest-card` in
+  `ui/notice/notice.css`): a rounded plane with a hairline and a lit top edge,
+  its hue glowing from a corner, a big tinted icon (pass the glyph at 21px,
+  `weight="duotone"`), the eyebrow in the serif italic. `hue` sets the colour
+  (a tip card wears its ADE Tips group's; default ADE violet) and `art` puts a
+  screenshot in the bottom-right corner beside the actions. Only this layout
+  looks like this; the other banners keep the banner look.
+- **The signal.** Show it only when the user can already understand it. The
+  lane template suggestion waits until the project has a lane besides the main
+  checkout, so "lane" means something by then.
+- **"Not now".** The kind is snoozed and the card is filed into ADE Tips with
+  `postponeSuggestion` (`renderer/onboarding/adeTipsSuggestions.ts`, per
+  computer). ADE Tips lists it under "Suggested for you", where the user can
+  start it later (the owner registers a starter with
+  `registerSuggestionStarter` while it can run, with the same pin it would use
+  on the card) or turn it off for good ("Don't suggest again", the owner's
+  `registerSuggestionKind` handler; per kind, or per project with
+  `neverPerScope` as the lane template does). Add a new suggestion to `ADE_SUGGESTIONS`
+  in that file so the card and the Tips row share one title and one line.
+- **The shared rules.** Every suggestion goes through
+  `useSituationalSuggestion` (`components/app/suggestions/`), which does the
+  registering above and applies the rules every suggestion shares
+  (`renderer/onboarding/situationalSuggestions.ts`): once per signal (or
+  again after `repeatAfterMs`), one new card per launch, a four-hour cooldown
+  after any card, and nothing during onboarding. The owner passes only its
+  signal and its action. Never register a `suggestion` banner directly: it
+  would skip those rules, and a suggestion that claimed the corner behind it
+  would be used up unseen.
+
+```tsx
+useSituationalSuggestion({
+  id: "lane-template", // title, line and action label come from ADE_SUGGESTIONS
+  signalKey: templateWouldHelp && hasOwnLane ? scopeKey : null,
+  tipsScopeKey: scopeKey,
+  context: projectContext,
+  start: templateWouldHelp ? startTemplateChat : null,
+  repeatAfterMs: LANE_TEMPLATE_REPEAT_MS,
+  neverPerScope: true,
+});
+```
 
 ## Dismissal
 
@@ -159,6 +221,7 @@ Pick a named layer and never type a z-index:
 | `menuPanel` | 60 | A submenu panel floating off its host menu row. Relative, not absolute: the panel is a child of the host menu, so the host's own layer decides what the whole menu covers |
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
+| `onboardingHint` | 95 | Contextual onboarding hints after the tour (ADE cursor, ring, card). Under popovers, menus, sheets and dialogs, so anything the user opens covers a hint |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `floatingBanner` | 115 | Floating top-center banners, below the sheets: a sheet someone just opened is what they are looking at, and a banner drawn over it covers its header |
@@ -169,6 +232,7 @@ Pick a named layer and never type a z-index:
 | `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
 | `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |
 | `contextMenu` | 9999 | A row context menu and its click-away layer |
+| `onboardingTour` | 10000 | The guided onboarding tour (ADE cursor, ring, card). Above menus, because a step points into an open menu. Only the small card takes pointer events, it sits beside its control, and the tour hides while a modal is open |
 | `capture` | 2147483000 | The global capture gesture notice, above everything |
 
 `toast` sits above `dialog` because `ToastViewport` renders inside `<main>`,

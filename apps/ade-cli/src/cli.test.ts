@@ -11545,9 +11545,8 @@ describe("ADE CLI", () => {
       "--linear-issue-json",
       '[{"id":"a","identifier":"ENG-1"},{"id":"b","identifier":"ENG-2"}]',
     ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toMatchObject({
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.steps[0]?.params).toMatchObject({
       arguments: {
         args: {
           chatSessionId: "session-9",
@@ -12559,7 +12558,7 @@ describe("ADE CLI", () => {
       arguments: {
         laneId: "lane-1",
         provider: "claude",
-        permissionMode: "default",
+        permissionMode: "full-auto",
       },
     });
   });
@@ -17697,7 +17696,10 @@ describe("--preset and --credential thread a harness brain into chat launches", 
 
 describe("tracked CLI session titles follow the merged provider", () => {
   const argumentsOf = (argv: string[]): Record<string, unknown> => {
-    const plan = buildCliPlan(argv);
+    // These cases cover title precedence. Pin a supported mode so the `shell`
+    // pseudo-provider does not make the changed agent-provider default part of
+    // this unrelated contract.
+    const plan = buildCliPlan([...argv, "--permissions", "default"]);
     if (plan.kind !== "execute") throw new Error(`expected an execute plan, got ${plan.kind}`);
     for (const step of plan.steps) {
       const raw = step.params;

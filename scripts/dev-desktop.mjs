@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   buildRuntimeCliForDevClient,
   assertDevAdeHome,
   printDevIsolationReport,
   assertRuntimeFresh,
   canConnectToSocket,
+  defaultDevSocketPath,
   devRuntimeEnv,
   ensureRuntime,
   resolveDevAdeHome,
@@ -16,7 +19,7 @@ import {
   repoRoot,
   shutdownRuntime,
 } from "./dev-shared.mjs";
-import { devDesktopUserDataFolder, pruneStaleDevUserData } from "./dev-user-data.mjs";
+import { devDesktopUserDataFolder, pruneStaleDevUserData, userDataInUse } from "./dev-user-data.mjs";
 
 function usage() {
   return [
@@ -29,10 +32,22 @@ function usage() {
     "  --auto                     Use dev socket and let desktop create runtime if missing. Default.",
     "  --attach                   Require an existing dev runtime before launching desktop.",
     "  --project-root <path>      Project to auto-open. Defaults to the primary checkout for ADE worktrees.",
+    "  --home                     Open on Home with no project, as an installed ADE does (first-run checks).",
+    "  --first-run                Walk setup as a brand-new user, isolated from your ADE (see below).",
+    "  --keep                     With --first-run: keep the last run's state (a later visit).",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --clean                    Use desktop dev:clean instead of dev.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",
     "  -h, --help                 Show this help.",
+    "",
+    "--first-run runs on its own ADE home (~/.ade-dev-first-run) and its own socket",
+    "(ade-runtime-first-run, unless --socket), with fresh app data, on Home.",
+    "Every launch empties that home except its account sign-in, so setup finds no",
+    "projects in ADE and no saved choices, and nothing it does reaches your ADE.",
+    "--keep skips the reset: the same app comes back as a returning user, which is",
+    "when What's new pages and situational suggestions can show.",
+    "Sign it in once: ADE_HOME=~/.ade-dev-first-run ade --socket <socket> login",
+    "(or through the app's own sign-in card); later launches keep that sign-in.",
   ].join("\n");
 }
 
@@ -43,6 +58,9 @@ function parseArgs(argv) {
     socketPath: null,
     clean: false,
     skipRuntimeBuild: false,
+    home: false,
+    firstRun: false,
+    keep: false,
     remoteDebuggingPort: null,
     forwardedDebugFlags: [],
   };
@@ -54,6 +72,19 @@ function parseArgs(argv) {
     }
     if (arg === "--attach") {
       options.mode = "attach";
+      continue;
+    }
+    if (arg === "--home") {
+      options.home = true;
+      continue;
+    }
+    if (arg === "--first-run") {
+      options.firstRun = true;
+      options.home = true;
+      continue;
+    }
+    if (arg === "--keep") {
+      options.keep = true;
       continue;
     }
     if (arg === "--clean") {
@@ -121,8 +152,59 @@ function parseArgs(argv) {
   return {
     ...options,
     projectRoot: resolveProjectRoot(options.projectRoot),
-    socketPath: resolveDevSocketPath(options.socketPath),
+    socketPath: resolveDevSocketPath(options.socketPath ?? (options.firstRun ? FIRST_RUN_SOCKET : null)),
   };
+}
+
+/** The default dev socket's first-run twin (a named pipe on Windows). */
+const FIRST_RUN_SOCKET = defaultDevSocketPath.replace("ade-runtime-dev", "ade-runtime-first-run");
+/** What a --first-run launch keeps: the home's account sign-in, nothing else. */
+const FIRST_RUN_KEPT = new Set(["secrets", "account-settings.json", "account-vault.json.enc", "account-migration.json"]);
+
+/**
+ * `--first-run`: a brand-new user on this computer, without touching the
+ * owner's ADE. Its own ADE home (registry, personal chats, launch defaults,
+ * provider sign-ins, machine identity, account session), emptied on every
+ * launch except the sign-in, and fresh Electron app data. The agents' own
+ * history (~/.claude, ~/.codex, ...) stays shared: setup reads it to find
+ * projects, as it would for a real new user.
+ *
+ * The sign-in is kept because an account is required and a copied session
+ * would share a refresh token with the owner's ADE, which rotating signs out.
+ */
+async function prepareFirstRun(socketPath, { keep = false } = {}) {
+  if (await canConnectToSocket(socketPath)) {
+    throw new Error(
+      `A brain is already listening at ${socketPath}. Stop that first-run app first (its brain must not be running while its home is reset).`,
+    );
+  }
+  const home = path.join(os.homedir(), ".ade-dev-first-run");
+  fs.mkdirSync(home, { recursive: true });
+  // The app's own data lives in the home, so a reset clears it and --keep keeps it.
+  const userData = process.env.ADE_DESKTOP_USER_DATA_PATH?.trim() || path.join(home, "desktop-app");
+  if (!keep) {
+    // A first-run app still open holds its data (and its brain may be
+    // starting): emptying the home under it corrupts both.
+    if (userDataInUse(userData)) {
+      throw new Error(
+        `A first-run ADE app is still open (it holds ${userData}). Quit it first; its home must not be reset while it runs.`,
+      );
+    }
+    for (const name of fs.readdirSync(home)) {
+      if (FIRST_RUN_KEPT.has(name)) continue;
+      // Bounded retries (Node's own, ~5 s in all): on Windows a folder a
+      // just-exited process still has a handle in fails with EBUSY/EPERM for
+      // a moment.
+      fs.rmSync(path.join(home, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  }
+  process.env.ADE_HOME = home;
+  process.env.ADE_DEV_ALLOW_ALT_HOME = "1";
+  process.env.ADE_DESKTOP_USER_DATA_PATH = userData;
+  const signedIn = fs.existsSync(path.join(home, "secrets", "credentials.json.enc"));
+  process.stdout.write(
+    `[ade] first run : ${home} ${keep ? "kept (a later visit)" : "reset"} (sign-in ${signedIn ? "kept" : "not set up yet; the app will ask"})\n`,
+  );
 }
 
 /**
@@ -164,6 +246,8 @@ function laneUserDataEnv() {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.keep && !options.firstRun) throw new Error("--keep only applies with --first-run.");
+  if (options.firstRun) await prepareFirstRun(options.socketPath, { keep: options.keep });
   if (!fs.existsSync(`${options.projectRoot}/.ade`)) {
     process.stderr.write(`[ade] warning: ${options.projectRoot} does not contain .ade; desktop may open the project picker.\n`);
   }
@@ -229,10 +313,11 @@ async function main() {
     if (options.forwardedDebugFlags.length) {
       appControlDebugEnv.ADE_APP_CONTROL_DEBUG_FLAGS = options.forwardedDebugFlags.join(" ");
     }
-    await runNpm(
-      ["--prefix", "apps/desktop", "run", desktopScript],
-      { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv },
-    );
+    const desktopEnv = { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv };
+    // `--home`: no startup project, so the window opens on Home the way an
+    // installed ADE does. The runtime above still uses the project root.
+    if (options.home) desktopEnv.ADE_PROJECT_ROOT = "";
+    await runNpm(["--prefix", "apps/desktop", "run", desktopScript], desktopEnv);
   } finally {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);

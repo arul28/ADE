@@ -1199,6 +1199,7 @@ function ComposerIdleSendButton({
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
+            data-onboarding-anchor="composer-send-menu"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-label="Send options"
@@ -8257,7 +8258,10 @@ function AgentChatComposerImpl({
           ) : null}
           <div className="flex min-w-0 items-center gap-1">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div
+            data-onboarding-anchor="composer-controls"
+            data-onboarding-anchor-fit="content"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(() => {
               const showNativeControls =
                 !parallelChatMode

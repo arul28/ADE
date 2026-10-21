@@ -67,6 +67,21 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work area: re-renders | 30 per 12 s | 2 per 12 s | 5 per 12 s |
 | React commits on Work while a chat streams | — | 5.3/s | 10/s |
 
+### Onboarding tour
+
+The guided tour after first-run setup (`components/onboarding/tour/`). Mac
+Studio dev build on its own socket, CDP 9233, 1.1× zoom, nothing streaming,
+2026-10-21 on the `ade/onboarding-tiers-planning` branch; not the baseline
+machine. `cdp.mjs metrics` and `gpu-trace.mjs`, 4 s windows from a Next click.
+
+| Metric | Before (first tour) | Baseline | Ceiling |
+|---|---|---|---|
+| Step change between read steps: frames drawn / GPU | 187–217/s, 183–212 ms/s | 38/s, 35 ms/s | 60/s, 60 ms/s |
+| Step change into a do-it step (pulse + click): frames drawn / GPU | — | 71/s, 76 ms/s | 100/s, 110 ms/s |
+| Step change: main-thread work | 14–19 ms/s | 16–20 ms/s | 30 ms/s |
+| Card showing, idle: main-thread work | 2.9 ms/s | 2.4 ms/s | 5 ms/s |
+| Paused pill, idle: main-thread work | 4.5 ms/s | 2.5 ms/s | 5 ms/s |
+
 ### Processes (CPU and memory)
 
 Measured with `process-cpu.sh` over 15 s on Work, idle, with 2 chats
@@ -166,6 +181,7 @@ Run without the app (`scripts/perf/service/`).
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 | Apple stream relay, one viewer, 2.5 Mb/s 60 fps stream, second half of a 30 s run: delay from the relay's send to the viewer (p50 / p90 / p99), frames delivered per second, and delta frames delivered ahead of a keyframe (checked by sequence number). 1 Mb/s 40 ms link, plus a fast Wi-Fi link that stalls 250 ms every 2 s | `apple-stream-pacing.bench.mts` | not paced (no acks, as before): 1 Mb/s 34.9 s / 43.9 s / 45.8 s, still growing; Wi-Fi stalls 9 / 70 / 239 ms, 57 fps | paced (the viewer acks): 1 Mb/s 52 / 73 / 240 ms, 58 fps, cap 2500 → 540–675 kb/s; Wi-Fi stalls 8 / 43 / 236 ms, 60 fps, 2 frames skipped; 0 undecodable throughout (also 600 kb/s 120 ms: 133 / 319 / 392 ms; 5 Mb/s 20 ms: 30 / 31 / 162 ms, no skips) | proposed, needs approval: p50 100 ms, p90 350 ms, ≥ 50 fps, 0 undecodable |
 | `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
+| Onboarding discovery: first-run setup's project discovery (`app.discoverOnboardingProjects`, 460 agent folders → 12 projects, 11 providers) and one cold chat list (`app.listOnboardingProjectChats`), Electron main event loop. Mac Studio M4 Max, 2026-10-21, this branch (not the baseline machine) | one-off `vite-node` script on this machine's real provider history, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | — | discovery: longest main-thread block 2,742 → 7 ms, total 4.7 → 5.5 s (now in a child process; the extra is its start); cold chat list: block 769–957 → 3–7 ms, total 0.85–1.7 → 1.1–1.9 s; a list after discovery 0 ms (kept in main) | proposed, needs approval: longest main-thread block 50 ms |
 
 On 2026-10-19, a focused Node 22 harness compared the existing 5-second
 desktop poll with the brain poll after this change. Both used the same activity

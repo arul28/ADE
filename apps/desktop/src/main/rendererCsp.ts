@@ -133,9 +133,8 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // `*.spotifycdn.com`.
   const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://storage.googleapis.com/images.clerk.dev/ https://img.clerk.com https://images.clerk.dev https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev https://img.youtube.com https://*.mzstatic.com https://i.scdn.co https://mosaic.scdn.co https://*.spotifycdn.com`;
   // The welcome video used to be a YouTube iframe embed, which required
-  // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail
-  // button that hands off to the system browser (WelcomeVideoGate.tsx), so
-  // no external frame-src is needed.
+  // frame-src exceptions for youtube(-nocookie).com. ADE only ever links to
+  // it (the system browser plays it), so no external frame-src is needed.
   // `ade-scene:` is framed and nothing else: a scene is agent-authored code, so
   // it is only ever loaded into a sandboxed iframe with its own origin. It is
   // deliberately absent from img-src/media-src/connect-src — there is no

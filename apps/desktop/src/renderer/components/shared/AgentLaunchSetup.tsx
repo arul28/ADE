@@ -4,7 +4,7 @@ import type { AgentChatSession, OpenProjectBinding } from "../../../shared/types
 import { useRootAppStore } from "../../state/appStore";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import { issueChatLaunchArgs } from "../../lib/linearBatchLaunch";
-import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { askFirstNativeControls } from "../../lib/nativeLaunchControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { navigateToAppTarget } from "../../lib/openExternal";
@@ -20,9 +20,9 @@ import "./agentLaunchSetup.css";
  * prompt it starts from, all editable, then one Start button. The same launch
  * the issue launchers make, so the chat shows the whole prompt.
  *
- * Permissions start at ask-first (`defaultNativeControls`): every caller so
- * far promises the person the agent asks before it changes anything. They can
- * still widen them in the picker.
+ * Permissions start at ask-first (`askFirstNativeControls`), not the usual
+ * full-access default: every caller so far promises the person the agent asks
+ * before it changes anything. They can still widen them in the picker.
  *
  * Remote machines: `pin` names the machine the chat must run on (the lane's
  * machine). Leave it null for the tab's own machine. The lane lookup, the
@@ -68,7 +68,7 @@ export function AgentLaunchSetup({
     reasoningEffort: null,
     fastMode: false,
     sessionType: "chat",
-    nativeControls: defaultNativeControls(),
+    nativeControls: askFirstNativeControls(),
   }));
   const modelId = config.modelId || defaultModelId;
 

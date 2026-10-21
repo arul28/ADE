@@ -1,0 +1,180 @@
+/*
+ * First run: what the welcome card, "Connect your agents" and "Bring your
+ * projects in" share, on the launch gate's glass (the card frame, its header,
+ * list and footer, the step widths, the motion). Each step's own styles sit
+ * beside it: `firstRunWelcome.css`, `firstRunAgents.css`,
+ * `firstRunProjects.css` (with the chat picker) and `firstRunDevices.css`
+ * (the phone QR). Every colour comes from the `.ade-gate`
+ * tokens in `launchGateGlass.css` (the theme's fg/bg at fixed steps), so dark,
+ * light and custom themes all read. Motion is one-shot entrance only and yields to both
+ * reduce-motion switches.
+ */
+
+/* The first-run cards carry more text than the sign-in card, over whatever
+   picture the scene shows, so their glass is a little denser. */
+.ade-fr-welcome,
+.ade-fr-projects {
+  /* .ade-fr-agents reuses the projects card's frame. */
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 74%, transparent);
+}
+
+[data-theme="light"] .ade-fr-welcome,
+[data-theme="light"] .ade-fr-projects {
+  --gate-glass-fill: color-mix(in srgb, var(--color-bg) 78%, transparent);
+}
+
+.ade-glass-primary.ade-fr-cta {
+  width: auto;
+  min-width: 200px;
+  padding: 0 26px;
+}
+
+/* ── The card frame, header, list and footer ─────────────────── */
+
+.ade-glass-card.ade-fr-projects {
+  padding: 28px 28px 22px;
+  text-align: left;
+}
+
+.ade-fr-head {
+  padding: 0 4px;
+}
+
+.ade-fr-eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-title {
+  margin: 8px 0 0;
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+
+.ade-fr-sub {
+  margin: 8px 0 0;
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--gate-text-2);
+}
+
+.ade-fr-list {
+  margin-top: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--gate-rule);
+  background: color-mix(in srgb, var(--color-bg) 18%, transparent);
+  overflow: hidden;
+}
+
+.ade-fr-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--gate-rule);
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+}
+
+.ade-fr-text-btn {
+  border: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gate-text-2);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-text-btn:hover {
+  color: var(--color-fg);
+  background: var(--gate-chip-fill);
+}
+
+.ade-fr-foot {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ade-fr-summary {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--gate-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A card taller than the window scrolls from its top instead of losing it. */
+.ade-gate:has(> .ade-gate-stack[data-step]) {
+  align-items: safe center;
+}
+
+/* The gate stack is sized for the sign-in card; the first-run cards are wider. */
+.ade-gate-stack[data-step="welcome"] {
+  width: min(580px, 100%);
+}
+
+.ade-gate-stack[data-step="projects"] {
+  width: min(640px, 100%);
+}
+
+.ade-gate-stack[data-step="agents"] {
+  width: min(640px, 100%);
+}
+
+/* Kimi's colour mark draws its "K" in hard-coded white, which vanishes on the
+   light glass; ink it with the theme's text colour there instead. */
+[data-theme="light"] [data-logo="kimi"] path[fill="#fff"] {
+  fill: var(--color-fg);
+}
+/* Short windows: the list keeps its room; the padding gives way. */
+@media (max-height: 760px) {
+  .ade-glass-card.ade-fr-projects {
+    padding: 22px 24px 18px;
+  }
+
+  .ade-fr-title {
+    font-size: 21px;
+  }
+
+  .ade-fr-list {
+    margin-top: 14px;
+  }
+
+  .ade-fr-foot {
+    margin-top: 14px;
+  }
+}
+
+@keyframes ade-fr-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-fr-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-fr-picker-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-fr-skeleton {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}

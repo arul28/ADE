@@ -4,6 +4,7 @@
 
 import type { DeeplinkEnvelope, DeeplinkOwnership } from "../deeplinks";
 import type { AppPackageChannel } from "../packageChannel";
+import type { ExternalSessionProvider } from "./externalSessions";
 import type {
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
@@ -157,6 +158,58 @@ export type AppWelcomeVideoState = {
   version: number;
   completedAt: string | null;
   dismissedAt: string | null;
+};
+
+/**
+ * A git project found on this computer during first-run setup, from the
+ * folders Claude Code and Codex sessions ran in. Its linked worktrees become
+ * lanes when the project opens.
+ */
+export type OnboardingProjectCandidate = {
+  rootPath: string;
+  name: string;
+  /** `owner/repo` from the origin remote, when there is one. */
+  repoLabel: string | null;
+  /** Coding-agent sessions (any importable provider) that ran in this project or its worktrees. */
+  chatCount: number;
+  /** Of those, the ones active within `ONBOARDING_CHAT_WINDOW_DAYS` (shared/onboardingChatWindow.ts): what setup imports. */
+  recentChatCount: number;
+  lastActiveAt: number | null;
+  /** Which providers those chats came from, in the importer's display order. */
+  providers: ExternalSessionProvider[];
+  /** Linked worktrees that open as lanes. */
+  laneCount: number;
+  /** Pre-selected: active recently, with a few chats. */
+  suggested: boolean;
+  /**
+   * Already one of ADE's projects on this computer. Listed so a returning
+   * user sees their projects (and can still bring their chats in), never
+   * added again.
+   */
+  inAde: boolean;
+};
+
+export type OnboardingProjectDiscovery = {
+  /** This computer's name, for "Ready on <name>". */
+  machineName: string;
+  projects: OnboardingProjectCandidate[];
+};
+
+/**
+ * One chat setup's import would bring in for a project: a provider session
+ * from the last `ONBOARDING_CHAT_WINDOW_DAYS` days that ran in the project or one of its worktrees.
+ * `provider` + `id` are the importer's own identity (`externalSessions.list`
+ * rows), so a choice made in setup matches the session at import time.
+ */
+export type OnboardingProjectChat = {
+  id: string;
+  provider: ExternalSessionProvider;
+  /** The provider's title, else the opening prompt on one line; null when neither exists. */
+  title: string | null;
+  cwd: string | null;
+  lastActiveAt: number;
+  /** User prompts, when the provider's history gives it cheaply. */
+  messageCount: number | null;
 };
 
 export type PtyProcessResourceUsageSnapshot = {

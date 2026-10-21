@@ -1,0 +1,643 @@
+/*
+ * ADE Tips: the dialog and the home widget. Kit and theme tokens only, so every
+ * theme (light, dark, custom) and every scene applies.
+ *
+ * The dialog speaks the first-run cards' voice (a mono eyebrow, a serif
+ * headline with the accent in italic), then the groups as a row of chips and
+ * one group at a time as a wall of tiles in the landing page's manner
+ * (`apps/web/src/components/home/FeatureWall.tsx`). Colour means "which
+ * group": each group has a hue (`--tips-hue`, set inline from
+ * `ADE_TIP_GROUPS`) for its chip, its bright first tile, its icons and the
+ * glow in each tile's corner. "For you" (postponed suggestions) is ADE's own
+ * violet.
+ *
+ * Cost: one group's tiles at a time, screenshots lazy and decoded off the
+ * main thread, no blur or filter on any tile. Motion: tiles rise in,
+ * staggered, on open and on a group change (the wall is keyed by group);
+ * hover lifts a tile 2px and nudges its screenshot. Transform and opacity
+ * only, none of it under either reduce-motion switch.
+ */
+
+/* ── dialog ─────────────────────────────────────────────────────── */
+
+.ade-tips-panel { overflow: hidden; }
+
+.ade-tips {
+  --tips-hue: #8b5cf6;
+  /* The hue as text and icon colour: lifted toward white on dark pages, pulled toward the ink on light ones. */
+  --tips-ink: color-mix(in srgb, var(--tips-hue) 78%, #ffffff);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  container: adetips / inline-size;
+}
+[data-theme="light"] .ade-tips,
+[data-theme="light"] .ade-tipw { --tips-ink: color-mix(in srgb, var(--tips-hue) 72%, var(--color-fg)); }
+
+/* The active group's colour, faint, behind the header. Static paint. */
+.ade-tips-wash {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 220px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 120% at 100% 0%, color-mix(in srgb, var(--tips-hue) 13%, transparent), transparent 70%),
+    radial-gradient(40% 90% at 0% 0%, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 70%);
+}
+
+.ade-tips-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 26px 28px 0;
+}
+.ade-tips-head-text { min-width: 0; animation: ade-tips-rise 360ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.ade-tips-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
+}
+.ade-tips-eyebrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, #c4b5fd, #8b5cf6 55%, #6d28d9);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.55);
+}
+.ade-tips-headline {
+  margin: 8px 0 0;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  font-weight: 400;
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+.ade-tips-headline em {
+  font-style: italic;
+  color: color-mix(in srgb, var(--color-accent) 72%, var(--color-fg));
+}
+.ade-tips-lede {
+  margin: 8px 0 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--kit-text-2);
+}
+.ade-tips-cards-switch {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-tips-cards-switch-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--tips-ink);
+  cursor: pointer;
+}
+.ade-tips-cards-switch-btn:hover { text-decoration: underline; text-underline-offset: 2px; }
+.ade-tips-cards-switch-btn:focus-visible { outline: 1px solid var(--tips-ink); outline-offset: 2px; border-radius: 3px; }
+.ade-tips-close { flex: none; margin: -6px -8px 0 0; background: transparent; }
+
+/* Groups: a row of chips, each in its group's hue once picked. */
+.ade-tips-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 20px 28px 16px;
+  border-bottom: 1px solid var(--kit-rule);
+}
+.ade-tips-chip {
+  --tips-ink: color-mix(in srgb, var(--tips-hue) 78%, #ffffff);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px 0 10px;
+  border: 1px solid var(--kit-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+[data-theme="light"] .ade-tips-chip { --tips-ink: color-mix(in srgb, var(--tips-hue) 72%, var(--color-fg)); }
+.ade-tips-chip > svg { flex: none; color: var(--tips-ink); }
+.ade-tips-chip-count {
+  margin-left: 1px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--kit-text-3);
+}
+.ade-tips-chip:hover { background: var(--kit-hover); color: var(--color-fg); }
+.ade-tips-chip[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--tips-hue) 50%, transparent);
+  background: color-mix(in srgb, var(--tips-hue) 14%, transparent);
+  color: var(--color-fg);
+}
+.ade-tips-chip[aria-selected="true"] .ade-tips-chip-count { color: var(--tips-ink); }
+/* "For you" is ADE's pick for this person: it carries a violet edge even when not picked. */
+.ade-tips-chip[data-suggested] {
+  border-color: color-mix(in srgb, #8b5cf6 45%, transparent);
+  background: linear-gradient(100deg, color-mix(in srgb, #8b5cf6 12%, transparent), color-mix(in srgb, #ec4899 6%, transparent));
+  color: var(--color-fg);
+}
+.ade-tips-chip[data-suggested][aria-selected="true"] {
+  border-color: color-mix(in srgb, #8b5cf6 70%, transparent);
+  background: linear-gradient(100deg, color-mix(in srgb, #8b5cf6 24%, transparent), color-mix(in srgb, #ec4899 12%, transparent));
+}
+.ade-tips-chip:focus-visible,
+.ade-tips-try:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 75%, transparent);
+  outline-offset: 2px;
+}
+
+.ade-tips-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 22px 28px 28px;
+  scrollbar-width: thin;
+}
+
+/* The group's name and its one line, above its tips. */
+.ade-tips-group-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  margin-bottom: 16px;
+  animation: ade-tips-rise 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.ade-tips-group-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--tips-ink);
+  background: color-mix(in srgb, var(--tips-hue) 16%, transparent);
+}
+.ade-tips-group-title {
+  margin: 0;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 22px;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-tips-group-blurb {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
+}
+
+/* One group's tips as a wall, in the landing page's manner: tiles of mixed
+   sizes packed into one grid (sizes and order in `onboarding/adeTips.ts`), the
+   group's own bright tile first, screenshot tiles for its headline features
+   and icon tiles for the rest. Four columns, two in a narrower window, one in
+   a very narrow one. */
+.ade-tips-wall {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: 168px;
+  grid-auto-flow: row dense;
+  gap: 12px;
+}
+.ade-tips-tile[data-size="intro"],
+.ade-tips-tile[data-size="wide"] { grid-column: span 2; }
+.ade-tips-tile[data-size="screen"] { grid-column: span 2; grid-row: span 2; }
+@container adetips (max-width: 860px) {
+  .ade-tips-wall { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container adetips (max-width: 500px) {
+  .ade-tips-wall { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
+  .ade-tips-tile[data-size] { grid-column: auto; grid-row: auto; }
+  .ade-tips-tile[data-size="screen"] { min-height: 300px; }
+  .ade-tips-head, .ade-tips-groups, .ade-tips-body { padding-left: 18px; padding-right: 18px; }
+  .ade-tips-headline { font-size: 27px; }
+}
+
+/* A tile: a plane a step off the dialog, a hairline, a lit top edge and its
+   colour glowing from one corner. All from theme tokens, so it reads on dark
+   and light pages; the light-theme rules below swap the lit edge and add a
+   faint drop. */
+.ade-tips-tile {
+  --tile-edge: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid var(--tile-edge);
+  background:
+    radial-gradient(120% 110% at 0% 0%, color-mix(in srgb, var(--tips-hue) 10%, transparent), transparent 58%),
+    color-mix(in srgb, var(--color-fg) 3.5%, var(--color-card));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 7%, transparent);
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms ease;
+  animation: ade-tips-rise 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--tips-i, 0) * 30ms + 30ms);
+}
+[data-theme="light"] .ade-tips-tile {
+  --tile-edge: color-mix(in srgb, var(--color-fg) 10%, transparent);
+  background:
+    radial-gradient(120% 110% at 0% 0%, color-mix(in srgb, var(--tips-hue) 9%, transparent), transparent 58%),
+    color-mix(in srgb, #ffffff 55%, var(--color-card));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px -16px rgba(0, 0, 0, 0.18);
+}
+.ade-tips-tile[data-can-try]:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--tips-hue) 32%, var(--tile-edge)); }
+/* The tip the home widget was showing. */
+.ade-tips-tile[data-focused] {
+  border-color: color-mix(in srgb, var(--tips-hue) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tips-hue) 18%, transparent), inset 0 1px 0 color-mix(in srgb, #ffffff 7%, transparent);
+}
+
+.ade-tips-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.ade-tips-tile-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  color: var(--tips-ink);
+}
+.ade-tips-tile-icon[data-large] {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--tips-hue) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tips-hue) 24%, transparent);
+}
+.ade-tips-tile-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--kit-text-2);
+}
+.ade-tips-tile-headline {
+  position: relative;
+  z-index: 1;
+  max-width: 420px;
+  margin: 8px 0 0;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -0.015em;
+  color: var(--color-fg);
+  text-wrap: balance;
+}
+.ade-tips-tile-text { margin-top: auto; min-width: 0; }
+.ade-tips-tile-title {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-tips-tile-line {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--kit-text-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ade-tips-tile[data-size="wide"] .ade-tips-tile-line { -webkit-line-clamp: 2; max-width: 440px; }
+
+/* A screen tile: its colour glows from the corner the screenshot comes out
+   of, and the screenshot bleeds off the bottom right, rounded where it shows. */
+.ade-tips-tile[data-size="screen"] {
+  padding-bottom: 0;
+  padding-right: 0;
+  background:
+    radial-gradient(110% 90% at 100% 100%, color-mix(in srgb, var(--tips-hue) 20%, transparent), transparent 62%),
+    color-mix(in srgb, var(--color-fg) 3.5%, var(--color-card));
+}
+[data-theme="light"] .ade-tips-tile[data-size="screen"] {
+  background:
+    radial-gradient(110% 90% at 100% 100%, color-mix(in srgb, var(--tips-hue) 16%, transparent), transparent 62%),
+    color-mix(in srgb, #ffffff 55%, var(--color-card));
+}
+.ade-tips-tile[data-size="screen"] .ade-tips-tile-top { padding-right: 16px; }
+.ade-tips-tile[data-size="screen"] .ade-tips-tile-headline { padding-right: 20px; }
+.ade-tips-shot {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 90px;
+  margin: 16px 0 0 24px;
+}
+/* The screenshot comes out of the bottom-right corner at its own scale: a
+   short one sits on the tile's bottom edge, a tall one starts under the words
+   and runs off the bottom (auto margins never go negative). It is never
+   blown up, and the top left, where its content starts, always shows. */
+.ade-tips-shot img {
+  flex: none;
+  display: block;
+  width: max(100%, 420px);
+  height: auto;
+  margin-top: auto;
+  border-top-left-radius: 12px;
+  border-left: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.32);
+  user-select: none;
+  transition: transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-theme="light"] .ade-tips-shot img { box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.16); }
+.ade-tips-tile[data-can-try]:hover .ade-tips-shot img { transform: translate(-4px, -4px); }
+
+/* The group's own tile: bright, in its colour, like the wall's middle tile. */
+.ade-tips-tile[data-size="intro"] {
+  justify-content: flex-end;
+  border: 0;
+  color: #ffffff;
+  background:
+    radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, #ffffff 22%, transparent), transparent 55%),
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--tips-hue) 70%, #1e1033) 0%,
+      color-mix(in srgb, var(--tips-hue) 88%, #000000) 48%,
+      color-mix(in srgb, var(--tips-hue) 62%, #ec4899) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 10px 30px -14px color-mix(in srgb, var(--tips-hue) 70%, transparent);
+}
+.ade-tips-intro-glyph {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+}
+.ade-tips-intro-title {
+  margin: 0;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.18);
+}
+.ade-tips-intro-blurb {
+  margin: 8px 0 0;
+  max-width: 380px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.88);
+}
+.ade-tips-intro-count {
+  position: absolute;
+  top: 22px;
+  right: 20px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* "Try it": ADE's cursor and two words in the tile's top-right corner, quiet
+   until the tile is hovered or the button focused. Its hit area covers the
+   whole tile, so the tile itself is the target. */
+.ade-tips-try {
+  position: static;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 4px 10px 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.ade-tips-try::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+}
+.ade-tips-try-cursor { position: relative; z-index: 3; display: inline-flex; width: 15px; height: 15px; }
+.ade-tips-try-cursor svg { width: 15px; height: 15px; }
+.ade-tips-tile:hover .ade-tips-try,
+.ade-tips-try:focus-visible {
+  opacity: 1;
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, #8b5cf6 40%, transparent);
+  background: color-mix(in srgb, #8b5cf6 13%, var(--color-card));
+}
+.ade-tips-tile:has(.ade-tips-try:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 75%, transparent);
+  outline-offset: 2px;
+}
+.ade-tips-try:focus-visible { outline: none; }
+
+/* The glyph, title and line of a "For you" card. */
+.ade-tips-glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: var(--tips-ink);
+  background: color-mix(in srgb, var(--tips-hue) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tips-hue) 26%, transparent);
+}
+.ade-tips-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+  color: var(--color-fg);
+}
+.ade-tips-sentence {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
+  text-wrap: pretty;
+}
+
+/* "For you": the one place with filled cards, in ADE's violet. */
+.ade-tips-suggested { display: flex; flex-direction: column; gap: 10px; }
+.ade-tips-suggest {
+  --tips-hue: #8b5cf6;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, #8b5cf6 32%, var(--kit-panel-edge));
+  background:
+    radial-gradient(90% 140% at 0% 0%, color-mix(in srgb, #8b5cf6 12%, transparent), transparent 62%),
+    radial-gradient(70% 120% at 100% 100%, color-mix(in srgb, #ec4899 6%, transparent), transparent 60%),
+    var(--kit-panel-bg);
+  animation: ade-tips-rise 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--tips-i, 0) * 40ms + 40ms);
+}
+.ade-tips-suggest-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.ade-tips-suggest .ade-tips-title { margin-top: 1px; font-size: 14px; }
+.ade-tips-suggest .ade-tips-sentence { margin-top: 4px; }
+.ade-tips-suggest-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.ade-tips-note { font-size: 11.5px; color: var(--kit-text-3); }
+.ade-tips-context { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; }
+
+@keyframes ade-tips-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tips-head-text,
+  .ade-tips-group-head,
+  .ade-tips-tile,
+  .ade-tips-suggest { animation: none; }
+  .ade-tips-tile[data-can-try]:hover,
+  .ade-tips-tile[data-can-try]:hover .ade-tips-shot img { transform: none; }
+}
+html[data-motion="reduced"] .ade-tips-head-text,
+html[data-motion="reduced"] .ade-tips-group-head,
+html[data-motion="reduced"] .ade-tips-tile,
+html[data-motion="reduced"] .ade-tips-suggest { animation: none; }
+html[data-motion="reduced"] .ade-tips-tile[data-can-try]:hover,
+html[data-motion="reduced"] .ade-tips-tile[data-can-try]:hover .ade-tips-shot img { transform: none; }
+
+/* ── home widget ────────────────────────────────────────────────── */
+
+.ade-tipw {
+  --tips-hue: #8b5cf6;
+  --tips-ink: color-mix(in srgb, var(--tips-hue) 78%, #ffffff);
+}
+.ade-tipw-body { gap: 10px; }
+/* Compact: the glyph and the group share the first line; the words run full width under them. */
+.ade-tipw-tip {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  align-content: start;
+  overflow: hidden;
+}
+.ade-tipw-text { display: contents; }
+.ade-tipw-text > .kit-eyebrow { grid-column: 2; grid-row: 1; align-self: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-tipw-title, .ade-tipw-sentence { grid-column: 1 / -1; }
+.ade-tipw-title { margin-top: 6px; }
+.ade-tipw-glyph {
+  grid-column: 1;
+  grid-row: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--tips-ink);
+  background: color-mix(in srgb, var(--tips-hue) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tips-hue) 26%, transparent);
+}
+.ade-tipw-title { font-size: 14px; font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; color: var(--color-fg); }
+.ade-tipw-sentence {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--kit-text-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ade-tipw-foot { flex: none; display: flex; align-items: center; gap: 8px; }
+.ade-tipw-foot .kit-btn { gap: 5px; }
+.ade-tipw-nav { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.ade-tipw-nav .kit-icon-btn { width: 24px; height: 24px; background: transparent; }
+.ade-tipw-nav .kit-num { min-width: 42px; text-align: center; font-size: 10.5px; color: var(--kit-text-3); }
+
+/* Wide (Regular, two columns): a larger glyph leads, the words sit beside it. */
+@container widget (min-width: 440px) {
+  .ade-tipw-tip { display: flex; align-items: center; gap: 16px; }
+  .ade-tipw-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .ade-tipw-text > .kit-eyebrow { align-self: flex-start; }
+  .ade-tipw-title { margin-top: 2px; font-size: 15px; }
+  .ade-tipw-sentence { font-size: 12.5px; }
+  .ade-tipw-glyph { flex: none; width: 44px; height: 44px; border-radius: 12px; }
+}
+
+/* Tall (a widget that fills a row): the tip sits in the middle of the card and
+   reads larger, instead of hugging the head over an empty card. */
+@container widget (min-height: 300px) {
+  .ade-tipw-tip { align-content: center; grid-template-columns: 40px minmax(0, 1fr); column-gap: 12px; }
+  .ade-tipw-title { font-size: 17px; letter-spacing: -0.01em; }
+  .ade-tipw-sentence { font-size: 13px; -webkit-line-clamp: 4; }
+  .ade-tipw-glyph { width: 40px; height: 40px; border-radius: 11px; }
+}
+@container widget (min-width: 440px) and (min-height: 300px) {
+  .ade-tipw-glyph { width: 56px; height: 56px; border-radius: 15px; }
+  .ade-tipw-title { font-size: 19px; }
+}
+
+/* Short: fewer lines, then no sentence and no counter. */
+@container widget (max-height: 215px) {
+  .ade-tipw-sentence { -webkit-line-clamp: 2; }
+}
+@container widget (max-height: 175px) {
+  .ade-tipw-sentence { display: none; }
+  .ade-tipw-nav .kit-num { display: none; }
+}

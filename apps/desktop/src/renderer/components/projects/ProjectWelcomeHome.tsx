@@ -107,6 +107,7 @@ export function HomeAction({
   disabled,
   title,
   tour,
+  onboardingAnchor,
 }: {
   icon: Icon;
   label: ReactNode;
@@ -115,6 +116,8 @@ export function HomeAction({
   disabled?: boolean;
   title?: string;
   tour?: string;
+  /** Marks the button for the onboarding tour (`data-onboarding-anchor`). */
+  onboardingAnchor?: string;
 }) {
   return (
     <button
@@ -122,6 +125,7 @@ export function HomeAction({
       className="ade-home-action"
       data-primary={primary || undefined}
       data-tour={tour}
+      data-onboarding-anchor={onboardingAnchor}
       disabled={disabled}
       title={title}
       onClick={onClick}

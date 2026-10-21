@@ -5,6 +5,12 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
+import { openWhatsNew } from "../announcements/AnnouncementsHost";
+import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
+import { resetOnboardingTiers } from "../../onboarding/resetOnboardingTiers";
+import { setSuggestionsTestMode, suggestionsTestMode } from "../../onboarding/situationalSuggestions";
+import { showToast } from "./toast/toastStore";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
@@ -912,6 +918,30 @@ export function CommandPalette({
         },
       },
       {
+        id: "help-whats-new",
+        title: "What's new",
+        hint: "Recent features, one page each",
+        group: "Help",
+        keywords: ["help", "new", "release", "features", "changelog", "announcements"],
+        run: () => openWhatsNew(),
+      },
+      {
+        id: "help-ade-tips",
+        title: "ADE Tips",
+        hint: "What ADE can do, one line each",
+        group: "Help",
+        keywords: ["help", "tips", "features", "learn"],
+        run: () => openAdeTips(),
+      },
+      {
+        id: "help-show-around",
+        title: "Show me around again",
+        hint: "Welcome, projects and first-chat hints",
+        group: "Help",
+        keywords: ["onboarding", "welcome", "tour", "setup"],
+        run: showMeAroundAgain,
+      },
+      {
         id: "ping",
         title: "Ping preload bridge",
         hint: 'Expect "pong"',
@@ -921,6 +951,41 @@ export function CommandPalette({
         },
       },
     ];
+
+    // Dev builds: test onboarding's later tiers without waiting days.
+    if (import.meta.env.DEV) {
+      next.push(
+        {
+          id: "dev-suggestions-test-mode",
+          title: "Dev: Suggestions test mode",
+          hint: "Show each situational suggestion as soon as its signal is there",
+          group: "Debug",
+          keywords: ["suggestion", "tier", "onboarding", "test"],
+          run: () => {
+            const on = !suggestionsTestMode();
+            setSuggestionsTestMode(on);
+            showToast({
+              tone: "info",
+              title: on ? "Suggestions test mode is on" : "Suggestions test mode is off",
+              message: on
+                ? "No cooldown, no once-per-launch, no snooze. Answer a card and the next signal can show."
+                : "Suggestions follow their normal rules again.",
+            });
+          },
+        },
+        {
+          id: "dev-reset-tips",
+          title: "Dev: Reset Tips, suggestions and What's new",
+          hint: "Forget what this computer has seen, then reload",
+          group: "Debug",
+          keywords: ["suggestion", "whats new", "announcement", "tips", "onboarding", "reset"],
+          run: () => {
+            resetOnboardingTiers();
+            window.location.reload();
+          },
+        },
+      );
+    }
 
     // The chat in front of the user can be restarted from here: a fresh
     // provider process with the same conversation.
@@ -954,7 +1019,11 @@ export function CommandPalette({
           command.id === "project-clone" ||
           command.id === "project-remote" ||
           command.id === "go-project" ||
-          command.id === "ping",
+          command.id === "help-whats-new" ||
+          command.id === "help-ade-tips" ||
+          command.id === "help-show-around" ||
+          command.id === "ping" ||
+          command.id.startsWith("dev-"),
       );
     }
 
