@@ -55,7 +55,8 @@ vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }))
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
 vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
 vi.mock("../settings/lanes/LanesSettingsPage", () => ({
-  LanesSettingsPage: stubSection(["lane-list", "storage", "archive", "auto-rebase", "rebase-suggestions", "lane-templates"]),
+  LanesSettingsPage: stubSection(["lane-list", "auto-rebase", "rebase-suggestions", "lane-templates"]),
+  StorageSettingsPage: stubSection(["storage", "archive"]),
 }));
 vi.mock("../settings/location/LocationPage", () => ({ LocationPage: stubSection(["project-location", "project-health"]) }));
 vi.mock("../settings/overview/SettingsOverview", () => ({ SettingsOverview: stubSection(["needs-attention", "at-a-glance"]) }));
@@ -135,12 +136,12 @@ describe("SettingsPage", () => {
   });
 
   it("lands a legacy page's link on the card it named, on the page that holds it now", async () => {
-    // `?tab=archive` was the Archive page; the archive is a block of
-    // Project → Lanes now, so the link opens Lanes at the archive.
+    // `?tab=archive` was the Archive page; the archive is a view of
+    // Project → Storage & cleanup now, so the link opens that page at the archive.
     renderSettings("/settings?tab=archive");
-    expect(await screen.findByRole("heading", { name: "Lanes", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Storage & cleanup", level: 1 })).toBeTruthy();
     await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("?tab=lanes-git#archive");
+      expect(screen.getByTestId("location").textContent).toBe("?tab=storage#archive");
     });
   });
 

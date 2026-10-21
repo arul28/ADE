@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
@@ -34,6 +35,8 @@ export type AgentChatCliLaunchDeps = {
   ptyService: PtyServiceForCliLaunch;
   /** False when this runtime has no RPC endpoint that accepts activity reports. */
   sessionActivityReportingEnabled?: boolean;
+  /** The Project notes block the CLI starts with, read once at launch. */
+  projectNotesService?: Pick<ProjectNotesService, "renderPromptBlock"> | null;
   logger?: LoggerForCliLaunch | null;
 };
 
@@ -118,6 +121,7 @@ export async function launchAgentChatCli(
     provider,
     permissionMode,
     sessionActivityReportingEnabled: deps.sessionActivityReportingEnabled,
+    projectNotes: deps.projectNotesService?.renderPromptBlock() ?? null,
     ...(provider === "claude" ? { sessionId } : {}),
     model: trackedPreset?.model || arg.model || null,
     reasoningEffort: arg.reasoningEffort ?? null,

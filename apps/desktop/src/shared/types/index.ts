@@ -58,3 +58,4 @@ export * from "./remoteMcp";
 export * from "../appleDeviceSettings";
 export * from "./subscriptionProxy";
 export * from "./quitPrompt";
+export * from "./projectNotes";

@@ -122,7 +122,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
-| `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard: plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression; storage accounting includes ADE temporary files. |
+| `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Project → Storage & cleanup → Space: storage dashboard, plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression; storage accounting includes ADE temporary files. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageMaintenanceJournal.tsx` | Collapsible "Recent cleanups" panel rendering the last runs from the maintenance journal, one humanized line per action. |
 | `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
@@ -646,7 +646,7 @@ prints nothing. The `ade` CLI itself does not prune.
 
 ### Lane lifecycle rules
 
-Settings > Storage owns the four project cleanup rules:
+Project → Storage & cleanup → Rules owns the four project cleanup rules:
 
 - maximum active lanes;
 - archive inactive lanes after a configured age;
@@ -871,7 +871,7 @@ under `.ade/cache`, capped at the last 30 runs and written atomically. The
 journal is a plain rebuildable file — no DB, no CRR — so a corrupt or missing
 journal degrades to empty.
 
-The Settings > Storage snapshot carries an optional `extras` block built from the
+The Project → Storage & cleanup → Space snapshot carries an optional `extras` block built from the
 journal and a `dbstat` scan: the project-database breakdown (webhooks, sync
 bookkeeping, PR cache, core — `dbstat` is treated as optional
 and degrades to no breakdown when the SQLite build lacks it), the recent-runs
