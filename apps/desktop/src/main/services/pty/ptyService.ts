@@ -2651,13 +2651,16 @@ export function createPtyService({
 
     const session = sessionService.get(entry.sessionId);
     if (!session || session.status !== "running" || session.attentionRequestedAt) return;
+    const isTrackedCli = entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint);
+    // A plain terminal's screen goes out only when the user keeps plain terminals in the check.
+    if (!isTrackedCli && projectConfigService?.get().effective.ai?.chat?.smartPlainTerminalsEnabled === false) return;
     const screenText = entry.terminalSnapshot
       ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
         .map((row) => stripAnsi(row.text))
         .join("\n")
       : cliStatusScreenTextFromOutputTail(readRecentOutputTail(entry));
     const request = buildCliStatusRequest(screenText, {
-      isTrackedCli: entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint),
+      isTrackedCli,
       toolTypeHint: entry.toolTypeHint,
       resumeCommand: entry.resumeCommand,
     });

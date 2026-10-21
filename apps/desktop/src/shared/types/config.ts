@@ -2126,6 +2126,12 @@ export type AiChatConfig = {
   smartPaletteEnabled?: boolean;
   smartLaneEmojiEnabled?: boolean;
   /**
+   * Under "Waiting on you": also check plain terminals (not only agent CLIs)
+   * for a prompt waiting on the user, which sends their last screen to Jev,
+   * redacted and capped at 4 KB. On unless set to false.
+   */
+  smartPlainTerminalsEnabled?: boolean;
+  /**
    * Jev's model and effort hint beside the composer's pickers (needs Smart
    * decisions on). `model_and_effort` (the default) may suggest another model;
    * `effort_only` only suggests an effort on the chosen model; `off` shows

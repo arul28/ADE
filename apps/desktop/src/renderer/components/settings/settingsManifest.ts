@@ -633,6 +633,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Smart decisions",
   },
   {
+    id: "chat.smart-plain-terminals",
+    label: "Also check plain terminals",
+    keywords: ["jev", "terminal", "shell", "waiting", "prompt", "privacy"],
+    tab: "chat",
+    anchor: "smart-plain-terminals",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
     id: "chat.smart-settle-nudge",
     label: "Settle finished chats",
     keywords: ["jev", "settle", "done", "finished", "idle"],

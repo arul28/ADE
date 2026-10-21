@@ -132,7 +132,8 @@ export function SmartDecisionsSection() {
               configKey={JEV_GROUP_CONFIG_KEY.chatStatus}
               icon={HandWaving}
               title="Waiting on you"
-              hint="Whether a chat's last reply asked you something or is waiting on its own background work, whether a terminal CLI is waiting for your input, and whether a status line still matches the final reply."
+              hint="Whether a chat's last reply asked you something or is waiting on its own background work, whether an agent CLI is waiting for your input, and whether a status line still matches the final reply."
+              option={<PlainTerminalsOption />}
             />
             <GroupRow
               anchor="smart-settle-nudge"
@@ -212,7 +213,7 @@ function GroupTitle({ icon: Icon, children }: { icon: ElementType; children: Rea
 }
 
 /** One switch under Smart decisions: a group of Jev decisions (off, its features use ADE's built-in rules), or the Zen credit opt-in. */
-function GroupRow({ anchor, configKey, defaultOn = true, localOnly = false, icon, title, hint }: {
+function GroupRow({ anchor, configKey, defaultOn = true, localOnly = false, icon, title, hint, option }: {
   anchor: string;
   configKey: (typeof JEV_GROUP_CONFIG_KEY)[keyof typeof JEV_GROUP_CONFIG_KEY] | "jevZenCreditEnabled";
   defaultOn?: boolean;
@@ -220,6 +221,8 @@ function GroupRow({ anchor, configKey, defaultOn = true, localOnly = false, icon
   icon: ElementType;
   title: string;
   hint: string;
+  /** Shown under the row while its switch is on. */
+  option?: ReactNode;
 }) {
   const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn, localOnly });
   return (
@@ -230,7 +233,30 @@ function GroupRow({ anchor, configKey, defaultOn = true, localOnly = false, icon
       control={(
         <SettingsToggle label={title} checked={enabled} disabled={status !== "loaded" || saving} onChange={(value) => void save(value)} />
       )}
-    />
+    >
+      {enabled && status === "loaded" ? option : null}
+    </ModernRow>
+  );
+}
+
+/**
+ * Under "Waiting on you": whether plain terminals are checked too, not only
+ * agent CLIs. Their last screen goes to Jev, redacted and capped.
+ */
+function PlainTerminalsOption() {
+  const { status, saving, enabled, save } = useChatConfigToggle("smartPlainTerminalsEnabled", { defaultOn: true });
+  return (
+    <div className="ade-smart-group-options" id="smart-plain-terminals" data-settings-anchor="smart-plain-terminals">
+      <SettingsToggle
+        label="Also check plain terminals"
+        checked={enabled}
+        disabled={status !== "loaded" || saving}
+        onChange={(value) => void save(value)}
+      />
+      <span className="ade-ap-rowhint">
+        Also plain terminals, such as an install script asking [y/N]. Their last screen is sent, with secrets removed and at most 4 KB. Off, only agent CLIs are checked.
+      </span>
+    </div>
   );
 }
 

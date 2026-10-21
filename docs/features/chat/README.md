@@ -4568,7 +4568,11 @@ config service):
   features with no network call (`jevEnabled` in `shared/jevSettings.ts`,
   read per call by `jevService`):
   - `ai.chat.smartChatStatusEnabled` -- "Waiting on you": `turn_end`,
-    `cli_status`, `status_line`.
+    `cli_status`, `status_line`. Its option `ai.chat.smartPlainTerminalsEnabled`
+    (default **true**, "Also check plain terminals") decides whether
+    `cli_status` also reads plain terminals, not only agent CLIs; their last
+    screen is sent with secrets removed (`redactSecrets`) and at most 4 KB
+    (`cliStatusInspector.ts`).
   - `ai.chat.smartSettleNudgeEnabled` -- "Settle finished chats":
     `settle_nudge`.
   - `ai.chat.modelHintMode` -- "Model and effort hint": `model_hint`. The
