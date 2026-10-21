@@ -8,13 +8,20 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { reasoningEffortTierLabel } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
+  adviseModelHint,
   buildModelHintRequest,
+  harnessOfCatalogModel,
   isModelHintPrompt,
-  pickModelHint,
   readModelHintAnswers,
   type ModelHint,
   type ModelHintRead,
 } from "./modelHint";
+import {
+  backfillModelHintProfile,
+  readModelHintProfile,
+  recordModelHintOutcome,
+  recordModelHintSend,
+} from "./modelHintProfile";
 
 const DEBOUNCE_MS = 700;
 /** Text that moved less than this share since the last ask keeps that answer. */
@@ -25,12 +32,6 @@ const STATUS_TTL_MS = 60_000;
 // Per machine, shared by every composer: the catalogue is the machine's, not the chat's.
 const catalogCache = new Map<string, { at: number; value: Promise<UserModelCatalog | null> }>();
 const modeCache = new Map<string, { at: number; value: Promise<HintMode> }>();
-/**
- * Model suggestions dismissed per chat; at `MODEL_DISMISSALS_TO_PIN` the chat
- * gets effort hints only. A new-chat draft starts its own count.
- */
-const modelDismissals = new Map<string, number>();
-const MODEL_DISMISSALS_TO_PIN = 2;
 
 type HintMode = "model_and_effort" | "effort_only" | "off";
 
@@ -83,7 +84,7 @@ function effortWord(effort: string | null): string {
 
 type Answered = { text: string; read: ModelHintRead; catalog: UserModelCatalog; mode: HintMode };
 
-export type ComposerModelHintChipProps = {
+export type ComposerModelHintArgs = {
   draft: string;
   attachments: readonly AgentChatFileRef[];
   laneName: string | null;
@@ -94,10 +95,9 @@ export type ComposerModelHintChipProps = {
   allowedModelIds: readonly string[] | null;
   /** The machine the chat runs on: its catalogue, its Jev. */
   pin: OpenProjectBinding | null;
-  sessionId: string | null;
   /**
    * The user chose this model (picked it by hand, or the chat already ran
-   * turns on it): only its effort is suggested.
+   * turns on it): it is only ever suggested a stronger model, never another.
    */
   modelChosen: boolean;
   /** True whenever the picker itself could not change the model (a turn running, a locked or fixed model). */
@@ -111,13 +111,22 @@ export type ComposerModelHintChipProps = {
   onReasoningEffortChange: (effort: string | null) => void;
 };
 
+export type ComposerModelHint = {
+  /** The effort that fits the prompt being typed, for the effort picker to mark; null when there is no read. */
+  suggestedEffort: string | null;
+  /** The chip, when the current pick is clearly off. */
+  chip: { hint: ModelHint; apply: () => void; dismiss: () => void } | null;
+  /** Call as the prompt is sent: what was sent with what, for the user's profile. */
+  recordSend: () => void;
+};
+
 /**
- * Jev's suggestion beside the model and effort controls: shown only when the
- * cheapest model and effort that do this prompt well differ from the current
- * pick. A click applies it through the picker's own handlers; nothing changes
- * on its own. Any failure shows nothing.
+ * Jev's model and effort advice for the composer: the effort that fits the
+ * prompt (marked in the effort picker) and, when the current pick is clearly
+ * off, a chip beside the controls. A click applies it through the picker's own
+ * handlers; nothing changes on its own. Any failure gives no advice.
  */
-export const ComposerModelHintChip = memo(function ComposerModelHintChip({
+export function useComposerModelHint({
   draft,
   attachments,
   laneName,
@@ -126,13 +135,12 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
   reasoningEffort,
   allowedModelIds,
   pin,
-  sessionId,
   modelChosen,
   hidden,
   effortPickedByHand,
   onModelChange,
   onReasoningEffortChange,
-}: ComposerModelHintChipProps) {
+}: ComposerModelHintArgs): ComposerModelHint {
   const [answered, setAnswered] = useState<Answered | null>(null);
   /** The prompt a hint was taken or dismissed on; it stays down until the text moves on. */
   const [dismissedFor, setDismissedFor] = useState<string | null>(null);
@@ -177,18 +185,17 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
         if (seq !== seqRef.current) return;
         const read = readModelHintAnswers(answers, imageCount);
         setAnswered(read ? { text, read, catalog, mode } : null);
+        // Jev answers here: learn from recent chats in the background, at most daily.
+        if (read) {
+          void backfillModelHintProfile({
+            pin: target,
+            harnessOf: (id) => harnessOfCatalogModel(catalog, id),
+          }).catch(() => {});
+        }
       })().catch(() => {});
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [active, text]);
-
-  const dismissalKey = `${pin?.key ?? ""}|${sessionId ?? "draft"}`;
-  const [dismissalTick, setDismissalTick] = useState(0);
-  // Every draft shares the "draft" key, so arriving at one is a new chat:
-  // dismissals in an earlier draft must not pin this one.
-  useEffect(() => {
-    if (sessionId == null) modelDismissals.delete(dismissalKey);
-  }, [dismissalKey, sessionId]);
 
   // An effort picked by hand is the user's answer for this prompt.
   const textRef = useRef(text);
@@ -199,26 +206,30 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
     effortPicksSeenRef.current = effortPickedByHand;
     if (textRef.current) setDismissedFor(textRef.current);
   }, [effortPickedByHand]);
-  const hint: ModelHint | null = useMemo(() => {
+  // Bumped when an outcome changes what the profile allows.
+  const [profileTick, setProfileTick] = useState(0);
+  const advice = useMemo(() => {
     if (!answered || !modelId) return null;
-    return pickModelHint({
+    return adviseModelHint({
       catalog: answered.catalog,
       read: answered.read,
       currentModelId: modelId,
       currentEffort: reasoningEffort,
       allowedModelIds,
-      modelPinned: modelChosen
-        || answered.mode === "effort_only"
-        || (modelDismissals.get(dismissalKey) ?? 0) >= MODEL_DISMISSALS_TO_PIN,
+      modelPinned: modelChosen,
+      modelsAllowed: answered.mode !== "effort_only",
+      profile: readModelHintProfile(),
     });
-    // `dismissalTick` re-reads the per-chat dismissal count.
+    // `profileTick` re-reads the stored profile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answered, modelId, reasoningEffort, allowedModelIds, modelChosen, dismissalKey, dismissalTick]);
+  }, [answered, modelId, reasoningEffort, allowedModelIds, modelChosen, profileTick]);
+  const hint = advice?.hint ?? null;
 
   // An answer about other text never shows under this text.
   const fresh = answered != null && changeShare(answered.text, text) < MIN_CHANGE_SHARE;
   const dismissed = dismissedFor != null && changeShare(dismissedFor, text) < MIN_CHANGE_SHARE;
   const visible = active && fresh && !dismissed && hint != null;
+  const suggestedEffort = active && fresh ? advice?.suggestedEffort ?? null : null;
 
   // Outcome log: what the hint offered and what the user did with it.
   const shownRef = useRef<{ hint: ModelHint; from: { modelId: string; effort: string | null } } | null>(null);
@@ -259,10 +270,35 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
     onReasoningEffortChange(pending.effort);
   }, [modelId, onReasoningEffortChange]);
 
-  if (!visible || !hint) return null;
+  const outcome = (shown: ModelHint, result: "accept" | "dismiss") => {
+    recordModelHintOutcome({
+      kind: shown.read.kind,
+      type: shown.effortOnly ? "effort" : "model",
+      direction: shown.direction,
+      outcome: result,
+    });
+    setProfileTick((tick) => tick + 1);
+  };
+
+  const recordSend = () => {
+    const sent = answered;
+    if (!sent || !modelId || changeShare(sent.text, textRef.current) >= MIN_CHANGE_SHARE) return;
+    const harness = harnessOfCatalogModel(sent.catalog, modelId);
+    if (!harness) return;
+    recordModelHintSend({
+      kind: sent.read.kind,
+      difficulty: sent.read.difficulty,
+      harness,
+      modelId,
+      effort: reasoningEffort,
+    });
+  };
+
+  if (!visible || !hint) return { suggestedEffort, chip: null, recordSend };
 
   const apply = () => {
     logOutcome("accept");
+    outcome(hint, "accept");
     // Taken: like a dismissal, it stays down for the rest of this prompt.
     setDismissedFor(text);
     if (hint.effortOnly) {
@@ -272,6 +308,18 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
     if (hint.effort != null) pendingEffortRef.current = { modelId: hint.modelId, effort: hint.effort };
     onModelChange(hint.modelId);
   };
+  const dismiss = () => {
+    logOutcome("dismiss");
+    outcome(hint, "dismiss");
+    setDismissedFor(text);
+  };
+  return { suggestedEffort, chip: { hint, apply, dismiss }, recordSend };
+}
+
+/** The chip for `useComposerModelHint`'s advice. */
+export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip }: { chip: ComposerModelHint["chip"] }) {
+  if (!chip) return null;
+  const { hint, apply, dismiss } = chip;
   const Arrow = hint.direction === "up" ? ArrowUp : ArrowDown;
   const label = hint.effortOnly
     ? `${effortWord(hint.effort)} effort?`
@@ -292,21 +340,14 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({
           className="inline-flex h-full min-w-0 items-center gap-0.5 rounded-l-md pl-1.5 pr-1 hover:bg-violet-500/[0.08] hover:text-fg"
           onClick={apply}
         >
-          {hint.effortOnly ? <Arrow size={10} weight="bold" /> : null}
+          <Arrow size={10} weight="bold" />
           <span className="max-w-32 truncate">{label}</span>
         </button>
         <button
           type="button"
           aria-label="Dismiss suggestion"
           className="inline-flex h-full items-center rounded-r-md px-1 text-fg/40 hover:bg-fg/[0.06] hover:text-fg"
-          onClick={() => {
-            logOutcome("dismiss");
-            setDismissedFor(text);
-            if (!hint.effortOnly) {
-              modelDismissals.set(dismissalKey, (modelDismissals.get(dismissalKey) ?? 0) + 1);
-              setDismissalTick((tick) => tick + 1);
-            }
-          }}
+          onClick={dismiss}
         >
           <X size={9} weight="bold" />
         </button>

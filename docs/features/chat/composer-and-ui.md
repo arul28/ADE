@@ -958,50 +958,61 @@ chat pane mount, which happens either way.
   GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
-- **Model hint (Jev).** `ComposerModelHintChip` sits right of the effort
-  picker and suggests the cheapest model and effort that do the prompt being
-  typed well, from the models the chat's machine can run. It asks only after
-  700 ms without typing, for a prompt of at least three words or 12
-  characters (`isModelHintPrompt`: "say hi back" counts, "fix it" does
-  not), and not again until the text has changed by 10% or more; an answer about older text
-  never renders under newer text. One interactive `ai.jevDecide` call
-  (feature `model_hint`) reads the task: difficulty (trivial / routine /
-  substantial / hard), kind, whether it needs images, a long context or a
-  fast reply. `modelHint.ts` then picks deterministically from
-  `usage.getModelCatalog`: it drops models that miss a hard need (image
-  input, speech input, a 400k context), keeps the levels whose Coding Agent
-  Index quality clears the bar for that difficulty and kind (`QUALITY_BAR`),
-  and takes free and plan-included before metered, the chat's own harness
-  first, then the cheapest per Intelligence Index task (the quickest when a
-  fast reply matters; task times within 1.25× of each other count as equal
-  and go to the cheaper one, so 81 s Opus low does not beat 90 s Sonnet
-  low). It stays quiet when the current pick already clears
-  the bar within 1.5× of the cheapest. The chip reads `Sonnet 5.5 · low?`, or
-  `↓ low effort?` when only the effort differs; hovering shows the reason and
-  the Artificial Analysis attribution, under "Suggested model" or, for an
-  effort-only hint, "Suggested effort". A click applies the model through the
-  model picker's own `onModelChange` and then the effort through
-  `onReasoningEffortChange`, as if the user had picked both; the × hides it
-  for this prompt, and so does an effort the user picks by hand in the
-  effort picker (`effortPickedByHand`); the chip re-reads once the prompt
-  has moved on by 10%. It never changes anything by itself.
-  A model the user chose is kept: when they picked it by hand in this chat
-  or draft, or the chat already has turns, only an effort on that model is
-  suggested. Two dismissed model suggestions in one chat do the same. The
-  model a new chat opens with (a saved launch default) is not a pick, the
-  fast-mode switch is not a model pick, and every new-chat draft starts
-  unpicked with no dismissals, since all drafts share the `draft` key. A
-  model the registry does not rate is never suggested; on its own levels it
-  can still get an effort hint, which then follows the difficulty (trivial →
-  low, routine → medium, substantial → high, hard → xhigh). The chip is
-  hidden while a turn runs, when the picker is locked, for a Custom (preset)
-  pick, and in parallel launch. It needs Smart decisions
-  (`ai.chat.smartDecisionsEnabled`) and an OpenCode Zen sign-in, and Settings
-  › Chat › Smart decisions › **Suggest a model and effort while typing** (`ai.chat.modelHintMode`:
-  `model_and_effort`, the default, `effort_only`, or `off`). Any failure (Jev
-  null or unsure, no catalogue, no candidate) shows no chip. The catalogue
-  and the setting are cached per machine (10 minutes and 1 minute) and every
-  call goes to the composer's `modelRuntimePin`.
+- **Model hint (Jev).** `useComposerModelHint` (in
+  `ComposerModelHintChip.tsx`) works out, for the prompt being typed, the
+  effort that fits on the current model and whether the current pick is
+  clearly off. It asks only after 700 ms without typing, for a prompt of at
+  least three words or 12 characters (`isModelHintPrompt`: "say hi back"
+  counts, "fix it" does not), and not again until the text has changed by
+  10% or more; an answer about older text never shows under newer text. One
+  interactive `ai.jevDecide` call (feature `model_hint`) reads the task:
+  difficulty (trivial / routine / substantial / hard), kind, and whether it
+  needs images, a long context or a fast reply. `adviseModelHint`
+  (`modelHint.ts`) then decides from `usage.getModelCatalog`, the Coding
+  Agent Index bar for that difficulty and kind (`QUALITY_BAR`), and this
+  user's profile (below):
+  - **Suggested effort, always.** The cheapest level of the current model
+    that clears the bar (an unrated model: trivial → low, routine → medium,
+    substantial → high, hard → xhigh), pulled toward the level this user
+    runs the model at for this kind of task as their samples grow (at most
+    75% habit; a habit never raises a trivial task). The effort picker marks
+    it with a dot on its segment, and on the trigger while the current level
+    differs (`suggestedEffort`).
+  - **The chip, only when clearly off.** For effort: two or more levels from
+    the suggested one (`↓ low effort?`). For a model (`↑ Opus 5.5 · high?`):
+    only models of the chat's own harness, its provider and what that
+    provider offers. Up when the current model is too weak for the task at
+    any level, even a model the user picked. A model the user did not pick
+    (a saved default) may also be moved to the model this user runs for this
+    kind of task, or to the cheapest model that clears the bar when that
+    saves more than 1.5×; a model the user picked, or the model the user
+    habitually runs for this kind of task, is never moved down. Trivial tasks
+    are never told to go up. A model the catalogue lists only in another
+    harness (Claude Code's Haiku 4.5) borrows that entry's scores.
+  - **Learning.** Accepts and dismissals count per kind of task, suggestion
+    type and direction; two more dismissals than accepts and that suggestion
+    stops for that kind of task, in every chat.
+  The chip's × or an effort picked by hand hides it for this prompt. A click
+  applies the model through the picker's `onModelChange`, then the effort
+  through `onReasoningEffortChange`. It never changes anything by itself, and
+  it is hidden while a turn runs, when the picker is locked, for a Custom
+  (preset) pick, and in parallel launch. It needs Smart decisions
+  (`ai.chat.smartDecisionsEnabled`), an OpenCode Zen sign-in, and Settings ›
+  Chat › Smart decisions › **Suggest a model and effort while typing**
+  (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`
+  for no model suggestions, or `off`). Any failure (Jev null or unsure, no
+  catalogue) gives no advice. The catalogue and the setting are cached per
+  machine (10 minutes and 1 minute) and every call goes to the composer's
+  `modelRuntimePin`.
+- **Model hint profile.** `modelHintProfile.ts` keeps what this user runs in
+  the window's localStorage (`ade.modelHint.profile.v1`), because it
+  describes the person, not a machine. No prompt text: per sample, Jev's
+  kind and difficulty, harness, model, effort, weight and time (at most 400,
+  half weight after 60 days), plus accept/dismiss counts. Each prompt sent
+  with a fresh Jev read adds a sample (weight 1). Once a day, after Jev first
+  answers, a backfill reads up to 30 recent chats it has not seen: Jev reads
+  each title at background priority and the chat's model and effort count at
+  weight 0.6. A failed Jev call ends the pass; the rest are read next time.
 - **Voice dictation.** Dictation types for you. It is not the Codex voice
   conversation button. When voice input is enabled and the bundled
   model is installed, a mic button appears beside Send. Capture is

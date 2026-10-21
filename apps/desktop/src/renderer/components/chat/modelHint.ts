@@ -12,6 +12,7 @@
  */
 import type { JevAnswers, JevDecideRequest } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
+import { habitEffort, habitFor, suggestionUnwanted, type ModelHintProfile } from "./modelHintProfile";
 
 /** A prompt worth reading: this many words, or this many characters (one long word, a path). */
 const MIN_PROMPT_WORDS = 3;
@@ -193,12 +194,6 @@ function meetsNeeds(model: UserCatalogModel, read: ModelHintRead): boolean {
 }
 
 /**
- * Free and plan-included first, then the harness the chat already uses (a
- * hint should not move a Claude chat to another harness when Claude has a
- * model that does the job), then cheapest; when a fast reply matters,
- * quickest, with times within `SPEED_TIE_RATIO` of each other left to cost.
- */
-/**
  * Two task times this close are the same reply to a person waiting: 81 s
  * against 90 s should not keep a pricier model over a cheaper one.
  */
@@ -208,11 +203,13 @@ function secondsTie(a: number, b: number): boolean {
   return Math.max(a, b) <= Math.min(a, b) * SPEED_TIE_RATIO;
 }
 
-function compareOptions(a: Option, b: Option, speedMatters: boolean, harness: string): number {
+/**
+ * Free and plan-included first, then cheapest; when a fast reply matters,
+ * quickest, with times within `SPEED_TIE_RATIO` of each other left to cost.
+ */
+function compareOptions(a: Option, b: Option, speedMatters: boolean): number {
   const tier = billingTier(a.model) - billingTier(b.model);
   if (tier) return tier;
-  const home = Number(a.model.harness !== harness) - Number(b.model.harness !== harness);
-  if (home) return home;
   if (speedMatters && !secondsTie(a.seconds, b.seconds)) return a.seconds - b.seconds;
   return a.cost - b.cost || effortRank(a.effort) - effortRank(b.effort) || b.quality - a.quality;
 }
@@ -226,6 +223,14 @@ export type ModelHint = {
   direction: "up" | "down";
   read: ModelHintRead;
   reason: string;
+};
+
+/** What the hint knows for this prompt: the effort to mark in the picker, and the chip, if any. */
+export type ModelHintAdvice = {
+  /** The effort that fits this prompt on the current model; marked in the effort picker. */
+  suggestedEffort: string | null;
+  /** The chip: only when the current pick is clearly off. */
+  hint: ModelHint | null;
 };
 
 const DIFFICULTY_LABEL: Record<HintDifficulty, string> = {
@@ -245,6 +250,18 @@ const KIND_LABEL: Record<HintKind, string> = {
   writing: "writing",
   media: "media task",
 };
+/** "for debugging", "for edits": how a reason names the kind of task. */
+const KIND_PLURAL: Record<HintKind, string> = {
+  question: "questions",
+  research: "research",
+  review: "reviews",
+  small_edit: "small edits",
+  feature: "features",
+  debugging: "debugging",
+  refactor: "refactors",
+  writing: "writing",
+  media: "media tasks",
+};
 const BILLING_PHRASE = { plan: "is on your plan", free: "is free", metered: "is metered" } as const;
 
 /**
@@ -262,6 +279,15 @@ const RAISES_ALLOWED: Record<HintDifficulty, boolean> = {
 
 /** Keep the current pick when it clears the bar at no more than this times the cheapest cost. */
 const KEEP_CURRENT_COST_RATIO = 1.5;
+/** Effort levels apart before the chip speaks up; one level off is left to the picker's mark. */
+const EFFORT_LEVELS_TO_SPEAK = 2;
+/** At its best level a model this far under the bar is too weak for the task. */
+const TOO_WEAK_MARGIN = 0.03;
+/** Weight of the user's own samples before their habit counts at all, and before it counts most. */
+const HABIT_MIN_WEIGHT = 2;
+const HABIT_FULL_WEIGHT = 10;
+/** The most a habit can outweigh the benchmarks. */
+const HABIT_MAX_SHARE = 0.75;
 
 /**
  * The effort an unrated model should run at, by difficulty: with no scores to
@@ -275,89 +301,271 @@ const UNRATED_EFFORT: Record<HintDifficulty, string> = {
   hard: "xhigh",
 };
 
-function unratedEffortHint(model: UserCatalogModel, currentEffort: string | null, read: ModelHintRead): ModelHint | null {
-  const levels = model.efforts.map((level) => level.effort).filter((effort): effort is string => effort != null);
-  if (levels.length < 2 || currentEffort == null) return null;
-  const wanted = effortRank(UNRATED_EFFORT[read.difficulty]);
-  const effort = [...levels].sort((a, b) => Math.abs(effortRank(a) - wanted) - Math.abs(effortRank(b) - wanted)
-    || effortRank(a) - effortRank(b))[0]!;
-  if (effort === currentEffort) return null;
-  const direction = effortRank(effort) > effortRank(currentEffort) ? "up" : "down";
-  if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return null;
-  return {
-    modelId: model.modelId,
-    displayName: model.displayName,
-    effort,
-    effortOnly: true,
-    direction,
-    read,
-    reason: `${DIFFICULTY_LABEL[read.difficulty]} ${KIND_LABEL[read.kind]} · ${effort} effort fits a ${read.difficulty} task (no benchmark data for this model)`,
-  };
+/** The harness a model id runs in when the catalogue does not list it. */
+function harnessOfModelId(modelId: string): string | null {
+  if (modelId.startsWith("opencode/")) return "opencode";
+  if (modelId.startsWith("cursor/")) return "cursor";
+  if (modelId.startsWith("anthropic/")) return "claude";
+  if (modelId.startsWith("openai/")) return "codex";
+  return null;
+}
+
+/** `opencode/anthropic/claude-haiku-4-5` → `anthropic/claude-haiku-4-5`: the model behind the harness. */
+function modelTail(modelId: string): string {
+  const parts = modelId.split("/");
+  return parts.slice(-2).join("/");
 }
 
 /**
- * The model and effort to suggest, or null to suggest nothing. `allowedModelIds`
- * is the picker's own list when it narrows what this chat can switch to.
- * `modelPinned`: the user chose this model, so only its effort may change.
- * A model the registry does not rate is never suggested; it can still get an
- * effort hint on its own levels.
+ * The current model's catalogue entry. A model this harness lists but the
+ * catalogue does not rate borrows the scores of the same model in another
+ * harness (Claude's Haiku 4.5 from OpenCode's), keeping its own harness.
  */
-export function pickModelHint(args: {
+function resolveCurrent(catalog: UserModelCatalog, modelId: string): UserCatalogModel | null {
+  const exact = catalog.models.find((model) => model.modelId === modelId);
+  if (exact) return exact;
+  const harness = harnessOfModelId(modelId);
+  if (!harness) return null;
+  const tail = modelTail(modelId);
+  const twins = catalog.models.filter((model) => modelTail(model.modelId) === tail);
+  const rated = twins.find((model) => model.efforts.some((level) => level.quality.score != null)) ?? twins[0];
+  return rated ? { ...rated, harness: harness as UserCatalogModel["harness"], modelId } : null;
+}
+
+export function harnessOfCatalogModel(catalog: UserModelCatalog, modelId: string): string | null {
+  return catalog.models.find((model) => model.modelId === modelId)?.harness ?? harnessOfModelId(modelId);
+}
+
+/** A model's levels in effort order. */
+function levelsOf(model: UserCatalogModel): Array<string | null> {
+  return [...new Set(model.efforts.map((level) => level.effort))].sort((a, b) => effortRank(a) - effortRank(b));
+}
+
+/** The model's level nearest a rank, the lower one on a tie. */
+function nearestLevel(levels: ReadonlyArray<string | null>, rank: number): string | null {
+  return [...levels].sort((a, b) => Math.abs(effortRank(a) - rank) - Math.abs(effortRank(b) - rank)
+    || effortRank(a) - effortRank(b))[0] ?? null;
+}
+
+type EffortRead = {
+  /** The effort that fits, after the user's habit. */
+  effort: string | null;
+  /** What the benchmarks alone say. */
+  benchEffort: string | null;
+  /** No level of this model clears the bar. */
+  tooWeak: boolean;
+  /** The user's habit moved the pick. */
+  personal: boolean;
+  quality: number | null;
+};
+
+/**
+ * The effort that fits this task on one model: the cheapest level that clears
+ * the bar (or, unrated, the level the difficulty calls for), pulled toward the
+ * level this user runs the model at for this kind of task as their samples
+ * grow. A habit never pulls a trivial task up, nor a model past its best level.
+ */
+function effortFor(model: UserCatalogModel, read: ModelHintRead, bar: number, profile: ModelHintProfile | null): EffortRead {
+  const levels = levelsOf(model);
+  const options = optionsOf(model);
+  let benchEffort: string | null;
+  let tooWeak = false;
+  let quality: number | null = null;
+  if (options.length) {
+    const clearing = options.filter((option) => option.quality >= bar)
+      .sort((a, b) => a.cost - b.cost || effortRank(a.effort) - effortRank(b.effort));
+    const best = [...options].sort((a, b) => b.quality - a.quality)[0]!;
+    const pick = clearing[0] ?? best;
+    benchEffort = pick.effort;
+    quality = pick.quality;
+    tooWeak = !clearing.length && best.quality < bar - TOO_WEAK_MARGIN;
+  } else {
+    benchEffort = nearestLevel(levels, effortRank(UNRATED_EFFORT[read.difficulty]));
+  }
+  let effort = benchEffort;
+  let personal = false;
+  if (profile && levels.length > 1) {
+    const habit = habitEffort(habitFor(profile, read, model.harness), model.modelId, effortRank);
+    if (habit && habit.weight >= HABIT_MIN_WEIGHT) {
+      const share = Math.min(HABIT_MAX_SHARE, habit.weight / HABIT_FULL_WEIGHT);
+      let rank = Math.round(share * effortRank(habit.effort) + (1 - share) * effortRank(benchEffort));
+      if (read.difficulty === "trivial") rank = Math.min(rank, effortRank(benchEffort));
+      const blended = nearestLevel(levels, rank);
+      personal = blended !== benchEffort;
+      effort = blended;
+    }
+  }
+  return { effort, benchEffort, tooWeak, personal, quality };
+}
+
+function levelGap(model: UserCatalogModel, a: string | null, b: string | null): number {
+  const levels = levelsOf(model);
+  const index = (effort: string | null) => {
+    const found = levels.indexOf(effort);
+    return found >= 0 ? found : levels.indexOf(nearestLevel(levels, effortRank(effort)));
+  };
+  return Math.abs(index(a) - index(b));
+}
+
+/**
+ * Jev's read, the catalogue and this user's history, turned into advice.
+ *
+ * - The effort that fits is always worked out, for the picker to mark.
+ * - Models are suggested only within the chat's own harness (its provider and
+ *   what that provider offers).
+ * - Up: when the current model is too weak for the task even at its best
+ *   level, a stronger one is suggested, even on a model the user picked.
+ * - Down or sideways: only for a model the user did not pick (`modelPinned`
+ *   false): the model this user runs for this kind of task, else the cheapest
+ *   one that clears the bar.
+ * - Effort: the chip shows only when the current effort is at least
+ *   `EFFORT_LEVELS_TO_SPEAK` levels from the one that fits.
+ * - A kind of suggestion this user keeps dismissing for this kind of task is
+ *   not shown again.
+ *
+ * `allowedModelIds` is the picker's own list when it narrows what this chat
+ * can switch to; `modelsAllowed` false (the effort-only setting) keeps every
+ * hint to effort.
+ */
+export function adviseModelHint(args: {
   catalog: UserModelCatalog;
   read: ModelHintRead;
   currentModelId: string;
   currentEffort: string | null;
   allowedModelIds?: readonly string[] | null;
   modelPinned: boolean;
-}): ModelHint | null {
-  const { catalog, read, currentModelId, currentEffort, modelPinned } = args;
-  const allowed = args.allowedModelIds?.length ? new Set(args.allowedModelIds) : null;
-  const currentModel = catalog.models.find((model) => model.modelId === currentModelId);
-  if (!currentModel) return null;
-  const currentLevel = currentModel.efforts.find((level) => level.effort === currentEffort)
-    ?? currentModel.efforts.find((level) => level.isDefault)
-    ?? currentModel.efforts[0];
-  const current = currentLevel ? optionsOf(currentModel).find((option) => option.effort === currentLevel.effort) : undefined;
-  // No score for the current pick: no footing to call another model better or cheaper.
-  if (!current) return unratedEffortHint(currentModel, currentEffort, read);
-
+  modelsAllowed: boolean;
+  profile: ModelHintProfile | null;
+}): ModelHintAdvice {
+  const { catalog, read, currentModelId, currentEffort, modelPinned, modelsAllowed, profile } = args;
+  const none: ModelHintAdvice = { suggestedEffort: null, hint: null };
+  const current = resolveCurrent(catalog, currentModelId);
+  if (!current) return none;
   const bar = qualityBarFor(read);
-  const candidates = catalog.models
-    .filter((model) => modelPinned
-      ? model === currentModel
-      : (!allowed || allowed.has(model.modelId)) && meetsNeeds(model, read))
-    .flatMap(optionsOf)
-    .filter((option) => option.quality >= bar)
-    .sort((a, b) => compareOptions(a, b, read.speedMatters, currentModel.harness));
-  const best = candidates[0];
-  if (!best) return null;
-  if (best.model.modelId === current.model.modelId && best.effort === current.effort) return null;
+  const fit = effortFor(current, read, bar, profile);
+  const levels = levelsOf(current);
+  const suggestedEffort = levels.length > 1 ? fit.effort : null;
+  const task = `${DIFFICULTY_LABEL[read.difficulty]} ${KIND_LABEL[read.kind]}`;
+  const unwanted = (type: "model" | "effort", direction: "up" | "down") =>
+    Boolean(profile && suggestionUnwanted(profile, read.kind, type, direction));
 
-  const currentClears = current.quality >= bar && meetsNeeds(currentModel, read);
-  // Close enough: a hint that saves pennies is noise.
-  if (currentClears && billingTier(currentModel) <= billingTier(best.model)
-    && current.cost <= best.cost * KEEP_CURRENT_COST_RATIO
-    && (!read.speedMatters || current.seconds <= best.seconds * KEEP_CURRENT_COST_RATIO)) {
-    return null;
+  const modelHint = modelsAllowed ? pickModel() : null;
+  if (modelHint) return { suggestedEffort, hint: modelHint };
+
+  // Effort on the current model.
+  if (suggestedEffort == null || currentEffort == null || suggestedEffort === currentEffort) {
+    return { suggestedEffort, hint: null };
+  }
+  if (levelGap(current, currentEffort, suggestedEffort) < EFFORT_LEVELS_TO_SPEAK) return { suggestedEffort, hint: null };
+  const direction = effortRank(suggestedEffort) > effortRank(currentEffort) ? "up" : "down";
+  if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return { suggestedEffort, hint: null };
+  if (unwanted("effort", direction)) return { suggestedEffort, hint: null };
+  let why: string;
+  if (fit.personal) why = `you usually run ${KIND_PLURAL[read.kind]} at about this level`;
+  else if (!optionsOf(current).length) why = `${effortLabel(suggestedEffort)} effort fits a ${read.difficulty} task (no benchmark data for this model)`;
+  else if (direction === "down") why = "a lower effort clears the bar for less";
+  else why = "your current effort is below the bar for this task";
+  return {
+    suggestedEffort,
+    hint: {
+      modelId: current.modelId,
+      displayName: current.displayName,
+      effort: suggestedEffort,
+      effortOnly: true,
+      direction,
+      read,
+      reason: `${task} · ${why}`,
+    },
+  };
+
+  function pickModel(): ModelHint | null {
+    const allowed = args.allowedModelIds?.length ? new Set(args.allowedModelIds) : null;
+    const pool = catalog.models.filter((model) => model.harness === current!.harness
+      && model.modelId !== current!.modelId
+      && (!allowed || allowed.has(model.modelId))
+      && meetsNeeds(model, read));
+    const clearing = pool
+      .flatMap(optionsOf)
+      .filter((option) => option.quality >= bar)
+      .sort((a, b) => compareOptions(a, b, read.speedMatters));
+    const habit = profile ? habitFor(profile, read, current!.harness) : null;
+    const habitModel = habit && habit.weight >= HABIT_MIN_WEIGHT * 1.5 && habit.modelId !== current!.modelId
+      ? pool.find((model) => model.modelId === habit.modelId) ?? null
+      : null;
+    const habitFits = habitModel != null && optionsOf(habitModel).some((option) => option.quality >= bar);
+    const needsUp = fit.tooWeak || !meetsNeeds(current!, read);
+    const currentClears = !needsUp && (fit.quality == null || fit.quality >= bar);
+
+    // Up: the current model cannot do this task well at any level.
+    if (needsUp && RAISES_ALLOWED[read.difficulty] && !unwanted("model", "up")) {
+      const target = habitFits ? habitModel! : clearing[0]?.model ?? null;
+      if (!target) return null;
+      const reason = habitFits
+        ? `${shortName(current!.displayName)} is below the bar here; you usually use ${shortName(target.displayName)} for ${KIND_PLURAL[read.kind]}`
+        : `${shortName(current!.displayName)} is below the bar here; the cheapest that clears it ${BILLING_PHRASE[target.billing.kind]}`;
+      return modelSuggestion(target, "up", reason);
+    }
+    if (modelPinned) return null;
+
+    // The model this user runs for this kind of task.
+    if (habitFits) {
+      const direction = modelStrength(habitModel!) >= modelStrength(current!) ? "up" : "down";
+      if (!unwanted("model", direction) && (direction === "down" || RAISES_ALLOWED[read.difficulty])) {
+        return modelSuggestion(habitModel!, direction, `you usually use ${shortName(habitModel!.displayName)} for ${KIND_PLURAL[read.kind]}`);
+      }
+    }
+
+    // This user runs the current model for this kind of task: leave it.
+    if (habit && habit.modelId === current!.modelId && habit.weight >= HABIT_MIN_WEIGHT * 1.5) return null;
+
+    // Otherwise the cheapest model that clears the bar, when it saves enough to matter.
+    const best = clearing[0];
+    if (!best) return null;
+    const currentOption = optionsOf(current!).find((option) => option.effort === fit.effort);
+    if (currentClears) {
+      if (!currentOption) return null;
+      if (billingTier(current!) <= billingTier(best.model)
+        && currentOption.cost <= best.cost * KEEP_CURRENT_COST_RATIO
+        && (!read.speedMatters || currentOption.seconds <= best.seconds * KEEP_CURRENT_COST_RATIO)) return null;
+    }
+    const direction = modelStrength(best.model) >= modelStrength(current!) ? "up" : "down";
+    if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return null;
+    if (unwanted("model", direction)) return null;
+    let why: string;
+    if (!currentClears) why = `your pick is just under the bar; the cheapest that clears it ${BILLING_PHRASE[best.model.billing.kind]}`;
+    else if (read.speedMatters) why = `a quicker model that clears the bar ${BILLING_PHRASE[best.model.billing.kind]}`;
+    else why = `the cheapest model that clears the bar ${BILLING_PHRASE[best.model.billing.kind]}`;
+    return modelSuggestion(best.model, direction, why, best.effort);
   }
 
-  const effortOnly = best.model.modelId === current.model.modelId;
-  const direction = best.quality > current.quality ? "up" : "down";
-  if (direction === "up" && !RAISES_ALLOWED[read.difficulty]) return null;
-  const task = `${DIFFICULTY_LABEL[read.difficulty]} ${KIND_LABEL[read.kind]}`;
-  const billing = BILLING_PHRASE[best.model.billing.kind];
-  let why: string;
-  if (!currentClears) why = `your pick is below the bar; the cheapest that clears it ${billing}`;
-  else if (read.speedMatters) why = `quick model that clears the bar ${billing}`;
-  else if (effortOnly) why = `a ${direction === "down" ? "lower" : "higher"} effort clears the bar for less`;
-  else why = `cheapest model that clears the bar ${billing}`;
-  return {
-    modelId: best.model.modelId,
-    displayName: best.model.displayName,
-    effort: best.effort,
-    effortOnly,
-    direction,
-    read,
-    reason: `${task} · ${why}`,
-  };
+  function modelSuggestion(target: UserCatalogModel, direction: "up" | "down", why: string, effort?: string | null): ModelHint {
+    return {
+      modelId: target.modelId,
+      displayName: target.displayName,
+      effort: effort !== undefined ? effort : effortFor(target, read, bar, profile).effort,
+      effortOnly: false,
+      direction,
+      read,
+      reason: `${task} · ${why}`,
+    };
+  }
+}
+
+/**
+ * How "up" and "down" compare two models: the Intelligence Index of the
+ * release, else its best score at any level. Not the best score alone: a
+ * mid-size model at max effort can edge past a larger one at high.
+ */
+function modelStrength(model: UserCatalogModel): number {
+  const index = model.profile?.intelligenceIndex;
+  if (typeof index === "number") return index / 100;
+  return Math.max(-1, ...optionsOf(model).map((option) => option.quality));
+}
+
+function shortName(name: string): string {
+  return name.replace(/^Claude\s+/, "").replace(/\s*\(latest\)$/i, "");
+}
+
+function effortLabel(effort: string | null): string {
+  return effort ?? "default";
 }
