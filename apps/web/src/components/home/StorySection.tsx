@@ -271,7 +271,17 @@ function FilmStory({ film }: { film: Film }) {
           video.style.opacity = on ? "1" : "0";
           if (on) seek(video, frame, film.fps);
         }
-        if (poster) poster.style.opacity = on && !video?.dataset.ready ? "1" : "0";
+        if (poster) {
+          const showPoster = on && !video?.dataset.ready;
+          poster.style.opacity = showPoster ? "1" : "0";
+          if (showPoster) {
+            const src = posterAt(s.shot, frame);
+            if (poster.dataset.src !== src) {
+              poster.dataset.src = src;
+              poster.src = src;
+            }
+          }
+        }
       }
       // The other machines' screens play the chats the MacBook started there.
       for (const name of SCREEN_SHOTS) {
@@ -402,32 +412,47 @@ function FilmStory({ film }: { film: Film }) {
     const section = ref.current;
     if (!section) return;
     let started = false;
+    let cancelled = false;
     const urls: string[] = [];
     const start = () => {
       if (started) return;
       started = true;
-      for (const shot of film.shots) {
-        fetch(`/film/${shot.name}.mp4`)
-          .then((response) => response.blob())
-          .then((blob) => {
+      // The stills stand in while the videos download, so warm them first.
+      for (const shot of film.shots) for (const src of posterStills(shot)) new Image().src = src;
+      // One video at a time, in story order: the first shot is ready sooner on a slow connection.
+      void (async () => {
+        for (const shot of film.shots) {
+          if (cancelled) return;
+          const load = (src: string) => {
             const video = els.videos[shot.name];
             if (!video) return;
-            const url = URL.createObjectURL(blob);
-            urls.push(url);
             video.addEventListener("loadeddata", () => {
               video.dataset.ready = "1";
               setReady((current) => ({ ...current, [shot.name]: true }));
             }, { once: true });
-            video.src = url;
-          })
-          .catch(() => {});
-      }
+            video.src = src;
+          };
+          try {
+            const response = await fetch(`/film/${shot.name}.mp4`);
+            if (!response.ok) throw new Error(`film ${shot.name}: ${response.status}`);
+            const blob = await response.blob();
+            if (cancelled) return;
+            const url = URL.createObjectURL(blob);
+            urls.push(url);
+            load(url);
+          } catch {
+            // A failed download falls back to streaming, so the shot still plays instead of holding a still.
+            if (!cancelled) load(`/film/${shot.name}.mp4`);
+          }
+        }
+      })();
     };
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) start();
     }, { rootMargin: "150% 0px" });
     observer.observe(section);
     return () => {
+      cancelled = true;
       observer.disconnect();
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
@@ -550,6 +575,31 @@ function FilmStory({ film }: { film: Film }) {
       </div>
     </section>
   );
+}
+
+/**
+ * The stills a shot shows before its video loads, and the mark each takes over
+ * from. encode-film.mjs writes them (`<shot>-<mark>.jpg`, `<shot>-end.jpg`), so
+ * a slow download still shows the picker and the typed prompt, not the empty
+ * first frame for the whole shot.
+ */
+const POSTER_STILLS: Record<string, Array<[from: string, still: string]>> = {
+  start: [["picker-open", "custom"]],
+  compose: [["typing", "typed"], ["children", "done"]],
+  machines: [["typing", "typed"], ["sent", "end"]],
+};
+
+function posterAt(shot: FilmShot, frame: number): string {
+  let src = `/film/${shot.name}.jpg`;
+  for (const [from, still] of POSTER_STILLS[shot.name] ?? []) {
+    const f = shot.marks[from]?.f;
+    if (f != null && frame >= f) src = `/film/${shot.name}-${still}.jpg`;
+  }
+  return src;
+}
+
+function posterStills(shot: FilmShot): string[] {
+  return (POSTER_STILLS[shot.name] ?? []).map(([, still]) => `/film/${shot.name}-${still}.jpg`);
 }
 
 /** Asks the video for a frame, at most one seek at a time; the newest request wins. */
