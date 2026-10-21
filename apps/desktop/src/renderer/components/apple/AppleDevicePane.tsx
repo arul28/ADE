@@ -1326,6 +1326,9 @@ export function AppleDevicePane({
                 setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
                 sendDuoPosture({ pose: stance });
               }}
+              onDuoAngle={(angle) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
+              onDuoAngleCommit={(angle) => sendDuoPosture({ angle })}
               onDuoNudge={(delta) => {
                 const next = clampAppleDuoAngle(duoState.pose.angle + delta);
                 setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));

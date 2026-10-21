@@ -96,7 +96,15 @@ enum DevicePosture {
             }
         }
         if let pose { return await bridge.setHingePose(udid: udid, pose: pose) }
-        return await bridge.setHingeAngle(udid: udid, angle: target)
+        // A raw angle leaves the presets: like Device Hub's slider it releases
+        // Table Mode (Tent's), and a phone left face down by Tent stands back
+        // up, or the cover stays the live panel at any angle.
+        guard await bridge.setHingeAngle(udid: udid, angle: target) else { return false }
+        _ = await bridge.setTableMode(udid: udid, enabled: false)
+        if await bridge.hingeState(udid: udid).orientation == "facedown" {
+            _ = await bridge.setPhysicalOrientation(udid: udid, value: "portrait")
+        }
+        return true
     }
 }
 
