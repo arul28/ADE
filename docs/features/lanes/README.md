@@ -1039,8 +1039,11 @@ Run `ade lanes appearance <lane> --emoji 🐛` to set one or
 `ade lanes appearance <lane> --emoji ""` to clear it. Optional roster fields
 keep older iOS clients decodable.
 
-During manual lane creation, ADE waits 600 ms after the name reaches three
-characters before asking Jev for a choice from the curated emoji set. A
+During manual lane creation, ADE waits 1.2 s after the name stops changing
+(three characters or more) before asking Jev for a choice from the curated
+emoji set: about one call per name. The whole set is sent; a shortlist picked
+locally from the name's words cut the tokens by three quarters but missed
+everyday names (groceries, gym, budget) on a 170-name test. A
 suggestion appears only at confidence 0.5 or higher. Jev favors 🐛 for crash,
 error, regression, race, and other bug fixes even when the title names a system
 such as sync, cache, or retry. Clicking the slot or pressing Tab in the name

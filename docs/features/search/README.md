@@ -139,7 +139,8 @@ Desktop ⌘K command palette:
   and Jev's candidates. PR reads remain on the active project binding and use
   the existing event-driven lane PR source; the palette adds no poller.
 - Queries with at least three words (or two words with no direct command match)
-  ask Jev to rank up to 40 likely commands after a 250 ms pause. The
+  ask Jev to rank up to 20 likely commands after a 500 ms pause (20 picked
+  the same command as 40 on 30 test queries, for 26% fewer tokens). The
   `Suggested` group appears above normal results when
   the top command probability is at least 0.35 and each shown command is above
   0.15. Suggestions use the same command rows and still require an explicit

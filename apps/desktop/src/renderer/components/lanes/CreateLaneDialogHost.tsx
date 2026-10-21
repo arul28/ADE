@@ -42,6 +42,9 @@ type CreateSetupPhase =
 
 export type CreateLaneBehavior = "stay-open-setup" | "close-on-create" | "configure-for-chat";
 
+/** The lane name has to sit still this long before Jev is asked for its emoji: about one call per name. */
+const LANE_EMOJI_SETTLE_MS = 1_200;
+
 /**
  * The lane recipe a "configure-for-chat" dialog hands back. It is the launch's
  * own `ChatLaunchLaneConfig` plus the two fields that travel separately on a
@@ -350,7 +353,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
           setSuggestedEmoji(emoji);
         }
       });
-    }, 600);
+    }, LANE_EMOJI_SETTLE_MS);
 
     return () => window.clearTimeout(timer);
     // Pin identity is carried by targetPinKey so rebuilt pin objects don't
