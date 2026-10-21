@@ -5,8 +5,14 @@
  * and the same model maker (what each was about, and the model and effort it
  * started on), and answers two small questions: which of that provider's
  * models for that maker, and which effort, this user would want. Matching a
- * request to how a person already works is reading, which Jev does well;
- * there are no benchmark numbers to weigh.
+ * request to how a person already works is reading, which Jev does well.
+ *
+ * Asked only that, Jev copies the user: five "say hello" chats on Opus give
+ * Opus for the sixth. So a third question asks for the cheapest model that
+ * does the request well, with each model's intelligence and price. Alone it
+ * sends real work to the smallest model too, so it speaks only when Jev is
+ * near certain and puts the request at the lowest effort: on 160 real chats
+ * it fired twice, both times on a model the user then picked.
  *
  * Every gap (Jev null or unsure, no catalogue, no choices) is "no hint": the
  * composer stays exactly as it was.
@@ -37,6 +43,8 @@ const HISTORY_LINES = 5;
 const EXTRA_MODELS = 4;
 /** Effort levels apart before an effort-only hint shows. */
 const EFFORT_LEVELS_TO_SPEAK = 2;
+/** The cheapest-model answer needs this, on a request Jev puts at the lowest effort. */
+const CHEAPER_CONFIDENCE = 0.9;
 
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
 function effortRank(effort: string | null): number {
@@ -99,7 +107,22 @@ function levelsOf(model: UserCatalogModel): Array<string | null> {
   return [...new Set(model.efforts.map((level) => level.effort))].sort((a, b) => effortRank(a) - effortRank(b));
 }
 
-export type HintChoice = { modelId: string; displayName: string; effort: string | null };
+export type HintChoice = {
+  modelId: string;
+  displayName: string;
+  effort: string | null;
+  /** "intelligence 38/100, $0.1/$0.5 per million tokens": what the cheapest-model question weighs. */
+  facts: string;
+};
+
+function modelFacts(model: UserCatalogModel): string {
+  const intelligence = model.profile?.intelligenceIndex;
+  const price = model.price;
+  return [
+    intelligence != null ? `intelligence ${Math.round(intelligence)}/100` : null,
+    price?.input != null && price.output != null ? `$${price.input}/$${price.output} per million tokens` : null,
+  ].filter(Boolean).join(", ") || "no published numbers";
+}
 
 /**
  * The model × effort choices Jev picks from: models of the current one's
@@ -135,8 +158,9 @@ export function hintChoices(args: {
     const name = shortName(model.displayName);
     if (seenNames.has(name)) continue;
     seenNames.add(name);
+    const facts = modelFacts(model);
     for (const effort of levelsOf(model)) {
-      choices.push({ modelId: model.modelId, displayName: model.displayName, effort });
+      choices.push({ modelId: model.modelId, displayName: model.displayName, effort, facts });
     }
   }
   return choices;
@@ -182,6 +206,11 @@ export function buildModelHintRequest(context: ModelHintContext) {
       instructions: "Pick the model this user would want for the new request, judging from how they chose for similar past requests.",
       criteria: Object.fromEntries(models),
     };
+    questions.cheapest = {
+      type: "choice",
+      instructions: "Pick the cheapest model that will do this request well. The user's past requests show how demanding they are; a request that any of these models can do needs no stronger one.",
+      criteria: Object.fromEntries(context.choices.map((choice) => [shortName(choice.displayName), `${choice.displayName}: ${choice.facts}`])),
+    };
   }
   const efforts = effortsOf(context.choices);
   if (efforts.length >= 2) {
@@ -205,7 +234,7 @@ function effortsOf(choices: readonly HintChoice[]): string[] {
     .sort((a, b) => effortRank(a) - effortRank(b));
 }
 
-export type ModelHintAnswers = Partial<Record<"model" | "effort", JevChoiceAnswer>>;
+export type ModelHintAnswers = Partial<Record<"model" | "effort" | "cheapest", JevChoiceAnswer>>;
 
 type Picked = { choice: HintChoice; modelConfidence: number; effortProbabilities: Record<string, number> | null };
 
@@ -241,12 +270,31 @@ function strength(model: UserCatalogModel | null | undefined): number {
   return model?.profile?.intelligenceIndex ?? -1;
 }
 
+/** The cheapest-model answer as a choice at Jev's effort, when it is near certain, the effort lowest, and the model weaker than the current one. */
+function cheaperChoice(
+  answers: ModelHintAnswers | null,
+  choices: readonly HintChoice[],
+  picked: HintChoice,
+  catalog: UserModelCatalog,
+  current: UserCatalogModel,
+): HintChoice | null {
+  const cheapest = answers?.cheapest;
+  if (!cheapest || cheapest.confidence < CHEAPER_CONFIDENCE || effortRank(picked.effort) > effortRank("low")) return null;
+  const options = choices.filter((choice) => shortName(choice.displayName) === cheapest.choice);
+  const target = catalog.models.find((model) => model.modelId === options[0]?.modelId);
+  if (!target || target.modelId === current.modelId || strength(target) < 0 || strength(target) >= strength(current)) return null;
+  return options.find((option) => option.effort === picked.effort)
+    ?? [...options].sort((a, b) => effortRank(a.effort) - effortRank(b.effort))[0]
+    ?? null;
+}
+
 /**
  * Jev's pick as a hint, or null. Shown only when the pick is clearly off from
  * the current one: another model, or an effort `EFFORT_LEVELS_TO_SPEAK` or
  * more levels away. A model the user picked by hand is never moved to a
- * weaker one; it can still be moved up, but not for a request Jev puts at
- * the lowest effort.
+ * weaker one, except to a cheaper model for a clearly small request
+ * (`cheaperChoice`); it can still be moved up, but not for a request Jev
+ * puts at the lowest effort.
  */
 export function hintFromAnswer(args: {
   answers: ModelHintAnswers | null;
@@ -264,6 +312,19 @@ export function hintFromAnswer(args: {
   const reason = args.fromHistory
     ? "From how you picked for similar new chats"
     : "Jev's read of this prompt (no similar chats yet)";
+
+  // A clearly small request: a cheaper model does it as well, even over a model picked by hand.
+  const cheaper = cheaperChoice(args.answers, args.choices, choice, args.catalog, current);
+  if (cheaper) {
+    return {
+      modelId: cheaper.modelId,
+      displayName: cheaper.displayName,
+      effort: cheaper.effort,
+      effortOnly: false,
+      direction: "down",
+      reason: "A small request: a cheaper model does it as well",
+    };
+  }
 
   if (choice.modelId === current.modelId) {
     const levels = levelsOf(current);
