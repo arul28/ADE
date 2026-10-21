@@ -14100,6 +14100,7 @@ const adeBridge = {
     weather: {
       search: (query: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherSearch, query),
       get: (args: { latitude: number; longitude: number }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherGet, args),
+      locate: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherLocate),
     },
     nowPlaying: {
       subscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSubscribe),

@@ -8,6 +8,8 @@ import React, {
 import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
 import { openWhatsNew } from "../announcements/AnnouncementsHost";
 import { restartOnboarding } from "../../onboarding/onboardingProgress";
+import { setSuggestionsTestMode, suggestionsTestMode } from "../../onboarding/situationalSuggestions";
+import { showToast } from "./toast/toastStore";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
@@ -872,6 +874,48 @@ export function CommandPalette({
       },
     ];
 
+    // Dev builds: test onboarding's later tiers without waiting days.
+    if (import.meta.env.DEV) {
+      next.push(
+        {
+          id: "dev-suggestions-test-mode",
+          title: "Dev: Suggestions test mode",
+          hint: "Show each situational suggestion as soon as its signal is there",
+          group: "Debug",
+          keywords: ["suggestion", "tier", "onboarding", "test"],
+          run: () => {
+            const on = !suggestionsTestMode();
+            setSuggestionsTestMode(on);
+            showToast({
+              tone: "info",
+              title: on ? "Suggestions test mode is on" : "Suggestions test mode is off",
+              message: on
+                ? "No cooldown, no once-per-launch, no snooze. Answer a card and the next signal can show."
+                : "Suggestions follow their normal rules again.",
+            });
+          },
+        },
+        {
+          id: "dev-reset-tips",
+          title: "Dev: Reset Tips, suggestions and What's new",
+          hint: "Forget what this computer has seen, then reload",
+          group: "Debug",
+          keywords: ["suggestion", "whats new", "announcement", "tips", "onboarding", "reset"],
+          run: () => {
+            for (const key of [
+              "ade.suggestions.v1",
+              "ade.suggestions.prompts.v1",
+              "ade.tips.suggestions.v1",
+              "ade.announcements.seen.v1",
+            ]) {
+              window.localStorage.removeItem(key);
+            }
+            window.location.reload();
+          },
+        },
+      );
+    }
+
     // The chat in front of the user can be restarted from here: a fresh
     // provider process with the same conversation.
     const activeChat = activeSessionTarget && isChatToolType(activeSessionTarget.toolType)
@@ -907,7 +951,8 @@ export function CommandPalette({
           command.id === "help-whats-new" ||
           command.id === "help-ade-tips" ||
           command.id === "help-show-around" ||
-          command.id === "ping",
+          command.id === "ping" ||
+          command.id.startsWith("dev-"),
       );
     }
 

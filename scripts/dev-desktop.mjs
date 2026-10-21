@@ -34,6 +34,7 @@ function usage() {
     "  --project-root <path>      Project to auto-open. Defaults to the primary checkout for ADE worktrees.",
     "  --home                     Open on Home with no project, as an installed ADE does (first-run checks).",
     "  --first-run                Walk setup as a brand-new user, isolated from your ADE (see below).",
+    "  --keep                     With --first-run: keep the last run's state (a later visit).",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --clean                    Use desktop dev:clean instead of dev.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",
@@ -43,6 +44,8 @@ function usage() {
     "(ade-runtime-first-run, unless --socket), with fresh app data, on Home.",
     "Every launch empties that home except its account sign-in, so setup finds no",
     "projects in ADE and no saved choices, and nothing it does reaches your ADE.",
+    "--keep skips the reset: the same app comes back as a returning user, which is",
+    "when What's new pages and situational suggestions can show.",
     "Sign it in once: ADE_HOME=~/.ade-dev-first-run ade --socket <socket> login",
     "(or through the app's own sign-in card); later launches keep that sign-in.",
   ].join("\n");
@@ -57,6 +60,7 @@ function parseArgs(argv) {
     skipRuntimeBuild: false,
     home: false,
     firstRun: false,
+    keep: false,
     remoteDebuggingPort: null,
     forwardedDebugFlags: [],
   };
@@ -77,6 +81,10 @@ function parseArgs(argv) {
     if (arg === "--first-run") {
       options.firstRun = true;
       options.home = true;
+      continue;
+    }
+    if (arg === "--keep") {
+      options.keep = true;
       continue;
     }
     if (arg === "--clean") {
@@ -164,7 +172,7 @@ const FIRST_RUN_KEPT = new Set(["secrets", "account-settings.json", "account-vau
  * The sign-in is kept because an account is required and a copied session
  * would share a refresh token with the owner's ADE, which rotating signs out.
  */
-async function prepareFirstRun(socketPath) {
+async function prepareFirstRun(socketPath, { keep = false } = {}) {
   if (await canConnectToSocket(socketPath)) {
     throw new Error(
       `A brain is already listening at ${socketPath}. Stop that first-run app first (its brain must not be running while its home is reset).`,
@@ -172,16 +180,21 @@ async function prepareFirstRun(socketPath) {
   }
   const home = path.join(os.homedir(), ".ade-dev-first-run");
   fs.mkdirSync(home, { recursive: true });
-  for (const name of fs.readdirSync(home)) {
-    if (!FIRST_RUN_KEPT.has(name)) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+  if (!keep) {
+    for (const name of fs.readdirSync(home)) {
+      if (!FIRST_RUN_KEPT.has(name)) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+    }
   }
   process.env.ADE_HOME = home;
   process.env.ADE_DEV_ALLOW_ALT_HOME = "1";
+  // The app's own data lives in the home, so a reset clears it and --keep keeps it.
   if (!process.env.ADE_DESKTOP_USER_DATA_PATH?.trim()) {
-    process.env.ADE_DESKTOP_USER_DATA_PATH = fs.mkdtempSync(path.join(os.tmpdir(), "ade-first-run-"));
+    process.env.ADE_DESKTOP_USER_DATA_PATH = path.join(home, "desktop-app");
   }
   const signedIn = fs.existsSync(path.join(home, "secrets", "credentials.json.enc"));
-  process.stdout.write(`[ade] first run : ${home} reset (sign-in ${signedIn ? "kept" : "not set up yet; the app will ask"})\n`);
+  process.stdout.write(
+    `[ade] first run : ${home} ${keep ? "kept (a later visit)" : "reset"} (sign-in ${signedIn ? "kept" : "not set up yet; the app will ask"})\n`,
+  );
 }
 
 /**
@@ -223,7 +236,8 @@ function laneUserDataEnv() {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.firstRun) await prepareFirstRun(options.socketPath);
+  if (options.keep && !options.firstRun) throw new Error("--keep only applies with --first-run.");
+  if (options.firstRun) await prepareFirstRun(options.socketPath, { keep: options.keep });
   if (!fs.existsSync(`${options.projectRoot}/.ade`)) {
     process.stderr.write(`[ade] warning: ${options.projectRoot} does not contain .ade; desktop may open the project picker.\n`);
   }

@@ -127,8 +127,46 @@ function onboardingSettled(): boolean {
 /** The one suggestion this launch showed, and whether the user answered it. */
 let launchClaim: { key: string; answered: boolean } | null = null;
 
+// ── dev test mode ───────────────────────────────────────────────────────
+
+const TEST_MODE_KEY = "ade.dev.suggestionsTestMode";
+/** Test mode: cards answered this launch, so an answered card does not come straight back. */
+const testModeAnswered = new Set<string>();
+
+/**
+ * Dev builds only: suggestions show as soon as their signal is there, one
+ * after another, with no wait for a later launch, no cooldown, no snooze and
+ * no once-per-signal. "Don't suggest again" and the tour still hold them.
+ * Toggled from the command palette ("Dev: Suggestions test mode").
+ */
+export function suggestionsTestMode(): boolean {
+  if (!import.meta.env.DEV) return false;
+  try {
+    return window.localStorage.getItem(TEST_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setSuggestionsTestMode(on: boolean): void {
+  if (!import.meta.env.DEV) return;
+  try {
+    if (on) window.localStorage.setItem(TEST_MODE_KEY, "1");
+    else window.localStorage.removeItem(TEST_MODE_KEY);
+  } catch {
+    return;
+  }
+  if (launchClaim?.answered) launchClaim = null;
+  emit();
+}
+
 /** Whether this signal may show now, as a new suggestion. */
 function canClaim(id: AdeSuggestionId, signalKey: string, repeatAfterMs: number | undefined, now: number): boolean {
+  if (suggestionsTestMode()) {
+    // One card at a time still; the next may come once this one is answered.
+    if ((launchClaim && !launchClaim.answered) || isTourOpen()) return false;
+    return !testModeAnswered.has(shownKey(id, signalKey)) && !state().kinds[id]?.off;
+  }
   if (launchClaim || !onboardingSettled()) return false;
   const current = state();
   const kind = current.kinds[id];
@@ -164,6 +202,13 @@ export function isSuggestionShowing(id: AdeSuggestionId, signalKey: string): boo
 /** The user answered the card ("Not now" also snoozes the kind). */
 export function answerSuggestion(id: AdeSuggestionId, signalKey: string, answer: "started" | "not-now"): void {
   if (launchClaim?.key === shownKey(id, signalKey)) launchClaim = { ...launchClaim, answered: true };
+  if (suggestionsTestMode()) {
+    // Test mode: the answer frees the slot (no snooze), so the next signal can show.
+    testModeAnswered.add(shownKey(id, signalKey));
+    launchClaim = null;
+    emit();
+    return;
+  }
   if (answer === "not-now") updateKind(id, { snoozedUntil: Date.now() + NOT_NOW_SNOOZE_MS });
   else emit();
 }

@@ -168,6 +168,12 @@ reaches your ADE.
   project you open from it is still the real repo and its project database, so
   use a scratch project when the tour sends its first chat.
 
+`--first-run --keep` skips the reset and reopens the same app as a returning
+user: the visit where What's new pages and situational suggestions can show.
+In dev builds the command palette also has **Dev: Suggestions test mode** (each
+suggestion shows as soon as its signal is there, no cooldown or wait for a
+later launch) and **Dev: Reset Tips, suggestions and What's new**.
+
 Sign it in once, as its own device: through the app's sign-in card, or
 `ADE_HOME=~/.ade-dev-first-run ade --socket /tmp/ade-runtime-first-run.sock login`.
 Never copy `~/.ade/secrets` into it: a copied session shares a refresh token
