@@ -123,6 +123,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   infra.addDispose(
     events.on("sessionsInvalidated", () => {
+      // Drop any retained listing so the refresh this triggers reads the host.
+      commands.invalidateCache(["work.listSessions"]);
       events.emit("sessionsChanged", {
         sessionId: "__ade_web_invalidation__",
         reason: "meta-updated",

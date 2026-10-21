@@ -51,6 +51,7 @@ import {
   recoverableArtifactSource,
   useArtifactPreview,
 } from "./useArtifactPreview";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -69,7 +70,8 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult): void {
+function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult | null): void {
+  if (!result) throw new Error("Deleting proof is not available here.");
   if (result.failed.length === 0) return;
   throw new Error(result.failed.map((failure) => failure.reason).join("; "));
 }
@@ -140,7 +142,7 @@ export function ArtifactLightbox({
   const saveMediaAs = window.ade.computerUse.saveMediaAs;
   const video = isVideoArtifact(artifact);
   const saveToDisk = useMemo(() => (
-    video && saveMediaAs && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
+    video && saveMediaAs && isAdeAvailable(saveMediaAs) && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
       ? async () => {
         const extension = artifact.uri.match(/\.[a-z0-9]+$/i)?.[0] ?? ".mp4";
         await saveMediaAs({ url: preview, fileName: `${artifact.title || "ade-proof"}${extension}` });
@@ -455,7 +457,7 @@ function DrawerProofTile({
               <ArrowSquareOut size={10} weight="bold" />
             </button>
           ) : null}
-          {storedFileMissing && recoverable ? (
+          {storedFileMissing && recoverable && isAdeAvailable(window.ade.computerUse.recoverArtifact) ? (
             <button
               type="button"
               aria-label={`Locate ${artifact.title} in its lane`}
@@ -465,14 +467,16 @@ function DrawerProofTile({
               <MagnifyingGlass size={10} weight="bold" />
             </button>
           ) : null}
-          <button
-            type="button"
-            aria-label={`Delete ${artifact.title}`}
-            onClick={() => onDelete(artifact)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/62 text-fg/60 backdrop-blur-sm transition-colors hover:bg-red-500/70 hover:text-white"
-          >
-            <Trash size={10} weight="bold" />
-          </button>
+          {isAdeAvailable(window.ade.computerUse.deleteArtifacts) ? (
+            <button
+              type="button"
+              aria-label={`Delete ${artifact.title}`}
+              onClick={() => onDelete(artifact)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/62 text-fg/60 backdrop-blur-sm transition-colors hover:bg-red-500/70 hover:text-white"
+            >
+              <Trash size={10} weight="bold" />
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -688,7 +692,9 @@ export function ChatComputerUsePanel({
             id: "proof-artifacts-missing-files",
             tone: "warning",
             title: `${brokenCount} item${brokenCount === 1 ? " has" : "s have"} no stored file.`,
-            actions: [{ label: `Remove ${brokenCount === 1 ? "it" : "them"}`, onClick: handlePruneBroken }],
+            actions: isAdeAvailable(window.ade.computerUse.deleteArtifacts)
+              ? [{ label: `Remove ${brokenCount === 1 ? "it" : "them"}`, onClick: handlePruneBroken }]
+              : [],
           }}
           layout="inline"
         />

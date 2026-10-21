@@ -8,6 +8,7 @@ import {
   acquireMacDesktopLiveViewLease,
   startMacDesktopLiveStream,
 } from "./macDesktopLiveViewLease";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The lane display's live view: one H.264 reader, one address, one budget.
@@ -145,7 +146,13 @@ export function useMacDesktopLiveView(args: {
    */
   releaseWhenGivenUp?: boolean;
 }): MacDesktopLiveView {
-  const { laneId, runtimePin, enabled } = args;
+  const { laneId, runtimePin } = args;
+  // The hosted web client has no host-stream bridge (it watches through its own
+  // viewer), so here the view stays idle instead of dialing a start that can
+  // only reject and retrying it.
+  const enabled = args.enabled
+    && isAdeAvailable(window.ade.macDesktop?.startStream)
+    && isAdeAvailable(window.ade.macDesktop?.resolveStreamUrl);
   const chatSessionId = args.chatSessionId ?? null;
   const priority = args.priority ?? MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY;
 

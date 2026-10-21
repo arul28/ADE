@@ -13,6 +13,7 @@ import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import "../../music/music.css";
 import "../homeWidgets.css";
 import "./NowPlayingWidget.css";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * Now Playing, in the Music player's language: a frosted card with the cover
@@ -453,7 +454,7 @@ export default function NowPlayingWidget({ item }: HomeWidgetProps) {
   const provider = useMusicProvider();
   const spotify = (own && provider === "spotify") || session?.app === SPOTIFY_APP_NAME;
   const backdrop = spotify ? null : artwork ?? (own ? null : appIcon);
-  const hasBridge = Boolean(window.ade?.home?.nowPlaying);
+  const hasBridge = isAdeAvailable(window.ade?.home?.nowPlaying);
   const top = hasBridge ? <TopRow current={own ? null : session} sessions={sessions} appleMusic={own && Boolean(window.ade?.music)} /> : null;
 
   let body: React.ReactNode;

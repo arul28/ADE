@@ -14,6 +14,7 @@ import { Banner } from "../ui/notice/Banner";
 import { LinearMark } from "../lanes/linearBrand";
 import { relativeTimeCompact } from "../../lib/format";
 import { buildLinearAgentRuleDraft } from "../automations/templates/templateData";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -154,7 +155,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
 
   const handleTurnOn = useCallback(() => run("rule", async () => {
     const automations = window.ade?.automations;
-    if (!automations?.saveDraft) throw new Error("Automations are not available in this ADE.");
+    if (!isAdeAvailable(automations?.saveDraft)) throw new Error("Automations are not available in this ADE.");
     const modelConfig: ModelConfig = {
       modelId: effectiveModelId,
       ...(hasReasoning && effort ? { thinkingLevel: effort as ModelConfig["thinkingLevel"] } : {}),

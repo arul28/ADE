@@ -16,6 +16,7 @@ import {
 } from "../../remoteTargets/remoteMachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * Settings → Overview's "Needs attention": every problem ADE can see, from
@@ -105,7 +106,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
   const runtime = info?.localRuntime;
   const route = settingsRouteFor("storage.diagnostics");
   const items: AttentionItem[] = [];
-  const restart = typeof window.ade?.app?.restartBackgroundService === "function"
+  const restart = isAdeAvailable(window.ade?.app?.restartBackgroundService)
     ? { label: "Restart service", run: () => window.ade.app.restartBackgroundService!() }
     : undefined;
   if (runtime) {
@@ -480,9 +481,9 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
-      quiet(ade.storage?.getPressure ? () => ade.storage.getPressure() : null, failed, "disk space"),
-      quiet(ade.app?.getRuntimeHealth ? () => ade.app.getRuntimeHealth!() : null, failed, "ADE's service health"),
-      hasProject ? quiet(ade.projectHealth?.getReport ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
+      quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
+      quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth!() : null, failed, "ADE's service health"),
+      hasProject ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
       quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
       quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null, failed, "providers"),
       quiet(ade.adeCli?.getStatus ? () => ade.adeCli.getStatus() : null, failed, "the ade command"),

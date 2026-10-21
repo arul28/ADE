@@ -89,6 +89,8 @@ import type {
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
   AdeUsagePriceOverrides,
+  AdeUsageStats,
+  UsageSnapshot,
   PinnedProviderToolStatus,
   AntigravitySignInCancelArgs,
   AntigravitySignInCompleteArgs,
@@ -1288,9 +1290,65 @@ function createNativeUnavailableNamespace(): Record<string, unknown> {
   };
 }
 
+// The host has no push channel for usage, so the web client re-reads on its
+// own: while a stats read says the host is still filling its caches (GitHub,
+// provider ledger), and when a tab that has sat hidden comes back.
+const USAGE_REFRESHING_RETRY_MS = [5_000, 15_000, 45_000, 120_000] as const;
+const USAGE_STALE_ON_RETURN_MS = 10 * 60_000;
+
 function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
+  const listeners = new Set<(snapshot: UsageSnapshot) => void>();
+  let retryIndex = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastReadAt = 0;
+  let stopVisibility: (() => void) | null = null;
+
+  // Listeners reload their own stats; the quota snapshot is what desktop
+  // sends with the event, so they get the same shape here.
+  const notify = async () => {
+    if (listeners.size === 0) return;
+    const snapshot = await call<UsageSnapshot | null>("usage.getQuotaSnapshot", {}, null).catch(() => null);
+    if (!snapshot) return;
+    for (const listener of [...listeners]) listener(snapshot);
+  };
+  const noteStats = (stats: AdeUsageStats | null) => {
+    lastReadAt = Date.now();
+    if (stats?.freshness?.state !== "refreshing") {
+      retryIndex = 0;
+      return;
+    }
+    if (retryTimer || retryIndex >= USAGE_REFRESHING_RETRY_MS.length || listeners.size === 0) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void notify();
+    }, USAGE_REFRESHING_RETRY_MS[retryIndex++]);
+  };
+
   return {
-    getAdeStats: (args = {}) => call("usage.getAdeStats", args, null),
+    getAdeStats: async (args = {}) => {
+      const stats = await call<AdeUsageStats | null>("usage.getAdeStats", args, null);
+      noteStats(stats);
+      return stats as AdeUsageStats;
+    },
+    onUpdate: (cb: (snapshot: UsageSnapshot) => void) => {
+      listeners.add(cb);
+      stopVisibility ??= observePageVisibility({
+        onHidden: () => {},
+        onVisible: () => {
+          if (lastReadAt && Date.now() - lastReadAt >= USAGE_STALE_ON_RETURN_MS) void notify();
+        },
+      });
+      return () => {
+        listeners.delete(cb);
+        if (listeners.size > 0) return;
+        stopVisibility?.();
+        stopVisibility = null;
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = null;
+      };
+    },
+    // An older host without the command answers null: ADE-only counts.
+    getGithubContributions: () => call("usage.getGithubContributions", {}, null),
     getSnapshot: () => call("usage.getQuotaSnapshot", {}, null),
     // Refresh is the user pressing the button: mark it non-idempotent so it
     // reaches the host instead of replaying a cached read, and so a failure
@@ -1306,8 +1364,8 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // refreshHistory is deliberately NOT mapped onto usage.refreshQuota: the
     // host keeps the cost-log rescan decoupled from quota polling, so aliasing
     // them would do unrelated work and still leave the stats stale. It needs
-    // its own descriptor. onUpdate/noteDemand have no streaming descriptor at
-    // all; all three stay with the fallback proxy rather than faking liveness.
+    // its own descriptor. noteDemand has no descriptor at all; both stay with
+    // the fallback proxy rather than faking liveness.
   } as Partial<Window["ade"]["usage"]>;
 }
 

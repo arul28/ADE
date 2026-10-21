@@ -61,6 +61,13 @@ export const WORK_TOOL_READ_ONLY_POLL_MS = 4_000;
  */
 export const WORK_TOOL_READ_ONLY_LIVE_POLL_MS = 15_000;
 
+/**
+ * Ceiling the poll backs off to while the lane state stops changing. A pane
+ * left open on an idle lane costs two reads a minute instead of fifteen;
+ * any change, focus or tab-visible event drops it back to the base cadence.
+ */
+export const WORK_TOOL_READ_ONLY_MAX_POLL_MS = 30_000;
+
 export type WorkToolReadOnlyViewProps = {
   tool: "browser" | "app-control" | DesktopWorkTool;
   laneId: string | null;
@@ -85,30 +92,43 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   const requestedLaneId = useRef(laneId);
   requestedLaneId.current = laneId;
 
-  const refresh = useCallback(async (): Promise<void> => {
+  // Serialized last answer, so the poll can tell "nothing changed" (back off,
+  // skip the render) from "the lane did something" (poll fast again).
+  const lastStateSignature = useRef<string | null>(null);
+
+  /** Resolves to whether the lane state differs from the previous read. */
+  const refresh = useCallback(async (): Promise<boolean> => {
     if (!laneId) {
       setState(null);
       setLoaded(true);
-      return;
+      return false;
     }
     const read = window.ade?.workTools?.getLaneState;
     if (!read) {
       setLoaded(true);
-      return;
+      return false;
     }
     try {
       const next = await read(laneId);
-      if (requestedLaneId.current !== laneId) return;
+      if (requestedLaneId.current !== laneId) return false;
+      const signature = JSON.stringify(next ?? null);
+      if (signature === lastStateSignature.current) return false;
+      lastStateSignature.current = signature;
       setState(next);
+      return true;
     } catch {
-      if (requestedLaneId.current !== laneId) return;
+      if (requestedLaneId.current !== laneId) return false;
+      const changed = lastStateSignature.current !== "null";
+      lastStateSignature.current = "null";
       setState(null);
+      return changed;
     } finally {
       if (requestedLaneId.current === laneId) setLoaded(true);
     }
   }, [laneId]);
 
   useEffect(() => {
+    lastStateSignature.current = null;
     setLoaded(false);
     setState(null);
     setPreview(null);
@@ -117,9 +137,52 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   }, [refresh]);
 
   useEffect(() => {
-    const intervalMs = livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS;
-    const timer = window.setInterval(() => void refresh(), intervalMs);
-    return () => window.clearInterval(timer);
+    const baseMs = livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS;
+    let timer: number | null = null;
+    let unchangedReads = 0;
+    let disposed = false;
+    const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+    const clear = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+    };
+    // The first three unchanged reads keep the base cadence, then it doubles up
+    // to the ceiling.
+    const delayMs = () =>
+      unchangedReads < 3 ? baseMs : Math.min(WORK_TOOL_READ_ONLY_MAX_POLL_MS, baseMs * 2 ** (unchangedReads - 2));
+    const schedule = () => {
+      clear();
+      // A hidden tab has nobody to show it to; becoming visible reads at once.
+      if (disposed || isHidden()) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        void tick();
+      }, delayMs());
+    };
+    const tick = async () => {
+      const changed = await refresh();
+      unchangedReads = changed ? 0 : unchangedReads + 1;
+      schedule();
+    };
+    const wake = () => {
+      if (disposed || isHidden()) return;
+      unchangedReads = 0;
+      clear();
+      void tick();
+    };
+    const onVisibility = () => {
+      if (isHidden()) clear();
+      else wake();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", wake);
+    schedule();
+    return () => {
+      disposed = true;
+      clear();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", wake);
+    };
   }, [refresh, livePlaying]);
 
   const observation = readOnlyObservation(tool, state);

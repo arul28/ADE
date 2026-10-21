@@ -32,6 +32,7 @@ import { parseDeeplink } from "../../../shared/deeplinks";
 import { relativeTimeCompact } from "../../lib/format";
 import { parseWorkSearchQuery } from "../../../shared/workSearch";
 import { cn } from "../ui/cn";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 // Debounce before hitting the universal search backend as the user types.
 const SEARCH_DEBOUNCE_MS = 150;
@@ -359,7 +360,8 @@ export function useUniversalSearch(
       return;
     }
     const queryApi = window.ade.search?.query;
-    if (!queryApi) return;
+    // The web client has no project search: nothing to ask, so no results.
+    if (!isAdeAvailable(queryApi)) return;
     const parsedQuery = parseWorkSearchQuery(query);
     const backendQueries = parsedQuery.backendQueries.length > 0
       ? parsedQuery.backendQueries
@@ -380,6 +382,8 @@ export function useUniversalSearch(
           const mergedResults: SearchResultItem[] = [];
           const mergedTotals: Partial<Record<SearchDocKind, number>> = {};
           for (const result of queryResults) {
+            // A client without project search (the web client) answers null.
+            if (!result) continue;
             for (const item of result.results) {
               const key = `${item.kind}:${item.id}`;
               if (seen.has(key)) continue;

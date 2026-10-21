@@ -4,6 +4,7 @@ import { isUrgentDiskPressure, type DiskPressureSnapshot } from "../../../shared
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const STORAGE_PRESSURE_SAMPLE_MS = 30_000;
 const WARNING_DESCRIPTION = "Storage is running low — ADE and your active projects may create more files while agents work. Click to review ADE storage.";
@@ -13,7 +14,9 @@ function useStoragePressure(enabled: boolean): DiskPressureSnapshot | null {
   const [snapshot, setSnapshot] = useState<DiskPressureSnapshot | null>(null);
 
   useEffect(() => {
-    if (!enabled) {
+    // The hosted web client reads no disk pressure; a poll that always rejects
+    // would only repeat on every tick and focus.
+    if (!enabled || !isAdeAvailable(window.ade.storage?.getPressure)) {
       setSnapshot(null);
       return;
     }

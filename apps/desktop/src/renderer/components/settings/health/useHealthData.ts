@@ -8,6 +8,7 @@ import type { ProjectHealthReport } from "../../../../shared/types/projectHealth
 import type { AppResourceUsageSnapshot, LaneCleanupConfig, OpenProjectBinding } from "../../../../shared/types";
 import { getAppResourceUsageCoalesced } from "../../../lib/resourcePressure";
 import { baseName } from "../storage/storageView";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 export type StorageData = {
   snapshot: StorageSnapshot | null;
@@ -88,7 +89,7 @@ export function useHealthData(
   const wantStorage = Boolean(parts.storage);
   const wantDiagnostics = Boolean(parts.diagnostics);
   const wantReport = Boolean(parts.report);
-  const reportAvailable = typeof window.ade?.projectHealth?.getReport === "function";
+  const reportAvailable = isAdeAvailable(window.ade?.projectHealth?.getReport);
   const [storage, setStorage] = React.useState<StorageData>(() => emptyStorage(wantStorage));
   const [diagnostics, setDiagnostics] = React.useState<DiagnosticsData>(EMPTY_DIAGNOSTICS);
   const [report, setReportState] = React.useState<ReportData>(() => emptyReport(reportAvailable, wantReport));
@@ -153,7 +154,7 @@ export function useHealthData(
   const loadDiagnostics = React.useCallback(async () => {
     if (!wantDiagnostics) return;
     const request = ++diagnosticsRequest.current;
-    const runtimeHealthFn = isThisMachine && typeof window.ade?.app?.getRuntimeHealth === "function"
+    const runtimeHealthFn = isThisMachine && isAdeAvailable(window.ade?.app?.getRuntimeHealth)
       ? window.ade.app.getRuntimeHealth
       : null;
     const [usage, runtimeHealth] = await Promise.all([

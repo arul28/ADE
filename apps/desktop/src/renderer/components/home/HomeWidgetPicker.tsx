@@ -8,6 +8,7 @@ import {
   HOME_GALLERY_ORDER,
   HOME_WIDGET_CATALOG,
   HOME_WIDGET_CATEGORIES,
+  hasDesktopHome,
   widgetShape,
   type HomeWidgetCategory,
 } from "./homeWidgetCatalog";
@@ -206,7 +207,7 @@ function tileClass(type: HomeWidgetType): HomeSizeClass {
 function PickerTile({ type, present, metrics, onOpen }: { type: HomeWidgetType; present: boolean; metrics: GridMetrics; onOpen: () => void }) {
   const meta = HOME_WIDGET_CATALOG[type];
   const Icon = meta.icon;
-  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
+  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
   // The live preview renders the widget's own buttons, so the tile is not a
   // button: its title is, stretched over the whole tile (CSS).
   return (
@@ -236,7 +237,7 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
   const plan = useMemo(() => planAdd(cells, type, cls, metrics), [cells, cls, metrics, type]);
   const size = storedSize(type, cls);
   const present = items.some((item) => item.type === type);
-  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !window.ade?.home ? "Needs the ADE desktop app." : null);
+  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
   const span = classSpan(shape, cls, metrics.columns);
   const Icon = meta.icon;
 

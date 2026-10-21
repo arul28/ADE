@@ -18,6 +18,7 @@ import {
   snoozeDeadlineIso,
   type SnoozeDurationKey,
 } from "../../lib/sessionSnooze";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -335,7 +336,7 @@ export async function saveAutoHandoffRules(args: {
   pin?: OpenProjectBinding | null;
 }): Promise<boolean> {
   const automations = window.ade?.automations;
-  if (!automations?.saveDraft) {
+  if (!isAdeAvailable(automations?.saveDraft)) {
     reportFailure("Auto handoff", args.sessionId, new Error("Automations are unavailable in this window."));
     return false;
   }
@@ -384,7 +385,7 @@ export async function deleteAutomationRules(
   pin?: OpenProjectBinding | null,
 ): Promise<{ attempted: boolean; failure: unknown }> {
   const deleteRule = window.ade?.automations?.deleteRule;
-  if (!deleteRule || ruleIds.length === 0) return { attempted: false, failure: null };
+  if (!isAdeAvailable(deleteRule) || ruleIds.length === 0) return { attempted: false, failure: null };
   let failure: unknown = null;
   for (const id of ruleIds) {
     try {

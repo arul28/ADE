@@ -37,6 +37,7 @@ import {
 import { knownSceneHeight, rememberSceneHeight } from "./sceneDocumentCache";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * Host for an MCP App: the page an MCP server ships with one of its tools.
@@ -74,8 +75,8 @@ const DEFAULT_HEIGHT = 220;
 export function canHostMcpApps(): boolean {
   return typeof window !== "undefined"
     && !isWebClientMode()
-    && typeof window.ade?.scene?.prepareApp === "function"
-    && typeof window.ade?.agentChat?.getMcpApp === "function";
+    && isAdeAvailable(window.ade?.scene?.prepareApp)
+    && isAdeAvailable(window.ade?.agentChat?.getMcpApp);
 }
 
 /*

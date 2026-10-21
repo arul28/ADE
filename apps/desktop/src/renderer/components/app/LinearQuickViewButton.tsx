@@ -40,6 +40,7 @@ import {
 } from "../../lib/issueLaunchRequests";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
+import { createBackoffPoller } from "../../webclient/adapter/infra/backoffPoller";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -48,6 +49,9 @@ const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // Linear is disconnected.
 const VISIBILITY_RETRY_INTERVAL_MS = 60_000;
 const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
+// While still disconnected the retry backs off toward this cap; a connection
+// made here reaches the button at once through the events and focus above.
+const DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS = 300_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 
@@ -294,23 +298,24 @@ export function LinearQuickViewButton({
     };
   }, [loadVisibility, activeProjectRoot, shouldAutoCheckVisibility]);
 
+  // Disconnected retry. The poller backs off while the answer stays "not
+  // connected", pauses while the page is hidden, and reads at once on return.
   useEffect(() => {
     if (!shouldAutoCheckVisibility) return;
     if (visible) return;
     if (!activeProjectRoot) return;
-    let cancelled = false;
-    const interval = window.setInterval(() => {
-      void loadVisibility().then((v) => {
-        if (!cancelled && v) {
-          setVisible(true);
-          window.clearInterval(interval);
-        }
-      }).catch(() => {});
-    }, visibilityRetryIntervalMs);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
+    const poller = createBackoffPoller({
+      baseMs: visibilityRetryIntervalMs,
+      maxMs: DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS,
+      isActive: () => true,
+      read: () => loadVisibility().then((nextVisible) => {
+        // Connected: the effect re-runs with `visible` set and stops this poller.
+        if (nextVisible) setVisible(true);
+        return false;
+      }),
+    });
+    poller.start();
+    return () => poller.stop();
   }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
 
   const openQuickView = useCallback(() => {

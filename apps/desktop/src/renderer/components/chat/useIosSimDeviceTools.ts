@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types/iosSimulator";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { IosSimToolsColumnProps } from "./IosSimToolsColumn";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /** How often the tools column re-reads whether the app is running. */
 const APP_STATE_POLL_MS = 4_000;
@@ -340,7 +341,9 @@ export function useIosSimDeviceTools({
   // Whether the app is running is the one fact the column shows that changes
   // without ADE doing anything, so it is the only thing here that polls.
   useEffect(() => {
-    if (!visible || !bundleId) {
+    // The hosted web client has no simulator bridge; a poll that always rejects
+    // would only spin.
+    if (!visible || !bundleId || !isAdeAvailable(window.ade.iosSimulator?.getAppState)) {
       setAppRunning(null);
       return;
     }

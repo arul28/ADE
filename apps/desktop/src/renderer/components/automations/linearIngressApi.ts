@@ -1,3 +1,5 @@
+import { isAdeAvailable } from "../../lib/adeAvailability";
+
 export type LinearIngressApi = typeof window.ade.automations.linearIngress;
 
 /**
@@ -6,5 +8,6 @@ export type LinearIngressApi = typeof window.ade.automations.linearIngress;
  * (hide the row, fall back to a settings link) rather than throwing.
  */
 export function linearIngressApi(): Partial<LinearIngressApi> | null {
-  return window.ade?.automations?.linearIngress ?? null;
+  const api = window.ade?.automations?.linearIngress;
+  return isAdeAvailable(api) ? api : null;
 }

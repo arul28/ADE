@@ -80,6 +80,7 @@ import type {
   ProvidersViewContext,
   SettingsProviderId,
 } from "./providers/types";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
@@ -1012,7 +1013,7 @@ export function ProvidersSection({
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!read) return;
+    if (!read || !isAdeAvailable(read)) return;
     setAcpDiagnosticsBusy(provider);
     try {
       const result = await read({ provider }, pin);
@@ -1034,7 +1035,7 @@ export function ProvidersSection({
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!read) {
+    if (!read || !isAdeAvailable(read)) {
       setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
       return;
     }

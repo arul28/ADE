@@ -117,3 +117,11 @@ export async function captureSceneShell(
  */
 export const SCENE_CAPTURE_RETRY_MS = 250;
 export const SCENE_CAPTURE_RETRY_MAX_MS = 4_000;
+/**
+ * How many captures in a row may come back empty before the frame stops asking.
+ * A null grab is not always "no capture route": the desktop also answers null
+ * for a minimized or hidden window or a rejected rect, and the web client's
+ * capture never produces a picture. A window that is merely hidden comes back
+ * within a few tries; anything still empty after this many is not going to.
+ */
+export const SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS = 5;

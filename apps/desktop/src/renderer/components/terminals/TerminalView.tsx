@@ -121,6 +121,8 @@ type CachedRuntime = {
   replaceFitRetryAttempts: number;
   hydrationBackfillTimer: ReturnType<typeof setTimeout> | null;
   hydrationBackfillAttempts: number;
+  /** Consecutive empty hydration reads; drives the retry backoff and the early stop. */
+  hydrationBackfillEmptyStreak: number;
   /** Compounded CSS zoom last compensated for; see `applyZoomCompensation`. */
   lastZoomFactor: number;
   /** Base (UNZOOMED) font size last requested by preferences. */
@@ -205,6 +207,12 @@ const REPLAY_SCROLLBACK_LINES = 30_000;
 const HYDRATION_BACKFILL_RETRY_MS = 250;
 const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
+// A blank pane that keeps answering empty is waiting on output that the live
+// stream delivers anyway, so each empty read waits longer (each read fetches up
+// to 128 KB) and the retries stop after a few answers in a row.
+const HYDRATION_BACKFILL_EMPTY_RETRY_START_MS = 150;
+const HYDRATION_BACKFILL_EMPTY_RETRY_MAX_MS = 5_000;
+const HYDRATION_BACKFILL_MAX_EMPTY_STREAK = 5;
 /**
  * Whether webfonts have finished loading, so a cell measurement can be trusted.
  *
@@ -1228,6 +1236,7 @@ function resumeRuntimePtyStream(runtime: CachedRuntime): void {
   runtime.hydrationStarted = false;
   runtime.hydrationCompleted = false;
   runtime.hydrationBackfillAttempts = 0;
+  runtime.hydrationBackfillEmptyStreak = 0;
   runtime.pendingHydrationChunks.length = 0;
   runtime.pendingHydrationBytes = 0;
   clearRuntimeHydrationTimers(runtime);
@@ -1877,6 +1886,7 @@ function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string, opts?:
   runtime.hydrationStarted = true;
   runtime.hydrationCompleted = true;
   runtime.hydrationBackfillAttempts = 0;
+  runtime.hydrationBackfillEmptyStreak = 0;
   runtime.displayedLiveDataBeforeHydration = false;
   runtime.hasAppliedTerminalContent = false;
   runtime.replayMode = false;
@@ -2546,7 +2556,13 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
           scheduleFit(runtime, true);
           return;
         }
-        scheduleHydrationBackfill(runtime, { snapshotOnly });
+        if (runtime.hydrationBackfillEmptyStreak >= HYDRATION_BACKFILL_MAX_EMPTY_STREAK) return;
+        const retryDelayMs = Math.min(
+          HYDRATION_BACKFILL_EMPTY_RETRY_START_MS * 2 ** runtime.hydrationBackfillEmptyStreak,
+          HYDRATION_BACKFILL_EMPTY_RETRY_MAX_MS,
+        );
+        runtime.hydrationBackfillEmptyStreak += 1;
+        scheduleHydrationBackfill(runtime, { snapshotOnly, delayMs: retryDelayMs });
       })
       .catch(() => {
         if (runtime.hydrationGeneration !== hydrationGeneration) return;
@@ -3000,6 +3016,7 @@ function createRuntime(args: {
     replaceFitRetryAttempts: 0,
     hydrationBackfillTimer: null,
     hydrationBackfillAttempts: 0,
+    hydrationBackfillEmptyStreak: 0,
     lastZoomFactor: 1,
     baseFontSize: args.preferences.fontSize,
     lastHydrationNormalized: false,

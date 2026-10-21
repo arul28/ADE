@@ -23,6 +23,7 @@ import { LaneList } from "./LaneList";
 import "../machineSettings.css";
 import "../health/health.css";
 import "./lanes.css";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 type ViewId = "lanes" | "lane-rules" | "space" | "archive" | "cleanup-rules";
 
@@ -221,7 +222,8 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
           <>
             {web ? null : <HealthCleanups data={data} show="rules" />}
             <SessionLifecycleSection />
-            <ProjectSection />
+            {/* The hosted web client cannot read the project folder; a card that can only say "Loading" is worse than none. */}
+            {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
           </>
         );
       default:

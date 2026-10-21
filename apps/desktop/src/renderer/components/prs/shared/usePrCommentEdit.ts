@@ -46,6 +46,7 @@ export function usePrCommentEdit(args: {
         body: trimmed,
         source: args.source,
       });
+      if (!updated) throw new Error("Editing comments is not available here.");
       setBody(updated.body ?? trimmed);
       setEditing(false);
       return true;

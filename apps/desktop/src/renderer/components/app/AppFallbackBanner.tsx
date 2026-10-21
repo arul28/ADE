@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { LocalRuntimeStatus } from "../../../shared/types";
 import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
 import { showToast } from "./toast/toastStore";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /** A degraded but usable desktop while its background service cannot start. */
 export function AppFallbackBanner(): null {
@@ -28,8 +29,12 @@ export function AppFallbackBanner(): null {
   }, []);
 
   const blocked = fallback?.reason === "background_item_blocked";
-  const openSettings = window.ade.recovery?.openBackgroundSettings;
-  const restart = window.ade.app?.restartBackgroundService;
+  const openSettings = isAdeAvailable(window.ade.recovery?.openBackgroundSettings)
+    ? window.ade.recovery.openBackgroundSettings
+    : undefined;
+  const restart = isAdeAvailable(window.ade.app?.restartBackgroundService)
+    ? window.ade.app.restartBackgroundService
+    : undefined;
   const actions: NoticeAction[] = [];
   // Reinstalling cannot flip "Allow in the Background"; only the person can.
   if (blocked && openSettings) {

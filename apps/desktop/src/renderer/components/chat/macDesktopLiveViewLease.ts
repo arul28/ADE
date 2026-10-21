@@ -158,7 +158,11 @@ export function startMacDesktopLiveStream(args: {
   const started = window.ade.macDesktop.startStream(
     { laneId: args.laneId, chatSessionId: args.chatSessionId, ...(args.fresh ? { fresh: true } : {}) },
     args.runtimePin,
-  ).finally(() => {
+  ).then((status) => {
+    // A client without the live view (the web client) answers null.
+    if (!status) throw new Error("The lane's live view is not available here.");
+    return status;
+  }).finally(() => {
     if (pendingStarts.get(key) === started) pendingStarts.delete(key);
   });
   pendingStarts.set(key, started);

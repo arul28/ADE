@@ -140,6 +140,9 @@ export class CommandCaller {
     const readKey = options.idempotent !== false
       ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
       : null;
+    // An authoritative read rejects where a plain one settles to a fallback or
+    // the last good value, so the two must never share an in-flight request.
+    const flightKey = readKey && options.authoritative ? `${readKey}\u0000authoritative` : readKey;
     const fetchCommand = async (): Promise<CommandResult<T>> => {
       try {
         const value = (await this.client.sendCommand(action, args, {
@@ -184,12 +187,24 @@ export class CommandCaller {
       }
     };
 
-    const result = readKey && options.cacheTtlMs !== undefined
-      ? await this.readCache.coalesce(readKey, fetchCommand, {
-          cacheResult: (next) => next.cacheable,
-          ttlMs: options.cacheTtlMs,
-        })
-      : await fetchCommand();
+    // Every idempotent read joins an identical in-flight request (ttl 0: the
+    // entry is dropped the moment it settles, so nothing can go stale). Only a
+    // caller that passes `cacheTtlMs` keeps the result afterwards. Several
+    // surfaces polling the same read otherwise each cost a host round-trip.
+    if (!flightKey) {
+      // A write: a read of its namespace that started before it settled would
+      // hand later callers the pre-write answer, so they read the host anew.
+      const namespacePrefix = `${action.split(".")[0]}.`;
+      try {
+        return (await fetchCommand()).value;
+      } finally {
+        this.readCache.invalidate((key) => key.startsWith(namespacePrefix, key.indexOf("\u0000") + 1));
+      }
+    }
+    const result = await this.readCache.coalesce(flightKey, fetchCommand, {
+      cacheResult: (next) => next.cacheable,
+      ttlMs: options.cacheTtlMs ?? 0,
+    });
     return result.value;
   }
 

@@ -118,6 +118,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { AccountAvatar } from "../account/AccountAvatar";
 import { useAccountStatus } from "../../lib/account";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -912,7 +913,7 @@ export function TopBar({
   useEffect(() => {
     if (!windowSessionRestored) return;
     const persistBindings = window.ade.app.setWindowProjectBindings;
-    if (!persistBindings) return;
+    if (!persistBindings || !isAdeAvailable(persistBindings)) return;
     void persistBindings(openRemoteProjectTabs).catch(() => {});
   }, [openRemoteProjectTabs, windowSessionRestored]);
 

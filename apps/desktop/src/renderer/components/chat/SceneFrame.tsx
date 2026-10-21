@@ -29,6 +29,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import {
   captureSceneShell,
   measureCapturableSceneRect,
+  SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS,
   SCENE_CAPTURE_RETRY_MAX_MS,
   SCENE_CAPTURE_RETRY_MS,
 } from "./sceneCapture";
@@ -206,6 +207,8 @@ export function SceneFrame({
   const stillTakenRef = useRef(false);
   /** Consecutive captures thrown away for moving; sets the retry backoff. */
   const captureMissesRef = useRef(0);
+  /** Consecutive captures that came back empty; see `SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS`. */
+  const emptyCapturesRef = useRef(0);
 
   const { rehydrated, undecided, storedStillSrc } = useSceneStillLatch({
     sessionId,
@@ -354,6 +357,7 @@ export function SceneFrame({
   useEffect(() => {
     stillTakenRef.current = false;
     captureMissesRef.current = 0;
+    emptyCapturesRef.current = 0;
     if (src === null) setStage(null);
   }, [src]);
 
@@ -674,6 +678,10 @@ export function SceneFrame({
           // Not a picture of this scene. Release the latch and look again on a
           // backoff: a re-pin or re-measure is usually over in a frame or two.
           stillTakenRef.current = false;
+          emptyCapturesRef.current = result.kind === "empty" ? emptyCapturesRef.current + 1 : 0;
+          // An empty grab with no end in sight (no capture route) stops here
+          // instead of retrying every few seconds for the life of the scene.
+          if (emptyCapturesRef.current >= SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS) return;
           const misses = captureMissesRef.current++;
           retryTimer = window.setTimeout(
             () => setStillAttempt((value) => value + 1),
@@ -682,6 +690,7 @@ export function SceneFrame({
           return;
         }
         captureMissesRef.current = 0;
+        emptyCapturesRef.current = 0;
         const { dataUrl } = result;
         const capturedTheme = sceneThemeSignature(themeRef.current);
         setStill(dataUrl);

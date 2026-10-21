@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { createProjectNotesService } from "../../../../desktop/src/main/services/projectNotes/projectNotesService";
+import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
@@ -8066,6 +8067,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       ...(payload.force === true ? { force: true } : {}),
     });
   });
+
+  // The brain's GitHub contribution calendar (its `gh` login), for the Home
+  // Contributions widget on clients that have no `gh` of their own.
+  register("usage.getGithubContributions", { viewerAllowed: true }, async () =>
+    readGithubContributionCalendar(), "runtime");
 
   // Account-wide usage pulls this from every reachable machine and merges the
   // results. It returns day × provider × model aggregates only — no transcript

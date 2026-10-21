@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The three answers a "what is installed on this machine" detector can give.
@@ -26,7 +27,7 @@ export function useInstalledTargets<T>(
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof detector !== "function") {
+    if (!detector || !isAdeAvailable(detector)) {
       // No bridge here: a platform where this menu has nothing extra to offer.
       setItems([]);
       return;
@@ -34,7 +35,7 @@ export function useInstalledTargets<T>(
     let cancelled = false;
     void detector()
       .then((found) => {
-        if (!cancelled) setItems(found);
+        if (!cancelled) setItems(found ?? []);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;

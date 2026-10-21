@@ -11,6 +11,7 @@ import * as Sentry from "@sentry/react";
 import { connectSentry } from "../../shared/sentry/capture";
 import { SENTRY_DATA_COLLECTION, SENTRY_DSNS, sentryReleaseName } from "../../shared/sentry/config";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
+import { isAdeUnavailableError } from "../lib/adeAvailability";
 
 declare const __ADE_WEB_VERSION__: string | undefined;
 
@@ -30,7 +31,8 @@ export function initWebClientSentry(): void {
     // the cold-load budget counts it; no trace headers go anywhere.
     tracePropagationTargets: [],
     dataCollection: SENTRY_DATA_COLLECTION,
-    beforeSend: hooks.beforeSend,
+    // A desktop-only member called on web is expected, not a crash.
+    beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) ? null : hooks.beforeSend(event)),
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,

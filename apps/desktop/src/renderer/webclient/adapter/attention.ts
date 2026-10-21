@@ -50,8 +50,14 @@ function openWebTargetInNewTab(target: DeeplinkTarget): boolean {
   try {
     // `noopener` keeps the new tab from reaching back into this one; without it
     // the opened document inherits a scriptable handle to the workspace.
-    const opened = window.open(targetToWebUrl(target), "_blank", "noopener,noreferrer");
-    return Boolean(opened);
+    // With "noopener" in the features string `window.open` always returns
+    // null, so a blocked popup could not be told apart from an opened one and
+    // every click also navigated in place. Open blank, then cut the opener.
+    const opened = window.open("about:blank", "_blank");
+    if (!opened) return false;
+    opened.opener = null;
+    opened.location.href = targetToWebUrl(target);
+    return true;
   } catch {
     return false;
   }
