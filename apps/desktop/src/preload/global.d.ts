@@ -48,6 +48,9 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
   AppleRuntimeDeleteArgs,
   AppleRuntimeDeleteResult,
   AppleRuntimeInstallArgs,
@@ -3144,6 +3147,14 @@ declare global {
           args: AppleRotateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRotateResult>;
+        setPosture: (
+          args: AppleSetPostureArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleSetPostureResult>;
+        getPosture: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDevicePosture>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
         scroll: (
           args: AppleScrollArgs,

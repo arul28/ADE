@@ -58,6 +58,9 @@ public actor SimHelperRuntime {
             guard let self else { return }
             Task { await self.postureChanged(udid: udid, state: state) }
         }
+        // Always apply the current pose, also when the watcher already ran: a
+        // capture that restarted (the last viewer left and one came back) has
+        // a fresh engine that knows nothing about the active panel.
         if started, session != nil {
             await postureChanged(udid: udid, state: await DevicePosture.read(udid: udid))
         }

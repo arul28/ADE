@@ -18,6 +18,12 @@ static bool resolve(void **destination, const char *symbol) {
 }
 
 bool SSCoreDeviceInitialize(void) {
+#if !defined(__aarch64__)
+    // ADE patch: the trampolines' async descriptors exist only on arm64 (see
+    // CoreDeviceTrampolines.S). Xcode 27.1, the first with an iPhone Duo, runs
+    // only on Apple silicon, so x86_64 simply has no foldable controls.
+    return false;
+#endif
     static dispatch_once_t once;
     static bool available;
     dispatch_once(&once, ^{

@@ -327,6 +327,8 @@ export function createAppleDeviceNamespace(
     // round 5, so a web tab rendered both and neither did anything.
     pressButton: (async (args?: unknown) => invoke("pressButton", args ?? {}, false)) as never,
     rotate: (async (args?: unknown) => invoke("rotate", args ?? {}, false)) as never,
+    setPosture: (async (args?: unknown) => invoke("setPosture", args ?? {}, false)) as never,
+    getPosture: (async (args?: unknown) => invoke("getPosture", args ?? {}, true)) as never,
     frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
     // SwiftUI preview lab. The drawer mounts these on open, so a web tab that
     // lacked them threw in an effect rather than degrading.

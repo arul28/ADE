@@ -1005,6 +1005,9 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
   AppleRuntimeDeleteArgs,
   AppleRuntimeDeleteResult,
   AppleRuntimeInstallArgs,
@@ -9723,6 +9726,17 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleRotateResult> =>
       callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
+    /** Fold the lane's iPhone Duo to a preset or an angle; `supported: false` on any other device. */
+    setPosture: (
+      args: AppleSetPostureArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleSetPostureResult> =>
+      callIosSimulatorMutation(pin, "setPosture", args, IPC.iosSimulatorSetPosture),
+    getPosture: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDevicePosture> =>
+      callIosSimulatorActionOr<AppleDevicePosture>(pin, "getPosture", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorGetPosture, args)),
     /**
      * The helper's own scroll gesture, by viewport direction.
      *

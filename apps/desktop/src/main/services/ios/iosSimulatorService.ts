@@ -7,6 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleDevicePosture,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
   AppleRuntimeDeleteArgs,
   AppleRuntimeInstallArgs,
   AppleRuntimePruneArgs,
@@ -121,6 +124,7 @@ import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
+  APPLE_DEVICE_POSES,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
   APPLE_ROTATE_UNMEASURABLE_CODE,
@@ -2115,7 +2119,7 @@ const AGENT_NO_LANE_DEVICE_MESSAGE =
  */
 const AGENT_DEVICE_DRIVING_ACTIONS = [
   "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
-  "startStream", "frame", "tap", "pressButton", "rotate", "typeText", "drag", "swipe", "scroll", "selectPoint",
+  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "typeText", "drag", "swipe", "scroll", "selectPoint",
   "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
@@ -2138,6 +2142,18 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
   if (!chatSessionId || !parseForeignCallerSessionId(chatSessionId)) return null;
   return { machineName: externalChatContext(chatSessionId)?.machineName ?? null };
+}
+
+/** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
+function parseHelperPosture(payload: Record<string, unknown>): AppleDevicePosture {
+  const supported = payload.supported !== false && (payload.supported === true || typeof payload.angle === "number");
+  return {
+    supported,
+    angle: typeof payload.angle === "number" ? payload.angle : null,
+    orientation: typeof payload.orientation === "string" ? payload.orientation : null,
+    tableMode: typeof payload.tableMode === "boolean" ? payload.tableMode : null,
+    activeScreenId: typeof payload.activeScreenId === "number" ? payload.activeScreenId : null,
+  };
 }
 
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
@@ -2549,6 +2565,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       handleHelperExited(event);
       return;
     }
+    if (event.type === "posture-changed") {
+      handlePostureChanged(event);
+      return;
+    }
     if (event.type !== "capture-stopped") return;
     const udid = typeof event.udid === "string" ? event.udid : null;
     if (!udid) return;
@@ -2567,6 +2587,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     const status = setStreamStopped(runtime, reason || "The simulator capture stopped.");
     emit({ type: "stream-error", status });
+  };
+
+  /**
+   * A foldable changed pose or active panel (the helper watches every Duo it
+   * streams). The stream now carries the other panel, at its own size, so the
+   * transport's pixel and point sizes are replaced before anyone maps a tap
+   * against them, then the pane hears the pose itself.
+   */
+  const handlePostureChanged = (event: { type: string } & Record<string, unknown>): void => {
+    const udid = typeof event.udid === "string" ? event.udid : null;
+    if (!udid) return;
+    const posture = parseHelperPosture(event);
+    const runtime = runtimeStreamingUdid(udid);
+    const transport = runtime?.streamStatus.transport;
+    if (runtime && transport) {
+      const width = typeof event.pixelWidth === "number" ? event.pixelWidth : transport.width;
+      const height = typeof event.pixelHeight === "number" ? event.pixelHeight : transport.height;
+      const pointWidth = typeof event.pointWidth === "number" ? event.pointWidth : transport.pointWidth;
+      const pointHeight = typeof event.pointHeight === "number" ? event.pointHeight : transport.pointHeight;
+      if (width !== transport.width || height !== transport.height
+        || pointWidth !== transport.pointWidth || pointHeight !== transport.pointHeight) {
+        runtime.streamStatus = { ...runtime.streamStatus, transport: { ...transport, width, height, pointWidth, pointHeight } };
+        emit({ type: "stream-status", status: runtime.streamStatus });
+      }
+    }
+    emit({ type: "apple.device.posture", laneId: runtime?.key ?? laneIdHoldingUdid(udid), udid, posture });
   };
 
   /**
@@ -5785,6 +5831,51 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * `applied: false` with a reason, because the alternative is a viewer that
    * draws an upright screen on its side.
    */
+  /** The lane whose device this is, for an event about a device no stream is showing. */
+  const laneIdHoldingUdid = (udid: string): string | null =>
+    laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
+
+  /**
+   * Fold the lane's iPhone Duo to a preset or an angle. Answers
+   * `applied: false, supported: false` for a device without a hinge rather
+   * than throwing: "this is not a foldable" is a state, not a failure.
+   */
+  const setPosture = async (postureArgs: AppleSetPostureArgs): Promise<AppleSetPostureResult> => {
+    assertDarwin();
+    const pose = typeof postureArgs.pose === "string" ? postureArgs.pose.trim().toLowerCase() : null;
+    const angle = typeof postureArgs.angle === "number" && Number.isFinite(postureArgs.angle) ? postureArgs.angle : null;
+    if (pose && !(APPLE_DEVICE_POSES as readonly string[]).includes(pose)) {
+      throw new Error(`pose must be ${APPLE_DEVICE_POSES.join(", ")}.`);
+    }
+    if (!pose && (angle === null || angle < 0 || angle > 180)) {
+      throw new Error("Give a pose, or an angle between 0 and 180 degrees.");
+    }
+    const runtime = resolveRuntime(postureArgs);
+    const deviceUdid = await resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
+    return enqueueControl("posture", async () => {
+      const payload = await helper().send({
+        type: "posture",
+        udid: deviceUdid,
+        ...(pose ? { pose } : { angle }),
+      });
+      // The hinge sweeps and the guest elects its panel a moment later; read
+      // the pose back once that has settled, so the answer is what happened.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const posture = await readPosture(deviceUdid);
+      return { applied: payload.applied === true, posture };
+    });
+  };
+
+  const readPosture = async (deviceUdid: string): Promise<AppleDevicePosture> =>
+    parseHelperPosture(await helper().send({ type: "posture-get", udid: deviceUdid }));
+
+  const getPosture = async (postureArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> = {}): Promise<AppleDevicePosture> => {
+    assertDarwin();
+    const runtime = resolveRuntime(postureArgs);
+    const deviceUdid = await resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
+    return readPosture(deviceUdid);
+  };
+
   const rotate = async (rotateArgs: AppleRotateArgs): Promise<AppleRotateResult> => {
     assertDarwin();
     const rawOrientation = typeof rotateArgs.orientation === "string" ? rotateArgs.orientation.trim() : "";
@@ -6671,6 +6762,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     tap,
     pressButton,
     rotate,
+    /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
+    setPosture,
+    getPosture,
     typeText,
     drag,
     swipe: drag,

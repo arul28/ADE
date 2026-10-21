@@ -177,6 +177,11 @@ export const APPLE_AGENT_ACTIONS = [
   "runtimeInstall",
   "runtimeInstallCancel",
 
+  /* Foldables: fold the iPhone Duo and read its pose. A no-op answer
+     (`supported: false`) on every other device. */
+  "setPosture",
+  "getPosture",
+
   /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
   "runTests",
 
@@ -910,7 +915,56 @@ export type IosSimulatorEventPayload =
   | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
   | AppleDeviceStateEvent
   | AppleRecordingStateEvent
-  | AppleRuntimeInstallEvent;
+  | AppleRuntimeInstallEvent
+  | AppleDevicePostureEvent;
+
+/* ------------------------------------------------------------------------- *
+ * Foldable posture (the iPhone Duo).
+ * ------------------------------------------------------------------------- */
+
+/** Device Hub's presets. `book` and `laptop` share 90°; `tent` stands face down at 80°. */
+export const APPLE_DEVICE_POSES = ["closed", "open", "laptop", "book", "tent"] as const;
+export type AppleDevicePose = (typeof APPLE_DEVICE_POSES)[number];
+
+/** The Duo's panels by SimScreen id: 1 is the cover (outer) display, 3 the inner one. */
+export const APPLE_DUO_COVER_SCREEN_ID = 1;
+export const APPLE_DUO_INNER_SCREEN_ID = 3;
+
+/** A foldable simulator's physical pose, as CoreDevice reports it. */
+export type AppleDevicePosture = {
+  /** False for every device without a hinge; every other field is then null. */
+  supported: boolean;
+  /** Hinge angle in degrees, 0 closed … 180 flat. */
+  angle: number | null;
+  /** Physical orientation: `portrait`, `landscape-left`, `facedown`, … */
+  orientation: string | null;
+  tableMode: boolean | null;
+  /** The panel that is on, and the one ADE streams and sends input to. */
+  activeScreenId: number | null;
+};
+
+export type AppleSetPostureArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  /** A preset. Exactly one of `pose` and `angle`. */
+  pose?: AppleDevicePose | null;
+  /** Degrees, 0–180. */
+  angle?: number | null;
+};
+
+export type AppleSetPostureResult = {
+  applied: boolean;
+  posture: AppleDevicePosture;
+};
+
+/** A lane's foldable changed pose or active panel, whoever moved it. */
+export type AppleDevicePostureEvent = {
+  type: "apple.device.posture";
+  laneId: string | null;
+  udid: string;
+  posture: AppleDevicePosture;
+};
 
 export type AppleRecordingPhase = "started" | "updated" | "stopped";
 

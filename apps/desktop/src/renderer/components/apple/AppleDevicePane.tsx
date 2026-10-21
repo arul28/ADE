@@ -16,6 +16,8 @@ import type {
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
   AppleLaneDevice,
+  AppleDevicePose,
+  AppleDevicePosture,
   AppleRuntimeDeleteResult,
   AppleRuntimeSimulatorDisposition,
   IosElementContextItem,
@@ -29,6 +31,7 @@ import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
   appleDeviceSupportsDuo,
+  clampAppleDuoAngle,
   createAppleDuoState,
   nearestAppleDuoStance,
   reduceAppleDuoState,
@@ -69,6 +72,7 @@ import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
+import { APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
@@ -142,6 +146,17 @@ const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOff
   "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
 };
 
+/**
+ * The inner panel's picture, a quarter turn on from the device's orientation
+ * (the panel is mounted that way; see `displayOrientation`).
+ */
+const APPLE_DUO_INNER_ORIENTATION: Record<AppleDeviceOrientation, AppleDeviceOrientation> = {
+  portrait: "landscape-left",
+  "landscape-left": "portrait-upside-down",
+  "portrait-upside-down": "landscape-right",
+  "landscape-right": "portrait",
+};
+
 /** What a runtime remove did, as one toast. Counts only; the details are in the log. */
 function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
   const freed = result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
@@ -208,6 +223,8 @@ export function AppleDevicePane({
    * but does nothing when `duoCapable` is false.
    */
   const [duoState, setDuoState] = useState(() => createAppleDuoState());
+  /** What the simulator itself reports: its hinge and the panel that is on. */
+  const [duoPosture, setDuoPosture] = useState<AppleDevicePosture | null>(null);
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -374,6 +391,17 @@ export function AppleDevicePane({
   useEffect(() => {
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
       switch (event.type) {
+        case "apple.device.posture": {
+          if (event.udid !== deviceUdidRef.current) return;
+          setDuoPosture(event.posture);
+          const angle = event.posture.angle;
+          if (angle !== null) {
+            setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
+              ? current
+              : reduceAppleDuoState(current, { type: "angle", angle })));
+          }
+          return;
+        }
         case "apple.device.state": {
           if (event.laneId && laneId && event.laneId !== laneId) return;
           if (event.phase === "failed") {
@@ -868,16 +896,76 @@ export function AppleDevicePane({
    * foldable and render the Duo body on a rigid device.
    */
   const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
-  const duoControlsEnabled = duoCapable && canUse3d;
-  const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
+  // The rail's fold controls drive the real simulator, so they show in flat
+  // mode too; only the articulated body needs the 3D view.
+  const duoControlsEnabled = duoCapable;
+  const duoProps: AppleDeviceDuoProps | undefined = duoCapable && canUse3d
     ? {
         enabled: true,
         angle: duoState.pose.angle,
         lowerFlat: duoState.pose.lowerFlat,
-        onHingeChange: (angle) =>
-          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle })),
+        onHingeChange: (angle) => {
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
+          sendDuoAngleSoon(angle);
+        },
       }
     : undefined;
+  /*
+   * The inner panel is mounted a quarter turn from the cover: its raw
+   * framebuffer is portrait while its picture is landscape. The stage already
+   * turns a raw frame for a sideways device, so the inner panel is drawn as one
+   * quarter turn further on (and taps are inverted by the same turn).
+   */
+  const displayOrientation: AppleDeviceOrientation = duoCapable && duoPosture?.activeScreenId === APPLE_DUO_INNER_SCREEN_ID
+    ? APPLE_DUO_INNER_ORIENTATION[orientation]
+    : orientation;
+
+  /**
+   * Fold the real simulator. Every caller here is the person at the rail or
+   * the 3D hinge; the view moves first and the simulator's own posture events
+   * settle it (the readback is what the guest actually did).
+   */
+  const sendDuoPosture = useCallback((target: { pose?: AppleDevicePose; angle?: number }) => {
+    void window.ade.iosSimulator
+      .setPosture({ laneId, chatSessionId: sessionId, ...target }, runtimePinRef.current)
+      .then((result) => setDuoPosture(result.posture))
+      .catch((cause: unknown) => setError(cause));
+  }, [laneId, sessionId]);
+  /** A hinge drag sends its latest angle once the drag pauses, not every frame. */
+  const duoAngleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendDuoAngleSoon = useCallback((angle: number) => {
+    if (duoAngleTimerRef.current) clearTimeout(duoAngleTimerRef.current);
+    duoAngleTimerRef.current = setTimeout(() => {
+      duoAngleTimerRef.current = null;
+      sendDuoPosture({ angle: Math.round(angle) });
+    }, 250);
+  }, [sendDuoPosture]);
+  useEffect(() => () => {
+    if (duoAngleTimerRef.current) clearTimeout(duoAngleTimerRef.current);
+  }, []);
+
+  /** Read the pose once the Duo is live; posture events keep it current after that. */
+  const duoLive = duoCapable && state === "live";
+  useEffect(() => {
+    if (!duoLive) {
+      setDuoPosture(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.iosSimulator
+      .getPosture({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+      .then((posture) => {
+        if (cancelled) return;
+        setDuoPosture(posture);
+        if (posture.angle !== null) {
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle: posture.angle! }));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [duoLive, laneId, sessionId, runtimePin?.key]);
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -1003,7 +1091,7 @@ export function AppleDevicePane({
               family={familyOf(laneDevice)}
               deviceTypeName={deviceName}
               deviceTypeIdentifier={deviceTypeIdentifier}
-              orientation={orientation}
+              orientation={displayOrientation}
               devicePointSize={stream.devicePointSize}
               /*
                * §A4: while Inspect owns the pointer, so does the overlay.
@@ -1229,10 +1317,15 @@ export function AppleDevicePane({
                     stance: nearestAppleDuoStance(duoState.pose.angle),
                   }
                 : undefined}
-              onDuoStance={(stance) =>
-                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }))}
-              onDuoNudge={(delta) =>
-                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }))}
+              onDuoStance={(stance) => {
+                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
+                sendDuoPosture({ pose: stance });
+              }}
+              onDuoNudge={(delta) => {
+                const next = clampAppleDuoAngle(duoState.pose.angle + delta);
+                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
+                sendDuoPosture({ angle: next });
+              }}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}

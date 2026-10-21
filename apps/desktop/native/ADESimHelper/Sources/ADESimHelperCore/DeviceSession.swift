@@ -104,6 +104,7 @@ public actor DeviceSession {
         let engine = CaptureEngine(deviceUDID: udid)
         try await engine.start()
         self.engine = engine
+        activeScreenID = nil
 
         let server = try FrameStreamServer()
         _ = try server.start()
@@ -227,6 +228,9 @@ public actor DeviceSession {
         server = nil
         await engine?.stop()
         engine = nil
+        // The next engine starts on the largest surface; forget the panel so
+        // the next posture read applies it to that engine.
+        activeScreenID = nil
     }
 
     public var isCapturing: Bool { engine != nil }

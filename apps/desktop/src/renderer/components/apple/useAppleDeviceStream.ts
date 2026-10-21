@@ -483,6 +483,24 @@ export function useAppleDeviceStream({
     setStreamStatus(next);
   }, []);
 
+  /*
+   * A foldable streams whichever panel is on, and each panel has its own size:
+   * folding the iPhone Duo swaps the inner display (669×951 pt) for the cover
+   * (466×678 pt) on the SAME stream. The service republishes the transport's
+   * sizes when that happens; follow them, or taps and the box keep the old
+   * panel's shape.
+   */
+  const transportPointWidth = streamStatus?.transport?.pointWidth ?? null;
+  const transportPointHeight = streamStatus?.transport?.pointHeight ?? null;
+  useEffect(() => {
+    if (!transportPointWidth || !transportPointHeight || transportPointWidth <= 0 || transportPointHeight <= 0) return;
+    setPointSize((current) => (
+      current && current.width === transportPointWidth && current.height === transportPointHeight
+        ? current
+        : { width: transportPointWidth, height: transportPointHeight }
+    ));
+  }, [transportPointHeight, transportPointWidth]);
+
   // One timer for both watchdogs. It runs only while a stream is wanted, so a
   // paused or absent device costs nothing.
   useEffect(() => {
