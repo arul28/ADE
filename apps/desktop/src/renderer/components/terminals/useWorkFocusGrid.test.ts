@@ -225,6 +225,7 @@ describe("Focus queue for another machine's lanes", () => {
       foldedForeignLaneIds: new Set(),
       filingBucketsFor: () => new Map(),
       foreignNesting: new Map([["studio:lane-f", { excludedTopLevelIds: new Set(["helper"]) }]]),
+      seenAtBySessionId: {},
       nowMs,
       onChange: (items) => reported.push(items.map((item) => item.session.id)),
     }));

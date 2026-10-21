@@ -55,14 +55,16 @@ export function WorkFocusGridEmpty({
               <span className="font-semibold tabular-nums text-fg">
                 {workingCount} {workingCount === 1 ? "session is" : "sessions are"} working.
               </span>{" "}
-              {workingCount === 1 ? "It shows" : "They show"} up here when {workingCount === 1 ? "it finishes" : "they finish"} or {workingCount === 1 ? "needs" : "need"} you.
+              {workingCount === 1 ? "It shows" : "They show"} up here when {workingCount === 1 ? "it needs" : "they need"} you.
+              Finished work stays in the sidebar.
             </div>
           </>
         ) : (
           <>
             <div className="text-[15px] font-medium text-fg">All quiet for now</div>
             <div className="text-[12px] leading-relaxed text-fg/80">
-              No sessions are working. A chat shows up here when an agent finishes a turn or asks you something.
+              No sessions are working. A chat shows up here when it asks you something, a run fails, or a scheduled
+              wake never starts.
             </div>
           </>
         )}

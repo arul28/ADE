@@ -217,26 +217,31 @@ removing the marker closes them again. Notification deep links add the open
 marker so a Settled destination cannot remain hidden.
 
 In by-lane list mode the toolbar's **Focus** pill
-(persisted as `workFoldBusyLanes`) moves every lane whose live rows are all
-Working or Waiting — or Done in a way the user has already left — onto a
-collapsed **Working** shelf, the first shelf inside the quiet zone (above
-Snoozed and Settled, still drawn in the working colour with the working glyph).
-Only the user opens or closes it: the open chat's lane folds like any other, so
-its card is hidden until the user unfolds the shelf. The rule lives
-in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
-cannot disagree with the board's columns. A lane folds only when at least one
-live agent row (a chat or a tracked agent CLI) is actually busy. A plain shell
-never counts as busy: a dev server or App Control shell runs indefinitely, so
-it cannot keep a lane folded once its chat is done. A raised hand (`needs_you`), a stale run, a stalled
-turn, or a finished row the user has not left holds the whole lane out with its
-rows visible. Snoozed and settled rows take no part. A finished nested row
-(attached shell, subagent) can never hold its lane out — nobody opens a helper
-to mark it seen — though a nested raised hand still can. A finished helper an
-agent launched (a peer, or a `--no-parent` chat recorded as
-`launchedBySessionId`) is skipped the same way while that agent is busy in the
-same lane, because such helpers are the launcher's business while it works; once
-the launcher finishes, its own Done holds the lane out and the helpers count
-again. Pinned lanes never fold; the primary lane folds like any other.
+(persisted as `workFoldBusyLanes`) moves every lane that has live work and
+nothing waiting on the user onto a collapsed **Working** shelf, the first shelf
+inside the quiet zone (above Snoozed and Settled, still drawn in the working
+colour with the working glyph). Only the user opens or closes it: the open
+chat's lane folds like any other, so its card is hidden until the user unfolds
+the shelf. The rule lives in `workLaneFocus.ts` (`summarizeLaneFocus`) so the
+shelf and the lane headers cannot disagree with the board's columns. A lane
+folds only when at least one live agent row (a chat or a tracked agent CLI) is
+actually busy. A plain shell never counts as busy: a dev server or App Control
+shell runs indefinitely, so it cannot keep a lane folded once its chat is done.
+A raised hand (`needs_you`), a stale run, a stalled turn, a scheduled wake that
+came due and never started, or a failure the user has not left holds the whole
+lane out with its rows visible. A **clean finish is not a request**: a Done row
+never holds its lane open and never claims a Focus tile, so an unopened chat
+cannot block a lane that has live work. A lane with nothing live (only finished
+rows) never folds either — it is not working, it waits to be settled — so its
+rows stay visible in the inbox. Snoozed and settled rows take no part. A
+finished nested row (attached shell, subagent) can never hold its lane out —
+nobody opens a helper to mark it seen — though a nested raised hand still can. A
+finished helper an agent launched (a peer, or a `--no-parent` chat recorded as
+`launchedBySessionId`) is the launcher's business while that agent is busy in the
+same lane: its finish, and a failure it hits, do not hold the lane out. A raised
+hand or a missed wake from a helper still does; a chat the user started has no
+launcher and is unaffected; a launcher in another lane does not count. Pinned
+lanes never fold; the primary lane folds like any other.
 
 A **stalled turn** is a live chat turn that has been silent for
 `TURN_STALL_AFTER_MS` (five minutes) and owns no open work. The host folds
@@ -278,12 +283,14 @@ takes a fresh baseline instead of floating every lane at once.
 
 Each by-lane header carries one rolled-up status dot
 (`LaneFocusStatusDot`, Needs you > Working > Waiting > Done) read from the same
-focus derivation as the shelf. A finished row counts as seen only after the user
-**leaves** it: `useWorkSessions` stamps `workSeenAtBySessionId` on selection
-change, bounded to `WORK_SEEN_AT_LIMIT` entries, so opening a finished row in
-the inbox does not fold its lane out from under the cursor. A lane that just
-came back out of the Working shelf floats to the front of the active tier,
-newest return first, except in Manual sort where the user's own order wins.
+focus derivation as the shelf. A **failure** counts as acknowledged only after
+the user **leaves** it: `useWorkSessions` stamps `workSeenAtBySessionId` on
+selection change, bounded to `WORK_SEEN_AT_LIMIT` entries, so opening a failed
+row in the inbox does not fold its lane out from under the cursor. A clean
+finish does not read the stamp — it never holds a lane out in the first place. A
+lane that just came back out of the Working shelf floats to the front of the
+active tier, newest return first, except in Manual sort where the user's own
+order wins.
 
 Lane groups with two or more sessions render an accent-coloured lane name,
 optional machine/PR markers, then indent the cards beside a lane-tinted rail.
@@ -698,16 +705,18 @@ Constants:
 ## Focus grid
 
 The Focus pill's grid half (`workFocusGrid`, only while Focus is on) replaces
-the work area with every chat that waits for the user. It is the normal Work
+the work area with every chat that needs the user. It is the normal Work
 grid (`WorkGridView` over `PaneTilingLayout`, standard chat surfaces with their
 own headers, chat action panes and floating previews); what differs:
 
 - **Membership comes from the sidebar, not from drags.** `workFocusQueue` in
-  `workLaneFocus.ts` applies the same per-row rule as the fold and returns each
-  agent chat in an unfolded lane that is not Working or Waiting (plus stale and
-  stalled runs). Plain shells never get a tile; a nested row gets one only
-  while it asks for the user. Chats from other machines are included through
-  their row's binding (remembered with `machineRouter.rememberSessionPin`).
+  `workLaneFocus.ts` returns each agent chat that needs the user: a raised hand,
+  a stale or stalled run, a scheduled wake that came due and never started, or a
+  failure the user has not left. That is the same `holdsOut` flag the fold
+  reads, so a clean finish never gets a tile. Plain shells never get a tile; a
+  nested row gets one only while it asks for the user. Chats from other machines
+  are included through their row's binding (remembered with
+  `machineRouter.rememberSessionPin`).
   `SessionListPane` reports the list (`WorkFocusQueueItem`: session + binding)
   through `onFocusQueueChange`, so the grid and the list cannot disagree. The
   project sidebar stays mounted while collapsed, keeping that report live as
