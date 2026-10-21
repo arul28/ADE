@@ -535,6 +535,12 @@ function createViewer(
       // answered in the continuous inner-display space either way.
       const hit = body.duo.pickInner(raycaster);
       if (!hit) return null;
+      if ("physicalOrientation" in body) {
+        // Apple's model answers in the live panel's own framebuffer, which
+        // is what the device takes, exactly as the flat view sends it.
+        const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
+        return { x: hit.u * raw.width, y: (1 - hit.vFromBottom) * raw.height };
+      }
       const oriented = portraitToOriented(hit.u, hit.vFromBottom, props.orientation);
       return { x: oriented.x * points.width, y: oriented.y * points.height };
     }
