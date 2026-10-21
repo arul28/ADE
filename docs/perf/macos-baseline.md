@@ -1123,7 +1123,7 @@ includes this long session and swings 50-80 MB between runs.
 |---|---|---:|---:|---:|---:|
 | Renderer CPU | `process-cpu.sh 20` | 3.0-3.2% | 3.3-3.4% | 2.5-2.6% | 25% |
 | GPU process CPU | same | 7.8-7.9% | 7.9-8.3% | 7.2-7.3% | 10% |
-| Sim helper CPU / RSS (capturing the live panel) | same | 0 (no capture) | 1.9% / 70 MB | 1.7% / 60 MB | 3% / 120 MB |
+| Sim helper CPU / RSS (capturing the live panel) | same | 1.7% / 60 MB (an orphaned capture, see below) | 1.9% / 70 MB | 1.7% / 60 MB | 3% / 120 MB |
 | Electron main / brain CPU | same | 0.4-0.9% / 0.4-1.6% | 0.5% / 0.7-0.8% | 0.4-1.7% / 0.6-1.6% | 15% / 10% |
 | Renderer JS heap after load | `performance.memory` | 243 MB | 253 MB | — | +40 MB over pane closed |
 
