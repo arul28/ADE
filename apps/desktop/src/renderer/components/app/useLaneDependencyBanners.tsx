@@ -303,7 +303,7 @@ export function useLaneDependencyBanners({
       ? {
           id: "lane-template-suggestion",
           tone: "accent",
-          icon: <Stack size={13} weight="bold" />,
+          icon: <Stack size={21} weight="duotone" />,
           busy: templateChatBusy,
           eyebrow: "Suggestion",
           title: LANE_TEMPLATE_SUGGESTION.title,

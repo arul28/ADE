@@ -58,15 +58,20 @@ export function ChatInlineMedia({
   const name = inlineMediaFilename(src);
   const [target, setTarget] = useState<Resolution>(null);
   const [resolved, setResolved] = useState(false);
+  // No root of this project holds the path (a file in /tmp, another repo):
+  // the file may well exist, but chat only reads inside the project.
+  const [outside, setOutside] = useState(false);
 
   useEffect(() => {
     if (!near) return;
     let cancelled = false;
     setTarget(null);
     setResolved(false);
+    setOutside(false);
     void resolveWorkspaceMediaTarget({ path: src, pin, laneId })
       .then(async (next) => {
         if (cancelled) return;
+        if (!next) setOutside(true);
         if (next) {
           await createPinnedFilesApi(pin).readFileRange({
             workspaceId: next.workspaceId,
@@ -104,7 +109,7 @@ export function ChatInlineMedia({
   if (!target) {
     return (
       <span ref={ref} className="my-3 block">
-        <MediaFileChip name={name} kind={kind} unavailable onOpen={open} />
+        <MediaFileChip name={name} kind={kind} unavailable={outside ? "outside" : "missing"} onOpen={open} />
       </span>
     );
   }
@@ -187,7 +192,7 @@ export function ChatInlineAudio({
   if (!resolvedTarget) {
     return (
       <span ref={ref} className="block">
-        <MediaFileChip name={name} kind="audio" unavailable onOpen={onOpen} />
+        <MediaFileChip name={name} kind="audio" unavailable="missing" onOpen={onOpen} />
       </span>
     );
   }
@@ -414,19 +419,27 @@ function MediaChip({
 function MediaFileChip({
   name,
   kind,
-  unavailable = false,
+  unavailable = null,
   onOpen,
 }: {
   name: string;
   kind: InlineMediaKind;
-  unavailable?: boolean;
+  /** Why it cannot be shown: outside every root of this project, or not readable there. */
+  unavailable?: "outside" | "missing" | null;
   onOpen: () => void;
 }) {
   const Icon = kind === "image" ? ImageIcon : kind === "video" ? FilmStrip : File;
+  const note = unavailable === "outside"
+    ? "Outside this project"
+    : unavailable === "missing"
+      ? "Not available on this machine"
+      : "Open in Files";
   return (
     <MediaChip
       onClick={onOpen}
-      title={unavailable ? `${name} — Not available on this machine` : `Open ${name} in Files`}
+      title={unavailable === "outside"
+        ? `${name} is outside this project, so chat can't show it`
+        : unavailable ? `${name} — Not available on this machine` : `Open ${name} in Files`}
       className="py-2 text-left text-(color:--chat-ink)/78 transition-colors hover:bg-(color:--chat-ink)/[0.08]"
     >
       <Icon size={15} className="shrink-0 opacity-65" aria-hidden />
@@ -437,7 +450,7 @@ function MediaFileChip({
           unavailable ? "text-(color:--chat-ink)/45" : "text-(color:--chat-ink)/55",
         )}
       >
-        {unavailable ? "Not available on this machine" : "Open in Files"}
+        {note}
       </span>
     </MediaChip>
   );

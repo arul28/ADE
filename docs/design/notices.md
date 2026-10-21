@@ -137,6 +137,13 @@ event, and it is never urgent, so it has its own quiet presentation:
   work"), one "why now" line in `detail`, then two actions: the primary
   (`variant: "solid"`) and "Not now" (`variant: "secondary"`). No ×: "Not now"
   is the dismissal.
+- **How it looks.** A tile from ADE Tips' wall (`.ade-suggest-card` in
+  `ui/notice/notice.css`): a rounded plane with a hairline and a lit top edge,
+  its hue glowing from a corner, a big tinted icon (pass the glyph at 21px,
+  `weight="duotone"`), the eyebrow in the serif italic. `hue` sets the colour
+  (a tip card wears its ADE Tips group's; default ADE violet) and `art` puts a
+  screenshot in the bottom-right corner beside the actions. Only this layout
+  looks like this; the other banners keep the banner look.
 - **The signal.** Show it only when the user can already understand it. The
   lane template suggestion waits until the project has a lane besides the main
   checkout, so "lane" means something by then.

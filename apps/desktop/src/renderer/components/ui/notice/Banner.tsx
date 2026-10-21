@@ -61,6 +61,13 @@ export type BannerModel = {
   error?: string;
   /** The quiet label above a `suggestion` card's title. Defaults to "Suggestion". */
   eyebrow?: string;
+  /**
+   * `suggestion` only: the card's colour (its glow, icon tile and eyebrow), a
+   * hex. A tip card wears its ADE Tips group's hue; defaults to ADE violet.
+   */
+  hue?: string;
+  /** `suggestion` only: a screenshot of the feature, peeking out of the card's corner. */
+  art?: { src: string; alt: string };
 };
 
 export function isDurableDismiss(
@@ -212,10 +219,14 @@ export function Banner({
 }
 
 /**
- * The `suggestion` layout. Not a state and not an alarm, so it reads quieter
- * than a banner: the tone shows only on the small icon tile and the primary
- * action. The owner passes exactly two actions, the primary and "Not now";
- * "Not now" is the dismissal, so the card draws no ×.
+ * The `suggestion` layout, drawn like a tile on ADE Tips' wall
+ * (`.ade-suggest-card` in `notice.css`): a rounded plane with a hairline and a
+ * lit top edge, the card's hue glowing from a corner, a big tinted icon, the
+ * eyebrow in the serif italic, and, when there is one, a screenshot of the
+ * feature coming out of the bottom-right corner beside the actions. Not a
+ * state and not an alarm: the tone shows only on the primary action. The
+ * owner passes exactly two actions, the primary and "Not now"; "Not now" is
+ * the dismissal, so the card draws no ×.
  */
 function SuggestionCard({
   model,
@@ -226,7 +237,6 @@ function SuggestionCard({
   style?: CSSProperties;
   testId?: string;
 }): JSX.Element {
-  const tokens = noticeTone(model.tone);
   return (
     <section
       role="status"
@@ -235,42 +245,19 @@ function SuggestionCard({
       data-notice-tone={model.tone}
       data-banner-id={model.id}
       data-banner-layout="suggestion"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        minWidth: 0,
-        padding: "12px 14px 14px",
-        borderRadius: 14,
-        border: `1px solid ${tokens.edge}`,
-        fontFamily: "var(--font-sans)",
-        color: "var(--color-fg)",
-        ...NOTICE_FLOAT_SURFACE,
-        // A suggestion sits over the page for a while, often over a picture,
-        // where the theme's card colour is itself translucent. Mix from the
-        // background instead, so its words always read (as the onboarding
-        // hint card does with `.kit-card[data-float]`).
-        background: "color-mix(in srgb, var(--color-bg) 90%, transparent)",
-        backdropFilter: "blur(18px) saturate(1.2)",
-        WebkitBackdropFilter: "blur(18px) saturate(1.2)",
-        ...style,
-      }}
+      data-has-art={model.art ? "true" : undefined}
+      className="ade-suggest-card"
+      style={{ ...(model.hue ? ({ "--suggest-hue": model.hue } as CSSProperties) : null), ...style }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <NoticeIcon tone={model.tone} icon={model.icon} busy={model.busy} size="sm" />
-        <span className="kit-eyebrow" style={{ color: "var(--kit-text-3, var(--color-muted-fg))" }}>
-          {model.eyebrow ?? "Suggestion"}
+      <div className="ade-suggest-head">
+        <span className="ade-suggest-icon" aria-hidden>
+          {model.busy ? <NoticeIcon tone={model.tone} busy size="sm" /> : model.icon ?? <NoticeIcon tone={model.tone} size="sm" />}
         </span>
+        <span className="ade-suggest-eyebrow">{model.eyebrow ?? "Suggestion"}</span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-        <span style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35, letterSpacing: "-0.005em", overflowWrap: "anywhere" }}>
-          {model.title}
-        </span>
-        {model.detail ? (
-          <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--color-muted-fg)", overflowWrap: "anywhere" }}>
-            {model.detail}
-          </span>
-        ) : null}
+      <div className="ade-suggest-text">
+        <span className="ade-suggest-title">{model.title}</span>
+        {model.detail ? <span className="ade-suggest-detail">{model.detail}</span> : null}
         {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
         {model.error ? (
           <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
@@ -278,7 +265,14 @@ function SuggestionCard({
           </span>
         ) : null}
       </div>
-      <NoticeActions actions={model.actions} tone={model.tone} size="md" style={{ marginTop: 2 }} />
+      <div className="ade-suggest-foot">
+        <NoticeActions actions={model.actions} tone={model.tone} size="md" />
+        {model.art ? (
+          <div className="ade-suggest-art">
+            <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

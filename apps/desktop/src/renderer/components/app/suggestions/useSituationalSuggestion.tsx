@@ -78,7 +78,7 @@ export function useSituationalSuggestion({
   // Built once: a new icon element each render would redraw the card each time.
   const icon = useMemo(() => {
     const SuggestionIcon = definition.icon;
-    return <SuggestionIcon size={13} weight="bold" />;
+    return <SuggestionIcon size={21} weight="duotone" />;
   }, [definition]);
 
   useAppBanner(

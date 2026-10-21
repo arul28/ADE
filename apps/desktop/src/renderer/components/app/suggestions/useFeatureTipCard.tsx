@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
-import { ADE_TIPS, runTipAction, tipActionAvailable, tipIndexForDay, type AdeTip } from "../../../onboarding/adeTips";
+import { ADE_TIPS, adeTipGroup, runTipAction, tipActionAvailable, tipIndexForDay, type AdeTip } from "../../../onboarding/adeTips";
+import { ADE_TIP_SHOTS } from "../../onboarding/tips/adeTipsWall";
 import {
   answerTipCard,
   claimTipCard,
@@ -57,7 +58,7 @@ export function useFeatureTipCard(enabled: boolean): void {
   const icon = useMemo(() => {
     if (!tip) return null;
     const TipIcon = tip.icon;
-    return <TipIcon size={13} weight="bold" />;
+    return <TipIcon size={21} weight="duotone" />;
   }, [tip]);
 
   const showing = tip !== null && enabled && isTipCardShowing(tip.id);
@@ -68,6 +69,9 @@ export function useFeatureTipCard(enabled: boolean): void {
           tone: "accent",
           icon,
           eyebrow: "Tip",
+          // Drawn like its tile in ADE Tips: its group's colour, and its screenshot when it has one.
+          hue: adeTipGroup(tip.group).hue,
+          art: ADE_TIP_SHOTS[tip.id],
           title: tip.title,
           detail: tip.sentence,
           actions: [
