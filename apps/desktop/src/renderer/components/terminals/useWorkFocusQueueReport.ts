@@ -29,6 +29,7 @@ export function useWorkFocusQueueReport({
   foldedForeignLaneIds,
   filingBucketsFor,
   foreignNesting,
+  seenAtBySessionId,
   nowMs,
   onChange,
 }: {
@@ -45,6 +46,8 @@ export function useWorkFocusQueueReport({
   filingBucketsFor: (sessions: readonly TerminalSessionSummary[]) => ReadonlyMap<string, SessionFilingBucket>;
   /** Each foreign lane's nesting, keyed by `machineId:laneId`. */
   foreignNesting: ReadonlyMap<string, { excludedTopLevelIds: ReadonlySet<string> }>;
+  /** The leave stamps that acknowledge a failure, shared by every machine's rows. */
+  seenAtBySessionId: Readonly<Record<string, string>>;
   nowMs: number;
   onChange?: (items: readonly WorkFocusQueueItem[]) => void;
 }): number {
@@ -76,6 +79,7 @@ export function useWorkFocusQueueReport({
         filingBuckets: filingBucketsFor(row.sessions),
         foldedLaneIds: EMPTY_ID_SET,
         laneWaiting: () => false,
+        seenAtBySessionId,
         nestedSessionIds: foreignNesting.get(compositeLaneId)?.excludedTopLevelIds ?? EMPTY_ID_SET,
         busySubagentParentIds: busyParentsByMachine.get(row.machineId),
         nowMs,
@@ -87,7 +91,7 @@ export function useWorkFocusQueueReport({
       }
     }
     return next;
-  }, [active, filingBucketsFor, foldedForeignLaneIds, foreignNesting, foreignRows, localIds, localSessions, nowMs]);
+  }, [active, filingBucketsFor, foldedForeignLaneIds, foreignNesting, foreignRows, localIds, localSessions, nowMs, seenAtBySessionId]);
   // Every field a tile's header reads, plus the machine it routes to.
   const key = items
     .map(({ session, binding }) => [

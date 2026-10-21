@@ -1111,13 +1111,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** By-lane only: fold lanes with nothing waiting on the user into a Working shelf. */
   workFoldBusyLanes?: boolean;
   setWorkFoldBusyLanes?: (enabled: boolean) => void;
-  /** Focus grid: the work area shows every chat that waits for the user. */
+  /** Focus grid: the work area shows every chat that needs the user. */
   workFocusGrid?: boolean;
   setWorkFocusGrid?: (enabled: boolean) => void;
   /**
-   * The chats that wait for the user while Focus is on, in list order
+   * The chats that need the user while Focus is on, in list order
    * (`workFocusQueue`). Reported up so the Focus grid shows exactly what the
-   * sidebar left unfolded.
+   * sidebar refuses to fold away.
    */
   onFocusQueueChange?: (items: readonly WorkFocusQueueItem[]) => void;
   /** Focus grid with the sidebar open: each waiting chat's page mark. */
@@ -1688,7 +1688,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [foldBusyLanesActive, laneFocusByLaneId, workPinnedLaneIdSet]);
 
   /**
-   * The Focus grid's chats: what Focus left unfolded and that waits for the
+   * The Focus grid's chats: the rows that hold a lane out and so wait on the
    * user, after the user's own filters. Empty while Focus is off.
    */
   const focusQueueIds = useMemo(() => {
@@ -1699,6 +1699,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       filingBuckets,
       foldedLaneIds,
       laneWaiting: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)) !== null,
+      seenAtBySessionId: workSeenAtBySessionId,
       nestedSessionIds: unfilteredNesting.excludedTopLevelIds,
       busySubagentParentIds,
       nowMs: stallNowMs,
@@ -1713,6 +1714,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     prsByLaneId,
     unfilteredNesting.excludedTopLevelIds,
     busySubagentParentIds,
+    workSeenAtBySessionId,
   ]);
 
   // Foreign lanes worth a row: ones with chats, after the same search, lane, and
@@ -1934,6 +1936,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     foldedForeignLaneIds,
     filingBucketsFor: filingBucketsForForeignSessions,
     foreignNesting: unfilteredForeignNestingByCompositeId,
+    seenAtBySessionId: workSeenAtBySessionId,
     nowMs: stallNowMs,
     onChange: onFocusQueueChange,
   });

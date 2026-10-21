@@ -324,13 +324,13 @@ export type WorkProjectViewState = {
   workFoldBusyLanes?: boolean;
   /**
    * Focus grid: while Focus (`workFoldBusyLanes`) is on, the work area shows
-   * every chat that waits for the user as a live tile instead of one open
+   * every chat that needs the user as a live tile instead of one open
    * chat. Optional and off by default.
    */
   workFocusGrid?: boolean;
   /**
-   * When the user last looked at each session, keyed by session id. A finished
-   * row seen after it finished no longer keeps its lane out of the Working
+   * When the user last looked at each session, keyed by session id. A failed
+   * row seen after it failed no longer keeps its lane out of the Working
    * shelf. Bounded by `stampWorkSeenAt`.
    */
   workSeenAtBySessionId?: Record<string, string>;
