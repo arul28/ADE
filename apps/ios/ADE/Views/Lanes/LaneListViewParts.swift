@@ -632,15 +632,6 @@ extension LanesTabView {
         }
         .disabled(isTaken || !canRunLiveActions)
       }
-      if snapshot.lane.color != nil {
-        Divider()
-        Button(role: .destructive) {
-          Task { await applyLaneColor(nil, to: snapshot.lane.id) }
-        } label: {
-          Label("Clear color", systemImage: "xmark.circle")
-        }
-        .disabled(!canRunLiveActions)
-      }
     } label: {
       Label("Color", systemImage: "paintpalette")
     }

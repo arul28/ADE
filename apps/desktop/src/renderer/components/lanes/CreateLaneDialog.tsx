@@ -25,7 +25,7 @@ import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
-import { colorsInUse, laneColorName, nextAvailableColor } from "./laneColorPalette";
+import { colorForNewLane, colorsInUse, laneColorName } from "./laneColorPalette";
 import { LaneBranchList, type LaneBranchListItem } from "./LaneBranchList";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { findBranchPullRequest, formatRelativeTime, indexPullRequestsByBranch } from "./branchPickerSearch";
@@ -298,10 +298,7 @@ export function CreateLaneDialog({
     ? branchExistsForLinearIssue(selectedLinearBranchName, createBranches)
     : false;
   React.useEffect(() => {
-    if (open && selectedColor === null) {
-      const next = nextAvailableColor(lanes);
-      if (next) setSelectedColor(next);
-    }
+    if (open && selectedColor === null) setSelectedColor(colorForNewLane(lanes));
   }, [open, lanes, selectedColor, setSelectedColor]);
 
   const machineMissing = Boolean(machineRequired) && !laneCreated && !selectedMachineId;
@@ -534,7 +531,6 @@ export function CreateLaneDialog({
                 }}
                 usedColors={usedColors}
                 usedColorOwners={usedColorOwners}
-                swatchSize={18}
               />
             </div>
           </ComposerPopover>

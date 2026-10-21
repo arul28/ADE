@@ -5,6 +5,7 @@ import {
   LANE_CLASSIC_COUNT,
   LANE_COLOR_PALETTE,
   LANE_FALLBACK_COLORS,
+  LANE_MORE_COLORS,
   LANE_RAINBOW_COLORS,
   PRIMARY_LANE_COLOR,
   allocateLaneColor,
@@ -23,6 +24,7 @@ export {
   LANE_CLASSIC_COUNT,
   LANE_COLOR_PALETTE,
   LANE_FALLBACK_COLORS,
+  LANE_MORE_COLORS,
   LANE_RAINBOW_COLORS,
   PRIMARY_LANE_COLOR,
   laneColorName,
@@ -47,6 +49,11 @@ export function colorsInUse(lanes: readonly LaneSummary[], excludeLaneId?: strin
 
 export function nextAvailableColor(lanes: readonly LaneSummary[]): string | null {
   return nextAvailableLaneColor(colorsInUse(lanes));
+}
+
+/** A free colour, or a random one once every colour is taken: a new lane always has one. */
+export function colorForNewLane(lanes: readonly LaneSummary[]): string {
+  return allocateLaneColor(colorsInUse(lanes));
 }
 
 export { allocateLaneColor };

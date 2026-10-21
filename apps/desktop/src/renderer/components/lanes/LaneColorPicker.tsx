@@ -1,13 +1,12 @@
 import React from "react";
-import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_MORE_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
 import { fgTint } from "./laneDesignTokens";
 
 type Props = {
   value: string | null | undefined;
-  onChange: (color: string | null) => void;
+  onChange: (color: string) => void;
   usedColors?: Set<string>;
   usedColorOwners?: Map<string, string>;
-  showClear?: boolean;
   swatchSize?: number;
 };
 
@@ -16,7 +15,6 @@ export function LaneColorPicker({
   onChange,
   usedColors,
   usedColorOwners,
-  showClear = true,
   swatchSize = 22,
 }: Props) {
   const selected = value?.toLowerCase() ?? null;
@@ -40,9 +38,15 @@ export function LaneColorPicker({
         usedColorOwners={usedColorOwners}
         onChange={onChange}
         swatchSize={swatchSize}
-        trailing={showClear ? (
-          <ClearButton selected={selected === null} onClear={() => onChange(null)} swatchSize={swatchSize} />
-        ) : null}
+      />
+      <SwatchGroup
+        label="More"
+        colors={LANE_MORE_COLORS}
+        selected={selected}
+        usedColors={usedColors}
+        usedColorOwners={usedColorOwners}
+        onChange={onChange}
+        swatchSize={swatchSize}
       />
     </div>
   );
@@ -56,7 +60,6 @@ function SwatchGroup({
   usedColorOwners,
   onChange,
   swatchSize,
-  trailing,
 }: {
   label: string;
   colors: readonly LaneColor[];
@@ -65,7 +68,6 @@ function SwatchGroup({
   usedColorOwners?: Map<string, string>;
   onChange: (color: string) => void;
   swatchSize: number;
-  trailing?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -97,7 +99,6 @@ function SwatchGroup({
             />
           );
         })}
-        {trailing}
       </div>
     </div>
   );
@@ -167,42 +168,6 @@ function Swatch({
           <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       ) : null}
-    </button>
-  );
-}
-
-function ClearButton({
-  selected,
-  onClear,
-  swatchSize,
-}: {
-  selected: boolean;
-  onClear: () => void;
-  swatchSize: number;
-}) {
-  return (
-    <button
-      type="button"
-      title="Clear color"
-      aria-label="Clear color"
-      aria-pressed={selected}
-      onClick={onClear}
-      style={{
-        width: swatchSize,
-        height: swatchSize,
-        borderRadius: 9999,
-        backgroundColor: "transparent",
-        cursor: "pointer",
-        outline: selected ? "2px solid var(--color-accent, #fff)" : "none",
-        outlineOffset: 2,
-        border: "1px dashed rgba(255,255,255,0.35)",
-        padding: 0,
-        color: "rgba(255,255,255,0.55)",
-        fontSize: 11,
-        lineHeight: `${swatchSize}px`,
-      }}
-    >
-      ✕
     </button>
   );
 }

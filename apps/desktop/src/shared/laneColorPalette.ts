@@ -28,9 +28,26 @@ export const LANE_RAINBOW_COLORS: readonly LaneColor[] = [
   { hex: "#7c3aed", name: "Bright Violet" },
 ] as const;
 
+/** Soft and deep shades, so a project with many lanes still gives each its own colour. */
+export const LANE_MORE_COLORS: readonly LaneColor[] = [
+  { hex: "#fb7185", name: "Rose" },
+  { hex: "#38bdf8", name: "Sky" },
+  { hex: "#818cf8", name: "Periwinkle" },
+  { hex: "#86efac", name: "Mint" },
+  { hex: "#fdba74", name: "Peach" },
+  { hex: "#94a3b8", name: "Slate" },
+  { hex: "#be123c", name: "Crimson" },
+  { hex: "#15803d", name: "Forest" },
+  { hex: "#0369a1", name: "Ocean" },
+  { hex: "#a21caf", name: "Plum" },
+  { hex: "#a16207", name: "Bronze" },
+  { hex: "#d6d3d1", name: "Sand" },
+] as const;
+
 export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
   ...LANE_CLASSIC_COLORS,
   ...LANE_RAINBOW_COLORS,
+  ...LANE_MORE_COLORS,
 ] as const;
 
 export const LANE_CLASSIC_COUNT = LANE_CLASSIC_COLORS.length;

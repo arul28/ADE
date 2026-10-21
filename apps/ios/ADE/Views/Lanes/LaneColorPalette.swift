@@ -25,6 +25,25 @@ enum LaneColorPalette {
     LanePaletteColor(hex: "#a3e635", name: "Lime"),
     LanePaletteColor(hex: "#22d3ee", name: "Cyan"),
     LanePaletteColor(hex: "#e879f9", name: "Fuchsia"),
+    LanePaletteColor(hex: "#ef4444", name: "Bright Red"),
+    LanePaletteColor(hex: "#f97316", name: "Bright Orange"),
+    LanePaletteColor(hex: "#facc15", name: "Bright Yellow"),
+    LanePaletteColor(hex: "#22c55e", name: "Bright Green"),
+    LanePaletteColor(hex: "#2563eb", name: "Bright Blue"),
+    LanePaletteColor(hex: "#4f46e5", name: "Indigo"),
+    LanePaletteColor(hex: "#7c3aed", name: "Bright Violet"),
+    LanePaletteColor(hex: "#fb7185", name: "Rose"),
+    LanePaletteColor(hex: "#38bdf8", name: "Sky"),
+    LanePaletteColor(hex: "#818cf8", name: "Periwinkle"),
+    LanePaletteColor(hex: "#86efac", name: "Mint"),
+    LanePaletteColor(hex: "#fdba74", name: "Peach"),
+    LanePaletteColor(hex: "#94a3b8", name: "Slate"),
+    LanePaletteColor(hex: "#be123c", name: "Crimson"),
+    LanePaletteColor(hex: "#15803d", name: "Forest"),
+    LanePaletteColor(hex: "#0369a1", name: "Ocean"),
+    LanePaletteColor(hex: "#a21caf", name: "Plum"),
+    LanePaletteColor(hex: "#a16207", name: "Bronze"),
+    LanePaletteColor(hex: "#d6d3d1", name: "Sand"),
   ]
 
   static let fallbacks: [String] = Array(entries.prefix(8)).map(\.hex)
@@ -69,9 +88,15 @@ enum LaneColorPalette {
     return result
   }
 
+  /// Violet is the Primary lane's colour, so a new lane never gets it on its own,
+  /// matching desktop's `ALLOCATABLE_LANE_COLORS`.
+  static let allocatable: [LanePaletteColor] = entries.filter { $0.hex.lowercased() != "#a78bfa" }
+
+  /// A free colour, or a random one once every colour is taken: a new lane always has one.
   static func nextAvailableColor(amongLanes lanes: [LaneSummary]) -> String? {
     let used = colorsInUse(amongLanes: lanes)
-    return entries.first(where: { !used.contains($0.hex.lowercased()) })?.hex
+    return allocatable.first(where: { !used.contains($0.hex.lowercased()) })?.hex
+      ?? allocatable.randomElement()?.hex
   }
 
   static func accent(forLane lane: LaneSummary?, fallbackIndex: Int = 0) -> Color? {

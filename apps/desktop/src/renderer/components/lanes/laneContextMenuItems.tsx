@@ -27,7 +27,7 @@ import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { Z_LAYERS } from "../ui/zLayers";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
-import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_MORE_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 
@@ -489,7 +489,7 @@ export function ColorSwatchRow({
   }, [lanesArray, ctxLane.id]);
   const currentLower = ctxLane.color?.toLowerCase() ?? null;
 
-  const apply = async (next: string | null) => {
+  const apply = async (next: string) => {
     setError(null);
     setBusy(true);
     try {
@@ -521,29 +521,15 @@ export function ColorSwatchRow({
         owners={owners}
         busy={busy}
         onPick={apply}
-        trailing={currentLower ? (
-          <button
-            type="button"
-            title="Clear color"
-            aria-label="Clear color"
-            disabled={busy}
-            onClick={() => apply(null)}
-            style={{
-              width: 18,
-              height: 18,
-              borderRadius: 9999,
-              backgroundColor: "transparent",
-              cursor: busy ? "not-allowed" : "pointer",
-              border: "1px dashed rgba(255,255,255,0.35)",
-              padding: 0,
-              color: "rgba(255,255,255,0.55)",
-              fontSize: 10,
-              lineHeight: "16px",
-            }}
-          >
-            ✕
-          </button>
-        ) : null}
+      />
+      <SwatchGroup
+        label="More"
+        colors={LANE_MORE_COLORS}
+        selectedLower={currentLower}
+        used={used}
+        owners={owners}
+        busy={busy}
+        onPick={apply}
       />
       {error ? (
         <div style={{ marginTop: 2, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
@@ -560,7 +546,6 @@ function SwatchGroup({
   owners,
   busy,
   onPick,
-  trailing,
 }: {
   label: string;
   colors: readonly LaneColor[];
@@ -569,7 +554,6 @@ function SwatchGroup({
   owners: Map<string, string>;
   busy: boolean;
   onPick: (hex: string) => void;
-  trailing?: React.ReactNode;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -636,7 +620,6 @@ function SwatchGroup({
             </button>
           );
         })}
-        {trailing}
       </div>
     </div>
   );
