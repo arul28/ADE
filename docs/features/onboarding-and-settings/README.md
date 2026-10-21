@@ -2039,10 +2039,12 @@ navigation in the front window: no call reaches a machine.
 
 Tips also come to the user now and then (`useFeatureTipCard`): a while into a
 project session, one tip they have not tried shows as the corner card ("Tip",
-Try it, Not now). It takes the same slot as a situational suggestion and asks
-after them, so a real signal wins; on top of the suggestions' rules it shows at
-most one tip a day and each tip once, and trying a tip from ADE Tips or the
-Home widget counts too. ADE Tips' header turns them off.
+Try it, Not now), in this computer's own random order. It shares the corner
+with situational suggestions (one card at a time, never during onboarding,
+and not within half an hour of a suggestion) but keeps its own pace: up to
+three a day, two hours apart, each tip once, and trying a tip from ADE Tips or
+the Home widget counts too. It never uses up a suggestion's once-per-launch
+slot. ADE Tips' header turns them off.
 
 To test tiers 2 and 3 without waiting days: `npm run dev:desktop -- --first-run
 --keep` reopens the isolated app as a returning user, and in dev builds the

@@ -22,8 +22,9 @@ import { isTourOpen, readOnboardingProgress, subscribeOnboardingProgress } from 
  *
  * Feature tips (tier 2 coming to the user): now and then, one of ADE Tips'
  * tips the user has not tried shows as the same corner card. They take the
- * same slot (one card per launch, the cooldown, never during onboarding) and,
- * on top, at most one tip a day, each tip once, and off from ADE Tips.
+ * corner, one card at a time and never during onboarding, but keep their own
+ * pace: up to three a day, two hours apart, each tip once, and off from ADE
+ * Tips. They do not use up the suggestions' once-per-launch slot.
  *
  * Per computer, like the rest of onboarding: this renderer's localStorage,
  * never synced. Only ids, signal keys and times are stored.
@@ -34,8 +35,10 @@ const CHANGE_EVENT = "ade:suggestions";
 const COOLDOWN_MS = 4 * 3_600_000;
 const NOT_NOW_SNOOZE_MS = 14 * 24 * 3_600_000;
 const MAX_SHOWN = 60;
-/** At most one feature tip card a day. */
-const TIP_CARD_GAP_MS = 24 * 3_600_000;
+/** Up to three feature tip cards a day, at least two hours apart. */
+const TIP_CARDS_PER_DAY = 3;
+const TIP_DAY_MS = 24 * 3_600_000;
+const TIP_CARD_GAP_MS = 2 * 3_600_000;
 /** This app launch; onboarding that finished during it waits for the next launch. */
 const LAUNCHED_AT = Date.now();
 
@@ -45,8 +48,8 @@ type KindState = {
 };
 
 type TipCardState = {
-  /** When the last tip card showed. */
-  lastAt: number;
+  /** When the recent tip cards showed (the last day's, newest last). */
+  shownAt: number[];
   /** Tip ids that showed as a card or were tried from ADE Tips: never offered again. */
   done: string[];
   /** "Turn off" in ADE Tips. */
@@ -68,7 +71,7 @@ function finite(value: unknown): number | undefined {
 }
 
 function readState(): StoredState {
-  const empty: StoredState = { lastShownAt: 0, kinds: {}, shown: {}, tips: { lastAt: 0, done: [], off: false } };
+  const empty: StoredState = { lastShownAt: 0, kinds: {}, shown: {}, tips: { shownAt: [], done: [], off: false } };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}") as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
@@ -95,7 +98,9 @@ function readState(): StoredState {
       ? (record.tips as Record<string, unknown>)
       : {};
     const tips: TipCardState = {
-      lastAt: finite(rawTips.lastAt) ?? 0,
+      shownAt: Array.isArray(rawTips.shownAt)
+        ? rawTips.shownAt.filter((at): at is number => typeof at === "number" && Number.isFinite(at)).slice(-TIP_CARDS_PER_DAY)
+        : [],
       done: Array.isArray(rawTips.done) ? rawTips.done.filter((id): id is string => typeof id === "string") : [],
       off: rawTips.off === true,
     };
@@ -189,10 +194,10 @@ export function setSuggestionsTestMode(on: boolean): void {
 function canClaim(id: AdeSuggestionId, signalKey: string, repeatAfterMs: number | undefined, now: number): boolean {
   if (suggestionsTestMode()) {
     // One card at a time still; the next may come once this one is answered.
-    if ((launchClaim && !launchClaim.answered) || isTourOpen()) return false;
+    if ((launchClaim && !launchClaim.answered) || tipCardUp() || isTourOpen()) return false;
     return !testModeAnswered.has(shownKey(id, signalKey)) && !state().kinds[id]?.off;
   }
-  if (launchClaim || !onboardingSettled()) return false;
+  if (launchClaim || tipCardUp() || !onboardingSettled()) return false;
   const current = state();
   const kind = current.kinds[id];
   if (kind?.off) return false;
@@ -281,41 +286,67 @@ export function markTipTried(tipId: string): void {
   if (!done.includes(tipId)) updateTips({ done: [...done, tipId] });
 }
 
+/** The tip card on screen now, if any. Separate from the suggestions' once-per-launch slot. */
+let tipClaim: { key: string; answered: boolean } | null = null;
+
+function tipCardUp(): boolean {
+  return tipClaim != null && !tipClaim.answered;
+}
+
 /**
- * Claims this launch's one card for a feature tip when the rules allow it:
- * the suggestions' rules (no other card this launch, the cooldown, not until
- * onboarding finished on an earlier launch), a day since the last tip card,
- * and tip cards not turned off. True when it is (now) the one showing.
+ * When the next tip card may show (0: now), or null when none may today. Up
+ * to three in any 24 hours, two hours apart; never over a suggestion that
+ * showed in the last half hour. The caller waits that long before asking.
+ */
+export function nextTipCardAt(now = Date.now()): number | null {
+  if (suggestionsTestMode()) return 0;
+  const { tips, lastShownAt } = state();
+  if (tips.off) return null;
+  const today = tips.shownAt.filter((at) => now - at < TIP_DAY_MS);
+  const afterGap = today.length ? Math.max(...today) + TIP_CARD_GAP_MS : 0;
+  const afterDay = today.length >= TIP_CARDS_PER_DAY ? Math.min(...today) + TIP_DAY_MS : 0;
+  const afterSuggestion = lastShownAt ? lastShownAt + TIP_AFTER_SUGGESTION_MS : 0;
+  return Math.max(0, afterGap, afterDay, afterSuggestion);
+}
+
+const TIP_AFTER_SUGGESTION_MS = 30 * 60_000;
+
+/**
+ * Claims the corner for a feature tip when the rules allow it: onboarding
+ * finished on an earlier launch, no suggestion or tip card up, tip cards not
+ * turned off, this tip not shown or tried before, and `nextTipCardAt` passed.
+ * A tip does not use up the suggestions' once-per-launch slot or cooldown.
+ * True when it is (now) the one showing.
  */
 export function claimTipCard(tipId: string): boolean {
   const key = `${TIP_CLAIM_PREFIX}${tipId}`;
-  if (launchClaim?.key === key) return !launchClaim.answered;
+  if (tipClaim?.key === key) return !tipClaim.answered;
   const current = state();
   if (current.tips.off || current.tips.done.includes(tipId)) return false;
+  if ((launchClaim && !launchClaim.answered) || tipCardUp() || isTourOpen()) return false;
   const now = Date.now();
   if (suggestionsTestMode()) {
-    if ((launchClaim && !launchClaim.answered) || isTourOpen() || testModeAnswered.has(key)) return false;
+    if (testModeAnswered.has(key)) return false;
   } else {
-    if (launchClaim || !onboardingSettled()) return false;
-    if (now - current.lastShownAt < COOLDOWN_MS || now - current.tips.lastAt < TIP_CARD_GAP_MS) return false;
+    if (!onboardingSettled()) return false;
+    const at = nextTipCardAt(now);
+    if (at == null || at > now) return false;
   }
-  launchClaim = { key, answered: false };
-  write({ ...current, lastShownAt: now, tips: { ...current.tips, lastAt: now, done: [...current.tips.done, tipId] } });
+  tipClaim = { key, answered: false };
+  const shownAt = [...current.tips.shownAt.filter((time) => now - time < TIP_DAY_MS), now].slice(-TIP_CARDS_PER_DAY);
+  write({ ...current, tips: { ...current.tips, shownAt, done: [...current.tips.done, tipId] } });
   return true;
 }
 
 export function isTipCardShowing(tipId: string): boolean {
-  if (launchClaim?.key !== `${TIP_CLAIM_PREFIX}${tipId}` || launchClaim.answered) return false;
+  if (tipClaim?.key !== `${TIP_CLAIM_PREFIX}${tipId}` || tipClaim.answered) return false;
   return !isTourOpen();
 }
 
 export function answerTipCard(tipId: string): void {
   const key = `${TIP_CLAIM_PREFIX}${tipId}`;
-  if (launchClaim?.key === key) launchClaim = { ...launchClaim, answered: true };
-  if (suggestionsTestMode()) {
-    testModeAnswered.add(key);
-    launchClaim = null;
-  }
+  if (tipClaim?.key === key) tipClaim = { ...tipClaim, answered: true };
+  if (suggestionsTestMode()) testModeAnswered.add(key);
   emit();
 }
 
