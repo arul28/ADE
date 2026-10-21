@@ -19,14 +19,18 @@ import type { ModelHintHistoryEntry } from "./modelHintHistory";
 const MIN_PROMPT_WORDS = 3;
 const MIN_PROMPT_CHARS = 12;
 const STATE_PROMPT_CHARS = 2_000;
-/** Below this the pick reads as no answer. */
-const MIN_CONFIDENCE = 0.5;
 /**
- * History lines sent to Jev, newest first. Free Jev has a daily allowance
- * shared by every Jev feature on the network, and a long history makes a call
- * several times slower and costlier (40 lines ≈ 1 s and 4× the tokens of 10).
+ * Below this the pick reads as no answer. On 160 of the author's real new
+ * chats, 0.7 kept 8 of 9 chips right; 0.5 showed 14 with 6 the user ignored.
  */
-const HISTORY_LINES = 15;
+const MIN_CONFIDENCE = 0.7;
+/**
+ * History lines sent to Jev, newest first. In the same test, 5 to 15 lines
+ * picked equally well, none was far worse, and 30 drifted to older habits.
+ * Free Jev has a daily allowance shared by every Jev feature on the network,
+ * so the shorter end wins.
+ */
+const HISTORY_LINES = 10;
 /** Models offered besides the current one and the ones in the history: the strongest few. */
 const EXTRA_MODELS = 4;
 /** Effort levels apart before an effort-only hint shows. */

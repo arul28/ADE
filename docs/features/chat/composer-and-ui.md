@@ -966,7 +966,7 @@ chat pane mount, which happens either way.
   and not again until the text has changed by 10% or more; an answer about
   older text never shows under newer text. One interactive `ai.jevDecide`
   call (feature `model_hint`, `modelHint.ts`) sends the prompt, this user's
-  recent new chats with the same provider and the same model maker (up to 15,
+  recent new chats with the same provider and the same model maker (up to 10,
   newest first, only on models still offered: model · effort and the prompt's start, from
   `modelHintHistory.ts`), and one `choice` question over that provider's
   model × effort options for that maker (`hintChoices`: the current model,
@@ -988,7 +988,7 @@ chat pane mount, which happens either way.
   (`ai.chat.smartDecisionsEnabled`), an OpenCode Zen sign-in, and Settings ›
   Chat › Smart decisions › **Suggest a model and effort while typing**
   (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
-  or `off`). Any failure (Jev null or under 0.5 confidence, no catalogue)
+  or `off`). Any failure (Jev null or under 0.7 confidence, no catalogue)
   shows nothing. The catalogue and the setting are cached per machine (10
   minutes and 1 minute) and every call goes to the composer's
   `modelRuntimePin`.
