@@ -313,8 +313,22 @@ export function answerSuggestion(id: AdeSuggestionId, signalKey: string, answer:
     emit();
     return;
   }
-  if (answer === "not-now") updateKind(id, { snoozedUntil: Date.now() + NOT_NOW_SNOOZE_MS });
-  else emit();
+  // A kind answered per scope (the lane template, per project) waits out its
+  // own `repeatAfterMs` from the showing in that scope; the rest snooze the kind.
+  if (answer === "not-now" && ADE_SUGGESTIONS[id].neverPer !== "scope") {
+    updateKind(id, { snoozedUntil: Date.now() + NOT_NOW_SNOOZE_MS });
+  } else emit();
+}
+
+/**
+ * The signal behind a showing card went away (or changed) before the user
+ * answered: the card counts as seen, and the corner is free for the next one.
+ */
+export function releaseSuggestion(id: AdeSuggestionId, signalKey: string): void {
+  const key = shownKey(id, signalKey);
+  if (corner?.key !== key || corner.answered) return;
+  answerCorner(key);
+  emit();
 }
 
 /** "Don't suggest again", from ADE Tips. */

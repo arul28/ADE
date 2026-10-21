@@ -11,6 +11,7 @@ import {
 import {
   answerSuggestion,
   claimSuggestion,
+  releaseSuggestion,
   isSuggestionShowing,
   neverSuggestKind,
   neverSuggestScope,
@@ -73,6 +74,13 @@ export function useSituationalSuggestion({
   useEffect(() => {
     if (signalKey && canStart) claimSuggestion(id, signalKey, scopeKey);
   }, [canStart, id, rulesVersion, scopeKey, signalKey]);
+
+  // The signal went away or changed under a showing card: free the corner,
+  // or every other card waits until the next launch.
+  useEffect(() => {
+    if (!signalKey) return undefined;
+    return () => releaseSuggestion(id, signalKey);
+  }, [id, signalKey]);
 
   // "Don't suggest again" from ADE Tips, for this scope or (per kind) any one.
   const neverPerScope = definition.neverPer === "scope";

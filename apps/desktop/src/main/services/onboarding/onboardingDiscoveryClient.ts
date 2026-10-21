@@ -136,7 +136,7 @@ export async function discoverOnboardingProjects(args: {
     resolveDeviceDisplayNameSettled(),
   ]);
   // A fresh discovery starts a fresh setup session: its lists replace the last one's.
-  if (response) cache = response.cache;
+  if (response?.kind === "discover") cache = response.cache;
   const machineName = deviceName.replace(/\.(local|lan|home)$/i, "").trim();
   return { machineName: machineName || "this computer", projects: response?.kind === "discover" ? response.projects : [] };
 }
@@ -160,12 +160,8 @@ export function listOnboardingProjectChats(args: {
   const read = runRequest({ kind: "listChats", rootPath, now, otherProviderChats }, args.logger)
     .then((response) => {
       if (response?.kind !== "listChats") return [];
-      // The child's cache holds the list it just read for this project (and
-      // its read of the other providers when it had to make one).
-      Object.assign(sessionCache.projectChatLists, response.cache.projectChatLists);
-      if (!sessionCache.otherProviderChats && response.cache.otherProviderChats) {
-        sessionCache.otherProviderChats = response.cache.otherProviderChats;
-      }
+      // The project's list, when it read completely (a slow provider leaves it out, to be read again).
+      Object.assign(sessionCache.projectChatLists, response.projectChatLists);
       return response.chats;
     })
     .finally(() => {

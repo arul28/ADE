@@ -628,8 +628,10 @@ export async function readOnboardingProjectChatsInto(args: {
   const key = pathKey(rootPath);
   const listed = args.cache.projectChatLists[key];
   if (onboardingChatListIsFresh(listed, now)) return listed.chats;
-  const chats = await readProjectChats(rootPath, now, args.cache, args.logger);
-  args.cache.projectChatLists[key] = { at: now, chats };
+  const { chats, complete } = await readProjectChats(rootPath, now, args.cache, args.logger);
+  // A list missing a provider that timed out or failed is not kept: the next ask reads it again.
+  if (complete) args.cache.projectChatLists[key] = { at: now, chats };
+  else delete args.cache.projectChatLists[key];
   return chats;
 }
 
@@ -638,8 +640,8 @@ async function readProjectChats(
   now: number,
   cache: OnboardingChatCache,
   logger?: DiscoveryLogger,
-): Promise<OnboardingProjectChat[]> {
-  if (!fs.existsSync(rootPath)) return [];
+): Promise<{ chats: OnboardingProjectChat[]; complete: boolean }> {
+  if (!fs.existsSync(rootPath)) return { chats: [], complete: true };
   const scopeRoots = [...new Set([rootPath, realpathIfExists(rootPath), ...listLinkedLaneWorktreeRoots(rootPath)])];
   const since = now - ONBOARDING_CHAT_WINDOW_MS;
   const cached = onboardingChatListIsFresh(cache.otherProviderChats, now) ? cache.otherProviderChats : null;
@@ -654,13 +656,16 @@ async function readProjectChats(
   const chats: OnboardingProjectChat[] = cached
     ? cached.chats.filter((chat) => chat.lastActiveAt >= since && cwdIsInScope(chat.cwd, scopeRoots))
     : [];
+  let complete = true;
   for (const provider of providers) {
     await yieldToEventLoop();
-    const records = await discoverWithinBudget(
+    const read = await discoverWithinBudget(
       provider,
       { limit: PROJECT_CHAT_SESSION_LIMIT, scopeRoots, updatedSinceMs: since, logger },
       logger,
-    ) ?? [];
+    );
+    if (read === null) complete = false;
+    const records = read ?? [];
     for (const record of records) {
       if (!cwdIsInScope(record.cwd, scopeRoots)) continue;
       const chat = importableChat(record, since);
@@ -668,5 +673,5 @@ async function readProjectChats(
     }
   }
   chats.sort((a, b) => b.lastActiveAt - a.lastActiveAt || `${a.provider}:${a.id}`.localeCompare(`${b.provider}:${b.id}`));
-  return chats.slice(0, PROJECT_CHAT_LIMIT);
+  return { chats: chats.slice(0, PROJECT_CHAT_LIMIT), complete };
 }

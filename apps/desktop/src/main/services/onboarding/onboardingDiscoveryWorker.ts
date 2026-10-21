@@ -41,7 +41,8 @@ export type OnboardingDiscoveryResponse =
     ok: true;
     kind: "listChats";
     chats: OnboardingProjectChat[];
-    cache: OnboardingChatCache;
+    /** Only this project's list, never the machine-wide one the request carried. */
+    projectChatLists: OnboardingChatCache["projectChatLists"];
     logs: OnboardingDiscoveryLogLine[];
   }
   | { ok: false; error: string; logs: OnboardingDiscoveryLogLine[] };
@@ -115,7 +116,10 @@ export function parseOnboardingDiscoveryResponse(value: unknown): OnboardingDisc
     return Array.isArray(value.projects) && value.projects.every(isProject) ? (value as OnboardingDiscoveryResponse) : null;
   }
   if (value.kind === "listChats") {
-    return Array.isArray(value.chats) && value.chats.every(isChat) ? (value as OnboardingDiscoveryResponse) : null;
+    return Array.isArray(value.chats) && value.chats.every(isChat)
+      && isObject(value.projectChatLists) && Object.values(value.projectChatLists).every(isChatList)
+      ? (value as OnboardingDiscoveryResponse)
+      : null;
   }
   return null;
 }
@@ -163,7 +167,7 @@ export async function runOnboardingDiscoveryRequest(request: OnboardingDiscovery
     }
     cache.otherProviderChats = request.otherProviderChats;
     const chats = await readOnboardingProjectChatsInto({ rootPath: request.rootPath, cache, logger, now: request.now });
-    return { ok: true, kind: "listChats", chats, cache, logs };
+    return { ok: true, kind: "listChats", chats, projectChatLists: cache.projectChatLists, logs };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error), logs };
   }
