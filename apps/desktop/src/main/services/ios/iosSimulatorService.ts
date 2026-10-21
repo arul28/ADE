@@ -6030,8 +6030,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
       // The hinge sweeps and the guest elects its panel a moment later; read
       // the pose back once that has settled, so the answer is what happened.
+      // Fully closed or flat has a known panel: wait (briefly) until the guest
+      // has switched to it, or the answer names the panel it is leaving.
+      const target = pose === "closed" ? 0 : pose === "open" ? 180 : angle;
+      const expectedScreen = target === 0 ? APPLE_DUO_COVER_SCREEN_ID : target === 180 ? APPLE_DUO_INNER_SCREEN_ID : null;
       await new Promise((resolve) => setTimeout(resolve, 600));
-      const posture = await readPosture(deviceUdid);
+      let posture = await readPosture(deviceUdid);
+      for (let waited = 600; expectedScreen !== null && payload.applied === true
+        && posture.activeScreenId !== expectedScreen && waited < 2_400; waited += 300) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        posture = await readPosture(deviceUdid);
+      }
       return { applied: payload.applied === true, posture };
     });
   };

@@ -522,6 +522,19 @@ function RailMenu({
  * Kept outside Radix's item handling: a range input inside a menu item would
  * close the menu on pointerdown and lose arrow keys to the menu's typeahead.
  */
+/**
+ * Soft detents at Closed, Laptop and Open: a drag that lands within a few
+ * degrees settles on the pose, as a real hinge clicks into place. Arrow keys
+ * stay exact.
+ */
+const DUO_HINGE_DETENTS = [0, 90, 180];
+const DUO_HINGE_DETENT_RANGE = 4;
+
+function snapToDetent(angle: number): number {
+  const detent = DUO_HINGE_DETENTS.find((entry) => Math.abs(entry - angle) <= DUO_HINGE_DETENT_RANGE);
+  return detent ?? angle;
+}
+
 function DuoHingeSlider({
   angle,
   onPreview,
@@ -557,8 +570,10 @@ function DuoHingeSlider({
         aria-valuetext={`${value} degrees`}
         className="min-w-0 flex-1 accent-accent"
         onPointerDown={() => setDragging(true)}
+        list="apple-duo-hinge-detents"
         onChange={(event) => {
-          const next = Number(event.currentTarget.value);
+          const raw = Number(event.currentTarget.value);
+          const next = dragging ? snapToDetent(raw) : raw;
           setValue(next);
           onPreview?.(next);
         }}
@@ -567,6 +582,9 @@ function DuoHingeSlider({
           if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") commit();
         }}
       />
+      <datalist id="apple-duo-hinge-detents">
+        {DUO_HINGE_DETENTS.map((detent) => <option key={detent} value={detent} />)}
+      </datalist>
       <span className="w-9 shrink-0 text-right font-sans text-[10px] tabular-nums text-fg/80">{`${value}°`}</span>
     </div>
   );
