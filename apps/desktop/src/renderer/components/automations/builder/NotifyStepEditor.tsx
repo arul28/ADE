@@ -44,6 +44,7 @@ import {
 import { variablesForTrigger } from "../variableCatalog";
 import { VariableInput } from "./VariableMenu";
 import { explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * A test send has no trigger to fill `{{…}}` values from, so each one is shown
@@ -696,7 +697,7 @@ export function NotifyStepEditor({
   useEffect(() => {
     setTest((current) => (current.state === "done" ? { state: "idle" } : current));
   }, [title, body, open]);
-  const canTest = typeof window.ade?.attention?.sendNotification === "function";
+  const canTest = isAdeAvailable(window.ade?.attention?.sendNotification);
   const titleProblem = !title.trim()
     ? "Add a title."
     : title.trim().length > CUSTOM_NOTIFICATION_TITLE_MAX
@@ -707,7 +708,7 @@ export function NotifyStepEditor({
 
   const sendTest = async () => {
     const send = window.ade?.attention?.sendNotification;
-    if (!send || titleProblem) return;
+    if (!isAdeAvailable(send) || titleProblem) return;
     setTest({ state: "sending" });
     try {
       // A link with trigger values has nothing to fill them with yet, so the

@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, type ComponentType, type LazyExoticComponent } from "react";
 import type { HomeLayoutItem, HomeWidgetType } from "./homeLayout";
-import { HOME_WIDGET_CATALOG, hasDesktopHome } from "./homeWidgetCatalog";
+import { HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
+import { hasDesktopHome } from "../../lib/adeAvailability";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
 
 /**

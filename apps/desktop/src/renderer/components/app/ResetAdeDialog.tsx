@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types/machineReset";
 import { Dialog } from "../ui/dialog";
 import { ERROR_GHOST_BUTTON } from "./errorSurfaceKit";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /** Typed by the person to arm the reset. One word, in capitals, so it is never typed by accident. */
 const CONFIRM_WORD = "RESET";
@@ -86,7 +87,9 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   }, [open]);
 
   const chooseRescueDir = useCallback(async () => {
-    const picked = await window.ade?.machineReset?.chooseRescueDir().catch(() => null);
+    const picked = isAdeAvailable(window.ade?.machineReset?.chooseRescueDir)
+      ? await window.ade.machineReset.chooseRescueDir().catch(() => null)
+      : null;
     if (picked) setRescueDir(picked);
   }, []);
 

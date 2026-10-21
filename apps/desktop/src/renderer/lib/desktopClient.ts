@@ -2,7 +2,10 @@ import { isAddressedToClient } from "../../shared/sessionInputOrigin";
 
 /** This desktop's id, or null on a surface that has none (the web client). */
 export function getDesktopClientId(): string | null {
-  return (typeof window !== "undefined" ? window.ade?.app?.desktopClientId : null) ?? null;
+  if (typeof window === "undefined") return null;
+  // A stand-in (web client) is a function, not an id.
+  const id = window.ade?.app?.desktopClientId;
+  return typeof id === "string" ? id : null;
 }
 
 /**

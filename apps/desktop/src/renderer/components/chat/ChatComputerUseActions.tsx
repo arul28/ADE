@@ -60,6 +60,7 @@ import { collectComputerUseActions, computerUseLinePictures, PROOF_THUMBNAIL_HEI
 import { ProofActionThumbnail } from "./ChatProofCitation";
 import { ViewedImageStrip } from "./ChatViewedImages";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /* ── App icons ───────────────────────────────────────────────────────────── */
 
@@ -79,7 +80,7 @@ function iconNameCandidates(name: string): string[] {
 
 async function lookupAppIcon(name: string): Promise<string | null> {
   const getAppIcon = window.ade?.app?.getAppIcon;
-  if (typeof getAppIcon !== "function") return null;
+  if (!isAdeAvailable(getAppIcon)) return null;
   for (const candidate of iconNameCandidates(name)) {
     try {
       const url = await getAppIcon({ name: candidate });
@@ -130,7 +131,7 @@ function useInstalledBrowserIcon(browserName: string | null): string | null {
   useEffect(() => {
     if (!browserName || installedBrowsers) return;
     const detector = window.ade?.app?.getInstalledBrowsers;
-    if (typeof detector !== "function") return;
+    if (!isAdeAvailable(detector)) return;
     let cancelled = false;
     installedBrowsersRequest ??= detector().catch(() => [] as InstalledBrowser[]);
     void installedBrowsersRequest.then((found) => {

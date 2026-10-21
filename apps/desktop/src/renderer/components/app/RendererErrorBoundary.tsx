@@ -9,6 +9,7 @@ import {
   WhatToDo,
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
@@ -52,11 +53,13 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
       });
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
-      void window.ade?.diagnostics?.autoReport({
-        surface: "renderer_crash",
-        code: "renderer_crash",
-        headline: "ADE needs to reload this window",
-      }).catch(() => undefined);
+      if (isAdeAvailable(window.ade?.diagnostics?.autoReport)) {
+        void window.ade.diagnostics.autoReport({
+          surface: "renderer_crash",
+          code: "renderer_crash",
+          headline: "ADE needs to reload this window",
+        }).catch(() => undefined);
+      }
     }
     // Keep renderer crashes visible in devtools logs and avoid a blank screen.
     console.error("renderer.crash", {

@@ -23,6 +23,7 @@ import { useRuntimeCatalogForFamily } from "../../shared/ModelPicker/useRuntimeC
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../../shared/ModelPicker/runtimeCatalogCache";
 import { loadHarnessAccounts, type HarnessAccountSource } from "./harnessSources";
 import { nativeModelsForProvider, type HarnessReachInputs } from "./harnessReach";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 export type HarnessRouteTestState =
   | { status: "testing" }
@@ -78,7 +79,7 @@ export function useHarnessReach({
 
   const loadCatalog = useCallback(async (seq = ++requestSeqRef.current, binding = pinRef.current) => {
     const list = window.ade?.ai?.listHarnessRoutes;
-    if (typeof list !== "function") {
+    if (!isAdeAvailable(list)) {
       if (seq === requestSeqRef.current) setCatalog({ sources: [], proxyAvailable: false });
       return;
     }
@@ -146,7 +147,7 @@ export function useHarnessReach({
     model: string,
   ): Promise<HarnessRouteTestResult | null> => {
     const test = window.ade?.ai?.testHarnessRoute;
-    if (typeof test !== "function") return null;
+    if (!isAdeAvailable(test)) return null;
     const key = routeTestKey(harness, source, model);
     const seq = requestSeqRef.current;
     const binding = pinRef.current;

@@ -93,7 +93,7 @@ async function loadConverted(
   });
   if (ctx.isCancelled()) return null;
   const convert = window.ade.app.convertImageToJpeg;
-  if (!convert || !isAdeAvailable(convert))
+  if (!isAdeAvailable(convert))
     throw new Error("Image conversion is unavailable on this system.");
   const result = await convert({
     data: bytesToBase64(bytes),

@@ -9,6 +9,7 @@ import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
 import { formatBytesShort, relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * Clipboard history. The desktop main process watches the clipboard while
@@ -26,7 +27,7 @@ function useClipboardState(paused: boolean): { state: HomeClipboardState | null;
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const bridge = window.ade?.home?.clipboard;
-    if (!bridge) return undefined;
+    if (!isAdeAvailable(bridge)) return undefined;
     let cancelled = false;
     const unsubscribe = bridge.onChanged((next) => {
       if (!cancelled) setState(next);

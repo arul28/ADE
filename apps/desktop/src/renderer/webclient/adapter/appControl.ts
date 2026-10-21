@@ -41,7 +41,7 @@ import type {
   SyncAppControlStreamSubscribeResult,
 } from "../../../shared/types/sync";
 import type { AdapterInfra } from "./types";
-import { createBackoffPoller } from "./infra/backoffPoller";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 /** How often status is re-read while the panel listens for events. */
 const STATUS_POLL_MS = 3_000;

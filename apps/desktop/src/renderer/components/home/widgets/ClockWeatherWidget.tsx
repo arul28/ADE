@@ -68,10 +68,16 @@ function readAutoPlace(zone: string): PlaceSetting | null {
   }
 }
 
+/** The desktop weather bridge, or undefined where there is none (the web client). */
+function weatherBridge() {
+  const bridge = window.ade?.home?.weather;
+  return isAdeAvailable(bridge) ? bridge : undefined;
+}
+
 function lookUpAutoPlace(zone: string): Promise<PlaceSetting | null> {
   if (autoPlaceRequest?.zone === zone) return autoPlaceRequest.promise;
   const city = timeZoneCity(zone);
-  const bridge = isAdeAvailable(window.ade?.home?.weather) ? window.ade.home!.weather : undefined;
+  const bridge = weatherBridge();
   const promise = (async () => {
     if (!city || !bridge) return null;
     const result = await bridge.search(city).catch(() => null);
@@ -166,7 +172,7 @@ function PlacePicker({ onPick, onCancel }: { onPick: (place: HomeWeatherPlace) =
   const [busy, setBusy] = useState(false);
   const requestRef = useRef(0);
   const search = useCallback(async (text: string) => {
-    const bridge = isAdeAvailable(window.ade?.home?.weather) ? window.ade.home!.weather : undefined;
+    const bridge = weatherBridge();
     if (!bridge) return;
     const request = ++requestRef.current;
     setBusy(true);
@@ -235,13 +241,13 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
   const chosen = readPlace(item.settings?.place);
   // No city chosen: the time zone's city, looked up once without a prompt.
   // A gallery preview reads nothing: it shows a sample day.
-  const auto = useAutoPlace(!preview && !chosen && isAdeAvailable(window.ade?.home?.weather));
+  const auto = useAutoPlace(!preview && !chosen && weatherBridge() != null);
   const place = preview ? PREVIEW_PLACE : chosen ?? auto.place;
   const unit: "c" | "f" = item.settings?.unit === "f" || item.settings?.unit === "c" ? item.settings.unit : defaultUnit();
   const [liveWeather, setWeather] = useState<HomeWeather | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
-  const bridge = isAdeAvailable(window.ade?.home?.weather) ? window.ade.home!.weather : undefined;
+  const bridge = weatherBridge();
   const span = useWidgetSpan(item);
   const wide = span.w >= 2;
 

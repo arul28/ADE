@@ -155,7 +155,7 @@ export async function stageAttachmentBytesFromFile(args: {
   let previewDataUrl: string | null = null;
   if (args.requiresHeicConversion) {
     const convertImageToJpeg = window.ade?.app?.convertImageToJpeg;
-    if (!convertImageToJpeg || !isAdeAvailable(convertImageToJpeg)) {
+    if (!isAdeAvailable(convertImageToJpeg)) {
       throw new AttachmentConversionError("unavailable");
     }
     const converted = await convertImageToJpeg({

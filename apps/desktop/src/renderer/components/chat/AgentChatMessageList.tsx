@@ -309,6 +309,7 @@ import { ChatProofCount } from "./chatCardPrimitives";
 import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -369,11 +370,11 @@ function ResetCreditNoticeRow({
   const [spending, setSpending] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
   const consume = window.ade?.usage?.consumeResetCredit;
-  const canSpend = Boolean(accountId) && typeof consume === "function" && !outcome;
+  const canSpend = Boolean(accountId) && isAdeAvailable(consume) && !outcome;
   const spend = useCallback(async () => {
     if (!accountId) return;
     const call = window.ade?.usage?.consumeResetCredit;
-    if (!call) return;
+    if (!isAdeAvailable(call)) return;
     setSpending(true);
     try {
       setOutcome(resetCreditOutcomeText(await call({ accountId })));

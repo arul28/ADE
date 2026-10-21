@@ -12,7 +12,7 @@ import { AI_STATUS_CACHE_INVALIDATED_EVENT, type AiStatusCacheInvalidatedEventDe
 import { cn } from "../../ui/cn";
 import { CloudAgentsPanel } from "./CloudAgentsPanel";
 import { CLOUD_PROVIDER_BRANDS, type CloudProviderBrand } from "./cloudAgentsModel";
-import { createBackoffPoller } from "../../../webclient/adapter/infra/backoffPoller";
+import { createBackoffPoller } from "../../../lib/backoffPoller";
 
 // Keep the entry point on the same visibility cadence as Linear. The cloud
 // integrations are connection-gated and should appear/disappear together

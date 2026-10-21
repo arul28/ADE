@@ -18,7 +18,7 @@ export class AdeUnavailableError extends Error {
 }
 
 /** True when `value` is a real `window.ade` namespace or method, not a stand-in. */
-export function isAdeAvailable(value: unknown): boolean {
+export function isAdeAvailable<T>(value: T): value is NonNullable<T> {
   if (value == null) return false;
   if (typeof value !== "object" && typeof value !== "function") return false;
   return (value as { [ADE_UNAVAILABLE]?: boolean })[ADE_UNAVAILABLE] !== true;
@@ -27,4 +27,9 @@ export function isAdeAvailable(value: unknown): boolean {
 export function isAdeUnavailableError(error: unknown): error is AdeUnavailableError {
   return error instanceof AdeUnavailableError
     || (typeof error === "object" && error != null && (error as { code?: unknown }).code === "ade_unavailable");
+}
+
+/** Whether this window can run desktop-only Home widgets (the web client cannot). */
+export function hasDesktopHome(): boolean {
+  return isAdeAvailable(window.ade?.home);
 }

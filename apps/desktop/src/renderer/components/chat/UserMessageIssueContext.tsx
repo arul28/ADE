@@ -7,6 +7,7 @@ import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 export function UserMessageIssueContext({
   attachments,
@@ -49,9 +50,11 @@ export function UserMessageIssueContext({
   const detachContext = useCallback((key: string) => {
     const attachment = visibleContextAttachments.find((entry) => chatContextAttachmentKey(entry) === key);
     if (!attachment || !sessionId) return;
+    // Hiding the chip without detaching would lie: the web client has no linear detach.
+    if (attachment.type === "linear_issue" && !isAdeAvailable(window.ade?.lanes?.detachLinearIssueFromSession)) return;
     setHiddenContextKeys((current) => [...current, key]);
     if (attachment.type === "linear_issue") {
-      void window.ade?.lanes?.detachLinearIssueFromSession?.({
+      void window.ade.lanes.detachLinearIssueFromSession({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
       }, machinePin);

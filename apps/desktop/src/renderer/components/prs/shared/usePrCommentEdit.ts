@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { PrComment } from "../../../../shared/types";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 export function usePrCommentEdit(args: {
   prId: string;
@@ -36,7 +37,7 @@ export function usePrCommentEdit(args: {
   const saveEdit = async (): Promise<boolean> => {
     const bridge = window.ade?.prs?.updateComment;
     const trimmed = editValue.trim();
-    if (!bridge || args.commentId == null || !trimmed) return false;
+    if (!isAdeAvailable(bridge) || args.commentId == null || !trimmed) return false;
     setEditBusy(true);
     setEditError(null);
     try {

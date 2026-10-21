@@ -27,6 +27,7 @@ import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
 import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -161,7 +162,7 @@ async function runPortProbe(port: number, pin: OpenProjectBinding | null): Promi
   const existing = portProbeInFlight.get(key);
   if (existing) return existing;
   const probe = window.ade?.localhost?.probePort;
-  if (typeof probe !== "function") return false;
+  if (!isAdeAvailable(probe)) return false;
   const promise = (async () => {
     try {
       const alive = Boolean(await probe(port, pin));

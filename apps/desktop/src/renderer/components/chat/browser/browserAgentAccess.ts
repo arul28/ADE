@@ -14,6 +14,7 @@ import type {
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
 } from "../../../../shared/types/builtInBrowser";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 export const BROWSER_AGENT_ACCESS_TITLE = "Agents can use the ADE browser";
 
@@ -42,7 +43,7 @@ function api(): AgentAccessApi | null {
     | Partial<AgentAccessApi>
     | null
     | undefined;
-  return candidate && typeof candidate.get === "function" ? (candidate as AgentAccessApi) : null;
+  return isAdeAvailable(candidate) && typeof candidate.get === "function" ? (candidate as AgentAccessApi) : null;
 }
 
 function isSnapshot(value: unknown): value is BuiltInBrowserAgentAccessSnapshot {

@@ -27,7 +27,7 @@ export function useInstalledTargets<T>(
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!detector || !isAdeAvailable(detector)) {
+    if (!isAdeAvailable(detector)) {
       // No bridge here: a platform where this menu has nothing extra to offer.
       setItems([]);
       return;

@@ -482,7 +482,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
-      quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth!() : null, failed, "ADE's service health"),
+      quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth() : null, failed, "ADE's service health"),
       hasProject ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
       quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
       quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null, failed, "providers"),

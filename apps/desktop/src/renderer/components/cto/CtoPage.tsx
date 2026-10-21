@@ -380,7 +380,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    */
   const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
     const startFresh = window.ade?.cto?.startFreshSession;
-    if (!startFresh) throw new Error("The CTO isn't available in this window.");
+    if (!isAdeAvailable(startFresh)) throw new Error("The CTO isn't available in this window.");
     if (!homeReady) throw new Error("The CTO's machine isn't reachable right now.");
     setRotating(true);
     try {

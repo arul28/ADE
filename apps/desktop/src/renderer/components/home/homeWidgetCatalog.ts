@@ -14,7 +14,6 @@ import {
   Timer,
   type Icon,
 } from "@phosphor-icons/react";
-import { isAdeAvailable } from "../../lib/adeAvailability";
 import type { HomeWidgetType } from "./homeLayout";
 import type { HomeSizeClass, Span, WidgetShape } from "./homeGridPack";
 
@@ -235,9 +234,4 @@ export function widgetShape(type: HomeWidgetType): WidgetShape {
     maxHeight: meta.maxHeight,
     grow: meta.grow,
   };
-}
-
-/** Whether this window can run desktop-only widgets (the web client cannot). */
-export function hasDesktopHome(): boolean {
-  return isAdeAvailable(window.ade?.home);
 }

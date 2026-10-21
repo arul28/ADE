@@ -72,6 +72,7 @@ import {
   type CrossMachineMachineLanes,
 } from "./appStore";
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
+import { isAdeAvailable } from "../lib/adeAvailability";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -1418,7 +1419,7 @@ async function readMachine(
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
   const callAction = window.ade?.remoteRuntime?.callAction;
-  if (!callAction) return;
+  if (!isAdeAvailable(callAction)) return;
   const readLanes = (includeStatus: boolean) =>
     withTimeout(
       callAction(targetId, projectId, {

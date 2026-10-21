@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types";
 import type { MacDesktopPermissionKind, MacDesktopPermissions } from "../../../shared/types/macDesktop";
 import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordingFormat";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The App Control pane's recording: status, the Record/Stop toggle, the
@@ -220,7 +221,7 @@ export function useAppControlRecording({
     const recheck = window.ade?.macDesktop?.recheckPermissions;
     setCheckingPermissions(true);
     try {
-      if (typeof recheck !== "function") throw new Error("Could not check on this machine.");
+      if (!isAdeAvailable(recheck)) throw new Error("Could not check on this machine.");
       const next = await recheck({ restartDriver: false }, pinRef.current);
       const stillMissing = appControlRecordingMissingPermissions(next);
       setPermissionCheck({ at: Date.now(), stillMissing });

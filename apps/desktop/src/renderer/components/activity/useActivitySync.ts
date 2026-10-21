@@ -9,7 +9,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
-import { createBackoffPoller } from "../../webclient/adapter/infra/backoffPoller";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 const POLL_INTERVAL_MS = 15_000;
 // The snapshot is incremental: an unchanged revision costs a relay round trip

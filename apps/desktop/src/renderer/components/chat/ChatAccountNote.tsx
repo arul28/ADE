@@ -15,6 +15,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/paneMenuTokens";
 import { useAgentChatApi } from "./agentChatApi";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -262,8 +263,10 @@ export function ChatAccountNote({
   const keyId = !preset ? clean(credentialId) : null;
   const credentialLabel = useCachedRead<string | null>(
     keyId ? `key|${pinScopeKey(runtimePin)}|${keyId}` : null,
-    () => window.ade?.apiCredentials?.list({}, runtimePin)
-      .then((rows) => clean(rows.find((row) => row.credentialId === keyId)?.label)) ?? null,
+    () => isAdeAvailable(window.ade?.apiCredentials?.list)
+      ? window.ade.apiCredentials.list({}, runtimePin)
+        .then((rows) => clean(rows.find((row) => row.credentialId === keyId)?.label))
+      : null,
     { once: true },
   );
   const model = useMemo(

@@ -38,6 +38,7 @@ import {
 } from "./homeGridPack";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
 import { toLayoutPx } from "../../lib/webZoom";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The home page's grid. It never scrolls and never leaves a gap: its size
@@ -418,7 +419,7 @@ export function HomeWidgetGrid({
     : packed.placed.some(({ cell }) => hasClipboardCell(cell)) ? "shown" : "hidden";
   useEffect(() => {
     const bridge = window.ade?.home?.clipboard;
-    if (!bridge?.setPresence || clipboardView == null) return undefined;
+    if (!isAdeAvailable(bridge?.setPresence) || clipboardView == null) return undefined;
     void bridge.setPresence(clipboardView).catch(() => {});
     return () => {
       void bridge.setPresence(null).catch(() => {});

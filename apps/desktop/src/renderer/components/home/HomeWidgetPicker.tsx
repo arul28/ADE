@@ -8,7 +8,6 @@ import {
   HOME_GALLERY_ORDER,
   HOME_WIDGET_CATALOG,
   HOME_WIDGET_CATEGORIES,
-  hasDesktopHome,
   widgetShape,
   type HomeWidgetCategory,
 } from "./homeWidgetCatalog";
@@ -25,6 +24,13 @@ import {
 } from "./homeGridPack";
 import { WidgetPreviewContext, useHomeGridMetrics } from "./HomeWidgetGrid";
 import "./homeWidgets.css";
+import { hasDesktopHome } from "../../lib/adeAvailability";
+import type { HomeWidgetMeta } from "./homeWidgetCatalog";
+
+/** Why a widget cannot be added here, or null when it can. */
+function unavailableReason(meta: HomeWidgetMeta): string | null {
+  return meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
+}
 
 /**
  * The Add widget gallery. Every widget is shown live (the real component,
@@ -207,7 +213,7 @@ function tileClass(type: HomeWidgetType): HomeSizeClass {
 function PickerTile({ type, present, metrics, onOpen }: { type: HomeWidgetType; present: boolean; metrics: GridMetrics; onOpen: () => void }) {
   const meta = HOME_WIDGET_CATALOG[type];
   const Icon = meta.icon;
-  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
+  const unavailable = unavailableReason(meta);
   // The live preview renders the widget's own buttons, so the tile is not a
   // button: its title is, stretched over the whole tile (CSS).
   return (
@@ -237,7 +243,7 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
   const plan = useMemo(() => planAdd(cells, type, cls, metrics), [cells, cls, metrics, type]);
   const size = storedSize(type, cls);
   const present = items.some((item) => item.type === type);
-  const unavailable = meta.comingSoon ?? (meta.desktopOnly && !hasDesktopHome() ? "Needs the ADE desktop app." : null);
+  const unavailable = unavailableReason(meta);
   const span = classSpan(shape, cls, metrics.columns);
   const Icon = meta.icon;
 

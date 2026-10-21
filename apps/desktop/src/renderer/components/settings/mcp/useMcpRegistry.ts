@@ -32,6 +32,7 @@ import {
 } from "../../../../shared/mcpRegistry";
 import type { McpFoundServer, McpRegistryContext, McpServerSignIn } from "../../../../shared/types/mcpRegistry";
 import { useAppStore } from "../../../state/appStore";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /** The three places a server can be switched off. */
 export type McpRegistryLevel = "account" | "machine" | "project";
@@ -353,7 +354,7 @@ export function useMcpRegistry(): McpRegistryApi {
   }, [mutate]);
 
   const cancelSignIn = useCallback((name: string) => {
-    void window.ade?.mcpRegistry?.cancelSignIn({ server: name });
+    if (isAdeAvailable(window.ade?.mcpRegistry?.cancelSignIn)) void window.ade.mcpRegistry.cancelSignIn({ server: name });
   }, []);
 
   const signOut = useCallback((name: string) => mutate(async () => {

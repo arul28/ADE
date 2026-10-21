@@ -1,4 +1,5 @@
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
+import { snapshotFromArtifacts } from "../../../shared/computerUseSnapshot";
 import type {
   ComputerUseArtifactListArgs,
   ComputerUseArtifactView,
@@ -48,51 +49,23 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
     onEvent: () => () => {},
     listArtifacts: async (args: ComputerUseArtifactListArgs = {}, pin?: RuntimePinArg): Promise<ComputerUseArtifactView[]> =>
       listArtifacts(args, pin),
-    // The host has no remote owner-snapshot command, so the chat's proof drawer
-    // is built here from the same listing the desktop snapshot uses. The web
-    // client captures nothing itself, so it reports no capture backend. Without
-    // this the fallback proxy answered `null` and the chat pane crashed.
-    getOwnerSnapshot: async (args: ComputerUseOwnerSnapshotArgs, pin?: RuntimePinArg): Promise<ComputerUseOwnerSnapshot> => {
-      const artifacts = await listArtifacts({
-        ownerKind: args.owner.kind,
-        ownerId: args.owner.id,
-        limit: args.limit ?? 50,
-        ...PROOF_LISTING_ARTIFACT_FILTER,
-      }, pin);
-      const recentArtifacts = artifacts.slice(0, 5);
-      const latest = recentArtifacts[0] ?? null;
-      return {
+    // The host has no remote owner-snapshot command, so the chat's proof
+    // drawer is built here from the same listing and builder the desktop uses.
+    // The web client captures nothing itself, so it reports no capture backend.
+    getOwnerSnapshot: async (args: ComputerUseOwnerSnapshotArgs, pin?: RuntimePinArg): Promise<ComputerUseOwnerSnapshot> =>
+      snapshotFromArtifacts({
         owner: args.owner,
         backendStatus: {
           backends: [],
           localFallback: { available: false, detail: "The web client does not capture proof.", supportedKinds: [] },
         },
-        summary: recentArtifacts.length > 0
-          ? `${recentArtifacts.length} computer-use artifact${recentArtifacts.length === 1 ? "" : "s"} retained for this scope.`
-          : "No computer-use artifacts have been ingested for this scope yet.",
-        activeBackend: latest
-          ? {
-              name: latest.backendName,
-              detail: `${latest.backendName} produced the latest ingested proof for this scope.`,
-              source: "artifact",
-            }
-          : null,
-        artifacts,
-        recentArtifacts,
-        activity: artifacts.slice(0, 8).map((artifact) => ({
-          id: `artifact:${artifact.id}`,
-          at: artifact.createdAt,
-          kind: "artifact_ingested" as const,
-          title: `${artifact.kind.replace(/_/g, " ")} captured`,
-          detail: `${artifact.backendName} produced ${artifact.title}.`,
-          artifactId: artifact.id,
-          backendName: artifact.backendName,
-          severity: artifact.availability === "missing_file" || artifact.availability === "unimported"
-            ? ("warning" as const)
-            : ("success" as const),
-        })),
-      };
-    },
+        artifacts: await listArtifacts({
+          ownerKind: args.owner.kind,
+          ownerId: args.owner.id,
+          limit: args.limit ?? 50,
+          ...PROOF_LISTING_ARTIFACT_FILTER,
+        }, pin),
+      }),
     readArtifactPreview: async (args: { uri: string }, pin?: RuntimePinArg): Promise<string | null> => {
       assertWebRuntimePinRoutable("computerUse.readArtifactPreview", pin, scope);
       return requestDataUrl(client, state, "readArtifact", { uri: args.uri });

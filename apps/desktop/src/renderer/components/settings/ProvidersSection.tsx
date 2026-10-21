@@ -1013,7 +1013,7 @@ export function ProvidersSection({
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!read || !isAdeAvailable(read)) return;
+    if (!isAdeAvailable(read)) return;
     setAcpDiagnosticsBusy(provider);
     try {
       const result = await read({ provider }, pin);
@@ -1035,7 +1035,7 @@ export function ProvidersSection({
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!read || !isAdeAvailable(read)) {
+    if (!isAdeAvailable(read)) {
       setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
       return;
     }

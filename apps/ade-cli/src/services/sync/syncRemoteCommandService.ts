@@ -8069,7 +8069,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
 
   // The brain's GitHub contribution calendar (its `gh` login), for the Home
-  // Contributions widget on clients that have no `gh` of their own.
+  // Contributions widget on clients that have no `gh` of their own. Viewer
+  // peers are the owner's own paired devices, and it is day counts only, the
+  // same exposure as usage.getQuotaSnapshot and usage.getUsageRollup.
   register("usage.getGithubContributions", { viewerAllowed: true }, async () =>
     readGithubContributionCalendar(), "runtime");
 

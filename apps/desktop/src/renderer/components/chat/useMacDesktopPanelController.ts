@@ -44,6 +44,7 @@ import { macDesktopErrorText } from "./macDesktopErrorText";
 import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import { macDesktopParkedWindows } from "./macDesktopStrip";
 import { Z_LAYERS } from "../ui/zLayers";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 export const MAC_DESKTOP_FULLSCREEN_Z = Z_LAYERS.macDesktop;
 
@@ -571,7 +572,8 @@ export function useMacDesktopPanelController({
     everywhere else, including in this pane when the agent holds the lease.
   */
   useEffect(() => {
-    void window.ade?.app?.setIgnoreMenuShortcuts?.(iHaveControl);
+    if (!isAdeAvailable(window.ade?.app?.setIgnoreMenuShortcuts)) return;
+    void window.ade.app.setIgnoreMenuShortcuts(iHaveControl);
     if (!iHaveControl) return;
     return () => { void window.ade?.app?.setIgnoreMenuShortcuts?.(false); };
   }, [iHaveControl]);

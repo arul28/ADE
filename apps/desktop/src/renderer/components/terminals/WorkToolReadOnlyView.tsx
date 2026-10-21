@@ -24,6 +24,7 @@ import {
 import { cn } from "../ui/cn";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
 import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 /**
  * The browser and App Control panes, as seen from a surface that cannot run
@@ -137,51 +138,20 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   }, [refresh]);
 
   useEffect(() => {
-    const baseMs = livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS;
-    let timer: number | null = null;
-    let unchangedReads = 0;
-    let disposed = false;
-    const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
-    const clear = () => {
-      if (timer != null) window.clearTimeout(timer);
-      timer = null;
-    };
-    // The first three unchanged reads keep the base cadence, then it doubles up
-    // to the ceiling.
-    const delayMs = () =>
-      unchangedReads < 3 ? baseMs : Math.min(WORK_TOOL_READ_ONLY_MAX_POLL_MS, baseMs * 2 ** (unchangedReads - 2));
-    const schedule = () => {
-      clear();
-      // A hidden tab has nobody to show it to; becoming visible reads at once.
-      if (disposed || isHidden()) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        void tick();
-      }, delayMs());
-    };
-    const tick = async () => {
-      const changed = await refresh();
-      unchangedReads = changed ? 0 : unchangedReads + 1;
-      schedule();
-    };
-    const wake = () => {
-      if (disposed || isHidden()) return;
-      unchangedReads = 0;
-      clear();
-      void tick();
-    };
-    const onVisibility = () => {
-      if (isHidden()) clear();
-      else wake();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", wake);
-    schedule();
+    // Unchanged reads back the poll off to the ceiling; a change, a focus or
+    // the tab becoming visible drops it back. A hidden tab does not poll.
+    const poller = createBackoffPoller({
+      baseMs: livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS,
+      maxMs: WORK_TOOL_READ_ONLY_MAX_POLL_MS,
+      isActive: () => true,
+      read: refresh,
+    });
+    const onFocus = () => poller.kick();
+    window.addEventListener("focus", onFocus);
+    poller.start();
     return () => {
-      disposed = true;
-      clear();
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", wake);
+      poller.stop();
+      window.removeEventListener("focus", onFocus);
     };
   }, [refresh, livePlaying]);
 

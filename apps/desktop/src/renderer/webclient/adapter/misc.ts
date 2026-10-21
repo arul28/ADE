@@ -36,8 +36,8 @@ import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
-import { createBackoffPoller } from "./infra/backoffPoller";
-import { isPageHidden, observePageVisibility } from "./infra/pageVisibility";
+import { createBackoffPoller } from "../../lib/backoffPoller";
+import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createComputerUseNamespace } from "./computerUse";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
@@ -1307,7 +1307,12 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   // sends with the event, so they get the same shape here.
   const notify = async () => {
     if (listeners.size === 0) return;
-    const snapshot = await call<UsageSnapshot | null>("usage.getQuotaSnapshot", {}, null).catch(() => null);
+    const snapshot = await call<UsageSnapshot | null>("usage.getQuotaSnapshot", {}, null).catch((error: unknown) => {
+      console.debug("[ade-web] usage update skipped: quota snapshot unavailable", error);
+      return null;
+    });
+    // Without a snapshot there is nothing honest to hand the listeners; the
+    // next stats read (or tab return) tries again.
     if (!snapshot) return;
     for (const listener of [...listeners]) listener(snapshot);
   };

@@ -44,7 +44,9 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
   const [notice, setNotice] = useState<BrainRepairNotice>(null);
 
   const action = useCallback(async (): Promise<BrainRepairNotice> => {
-    const repairSession = window.ade?.account?.repairSession;
+    const repairSession = isAdeAvailable(window.ade?.account?.repairSession)
+      ? window.ade.account.repairSession
+      : undefined;
     if (repairSession) {
       const result = await repairSession();
       if (result.outcome === "sign_in_required") {
@@ -103,7 +105,7 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
   return {
     run: runRepair,
     pending,
-    available: typeof window.ade?.account?.repairSession === "function"
+    available: isAdeAvailable(window.ade?.account?.repairSession)
       || isAdeAvailable(window.ade?.app?.restartBackgroundService),
     error,
     notice,

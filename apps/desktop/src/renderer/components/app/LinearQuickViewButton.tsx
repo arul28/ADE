@@ -40,7 +40,7 @@ import {
 } from "../../lib/issueLaunchRequests";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
-import { createBackoffPoller } from "../../webclient/adapter/infra/backoffPoller";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another

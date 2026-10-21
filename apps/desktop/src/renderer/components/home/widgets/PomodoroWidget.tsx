@@ -101,7 +101,7 @@ const useFocusStore = create<FocusStore>((set, get) => {
       // Every window's timer fires at the same moment; only the window main
       // picks logs and toasts. The others take its write (storage event).
       const claim = window.ade?.home?.focus?.claimCompletion;
-      if (ending.endsAt != null && claim && isAdeAvailable(claim)) {
+      if (ending.endsAt != null && isAdeAvailable(claim)) {
         const won = await claim(ending.endsAt).catch(() => true);
         if (!won) {
           // The winner's write normally arrives as a storage event. If that

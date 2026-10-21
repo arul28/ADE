@@ -142,7 +142,7 @@ export function ArtifactLightbox({
   const saveMediaAs = window.ade.computerUse.saveMediaAs;
   const video = isVideoArtifact(artifact);
   const saveToDisk = useMemo(() => (
-    video && saveMediaAs && isAdeAvailable(saveMediaAs) && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
+    video && isAdeAvailable(saveMediaAs) && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
       ? async () => {
         const extension = artifact.uri.match(/\.[a-z0-9]+$/i)?.[0] ?? ".mp4";
         await saveMediaAs({ url: preview, fileName: `${artifact.title || "ade-proof"}${extension}` });

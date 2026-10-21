@@ -171,7 +171,7 @@ function useMcpAppGrants(
   const refresh = useCallback(() => {
     const current = appRef.current;
     const list = window.ade?.agentChat?.listMcpAppGrants;
-    if (!current || typeof list !== "function") return;
+    if (!current || !isAdeAvailable(list)) return;
     void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
       .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
       .catch(() => { /* the row keeps what it last knew */ });

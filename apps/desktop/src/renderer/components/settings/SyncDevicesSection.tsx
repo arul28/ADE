@@ -56,6 +56,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import type { SyncConnections } from "./useSyncConnections";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
@@ -251,9 +252,11 @@ export function ThisMacCard({
   // (restart the background service).
   const [startingSync, setStartingSync] = useState(false);
   const [startSyncFailure, setStartSyncFailure] = useState<string | null>(null);
-  const startSyncHost = window.ade?.account?.startSyncHost;
+  const startSyncHost = isAdeAvailable(window.ade?.account?.startSyncHost)
+    ? window.ade.account.startSyncHost
+    : undefined;
   const startSync = useCallback(async () => {
-    const start = window.ade?.account?.startSyncHost;
+    const start = isAdeAvailable(window.ade?.account?.startSyncHost) ? window.ade.account.startSyncHost : undefined;
     if (!start) return;
     setStartingSync(true);
     setStartSyncFailure(null);

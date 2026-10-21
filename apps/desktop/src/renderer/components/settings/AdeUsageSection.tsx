@@ -46,6 +46,7 @@ import { formatUpdatedAge } from "../usage/usageWindowFormat";
 import { SettingsColumn } from "./primitives";
 import "../usage/usageSurfaces.css";
 import { Banner } from "../ui/notice";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
@@ -653,7 +654,8 @@ export function AdeUsageSection() {
         setError(null);
         if (force) {
           setRefreshing(true);
-          await window.ade?.usage?.refreshHistory?.();
+          // The web client has no history poller to nudge; the read below is the refresh.
+          if (isAdeAvailable(window.ade?.usage?.refreshHistory)) await window.ade.usage.refreshHistory();
         }
         // `force` must reach the read itself, not just `refreshHistory()`.
         // Without it the cross-machine fan-out is indistinguishable from the

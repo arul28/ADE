@@ -913,7 +913,7 @@ export function TopBar({
   useEffect(() => {
     if (!windowSessionRestored) return;
     const persistBindings = window.ade.app.setWindowProjectBindings;
-    if (!persistBindings || !isAdeAvailable(persistBindings)) return;
+    if (!isAdeAvailable(persistBindings)) return;
     void persistBindings(openRemoteProjectTabs).catch(() => {});
   }, [openRemoteProjectTabs, windowSessionRestored]);
 

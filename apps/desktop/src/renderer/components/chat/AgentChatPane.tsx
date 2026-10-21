@@ -1091,11 +1091,12 @@ const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION = MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES;
 const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 128 * 1024 * 1024;
 /**
- * How often the active-turn loop re-reads a transcript when NOTHING is arriving.
- * The live `agentChat.onEvent` subscription (kept alive across tab switches by
+ * The base wait before the active-turn loop re-reads a transcript when NOTHING
+ * is arriving; quiet reads back off from it (caps below). The live
+ * `agentChat.onEvent` subscription (kept alive across tab switches by
  * `chatSessionRetention`) is the transport; this loop only exists to notice a
- * silently wedged stream, so it ticks slowly and skips entirely whenever an
- * event landed inside the last interval.
+ * silently wedged stream, so it skips entirely whenever an event landed since
+ * the last tick.
  */
 const ACTIVE_TURN_RECOVERY_INTERVAL_MS = 10_000;
 // A quiet chat (no event, no focus) backs off toward these caps. Each read is
@@ -8154,7 +8155,7 @@ export function AgentChatPane({
         const snapshot = await window.ade.computerUse.getOwnerSnapshot({
           owner: { kind: "chat_session", id: sessionId },
         }, chatRuntimePinRef.current);
-        // A host without this read can answer null; treat it as a failed read
+        // An older desktop host can answer null; treat it as a failed read
         // so the pane never stores (and renders) an empty snapshot.
         if (!snapshot) throw new Error("No computer-use snapshot for this chat.");
         lastComputerUseSnapshotRef.current = {

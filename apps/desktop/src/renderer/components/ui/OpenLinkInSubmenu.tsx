@@ -19,6 +19,7 @@ import {
   MenuSubmenuStatus,
 } from "./MenuSubmenu";
 import { useInstalledTargets } from "./useInstalledTargets";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * "Open this link in ▸" — ADE's own browser, the system default, and every
@@ -79,7 +80,7 @@ export function OpenLinkInSubmenu({
 
   const openInBrowser = async (browser: InstalledBrowser) => {
     const opener = window.ade?.app?.openInBrowser;
-    if (typeof opener !== "function") {
+    if (!isAdeAvailable(opener)) {
       // No OS browser bridge (hosted web): the system default is the honest
       // equivalent of "some other browser".
       openExternalUrl(openUrl);

@@ -52,6 +52,7 @@ import {
   paceVisual,
   shortWindowLabel,
 } from "./usageWindowFormat";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * Where a meter's details panel hangs.
@@ -193,7 +194,7 @@ export function UsageAccountRow({
       // Read the bridge at click time: the web client and older preloads do not
       // expose it, and the button is only offered when they do.
       const consume = window.ade?.usage?.consumeResetCredit;
-      const result = consume ? await consume({ accountId }) : null;
+      const result = isAdeAvailable(consume) ? await consume({ accountId }) : null;
       if (mountedRef.current) setOutcome(resetCreditOutcomeText(result));
     } catch {
       if (mountedRef.current) setOutcome(RESET_CREDIT_OUTCOME_TEXT.failure);
@@ -205,7 +206,7 @@ export function UsageAccountRow({
   const email = account?.email ?? fallbackEmail ?? undefined;
   const identity = email ?? account?.label ?? "This machine";
   const hasCredit = (account?.resetCredits?.availableCount ?? 0) > 0
-    && typeof window.ade?.usage?.consumeResetCredit === "function";
+    && isAdeAvailable(window.ade?.usage?.consumeResetCredit);
 
   /**
    * The pacing pill, read off the window with the LEAST headroom.
