@@ -3117,6 +3117,33 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
+  it("capLiveStream re-caps the running capture and never starts one", async () => {
+    // Pacing changes the cap while a viewer may be leaving. A cap that started
+    // a capture would leave the helper encoding for nobody on the user's Mac.
+    const { service, helper, dispose } = setup();
+    try {
+      const before = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 900 });
+      expect(helper.sent.slice(before).some((command) => command.type === "capture-start")).toBe(false);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const running = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 900 });
+      expect(helper.sent.slice(running)).toEqual([
+        expect.objectContaining({ type: "capture-start", udid: "device-1", bitrateKbps: 900 }),
+      ]);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(900);
+
+      await service.stopStream({ laneId: "lane-a" });
+      const stopped = helper.sent.length;
+      await service.capLiveStream({ laneId: "lane-a", bitrateKbps: 600 });
+      expect(helper.sent.slice(stopped).some((command) => command.type === "capture-start")).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
   it("liftStreamBitrateCap leaves a cap in place while a remote viewer still watches, and sends nothing when there is none", async () => {
     const { service, helper, dispose } = setup();
     try {

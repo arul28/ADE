@@ -215,6 +215,9 @@ final class AppleDeviceViewerModel: ObservableObject {
     }
     lastControlActivity = Date()
     mode = .controlling
+    // Whether anyone drives a simulator from a phone at all. Nothing about
+    // the device, lane or machine crosses; repeats in one foreground are one.
+    ProductAnalytics.shared.captureFeature(.simulatorControl, outcome: .started)
     appleViewerLog.notice("control on lane=\(self.laneId, privacy: .public)")
   }
 
