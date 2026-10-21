@@ -58,6 +58,7 @@ function normalizeLoose(s: string): string {
 function lifecycleSourceLabel(source: TerminalSessionSummary["attentionSource"] | TerminalSessionSummary["settleSource"]): string {
   if (source === "agent_explicit") return "Agent declaration";
   if (source === "provider_structured") return "Provider request";
+  if (source === "cli_prompt") return "CLI prompt";
   if (source === "linear") return "Linear";
   if (source === "turn_end_question") return "Question in the agent's reply";
   if (source === "pr_merge") return "Lane PR merge";

@@ -2409,7 +2409,12 @@ struct WorkChatSessionView: View {
 
   /// The lane tool chips' poll and the two surfaces they open.
   private var laneToolsPresenter: WorkLaneToolsPresenter {
-    var presenter = WorkLaneToolsPresenter(model: laneTools, laneId: session.laneId, enabled: !isPersonalChat)
+    var presenter = WorkLaneToolsPresenter(
+      model: laneTools,
+      laneId: session.laneId,
+      chatSessionId: session.id,
+      enabled: !isPersonalChat
+    )
     #if DEBUG
     presenter.preview = previewLaneTools
     #endif

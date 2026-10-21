@@ -1,4 +1,5 @@
 import type { MuseBinaryStatus } from "../shared/museBinary";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
@@ -48,6 +49,20 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
+  AppleDuoModelResult,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -174,6 +189,9 @@ import type {
   StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
+  OnboardingProjectCandidate,
+  OnboardingProjectChat,
+  OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
@@ -1245,6 +1263,14 @@ declare global {
         markWelcomeVideoSeen: (
           reason: "completed" | "dismissed",
         ) => Promise<AppWelcomeVideoState>;
+        /** First-run setup: git projects Claude Code and Codex used on this computer. Desktop only. */
+        discoverOnboardingProjects?: () => Promise<OnboardingProjectDiscovery>;
+        /** First-run setup: add these checkouts as project tabs without opening them. Desktop only. */
+        addOnboardingProjects?: (rootPaths: string[]) => Promise<RecentProjectSummary[]>;
+        /** First-run setup: one project's chats from the last `ONBOARDING_CHAT_WINDOW_DAYS` days on this computer, for the import picker. Desktop only. */
+        listOnboardingProjectChats?: (rootPath: string) => Promise<OnboardingProjectChat[]>;
+        /** First-run setup: a chosen folder as the project it belongs to, or null outside a git checkout. Desktop only. */
+        resolveOnboardingFolder?: (folder: string) => Promise<OnboardingProjectCandidate | null>;
         getLaunchGateState: () => Promise<{ resolved: boolean }>;
         resolveLaunchGate: () => Promise<{ resolved: true }>;
         setWindowProjectTabs: (
@@ -1615,6 +1641,14 @@ declare global {
         exportEnv: () => Promise<ProjectSecretsExportResult>;
       };
       ai: {
+        /**
+         * Ask Jev (OpenCode Zen's free decision model) on the machine `pin`
+         * names. `null` on any failure: not signed in, turned off, rate
+         * limited, slow, or an unusable answer. Use your existing logic then.
+         */
+        jevDecide: <Q extends JevQuestions>(request: JevDecideRequest<Q>, pin?: OpenProjectBinding | null) => Promise<JevAnswers<Q> | null>;
+        /** The helper's availability, breaker and counts; `null` when that machine cannot say. */
+        jevStatus: (pin?: OpenProjectBinding | null) => Promise<JevStatus | null>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;
@@ -2084,6 +2118,15 @@ declare global {
         getModelDetail?: (
           args: import("../shared/types").GetAdeUsageModelDetailArgs,
         ) => Promise<import("../shared/types").AdeUsageModelDetail | null>;
+        /**
+         * Every model the machine `pin` names can run, with its registry
+         * profile. Null without a runtime. Optional on the bridge: an older
+         * preload or web host may not expose it.
+         */
+        getModelCatalog?: (
+          args?: { provider?: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ catalog: import("../main/services/router/modelCatalog").UserModelCatalog } | null>;
         getModelPriceOverrides?: () => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
         /**
          * This machine's GitHub contribution calendar (the profile's year of
@@ -3078,6 +3121,27 @@ declare global {
           args?: AppleDeviceCleanupArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDeviceCleanupResult>;
+        runtimeList: (pin?: OpenProjectBinding | null) => Promise<AppleRuntimeInventory>;
+        runtimeInstall: (
+          args?: AppleRuntimeInstallArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState>;
+        runtimeInstallCancel: (
+          args?: AppleRuntimeScope,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState | null>;
+        runtimeDelete: (
+          args: AppleRuntimeDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        runtimePrune: (
+          args: AppleRuntimePruneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeDeleteResult>;
+        xcodeRunFirstLaunch: (
+          args?: AppleRuntimeScope & { confirmedByUser?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleXcodeStatus>;
         frame: (
           args?: AppleFrameArgs,
           pin?: OpenProjectBinding | null,
@@ -3121,6 +3185,32 @@ declare global {
           args: AppleRotateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRotateResult>;
+        setPosture: (
+          args: AppleSetPostureArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleSetPostureResult>;
+        getPosture: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDevicePosture>;
+        getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
+        renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        renderComplete: (
+          args: { requestId: string; filed: number; error: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
+        duoAppStoreScreenshots: (
+          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDuoAppStoreScreenshotsResult>;
+        attachRenderProof: (
+          args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ proofArtifactId: string | null }>;
+        addDuoSkill: (
+          args?: { laneId?: string | null; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleAddDuoSkillResult>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
         scroll: (
           args: AppleScrollArgs,

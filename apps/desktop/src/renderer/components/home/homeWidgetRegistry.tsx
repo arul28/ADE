@@ -23,6 +23,7 @@ const LAZY_WIDGETS: Partial<Record<HomeWidgetType, LazyWidget>> = {
   shipped: lazy(() => import("./widgets/ShippedWidget")),
   feed: lazy(() => import("./widgets/FeedWidget")),
   nowPlaying: lazy(() => import("./widgets/NowPlayingWidget")),
+  tips: lazy(() => import("./widgets/AdeTipsWidget")),
 };
 
 function WidgetShell({ type, message }: { type: HomeWidgetType; message?: string }) {

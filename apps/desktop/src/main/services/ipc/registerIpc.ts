@@ -218,6 +218,9 @@ import type {
   BatchAssessmentResult,
   AppInfo,
   AppWelcomeVideoState,
+  OnboardingProjectCandidate,
+  OnboardingProjectChat,
+  OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   ClearLocalAdeDataArgs,
@@ -1004,7 +1007,9 @@ import {
   type BrowserLoginImportService,
 } from "../builtInBrowser/loginImport";
 import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
-import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
+import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, addRecentProjectsWithoutEviction } from "../state/globalState";
+import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingDiscoveryClient";
+import { resolveOnboardingFolder } from "../onboarding/onboardingProjectDiscovery";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -4686,6 +4691,67 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
+  );
+
+  // First-run setup on this computer. All four run here and only here: setup
+  // is the first open of ADE on a machine, and it reads that machine's own
+  // coding-agent history. The web client and other machines never call them.
+  const localRecentRoots = (): string[] => (readGlobalState(globalStatePath).recentProjects ?? [])
+    .filter((entry) => !entry.remote)
+    .map((entry) => entry.rootPath);
+  ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> =>
+    discoverOnboardingProjects({ knownRoots: localRecentRoots(), logger: getCtx().logger }));
+
+  // A folder the user picked in setup, as the project it belongs to (a
+  // subfolder resolves to its checkout, a lane or worktree to its project), or
+  // null when it is not in a git checkout. Reads a few files; no git.
+  ipcMain.handle(
+    IPC.appResolveOnboardingFolder,
+    async (_event, arg: { folder?: unknown } = {}): Promise<OnboardingProjectCandidate | null> => {
+      const folder = typeof arg?.folder === "string" ? arg.folder.trim() : "";
+      if (!folder) return null;
+      return resolveOnboardingFolder({ folder, knownRoots: localRecentRoots() });
+    },
+  );
+
+  // One project's importable chats on this computer, for setup's per-chat
+  // picker. Read when the picker opens, before any project is open.
+  ipcMain.handle(
+    IPC.appListOnboardingProjectChats,
+    async (_event, arg: { rootPath?: unknown } = {}): Promise<OnboardingProjectChat[]> => {
+      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) return [];
+      return listOnboardingProjectChats({ rootPath, logger: getCtx().logger });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.appAddOnboardingProjects,
+    async (_event, arg: { rootPaths?: unknown } = {}): Promise<RecentProjectSummary[]> => {
+      const roots = (Array.isArray(arg?.rootPaths) ? arg.rootPaths : [])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => path.resolve(value.trim()))
+        .slice(0, 40);
+      const before = readGlobalState(globalStatePath);
+      // In the order shown, never evicting a listed project: when the picks
+      // fit within the recents cap they go ahead of the projects already
+      // listed; when they would overflow it they go after them, so a later
+      // open's trim drops the newest additions first and never the user's
+      // earlier projects (local or remote). Only git checkouts: this adds
+      // project tabs, never arbitrary folders. The reopen-on-launch project
+      // stays as it was.
+      const next = addRecentProjectsWithoutEviction(
+        before,
+        roots
+          .filter((rootPath) => fs.existsSync(path.join(rootPath, ".git")))
+          .map((rootPath) => ({ rootPath, displayName: path.basename(rootPath) })),
+      );
+      if (next !== before) {
+        writeGlobalState(globalStatePath, next);
+        clearRecentProjectSummaryCache();
+      }
+      return listRecentProjectSummaries({ force: true });
+    },
   );
 
   ipcMain.handle(
@@ -10405,6 +10471,12 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeList, async () => ensureIosSimulator().runtimeList());
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstall, async (_event, arg = {}) => ensureIosSimulator().runtimeInstall(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
+  ipcMain.handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
+  ipcMain.handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
@@ -10422,6 +10494,14 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 
   ipcMain.handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
+  ipcMain.handle(IPC.iosSimulatorSetPosture, async (_event, arg) => ensureIosSimulator().setPosture(arg));
+  ipcMain.handle(IPC.iosSimulatorGetPosture, async (_event, arg = {}) => ensureIosSimulator().getPosture(arg));
+  ipcMain.handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
+  ipcMain.handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
+  ipcMain.handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
+  ipcMain.handle(IPC.iosSimulatorAttachRenderProof, async (_event, arg = {}) => ensureIosSimulator().attachRenderProof(arg));
+  ipcMain.handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
+  ipcMain.handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
   ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
 
   ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));

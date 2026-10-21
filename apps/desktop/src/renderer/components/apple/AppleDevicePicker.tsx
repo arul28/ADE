@@ -8,7 +8,11 @@ import type {
   AppleInstalledSimulator,
   AppleLaneDevice,
   AppleLaneDeviceFamily,
+  AppleMissingRuntime,
   AppleNewDeviceSpec,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimeSimulatorDisposition,
   AppleSimulatorOwner,
   AppleSimulatorOwnershipInfo,
 } from "../../../shared/types/iosSimulator";
@@ -46,6 +50,9 @@ import {
   appleOwnerLaneLabel,
   partitionApplePickerDevices,
 } from "./applePickerInventory";
+import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } from "./AppleRuntimesSection";
+import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
+import { AppleSpinner } from "./AppleSpinner";
 
 /**
  * The pane's front door: an "Available" heading with one glyph per installed
@@ -90,6 +97,16 @@ export type AppleDevicePickerProps = {
   onRefresh: () => void;
   /** False pauses the backdrop's loop, exactly as on the tools grid. */
   playing?: boolean;
+  /** `runtimeList()`: installed runtimes, the one this Xcode expects, the running download, Xcode itself. */
+  runtimeInventory?: AppleRuntimeInventory | null;
+  /** A runtime remove or prune is running. */
+  removingRuntime?: boolean;
+  /** Download what this Xcode needs, then create `deviceType` on it. */
+  onInstallAndCreate?: (deviceType: string) => void;
+  onCancelInstall?: () => void;
+  onRemoveRuntime?: (id: string, simulators: AppleRuntimeSimulatorDisposition) => void;
+  onPruneRuntimes?: (simulators: AppleRuntimeSimulatorDisposition) => void;
+  onRunXcodeSetup?: () => Promise<void>;
 };
 
 /** The column the page is built around — the tools grid's 512 plus one card. */
@@ -106,14 +123,6 @@ const FAMILY_GLYPH: Record<AppleDeviceFamilyId, Icon> = {
   vision: AppleDeviceVisionGlyph,
   other: AppleDeviceIPhoneGlyph,
 };
-
-const Spinner = () => (
-  <span
-    aria-hidden="true"
-    data-apple-spinner=""
-    className="h-3 w-3 shrink-0 animate-spin rounded-full border border-muted-fg/35 border-t-accent"
-  />
-);
 
 /**
  * `iOS 26.3 · iPhone 15 Pro`, which is the OS and the device the owner asked
@@ -147,6 +156,13 @@ export function AppleDevicePicker({
   onDelete,
   onRefresh,
   playing = true,
+  runtimeInventory,
+  removingRuntime = false,
+  onInstallAndCreate,
+  onCancelInstall,
+  onRemoveRuntime,
+  onPruneRuntimes,
+  onRunXcodeSetup,
 }: AppleDevicePickerProps) {
   const theme = useAppStore((s) => s.theme);
 
@@ -170,10 +186,13 @@ export function AppleDevicePicker({
   );
 
   const busy = pending !== null;
-  const canCreate = (runtimes ?? []).some((runtime) => runtime.deviceTypes.length > 0);
+  const missingRuntime = onInstallAndCreate ? runtimeInventory?.missing ?? null : null;
+  const canCreate = (runtimes ?? []).some((runtime) => runtime.deviceTypes.length > 0) || Boolean(missingRuntime);
+  const xcodeNote = onRunXcodeSetup ? <AppleXcodeNote xcode={runtimeInventory?.xcode} onRunSetup={onRunXcodeSetup} /> : null;
 
   return (
     <PickerPage theme={theme} playing={playing}>
+      {xcodeNote}
       {installed.length === 0 && !canCreate ? (
         <EmptyCard refreshing={refreshing} onRefresh={onRefresh} />
       ) : (
@@ -228,7 +247,21 @@ export function AppleDevicePicker({
             disabled={busy}
             creating={pending === "create"}
             onCreate={onCreate}
+            missingRuntime={missingRuntime}
+            install={runtimeInventory?.install ?? null}
+            {...(onInstallAndCreate ? { onInstallAndCreate } : {})}
+            {...(onCancelInstall ? { onCancelInstall } : {})}
           />
+
+          {onRemoveRuntime && onPruneRuntimes ? (
+            <AppleRuntimesSection
+              inventory={runtimeInventory ?? null}
+              removing={removingRuntime}
+              disabled={busy}
+              onRemove={onRemoveRuntime}
+              onPrune={onPruneRuntimes}
+            />
+          ) : null}
 
           <StorageSection
             disk={disk}
@@ -435,7 +468,7 @@ function DeviceCard({
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">
               {simulator.name}
             </span>
-            {pending ? <Spinner /> : mine ? (
+            {pending ? <AppleSpinner /> : mine ? (
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
@@ -567,6 +600,9 @@ const FAMILY_GROUP_LABEL: Record<AppleLaneDeviceFamily, string> = {
  * archived or deleted. The runtime choice appears only when this Mac has more
  * than one; the model list is the one that runtime supports, newest first.
  */
+/** The runtime menu's value for "the runtime this Xcode needs, not installed yet". */
+const MISSING_RUNTIME_VALUE = "missing-runtime";
+
 function CreateSection({
   runtimes,
   defaultSpec,
@@ -574,6 +610,10 @@ function CreateSection({
   disabled,
   creating,
   onCreate,
+  missingRuntime,
+  install,
+  onInstallAndCreate,
+  onCancelInstall,
 }: {
   runtimes: readonly AppleInstalledRuntime[];
   /** The service's default; the first runtime and its first iPhone when absent. */
@@ -583,27 +623,41 @@ function CreateSection({
   disabled: boolean;
   creating: boolean;
   onCreate: (spec: AppleNewDeviceSpec) => void;
+  /** Current models no installed runtime runs, offered as "Not installed". */
+  missingRuntime: AppleMissingRuntime | null;
+  install: AppleRuntimeInstallState | null;
+  onInstallAndCreate?: (deviceType: string) => void;
+  onCancelInstall?: () => void;
 }) {
   const [runtimeId, setRuntimeId] = useState<string | null>(null);
   const [typeId, setTypeId] = useState<string | null>(null);
   const creatable = runtimes.filter((entry) => entry.deviceTypes.length > 0);
-  const runtime = creatable.find((entry) => entry.identifier === (runtimeId ?? defaultSpec?.runtime))
-    ?? creatable[0]
-    ?? null;
-  const types = runtime?.deviceTypes ?? [];
+  const installing = appleRuntimeInstallActive(install);
+  // No installed runtime at all: the missing one is the only choice.
+  const pickedMissing = Boolean(missingRuntime) && (runtimeId === MISSING_RUNTIME_VALUE || creatable.length === 0);
+  const runtime = pickedMissing
+    ? null
+    : creatable.find((entry) => entry.identifier === (runtimeId ?? defaultSpec?.runtime)) ?? creatable[0] ?? null;
+  const types = pickedMissing ? missingRuntime!.deviceTypes : runtime?.deviceTypes ?? [];
   // The service's default model applies only to the service's default runtime.
   const wantedType = typeId ?? (runtime?.identifier === defaultSpec?.runtime ? defaultSpec?.deviceType : null);
   const deviceType = types.find((entry) => entry.identifier === wantedType)
     ?? types.find((entry) => entry.family === "iphone")
     ?? types[0]
     ?? null;
-  const runtimeOptions: DrawerMenuOption<string>[] = creatable.map((entry) => ({ value: entry.identifier, label: entry.name }));
+  const runtimeOptions: DrawerMenuOption<string>[] = [
+    ...(missingRuntime
+      ? [{ value: MISSING_RUNTIME_VALUE, label: `${missingRuntime.name} · Not installed` }]
+      : []),
+    ...creatable.map((entry) => ({ value: entry.identifier, label: entry.name })),
+  ];
   const typeOptions: DrawerMenuOption<string>[] = types.map((entry) => ({
     value: entry.identifier,
     label: entry.name,
     group: FAMILY_GROUP_LABEL[entry.family],
   }));
-  if (!runtime) return null;
+  if (!runtime && !pickedMissing) return null;
+  const runtimeValue = pickedMissing ? MISSING_RUNTIME_VALUE : runtime!.identifier;
   return (
     <section
       aria-label="Create a new one"
@@ -626,7 +680,7 @@ function CreateSection({
           {runtimeOptions.length > 1 ? (
             <DrawerMenu
               ariaLabel="Runtime"
-              value={runtime.identifier}
+              value={runtimeValue}
               placeholder="Runtime"
               options={runtimeOptions}
               disabled={disabled}
@@ -637,7 +691,7 @@ function CreateSection({
             />
           ) : (
             <span data-apple-create-runtime="" className="shrink-0 font-sans text-[12px] leading-5 text-fg/80">
-              {runtime.name}
+              {pickedMissing ? `${missingRuntime!.name} · Not installed` : runtime!.name}
             </span>
           )}
           <DrawerMenu
@@ -653,18 +707,28 @@ function CreateSection({
           <Button
             variant="primary"
             size="sm"
-            disabled={disabled || !deviceType}
-            aria-label="Create a new simulator for this lane"
-            onClick={() => deviceType && onCreate({ runtime: runtime.identifier, deviceType: deviceType.identifier })}
+            disabled={disabled || !deviceType || (pickedMissing && (installing || !onInstallAndCreate))}
+            aria-label={pickedMissing ? "Install the runtime and create a simulator" : "Create a new simulator for this lane"}
+            onClick={() => {
+              if (!deviceType) return;
+              if (pickedMissing) onInstallAndCreate?.(deviceType.identifier);
+              else onCreate({ runtime: runtime!.identifier, deviceType: deviceType.identifier });
+            }}
             className="shrink-0"
           >
-            {creating ? <Spinner /> : null}
-            Create
+            {creating || (pickedMissing && installing) ? <AppleSpinner /> : null}
+            {pickedMissing ? "Install & create" : "Create"}
           </Button>
         </div>
-        <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-          Starts empty. Nothing is copied or downloaded. Deleted with the lane.
-        </p>
+        {install && (installing || install.phase === "failed") ? (
+          <AppleRuntimeInstallProgress install={install} onCancel={() => onCancelInstall?.()} />
+        ) : (
+          <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+            {pickedMissing
+              ? `${missingRuntime!.name} isn't on this Mac. ADE downloads what Xcode needs (about 8 GB per runtime), then creates the simulator.`
+              : "Starts empty. Nothing is copied or downloaded. Deleted with the lane."}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -735,7 +799,7 @@ function StorageSection({
               onClick={onCleanup}
               className="shrink-0"
             >
-              {cleaning ? <Spinner /> : null}
+              {cleaning ? <AppleSpinner /> : null}
               Clean up
             </Button>
           ) : null}

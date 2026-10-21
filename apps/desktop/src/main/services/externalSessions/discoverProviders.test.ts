@@ -1512,7 +1512,11 @@ describe("Claude continuation-chain discovery", () => {
       mtime: "2026-07-06T10:00:00.000Z",
     });
 
-    const sessions = await discoverClaudeSessions({ homeDir: claudeHome, limit: 10 });
+    const sessions = await discoverClaudeSessions({
+      homeDir: claudeHome,
+      limit: 10,
+      updatedSinceMs: Date.parse("2026-07-05T12:00:00.000Z"),
+    });
 
     // A session imported under the ancestor id is this row; imported-marking
     // has no other way to know that once the ancestor stops being listed.

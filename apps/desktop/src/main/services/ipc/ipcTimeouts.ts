@@ -79,6 +79,12 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     deviceDelete: IPC.iosSimulatorDeviceDelete,
     deviceDetach: IPC.iosSimulatorDeviceDetach,
     deviceCleanup: IPC.iosSimulatorDeviceCleanup,
+    runtimeDelete: IPC.iosSimulatorRuntimeDelete,
+    duoAppStoreScreenshots: IPC.iosSimulatorDuoAppStoreScreenshots,
+    addDuoSkill: IPC.iosSimulatorAddDuoSkill,
+    attachRenderProof: IPC.iosSimulatorAttachRenderProof,
+    runtimePrune: IPC.iosSimulatorRuntimePrune,
+    xcodeRunFirstLaunch: IPC.iosSimulatorXcodeRunFirstLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
@@ -272,10 +278,16 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorDeviceCreate:
     case IPC.iosSimulatorDeviceDelete:
     case IPC.iosSimulatorDeviceDetach:
+    case IPC.iosSimulatorDuoAppStoreScreenshots:
+    case IPC.iosSimulatorAddDuoSkill:
+    case IPC.iosSimulatorAttachRenderProof:
       return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
     // Mapped from the remote `ios_simulator.deviceCleanup` above, but with no
     // case of its own it fell to 30s against a 15 minute cleanup pass.
     case IPC.iosSimulatorDeviceCleanup:
+    case IPC.iosSimulatorRuntimeDelete:
+    case IPC.iosSimulatorRuntimePrune:
+    case IPC.iosSimulatorXcodeRunFirstLaunch:
       return IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS;
     // UAC, the Windows password dialog, or Windows' sign-in window may be
     // waiting on a person; see WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
@@ -340,6 +352,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 150_000;
     case IPC.githubCreateIssue:
       return 180_000;
+    // First-run discovery runs in a child with its own ceiling (60s discover,
+    // 30s chat list, `onboardingDiscoveryClient.ts`). The IPC budget outlives
+    // it, so a wedged child ends in setup's empty answer, not an IPC timeout.
+    case IPC.appDiscoverOnboardingProjects:
+      return 75_000;
+    case IPC.appListOnboardingProjectChats:
+      return 40_000;
     case IPC.archiveRestore:
       return 10 * 60_000;
     case IPC.archiveDelete:

@@ -1297,15 +1297,14 @@ func workRuntimeModeTint(_ mode: String) -> Color {
 /// Default runtime mode for a fresh chat given the provider. Mirrors the
 /// desktop/TUI defaults: Default for Claude/Codex, Edit for OpenCode, Agent
 /// for Cursor, and Auto low for Droid.
+/// What a new chat starts on: each provider's most permissive mode, the same
+/// default the desktop composer uses (`defaultNativeControls`). The picker
+/// still offers every narrower mode, and a saved choice wins over this.
 func workDefaultRuntimeMode(provider: String) -> String {
   switch provider.lowercased() {
-  case "claude", "codex": return "default"
-  case "pi": return "default"
-  case "opencode": return "edit"
-  case "cursor": return "default"
-  case "droid", "factory": return "auto-low"
-  case "muse": return "onRequest"
-  case "copilot": return "ask"
+  case "claude", "codex", "pi", "opencode", "cursor", "copilot": return "full-auto"
+  case "droid", "factory": return "auto-high"
+  case "muse": return "allowAll"
   default: return ""
   }
 }

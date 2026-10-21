@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   currentUid,
+  resolveAssociatedAppBundleId,
   type AdeServiceCommand,
   loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
@@ -151,6 +152,10 @@ export function renderWatchdogLaunchdPlist(args: {
 <dict>
   <key>Label</key>
   <string>${escapeXml(label)}</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>${escapeXml(resolveAssociatedAppBundleId({ ...process.env, ...command.env }))}</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
 ${programArguments}

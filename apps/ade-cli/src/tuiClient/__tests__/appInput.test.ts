@@ -1382,6 +1382,9 @@ describe("interface draft setup", () => {
       modelId: "openai/gpt-6-astra",
       displayName: "GPT-6 Astra",
       reasoningEffort: "low",
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
     });
     expect(registryModelsForProvider("codex").slice(0, 6).map((model) => model.modelId)).toEqual([
       "openai/gpt-6.1-sol",

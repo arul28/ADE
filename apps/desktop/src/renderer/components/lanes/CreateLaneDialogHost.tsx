@@ -30,6 +30,7 @@ import type {
   NewLaneBaseSource,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { useLaneEmojiSuggestion } from "./useLaneEmojiSuggestion";
 
 type CreateSetupPhase =
   | "creating"
@@ -251,6 +252,20 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setPickedMachineId,
   } = useLaneMachineChoice(open);
 
+  const {
+    selectedEmoji: createSelectedEmoji,
+    suggestedEmoji,
+    pick: handleSetCreateEmoji,
+    accept: handleAcceptSuggestedEmoji,
+    reset: resetLaneEmoji,
+    nameChanged: laneNameChangedEmoji,
+  } = useLaneEmojiSuggestion({
+    name: createLaneName,
+    enabled: open && behavior !== "configure-for-chat" && !createBusy && !laneCreated,
+    pin: targetPin,
+    pinKey: targetPinKey,
+  });
+
   /**
    * The chosen machine's own lane list (parents, colors, its Primary for
    * branch listing). Read once per machine pick, seeded from the union so the
@@ -318,17 +333,24 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateSetupPhase(null);
     setSelectedTemplateId("");
     setCreateSelectedColor(null);
+    resetLaneEmoji();
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
     setPickedMachineId("");
     setPinnedLanes(null);
-  }, [setPickedMachineId]);
+  }, [resetLaneEmoji, setPickedMachineId]);
+
+  const handleSetCreateLaneName = useCallback((value: string) => {
+    setCreateLaneName(value);
+    laneNameChangedEmoji();
+  }, [laneNameChangedEmoji]);
 
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
     if (!issue) return;
 
     const nextName = linearIssueLaneName(issue);
+    laneNameChangedEmoji();
     setCreateLaneName((current) => {
       const trimmed = current.trim();
       const previousAutoName = createLinearIssueAutoNameRef.current;
@@ -341,7 +363,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     });
     setCreateImportBranch("");
     setCreateMode((mode) => mode === "existing" ? "primary" : mode);
-  }, []);
+  }, [laneNameChangedEmoji]);
 
   /**
    * Load what the form reads from the chosen machine: its base branches (via
@@ -432,7 +454,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
     setCreateMode("primary");
-    setCreateSelectedColor(null);
+    // The colour is not cleared here: closing already cleared it, and the
+    // dialog's own effect picks a free one on open. Clearing it again here, in
+    // the same commit as that pick, left every new lane with no colour.
+    resetLaneEmoji();
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
     setCreateBusy(false);
@@ -450,7 +475,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // Apply caller prefill after resetting to defaults.
     if (prefillInput?.name) setCreateLaneName(prefillInput.name.trim());
     if (prefillInput?.linearIssue) handleSetCreateLinearIssue(prefillInput.linearIssue);
-  }, [boundLanes, handleSetCreateLinearIssue, loadMachineData, setPickedMachineId]);
+  }, [boundLanes, handleSetCreateLinearIssue, loadMachineData, resetLaneEmoji, setPickedMachineId]);
 
   // Prepare on open; reset on close. `open` is the single source of truth, so
   // any external trigger (deeplink, button, dialog bus, Work-tab pane) that sets
@@ -786,12 +811,16 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       createdLaneMachineRef.current = { machineId, pin };
       setLaneCreated(true);
 
-      if (createSelectedColor) {
+      if (createSelectedColor || createSelectedEmoji) {
         try {
           setCreateSetupPhase("appearance");
-          await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor }, ...pinArg(pin));
+          await window.ade.lanes.updateAppearance({
+            laneId: lane.id,
+            ...(createSelectedColor ? { color: createSelectedColor } : {}),
+            ...(createSelectedEmoji ? { emoji: createSelectedEmoji } : {}),
+          }, ...pinArg(pin));
         } catch {
-          // Color collisions or transient errors shouldn't block lane creation.
+          // Appearance is optional and must not block lane creation.
         }
       }
 
@@ -849,6 +878,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     runSetupForCreatedLane,
     selectedTemplateId,
     createSelectedColor,
+    createSelectedEmoji,
     createSelectedLinearIssue,
     activeProjectRoot,
     validateLaneFormExtras,
@@ -906,7 +936,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       open={open}
       onOpenChange={handleDialogOpenChange}
       createLaneName={createLaneName}
-      setCreateLaneName={setCreateLaneName}
+      setCreateLaneName={handleSetCreateLaneName}
       createMode={createMode}
       setCreateMode={setCreateMode}
       createParentLaneId={createParentLaneId}
@@ -932,6 +962,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setSelectedTemplateId={setSelectedTemplateId}
       selectedColor={createSelectedColor}
       setSelectedColor={setCreateSelectedColor}
+      selectedEmoji={createSelectedEmoji}
+      setSelectedEmoji={handleSetCreateEmoji}
+      suggestedEmoji={suggestedEmoji}
+      onAcceptSuggestedEmoji={handleAcceptSuggestedEmoji}
+      showEmojiControl={!configureForChat}
       selectedLinearIssue={createSelectedLinearIssue}
       setSelectedLinearIssue={handleSetCreateLinearIssue}
       branchPullRequests={createBranchPullRequests}

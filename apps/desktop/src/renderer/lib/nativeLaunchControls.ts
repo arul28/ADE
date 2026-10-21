@@ -3,7 +3,6 @@ import type {
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
-  ChatSurfaceProfile,
 } from "../../shared/types";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS,
@@ -47,21 +46,36 @@ type ChatRuntimeProviderKey =
   | "antigravity";
 type CliProvider = ChatRuntimeProviderKey;
 
-export function defaultNativeControls(profile: ChatSurfaceProfile = "standard"): NativeControlState {
-  if (profile === "persistent_identity") {
-    return {
-      interactionMode: "default",
-      claudePermissionMode: "bypassPermissions",
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
-      opencodePermissionMode: "full-auto",
-      droidPermissionMode: "auto-high",
-      musePermissionMode: "allowAll",
-      cursorModeId: "full-auto",
-      cursorConfigValues: {},
-    };
-  }
+/**
+ * What a new chat starts on when nothing is remembered for its lane: every
+ * provider's most permissive mode (Claude bypass, Codex never-ask with full
+ * access, Droid auto-high, Copilot/OpenCode/Pi/ACP full-auto, Muse allow-all,
+ * Cursor full-auto). That is how almost everyone runs agents in ADE, so the
+ * default says so; the composer's picker still offers every narrower level,
+ * and a lane's last choice still wins over this.
+ */
+export function defaultNativeControls(): NativeControlState {
+  return {
+    interactionMode: "default",
+    claudePermissionMode: "bypassPermissions",
+    codexApprovalPolicy: "never",
+    codexSandbox: "danger-full-access",
+    codexConfigSource: "flags",
+    opencodePermissionMode: "full-auto",
+    droidPermissionMode: "auto-high",
+    copilotPermissionMode: "full-auto",
+    musePermissionMode: "allowAll",
+    cursorModeId: "full-auto",
+    cursorConfigValues: {},
+  };
+}
+
+/**
+ * Ask before changing anything, on every provider. Only for launches whose
+ * own copy promises that (the Settings health fixes, the project-move check);
+ * every other chat starts on `defaultNativeControls`.
+ */
+export function askFirstNativeControls(): NativeControlState {
   return {
     interactionMode: "default",
     claudePermissionMode: "default",

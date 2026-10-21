@@ -1,5 +1,6 @@
 import type {
   HomeWeather,
+  HomeWeatherLocateResult,
   HomeWeatherPlace,
   HomeWeatherResult,
   HomeWeatherSearchResult,
@@ -19,6 +20,8 @@ export type HomeWeatherFetch = (url: string, init: { signal: AbortSignal }) => P
 }>;
 
 const WEATHER_TTL_MS = 15 * 60_000;
+/** A laptop moves; an hour is plenty for "where is this computer, roughly". */
+const LOCATE_TTL_MS = 60 * 60_000;
 const FETCH_TIMEOUT_MS = 8_000;
 
 type WeatherCodeSource = {
@@ -135,5 +138,37 @@ export function createWeatherService(deps: { fetch: HomeWeatherFetch }) {
     }
   };
 
-  return { search, get };
+  /**
+   * Where this computer roughly is, for weather before the user picks a
+   * place: the city ipinfo.io places its internet address in (HTTPS, no key,
+   * no permission prompt). Only the address the request comes from is
+   * shared, as with the forecast reads. A VPN puts it at the VPN's city; the
+   * user can pick a place instead.
+   */
+  let located: { at: number; place: HomeWeatherPlace } | null = null;
+  const locate = async (): Promise<HomeWeatherLocateResult> => {
+    if (located && Date.now() - located.at < LOCATE_TTL_MS) return { ok: true, place: located.place };
+    try {
+      const raw = (await fetchJson("https://ipinfo.io/json")) as Record<string, unknown>;
+      const [latitude, longitude] = typeof raw.loc === "string" ? raw.loc.split(",").map(Number) : [];
+      const name = typeof raw.city === "string" ? raw.city.trim() : "";
+      if (!name || latitude == null || longitude == null || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return { ok: false, error: "No location for this connection." };
+      }
+      const detail = [raw.region, raw.country].filter((part): part is string => typeof part === "string" && part.length > 0).join(", ");
+      const place: HomeWeatherPlace = {
+        name,
+        detail: detail || null,
+        latitude,
+        longitude,
+        timezone: typeof raw.timezone === "string" ? raw.timezone : null,
+      };
+      located = { at: Date.now(), place };
+      return { ok: true, place };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  return { search, get, locate };
 }

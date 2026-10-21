@@ -20,6 +20,9 @@ actor FrameCapture {
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     private(set) var capturedWidth: Int = 0
+    // ADE patch (foldables): the screen CoreDevice reports active. Nil keeps
+    // upstream's largest-surface pick, which is every non-foldable device.
+    private var preferredScreenID: UInt32?
     private(set) var capturedHeight: Int = 0
     private var idleTimer: Task<Void, Never>?
     private var lastCaptureTime: ContinuousClock.Instant = .now
@@ -139,10 +142,36 @@ actor FrameCapture {
         return candidates
     }
 
+    /// ADE patch (foldables): follow the active panel. The Duo keeps both
+    /// panels' surfaces alive, so the largest one is the inner display even
+    /// while the phone is closed and the cover is the one showing.
+    func setPreferredScreen(_ screenID: UInt32?) {
+        guard preferredScreenID != screenID else { return }
+        preferredScreenID = screenID
+        captureFrame(force: true)
+    }
+
+    /// ADE patch (foldables): the SimScreen id behind a framebuffer descriptor,
+    /// read the way upstream's `SimDisplayMetadata` reads it.
+    private static func screenID(of descriptor: NSObject) -> UInt32? {
+        let selector = NSSelectorFromString("screenProperties")
+        guard descriptor.responds(to: selector),
+              let properties = descriptor.perform(selector)?.takeUnretainedValue() as? NSObject
+        else { return nil }
+        return (properties as AnyObject).adeScreenID?()
+    }
+
     /// Return the descriptor whose live surface has the largest area.
     /// Secondary planes/overlays are typically smaller than the main screen.
     private func pickBestDescriptor() -> NSObject? {
         let surfSel = NSSelectorFromString("framebufferSurface")
+        if let preferredScreenID {
+            for desc in descriptors where Self.screenID(of: desc) == preferredScreenID {
+                guard let surfObj = desc.perform(surfSel)?.takeUnretainedValue() else { continue }
+                let surf = unsafeBitCast(surfObj, to: IOSurface.self)
+                if IOSurfaceGetWidth(surf) > 0, IOSurfaceGetHeight(surf) > 0 { return desc }
+            }
+        }
         var best: NSObject?
         var bestArea: Int = 0
         for desc in descriptors {
@@ -305,4 +334,10 @@ actor FrameCapture {
         surfacesChangedCallback: @convention(block) @escaping () -> Void,
         propertiesChangedCallback: @convention(block) @escaping () -> Void
     )
+}
+
+/// ADE patch (foldables): CoreSimDeviceIO's SimScreenProperties getter.
+/// Optional dispatch keeps older Xcodes without it on the largest-surface path.
+@objc private protocol ADESimScreenPropertiesAccess {
+    @objc(screenID) func adeScreenID() -> UInt32
 }

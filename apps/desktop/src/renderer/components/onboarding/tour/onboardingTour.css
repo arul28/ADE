@@ -1,0 +1,424 @@
+/*
+ * The guided tour (OnboardingTourHost): ADE's violet cursor, a ring around the
+ * control, a small kit card beside it with a caret, the pill that offers
+ * "Show me", and the closing "You're all set" card. Nothing here blocks: the
+ * layer lets every pointer event through except the cards' and the pill's own.
+ *
+ * Read steps and do-it steps look different on purpose. A read step's ring is
+ * still and its card ends in a primary Next. A do-it step's ring calls (two
+ * soft pulses, then a steady glow), its card carries an instruction line with
+ * an icon, and Next steps down to "Skip this step".
+ *
+ * Cost: the cards and the pill are solid popover surfaces, not frosted glass.
+ * A backdrop blur has to be redrawn on every frame anything under it moves
+ * (the scene, a streaming chat), and these sit over the busiest parts of the
+ * window. Motion is transform and opacity only, and finite. Reduce motion
+ * (the OS setting or `html[data-motion="reduced"]`) gets no pulse and no
+ * card travel; the cursor itself is handled in `tourCursor.ts`.
+ */
+
+.ade-tour-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The cursor is ADE's, not the system arrow: violet, a size up, with a glow
+   so it reads on dark and light pages alike. One element for the whole tour;
+   `tourCursor.ts` sets its transform and opacity. */
+.ade-tour-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  opacity: 0;
+  transform-origin: 3px 3px;
+  will-change: transform, opacity;
+  filter:
+    drop-shadow(0 2px 3px rgba(17, 12, 40, 0.45))
+    drop-shadow(0 0 10px rgba(139, 92, 246, 0.45));
+}
+
+.ade-tour-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1.5px solid #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.14);
+  animation: ade-tour-fade-in 220ms ease-out both;
+}
+
+/* A do-it step's ring stays a step louder after its pulses: thicker, with a
+   wider glow, so "this one" still reads once the motion stops. */
+.ade-tour-ring[data-kind="do"] {
+  border-width: 2px;
+  box-shadow:
+    0 0 0 3px rgba(139, 92, 246, 0.22),
+    0 0 18px 2px rgba(139, 92, 246, 0.28);
+}
+
+.ade-tour-ring::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 8px rgba(139, 92, 246, 0.32);
+  opacity: 0;
+}
+
+/* Stepped, 24 changes a second: a soft glow reads the same, and the window
+   redraws a fifth as often as a smooth 120 Hz pulse would. */
+.ade-tour-ring[data-pulse="true"]::after {
+  animation: ade-tour-pulse 1000ms steps(12, jump-none) 300ms 2;
+}
+
+.ade-tour-card-slot {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.ade-tour-card-slot:not([data-placed]) {
+  visibility: hidden;
+}
+
+/* Solid, not frosted: see the cost note at the top. */
+.ade-tour-card.kit-card[data-float="true"] {
+  background: var(--color-popup-bg, var(--color-bg));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.ade-tour-card {
+  position: relative;
+  gap: 6px;
+  padding: 12px 12px 10px 14px;
+  overflow: visible;
+  pointer-events: auto;
+  animation: ade-tour-card-in 200ms 30ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* A small diamond on the edge that faces the control, in the card's own
+   fill and edge, so the card reads as pointing at it. Clipped to the half
+   outside the card. Placed by the host (`data-side`, left or top). */
+.ade-tour-caret {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  background: inherit;
+  border: inherit;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.ade-tour-caret:not([data-side]) {
+  display: none;
+}
+
+.ade-tour-caret[data-side="above"] {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  top: 100%;
+  border-top-color: transparent;
+  border-left-color: transparent;
+}
+
+.ade-tour-caret[data-side="below"] {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  top: 0;
+  border-bottom-color: transparent;
+  border-right-color: transparent;
+}
+
+.ade-tour-caret[data-side="right"] {
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+  left: 0;
+  border-top-color: transparent;
+  border-right-color: transparent;
+}
+
+.ade-tour-caret[data-side="left"] {
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  left: 100%;
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+}
+
+.ade-tour-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ade-tour-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: #7c3aed;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme="dark"] .ade-tour-count {
+  color: #c4b5fd;
+}
+
+.ade-tour-skip,
+.ade-tour-pass {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--kit-text-3);
+  cursor: pointer;
+}
+
+.ade-tour-skip:hover,
+.ade-tour-pass:hover {
+  color: var(--color-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ade-tour-skip:focus-visible,
+.ade-tour-pass:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.ade-tour-pass {
+  height: 26px;
+  padding: 0 4px;
+}
+
+.ade-tour-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 19px;
+  letter-spacing: -0.005em;
+  color: var(--color-fg);
+}
+
+.ade-tour-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 17.5px;
+  color: var(--kit-text-2);
+}
+
+/* The do-it instruction: one line, an icon, the accent. The card's loudest
+   element, so the eye lands on what to do. */
+.ade-tour-ask {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 7px 10px 7px 7px;
+  border: 1px solid rgba(139, 92, 246, 0.42);
+  border-radius: 8px;
+  background: rgba(139, 92, 246, 0.12);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 17px;
+  color: var(--color-fg);
+}
+
+.ade-tour-ask-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #8b5cf6;
+  color: #ffffff;
+}
+
+.ade-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.ade-tour-actions .kit-btn {
+  gap: 5px;
+}
+
+/* Waiting: one small pill, bottom centre, raised clear of a chat's composer
+   and its controls (and of the top bar and the new chat page's Chat/CLI
+   switch at the top). */
+.ade-tour-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 128px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 7px 8px 7px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: var(--color-popup-bg, var(--color-bg));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  animation: ade-tour-pill-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ade-tour-pill-cursor {
+  flex: none;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+}
+
+.ade-tour-pill-cursor svg {
+  width: 22px;
+  height: 22px;
+}
+
+.ade-tour-pill-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.ade-tour-pill-title {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--color-fg);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ade-tour-pill-sub {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ade-tour-pill .kit-btn {
+  flex: none;
+}
+
+/* The closing card: centred, a little wider, the same solid surface. */
+.ade-tour-finish-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ade-tour-finish.ade-tour-card {
+  width: min(400px, 100%);
+  gap: 8px;
+  padding: 20px 20px 16px;
+}
+
+.ade-tour-finish-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.ade-tour-finish-list {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--kit-rule);
+}
+
+.ade-tour-finish-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--kit-rule);
+}
+
+.ade-tour-finish-list li > svg {
+  flex: none;
+  color: #8b5cf6;
+}
+
+.ade-tour-finish-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--kit-text-2);
+}
+
+.ade-tour-finish-text b {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-tour-finish-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+@keyframes ade-tour-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ade-tour-pulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+@keyframes ade-tour-card-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ade-tour-pill-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tour-ring,
+  .ade-tour-ring::after,
+  .ade-tour-card,
+  .ade-tour-pill {
+    animation: none;
+  }
+}
+
+html[data-motion="reduced"] .ade-tour-ring,
+html[data-motion="reduced"] .ade-tour-ring::after,
+html[data-motion="reduced"] .ade-tour-card,
+html[data-motion="reduced"] .ade-tour-pill {
+  animation: none;
+}

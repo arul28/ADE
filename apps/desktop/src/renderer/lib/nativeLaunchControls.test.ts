@@ -65,7 +65,7 @@ describe("nativeLaunchControls", () => {
 
   it("reads unified permission from default native controls", () => {
     const defaults = defaultNativeControls();
-    expect(readUnifiedPermissionFromNativeControls("openai/gpt-5.5", defaults)).toBe("default");
-    expect(readUnifiedPermissionFromNativeControls("anthropic/claude-opus-4-8", defaults)).toBe("default");
+    expect(readUnifiedPermissionFromNativeControls("openai/gpt-5.5", defaults)).toBe("full-auto");
+    expect(readUnifiedPermissionFromNativeControls("anthropic/claude-opus-4-8", defaults)).toBe("full-auto");
   });
 });

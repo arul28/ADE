@@ -303,3 +303,14 @@ export function createAppleDeviceOrbit(
     },
   };
 }
+
+/**
+ * How far to move toward a target this frame, the same whatever the frame
+ * rate: an exponential ease with time constant `tauSeconds`, over the time
+ * since `lastAt` (ms; 0 for the first frame of an ease), capped at 100 ms so
+ * a stalled tab does not jump the whole way at once.
+ */
+export function appleEaseFactor(lastAt: number, now: number, tauSeconds: number): number {
+  const dt = lastAt ? Math.min(0.1, Math.max(0, (now - lastAt) / 1000)) : 1 / 60;
+  return 1 - Math.exp(-dt / tauSeconds);
+}

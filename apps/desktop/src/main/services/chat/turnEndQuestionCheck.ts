@@ -8,6 +8,7 @@ import {
 } from "../../../shared/backgroundUtilityModel";
 import type { AgentChatEvent } from "../../../shared/types/chat";
 import type { SessionAttentionSource } from "../../../shared/types";
+import type { JevService } from "../jev/jevService";
 import type { Logger } from "../logging/logger";
 import {
   buildTurnEndAskPrompt,
@@ -22,6 +23,27 @@ import {
 const TIEBREAK_TIMEOUT_MS = 8_000;
 /** `sessionId:turnId` pairs remembered as checked, oldest dropped first. */
 const MAX_CHECKED_TURNS = 1_024;
+/** Jev's yes/no bars; an answer between them is no answer and falls through. */
+const JEV_ASKS_YES = 0.8;
+const JEV_ASKS_NO = 0.2;
+const JEV_WAITING_YES = 0.8;
+
+/**
+ * The one Jev request per checked turn end: does the reply ask the user, and
+ * does it say the agent waits on its own work. Measured on free Jev: optional
+ * offers 0.06–0.11, "Which do you prefer?" 0.95, CI/subagent progress notes
+ * 0.03 asks and 0.96–0.97 waiting.
+ */
+const TURN_END_JEV_QUESTIONS = {
+  asksUser: {
+    type: "noul",
+    instructions: "Does the end of the agent's reply ask the user to answer, choose, approve, or decide something the agent must wait for before it can continue? An optional offer the user can ignore (\"let me know if you want X\", \"I can also...\", \"say the word if you would rather...\") is not an ask. A progress update (work is running, the agent will report back) is not an ask.",
+  },
+  waitingOnOwnWork: {
+    type: "noul",
+    instructions: "Does the end of the agent's reply say the agent is now waiting on work it started itself (subagents, background jobs, CI, a build, a watcher) and will continue or report back when that finishes, rather than being finished or waiting on the user?",
+  },
+} as const;
 
 /** What can hold the hand down: an open approval card, or a hand already up. */
 export type TurnEndHandState = {
@@ -37,6 +59,8 @@ export type TurnEndQuestionFacts = {
   /** A subagent's questions are for the agent that spawned it. */
   isSubagentWithParent: boolean;
   backgroundWorkCount: number;
+  /** Chats this one started (nested or `--no-parent`) that are still busy; absent is none. */
+  liveChildCount?: number;
   /** The session's provider; only those with a cheap model get a tiebreak. */
   provider: string | null | undefined;
   lastUserMessage: string | null;
@@ -65,6 +89,13 @@ export type TurnEndQuestionCheckDeps = {
   }) => boolean;
   /** Clear only an inferred marker older than this committed turn start. */
   clearInferredAttention: (sessionId: string, startedAt: string) => void;
+  /** The shared Jev helper; absent where the host has none, which keeps today's path. */
+  decide?: JevService["decide"] | null;
+  /**
+   * Record (an ISO time) or clear (null) that the chat's last reply waits on
+   * its own work, which the Work fold reads as Waiting while that work runs.
+   */
+  setAwaitingOwnWork?: (sessionId: string, at: string | null) => void;
 };
 
 export type TurnEndQuestionCheck = {
@@ -78,13 +109,29 @@ function handCanRise(hand: TurnEndHandState): boolean {
   return !hand.hasPendingInput && !hand.attentionRequestedAt;
 }
 
+/** `true` at or above `yes`, `false` at or below `no`, and no answer in between. */
+function threeWay(p: number, no: number, yes: number): boolean | null {
+  if (p >= yes) return true;
+  if (p <= no) return false;
+  return null;
+}
+
+type JevTurnEndReading = { asksUser: boolean | null; waitingOnOwnWork: boolean };
+type AskDecider = "jev" | "model";
+
 /**
  * A turn that ends while the chat still owns live background work reads as
  * Working, so a question in its reply is invisible unless the agent called
  * `ade chat ask`. This reads the reply's ending and raises the hand for it:
- * clear asks at once, clear progress notes never, the rest by a cheap model
- * when the provider has one. Once per turn and live only (replay never
- * reaches here); the raised hand is what persists.
+ * clear asks at once, clear progress notes never, the rest by Jev for any
+ * provider, then by a cheap model when the provider has one and Jev gave no
+ * clear answer. Once per turn and live only (replay never reaches here); the
+ * raised hand is what persists.
+ *
+ * The same Jev request also asks whether the reply says the agent waits on
+ * its own work. A turn that ends with live background work or live child
+ * chats and says so is marked `awaitingOwnWorkAt`, which the Work fold reads
+ * as Waiting rather than Done while that work still runs.
  */
 export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): TurnEndQuestionCheck {
   const { logger } = deps;
@@ -111,21 +158,39 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     }
   };
 
-  const raise = (sessionId: string, turnId: string, question: string, decidedBy: "rules" | "model"): void => {
+  const raise = (sessionId: string, turnId: string, question: string, decidedBy: "rules" | "jev" | "model"): void => {
     const raised = deps.requestAttention({ sessionId, message: question, source: "turn_end_question" });
     logger.info("agent_chat.turn_end_question_raised", { sessionId, turnId, decidedBy, raised });
   };
 
-  const runTiebreak = async (args: {
+  /** Jev's reading of the reply, or null when Jev is absent, failed, or unsure of both. */
+  const askJev = async (
+    facts: TurnEndQuestionFacts,
+    replyText: string,
+  ): Promise<JevTurnEndReading | null> => {
+    if (!deps.decide) return null;
+    const answers = await deps.decide({
+      feature: "turn_end",
+      state: buildTurnEndAskPrompt({ userMessage: facts.lastUserMessage, replyText }),
+      questions: TURN_END_JEV_QUESTIONS,
+      priority: "background",
+    });
+    if (!answers) return null;
+    const asks = answers.asksUser.noul;
+    return {
+      asksUser: threeWay(asks, JEV_ASKS_NO, JEV_ASKS_YES),
+      waitingOnOwnWork: answers.waitingOnOwnWork.noul >= JEV_WAITING_YES,
+    };
+  };
+
+  const runCheapModel = async (args: {
     facts: TurnEndQuestionFacts;
     turnId: string;
     provider: AdeBackgroundUtilityProvider;
     replyText: string;
-  }): Promise<void> => {
+  }): Promise<boolean | null> => {
     const { facts, turnId, provider } = args;
     const { sessionId } = facts;
-    const startedAt = Date.now();
-    let asksUser: boolean | null = null;
     let cwd: string | null = null;
     try {
       // A fresh scratch directory: the classifier must see no repo, no
@@ -140,7 +205,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
         jsonSchema: TURN_END_ASK_JSON_SCHEMA,
         timeoutMs: TIEBREAK_TIMEOUT_MS,
       });
-      asksUser = parseTurnEndAskDecision(result.structuredOutput, result.text);
+      return parseTurnEndAskDecision(result.structuredOutput, result.text);
     } catch (error) {
       // Fail quiet: an unanswered tiebreak never raises a hand.
       logger.warn("agent_chat.turn_end_question_tiebreak_failed", {
@@ -149,27 +214,94 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
         provider,
         error: error instanceof Error ? error.message : String(error),
       });
+      return null;
     } finally {
       if (cwd) fs.rmSync(cwd, { recursive: true, force: true });
     }
-    // The hand may still go up only if nothing happened since the turn ended:
-    // same live chat, no user message or new turn (either clears the pending
+  };
+
+  /**
+   * Whether the reply asks the user. Jev first, for any provider; when it
+   * gives no clear answer, exactly today's path: the provider's cheap model,
+   * if any. `null` is no answer, which never raises a hand.
+   */
+  const decideAsk = async (args: {
+    facts: TurnEndQuestionFacts;
+    turnId: string;
+    /** Only set for unsure endings of background-work turns. */
+    provider: AdeBackgroundUtilityProvider | null;
+    replyText: string;
+    rulesVerdict: "unsure" | "not_ask";
+    jev: JevTurnEndReading | null;
+  }): Promise<{ asksUser: boolean | null; decidedBy: AskDecider }> => {
+    const { facts, provider, jev } = args;
+    // A progress note on a background-work turn can still ask, so Jev's ask
+    // answer stands there too. With only child chats running, a "not an ask"
+    // from the rules is final; Jev was asked only whether the agent waits.
+    const jevMayOverrule = args.rulesVerdict === "unsure" || facts.backgroundWorkCount > 0;
+    const asksUser = jevMayOverrule ? jev?.asksUser ?? null : false;
+    if (asksUser !== null || !provider) return { asksUser, decidedBy: "jev" };
+    return {
+      asksUser: await runCheapModel({ facts, turnId: args.turnId, provider, replyText: args.replyText }),
+      decidedBy: "model",
+    };
+  };
+
+  /**
+   * Acts on the decision, only if nothing happened since the turn ended: a
+   * hidden ask raises the hand; a reply that waits on the agent's own work
+   * marks the chat as awaiting it.
+   */
+  const finishTurnEnd = (args: {
+    facts: TurnEndQuestionFacts;
+    turnId: string;
+    provider: AdeBackgroundUtilityProvider | null;
+    replyText: string;
+    jev: JevTurnEndReading | null;
+    asksUser: boolean | null;
+    decidedBy: AskDecider;
+    startedAt: number;
+  }): void => {
+    const { facts, turnId, jev, asksUser, decidedBy } = args;
+    const { sessionId } = facts;
+    // Same live chat, no user message or new turn (either clears the pending
     // entry), no approval card, and no hand raised in the meantime.
     const stillOpen = pendingTurnBySession.get(sessionId) === turnId
       && facts.isStillCurrent()
       && handCanRise(deps.readHandState(sessionId));
     if (pendingTurnBySession.get(sessionId) === turnId) pendingTurnBySession.delete(sessionId);
+    const awaitingOwnWork = stillOpen && asksUser !== true && jev?.waitingOnOwnWork === true;
     logger.info("agent_chat.turn_end_question_tiebreak", {
       sessionId,
       turnId,
-      provider,
+      provider: args.provider,
+      jev: jev ? (jev.asksUser === null ? "unsure" : jev.asksUser ? "ask" : "not_ask") : "no_answer",
+      decidedBy,
       asksUser,
+      awaitingOwnWork,
       stillOpen,
-      durationMs: Date.now() - startedAt,
+      durationMs: Date.now() - args.startedAt,
     });
-    if (asksUser === true && stillOpen) {
-      raise(sessionId, turnId, turnEndQuestionText(args.replyText), "model");
+    // As with the rules, the hand is only for a reply hidden under Working.
+    if (asksUser === true && stillOpen && facts.backgroundWorkCount > 0) {
+      raise(sessionId, turnId, turnEndQuestionText(args.replyText), decidedBy);
+    } else if (awaitingOwnWork) {
+      deps.setAwaitingOwnWork?.(sessionId, new Date().toISOString());
     }
+  };
+
+  const runTiebreak = async (args: {
+    facts: TurnEndQuestionFacts;
+    turnId: string;
+    provider: AdeBackgroundUtilityProvider | null;
+    replyText: string;
+    rulesVerdict: "unsure" | "not_ask";
+  }): Promise<void> => {
+    const startedAt = Date.now();
+    // Without a Jev helper the cheap model starts at once, exactly as before.
+    const jev = deps.decide ? await askJev(args.facts, args.replyText) : null;
+    const { asksUser, decidedBy } = await decideAsk({ ...args, jev });
+    finishTurnEnd({ ...args, jev, asksUser, decidedBy, startedAt });
   };
 
   return {
@@ -177,6 +309,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       if (event.type === "status" && event.turnStatus === "started") {
         pendingTurnBySession.delete(sessionId);
         lastReplyBySession.delete(sessionId);
+        deps.setAwaitingOwnWork?.(sessionId, null);
         const startedAt = turnStartedAt?.trim();
         if (startedAt) {
           // The persisted source + timestamp fence makes duplicate and stale
@@ -188,6 +321,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       if (event.type === "user_message") {
         pendingTurnBySession.delete(sessionId);
         lastReplyBySession.delete(sessionId);
+        deps.setAwaitingOwnWork?.(sessionId, null);
         return;
       }
       if (event.type !== "text") return;
@@ -210,25 +344,34 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       const checkKey = `${sessionId}:${turnId}`;
       if (checkedTurns.has(checkKey)) return;
       rememberChecked(checkKey);
-      if (facts.isSubagentWithParent || facts.backgroundWorkCount <= 0) return;
+      const hasBackgroundWork = facts.backgroundWorkCount > 0;
+      if (facts.isSubagentWithParent || (!hasBackgroundWork && (facts.liveChildCount ?? 0) <= 0)) return;
       if (!handCanRise(deps.readHandState(sessionId))) return;
       if (!reply || (reply.turnId && reply.turnId !== turnId)) return;
 
       const classification = classifyTurnEndAsk(reply.text);
-      if (classification.verdict === "not_ask") return;
       if (classification.verdict === "ask") {
-        raise(sessionId, turnId, classification.question, "rules");
+        // With only child chats running, the row already reads Done and shows
+        // the question; the hand is for a reply hidden under Working.
+        if (hasBackgroundWork) raise(sessionId, turnId, classification.question, "rules");
         return;
       }
-      const provider = adeBackgroundUtilityProvider(facts.provider);
-      if (!provider) return;
+      // The cheap model keeps today's scope: unsure endings of background-work
+      // turns. A progress note ("not an ask") on such a turn can still ask
+      // ("…running. I need to know X before I merge."), so Jev, when it
+      // answers, gets the last word there; the cheap model does not.
+      const provider = classification.verdict === "unsure" && hasBackgroundWork
+        ? adeBackgroundUtilityProvider(facts.provider)
+        : null;
+      if (!deps.decide && !provider) return;
       pendingTurnBySession.set(sessionId, turnId);
-      void runTiebreak({ facts, turnId, provider, replyText: reply.text });
+      void runTiebreak({ facts, turnId, provider, replyText: reply.text, rulesVerdict: classification.verdict });
     },
 
     forget(sessionId) {
       lastReplyBySession.delete(sessionId);
       pendingTurnBySession.delete(sessionId);
+      deps.setAwaitingOwnWork?.(sessionId, null);
     },
   };
 }

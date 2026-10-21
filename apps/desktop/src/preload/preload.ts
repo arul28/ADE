@@ -13,6 +13,7 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
+import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type {
   JiraComment,
   JiraConnectArgs,
@@ -151,6 +152,7 @@ import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure
 // recording record is unit 2C's shape and re-declaring it here is how the two
 // drift.
 import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
+import type { UserModelCatalog } from "../main/services/router/modelCatalog";
 import type {
   ArchiveActionArgs,
   ArchiveActionResult,
@@ -252,6 +254,9 @@ import type {
   StopBackgroundServiceRequest,
   StopBackgroundServiceResult,
   AppWelcomeVideoState,
+  OnboardingProjectCandidate,
+  OnboardingProjectChat,
+  OnboardingProjectDiscovery,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
@@ -1007,6 +1012,20 @@ import type {
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
+  AppleDevicePosture,
+  AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
+  AppleDuoModelResult,
+  AppleSetPostureArgs,
+  AppleSetPostureResult,
+  AppleRuntimeDeleteArgs,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
+  AppleRuntimeInstallState,
+  AppleRuntimeInventory,
+  AppleRuntimePruneArgs,
+  AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -4672,6 +4691,14 @@ const adeBridge = {
       reason: "completed" | "dismissed",
     ): Promise<AppWelcomeVideoState> =>
       ipcRenderer.invoke(IPC.appMarkWelcomeVideoSeen, { reason }),
+    discoverOnboardingProjects: async (): Promise<OnboardingProjectDiscovery> =>
+      ipcRenderer.invoke(IPC.appDiscoverOnboardingProjects),
+    addOnboardingProjects: async (rootPaths: string[]): Promise<RecentProjectSummary[]> =>
+      ipcRenderer.invoke(IPC.appAddOnboardingProjects, { rootPaths }),
+    listOnboardingProjectChats: async (rootPath: string): Promise<OnboardingProjectChat[]> =>
+      ipcRenderer.invoke(IPC.appListOnboardingProjectChats, { rootPath }),
+    resolveOnboardingFolder: async (folder: string): Promise<OnboardingProjectCandidate | null> =>
+      ipcRenderer.invoke(IPC.appResolveOnboardingFolder, { folder }),
     getLaunchGateState: async (): Promise<{ resolved: boolean }> =>
       ipcRenderer.invoke(IPC.appGetLaunchGateState),
     resolveLaunchGate: async (): Promise<{ resolved: true }> =>
@@ -5442,6 +5469,20 @@ const adeBridge = {
       ),
   },
   ai: {
+    // The shared Jev helper on the machine `pin` names. `null` is the normal
+    // "use your fallback" answer, so a lost connection or an older brain
+    // without the action reads the same as a failed call and never throws.
+    jevDecide: <Q extends JevQuestions>(
+      request: JevDecideRequest<Q>,
+      pin?: OpenProjectBinding | null,
+    ): Promise<JevAnswers<Q> | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevAnswers<Q> | null>(pin, "ai", "jevDecide", { args: request }, async () => null)
+        .then((answers) => answers ?? null)
+        .catch(() => null),
+    jevStatus: (pin?: OpenProjectBinding | null): Promise<JevStatus | null> =>
+      callPinnedOrBoundRuntimeActionOr<JevStatus | null>(pin, "ai", "jevStatus", {}, async () => null)
+        .then((status) => status ?? null)
+        .catch(() => null),
     getStatus: async (args?: {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
@@ -6596,6 +6637,15 @@ const adeBridge = {
     getModelDetail: async (args: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> =>
       callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetModelDetail, args),
+      ),
+    // The models the machine `pin` names can run, with their registry
+    // profiles. No local IPC: without a runtime there is no catalogue.
+    getModelCatalog: async (
+      args: { provider?: string } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ catalog: UserModelCatalog } | null> =>
+      callPinnedOrBoundRuntimeActionOr<{ catalog: UserModelCatalog } | null>(
+        pin, "usage", "getModelCatalog", { args }, async () => null,
       ),
     // Machine-level (this computer's `gh` login), so main answers it directly.
     getGithubContributions: async (): Promise<GithubContributionCalendar | null> =>
@@ -9627,6 +9677,38 @@ const adeBridge = {
     ): Promise<AppleDeviceCleanupResult> =>
       callIosSimulatorMutation(pin, "deviceCleanup", args, IPC.iosSimulatorDeviceCleanup),
 
+    /** Installed simulator runtimes, the one this Xcode expects, and any download in progress. */
+    runtimeList: (pin?: OpenProjectBinding | null): Promise<AppleRuntimeInventory> =>
+      callIosSimulatorActionOr<AppleRuntimeInventory>(pin, "runtimeList", {}, () => ipcRenderer.invoke(IPC.iosSimulatorRuntimeList)),
+    /** Start downloading a runtime. Returns at once; progress arrives as `apple.runtime.install` events. */
+    runtimeInstall: (
+      args: AppleRuntimeInstallArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState> =>
+      callIosSimulatorMutation(pin, "runtimeInstall", args, IPC.iosSimulatorRuntimeInstall),
+    runtimeInstallCancel: (
+      args: AppleRuntimeScope = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState | null> =>
+      callIosSimulatorMutation(pin, "runtimeInstallCancel", args, IPC.iosSimulatorRuntimeInstallCancel),
+    /** Remove one runtime, moving or erasing the simulators on it. The person confirms first. */
+    runtimeDelete: (
+      args: AppleRuntimeDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimeDelete", args, IPC.iosSimulatorRuntimeDelete),
+    /** Remove every runtime older than the newest of its platform. */
+    runtimePrune: (
+      args: AppleRuntimePruneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeDeleteResult> =>
+      callIosSimulatorMutation(pin, "runtimePrune", args, IPC.iosSimulatorRuntimePrune),
+    xcodeRunFirstLaunch: (
+      args: AppleRuntimeScope & { confirmedByUser?: boolean } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleXcodeStatus> =>
+      callIosSimulatorMutation(pin, "xcodeRunFirstLaunch", args, IPC.iosSimulatorXcodeRunFirstLaunch),
+
     /**
      * One decoded frame from the running stream.
      *
@@ -9689,6 +9771,46 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleRotateResult> =>
       callIosSimulatorMutation(pin, "rotate", args, IPC.iosSimulatorRotate),
+    /** Fold the lane's iPhone Duo to a preset or an angle; `supported: false` on any other device. */
+    setPosture: (
+      args: AppleSetPostureArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleSetPostureResult> =>
+      callIosSimulatorMutation(pin, "setPosture", args, IPC.iosSimulatorSetPosture),
+    getPosture: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDevicePosture> =>
+      callIosSimulatorActionOr<AppleDevicePosture>(pin, "getPosture", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorGetPosture, args)),
+    /** Apple's Duo model from the owning machine's Xcode (base64), for the 3D view. */
+    /** Both Duo displays at App Store Connect's sizes, filed as proof. Folds the simulator. */
+    duoAppStoreScreenshots: (
+      args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDuoAppStoreScreenshotsResult> =>
+      callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
+    /** File a 3D render (PNG or WebM) to the proof drawer on the machine that owns the lane's device. */
+    attachRenderProof: (
+      args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ proofArtifactId: string | null }> =>
+      callIosSimulatorMutation(pin, "attachRenderProof", args, IPC.iosSimulatorAttachRenderProof),
+    /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
+    addDuoSkill: (
+      args: { laneId?: string | null; chatSessionId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleAddDuoSkillResult> =>
+      callIosSimulatorMutation(pin, "addDuoSkill", args, IPC.iosSimulatorAddDuoSkill),
+    /** The Apple pane took an `ade apple render` request, or finished it. */
+    renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),
+    renderComplete: (
+      args: { requestId: string; filed: number; error: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderComplete", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderComplete, args)),
+    getDuoModel: (pin?: OpenProjectBinding | null): Promise<AppleDuoModelResult> =>
+      callIosSimulatorActionOr<AppleDuoModelResult>(pin, "getDuoModel", {}, () => ipcRenderer.invoke(IPC.iosSimulatorGetDuoModel)),
     /**
      * The helper's own scroll gesture, by viewport direction.
      *
@@ -14092,6 +14214,7 @@ const adeBridge = {
     weather: {
       search: (query: string) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherSearch, query),
       get: (args: { latitude: number; longitude: number }) => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherGet, args),
+      locate: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.weatherLocate),
     },
     nowPlaying: {
       subscribe: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.nowPlayingSubscribe),

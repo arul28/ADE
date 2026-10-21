@@ -5,6 +5,12 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
+import { openWhatsNew } from "../announcements/AnnouncementsHost";
+import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
+import { resetOnboardingTiers } from "../../onboarding/resetOnboardingTiers";
+import { setSuggestionsTestMode, suggestionsTestMode } from "../../onboarding/situationalSuggestions";
+import { showToast } from "./toast/toastStore";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
@@ -22,7 +28,8 @@ import {
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate } from "react-router-dom";
+import { usePaletteSuggestions } from "./usePaletteSuggestions";
+import { useLocation, useNavigate } from "react-router-dom";
 import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
@@ -112,9 +119,11 @@ import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
   selectActiveProjectStateKey,
+  projectStateKeyForBinding,
   useAppStore,
   useRootAppStore,
 } from "../../state/appStore";
+import { openStartChatDraft } from "../../lib/workDraft";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
@@ -123,6 +132,8 @@ import {
   useChatFindPaletteCommand,
 } from "../chat/chatFindPalette";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanes/lanePageModel";
+import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
@@ -157,6 +168,44 @@ type ProjectActionOutcome = {
   location: ProjectLocation;
   projectId?: string;
   error?: string;
+};
+
+/** The focused lane's PR row: open its pull request, or start one when it has none. */
+function lanePrCommand(
+  lane: { id: string; name: string },
+  tag: LaneTabPrTag | null,
+  navigate: (path: string) => void,
+): Command {
+  if (tag) {
+    return {
+      id: `lane-open-pr-${lane.id}`,
+      title: `Open PR #${tag.githubPrNumber}: ${tag.title}`,
+      hint: `Open the pull request for ${lane.name} in ADE's PRs tab`,
+      keywords: ["open pr", "open pull request", "this lane", "for this lane", lane.name],
+      group: "Lanes",
+      run: () => {
+        const route = lanePrTagRoutePath(tag);
+        if (route) navigate(route);
+      },
+    };
+  }
+  return {
+    id: `lane-create-pr-${lane.id}`,
+    title: `Create a PR for ${lane.name}`,
+    hint: `Open the pull request creator for ${lane.name}`,
+    keywords: ["create pr", "create pull request", "open pr", "this lane", "for this lane", lane.name],
+    group: "Lanes",
+    // The active project binding is the selected lane's runtime. PRsPage
+    // reads the source lane from that same bound project after navigation.
+    run: () => navigate(`/prs?${new URLSearchParams({ create: "1", sourceLaneId: lane.id }).toString()}`),
+  };
+}
+
+/** Hand-written hints for settings whose "tab · group" caption says too little. */
+const SETTING_ENTRY_HINTS: Record<string, string> = {
+  "appearance.chat-font-size": "Change how large chat messages appear",
+  "archive.items": "Browse or restore older lanes, chats, and shells",
+  "lanes-git.lanes": "Manage active, stale, merged, and archived lanes",
 };
 
 type Command = {
@@ -221,11 +270,17 @@ export function CommandPalette({
   onOpenChange: (v: boolean) => void;
   intent?: CommandPaletteIntent;
 }) {
+  const location = useLocation();
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const selectedLanePr = useCommandPaletteLanePr({ active: open, lane: selectedLane, pin: projectBinding });
+  const runtimePinRef = useRef(projectBinding);
+  runtimePinRef.current = projectBinding;
+  const runtimePinKey = projectBinding?.key ?? null;
   const selectLane = useAppStore((s) => s.selectLane);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
@@ -360,6 +415,7 @@ export function CommandPalette({
     };
   }, [boundRuntimeName, boundTargetId, projectBinding, remoteSnapshot]);
   const listRef = useRef<HTMLUListElement>(null);
+  const normalFlatCountRef = useRef(0);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   // Tracks the location whose path is currently loaded into `browseInput`, so
@@ -691,6 +747,7 @@ export function CommandPalette({
         title: "Go to PRs",
         hint: "Review pull requests",
         shortcut: "G R",
+        keywords: ["open pull request", "lane pull request", "current lane", "review"],
         group: "Navigation",
         run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs"),
       },
@@ -742,7 +799,9 @@ export function CommandPalette({
       ...availableSettingsEntries().map((entry) => ({
         id: `setting-${entry.id}`,
         title: entry.label,
-        hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
+        hint:
+          SETTING_ENTRY_HINTS[entry.id] ??
+          `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
         // Keywords never render; they widen what the palette's own filter
         // matches on, so "crash" reaches "Send a report to ADE".
@@ -769,6 +828,31 @@ export function CommandPalette({
         hint: "Switch to work / terminals view",
         group: "Actions",
         run: () => navigate("/work"),
+      },
+      {
+        id: "action-new-chat",
+        title: selectedLane
+          ? `Start a new chat in ${selectedLane.name}`
+          : "Start a new chat",
+        hint: selectedLane
+          ? "Create a chat in the selected lane"
+          : "Open a blank chat in Work",
+        keywords: ["new conversation", "start chat", "this lane", "selected lane"],
+        group: "Actions",
+        run: () => {
+          const projectKey = projectStateKeyForBinding(
+            projectBinding,
+            project?.rootPath,
+          );
+          if (!projectKey) return;
+          openStartChatDraft(
+            setWorkViewState,
+            projectKey,
+            selectedLane?.id ?? "",
+            null,
+          );
+          navigate("/work");
+        },
       },
       {
         id: "action-refresh-packs",
@@ -813,6 +897,9 @@ export function CommandPalette({
           navigate(`/lanes?laneId=${encodeURIComponent(nextLane.id)}`);
         },
       },
+      ...(selectedLane && selectedLanePr?.status === "ready"
+        ? [lanePrCommand(selectedLane, selectedLanePr.tag, navigate)]
+        : []),
       {
         id: "lane-filter",
         title: "Focus Lane Filter",
@@ -831,6 +918,30 @@ export function CommandPalette({
         },
       },
       {
+        id: "help-whats-new",
+        title: "What's new",
+        hint: "Recent features, one page each",
+        group: "Help",
+        keywords: ["help", "new", "release", "features", "changelog", "announcements"],
+        run: () => openWhatsNew(),
+      },
+      {
+        id: "help-ade-tips",
+        title: "ADE Tips",
+        hint: "What ADE can do, one line each",
+        group: "Help",
+        keywords: ["help", "tips", "features", "learn"],
+        run: () => openAdeTips(),
+      },
+      {
+        id: "help-show-around",
+        title: "Show me around again",
+        hint: "Welcome, projects and first-chat hints",
+        group: "Help",
+        keywords: ["onboarding", "welcome", "tour", "setup"],
+        run: showMeAroundAgain,
+      },
+      {
         id: "ping",
         title: "Ping preload bridge",
         hint: 'Expect "pong"',
@@ -840,6 +951,41 @@ export function CommandPalette({
         },
       },
     ];
+
+    // Dev builds: test onboarding's later tiers without waiting days.
+    if (import.meta.env.DEV) {
+      next.push(
+        {
+          id: "dev-suggestions-test-mode",
+          title: "Dev: Suggestions test mode",
+          hint: "Show each situational suggestion as soon as its signal is there",
+          group: "Debug",
+          keywords: ["suggestion", "tier", "onboarding", "test"],
+          run: () => {
+            const on = !suggestionsTestMode();
+            setSuggestionsTestMode(on);
+            showToast({
+              tone: "info",
+              title: on ? "Suggestions test mode is on" : "Suggestions test mode is off",
+              message: on
+                ? "No cooldown, no once-per-launch, no snooze. Answer a card and the next signal can show."
+                : "Suggestions follow their normal rules again.",
+            });
+          },
+        },
+        {
+          id: "dev-reset-tips",
+          title: "Dev: Reset Tips, suggestions and What's new",
+          hint: "Forget what this computer has seen, then reload",
+          group: "Debug",
+          keywords: ["suggestion", "whats new", "announcement", "tips", "onboarding", "reset"],
+          run: () => {
+            resetOnboardingTiers();
+            window.location.reload();
+          },
+        },
+      );
+    }
 
     // The chat in front of the user can be restarted from here: a fresh
     // provider process with the same conversation.
@@ -873,7 +1019,11 @@ export function CommandPalette({
           command.id === "project-clone" ||
           command.id === "project-remote" ||
           command.id === "go-project" ||
-          command.id === "ping",
+          command.id === "help-whats-new" ||
+          command.id === "help-ade-tips" ||
+          command.id === "help-show-around" ||
+          command.id === "ping" ||
+          command.id.startsWith("dev-"),
       );
     }
 
@@ -883,9 +1033,13 @@ export function CommandPalette({
     hasActiveProject,
     lanes,
     navigate,
+    projectBinding,
     project?.rootPath,
     selectLane,
     selectedLaneId,
+    selectedLane,
+    selectedLanePr,
+    setWorkViewState,
     startProjectBrowse,
     startProjectClone,
     startProjectCreate,
@@ -908,6 +1062,28 @@ export function CommandPalette({
       return parsedWorkQuery.terms.every((term) => searchable.includes(term));
     });
   }, [commands, parsedWorkQuery.terms]);
+
+  const isFocusedChat = Boolean(
+    activeSessionTarget && isChatToolType(activeSessionTarget.toolType),
+  );
+  const suggestedCommands = usePaletteSuggestions({
+    open,
+    defaultMode: mode === "default",
+    q,
+    commands,
+    filtered,
+    terms: parsedWorkQuery.terms,
+    hasWorkFilters: parsedWorkQuery.filterTokens.length > 0 || parsedWorkQuery.tracked !== null,
+    pathname: location.pathname,
+    selectedLaneId: selectedLane?.id ?? null,
+    selectedLaneName: selectedLane?.name,
+    isFocusedChat,
+    focusedChatId: activeSessionTarget?.id,
+    runtimePinKey,
+    runtimePinRef,
+    normalFlatCountRef,
+    setSelectedIdx,
+  });
 
   const grouped = useMemo(() => {
     const groups: { label: string; items: Command[] }[] = [];
@@ -1065,6 +1241,7 @@ export function CommandPalette({
   const paletteSections = useMemo(
     () =>
       buildPaletteSections({
+        suggestedCount: suggestedCommands.length,
         commandsLead,
         threadCount: visibleWorkResults.length,
         commandCount: filtered.length,
@@ -1076,10 +1253,12 @@ export function CommandPalette({
       commandsLead,
       filtered.length,
       flatEntities.length,
+      suggestedCommands.length,
       visibleWorkResults.length,
     ],
   );
   const totalFlat = paletteSectionsTotal(paletteSections);
+  normalFlatCountRef.current = totalFlat - suggestedCommands.length;
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1611,6 +1790,11 @@ export function CommandPalette({
       // that produced the row on screen.
       const hit = paletteSectionAt(paletteSections, index);
       if (!hit) return;
+      if (hit.section.key === "suggested") {
+        const command = suggestedCommands[hit.offset];
+        if (command) runCommand(command);
+        return;
+      }
       if (hit.section.key === "chatFind") {
         if (chatFindCommand) runCommand(chatFindCommand);
         return;
@@ -1640,6 +1824,7 @@ export function CommandPalette({
       paletteSections,
       renderedCommands,
       runCommand,
+      suggestedCommands,
       toggleExpandKind,
       visibleWorkResults,
     ],
@@ -2666,9 +2851,8 @@ export function CommandPalette({
                               groups: { label: string; items: Command[] }[],
                               startIndex: number,
                             ) => {
-                              // The groups are consecutive slices of
-                              // `renderedCommands`, so a group's first flat index
-                              // is the running sum of the groups before it.
+                              // A group's first flat index is the running sum
+                              // of the command rows before it in this section.
                               let cursor = startIndex;
                               const groupStarts = groups.map((group) => {
                                 const start = cursor;
@@ -2809,6 +2993,12 @@ export function CommandPalette({
                             return walkPaletteSections(
                               paletteSections,
                               (section, startIndex) => {
+                                if (section.key === "suggested") {
+                                  return renderCommandGroups(
+                                    [{ label: "Suggested", items: suggestedCommands }],
+                                    startIndex,
+                                  );
+                                }
                                 if (section.key === "chatFind") {
                                   return chatFindCommand
                                     ? renderCommandGroups(

@@ -32,6 +32,7 @@ import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
+import { SmartDecisionsSection } from "./SmartDecisionsSection";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
 
@@ -167,6 +168,9 @@ export function ChatSection() {
             <LaunchPromptSection />
 
             <PromptSuggestionsSection />
+
+            {/* Jev's calls about chats, and its model hint in the composer. */}
+            <SmartDecisionsSection />
 
             <ClaudeModsSection />
 

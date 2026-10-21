@@ -29,6 +29,7 @@ import type {
   ProvidersViewContext,
 } from "./types";
 import { statusProbeFailed } from "./types";
+import { providerStatusConnected } from "./providerConnected";
 
 type AcpProviderSpec = {
   id: AcpSettingsProviderId;
@@ -151,7 +152,7 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
       message: `This machine did not report ${spec.label} status.`,
     };
   }
-  if (connection.runtimeAvailable) {
+  if (providerStatusConnected(id, ctx.status)) {
     return { state: "connected", label: "Connected", message: "Connection verified." };
   }
   if (connection.runtimeDetected) {

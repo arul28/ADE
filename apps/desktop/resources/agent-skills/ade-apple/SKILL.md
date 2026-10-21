@@ -155,14 +155,20 @@ a different kind and calling it done.
 ## The lane's device
 
 One simulator per lane. ADE creates one on first ask, or binds one you already
-have. **ADE never downloads a runtime.** With none installed you get
-`APPLE_NO_INSTALLED_SIMULATORS` — tell the user to open Xcode ▸ Settings ▸
-Components.
+have. Creating a device never downloads anything. With no runtime installed you
+get `APPLE_NO_INSTALLED_SIMULATORS`: run `ade apple runtimes` to see what this
+Xcode needs, and `ade apple runtimes install` to fetch it (about 8 GB per
+runtime, in the background; re-run `ade apple runtimes` for progress). Tell the
+user before you start a download. Removing a runtime erases or moves every
+simulator on it, so it is the user's call, from the Apple Development panel's
+Runtimes section; agents cannot do it.
 
 Two facts that decide what you should do:
 
-- A **runtime** is the iOS image. It is the large download, one per iOS
-  version, and ADE will not fetch one.
+- A **runtime** is the iOS image. It is the large download (about 8 GB),
+  one per iOS version, fetched only by `ade apple runtimes install` after you
+  tell the user. Point releases can be narrow: iOS 27.1 runs only the iPhone
+  Duo, and every other current iPhone runs on iOS 27.0.
 - A **device** is an instance made from a runtime. Creating one copies no iOS,
   so it is cheap. A new lane device is empty: it copies nothing from any other
   simulator and grows only with what the lane installs. A device that is
@@ -238,6 +244,29 @@ Name elements, not pixels.
   refusal as a broken simulator. `verification: already-on-axis` means the
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
+
+- Folding (iPhone Duo only): `fold closed|open|laptop|book|tent` or
+  `fold --angle 120`, then read `posture` back. The answer is what the
+  simulator did: `activeScreenId` 1 is the cover, 3 the inner display, and the
+  live view, taps and typing follow it. On any other device it answers
+  `supported: false`. Test a layout in more than one pose, and fold during a
+  session, not only at launch. For a demo, `fold --sequence closed,open,tent`
+  inside a recording adds a caption per pose.
+
+- Getting an app ready for the Duo: `duo-skill` copies Apple's
+  `app-resizability` skill (from Xcode 27) into the lane's
+  `.agents/skills`; read it and follow it. It moves a UIKit app onto the scene
+  life cycle (iOS 27 SDK apps without one do not launch) and off
+  `UIScreen.main`, the idiom and the interface orientation. Then prove it:
+  `fold closed`, `screenshot`, `fold open`, `screenshot`, without relaunching.
+  It stops to ask whether the scene setup goes in Info.plist or code.
+
+- 3D renders: `render --angles front,three-quarter-left --poses closed,open`
+  (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
+  of the 3D device with its live screen to the proof drawer. It needs the
+  lane's Apple pane open in ADE desktop on the device's machine (the pane
+  does the rendering); otherwise it says so. On a Duo each pose folds the
+  simulator first.
 
 Agent launches stay in the background; `apple show` brings the device up at
 any time.

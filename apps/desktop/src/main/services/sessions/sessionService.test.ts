@@ -2513,3 +2513,38 @@ describe("sessionService attached shell archiving", () => {
     }
   });
 });
+
+describe("sessionService archived lane backfill", () => {
+  it("archives the chats of lanes archived earlier once, and leaves a chat the user restored alone", async () => {
+    const projectRoot = makeProjectRoot("ade-archived-lane-backfill-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+    try {
+      insertProjectGraph(db);
+      const laneArchivedAt = "2026-03-18T00:00:00.000Z";
+      db.run("update lanes set status = 'archived', archived_at = ? where id = 'lane-1'", [laneArchivedAt]);
+      for (const id of ["chat-a", "chat-b"]) {
+        db.run(
+          `insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status, tool_type)
+           values (?, 'lane-1', ?, '2026-03-17T00:00:00.000Z', ?, 'completed', 'codex-chat')`,
+          [id, id, `/tmp/${id}.log`],
+        );
+      }
+      const archived = (id: string) =>
+        db.get<{ archivedAt: string | null }>("select archived_at as archivedAt from terminal_sessions where id = ?", [id])?.archivedAt ?? null;
+
+      // First start after the upgrade: the lane's chats go with it.
+      expect(createSessionService({ db }).archiveSessionsOfArchivedLanes()).toBe(2);
+      expect(archived("chat-a")).toBe(laneArchivedAt);
+
+      // The user brings one chat back from Archive; the lane stays archived.
+      db.run("update terminal_sessions set archived_at = null where id = 'chat-a'");
+
+      // Every later start: the restored chat stays restored.
+      expect(createSessionService({ db }).archiveSessionsOfArchivedLanes()).toBe(0);
+      expect(archived("chat-a")).toBeNull();
+      expect(archived("chat-b")).toBe(laneArchivedAt);
+    } finally {
+      await db.close();
+    }
+  });
+});

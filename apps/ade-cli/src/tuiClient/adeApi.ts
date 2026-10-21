@@ -662,7 +662,7 @@ export async function startCliTerminalSession(args: {
     reasoningEffort: args.reasoningEffort ?? undefined,
     ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
     ...launchIdentityFields(resolveLaunchIdentity(args)),
-    permissionMode: args.permissionMode ?? "default",
+    permissionMode: args.permissionMode ?? "full-auto",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,
     rows: args.rows,

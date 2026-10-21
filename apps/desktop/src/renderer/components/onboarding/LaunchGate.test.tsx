@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import React, { useEffect } from "react";
+import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,17 +37,6 @@ vi.mock("./GlassSignInCard", () => ({
   GlassSignInCard: ({ onSignedIn }: { onSignedIn: () => void }) => (
     <button type="button" onClick={onSignedIn}>Sign in test</button>
   ),
-}));
-
-vi.mock("./WelcomeVideoGate", () => ({
-  WelcomeVideoGate: ({
-    onVisibilityChange,
-  }: {
-    onVisibilityChange: (visible: boolean, checking: boolean) => void;
-  }) => {
-    useEffect(() => onVisibilityChange(false, false), [onVisibilityChange]);
-    return null;
-  },
 }));
 
 import { LaunchGate } from "./LaunchGate";

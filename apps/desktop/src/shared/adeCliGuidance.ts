@@ -278,6 +278,10 @@ export function buildAdeBootstrapGuidance(
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
     "Visuals: when there is an obvious thing to show and a picture reads faster than prose (status across many items, a comparison, a trend), add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first; check with `ade scene preview`.",
+    // The one proof line every agent sees. Chat shows a picture only from the
+    // project's own files or the proof store; an agent that linked a screenshot
+    // it saved to /tmp left the user a chip saying "Outside this project".
+    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",

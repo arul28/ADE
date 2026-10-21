@@ -2102,6 +2102,42 @@ export type AiChatConfig = {
    * in `.ade/local.yaml`, so it is per project and per machine.
    */
   promptSuggestionsEnabled?: boolean;
+  /**
+   * "Smart decisions (Jev)": let ADE ask the Jev decision model small
+   * questions (did a turn end on a question?) before its built-in rules. On
+   * unless set to false. OpenCode's free Jev needs no sign-in; the ADE bonus
+   * takes over when its daily allowance is out. Lives in `.ade/local.yaml`.
+   */
+  smartDecisionsEnabled?: boolean;
+  /**
+   * Once OpenCode's free allowance is out, spend the user's own OpenCode Zen
+   * balance on Jev before the ADE bonus. Off unless set to true; needs a Zen
+   * sign-in on this machine.
+   */
+  jevZenCreditEnabled?: boolean;
+  /**
+   * The Smart decisions groups (`shared/jevSettings.ts`), each on unless set
+   * to false and only asked while `smartDecisionsEnabled` is on: whether a
+   * chat or CLI is waiting on you and status lines are current; settle
+   * suggestions for finished chats; ⌘K's Suggested commands; new lanes' emoji.
+   */
+  smartChatStatusEnabled?: boolean;
+  smartSettleNudgeEnabled?: boolean;
+  smartPaletteEnabled?: boolean;
+  smartLaneEmojiEnabled?: boolean;
+  /**
+   * Under "Waiting on you": also check plain terminals (not only agent CLIs)
+   * for a prompt waiting on the user, which sends their last screen to Jev,
+   * redacted and capped at 4 KB. On unless set to false.
+   */
+  smartPlainTerminalsEnabled?: boolean;
+  /**
+   * Jev's model and effort hint beside the composer's pickers (needs Smart
+   * decisions on). `model_and_effort` (the default) may suggest another model;
+   * `effort_only` only suggests an effort on the chosen model; `off` shows
+   * nothing and is the group's switch.
+   */
+  modelHintMode?: "model_and_effort" | "effort_only" | "off";
 };
 export type AiConfig = {
   compaction?: Record<string, ProviderCompactionSettings>;

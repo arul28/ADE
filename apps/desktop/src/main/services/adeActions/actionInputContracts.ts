@@ -282,6 +282,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\", limit?: number }",
       example: "ade router routes --provider claude --text",
     },
+    getModelCatalog: {
+      description:
+        "List every model this machine can run with its full model registry profile: Intelligence Index and every per-eval score, domain and personality indices, modalities, license, speed, list prices, Coding Agent Index rows and linked speech leaderboard rows, plus the harness and who bills it (plan, metered, free). Registry data is based on Artificial Analysis (artificialanalysis.ai).",
+      input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\" }",
+      example: "ade models catalog --text",
+    },
+    getModelSheet: {
+      description:
+        "List every model this machine can run, grouped by model family and organized by the kind of task it suits: a 0-1 score per task kind (question, research, review, small_edit, feature, debugging, refactor, writing, vision) at each measured effort, the best effort per kind, speed and cost tiers, billing and harness, how unmatched names were matched, and plain-English notes (summary, strengths, weaknesses, best for, avoid for). Registry data is based on Artificial Analysis (artificialanalysis.ai).",
+      input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\" }",
+      example: "ade models sheet --text",
+    },
     previewModelRoute: {
       description:
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",

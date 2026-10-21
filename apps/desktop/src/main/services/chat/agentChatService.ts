@@ -456,6 +456,8 @@ import {
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
 import { createTurnEndQuestionCheck } from "./turnEndQuestionCheck";
+import { createAwaitingOwnWorkTracker } from "./awaitingOwnWorkTracker";
+import type { JevService } from "../jev/jevService";
 import { createNextPromptSuggestion, sanitizePromptSuggestion } from "./nextPromptSuggestion";
 import {
   exceedsInlineFileLimit,
@@ -1388,6 +1390,7 @@ import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
   buildSessionIntelligenceModelCandidates,
+  extractLatestAssistantParagraphs,
   formatConversationTranscript,
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
@@ -1396,6 +1399,7 @@ import {
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
+import { createStatusLineStaleRegen } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
   mapCursorSdkMessageToChatEvents,
@@ -11120,6 +11124,11 @@ export function createAgentChatService(args: {
    */
   turnUsageLedger?: TurnUsageLedger | null;
   /**
+   * The shared Jev helper (`ai.jevDecide`). The turn-end question check asks
+   * it first; absent (tests, the in-process desktop) keeps today's path.
+   */
+  jevDecide?: JevService["decide"] | null;
+  /**
    * The model router in shadow mode. It watches subagent starts and results
    * and logs the route it would have picked; it never changes a turn. Absent
    * in tests and in hosts that do not keep one.
@@ -11285,6 +11294,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     requestSessionAttention = (request) =>
       sessionService.requestAttention(request.sessionId, request.message, request.source),
+    jevDecide,
     turnUsageLedger,
     modelRouter,
     onClaudeHooksIgnored,
@@ -12704,6 +12714,26 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  /** Chats whose last reply Jev read as waiting on their own work; read by the session summary. */
+  const awaitingOwnWork = createAwaitingOwnWorkTracker({
+    logger,
+    // The marker lives on the summary, so the Work list must read it again.
+    onChanged: (sessionId) => emitTransientChatEnvelope(sessionId, { type: "session_meta_updated" }),
+  });
+  /** Chats this one started, nested or `--no-parent`, that are still busy. */
+  const countLiveChildChats = (sessionId: string): number => {
+    let count = 0;
+    for (const child of managedSessions.values()) {
+      if (child.deleted || child.session.id === sessionId) continue;
+      if (child.session.orchestrationParentSessionId !== sessionId && child.session.launchedBySessionId !== sessionId) continue;
+      if (
+        child.session.status === "active"
+        || runtimeMidTurn(child)
+        || totalBackgroundWork(runtimeBackgroundWork(child.runtime ?? null)) > 0
+      ) count += 1;
+    }
+    return count;
+  };
   // Declared before `notifyChatSessionEnded` for the same reason as `autoResume`.
   const turnEndQuestion = createTurnEndQuestionCheck({
     logger,
@@ -12722,6 +12752,8 @@ export function createAgentChatService(args: {
     requestAttention: requestSessionAttention,
     clearInferredAttention: (sessionId, startedAt) =>
       sessionService.clearAttentionRequest(sessionId, "turn_end_question", startedAt),
+    decide: jevDecide ?? null,
+    setAwaitingOwnWork: awaitingOwnWork.set,
   });
   // ADE's next-prompt suggestion for providers without a native one. Runs on
   // the same single model that names the chat: the vendor's cheap helper
@@ -18124,8 +18156,12 @@ export function createAgentChatService(args: {
     const permissions = ai.permissions ?? {};
     const chat = ai.chat ?? {};
     const si = ai.sessionIntelligence;
-    const cliMode = permissions.cli?.mode ?? "edit";
-    const inProcessMode = permissions.inProcess?.mode ?? "edit";
+    // With nothing configured, a chat launched without its own controls (CLI,
+    // phone, automation, an agent's spawn) runs full access, the same default
+    // the desktop composer starts on. Anything the project configures still
+    // wins, and spawned chats stay under their parent's permission ceiling.
+    const cliMode = permissions.cli?.mode ?? "full-auto";
+    const inProcessMode = permissions.inProcess?.mode ?? "full-auto";
 
     const approvalPolicy = (() => {
       const configuredCodex = permissions.providers?.codex;
@@ -18140,10 +18176,10 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      // Codex chat defaults match the documented "Default permissions" preset:
-      // workspace-write + on-request. Legacy shared CLI edit-mode fallbacks map
-      // to "untrusted", but that represents the explicit Codex edit preset
-      // rather than the default chat preset.
+      // Unconfigured, `cliMode` is full-auto (see above), so Codex runs
+      // never-ask. A configured shared `edit` mode maps to the "Default
+      // permissions" preset (workspace-write + on-request), not to the
+      // explicit Codex edit preset ("untrusted").
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
       return "on-request" as const;
@@ -20612,6 +20648,32 @@ export function createAgentChatService(args: {
     }
   };
 
+  const regenStaleStatusLine = createStatusLineStaleRegen({
+    decide: jevDecide,
+    logger,
+    readStatusLine: (sessionId) => sessionService.get(sessionId)?.statusNote,
+    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }),
+  });
+
+  /** An agent-written status line is kept unless Jev reads the final reply as past it. */
+  const checkAgentWrittenStatusLine = (managed: ManagedChatSession): void => {
+    const idleSinceAt = managed.session.idleSinceAt;
+    regenStaleStatusLine({
+      sessionId: managed.session.id,
+      readTurn: () => {
+        const entries = collectConversationEntries(managed);
+        return {
+          reply: extractLatestAssistantParagraphs(entries),
+          userMessage: [...entries].reverse().find((entry) => entry.role === "user")?.text ?? null,
+        };
+      },
+      // Only while nothing moved: no new turn since.
+      isUnchanged: () => !managed.deleted
+        && managed.session.status === "idle"
+        && managed.session.idleSinceAt === idleSinceAt,
+    });
+  };
+
   const maybeRefreshIdleStatusLine = (
     managed: ManagedChatSession,
     turnStartedAt: string | null | undefined,
@@ -20622,7 +20684,10 @@ export function createAgentChatService(args: {
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);
       const turnMs = Date.parse(turnStartedAt);
-      if (Number.isFinite(noteMs) && Number.isFinite(turnMs) && noteMs >= turnMs) return;
+      if (Number.isFinite(noteMs) && Number.isFinite(turnMs) && noteMs >= turnMs) {
+        checkAgentWrittenStatusLine(managed);
+        return;
+      }
     }
     void regenerateSessionMetadata({
       sessionId: managed.session.id,
@@ -22132,6 +22197,7 @@ export function createAgentChatService(args: {
         isSubagentWithParent: managed.session.spawnKind === "subagent"
           && Boolean(managed.session.orchestrationParentSessionId?.trim()),
         backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
+        liveChildCount: countLiveChildChats(managed.session.id),
         provider: managed.session.provider,
         lastUserMessage: lastUser ? lastUser.displayText ?? lastUser.text : null,
         isStillCurrent: () => !managed.deleted && managedSessions.get(managed.session.id) === managed,
@@ -46897,6 +46963,7 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
     runtimeActor,
+    rememberLaunchDefaults: rememberAsLaunchDefaults,
     launchedBySessionId: requestedLaunchedBySessionId,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
@@ -47348,7 +47415,7 @@ export function createAgentChatService(args: {
           copilotPermissionMode: requestedCopilotPermissionMode
             ?? (effectivePermissionMode === "plan" ? "plan"
               : effectivePermissionMode === "edit" ? "auto-edit"
-                : effectivePermissionMode === "full-auto" ? "full-auto"
+                : effectivePermissionMode === "full-auto" || effectivePermissionMode == null ? "full-auto"
                   : "ask"),
         };
       }
@@ -47358,9 +47425,10 @@ export function createAgentChatService(args: {
         };
       }
       if (effectiveProvider === "muse") {
+        // Nothing asked for: full access, like every other provider's fallback.
         const museMode = requestedMusePermissionMode
           ?? musePermissionModeFromLegacyPermissionMode(effectivePermissionMode)
-          ?? "onRequest";
+          ?? "allowAll";
         return {
           interactionMode: effectivePermissionMode === "plan" ? "plan" as const : "default" as const,
           musePermissionMode: museMode,
@@ -47724,8 +47792,10 @@ export function createAgentChatService(args: {
         throw new Error(claim.message);
       }
     }
-    // Only a person's choice moves the machine's defaults.
-    if (!runtimeActor) rememberLaunchDefaults(managed.session);
+    // Only a person's choice moves the machine's defaults. A launch the
+    // person did not configure (the onboarding tour's first chat on a cheap
+    // model) opts out.
+    if (!runtimeActor && rememberAsLaunchDefaults !== false) rememberLaunchDefaults(managed.session);
     return managed.session;
   };
 
@@ -63429,6 +63499,7 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
+      ...awaitingOwnWork.summaryFields(row.id),
       ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),

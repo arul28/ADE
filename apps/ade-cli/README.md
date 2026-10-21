@@ -760,6 +760,13 @@ ade --socket apple type "reddit" --submit --text                   # --submit pr
 ade --socket apple key return --text                               # named keys: return (alias enter), tab
 ade --socket apple record-start --text                             # record-stop --keep|--discard, record-list, record-delete --id <id>
 ade apple show --text                                              # put the device on the user's screen; --floating for the floating player
+# iPhone Duo and runtimes.
+ade apple fold closed --text                                       # closed|open|laptop|book|tent, --angle 120, --sequence closed,open,tent
+ade apple posture --text                                           # hinge angle, orientation and the live panel (1 cover, 3 inner)
+ade apple runtimes --text                                          # list; `runtimes install [--version 27.1]`, `runtimes cancel`
+ade apple render --poses closed,open --angles front --text         # 3D renders by the open Apple pane, filed as proof
+ade apple app-store-shots --text                                   # both Duo panels at App Store Connect's sizes
+ade apple duo-skill --text                                         # Apple's app-resizability skill into the lane's .agents/skills
 # Device event log: the app's own log rows interleaved with what ADE did.
 ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it
 ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture; --force takes a log another chat started

@@ -3354,6 +3354,13 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
   /**
+   * When the turn-end check (Jev) read this chat's last reply as waiting on
+   * its own work (subagents, CI, a watcher it started) rather than finished
+   * or asking the user. Cleared when the next turn starts or the user writes.
+   * Live only, in the brain that runs the chat; absent otherwise.
+   */
+  awaitingOwnWorkAt?: string | null;
+  /**
    * A Claude `--bg` job this session started, when one is still recorded.
    *
    * A RECORD, not a liveness signal: it survives the job finishing and survives
@@ -4090,6 +4097,12 @@ export type AgentChatPermissionPolicy = {
 export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
   runtimeActor?: AgentChatRuntimeActor;
+  /**
+   * `false`: this launch does not become the machine's remembered launch
+   * defaults (`chat-launch-defaults.json`). For launches ADE configured rather
+   * than the person, such as the onboarding tour's first chat. Absent: remember.
+   */
+  rememberLaunchDefaults?: boolean;
   laneId: string;
   provider: AgentChatProvider;
   model: string;

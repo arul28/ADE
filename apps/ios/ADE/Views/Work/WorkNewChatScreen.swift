@@ -673,7 +673,7 @@ struct WorkNewChatScreen: View {
   @State private var busy: Bool = false
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
-  @State private var runtimeMode: String = "default"
+  @State private var runtimeMode: String = "full-auto"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
   /// Copilot's context tier and Auto profile for the chat about to be created.
@@ -775,7 +775,7 @@ struct WorkNewChatScreen: View {
     openingSelection = WorkComposerPreferences.Selection(
       provider: restoredProvider,
       modelId: restoredModelId,
-      runtimeMode: saved?.runtimeMode ?? "default",
+      runtimeMode: saved?.runtimeMode ?? workDefaultRuntimeMode(provider: restoredProvider),
       reasoningEffort: saved?.reasoningEffort ?? "",
       codexFastMode: saved?.codexFastMode ?? false
     )

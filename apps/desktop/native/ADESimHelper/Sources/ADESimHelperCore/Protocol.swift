@@ -94,6 +94,10 @@ public enum SimHelperCommand: Equatable, Sendable {
     case type(id: String, udid: String, text: String)
     case scroll(id: String, udid: String, deltaX: Double, deltaY: Double, anchor: DevicePoint?)
     case orientation(id: String, udid: String, value: Int)
+    /// A foldable's pose: one of `DevicePosture.poses`, or a raw hinge angle in degrees (0–180).
+    case posture(id: String, udid: String, pose: String?, angle: Double?)
+    /// The hinge angle, physical orientation and which display is active.
+    case postureGet(id: String, udid: String)
     case axDescribe(id: String, udid: String)
     case axFrontmost(id: String, udid: String)
     case screenshot(id: String, udid: String, path: String)
@@ -129,6 +133,8 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .type(id, _, _): return id
         case let .scroll(id, _, _, _, _): return id
         case let .orientation(id, _, _): return id
+        case let .posture(id, _, _, _): return id
+        case let .postureGet(id, _): return id
         case let .axDescribe(id, _): return id
         case let .axFrontmost(id, _): return id
         case let .screenshot(id, _, _): return id
@@ -154,6 +160,8 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .type(_, udid, _): return udid
         case let .scroll(_, udid, _, _, _): return udid
         case let .orientation(_, udid, _): return udid
+        case let .posture(_, udid, _, _): return udid
+        case let .postureGet(_, udid): return udid
         case let .axDescribe(_, udid): return udid
         case let .axFrontmost(_, udid): return udid
         case let .screenshot(_, udid, _): return udid
@@ -326,6 +334,24 @@ public enum SimHelperCommandParser {
                 }
                 return .success(.orientation(id: id, udid: udid, value: value))
 
+            case "posture":
+                let udid = try requireUdid()
+                let pose = (dictionary["pose"] as? String)?.lowercased()
+                let angle = (dictionary["angle"] as? NSNumber)?.doubleValue
+                if let pose {
+                    guard DevicePosture.poses.contains(pose) else {
+                        throw Invalid.message("`pose` must be one of closed, open, laptop, book, tent.")
+                    }
+                } else {
+                    guard let angle, angle.isFinite, (0...180).contains(angle) else {
+                        throw Invalid.message("posture needs `pose`, or an `angle` between 0 and 180.")
+                    }
+                }
+                return .success(.posture(id: id, udid: udid, pose: pose, angle: pose == nil ? angle : nil))
+
+            case "posture-get":
+                return .success(.postureGet(id: id, udid: try requireUdid()))
+
             case "ax-describe":
                 return .success(.axDescribe(id: id, udid: try requireUdid()))
 
@@ -438,6 +464,8 @@ public enum SimHelperEvent: @unchecked Sendable {
     case recordStarted(id: String, udid: String, path: String)
     /// A recording finished.
     case recordStopped(udid: String, finished: FinishedRecording)
+    /// A watched foldable's pose or active display changed. `state` is `DevicePosture.State.payload`.
+    case postureChanged(udid: String, state: [String: Any])
 
     public var payload: [String: Any] {
         switch self {
@@ -469,6 +497,11 @@ public enum SimHelperEvent: @unchecked Sendable {
         case let .recordStopped(udid, finished):
             var line = finished.payload
             line["type"] = "record-stopped"
+            line["udid"] = udid
+            return line
+        case let .postureChanged(udid, state):
+            var line = state
+            line["type"] = "posture-changed"
             line["udid"] = udid
             return line
         }

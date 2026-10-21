@@ -209,10 +209,7 @@ func appleDeviceChipModelName(_ name: String) -> String {
 /// evidence the device is on, so both read as off. The host fills a missing
 /// name with the udid; that is not a name, so the family ("iPhone") stands in.
 func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
-  guard let device = status?.device,
-        let udid = device.udid, !udid.isEmpty,
-        status?.laneDevice?.udid == udid
-  else { return nil }
+  guard appleStatusShowsLaneDevice(status), let device = status?.device, let udid = device.udid else { return nil }
   let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
   guard booted || status?.stream?.running == true else { return nil }
   let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -311,7 +308,8 @@ final class WorkLaneToolsModel: ObservableObject {
   /// neither read goes on the wire unadvertised.
   func refresh(laneId: String, syncService: SyncService) async {
     let readTools = syncService.supportsWorkToolsState
-    let readApple = syncService.supportsAppleDeviceStatus
+    // Asked of the lane's own machine: a lane on another Mac answers there.
+    let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil
@@ -353,6 +351,9 @@ struct WorkLaneToolsPreview {
 struct WorkLaneToolsPresenter: ViewModifier {
   @ObservedObject var model: WorkLaneToolsModel
   let laneId: String
+  /// The chat the chips sit in. A device that chat claimed is still its own to
+  /// drive from the viewer, as it is from the desktop's pane in that chat.
+  var chatSessionId: String?
   /// False for a personal chat, which has no lane.
   let enabled: Bool
   #if DEBUG
@@ -383,7 +384,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
       }
       // Full screen, seeded with the last status so the first frame is not an empty viewer.
       .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
-        AppleDeviceViewer(laneId: laneId, initialStatus: model.appleStatus)
+        AppleDeviceViewer(laneId: laneId, chatSessionId: chatSessionId, initialStatus: model.appleStatus)
       }
       .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
         MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)

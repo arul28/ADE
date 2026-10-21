@@ -417,6 +417,11 @@ export type TerminalSessionSummary = {
   settleOverride?: SessionSettleOverride | null;
   /** Auditable owner/policy that declared the current settled state. */
   settleSource?: SessionSettleSource | null;
+  /** Jev's last-turn completion probability; only high-confidence positives surface as a settle nudge. */
+  settleNudgeTurnId?: string | null;
+  settleNudgeDoneProbability?: number | null;
+  /** The turn whose suggestion the user dismissed by settling or un-settling. */
+  settleNudgeDismissedTurnId?: string | null;
   /**
    * Snooze is a synced VISIBILITY OVERLAY, never a lifecycle phase — it does
    * not touch `canonicalSessionState()`, only where the UI files the row.
@@ -443,6 +448,8 @@ export type TerminalSessionSummary = {
   chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** The chat's `awaitingOwnWorkAt`: its last reply said it waits on its own work. */
+  awaitingOwnWorkAt?: string | null;
   /**
    * Deprecated mirror of `usageLimitResume.fireAt`, published only for the
    * `armed` and `resuming` states. Old iOS builds read it; new clients read
@@ -529,8 +536,10 @@ export type TerminalSessionSummary = {
  * `turn_end_question`: ADE read a question at the end of a turn the agent closed
  * while background work kept running, and raised the hand the agent did not
  * (`main/services/chat/turnEndAsk.ts`). It behaves exactly like `agent_explicit`.
+ * `cli_prompt`: Jev identified a high-confidence input prompt in an idle CLI
+ * terminal screen.
  */
-export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question";
+export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear" | "turn_end_question" | "cli_prompt";
 
 /**
  * Result of a Work-board drag.

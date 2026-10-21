@@ -1,4 +1,10 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "**": false,
+      "main": true
+    }
+  },
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- .",
   "headers": [
     {

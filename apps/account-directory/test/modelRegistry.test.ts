@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AA_CODING_AGENTS_URL,
+  AA_LEADERBOARD_URL,
+  AA_MEDIA_URLS,
   AA_MODELS_URL,
   handleModelRegistryRequest,
   MIN_AA_MODELS,
@@ -30,6 +32,16 @@ const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, imp
 const MODELS_PAGE = fixture("aa-models-page.html");
 const AGENTS_PAGE = fixture("aa-coding-agents-page.html");
 const MODELS_DEV = fixture("models-dev.json");
+const LEADERBOARD_PAGE = fixture("aa-leaderboard-page.html");
+const MEDIA_PAGES = {
+  "text-to-speech": fixture("aa-text-to-speech-page.html"),
+  "speech-to-text": fixture("aa-speech-to-text-page.html"),
+  "speech-to-speech": fixture("aa-speech-to-speech-page.html"),
+};
+/** Rows the leaderboard fixture lists that no synthetic record page carries. */
+const LEADERBOARD_ONLY = 7;
+/** Leaderboard, records, agents, three speech leaderboards, models.dev. */
+const REFRESH_FETCHES = 7;
 
 const NOW = Date.UTC(2026, 8, 29, 12, 0, 0);
 const HOUR_MS = 3_600_000;
@@ -86,6 +98,7 @@ describe("Artificial Analysis parsing", () => {
       outputTokensPerSecond: expect.any(Number),
       timeToFirstTokenSeconds: expect.any(Number),
       price: { input: expect.any(Number), output: expect.any(Number), cacheRead: expect.any(Number), cacheWrite: expect.any(Number) },
+      profile: "record",
     });
     const opus = bySlug.get("claude-opus-5-5")!;
     expect({
@@ -185,11 +198,15 @@ function syntheticModelsPage(count: number, tag = "a"): string {
 
 type Source = string | number | Error;
 
-function sources(overrides: Partial<Record<"models" | "agents" | "modelsDev", Source>> = {}) {
+function sources(overrides: Partial<Record<"models" | "leaderboard" | "agents" | "modelsDev", Source>> = {}) {
   const table: Record<string, Source> = {
     [AA_MODELS_URL]: overrides.models ?? syntheticModelsPage(MIN_AA_MODELS),
     [AA_CODING_AGENTS_URL]: overrides.agents ?? AGENTS_PAGE,
     [MODELS_DEV_URL]: overrides.modelsDev ?? MODELS_DEV,
+    [AA_LEADERBOARD_URL]: overrides.leaderboard ?? LEADERBOARD_PAGE,
+    [AA_MEDIA_URLS["text-to-speech"]]: MEDIA_PAGES["text-to-speech"],
+    [AA_MEDIA_URLS["speech-to-text"]]: MEDIA_PAGES["speech-to-text"],
+    [AA_MEDIA_URLS["speech-to-speech"]]: MEDIA_PAGES["speech-to-speech"],
   };
   const calls: string[] = [];
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -221,19 +238,22 @@ describe("refreshModelRegistry", () => {
   it("stores a snapshot from both sources", async () => {
     const env = makeEnv();
     const result = await refreshModelRegistry(env, { now: () => NOW, fetchImpl: sources().fetchImpl });
-    expect(result).toMatchObject({ stored: true, models: MIN_AA_MODELS, agents: 8 });
+    expect(result).toMatchObject({ stored: true, models: MIN_AA_MODELS + LEADERBOARD_ONLY, agents: 8 });
     const snapshot = newest(env);
     expect(snapshot.sources).toEqual({
       artificialAnalysis: { fetchedAt: new Date(NOW).toISOString(), ok: true },
       modelsDev: { fetchedAt: new Date(NOW).toISOString(), ok: true },
+      media: { fetchedAt: new Date(NOW).toISOString(), ok: true },
     });
     expect(Object.keys(snapshot.prices).sort()).toEqual(["anthropic", "openai"]);
   });
 
+  // Fresh data needs MIN_AA_MODELS between the leaderboard and the record page,
+  // so each case takes the leaderboard down with the record page.
   it.each([
-    ["the models page answers an error", { models: 503 }, "http_503"],
-    ["the models page parses too few records", { models: syntheticModelsPage(MIN_AA_MODELS - 1, "b") }, `models_too_few:${MIN_AA_MODELS - 1}`],
-    ["the fetch throws", { models: new TypeError("network down") }, "TypeError: network down"],
+    ["the model pages answer an error", { models: 503, leaderboard: 503 }, "leaderboard: http_503; records: http_503; models_too_few:0"],
+    ["the record page parses too few records", { models: syntheticModelsPage(MIN_AA_MODELS - 1, "b"), leaderboard: 503 }, `leaderboard: http_503; models_too_few:${MIN_AA_MODELS - 1}`],
+    ["the fetch throws", { models: new TypeError("network down"), leaderboard: new TypeError("network down") }, "leaderboard: TypeError: network down; records: TypeError: network down; models_too_few:0"],
   ] as const)("keeps the previous Artificial Analysis data when %s", async (_case, failure, error) => {
     const env = makeEnv();
     await refreshModelRegistry(env, { now: () => NOW, fetchImpl: sources().fetchImpl });
@@ -259,7 +279,7 @@ describe("refreshModelRegistry", () => {
       fetchImpl: sources({ models: syntheticModelsPage(MIN_AA_MODELS + 1, "c"), agents: "<html></html>" }).fetchImpl,
     });
     const after = newest(env);
-    expect(after.models).toHaveLength(MIN_AA_MODELS + 1);
+    expect(after.models).toHaveLength(MIN_AA_MODELS + 1 + LEADERBOARD_ONLY);
     expect(after.agents).toEqual(before.agents);
     expect(after.sources.artificialAnalysis).toMatchObject({ ok: false, error: "agents: agents_none" });
   });
@@ -304,7 +324,7 @@ describe("runModelRegistryCron", () => {
     const env = makeEnv();
     const first = sources();
     expect(await runModelRegistryCron(env, { now: () => NOW, fetchImpl: first.fetchImpl })).toMatchObject({ ran: true });
-    expect(first.calls).toHaveLength(3);
+    expect(first.calls).toHaveLength(REFRESH_FETCHES);
 
     const early = sources();
     expect(await runModelRegistryCron(env, { now: () => NOW + 23 * HOUR_MS, fetchImpl: early.fetchImpl }))
@@ -325,7 +345,7 @@ describe("runModelRegistryCron", () => {
     ]);
     expect(results.filter((result) => result.ran)).toHaveLength(1);
     expect(results).toContainEqual({ ran: false, reason: "claimed" });
-    expect(shared.calls).toHaveLength(3);
+    expect(shared.calls).toHaveLength(REFRESH_FETCHES);
     expect(env.DB.modelRegistrySnapshots).toHaveLength(1);
   });
 
@@ -415,7 +435,7 @@ describe("GET /router/registry", () => {
     expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
     const body = (await response.json()) as ModelRegistrySnapshot;
     expect(body.generatedAt).toBe(new Date(NOW + HOUR_MS).toISOString());
-    expect(body.models).toHaveLength(MIN_AA_MODELS + 5);
+    expect(body.models).toHaveLength(MIN_AA_MODELS + 5 + LEADERBOARD_ONLY);
 
     const revalidated = await get(env, { authorization, "if-none-match": `W/${etag}` });
     expect(revalidated.status).toBe(304);

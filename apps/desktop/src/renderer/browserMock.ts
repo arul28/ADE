@@ -110,6 +110,7 @@ import {
   type DraftUpdateArgs,
   type DraftEntry,
   type RemoteRuntimeActionRequest,
+  type ExternalSessionProvider,
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
@@ -152,6 +153,10 @@ import {
   type ArchiveSummaryArgs,
 } from "../shared/types/archive";
 import { emptyArchiveCounts } from "../shared/archive";
+import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
+import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
+import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
+import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -1304,6 +1309,127 @@ function browserMockGateState(): BrowserMockGateState | null {
   }
 }
 
+/** Whether the page URL carries `?<name>` (a browser-preview switch). */
+function browserMockFlag(name: string): boolean {
+  try {
+    return new URLSearchParams(window.location.search).has(name);
+  } catch {
+    return false;
+  }
+}
+
+/** Setup finished or skipped in this page load; `?mockFirstRun` stops forcing it after that. */
+let browserMockFirstRunEnded = false;
+
+function browserMockFirstRun(): boolean {
+  return !browserMockFirstRunEnded && browserMockFlag("mockFirstRun");
+}
+
+/**
+ * Situational suggestion previews (tier 3 of onboarding). A card needs its
+ * signal and waits out a shared cooldown, so the preview can stage them:
+ *
+ * - `?mockSuggestion=<id>[,<id>]`: once per tab, a computer that finished
+ *   onboarding eight days ago, with every other suggestion turned off and no
+ *   cooldown, so only the named ones can show. Name two to see the cooldown
+ *   hold the second back. Reloads keep the state (the seed is per tab).
+ * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
+ * - `?mockRunningChats`: Activity reports three running chats (the grid).
+ * - `?mockStackedPr`: feature/i18n is built on feature/auth-flow, whose pull
+ *   request is open (stacked PRs).
+ * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
+ * - `?mockUsageLow`: Codex's weekly limit is at 12% left (plan running low).
+ */
+function seedBrowserMockSuggestions(): void {
+  try {
+    const wanted = new URLSearchParams(window.location.search).get("mockSuggestion");
+    if (!wanted || window.sessionStorage.getItem("ade.browserMock.suggestionSeed") === wanted) return;
+    window.sessionStorage.setItem("ade.browserMock.suggestionSeed", wanted);
+    const named = new Set(wanted.split(","));
+    const weekAgo = Date.now() - 8 * 24 * 3_600_000;
+    const kinds: SuggestionsState["kinds"] = Object.fromEntries(
+      Object.keys(ADE_SUGGESTIONS)
+        .filter((id) => !named.has(id))
+        .map((id) => [id, { off: "never" as const }]),
+    );
+    const suggestions: SuggestionsState = { ...EMPTY_SUGGESTIONS_STATE, kinds };
+    const onboarding: OnboardingProgress = { startedAt: weekAgo, tour: { completedAt: weekAgo }, hints: {} };
+    // What's new keeps what this tab saw, so its modal does not cover the preview.
+    resetOnboardingTiers({ keepWhatsNew: true });
+    window.localStorage.setItem(SUGGESTIONS_STORAGE_KEY, JSON.stringify(suggestions));
+    window.localStorage.setItem(ONBOARDING_PROGRESS_STORAGE_KEY, JSON.stringify(onboarding));
+    writeBrowserMockWelcomeVideoState({
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: new Date(weekAgo).toISOString(),
+      dismissedAt: null,
+    });
+  } catch {
+    // Preview-only state; storage can be unavailable.
+  }
+}
+
+/** Activity items for `?mockRunningChats` / `?mockStackedPr`, in the attention snapshot's shape. */
+function browserMockActivityItems(): any[] {
+  const at = new Date().toISOString();
+  const base = {
+    contractVersion: 1,
+    revision: 1,
+    fingerprint: "mock",
+    machine: { machineKey: "mock-this", name: "This Mac", online: true, lastSeenAt: at },
+    project: { projectId: "mock-project", rootPath: "/tmp/mock" },
+    actions: [],
+    occurredAt: at,
+    updatedAt: at,
+    seenAt: null,
+    dismissedAt: null,
+    expiresAt: null,
+    preview: "",
+    privacyPreview: "",
+  };
+  const items: any[] = [];
+  if (browserMockFlag("mockRunningChats")) {
+    const running = [
+      ["lane-main", "Polish the welcome page"],
+      ["lane-auth", "Refresh token race"],
+      ["lane-api", "Split the API client"],
+    ];
+    for (const [laneId, title] of running) {
+      items.push({
+        ...base,
+        id: `mock-running-${laneId}`,
+        kind: "agent",
+        eventKind: "agent_running",
+        phase: "running",
+        laneId,
+        title,
+        destination: { kind: "session", sessionId: `mock-running-${laneId}` },
+      });
+    }
+  }
+  if (browserMockFlag("mockStackedPr")) {
+    items.push({
+      ...base,
+      id: "mock-pr-auth",
+      kind: "pull_request",
+      eventKind: "pr_opened",
+      phase: "open",
+      laneId: "lane-auth",
+      title: "Auth flow",
+      destination: { kind: "pull_request", number: 412, tab: "overview" },
+    });
+  }
+  return items;
+}
+
+/**
+ * `?mockFirstRun&mockGate`: a fresh computer. No project is open and nothing
+ * is in recents yet, so setup lands on Home with only what it added.
+ */
+function browserMockFreshComputer(): boolean {
+  return browserMockFlag("mockFirstRun") && browserMockFlag("mockGate");
+}
+
 function readBrowserMockWelcomeVideoState() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(WELCOME_VIDEO_STORAGE_KEY) ?? "null") as {
@@ -1673,7 +1799,12 @@ const BUILTIN_MOCK_LANES: any[] = [
     "feature/analytics",
     "refs/heads/feature/analytics",
   ),
-  makeLane("lane-i18n", "feature/i18n", "refs/heads/feature/i18n"),
+  makeLane(
+    "lane-i18n",
+    "feature/i18n",
+    "refs/heads/feature/i18n",
+    browserMockFlag("mockStackedPr") ? { parentLaneId: "lane-auth", stackDepth: 1 } : undefined,
+  ),
   makeLane(
     "lane-a11y",
     "feature/accessibility",
@@ -1988,9 +2119,15 @@ const ADE_DB_SESSIONS: any[] =
     ? ADE_DB_SNAPSHOT.sessions
     : [];
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
-const MOCK_SESSIONS: any[] = [
+// `?mockNoChats` previews a computer with no chats yet (the tour's first-chat step).
+const MOCK_SESSIONS: any[] = (browserMockFlag("mockNoChats") ? [] : [
   ...(ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS),
-].filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT));
+])
+  .filter((session) => !(BROWSER_MOCK_FILM && session.id === BROWSER_MOCK_FILM_HIDDEN_CHAT))
+  // `?mockNeedsYou` previews a chat waiting on the user (the "needs you" hint and row).
+  .map((session) => (browserMockFlag("mockNeedsYou") && session.id === "mock-session-claude-1"
+    ? { ...session, attentionRequestedAt: new Date().toISOString() }
+    : session));
 const ADE_DB_CHAT_TRANSCRIPTS: Record<
   string,
   { events?: any[]; path?: string | null }
@@ -4425,6 +4562,39 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     ];
   }
 
+  // First-run preview: a realistic mix on "Connect your agents" (Claude and
+  // Copilot connected, Codex and Cursor waiting for a sign-in, Droid and Kimi
+  // installed but signed out, the rest not set up), so every tile shape shows.
+  if (browserMockFirstRun() && !BROWSER_MOCK_DEMO) {
+    const connection = (provider: string, state: "connected" | "signed-out" | "missing", extra = {}) => ({
+      ...BROWSER_MOCK_PROVIDER_CONNECTION("droid"),
+      provider,
+      authAvailable: state === "connected",
+      runtimeDetected: state !== "missing",
+      runtimeAvailable: state === "connected",
+      ...extra,
+    });
+    BROWSER_MOCK_AI_STATUS.availableProviders.claude.auth = { ready: true, mode: "subscription", detail: "Claude Max" };
+    BROWSER_MOCK_AI_STATUS.opencodeBinaryInstalled = true;
+    BROWSER_MOCK_AI_STATUS.opencodeProviders = [
+      { id: "opencode", name: "OpenCode Zen", connected: true, signedIn: false, modelCount: 6 },
+    ];
+    BROWSER_MOCK_AI_STATUS.providerConnections = {
+      claude: connection("claude", "connected", { accountPlan: "Claude Max", accountEmail: "arul@example.com" }),
+      codex: connection("codex", "signed-out"),
+      cursor: connection("cursor", "missing"),
+      droid: connection("droid", "signed-out"),
+      copilot: connection("copilot", "connected", { accountEmail: "arul28" }),
+      muse: connection("muse", "missing"),
+      pi: connection("pi", "missing"),
+      qwen: connection("qwen", "missing"),
+      kimi: connection("kimi", "signed-out"),
+      grok: connection("grok", "missing"),
+      devin: connection("devin", "missing"),
+      antigravity: connection("antigravity", "missing"),
+    };
+  }
+
   // A demo quota fixture, so the Limits surface in the browser preview renders
   // the shape it renders in the app: two providers, several windows, and more
   // than one account pooled across machines.
@@ -4483,6 +4653,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     { rootPath: "/Users/ada/Projects/dotfiles", displayName: "dotfiles", lastOpenedAt: browserMockAgo(9 * 86_400_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/dotfiles.git" },
     { rootPath: "/Users/ada/Projects/notes-api", displayName: "notes-api", lastOpenedAt: browserMockAgo(14 * 86_400_000), exists: true, kind: "local", gitOriginUrl: null },
   ];
+  if (browserMockFreshComputer()) BROWSER_MOCK_RECENT_PROJECTS.length = 0;
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     accounts: [
       {
@@ -4543,7 +4714,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         provider: "codex",
         windowType: "weekly",
         accountId: "codex:dev@example.com",
-        percentUsed: 51,
+        // `?mockUsageLow`: Codex's one account is nearly used up (the plan-low suggestion).
+        percentUsed: browserMockFlag("mockUsageLow") ? 88 : 51,
         resetsAt: browserMockResetAt(6 * 86_400_000 + 7 * 3_600_000),
         resetsInMs: 6 * 86_400_000 + 7 * 3_600_000,
         pacing: browserMockPacing(51, 42, 151),
@@ -5093,7 +5265,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     return envelope;
   };
 
+  seedBrowserMockSuggestions();
+  const mockActivityItems = browserMockActivityItems();
+
   (window as any).ade = {
+    ...(mockActivityItems.length
+      ? {
+          attention: {
+            getSnapshot: async () => ({
+              contractVersion: 1,
+              scope: "machine",
+              revision: 1,
+              generatedAt: new Date().toISOString(),
+              items: mockActivityItems,
+            }),
+            acknowledge: async (args: { itemIds: string[] }) => ({ acknowledged: args.itemIds }),
+            reportPresence: async () => undefined,
+            openItem: async () => undefined,
+          },
+        }
+      : {}),
     analytics: {
       capture: async () => ({ accepted: false, reason: "not_configured" }),
       getStatus: async () => ({
@@ -5506,8 +5697,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         publishedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
         updateAvailable: false,
       }),
-      getProject: resolved(MOCK_PROJECT),
-      getWindowSession: resolved({
+      getProject: resolved(browserMockFreshComputer() ? null : MOCK_PROJECT),
+      getWindowSession: resolved(browserMockFreshComputer() ? {
+        windowId: 1,
+        project: null,
+        binding: null,
+        openProjectTabs: [],
+      } : {
         windowId: 1,
         project: MOCK_PROJECT,
         binding: {
@@ -5517,15 +5713,102 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           displayName: MOCK_PROJECT.name,
         },
         openProjectTabs: [MOCK_PROJECT],
+        ...(browserMockFlag("mockManyTabs")
+          ? {
+              openProjectTabRoots: [
+                MOCK_PROJECT.rootPath,
+                ...BROWSER_MOCK_RECENT_PROJECTS
+                  .filter((entry) => entry.kind === "local")
+                  .map((entry) => entry.rootPath),
+                "/Users/ada/Projects/analytics-pipeline",
+                "/Users/ada/Projects/billing-service",
+                "/Users/ada/Projects/marketing-site",
+              ],
+            }
+          : {}),
       }),
       getWelcomeVideoState: async () => {
         const state = readBrowserMockWelcomeVideoState();
         if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
+        // `?mockFirstRun` previews first-run setup on top of the gate.
+        if (browserMockFirstRun()) return { ...state, completedAt: null, dismissedAt: null };
         return browserMockGateState() && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
       },
+      discoverOnboardingProjects: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        const day = 24 * 3_600_000;
+        const now = Date.now();
+        return {
+          machineName: "Arul's MacBook Pro",
+          projects: [
+            { rootPath: "/Users/dev/ADE", name: "ADE", repoLabel: "arul28/ADE", chatCount: 111, recentChatCount: 18, lastActiveAt: now - 2 * 3_600_000, providers: ["claude", "codex"] as ExternalSessionProvider[], laneCount: 16, suggested: true, inAde: false },
+            { rootPath: "/Users/dev/Versic", name: "Versic", repoLabel: "arul28/Versic", chatCount: 571, recentChatCount: 42, lastActiveAt: now - 2 * day, providers: ["claude", "codex", "cursor", "opencode"] as ExternalSessionProvider[], laneCount: 3, suggested: true, inAde: false },
+            { rootPath: "/Users/dev/Quill", name: "Quill", repoLabel: "arul28/Quill", chatCount: 5, recentChatCount: 0, lastActiveAt: now - 160 * day, providers: ["codex"] as ExternalSessionProvider[], laneCount: 0, suggested: false, inAde: false },
+            // Already in ADE: listed after the new ones, never added again.
+            { rootPath: "/Users/dev/fleet", name: "fleet", repoLabel: "arul28/fleet", chatCount: 4, recentChatCount: 3, lastActiveAt: now - 5 * day, providers: ["claude"] as ExternalSessionProvider[], laneCount: 0, suggested: true, inAde: true },
+            { rootPath: "/Users/dev/PROX", name: "PROX", repoLabel: null, chatCount: 2, recentChatCount: 0, lastActiveAt: now - 170 * day, providers: ["codex"] as ExternalSessionProvider[], laneCount: 1, suggested: false, inAde: true },
+          ],
+        };
+      },
+      // One project's recent chats for setup's import picker: a few per
+      // project, mixed providers, some in worktrees, newest first.
+      listOnboardingProjectChats: async (rootPath: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 420));
+        const hour = 3_600_000;
+        const now = Date.now();
+        const seeds: Record<string, Array<[ExternalSessionProvider, string | null, string | null, number, number | null]>> = {
+          ADE: [
+            ["claude", "Split the import pill into a toggle and a chat picker", null, 2 * hour, 34],
+            ["codex", "Tighten PR detail header on iOS", "ios-pr-header", 5 * hour, 12],
+            ["claude", "Why does the Apple pane show a stuck loader after the device boots?", "apple-sim", 26 * hour, 118],
+            ["codex", "Measure lane status polling cost and drop the second git status", null, 3 * 24 * hour, 9],
+            ["claude", null, "relay-backoff", 6 * 24 * hour, 3],
+            ["codex", "Release notes generator for v1.2.80", null, 11 * 24 * hour, 21],
+            ["claude", "Windows path cases for the session importer", "win-paths", 19 * 24 * hour, null],
+          ],
+          Versic: [
+            ["cursor", "Lane sidebar keyboard navigation", null, 3 * hour, 14],
+            ["claude", "Port the billing webhooks to the new queue", "billing-queue", 30 * hour, 52],
+            ["opencode", "Speed up the search index rebuild", null, 2 * 24 * hour, 8],
+            ["codex", "Fix flaky checkout e2e on CI", "ci-checkout", 4 * 24 * hour, 17],
+            ["claude", "Draft the onboarding email sequence copy", null, 9 * 24 * hour, 6],
+            ["cursor", null, null, 15 * 24 * hour, 2],
+          ],
+          fleet: [
+            ["claude", "Add a health check to the fleet agent", null, 5 * 24 * hour, 11],
+            ["claude", "Rotate the staging TLS certs", null, 8 * 24 * hour, 4],
+            ["claude", "Explain the deploy lock and when it is released", "deploy-lock", 21 * 24 * hour, 7],
+          ],
+        };
+        const name = rootPath.split("/").filter(Boolean).pop() ?? rootPath;
+        return (seeds[name] ?? []).map(([provider, title, worktree, ageMs, messageCount], index) => ({
+          id: `${name.toLowerCase()}-${provider}-${index}`,
+          provider,
+          title,
+          cwd: worktree ? `${rootPath}/.ade/worktrees/${worktree}` : rootPath,
+          lastActiveAt: now - ageMs,
+          messageCount,
+        }));
+      },
+      // Setup's projects join recents (newest first), as the main process does.
+      addOnboardingProjects: async (rootPaths: string[]) => {
+        const added = rootPaths
+          .filter((rootPath) => !BROWSER_MOCK_RECENT_PROJECTS.some((entry) => entry.rootPath === rootPath))
+          .map((rootPath) => ({
+            rootPath,
+            displayName: rootPath.split("/").filter(Boolean).pop() ?? rootPath,
+            lastOpenedAt: new Date().toISOString(),
+            exists: true,
+            kind: "local",
+            gitOriginUrl: null,
+          }));
+        BROWSER_MOCK_RECENT_PROJECTS.unshift(...added);
+        return BROWSER_MOCK_RECENT_PROJECTS;
+      },
       markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
+        browserMockFirstRunEnded = true;
         const current = readBrowserMockWelcomeVideoState();
         const next = {
           ...current,
@@ -5705,7 +5988,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStateEvent: noop,
     },
     remoteRuntime: {
-      listTargets: resolved([{
+      listTargets: browserMockFlag("mockOneMachine") ? resolved([]) : resolved([{
         id: "mock-remote",
         name: "Studio Mac",
         hostname: "studio.local",
@@ -5718,7 +6001,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         runtimeBinaryVersion: "0.0.0-browser",
         lastConnectedAt: Date.now(),
       }]),
-      getConnectionSnapshot: resolved({
+      getConnectionSnapshot: browserMockFlag("mockOneMachine")
+        ? resolved({ connections: [], connectedCount: 0, updatedAt: Date.now() })
+        : resolved({
         connections: [{
           target: {
             id: "mock-remote",
@@ -6544,6 +6829,33 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listRegistry: resolved([]),
     },
     lanes: {
+      // `?mockLaneTemplate` previews the lane template suggestion: a repo with
+      // packages and no default template. Without it the call fails, as it
+      // does on a runtime that predates the action, and nothing shows.
+      getDependencyStatus: async () => {
+        if (!browserMockFlag("mockLaneTemplate")) throw new Error("Not available in the browser preview.");
+        return {
+          projectRoot: MOCK_PROJECT.rootPath,
+          platform: "darwin",
+          folders: [{
+            manager: "npm",
+            lockfile: "package-lock.json",
+            dir: ".",
+            installCommand: "npm install",
+            installDir: "node_modules",
+            installed: true,
+            outOfDate: false,
+            outOfDateReason: null,
+            tracksInstall: true,
+            fingerprint: "mock",
+          }],
+          truncated: false,
+          updateCommand: null,
+          defaultTemplateId: null,
+          templateCount: 0,
+          checkedAt: new Date().toISOString(),
+        };
+      },
       list: resolved(MOCK_LANES),
       listSnapshots: async () =>
         MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
@@ -7780,6 +8092,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceDetach: resolvedArg(null as any),
       deviceDeleteInstalled: resolvedArg(undefined as any),
       deviceCleanup: resolvedArg({ deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] } as any),
+      runtimeList: resolved({
+        runtimes: [],
+        missing: null,
+        install: null,
+        xcode: { version: null, build: null, firstLaunchPending: false, latest: null, updateAvailable: false },
+        freeBytes: null,
+      } as any),
+      runtimeInstall: resolvedArg(null as any),
+      runtimeInstallCancel: resolved(null as any),
+      runtimeDelete: resolvedArg({ deleted: [], moved: [], erased: [], errors: [] } as any),
+      runtimePrune: resolvedArg({ deleted: [], moved: [], erased: [], errors: [] } as any),
+      xcodeRunFirstLaunch: resolvedArg(null as any),
+      setPosture: resolvedArg({ applied: false, posture: { supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null } } as any),
+      getPosture: resolvedArg({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null } as any),
+      getDuoModel: resolved({ base64: null, path: null } as any),
+      duoAppStoreScreenshots: resolvedArg({ shots: [] } as any),
+      addDuoSkill: resolvedArg({ skill: "app-resizability", path: "", added: false } as any),
+      attachRenderProof: resolvedArg({ proofArtifactId: null } as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),
@@ -8252,7 +8582,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           userDisplayName: "Riley Chen",
         },
       ]),
-      getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
+      getLinearConnectionStatus: resolvedArg(
+        browserMockFlag("mockLinearOff")
+          ? { ...MOCK_LINEAR_CONNECTION, tokenStored: false, connected: false }
+          : MOCK_LINEAR_CONNECTION,
+      ),
       setLinearToken: resolvedArg({
         ...MOCK_LINEAR_CONNECTION,
         authMode: "manual" as const,

@@ -46,7 +46,7 @@ type PerIssueState = BatchLaunchIssueConfig & {
 const DEFAULT_PROMPT_STORAGE_PREFIX = "ade.linear.batchLaunch.defaultPrompt.v1:";
 
 function batchLaunchNativeDefaults(): NativeControlState {
-  const controls = defaultNativeControls("persistent_identity");
+  const controls = defaultNativeControls();
   return {
     ...controls,
     cursorConfigValues: { ...controls.cursorConfigValues },

@@ -106,6 +106,9 @@ public enum SimButton: Equatable {
         switch name {
         case "home", "lock", "siri", "side_button", "app_switcher", "swipe_home":
             return .named(name)
+        case "power", "sleep_wake":
+            // Consumer Power, the usage DeviceKit's chrome gives the side button.
+            return .hid(page: consumerPage, usage: 0x30)
         case "volume-up", "volume_up":
             return .hid(page: consumerPage, usage: 0xE9)
         case "volume-down", "volume_down":

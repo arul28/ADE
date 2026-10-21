@@ -104,6 +104,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let sessions: [TerminalSessionSummary]
   let laneColor: String?
   let laneIcon: LaneIcon?
+  let laneEmoji: String?
   let isOrphaned: Bool
   /// Nothing here wants attention, so the section renders as a single thin row
   /// instead of a full header over nothing, and it defaults to collapsed. True
@@ -161,6 +162,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     sessions: [TerminalSessionSummary],
     laneColor: String? = nil,
     laneIcon: LaneIcon? = nil,
+    laneEmoji: String? = nil,
     isOrphaned: Bool = false,
     isQuiet: Bool = false,
     isHeaderless: Bool = false,
@@ -177,6 +179,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     self.sessions = sessions
     self.laneColor = laneColor
     self.laneIcon = laneIcon
+    self.laneEmoji = laneEmoji
     self.isOrphaned = isOrphaned
     self.isQuiet = isQuiet
     self.isHeaderless = isHeaderless
@@ -214,6 +217,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
       && lhs.tint == rhs.tint
       && lhs.laneColor == rhs.laneColor
       && lhs.laneIcon == rhs.laneIcon
+      && lhs.laneEmoji == rhs.laneEmoji
       && lhs.isOrphaned == rhs.isOrphaned
       && lhs.isQuiet == rhs.isQuiet
       && lhs.isHeaderless == rhs.isHeaderless
@@ -578,6 +582,8 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(lane.id)
     hasher.combine(lane.name)
     hasher.combine(lane.color)
+    hasher.combine(lane.icon?.rawValue)
+    hasher.combine(lane.emoji)
     hasher.combine(lane.status.dirty)
     hasher.combine(lane.status.ahead)
     hasher.combine(lane.status.behind)
@@ -1095,6 +1101,7 @@ func workSessionGroupsByLane(
       sessions: list,
       laneColor: lane.color,
       laneIcon: lane.icon,
+      laneEmoji: lane.emoji,
       // Derived from the unfiltered roster, so a search that narrows a busy
       // lane to one hit never collapses its header mid-keystroke. `list` may
       // still hold that row's terminal children — they render nested under it.

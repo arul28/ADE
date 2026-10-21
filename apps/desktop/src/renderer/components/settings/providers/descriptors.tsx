@@ -36,6 +36,7 @@ import type {
   SettingsProviderId,
 } from "./types";
 import { statusProbeFailed } from "./types";
+import { providerStatusConnected } from "./providerConnected";
 
 // The six words a tile is allowed to say — sentence case, no ellipsis-free
 // exceptions. "Verification failed" and "Unavailable" used to leak out of two
@@ -94,7 +95,7 @@ function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" 
   const tool = cliTool(cli);
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
   const message = buildCliMessage(tool, connection);
-  if (connection?.runtimeAvailable) {
+  if (providerStatusConnected(cli, ctx.status)) {
     return { state: "connected", label: "Connected", message };
   }
   if (connection?.runtimeDetected || connection?.authAvailable) {
@@ -124,7 +125,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       }
       const availability = ctx.status?.availableProviders?.claude ?? null;
       const message = buildClaudeAvailabilityMessage(availability);
-      if (availability?.binary.present && availability.auth.ready) {
+      if (providerStatusConnected("claude", ctx.status)) {
         return { state: "connected", label: "Connected", message };
       }
       if (availability?.binary.present) {
@@ -260,7 +261,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       }
       const connection = ctx.status?.providerConnections?.muse ?? null;
       const message = connection?.blocker ?? "Ready.";
-      if (connection?.runtimeAvailable && connection.authAvailable) {
+      if (providerStatusConnected("muse", ctx.status)) {
         return { state: "connected", label: "Connected", message };
       }
       // Detected but no sign-in on disk: on macOS chat is still offered (the
@@ -318,7 +319,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       }
       const message = buildPiMessage(connection, installation);
       const errorLine = installation?.error ? `Inventory fallback: ${installation.error}` : null;
-      if (connection?.runtimeAvailable) {
+      if (providerStatusConnected("pi", ctx.status)) {
         return { state: "connected", label: "Connected", message, errorLine };
       }
       if (!installation?.installed && !connection?.runtimeDetected) {

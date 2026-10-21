@@ -16,6 +16,8 @@ import type {
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
   AppleLaneDevice,
+  AppleRuntimeDeleteResult,
+  AppleRuntimeSimulatorDisposition,
   IosElementContextItem,
   IosSimulatorStatus,
   OpenProjectBinding,
@@ -27,13 +29,15 @@ import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
   appleDeviceSupportsDuo,
+  APPLE_DUO_NUDGE_DEGREES,
+  clampAppleDuoAngle,
   createAppleDuoState,
   nearestAppleDuoStance,
   reduceAppleDuoState,
 } from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
-import { showToast } from "../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -66,8 +70,15 @@ import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
+import { useAppleRuntimes } from "./useAppleRuntimes";
+import { useAppleDuoModel } from "./useAppleDuoModel";
+import { AppleRenderSheet } from "./AppleRenderSheet";
+import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
+import { AppleDuoHingeBar } from "./AppleDuoHingeBar";
+import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
+import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 
@@ -138,6 +149,26 @@ const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOff
   "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
   "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
 };
+
+/** What a runtime remove did, as one toast. Counts only; the details are in the log. */
+function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
+  const freed = result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+  const parts = [
+    result.deleted.length ? `removed ${result.deleted.map((entry) => entry.name).join(", ")}` : null,
+    result.moved.length ? `moved ${result.moved.length} simulator${result.moved.length === 1 ? "" : "s"}` : null,
+    result.erased.length ? `erased ${result.erased.length}` : null,
+  ].filter(Boolean);
+  const failed = result.errors.length > 0;
+  showToast({
+    id: "apple-runtime-remove",
+    tone: failed ? "warning" : "success",
+    title: failed
+      ? (result.deleted.length ? "Some runtimes were not removed" : "The runtime was not removed")
+      : `Freed ${(freed / 1e9).toFixed(1)} GB`,
+    message: [parts.length ? `${parts.join(", ")}.` : null, failed ? result.errors[0]!.message : null].filter(Boolean).join(" "),
+    ...(failed ? { durationMs: READABLE_TOAST_DURATION_MS } : {}),
+  });
+}
 
 export function AppleDevicePane({
   sessionId,
@@ -324,7 +355,11 @@ export function AppleDevicePane({
   const state: AppleDeviceState = resolveAppleDeviceState({
     supported: status ? status.supported : true,
     helperAvailable: helperAvailable(status),
-    hasDevice: Boolean(deviceUdid),
+    // A lane bound to a simulator that is no longer installed (deleted in
+    // Xcode or simctl, or its runtime removed) has no device to start: the
+    // picker says so and offers Create, instead of an Off card whose Start
+    // can only fail. Until the list has loaded, the binding is trusted.
+    hasDevice: Boolean(deviceUdid) && (!listLoaded || installed.some((entry) => entry.udid === deviceUdid)),
     booted,
     starting: pendingStart !== null,
     previewing: preview !== null,
@@ -563,6 +598,37 @@ export function AppleDevicePane({
       });
   }, [laneId, refreshList]);
 
+  /* ── simulator runtimes ──────────────────────────────────────────────── */
+
+  const [runtimesNonce, setRuntimesNonce] = useState(0);
+  const runtimes$ = useAppleRuntimes({
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    laneId,
+    enabled: !hidden,
+    refreshNonce: runtimesNonce,
+    onError: (cause) => setError(cause),
+    onInstallSettled: () => refreshList(),
+    createDevice,
+  });
+  const installAndCreate = runtimes$.installAndCreate;
+  const removeRuntime = useCallback((id: string, simulators: AppleRuntimeSimulatorDisposition) => {
+    void runtimes$.remove(id, simulators).then((result) => {
+      if (result) showRuntimeRemoval(result);
+      refreshList();
+    });
+  }, [refreshList, runtimes$]);
+  const pruneRuntimes = useCallback((simulators: AppleRuntimeSimulatorDisposition) => {
+    void runtimes$.prune(simulators).then((result) => {
+      if (result) showRuntimeRemoval(result);
+      refreshList();
+    });
+  }, [refreshList, runtimes$]);
+  const refreshAll = useCallback(() => {
+    refreshList();
+    setRuntimesNonce((value) => value + 1);
+  }, [refreshList]);
+
   /**
    * Delete a simulator from the picker's per-device menu.
    *
@@ -777,16 +843,58 @@ export function AppleDevicePane({
    * foldable and render the Duo body on a rigid device.
    */
   const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
-  const duoControlsEnabled = duoCapable && canUse3d;
-  const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
+  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin?.key ?? null, runtimePinRef });
+  /** What the simulator reports (its hinge and live panel), and how to fold it. */
+  const {
+    posture: duoPosture,
+    sendPosture: sendDuoPosture,
+    sendAngleSoon: sendDuoAngleSoon,
+  } = useAppleDuoPosture({
+    enabled: duoCapable && state === "live",
+    deviceUdid,
+    laneId,
+    chatSessionId: sessionId,
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    onAngle: (angle) => setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
+      ? current
+      : reduceAppleDuoState(current, { type: "angle", angle }))),
+    onError: (cause) => setError(cause),
+  });
+  const duoProps: AppleDeviceDuoProps | undefined = duoCapable && canUse3d
     ? {
         enabled: true,
         angle: duoState.pose.angle,
         lowerFlat: duoState.pose.lowerFlat,
-        onHingeChange: (angle) =>
-          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle })),
+        model: duoModel,
+        activeScreenId: duoPosture?.activeScreenId ?? null,
+        physicalOrientation: duoPosture?.orientation ?? null,
+        onHingeChange: (angle) => {
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
+          sendDuoAngleSoon(angle);
+        },
       }
     : undefined;
+  // The posture is null for a device without a hinge, which draws as held.
+  const displayOrientation = appleDuoDisplayOrientation(orientation, duoPosture);
+
+  /* ── 3D renders ────────────────────────────────────────────────────────── */
+
+  const { rendererRef, renderOpen, setRenderOpen, rendering, openRender, runRender } = useAppleRenderRequests({
+    laneId,
+    sessionId,
+    deviceName,
+    duoCapable,
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    effectiveMode,
+    setMode,
+    live: (state === "live" || state === "video-lost") && canUse3d,
+    stalled: state === "video-lost",
+    reconnect: stream.reconnect,
+    onError: (cause) => setError(cause),
+  });
+
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -848,8 +956,15 @@ export function AppleDevicePane({
             onCleanup={cleanupDevices}
             cleaning={cleaning}
             onDelete={deleteInstalled}
-            onRefresh={refreshList}
+            onRefresh={refreshAll}
             playing={!hidden}
+            runtimeInventory={runtimes$.inventory}
+            removingRuntime={runtimes$.removing}
+            onInstallAndCreate={installAndCreate}
+            onCancelInstall={runtimes$.cancelInstall}
+            onRemoveRuntime={removeRuntime}
+            onPruneRuntimes={pruneRuntimes}
+            onRunXcodeSetup={runtimes$.runXcodeSetup}
           />
         );
       case "starting":
@@ -905,7 +1020,7 @@ export function AppleDevicePane({
               family={familyOf(laneDevice)}
               deviceTypeName={deviceName}
               deviceTypeIdentifier={deviceTypeIdentifier}
-              orientation={orientation}
+              orientation={displayOrientation}
               devicePointSize={stream.devicePointSize}
               /*
                * §A4: while Inspect owns the pointer, so does the overlay.
@@ -919,9 +1034,22 @@ export function AppleDevicePane({
                */
               interactive={appleInputAllowed(state) && !inspectOn}
               duo={duoProps}
+              rendererRef={rendererRef}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
-              onDeviceKey={input.key}
+              onDeviceKey={(event) => {
+                // ⌥[ folds and ⌥] unfolds a Duo by 15°. Plain brackets still
+                // type into the device.
+                if (duoCapable && event.altKey && !event.metaKey && !event.ctrlKey && (event.key === "[" || event.key === "]"
+                  || event.key === "“" || event.key === "‘")) {
+                  const delta = event.key === "[" || event.key === "“" ? -APPLE_DUO_NUDGE_DEGREES : APPLE_DUO_NUDGE_DEGREES;
+                  const next = clampAppleDuoAngle(duoState.pose.angle + delta);
+                  setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
+                  sendDuoPosture({ angle: next });
+                  return true;
+                }
+                return input.key(event);
+              }}
               onReaderStatus={stream.handleReaderStatus}
               onDimensions={stream.handleDimensions}
               onFrame={stream.noteFrame}
@@ -939,6 +1067,24 @@ export function AppleDevicePane({
               powered-off lane device read as one that was about to come up. The
               label sits outside the stage so the dimming does not fade it too.
             */}
+            {/* The hinge drives the real simulator, so it shows in flat mode too. */}
+            {duoCapable && state === "live" ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-4 z-[3] flex justify-center">
+                <AppleDuoHingeBar
+                  angle={duoState.pose.angle}
+                  reported={duoPosture
+                    ? {
+                      angle: duoPosture.angle,
+                      panel: duoPosture.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
+                        ? "cover"
+                        : duoPosture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" : null,
+                    }
+                    : null}
+                  onPreview={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
+                  onCommit={(angle) => sendDuoPosture({ angle })}
+                />
+              </div>
+            ) : null}
             {state === "stopped" ? (
               <div
                 data-apple-off-screen=""
@@ -1124,21 +1270,51 @@ export function AppleDevicePane({
               screenshotPending={screenshotPending}
               onHome={pressHome}
               onHardwareButton={pressHardwareButton}
-              duo={duoControlsEnabled
+              duo={duoCapable
                 ? {
                     capable: true,
                     angle: duoState.pose.angle,
                     stance: nearestAppleDuoStance(duoState.pose.angle),
                   }
                 : undefined}
-              onDuoStance={(stance) =>
-                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }))}
-              onDuoNudge={(delta) =>
-                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }))}
+              onDuoStance={(stance) => {
+                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
+                sendDuoPosture({ pose: stance });
+              }}
+              onDuoAppStoreShots={() => {
+                showToast({ id: "apple-duo-app-store", tone: "info", title: "Taking App Store screenshots…", message: "Folding the Duo closed, then open." });
+                void window.ade.iosSimulator
+                  .duoAppStoreScreenshots({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+                  .then((result) => showToast({
+                    id: "apple-duo-app-store",
+                    tone: "success",
+                    title: "App Store screenshots filed to the proof drawer",
+                    message: result.shots.map((shot) => `${shot.display} ${shot.width}×${shot.height}`).join(" · "),
+                  }))
+                  .catch((cause: unknown) => setError(cause));
+              }}
+              onDuoAddSkill={() => {
+                void window.ade.iosSimulator
+                  .addDuoSkill({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+                  .then((result) => showToast({
+                    id: "apple-duo-skill",
+                    tone: "success",
+                    title: result.added ? "Apple's Duo skill added to this lane" : "This lane already has Apple's Duo skill",
+                    message: "Agents in the lane find it in .agents/skills/app-resizability. Ask one to get the app ready for the iPhone Duo.",
+                  }))
+                  .catch((cause: unknown) => setError(cause));
+              }}
+              onDuoNudge={(delta) => {
+                const next = clampAppleDuoAngle(duoState.pose.angle + delta);
+                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
+                sendDuoPosture({ angle: next });
+              }}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}
               onScreenshot={screenshot}
+              onRender={canUse3d ? openRender : undefined}
+              rendering={rendering}
               onToggleTools={() => setToolsOpen((open) => !open)}
               onToggleInspect={toggleInspect}
               onMode={setMode}
@@ -1214,6 +1390,15 @@ export function AppleDevicePane({
           </div>
         ) : null}
       </div>
+      {renderOpen ? (
+        <AppleRenderSheet
+          deviceName={deviceName}
+          duo={duoCapable}
+          rendering={rendering}
+          onClose={() => setRenderOpen(false)}
+          onRender={(request) => void runRender(request).catch(() => undefined)}
+        />
+      ) : null}
     </div>
   );
 }

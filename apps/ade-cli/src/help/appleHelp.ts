@@ -1142,6 +1142,100 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --device, --udid <id>  Simulator device.
     --lane, --lane-id <id> Lane whose device to rotate.
 `,
+  fold: `${ADE_BANNER}
+  Apple device: fold (iPhone Duo)
+
+  Folds a foldable simulator to one of Device Hub's poses, or to an angle,
+  then reads the pose back. The live view and input follow the panel that is
+  on: the cover when closed, the inner display when open.
+
+    $ ade apple fold closed --text
+    $ ade apple fold open --text
+    $ ade apple fold --angle 120 --text
+    $ ade apple fold --sequence closed,open,tent --text
+
+  Poses: closed (0°), open (180°), laptop (90°, landscape), book (90°,
+  portrait), tent (80°, face down). --sequence runs them in order and adds a
+  step caption to a running recording before each one, for demos.
+
+  On a device without a hinge it answers applied false, supported false.
+
+  Flags:
+    --pose <pose>          Pose; also accepted as the next positional.
+    --angle <degrees>      Hinge angle, 0 to 180, instead of a pose.
+    --sequence <a,b,…>     Poses to run in order.
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose device to fold.
+`,
+  render: `${ADE_BANNER}
+  Apple device: render
+
+  Renders the device in 3D with its live screen and files the images (and an
+  optional turntable video) to the proof drawer. The Apple Development pane
+  must be open for the lane in ADE on a desktop: it does the rendering. For an
+  iPhone Duo, each pose folds the real simulator first.
+
+    $ ade apple render --text
+    $ ade apple render --angles front,three-quarter-right --lighting studio --text
+    $ ade apple render --poses closed,laptop,open --sheet --video --text
+
+  Flags:
+    --angles <a,b>         front, three-quarter-left, three-quarter-right, current.
+    --poses <a,b>          Duo only: closed, open, laptop, book, tent.
+    --lighting <l>         transparent (default), studio, dusk.
+    --sheet                Also file a labelled contact sheet.
+    --video                Also file a 6 s turntable (WebM).
+    --no-shadow            No contact shadow.
+    --lane, --lane-id <id> Lane whose device to render.
+`,
+  posture: `${ADE_BANNER}
+  Apple device: posture (iPhone Duo)
+
+  Reads a foldable simulator's hinge angle, physical orientation, Table Mode
+  and active panel (activeScreenId 1 is the cover, 3 the inner display).
+
+    $ ade apple posture --text
+
+  Flags:
+    --device, --udid <id>  Simulator device.
+    --lane, --lane-id <id> Lane whose device to read.
+`,
+  "duo-skill": `${ADE_BANNER}
+  Apple device: Apple's Duo agent skill
+
+  Copies Apple's app-resizability agent skill (from this Mac's Xcode 27,
+  \`xcrun agent skills export\`) into the lane's .agents/skills, where the
+  lane's agents find it. It moves a UIKit app off UIScreen.main, the idiom and
+  the interface orientation, and onto the scene life cycle, so its layout
+  refills each panel of the iPhone Duo as it folds. A lane that already has
+  the skill keeps its copy.
+
+    $ ade apple duo-skill --text
+
+  Flags:
+    --lane, --lane-id <id> Lane to add the skill to.
+`,
+  runtimes: `${ADE_BANNER}
+  Apple runtimes
+
+  Lists this Mac's simulator runtimes (size, the simulators on each, which a
+  newer runtime fully replaces), the Xcode version and whether a newer one is
+  out, and any current models no installed runtime runs. Installs what this
+  Xcode needs. Removing a runtime is the person's call, from the Apple
+  Development panel.
+
+    $ ade apple runtimes --text
+    $ ade apple runtimes install --text
+    $ ade apple runtimes install --version 27.1 --text
+    $ ade apple runtimes cancel --text
+
+  install returns at once; the download runs on the machine that owns the
+  lane. Re-run \`ade apple runtimes\` to see its progress.
+
+  Flags:
+    --version <x.y>        A specific runtime (pins xcodebuild -buildVersion).
+    --lane, --lane-id <id> Lane whose machine to act on.
+`,
 };
 
 /** Subcommand aliases that share another subcommand's help page. */
@@ -1174,6 +1268,11 @@ export const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "press-button": "button",
   reveal: "show",
   orientation: "rotate",
+  "posture-set": "fold",
+  "set-posture": "fold",
+  "get-posture": "posture",
+  hinge: "posture",
+  runtime: "runtimes",
   "match-preview": "preview-match",
   "resolve-preview": "preview-match",
   "ensure-preview": "preview-ensure",

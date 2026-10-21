@@ -23,6 +23,7 @@ import { COLORS, toneText } from "../laneDesignTokens";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
+import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
 
 function Sep() {
   return <span aria-hidden className="text-muted-fg/35">·</span>;
@@ -124,7 +125,12 @@ export function LaneIdentity({
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className="flex shrink-0" style={{ color: toneText(accent) }}>
-              <LaneIcon size={16} />
+              <LaneEmojiGlyph
+                emoji={lane.emoji}
+                icon={lane.icon}
+                className="text-sm leading-none"
+                fallback={<LaneIcon size={16} />}
+              />
             </span>
             <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>
               {lane.name}

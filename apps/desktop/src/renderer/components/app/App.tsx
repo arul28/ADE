@@ -36,6 +36,11 @@ import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
+import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
+import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
+import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
+import { SpotlightHost } from "../onboarding/spotlight/SpotlightHost";
+import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
@@ -1582,6 +1587,16 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* The guided tour after first-run setup, then contextual hints; both
+              render nothing unless onboarding is on. */}
+          <OnboardingTourHost />
+          <OnboardingHintHost />
+          {/* "What's new" pages: once per computer, inside a project, after onboarding. */}
+          <AnnouncementsHost />
+          {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
+          <AdeTipsDialogHost />
+          {/* The ring "Try it" leaves around the control it went to. */}
+          <SpotlightHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
           {/* "Quit ADE?" — main asks the window it is quitting from. */}

@@ -67,6 +67,21 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Work area: re-renders | 30 per 12 s | 2 per 12 s | 5 per 12 s |
 | React commits on Work while a chat streams | — | 5.3/s | 10/s |
 
+### Onboarding tour
+
+The guided tour after first-run setup (`components/onboarding/tour/`). Mac
+Studio dev build on its own socket, CDP 9233, 1.1× zoom, nothing streaming,
+2026-10-21 on the `ade/onboarding-tiers-planning` branch; not the baseline
+machine. `cdp.mjs metrics` and `gpu-trace.mjs`, 4 s windows from a Next click.
+
+| Metric | Before (first tour) | Baseline | Ceiling |
+|---|---|---|---|
+| Step change between read steps: frames drawn / GPU | 187–217/s, 183–212 ms/s | 38/s, 35 ms/s | 60/s, 60 ms/s |
+| Step change into a do-it step (pulse + click): frames drawn / GPU | — | 71/s, 76 ms/s | 100/s, 110 ms/s |
+| Step change: main-thread work | 14–19 ms/s | 16–20 ms/s | 30 ms/s |
+| Card showing, idle: main-thread work | 2.9 ms/s | 2.4 ms/s | 5 ms/s |
+| Paused pill, idle: main-thread work | 4.5 ms/s | 2.5 ms/s | 5 ms/s |
+
 ### Processes (CPU and memory)
 
 Measured with `process-cpu.sh` over 15 s on Work, idle, with 2 chats
@@ -164,7 +179,9 @@ Run without the app (`scripts/perf/service/`).
 | MCP App: file one app with the chat (218 KB page, its record, and the prune of a 40-app chat; `mcpAppStore.write`, runs in the brain once per tool call that has a page) | one-off `tsx` loop, 60 runs (no bench file yet) | — | 0.9–1.7 ms; reading one back 0.1 ms | 10 ms |
 | MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
+| Apple stream relay, one viewer, 2.5 Mb/s 60 fps stream, second half of a 30 s run: delay from the relay's send to the viewer (p50 / p90 / p99), frames delivered per second, and delta frames delivered ahead of a keyframe (checked by sequence number). 1 Mb/s 40 ms link, plus a fast Wi-Fi link that stalls 250 ms every 2 s | `apple-stream-pacing.bench.mts` | not paced (no acks, as before): 1 Mb/s 34.9 s / 43.9 s / 45.8 s, still growing; Wi-Fi stalls 9 / 70 / 239 ms, 57 fps | paced (the viewer acks): 1 Mb/s 52 / 73 / 240 ms, 58 fps, cap 2500 → 540–675 kb/s; Wi-Fi stalls 8 / 43 / 236 ms, 60 fps, 2 frames skipped; 0 undecodable throughout (also 600 kb/s 120 ms: 133 / 319 / 392 ms; 5 Mb/s 20 ms: 30 / 31 / 162 ms, no skips) | proposed, needs approval: p50 100 ms, p90 350 ms, ≥ 50 fps, 0 undecodable |
 | `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
+| Onboarding discovery: first-run setup's project discovery (`app.discoverOnboardingProjects`, 460 agent folders → 12 projects, 11 providers) and one cold chat list (`app.listOnboardingProjectChats`), Electron main event loop. Mac Studio M4 Max, 2026-10-21, this branch (not the baseline machine) | one-off `vite-node` script on this machine's real provider history, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | — | discovery: longest main-thread block 2,742 → 7 ms, total 4.7 → 5.5 s (now in a child process; the extra is its start); cold chat list: block 769–957 → 3–7 ms, total 0.85–1.7 → 1.1–1.9 s; a list after discovery 0 ms (kept in main) | proposed, needs approval: longest main-thread block 50 ms |
 
 On 2026-10-19, a focused Node 22 harness compared the existing 5-second
 desktop poll with the brain poll after this change. Both used the same activity
@@ -1107,6 +1124,39 @@ Spotify's service sets when Spotify accepts the play, not when audio starts.
   at most 46 reads and 6 pushes per ten minutes.
 - Windows (WebView2, Widevine) is measured separately; see the Windows numbers
   in the PR.
+
+### Apple pane: iPhone Duo (2026-10-21)
+
+Measured 2026-10-21 on this Mac Studio (M4 Max), dev build at `da37d1019` in an App
+Control session (window covered, launched with
+`--disable-backgrounding-occluded-windows`, so the renderer was not throttled),
+throwaway project, one iPhone Duo simulator on iOS 27.1 showing a still screen,
+an App Control DevTools window open, other agents running. `process-cpu.sh 20`
+with the debugging port swapped and the sim helper added; two runs each. The
+Apple pane had no row before; "Pane closed" is the comparison. Renderer RSS
+includes this long session and swings 50-80 MB between runs.
+
+| Metric | How | Pane closed | Duo, 3D | Duo, flat | Ceiling |
+|---|---|---:|---:|---:|---:|
+| Renderer CPU | `process-cpu.sh 20` | 3.0-3.2% | 3.3-3.4% | 2.5-2.6% | 25% |
+| GPU process CPU | same | 7.8-7.9% | 7.9-8.3% | 7.2-7.3% | 10% |
+| Sim helper CPU / RSS (capturing the live panel) | same | 1.7% / 60 MB (an orphaned capture, see below) | 1.9% / 70 MB | 1.7% / 60 MB | 3% / 120 MB |
+| Electron main / brain CPU | same | 0.4-0.9% / 0.4-1.6% | 0.5% / 0.7-0.8% | 0.4-1.7% / 0.6-1.6% | 15% / 10% |
+| Renderer JS heap after load | `performance.memory` | 243 MB | 253 MB | — | +40 MB over pane closed |
+
+- Folding (six poses in 20 s, 3D): GPU 25.5%, renderer 13.3%, helper 12.4%
+  for the sweep, back to the still-screen numbers once it settles. A fold
+  sweeps the hinge in 10° steps and the 3D body redraws each one; it is
+  user-driven, not idle.
+- Nothing new polls: pose and panel changes arrive as helper events, the
+  runtime list is read on open and refresh, and the Xcode feed once a day.
+- The pane's own cost over the closed baseline is about 10 MB of JS heap
+  (Apple's V68 model and three.js) and the helper's capture. The heap is over
+  the 220 MB "any tab" ceiling with the pane closed too, in this long dev
+  session; that is not this pane.
+- A reload or a closed window used to leave the capture running with no
+  viewer (the stop's 1 s grace timer died with the page); it now stops on
+  `pagehide`. A renderer crash still leaves it to the next viewer's stop.
 
 ### Focus attention inference (2026-10-15)
 

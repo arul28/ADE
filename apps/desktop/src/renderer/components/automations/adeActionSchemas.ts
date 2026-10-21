@@ -169,15 +169,16 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     domain: "lane",
     action: "updateAppearance",
     label: "Update lane appearance",
-    description: "Change the color, icon, or tags shown for a lane in the UI.",
+    description: "Change the color, emoji, or tags shown for a lane in the UI.",
     params: [
       LANE_ID_PARAM,
       { name: "color", type: "string", description: "Hex color or null to clear." },
+      { name: "emoji", type: "string", description: "One emoji or null to clear." },
       {
         name: "icon",
         type: "enum",
         enumValues: ["star", "flag", "bolt", "shield", "tag"],
-        description: "Optional icon glyph.",
+        description: "Legacy icon value for older callers.",
       },
       { name: "tags", type: "string-array", description: "Comma-separated tag list." },
     ],

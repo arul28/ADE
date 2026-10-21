@@ -25,6 +25,13 @@ enum LaneColorPalette {
     LanePaletteColor(hex: "#a3e635", name: "Lime"),
     LanePaletteColor(hex: "#22d3ee", name: "Cyan"),
     LanePaletteColor(hex: "#e879f9", name: "Fuchsia"),
+    LanePaletteColor(hex: "#ef4444", name: "Bright Red"),
+    LanePaletteColor(hex: "#f97316", name: "Bright Orange"),
+    LanePaletteColor(hex: "#facc15", name: "Bright Yellow"),
+    LanePaletteColor(hex: "#22c55e", name: "Bright Green"),
+    LanePaletteColor(hex: "#2563eb", name: "Bright Blue"),
+    LanePaletteColor(hex: "#4f46e5", name: "Indigo"),
+    LanePaletteColor(hex: "#7c3aed", name: "Bright Violet"),
   ]
 
   static let fallbacks: [String] = Array(entries.prefix(8)).map(\.hex)
@@ -69,9 +76,33 @@ enum LaneColorPalette {
     return result
   }
 
+  /// Violet is the Primary lane's colour, so a new lane never gets it on its own,
+  /// matching desktop's `ALLOCATABLE_LANE_COLORS`.
+  static let allocatable: [LanePaletteColor] = entries.filter { $0.hex.lowercased() != "#a78bfa" }
+
+  /// The first palette colour no open lane uses, then the first unused generated
+  /// one, matching desktop's `nextAvailableLaneColor`: a new lane always has one.
   static func nextAvailableColor(amongLanes lanes: [LaneSummary]) -> String? {
     let used = colorsInUse(amongLanes: lanes)
-    return entries.first(where: { !used.contains($0.hex.lowercased()) })?.hex
+    if let free = allocatable.first(where: { !used.contains($0.hex.lowercased()) }) { return free.hex }
+    for index in 0..<512 where !used.contains(generatedColor(index)) {
+      return generatedColor(index)
+    }
+    return generatedColor(used.count)
+  }
+
+  /// Desktop's `generatedLaneColor`: hues a golden angle apart, at the palette's
+  /// saturation and lightness, as lowercase hex.
+  static func generatedColor(_ index: Int) -> String {
+    let hue = (Double(index) * 137.508 + 17).truncatingRemainder(dividingBy: 360)
+    let saturation = 0.72, lightness = 0.62
+    let a = saturation * min(lightness, 1 - lightness)
+    func channel(_ n: Double) -> String {
+      let k = (n + hue / 30).truncatingRemainder(dividingBy: 12)
+      let value = lightness - a * max(-1, min(k - 3, 9 - k, 1))
+      return String(format: "%02x", Int((value * 255).rounded()))
+    }
+    return "#\(channel(0))\(channel(8))\(channel(4))"
   }
 
   static func accent(forLane lane: LaneSummary?, fallbackIndex: Int = 0) -> Color? {
@@ -152,11 +183,14 @@ func laneIconSystemName(_ icon: LaneIcon) -> String {
 struct WorkLaneLogoMark: View {
   let color: Color
   var laneIcon: LaneIcon? = nil
+  var emoji: String? = nil
   var size: CGFloat = 11
 
   var body: some View {
     Group {
-      if let laneIcon {
+      if let emoji, !emoji.isEmpty {
+        Text(emoji)
+      } else if let laneIcon {
         Image(systemName: laneIconSystemName(laneIcon))
       } else {
         Image(systemName: "arrow.branch")

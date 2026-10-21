@@ -153,6 +153,7 @@ export function projectChatOntoSession(
     ...session,
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     nextWakeAt: chat.nextWakeAt,
+    ...(chat.awaitingOwnWorkAt ? { awaitingOwnWorkAt: chat.awaitingOwnWorkAt } : {}),
     usageLimitParkedUntil: chat.usageLimitParkedUntil ?? null,
     usageLimitResume: chat.usageLimitResume ?? null,
     chatActivityMode: chatIsPlanning(chat) ? "planning" : null,

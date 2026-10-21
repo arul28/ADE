@@ -36,29 +36,6 @@ struct LaneColorSwatchPicker: View {
         .accessibilityLabel(entry.name + (isTaken ? " — in use" : ""))
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
       }
-      Button {
-        onSelect(nil)
-      } label: {
-        ZStack {
-          Circle()
-            .fill(Color.clear)
-            .frame(width: 30, height: 30)
-            .overlay(
-              Circle()
-                .strokeBorder(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3]))
-            )
-          Image(systemName: "xmark")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-          if selectedHex == nil {
-            Circle()
-              .stroke(ADEColor.textPrimary, lineWidth: 2)
-              .frame(width: 36, height: 36)
-          }
-        }
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("No color")
     }
   }
 }

@@ -219,7 +219,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
+      "getStatus", "jevDecide", "jevStatus", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "antigravitySignInStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -404,8 +404,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   usage: {
     read: [
-      "getAdeUsageStats", "getCostBreakdown", "getModelDetail", "getModelPriceOverrides",
-      "getModelRoutes", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
+      "getAdeUsageStats", "getCostBreakdown", "getModelCatalog", "getModelDetail", "getModelPriceOverrides",
+      "getModelRoutes", "getModelSheet", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
       "getUsageSnapshot",
     ],
     write: [
@@ -528,19 +528,21 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
       "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
       "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
+      "runtimeList", "getPosture", "getDuoModel",
     ],
     write: [
       "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",
       "deviceStop", "deviceDetach", "deviceDelete", "deviceCleanup", "runTests", "startStream",
       "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
-      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "selectPoint",
+      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
       "inspectPoint", "findElement", "tapElement", "fillElement", "waitForElement",
       "assertVisible", "setAppearance", "setContentSize", "setAccessibilityOption",
       "setLocation", "clearLocation", "setPermission", "sendPushNotification", "setStatusBar",
       "clearStatusBar", "startEventLog", "stopEventLog", "screenshot", "captureProofBundle",
       "recordStart", "recordStop", "recordDelete", "ensurePreviewWorkspace",
       "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "shutdown", "openDevice",
-      "closeDevice", "deviceDeleteInstalled",
+      "closeDevice", "deviceDeleteInstalled", "runtimeInstall", "runtimeInstallCancel",
+      "runtimeDelete", "runtimePrune", "xcodeRunFirstLaunch",
     ],
   },
   mac_desktop: {

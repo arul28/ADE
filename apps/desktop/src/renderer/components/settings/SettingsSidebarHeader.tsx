@@ -38,7 +38,8 @@ export function SettingsSidebarHeader({ onOpenAccount }: { onOpenAccount: () => 
           <ArrowLeft size={13} weight="bold" />
           <span>Back</span>
         </button>
-        <HelpMenu align="start" className="ade-settings-sidebar-tool" iconSize={14} />
+
+        <HelpMenu className="ade-settings-sidebar-tool" iconSize={13} />
 
         <div className="ade-settings-sidebar-zoom" role="group" aria-label="Zoom">
           <button

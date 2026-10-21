@@ -1,13 +1,12 @@
 import React from "react";
-import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, laneColorName, type LaneColor } from "./laneColorPalette";
 import { fgTint } from "./laneDesignTokens";
 
 type Props = {
   value: string | null | undefined;
-  onChange: (color: string | null) => void;
+  onChange: (color: string) => void;
   usedColors?: Set<string>;
   usedColorOwners?: Map<string, string>;
-  showClear?: boolean;
   swatchSize?: number;
 };
 
@@ -16,7 +15,6 @@ export function LaneColorPicker({
   onChange,
   usedColors,
   usedColorOwners,
-  showClear = true,
   swatchSize = 22,
 }: Props) {
   const selected = value?.toLowerCase() ?? null;
@@ -40,9 +38,7 @@ export function LaneColorPicker({
         usedColorOwners={usedColorOwners}
         onChange={onChange}
         swatchSize={swatchSize}
-        trailing={showClear ? (
-          <ClearButton selected={selected === null} onClear={() => onChange(null)} swatchSize={swatchSize} />
-        ) : null}
+        trailing={<CustomSwatch value={value ?? null} onChange={onChange} swatchSize={swatchSize} />}
       />
     </div>
   );
@@ -100,6 +96,59 @@ function SwatchGroup({
         {trailing}
       </div>
     </div>
+  );
+}
+
+/**
+ * Any colour at all, through the system colour panel. Filled with the lane's
+ * colour when that colour is not one of the named swatches. The pick is saved
+ * once, on the panel's `change`, not on every step of a drag.
+ */
+function CustomSwatch({
+  value,
+  onChange,
+  swatchSize,
+}: {
+  value: string | null;
+  onChange: (color: string) => void;
+  swatchSize: number;
+}) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const onChangeRef = React.useRef(onChange);
+  onChangeRef.current = onChange;
+  const custom = value && /^#[0-9a-f]{6}$/i.test(value) && !laneColorName(value) ? value : null;
+  React.useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const commit = () => onChangeRef.current(input.value);
+    input.addEventListener("change", commit);
+    return () => input.removeEventListener("change", commit);
+  }, []);
+  return (
+    <label
+      title={custom ? `Custom colour ${custom}` : "Custom colour"}
+      style={{
+        position: "relative",
+        width: swatchSize,
+        height: swatchSize,
+        borderRadius: 9999,
+        cursor: "pointer",
+        background: custom ?? "conic-gradient(#ef4444, #facc15, #22c55e, #22d3ee, #2563eb, #e879f9, #ef4444)",
+        outline: custom ? "2px solid var(--color-accent, #fff)" : "none",
+        outlineOffset: 2,
+        boxShadow: `inset 0 0 0 1px ${fgTint(18)}`,
+        display: "inline-flex",
+        overflow: "hidden",
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="color"
+        aria-label="Custom colour"
+        defaultValue={custom ?? "#7dd3fc"}
+        style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", border: "none", padding: 0 }}
+      />
+    </label>
   );
 }
 
@@ -167,42 +216,6 @@ function Swatch({
           <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       ) : null}
-    </button>
-  );
-}
-
-function ClearButton({
-  selected,
-  onClear,
-  swatchSize,
-}: {
-  selected: boolean;
-  onClear: () => void;
-  swatchSize: number;
-}) {
-  return (
-    <button
-      type="button"
-      title="Clear color"
-      aria-label="Clear color"
-      aria-pressed={selected}
-      onClick={onClear}
-      style={{
-        width: swatchSize,
-        height: swatchSize,
-        borderRadius: 9999,
-        backgroundColor: "transparent",
-        cursor: "pointer",
-        outline: selected ? "2px solid var(--color-accent, #fff)" : "none",
-        outlineOffset: 2,
-        border: "1px dashed rgba(255,255,255,0.35)",
-        padding: 0,
-        color: "rgba(255,255,255,0.55)",
-        fontSize: 11,
-        lineHeight: `${swatchSize}px`,
-      }}
-    >
-      ✕
     </button>
   );
 }

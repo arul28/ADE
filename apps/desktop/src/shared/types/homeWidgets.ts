@@ -20,6 +20,7 @@ export const HOME_WIDGETS_IPC = {
   machineKill: "ade.home.machine.kill",
   weatherSearch: "ade.home.weather.search",
   weatherGet: "ade.home.weather.get",
+  weatherLocate: "ade.home.weather.locate",
   focusClaimCompletion: "ade.home.focus.claimCompletion",
   shareCopyImage: "ade.home.share.copyImage",
   shareSaveImage: "ade.home.share.saveImage",
@@ -227,6 +228,7 @@ export type HomeWeather = {
 
 export type HomeWeatherResult = { ok: true; weather: HomeWeather } | { ok: false; error: string };
 export type HomeWeatherSearchResult = { ok: true; places: HomeWeatherPlace[] } | { ok: false; error: string };
+export type HomeWeatherLocateResult = { ok: true; place: HomeWeatherPlace } | { ok: false; error: string };
 
 export type HomeWidgetsBridge = {
   clipboard: {
@@ -247,6 +249,8 @@ export type HomeWidgetsBridge = {
   weather: {
     search: (query: string) => Promise<HomeWeatherSearchResult>;
     get: (args: { latitude: number; longitude: number }) => Promise<HomeWeatherResult>;
+    /** This computer's approximate city, from its internet address; no prompt. */
+    locate?: () => Promise<HomeWeatherLocateResult>;
   };
   nowPlaying: {
     /** The widget is on screen: start the source (if needed) and get the state now. */

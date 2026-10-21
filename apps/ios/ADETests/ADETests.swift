@@ -1878,6 +1878,13 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "claude"), "full-auto")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "codex"), "full-auto")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "opencode"), "full-auto")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "cursor"), "full-auto")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "droid"), "auto-high")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "muse"), "allowAll")
+    XCTAssertEqual(workDefaultRuntimeMode(provider: "copilot"), "full-auto")
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto", "config-toml"])

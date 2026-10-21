@@ -48,6 +48,8 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case pushAction = "push_action"
   case voiceDictation = "voice_dictation"
   case appClipHandoff = "app_clip_handoff"
+  /// A person took Control of a Mac's simulator from the phone.
+  case simulatorControl = "simulator_control"
 }
 
 enum ADEAnalyticsOutcome: String, CaseIterable {

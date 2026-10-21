@@ -783,7 +783,7 @@ export function CommitHistoryView({
   }
 
   return (
-    <div ref={rootRef} className="chv relative flex min-h-0 flex-1 flex-col" data-testid="commit-history">
+    <div ref={rootRef} className="chv relative flex min-h-0 flex-1 flex-col" data-testid="commit-history" data-onboarding-anchor="history-graph">
       <style ref={focusStyleRef} />
       <style>{`.chv .chv-tile g, .chv .chv-row { transition: opacity 120ms ease-out; } .chv .chv-tile .chv-edge { transition: stroke-width 120ms ease-out; }`}</style>
       {loading && commits.length > 0 ? (

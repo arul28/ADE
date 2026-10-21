@@ -194,7 +194,7 @@ describe("laneColorPalette", () => {
     it("never allocates the reserved Primary purple", () => {
       const taken = ALLOCATABLE_LANE_COLORS.map((c) => makeLane({ id: c.hex, color: c.hex }));
       // Purple is the one palette entry left unused, and it is still not offered.
-      expect(nextAvailableColor(taken)).toBeNull();
+      expect(nextAvailableColor(taken)).not.toBe(PRIMARY_LANE_COLOR);
       expect(ALLOCATABLE_LANE_COLORS.some((c) => c.hex === PRIMARY_LANE_COLOR)).toBe(false);
       expect(LANE_FALLBACK_COLORS).not.toContain(PRIMARY_LANE_COLOR);
     });
@@ -206,9 +206,16 @@ describe("laneColorPalette", () => {
       expect(nextAvailableColor(taken)).toBe(ALLOCATABLE_LANE_COLORS[3]!.hex);
     });
 
-    it("returns null when every palette color is already in use", () => {
+    it("keeps finding an unused colour once every palette colour is in use", () => {
       const taken = LANE_COLOR_PALETTE.map((c) => makeLane({ id: c.hex, color: c.hex }));
-      expect(nextAvailableColor(taken)).toBeNull();
+      const takenHexes = new Set(taken.map((lane) => lane.color!.toLowerCase()));
+      const first = nextAvailableColor(taken);
+      expect(first).toMatch(/^#[0-9a-f]{6}$/);
+      expect(takenHexes.has(first.toLowerCase())).toBe(false);
+      // The next lane gets yet another colour, not a repeat.
+      const second = nextAvailableColor([...taken, makeLane({ id: "extra", color: first })]);
+      expect(second).not.toBe(first);
+      expect(takenHexes.has(second.toLowerCase())).toBe(false);
     });
   });
 

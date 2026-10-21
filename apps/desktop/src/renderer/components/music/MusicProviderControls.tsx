@@ -55,7 +55,7 @@ export function SpotifyOnboarding() {
 
   if (step === 0) {
     return (
-      <section className="ade-spotify-setup ade-chat-scene-plane is-intro" data-testid="spotify-setup">
+      <section className="ade-spotify-setup ade-chat-scene-plane is-intro" data-testid="spotify-setup" data-onboarding-anchor="music-setup">
         <header className="ade-spotify-setup-head">
           <SpotifyBrand />
           <h1>Connect Spotify</h1>

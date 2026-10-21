@@ -115,7 +115,7 @@ beforeEach(() => {
     disconnect() {}
   };
   const onEvent = vi.fn((_listener: (event: unknown) => void, _pin?: unknown) => vi.fn());
-  (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), onEvent } };
+  (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), onEvent, getPosture: vi.fn(async () => ({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null })) } };
 });
 
 afterEach(() => {
@@ -323,7 +323,7 @@ describe("AppleDeviceMiniPlayer, device off", () => {
     stream.state = "error";
     stream.error = "APPLE_DEVICE_OFF: iPhone 17 Pro is off. Start it to watch.";
     const deviceStart = vi.fn(async () => ({ ok: true }));
-    (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), deviceStart } };
+    (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), deviceStart, onEvent: vi.fn(() => vi.fn()), getPosture: vi.fn(async () => ({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null })) } };
     openAppleMiniPlayer(TARGET);
     render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} surface={SURFACE} />);
 
@@ -439,7 +439,7 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
     vi.useFakeTimers();
     try {
       const stopStream = vi.fn(() => Promise.resolve());
-      (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), stopStream } };
+      (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), stopStream, onEvent: vi.fn(() => vi.fn()), getPosture: vi.fn(async () => ({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null })) } };
       const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
       const pane = acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
       noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });

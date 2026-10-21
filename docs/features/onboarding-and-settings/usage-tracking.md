@@ -874,6 +874,49 @@ throws into the chat. Read it with `ade router shadow --days 7` (action
 task with `ade router pick`, and force a fetch with `ade router refresh`.
 `ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
 
+**Your model catalogue.** `ade models catalog` (action `usage.getModelCatalog`,
+read-only, like the other usage reads it runs on the machine the CLI targets)
+lists every model this machine can run, one entry per harness × model, from the
+same model lists and the same registry mapping as the routes (`modelCatalog.ts`
+groups `buildModelRoutes`). Each entry says how the user reaches the model (the
+harness, and `plan`, `metered` with its channel, or `free`), its channel price,
+each effort level with the variant it rates from, and the full registry profile
+of the level it runs at by default (its default effort, else `high`): the
+Intelligence Index and every per-eval score, domain and personality indices,
+modalities, license, speed, list prices. Facts every level of a release shares
+(modalities, license, parameters, knowledge cutoff) come from another variant of
+the family when the default one's data lacks them. It also lists the Coding
+Agent Index rows and the speech leaderboard rows linked to the model's variants.
+A model the registry has no family for is listed with a null profile. `--text`
+prints one line per model with `MODEL_REGISTRY_AA_ATTRIBUTION`; without it the
+full profiles come back as JSON. It starts nothing and changes no routing.
+
+**Your model sheet.** `ade models sheet [--provider <p>] [--text]` (action
+`usage.getModelSheet`, read-only, same machine scoping as the catalogue)
+organizes the same catalogue by the kind of task each model suits.
+`modelSheet.ts` groups the runnable models by registry family and gives each
+family a 0-1 score per task kind (question, research, review, small edit,
+feature, debugging, refactor, writing, vision, audio): a weighted mean of
+benchmarks from `TASK_KIND_WEIGHTS`, each min-max normalized over the models
+Artificial Analysis lists today. A kind is left out when the model's measured
+benchmarks carry less than `MIN_WEIGHT_COVERAGE` (60%) of its weight, or when a
+required one (MMMU-Pro for vision, the speech index for audio) is missing.
+Headline scores use `high` where AA measured it, else AA's default variant;
+each model also lists its efforts with the variant measured at exactly that
+level (no neighbor fill-in) and the best measured effort per kind (within 0.02,
+the cheaper one). Speed and cost tiers (`fast/medium/slow`,
+`cheap/mid/premium`) come from time and cost per index task. Families are
+sorted by Intelligence Index. Each family also carries words, for people and
+for Jev: a summary, strengths, weaknesses, best-for and avoid-for kinds, and
+notes from the curated `modelSheetNotes.json` (each with the benchmark it rests
+on), or words generated from the scores when a family has none. Runnable
+models the router cannot map are resolved through the curated
+`modelSheetMatches.json` (`same`, `same-model-faster-serving`,
+`nearest-sibling`, `none`, with a confidence and a reason); a nearest sibling
+is shown as a note and never lends its scores. `--text` prints the task-kind
+table and then each family in words; without it the sheet comes back as JSON.
+It starts nothing and changes no routing.
+
 `ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
 the router would have saved. It reads the turn ledger, so the history starts on day
 one, not the day the router shipped. Each chat thread is one series of turns. The

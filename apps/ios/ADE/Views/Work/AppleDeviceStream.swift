@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import SwiftUI
 import UIKit
 
 // MARK: - Wire models
@@ -102,7 +103,43 @@ struct AppleStreamTicket: Codable, Equatable {
   var codec: String?
   var width: Double?
   var height: Double?
+  /// Device POINTS. With `width`/`height` this is the points-per-pixel ratio a
+  /// touch on the picture needs to become a tap. Absent from older hosts,
+  /// which leaves the viewer watch-only.
+  var pointWidth: Double?
+  var pointHeight: Double?
+  /// The host takes a live finger (`apple.input` kind `touch`). Older hosts
+  /// omit it, and the viewer sends whole taps and drags instead.
+  var liveTouch: Bool?
   var expiresAt: String?
+
+  /// Frame size in pixels, when the host sent a real one.
+  var pixelSize: CGSize? { Self.size(width, height) }
+
+  /// Screen size in points, when the host sent one.
+  var pointSize: CGSize? { Self.size(pointWidth, pointHeight) }
+
+  private static func size(_ width: Double?, _ height: Double?) -> CGSize? {
+    guard let width, let height, width > 0, height > 0 else { return nil }
+    return CGSize(width: width, height: height)
+  }
+}
+
+/// What the relay says about this viewer's link, about once a second.
+///
+/// Only sent to a viewer that acks (see `AppleStreamSocket`). Every field is
+/// optional for the same reason as the status: a newer Mac may say more.
+struct AppleStreamNetworkStats: Equatable {
+  /// The last record's round trip, Mac to phone and back.
+  var rttMs: Double?
+  /// Frames the relay skipped to keep this viewer current.
+  var skipped: Int?
+
+  init?(control object: [String: Any]) {
+    guard object["t"] as? String == "stats" else { return nil }
+    rttMs = (object["rttMs"] as? NSNumber)?.doubleValue
+    skipped = (object["skipped"] as? NSNumber)?.intValue
+  }
 }
 
 // MARK: - Display helpers
@@ -132,6 +169,19 @@ func appleDeviceOwnerLabel(_ owner: AppleDeviceStatusOwner?) -> String? {
     return title
   }
   return "a chat in this lane"
+}
+
+/// Whether the device the status shows is the one this lane holds.
+///
+/// For a lane with no device the host reports any booted iPhone, so `device`
+/// alone could be another lane's or the user's own simulator. Only a match
+/// with `laneDevice` makes it this lane's to drive.
+func appleStatusShowsLaneDevice(_ status: AppleDeviceStatus?) -> Bool {
+  guard
+    let shown = status?.device?.udid, !shown.isEmpty,
+    let held = status?.laneDevice?.udid
+  else { return false }
+  return shown == held
 }
 
 func appleDeviceFamilySymbol(_ family: String?) -> String {
@@ -557,6 +607,68 @@ final class AppleStreamDecoder {
   }
 }
 
+// MARK: - Layer host
+
+/// Hosts the decoder's `AVSampleBufferDisplayLayer`.
+///
+/// The layer belongs to the decoder, not to this view: SwiftUI rebuilds a
+/// representable freely, and a layer recreated on a rebuild would drop the
+/// format description and stall until the next keyframe.
+struct AppleStreamLayerView: UIViewRepresentable {
+  let layer: AVSampleBufferDisplayLayer
+
+  func makeUIView(context: Context) -> AppleStreamLayerHostView {
+    let view = AppleStreamLayerHostView()
+    view.install(layer)
+    return view
+  }
+
+  func updateUIView(_ uiView: AppleStreamLayerHostView, context: Context) {
+    uiView.install(layer)
+  }
+}
+
+final class AppleStreamLayerHostView: UIView {
+  private weak var installed: AVSampleBufferDisplayLayer?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .black
+    isUserInteractionEnabled = false
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  func install(_ next: AVSampleBufferDisplayLayer) {
+    guard installed !== next else { return }
+    installed?.removeFromSuperlayer()
+    layer.addSublayer(next)
+    installed = next
+    setNeedsLayout()
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    // No implicit animation: the layer is resized on rotation and on the first
+    // frame, and an animated bounds change makes the picture visibly swim.
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    installed?.frame = bounds
+    CATransaction.commit()
+  }
+}
+
+/// Bitrate as the stream stats say it. Sub-megabit reads in kb/s because "0.8 Mb/s"
+/// is a worse answer than "800 kb/s" for the number people are watching drop.
+func appleStreamBitrateLabel(kbps: Double) -> String {
+  guard kbps > 0 else { return "0 kb/s" }
+  if kbps < 1000 { return "\(Int(kbps.rounded())) kb/s" }
+  return String(format: "%.1f Mb/s", kbps / 1000)
+}
+
 // MARK: - Socket
 
 /// The binary stream socket.
@@ -565,21 +677,33 @@ final class AppleStreamDecoder {
 /// envelope. The same `URLSessionWebSocketTask` works for both the direct and
 /// the relay path — the relay forwards binary frames verbatim — so there is one
 /// client here and the host's ticket decides which one it is.
+///
+/// Every batch of records is acked (`{t:"ack",n}`, the count received on this
+/// socket). The relay times those acks, which is the only way it can see a
+/// queue building between the Mac and the phone when the socket it writes to
+/// is the tunnel's loopback pipe; past its budget it skips frames and resumes
+/// at a keyframe, and it answers with `{t:"stats"}`. A host that predates
+/// pacing ignores the acks.
 @MainActor
 final class AppleStreamSocket: NSObject {
   private var task: URLSessionWebSocketTask?
   private var session: URLSession?
   private var parser = AppleStreamRecordParser()
   private var closed = false
+  private var visible = true
+  /// Records received on this socket; what an ack reports.
+  private var received = 0
 
   var onOpen: (() -> Void)?
   var onRecord: ((AppleStreamRecord) -> Void)?
   var onError: ((String) -> Void)?
+  var onStats: ((AppleStreamNetworkStats) -> Void)?
 
   func connect(url: URL, token: String?) {
     close()
     closed = false
     parser.reset()
+    received = 0
     var request = URLRequest(url: url)
     if let token, !token.isEmpty {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -602,6 +726,7 @@ final class AppleStreamSocket: NSObject {
   /// left — so this is what keeps a backgrounded phone from holding a capture
   /// open on someone's Mac.
   func setVisible(_ visible: Bool) {
+    self.visible = visible
     guard let task, !closed else { return }
     let payload = visible ? "{\"t\":\"visible\"}" : "{\"t\":\"hidden\"}"
     task.send(.string(payload)) { _ in
@@ -622,31 +747,49 @@ final class AppleStreamSocket: NSObject {
   private func receive() {
     guard let task else { return }
     task.receive { [weak self] result in
-      Task { @MainActor [weak self] in
-        guard let self, !self.closed, self.task === task else { return }
-        switch result {
-        case .failure(let error):
-          self.onError?(Self.message(for: error))
-        case .success(let message):
-          switch message {
-          case .data(let data):
-            self.ingest(data)
-          case .string(let text):
-            // The host's own error channel: a text frame on a binary stream is
-            // the only way it can explain itself once the pipe is up.
-            self.handleControl(text)
-          @unknown default:
-            break
-          }
-          self.receive()
-        }
+      // The session's delegate queue is main, so this is already on the main
+      // actor: handling the frame in place saves a task hop on every frame,
+      // which is time the picture would otherwise spend waiting to decode.
+      if Thread.isMainThread {
+        MainActor.assumeIsolated { self?.handle(result, from: task) }
+      } else {
+        Task { @MainActor [weak self] in self?.handle(result, from: task) }
       }
+    }
+  }
+
+  private func handle(
+    _ result: Result<URLSessionWebSocketTask.Message, Error>,
+    from task: URLSessionWebSocketTask
+  ) {
+    guard !closed, self.task === task else { return }
+    switch result {
+    case .failure(let error):
+      onError?(Self.message(for: error))
+    case .success(let message):
+      switch message {
+      case .data(let data):
+        ingest(data)
+      case .string(let text):
+        // The host's own channel: a text frame on a binary stream is how it
+        // explains itself once the pipe is up, and how the relay reports pace.
+        handleControl(text)
+      @unknown default:
+        break
+      }
+      receive()
     }
   }
 
   private func ingest(_ data: Data) {
     do {
-      for record in try parser.push(data) {
+      let records = try parser.push(data)
+      guard !records.isEmpty else { return }
+      received += records.count
+      // Acked before decoding: the relay is measuring the network, and decode
+      // time on this end is not a queue it can drain by skipping frames.
+      ack()
+      for record in records {
         onRecord?(record)
       }
     } catch {
@@ -655,11 +798,23 @@ final class AppleStreamSocket: NSObject {
     }
   }
 
+  private func ack() {
+    guard let task, !closed, visible else { return }
+    task.send(.string("{\"t\":\"ack\",\"n\":\(received)}")) { _ in
+      // A lost ack only makes the relay think this viewer is a little behind;
+      // the receive loop reports a dead socket with a better sentence.
+    }
+  }
+
   private func handleControl(_ text: String) {
     guard
       let data = text.data(using: .utf8),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return }
+    if let stats = AppleStreamNetworkStats(control: object) {
+      onStats?(stats)
+      return
+    }
     if let message = object["error"] as? String, !message.isEmpty {
       onError?(message)
       close()

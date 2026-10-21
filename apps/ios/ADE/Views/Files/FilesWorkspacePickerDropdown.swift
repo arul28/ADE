@@ -89,6 +89,7 @@ struct FilesWorkspacePickerDropdown: View {
             WorkLaneLogoMark(
               color: LaneColorPalette.displayColor(forHex: lane.color, fallback: ADEColor.textSecondary),
               laneIcon: lane.icon,
+              emoji: lane.emoji,
               size: 11
             )
           } else if workspace?.kind.lowercased() == "primary" {
@@ -217,6 +218,7 @@ private struct FilesWorkspacePickerSheet: View {
           WorkLaneLogoMark(
             color: LaneColorPalette.displayColor(forHex: lane.color, fallback: ADEColor.textSecondary),
             laneIcon: lane.icon,
+            emoji: lane.emoji,
             size: 14
           )
           .frame(width: 22)

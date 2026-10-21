@@ -75,6 +75,10 @@ final class MachineConnection {
   private(set) var gaveUp = false
   /// The route the live socket took (nil while not live).
   private(set) var liveRouteKind: SyncConnectionRouteKind?
+  /// The address the live socket dialed (nil while not live). A side channel
+  /// to this machine (the Apple device video) resolves against it, never
+  /// against the focused machine's address.
+  private(set) var liveAddress: String?
   private var relayReauthorizationTask: Task<Void, Never>?
   /// Sleeping out a backoff delay between failed dials.
   private var waitingToRetry = false
@@ -287,6 +291,7 @@ final class MachineConnection {
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)
+    liveAddress = result.address
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -334,6 +339,7 @@ final class MachineConnection {
     }
     socket = nil
     liveRouteKind = nil
+    liveAddress = nil
     // The roster subscription belongs to the socket; keep the rows for the
     // offline view and ask for a fresh snapshot on the next socket.
     rosterSeq = nil
@@ -587,6 +593,10 @@ final class MachineConnection {
 
   func supportsAction(_ action: String) -> Bool {
     commandDescriptors.contains { $0.action == action }
+  }
+
+  func commandDescriptor(for action: String) -> SyncRemoteCommandDescriptor? {
+    commandDescriptors.first { $0.action == action }
   }
 
   // MARK: - Heartbeat

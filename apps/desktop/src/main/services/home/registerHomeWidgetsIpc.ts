@@ -151,6 +151,7 @@ export function registerHomeWidgetsIpc(args: {
   handle(HOME_WIDGETS_IPC.machineKill, (pid: number) => service.machine.kill(Number(pid)));
   handle(HOME_WIDGETS_IPC.weatherSearch, (query: string) => service.weather.search(String(query ?? "")));
   handle(HOME_WIDGETS_IPC.weatherGet, (input: { latitude: number; longitude: number }) => service.weather.get(input));
+  handle(HOME_WIDGETS_IPC.weatherLocate, () => service.weather.locate());
 
   // Now Playing: a source runs only while some window's widget is subscribed.
   // The Music app's icon is read once per path (the source asks on every

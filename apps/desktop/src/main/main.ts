@@ -91,6 +91,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureMacDesktopAnalytics,
+  captureAppleDeviceAnalytics,
   captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatCompactionAnalytics,
@@ -4474,6 +4475,19 @@ app.whenReady().then(async () => {
     laneTeardownDeps.rebaseSuggestionService = {
       dismiss: (args) => rebaseSuggestionService?.dismiss(args) ?? Promise.resolve(),
     };
+    laneTeardownDeps.sessionService = sessionService;
+    // Lanes archived before archive took their chats along keep those chats
+    // visible under an "Archived lane" header; archive them once per project.
+    try {
+      const archivedSessionCount = sessionService.archiveSessionsOfArchivedLanes();
+      if (archivedSessionCount > 0) {
+        logger.info("lane.archive.sessions_backfilled", { archivedSessionCount });
+      }
+    } catch (error) {
+      logger.warn("lane.archive.sessions_backfill_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const sessionDeltaService = createSessionDeltaService({
       db,
@@ -5239,6 +5253,7 @@ app.whenReady().then(async () => {
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
+      captureAnalytics: (outcome) => captureAppleDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
       // Lane-scoped calls build the lane's worktree, not the primary checkout.
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {
@@ -7868,6 +7883,18 @@ app.whenReady().then(async () => {
     }
   };
 
+  /** A wedged first-run discovery child would otherwise outlive ADE's quit. */
+  const terminateOnboardingDiscoveryWorkersBestEffort = (): void => {
+    try {
+      const { terminateOnboardingDiscoveryWorkers } = require(
+        "./services/onboarding/onboardingDiscoveryClient",
+      );
+      terminateOnboardingDiscoveryWorkers();
+    } catch {
+      // ignore if module not loaded
+    }
+  };
+
   const disposeSharedTranscriptionService = (): void => {
     try {
       sharedTranscriptionService?.dispose();
@@ -7994,6 +8021,7 @@ app.whenReady().then(async () => {
     // exit on their own once this process is gone.
     void disposeAllCursorSdkConnections().catch(() => {});
     terminateLoginImportWorkersBestEffort();
+    terminateOnboardingDiscoveryWorkersBestEffort();
   };
 
   /**
