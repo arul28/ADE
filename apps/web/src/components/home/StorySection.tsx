@@ -268,7 +268,8 @@ function FilmStory({ film }: { film: Film }) {
         const poster = els.posters[s.shot.name];
         const on = s === active;
         if (video) {
-          video.style.opacity = on ? "1" : "0";
+          // Until it is ready the still shows instead: a streamed video's first frame would cover it.
+          video.style.opacity = on && video.dataset.ready ? "1" : "0";
           if (on) seek(video, frame, film.fps);
         }
         if (poster) {
