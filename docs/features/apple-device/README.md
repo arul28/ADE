@@ -397,6 +397,9 @@ minimized" for that chat.
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
 | `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
+| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift` | The phone's full-screen viewer: View only / Control, the speed readout. |
+| `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, Control blockers and the tap→screen probe. |
+| `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock and the acking stream socket. |
 | `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container. See [inspector.md](./inspector.md). |
@@ -624,6 +627,95 @@ returns those.
 
 A viewer that is not visible stops its stream. A stall of ~3s shows
 Reconnect. First frame timeout is 5s.
+
+### Remote viewers and pacing
+
+A phone, a web tab or another desktop gets the stream through
+`appleStreamRelay.ts`: a single-use ticket over sync (`apple.streamTicket`,
+which starts capture at `apple.remoteBitrateKbpsCap`, default 2500 kb/s), then
+a second WebSocket that carries the helper's records unchanged. The ticket
+carries the transport's pixel size and its POINT size; a viewer needs both to
+turn a touch into a tap.
+
+A viewer that sends `{t:"ack",n}` (records received so far) is **paced**.
+Over the tunnel relay the socket the brain writes to is a loopback pipe, so its
+`bufferedAmount` cannot show a queue building on the way to the phone; the
+acks can. The relay keeps the send time of every unacked record and compares
+the oldest one's age with the best round trip of the last 5–10 s:
+
+- Past `APPLE_STREAM_LAG_BUDGET_MS` (250 ms) the viewer stops getting delta
+  frames. Once it is back within 60 ms it resumes at a keyframe; the relay
+  gets one by attaching a short second loopback reader, which makes the helper
+  rebuild its encoder (there is no keyframe command, and none is needed).
+  Config records are never skipped. A viewer never receives a delta frame it
+  cannot decode.
+- Each stall lowers the lane's encoder cap to 60% (at most every 2 s, never
+  under 400 kb/s); 15 s without a stall raises it by a quarter, every 10 s, up
+  to the configured cap. The cap is the lane's, so it also applies to the
+  Mac's own view while a remote viewer is attached, as the remote cap already
+  did.
+- About once a second the relay answers with `{t:"stats"}`: `rttMs`,
+  `baseRttMs`, `lagMs`, `skipped`, `bitrateKbps`.
+
+A viewer that never acks (the web client and desktops today, older phones) is
+forwarded every record, exactly as before.
+
+Measured by `scripts/perf/service/apple-stream-pacing.bench.mts` (the relay over
+a simulated link; 2.5 Mb/s encoder, 60 fps, keyframes 20× a delta), second
+half of a 30 s run:
+
+| Link | Not paced | Paced |
+|---|---|---|
+| 1 Mb/s, 40 ms one way | p50 36 s, still growing | p50 51 ms, p90 54 ms, p99 221 ms |
+| 600 kb/s, 120 ms | — | p50 133 ms, p90 184 ms |
+| 5 Mb/s, 20 ms | — | p50 30 ms, no skips, cap untouched |
+
+### The phone: watch and control
+
+`AppleDeviceViewer` opens full screen from the simulator chip in a chat.
+**View only** is the default: the picture fills the screen and a tap shows or
+hides the bars. **Control** is a press-and-hold (0.6 s, the half fills as it
+is held); a tap only says "Hold to take control". While controlling, the
+picture sits between the bars in an orange frame, the bar says "Controlling",
+and Home, a keyboard and **Done** are on it. System edge gestures are deferred
+so a swipe up from the bottom reaches the simulator.
+
+Control is not offered, with the reason shown, when the host lacks
+`apple.input`/`apple.invoke` or the point size, when the device shown is not
+the lane's own (`laneDevice` must match), when another chat claimed the device
+(the chat the viewer was opened from does not count — its id rides as
+`chatSessionId`, the same rule as the desktop pane), or before the picture is
+live. It ends by itself on background, a lost or stalled picture, a claim by
+another chat, a different device behind the picture, a refused gesture, or
+5 minutes without a touch.
+
+Input is the desktop's contract (`useAppleDeviceInput`): a touch is a fraction
+of the drawn picture, turned back through the phone's own display rotation,
+then multiplied by the helper's current point metrics. Those metrics come from
+the stream's config record (the helper's metrics in pixels, re-sent when a Duo
+folds) times the ticket's points-per-pixel, never from the decoded frame size,
+because an app drawing landscape turns the framebuffer while the helper still
+normalises against portrait. One gesture leaves as one `apple.input` call: a
+`tap` under 10 points of travel, else a `drag` replayed at its real duration
+(60 ms–2 s). Home is `apple.invoke pressButton`. Text is `apple.input type`.
+Calls are never queued or retried.
+
+On the host, `apple.input` stamps `source: "user"` (a person's tap never
+starts an agent's auto-recording) and reads the owner from memory
+(`getControlOwner`) instead of a full status read, which ran `simctl` on most
+taps because the status throttle is 500 ms.
+
+A lane on another machine: `apple.*` commands route by the lane's namespaced
+id, and the video socket resolves the ticket against **that** machine's live
+address (`SyncService.appleStreamEndpoint`), not the focused machine's.
+
+The speed readout (speedometer button) shows decoded fps, received kb/s, the
+relay's round trip, skipped frames, and the median tap→screen time. The phone
+cannot read pixels, so "the screen changed" is read from the stream: an idle
+device is captured at a 5 fps floor with tiny frames, and a change starts a
+burst of frames a refresh apart, or a frame several times the recent size.
+On the Mac's helper (iPhone 17 Pro, 2.5 Mb/s) the first changed frame leaves
+17–130 ms after a tap is applied (median 103 ms).
 
 ## Semantic actions
 

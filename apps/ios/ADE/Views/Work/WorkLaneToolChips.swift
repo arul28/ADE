@@ -311,7 +311,8 @@ final class WorkLaneToolsModel: ObservableObject {
   /// neither read goes on the wire unadvertised.
   func refresh(laneId: String, syncService: SyncService) async {
     let readTools = syncService.supportsWorkToolsState
-    let readApple = syncService.supportsAppleDeviceStatus
+    // Asked of the lane's own machine: a lane on another Mac answers there.
+    let readApple = syncService.supportsAppleAction("apple.status", laneId: laneId)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil
@@ -353,6 +354,9 @@ struct WorkLaneToolsPreview {
 struct WorkLaneToolsPresenter: ViewModifier {
   @ObservedObject var model: WorkLaneToolsModel
   let laneId: String
+  /// The chat the chips sit in. A device that chat claimed is still its own to
+  /// drive from the viewer, as it is from the desktop's pane in that chat.
+  var chatSessionId: String?
   /// False for a personal chat, which has no lane.
   let enabled: Bool
   #if DEBUG
@@ -383,7 +387,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
       }
       // Full screen, seeded with the last status so the first frame is not an empty viewer.
       .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
-        AppleDeviceViewer(laneId: laneId, initialStatus: model.appleStatus)
+        AppleDeviceViewer(laneId: laneId, chatSessionId: chatSessionId, initialStatus: model.appleStatus)
       }
       .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
         MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)

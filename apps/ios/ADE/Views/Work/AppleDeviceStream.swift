@@ -102,7 +102,38 @@ struct AppleStreamTicket: Codable, Equatable {
   var codec: String?
   var width: Double?
   var height: Double?
+  /// Device POINTS. With `width`/`height` this is the points-per-pixel ratio a
+  /// touch on the picture needs to become a tap. Absent from older hosts,
+  /// which leaves the viewer watch-only.
+  var pointWidth: Double?
+  var pointHeight: Double?
   var expiresAt: String?
+}
+
+/// What the relay says about this viewer's link, about once a second.
+///
+/// Only sent to a viewer that acks (see `AppleStreamSocket`). Every field is
+/// optional for the same reason as the status: a newer Mac may say more.
+struct AppleStreamNetworkStats: Equatable {
+  /// The last record's round trip, Mac to phone and back.
+  var rttMs: Double?
+  /// The best round trip lately; what the link costs with nothing queued.
+  var baseRttMs: Double?
+  /// How far the oldest unacked record is behind `baseRttMs`.
+  var lagMs: Double?
+  /// Frames the relay skipped to keep this viewer current.
+  var skipped: Int?
+  /// The encoder cap the relay is running this lane at.
+  var bitrateKbps: Double?
+
+  init?(control object: [String: Any]) {
+    guard object["t"] as? String == "stats" else { return nil }
+    rttMs = (object["rttMs"] as? NSNumber)?.doubleValue
+    baseRttMs = (object["baseRttMs"] as? NSNumber)?.doubleValue
+    lagMs = (object["lagMs"] as? NSNumber)?.doubleValue
+    skipped = (object["skipped"] as? NSNumber)?.intValue
+    bitrateKbps = (object["bitrateKbps"] as? NSNumber)?.doubleValue
+  }
 }
 
 // MARK: - Display helpers
@@ -565,21 +596,36 @@ final class AppleStreamDecoder {
 /// envelope. The same `URLSessionWebSocketTask` works for both the direct and
 /// the relay path — the relay forwards binary frames verbatim — so there is one
 /// client here and the host's ticket decides which one it is.
+///
+/// Every batch of records is acked (`{t:"ack",n}`, the count received on this
+/// socket). The relay times those acks, which is the only way it can see a
+/// queue building between the Mac and the phone when the socket it writes to
+/// is the tunnel's loopback pipe; past its budget it skips frames and resumes
+/// at a keyframe, and it answers with `{t:"stats"}`. A host that predates
+/// pacing ignores the acks.
 @MainActor
 final class AppleStreamSocket: NSObject {
   private var task: URLSessionWebSocketTask?
   private var session: URLSession?
   private var parser = AppleStreamRecordParser()
   private var closed = false
+  private var visible = true
+  /// Records received on this socket; what an ack reports.
+  private var received = 0
+  /// Bytes received on this socket, for the viewer's bitrate readout.
+  private(set) var receivedBytes = 0
 
   var onOpen: (() -> Void)?
   var onRecord: ((AppleStreamRecord) -> Void)?
   var onError: ((String) -> Void)?
+  var onStats: ((AppleStreamNetworkStats) -> Void)?
 
   func connect(url: URL, token: String?) {
     close()
     closed = false
     parser.reset()
+    received = 0
+    receivedBytes = 0
     var request = URLRequest(url: url)
     if let token, !token.isEmpty {
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -602,6 +648,7 @@ final class AppleStreamSocket: NSObject {
   /// left — so this is what keeps a backgrounded phone from holding a capture
   /// open on someone's Mac.
   func setVisible(_ visible: Bool) {
+    self.visible = visible
     guard let task, !closed else { return }
     let payload = visible ? "{\"t\":\"visible\"}" : "{\"t\":\"hidden\"}"
     task.send(.string(payload)) { _ in
@@ -622,31 +669,50 @@ final class AppleStreamSocket: NSObject {
   private func receive() {
     guard let task else { return }
     task.receive { [weak self] result in
-      Task { @MainActor [weak self] in
-        guard let self, !self.closed, self.task === task else { return }
-        switch result {
-        case .failure(let error):
-          self.onError?(Self.message(for: error))
-        case .success(let message):
-          switch message {
-          case .data(let data):
-            self.ingest(data)
-          case .string(let text):
-            // The host's own error channel: a text frame on a binary stream is
-            // the only way it can explain itself once the pipe is up.
-            self.handleControl(text)
-          @unknown default:
-            break
-          }
-          self.receive()
-        }
+      // The session's delegate queue is main, so this is already on the main
+      // actor: handling the frame in place saves a task hop on every frame,
+      // which is time the picture would otherwise spend waiting to decode.
+      if Thread.isMainThread {
+        MainActor.assumeIsolated { self?.handle(result, from: task) }
+      } else {
+        Task { @MainActor [weak self] in self?.handle(result, from: task) }
       }
     }
   }
 
+  private func handle(
+    _ result: Result<URLSessionWebSocketTask.Message, Error>,
+    from task: URLSessionWebSocketTask
+  ) {
+    guard !closed, self.task === task else { return }
+    switch result {
+    case .failure(let error):
+      onError?(Self.message(for: error))
+    case .success(let message):
+      switch message {
+      case .data(let data):
+        ingest(data)
+      case .string(let text):
+        // The host's own channel: a text frame on a binary stream is how it
+        // explains itself once the pipe is up, and how the relay reports pace.
+        handleControl(text)
+      @unknown default:
+        break
+      }
+      receive()
+    }
+  }
+
   private func ingest(_ data: Data) {
+    receivedBytes += data.count
     do {
-      for record in try parser.push(data) {
+      let records = try parser.push(data)
+      guard !records.isEmpty else { return }
+      received += records.count
+      // Acked before decoding: the relay is measuring the network, and decode
+      // time on this end is not a queue it can drain by skipping frames.
+      ack()
+      for record in records {
         onRecord?(record)
       }
     } catch {
@@ -655,11 +721,23 @@ final class AppleStreamSocket: NSObject {
     }
   }
 
+  private func ack() {
+    guard let task, !closed, visible else { return }
+    task.send(.string("{\"t\":\"ack\",\"n\":\(received)}")) { _ in
+      // A lost ack only makes the relay think this viewer is a little behind;
+      // the receive loop reports a dead socket with a better sentence.
+    }
+  }
+
   private func handleControl(_ text: String) {
     guard
       let data = text.data(using: .utf8),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return }
+    if let stats = AppleStreamNetworkStats(control: object) {
+      onStats?(stats)
+      return
+    }
     if let message = object["error"] as? String, !message.isEmpty {
       onError?(message)
       close()

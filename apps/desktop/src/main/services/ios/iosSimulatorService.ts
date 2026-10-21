@@ -3539,6 +3539,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return inflight;
   };
 
+  /**
+   * The chat holding the lane's device, from memory alone.
+   *
+   * The same two claims `getStatus` reports (an app session first, then a
+   * bare device session), without its `simctl` device list. A remote tap
+   * checks ownership on every gesture, and the status throttle is 500 ms, so
+   * reading the owner through `getStatus` put a `simctl` round trip in front
+   * of most taps from a phone.
+   */
+  const getControlOwner = (ownerArgs: { laneId?: string | null } = {}): string | null => {
+    const runtime = resolveRuntime(ownerArgs);
+    return runtime.activeSession?.chatSessionId
+      ?? hub(runtime).getDeviceSession()?.chatSessionId
+      ?? null;
+  };
+
   /** Invalidate a lane's cached status after a state change. */
   const invalidateStatus = (runtime: LaneRuntime): void => {
     runtime.cachedStatus = { ...runtime.cachedStatus, computedAt: 0 };
@@ -6574,6 +6590,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   return guardAgentDeviceActions({
     getStatus,
+    getControlOwner,
     claim,
     listDevices,
     listLaunchTargets,

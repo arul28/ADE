@@ -40,11 +40,44 @@ import {
  * is noise, so the last config record and the last keyframe access unit are
  * cached and replayed to a viewer the moment it attaches. Without this a second
  * viewer stared at black until the encoder's next IDR.
+ *
+ * **A viewer that acks is paced.** Over the tunnel relay the socket this
+ * service writes to is a loopback pipe, so its `bufferedAmount` stays near zero
+ * while frames queue up somewhere between here and the phone. A viewer that
+ * sends `{t:"ack",n}` (records received so far) gives the one honest measure of
+ * that queue: how long the oldest unacked record has been out, over the best
+ * round trip seen lately. Past `APPLE_STREAM_LAG_BUDGET_MS` the viewer stops
+ * getting delta frames, and once it has caught up it resumes at a keyframe the
+ * relay asks the helper for. A stall also lowers the lane's encoder cap; a
+ * quiet spell raises it back. A viewer that never acks (the web client, older
+ * phones) is forwarded everything exactly as before.
  */
 
 export const APPLE_STREAM_PATH_PREFIX = "/apple/stream/";
 export const APPLE_STREAM_TICKET_TTL_MS = 60_000;
 export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
+
+/** How far behind its best round trip a pacing viewer may fall before deltas are skipped. */
+export const APPLE_STREAM_LAG_BUDGET_MS = 250;
+/** A skipping viewer resumes, at a keyframe, once it is back within this. */
+export const APPLE_STREAM_RESUME_LAG_MS = 60;
+/** The lowest encoder cap stalls may push a lane to. */
+export const APPLE_STREAM_MIN_ADAPTIVE_KBPS = 400;
+const KEYFRAME_REQUEST_MIN_INTERVAL_MS = 1_000;
+/** A keyframe probe that never sees a byte is abandoned after this. */
+const KEYFRAME_PROBE_TIMEOUT_MS = 3_000;
+const STATS_INTERVAL_MS = 1_000;
+/** The round-trip floor is the best of the last two windows of this length. */
+const RTT_WINDOW_MS = 5_000;
+/** Stalls this recent hold off raising a lowered cap. */
+const CONGESTION_WINDOW_MS = 10_000;
+/** A lowered cap gets this long to take effect before the next step down. */
+const BITRATE_LOWER_INTERVAL_MS = 2_000;
+/** How long without a stall before a lowered cap steps back up, and how often. */
+const BITRATE_RAISE_QUIET_MS = 15_000;
+const BITRATE_RAISE_INTERVAL_MS = 10_000;
+/** Unacked records remembered per viewer; a viewer this far behind is skipping anyway. */
+const MAX_INFLIGHT_RECORDS = 1_024;
 
 /** A ticket, as the requester receives it over the JSON sync channel. */
 export type AppleStreamTicket = {
@@ -57,6 +90,9 @@ export type AppleStreamTicket = {
   codec: string | null;
   width: number | null;
   height: number | null;
+  /** Device POINTS, so a viewer can turn a touch on the picture into a tap. */
+  pointWidth: number | null;
+  pointHeight: number | null;
   expiresAt: string;
 };
 
@@ -71,7 +107,8 @@ export type AppleStreamSource = {
 
 /** Just enough of a `ws` socket to forward records onto it. */
 export type AppleStreamViewerSocket = {
-  send(data: Uint8Array): void;
+  /** Binary for a record, text for the relay's own `{t:"stats"}` notes. */
+  send(data: Uint8Array | string): void;
   close(code?: number, reason?: string): void;
   on(event: "message", listener: (data: unknown, isBinary?: boolean) => void): void;
   on(event: "close" | "error", listener: (...args: unknown[]) => void): void;
@@ -102,6 +139,14 @@ export type AppleStreamRelayDeps = {
   /** Absolute `ws://host:port` prefix for the ticket URL, when known. */
   publicOrigin?: () => string | null;
   connect?: (source: AppleStreamSource) => AppleStreamUpstream;
+  /**
+   * The configured remote cap, the ceiling adaptive pacing may climb back to.
+   * Without it (or `applyBitrateCap`) pacing still skips frames but never
+   * touches the encoder.
+   */
+  bitrateCapKbps?: () => number | null;
+  /** Re-cap the lane's live encoder. The helper rebuilds it, starting with a keyframe. */
+  applyBitrateCap?: (args: { laneId: string; bitrateKbps: number }) => Promise<unknown>;
   now?: () => number;
   logger?: {
     debug?: (event: string, data?: Record<string, unknown>) => void;
@@ -115,6 +160,8 @@ export type AppleStreamRelay = {
     codec?: string | null;
     width?: number | null;
     height?: number | null;
+    pointWidth?: number | null;
+    pointHeight?: number | null;
   }): AppleStreamTicket;
   /** The ticket id in `/apple/stream/<id>`, or null when the url is not ours. */
   ticketFromUrl(url: string | null | undefined): string | null;
@@ -149,6 +196,25 @@ type Viewer = {
   laneId: string;
   visible: boolean;
   closed: boolean;
+  /** Records sent on this socket, the count the viewer's acks are in. */
+  sent: number;
+  /** Set by the viewer's first ack; a viewer that never acks is never paced. */
+  pacing: ViewerPacing | null;
+};
+
+type ViewerPacing = {
+  /** Sent and not yet acked, oldest first. */
+  inflight: Array<{ seq: number; at: number }>;
+  acked: number;
+  lastRttMs: number | null;
+  /** Best round trip in the current and the previous `RTT_WINDOW_MS`. */
+  rttMin: number | null;
+  rttPrevMin: number | null;
+  rttWindowStartedAt: number;
+  /** Dropping access units until a keyframe can be delivered on time. */
+  skipping: boolean;
+  skipped: number;
+  lastStatsAt: number;
 };
 
 type LaneStream = {
@@ -156,10 +222,18 @@ type LaneStream = {
   viewers: Set<Viewer>;
   upstream: AppleStreamUpstream | null;
   opening: Promise<void> | null;
+  /** The loopback body the upstream reads, kept for keyframe probes. */
+  source: AppleStreamSource | null;
   /** Whole framed records, kept so a late joiner can decode immediately. */
-  configRecord: Uint8Array | null;
-  keyframeRecord: Uint8Array | null;
+  configRecord: AppleStreamRecord | null;
+  keyframeRecord: AppleStreamRecord | null;
   buffer: Uint8Array;
+  lastKeyframeRequestAt: number;
+  keyframeProbe: AppleStreamUpstream | null;
+  /** The cap pacing chose, below the configured one; null when untouched. */
+  adaptiveKbps: number | null;
+  congestionAt: number[];
+  lastBitrateChangeAt: number;
 };
 
 /**
@@ -315,24 +389,216 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       viewers: new Set(),
       upstream: null,
       opening: null,
+      source: null,
       configRecord: null,
       keyframeRecord: null,
       buffer: new Uint8Array(0),
+      lastKeyframeRequestAt: 0,
+      keyframeProbe: null,
+      adaptiveKbps: null,
+      congestionAt: [],
+      lastBitrateChangeAt: 0,
     };
     lanes.set(laneId, created);
     return created;
   };
 
-  const sendTo = (viewer: Viewer, bytes: Uint8Array): void => {
-    if (viewer.closed || !viewer.visible) return;
+  const sendRaw = (viewer: Viewer, data: Uint8Array | string): boolean => {
     try {
-      viewer.socket.send(bytes);
+      viewer.socket.send(data);
+      return true;
     } catch (error) {
       warn("apple.stream_send_failed", {
         laneId: viewer.laneId,
         error: error instanceof Error ? error.message : String(error),
       });
       dropViewer(viewer, 1011, "send failed");
+      return false;
+    }
+  };
+
+  /** How far the viewer is behind its own best round trip, in ms. */
+  const lagOf = (pacing: ViewerPacing): number => {
+    const oldest = pacing.inflight[0];
+    if (!oldest) return 0;
+    const floor = Math.min(pacing.rttMin ?? Infinity, pacing.rttPrevMin ?? Infinity);
+    return Math.max(0, now() - oldest.at - (Number.isFinite(floor) ? floor : 0));
+  };
+
+  /**
+   * Ask the helper for a keyframe by attaching a second loopback reader.
+   *
+   * The helper rebuilds its encoder for every reader that attaches, and a new
+   * encoder opens with an IDR that every reader receives — this one included,
+   * which is all the relay wanted. There is no "send a keyframe" command, and
+   * this needs none.
+   */
+  const requestKeyframe = (stream: LaneStream): void => {
+    const source = stream.source;
+    if (!source || stream.keyframeProbe || disposed) return;
+    const at = now();
+    if (at - stream.lastKeyframeRequestAt < KEYFRAME_REQUEST_MIN_INTERVAL_MS) return;
+    stream.lastKeyframeRequestAt = at;
+    let probe: AppleStreamUpstream;
+    try {
+      probe = connect(source);
+    } catch (error) {
+      warn("apple.stream_keyframe_probe_failed", {
+        laneId: stream.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    stream.keyframeProbe = probe;
+    const finish = (): void => {
+      clearTimeout(timer);
+      if (stream.keyframeProbe !== probe) return;
+      stream.keyframeProbe = null;
+      try {
+        probe.close();
+      } catch {
+        // Already ended.
+      }
+    };
+    const timer = setTimeout(finish, KEYFRAME_PROBE_TIMEOUT_MS);
+    timer.unref?.();
+    probe.onData(finish);
+    probe.onEnd(finish);
+    debug("apple.stream_keyframe_requested", { laneId: stream.laneId });
+  };
+
+  const setAdaptiveCap = (stream: LaneStream, kbps: number): void => {
+    if (!deps.applyBitrateCap) return;
+    stream.adaptiveKbps = kbps;
+    stream.lastBitrateChangeAt = now();
+    debug("apple.stream_bitrate_adapted", { laneId: stream.laneId, bitrateKbps: kbps });
+    void Promise.resolve(deps.applyBitrateCap({ laneId: stream.laneId, bitrateKbps: kbps })).catch((error: unknown) => {
+      warn("apple.stream_bitrate_adapt_failed", {
+        laneId: stream.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /**
+   * A viewer fell behind: lower the cap, at most once per
+   * `BITRATE_LOWER_INTERVAL_MS` so the last change has time to show.
+   *
+   * Skipping alone cannot fix a link slower than the encoder: every resume
+   * starts with a keyframe the link then queues behind, so the viewer
+   * stutters between stalls. A lower cap is what makes it smooth again.
+   */
+  const noteCongestion = (stream: LaneStream): void => {
+    const at = now();
+    stream.congestionAt = [...stream.congestionAt.filter((t) => at - t < CONGESTION_WINDOW_MS), at];
+    if (at - stream.lastBitrateChangeAt < BITRATE_LOWER_INTERVAL_MS) return;
+    const ceiling = deps.bitrateCapKbps?.() ?? null;
+    if (ceiling == null) return;
+    const current = stream.adaptiveKbps ?? ceiling;
+    const next = Math.max(APPLE_STREAM_MIN_ADAPTIVE_KBPS, Math.round(current * 0.6));
+    if (next < current) setAdaptiveCap(stream, next);
+  };
+
+  /** A quiet link earns back a quarter of the cap at a time, up to the ceiling. */
+  const maybeRaiseCap = (stream: LaneStream): void => {
+    if (stream.adaptiveKbps == null) return;
+    const at = now();
+    const lastCongestion = stream.congestionAt[stream.congestionAt.length - 1] ?? 0;
+    if (at - lastCongestion < BITRATE_RAISE_QUIET_MS) return;
+    if (at - stream.lastBitrateChangeAt < BITRATE_RAISE_INTERVAL_MS) return;
+    const ceiling = deps.bitrateCapKbps?.() ?? null;
+    if (ceiling == null) return;
+    const next = Math.min(ceiling, Math.round(stream.adaptiveKbps * 1.25));
+    if (next >= ceiling) {
+      stream.adaptiveKbps = null;
+      stream.lastBitrateChangeAt = at;
+      void Promise.resolve(deps.applyBitrateCap?.({ laneId: stream.laneId, bitrateKbps: ceiling })).catch(() => null);
+      return;
+    }
+    setAdaptiveCap(stream, next);
+  };
+
+  /** Whether a paced viewer gets this access unit. */
+  const admit = (stream: LaneStream, pacing: ViewerPacing, keyframe: boolean): boolean => {
+    const lag = lagOf(pacing);
+    if (!pacing.skipping) {
+      if (lag <= APPLE_STREAM_LAG_BUDGET_MS) return true;
+      pacing.skipping = true;
+      debug("apple.stream_viewer_skipping", { laneId: stream.laneId, lagMs: Math.round(lag) });
+      noteCongestion(stream);
+      return false;
+    }
+    if (lag > APPLE_STREAM_RESUME_LAG_MS) return false;
+    // Caught up. Only a keyframe can restart a decoder that missed frames, so
+    // anything else is still dropped and a keyframe is asked for.
+    if (keyframe) {
+      pacing.skipping = false;
+      return true;
+    }
+    requestKeyframe(stream);
+    return false;
+  };
+
+  const sendTo = (stream: LaneStream, viewer: Viewer, record: AppleStreamRecord): void => {
+    if (viewer.closed || !viewer.visible) return;
+    const pacing = viewer.pacing;
+    if (pacing && record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT && !admit(stream, pacing, record.keyframe)) {
+      pacing.skipped += 1;
+      return;
+    }
+    if (!sendRaw(viewer, record.bytes)) return;
+    viewer.sent += 1;
+    if (!pacing) return;
+    pacing.inflight.push({ seq: viewer.sent, at: now() });
+    if (pacing.inflight.length > MAX_INFLIGHT_RECORDS) pacing.inflight.shift();
+  };
+
+  /** `{t:"ack",n}`: the viewer has received `n` records on this socket. */
+  const onAck = (stream: LaneStream, viewer: Viewer, received: number): void => {
+    if (!Number.isFinite(received) || received < 0 || received > viewer.sent) return;
+    const at = now();
+    const pacing = viewer.pacing ?? (viewer.pacing = {
+      inflight: [],
+      acked: 0,
+      lastRttMs: null,
+      rttMin: null,
+      rttPrevMin: null,
+      rttWindowStartedAt: at,
+      skipping: false,
+      skipped: 0,
+      lastStatsAt: at,
+    });
+    if (received <= pacing.acked) return;
+    pacing.acked = received;
+    let newest: { seq: number; at: number } | undefined;
+    while (pacing.inflight.length > 0 && pacing.inflight[0]!.seq <= received) {
+      newest = pacing.inflight.shift();
+    }
+    if (newest) {
+      const rtt = at - newest.at;
+      pacing.lastRttMs = rtt;
+      if (at - pacing.rttWindowStartedAt >= RTT_WINDOW_MS) {
+        pacing.rttPrevMin = pacing.rttMin;
+        pacing.rttMin = null;
+        pacing.rttWindowStartedAt = at;
+      }
+      pacing.rttMin = pacing.rttMin == null ? rtt : Math.min(pacing.rttMin, rtt);
+    }
+    // An idle simulator may send nothing for seconds, so a viewer that caught
+    // up asks for its keyframe here rather than waiting on the next frame.
+    if (pacing.skipping && lagOf(pacing) <= APPLE_STREAM_RESUME_LAG_MS) requestKeyframe(stream);
+    maybeRaiseCap(stream);
+    if (at - pacing.lastStatsAt >= STATS_INTERVAL_MS) {
+      pacing.lastStatsAt = at;
+      const floor = Math.min(pacing.rttMin ?? Infinity, pacing.rttPrevMin ?? Infinity);
+      sendRaw(viewer, JSON.stringify({
+        t: "stats",
+        rttMs: pacing.lastRttMs == null ? null : Math.round(pacing.lastRttMs),
+        baseRttMs: Number.isFinite(floor) ? Math.round(floor) : null,
+        lagMs: Math.round(lagOf(pacing)),
+        skipped: pacing.skipped,
+        bitrateKbps: stream.adaptiveKbps ?? deps.bitrateCapKbps?.() ?? null,
+      }));
     }
   };
 
@@ -352,18 +618,28 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     stream.buffer = split.rest;
     for (const record of split.records) {
       if (record.type === IOS_VIDEO_RECORD_TYPE_CONFIG) {
-        stream.configRecord = record.bytes;
+        stream.configRecord = record;
       } else if (record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT && record.keyframe) {
-        stream.keyframeRecord = record.bytes;
+        stream.keyframeRecord = record;
       }
-      for (const viewer of [...stream.viewers]) sendTo(viewer, record.bytes);
+      for (const viewer of [...stream.viewers]) sendTo(stream, viewer, record);
     }
   };
 
   const closeUpstream = (stream: LaneStream): void => {
     const upstream = stream.upstream;
+    const probe = stream.keyframeProbe;
     stream.upstream = null;
+    stream.keyframeProbe = null;
     stream.buffer = new Uint8Array(0);
+    // The next upstream starts at the configured cap, so pacing starts over.
+    stream.adaptiveKbps = null;
+    stream.congestionAt = [];
+    try {
+      probe?.close();
+    } catch {
+      // Already ended.
+    }
     if (!upstream) return;
     try {
       upstream.close();
@@ -388,6 +664,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     const open = (async () => {
       const source = await deps.openSource({ laneId: stream.laneId });
       if (disposed || stream.viewers.size === 0) return;
+      stream.source = source;
       const upstream = connect(source);
       stream.upstream = upstream;
       upstream.onData((chunk) => onUpstreamChunk(stream, chunk));
@@ -443,12 +720,12 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
   }
 
   const primeViewer = (stream: LaneStream, viewer: Viewer): void => {
-    if (stream.configRecord) sendTo(viewer, stream.configRecord);
-    if (stream.keyframeRecord) sendTo(viewer, stream.keyframeRecord);
+    if (stream.configRecord) sendTo(stream, viewer, stream.configRecord);
+    if (stream.keyframeRecord) sendTo(stream, viewer, stream.keyframeRecord);
   };
 
   return {
-    issue({ laneId, codec = null, width = null, height = null }) {
+    issue({ laneId, codec = null, width = null, height = null, pointWidth = null, pointHeight = null }) {
       pruneTickets();
       const trimmed = laneId.trim();
       if (!trimmed) throw new Error("apple.streamTicket requires a laneId.");
@@ -474,6 +751,8 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         codec,
         width,
         height,
+        pointWidth,
+        pointHeight,
         expiresAt: new Date(expiresAtMs).toISOString(),
       };
     },
@@ -509,7 +788,14 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       // Single use: a replayed ticket must not resume someone else's view.
       tickets.delete(ticket);
       const stream = laneStream(pending.laneId);
-      const viewer: Viewer = { socket, laneId: pending.laneId, visible: true, closed: false };
+      const viewer: Viewer = {
+        socket,
+        laneId: pending.laneId,
+        visible: true,
+        closed: false,
+        sent: 0,
+        pacing: null,
+      };
       stream.viewers.add(viewer);
 
       socket.on("message", (data: unknown, isBinary?: boolean) => {
@@ -522,10 +808,14 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
               ? Buffer.from(data).toString("utf8")
               : null;
         if (!text) return;
-        let parsed: { t?: unknown };
+        let parsed: { t?: unknown; n?: unknown };
         try {
-          parsed = JSON.parse(text) as { t?: unknown };
+          parsed = JSON.parse(text) as { t?: unknown; n?: unknown };
         } catch {
+          return;
+        }
+        if (parsed.t === "ack") {
+          if (typeof parsed.n === "number" && !viewer.closed) onAck(stream, viewer, parsed.n);
           return;
         }
         if (parsed.t === "hidden") {
@@ -537,6 +827,11 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         if (parsed.t === "visible") {
           if (viewer.visible || viewer.closed) return;
           viewer.visible = true;
+          // What was out while hidden says nothing about the link now.
+          if (viewer.pacing) {
+            viewer.pacing.inflight = [];
+            viewer.pacing.skipping = false;
+          }
           void ensureUpstream(stream).then(() => primeViewer(stream, viewer));
         }
       });
@@ -668,6 +963,10 @@ export function createAppleStreamRelayForService(deps: {
     logger: deps.logger,
     connect: deps.connect,
     publicOrigin: deps.publicOrigin,
+    bitrateCapKbps: deps.remoteBitrateKbpsCap,
+    // A running capture takes a new cap on its live encoder, keeping its
+    // address and its readers (see the service's `startStream`).
+    applyBitrateCap: ({ laneId, bitrateKbps }) => deps.service.startStream({ laneId, bitrateKbps }),
     // Fall back to the service's own tracker, so the brain (which passes no
     // registry) still sees a desktop renderer that joined a remote-started
     // capture.

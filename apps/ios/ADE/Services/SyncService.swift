@@ -16477,14 +16477,55 @@ final class SyncService: ObservableObject {
     }
   }
 
-  // MARK: - Apple device (view only)
+  // MARK: - Apple device (watch and control)
 
-  /// Whether the connected Mac can describe this lane's Apple device at all.
+  /// The fleet connection of a lane on another machine, or nil for a lane of
+  /// the focused machine.
   ///
-  /// Feature-detected rather than assumed: `apple.*` is an optional action set,
-  /// so a Mac that predates the Apple device environment simply omits it and
-  /// the phone's Simulator card says "update the host" instead of putting an
-  /// unknown command on the wire behind a poll.
+  /// `sendCommand` already routes an `apple.*` command by the lane's
+  /// namespaced id. The capability checks and the video socket do not go
+  /// through it, so they ask here which machine they are about.
+  private func appleLaneConnection(laneId: String?) -> MachineConnection? {
+    guard
+      let laneId,
+      let remote = workParseRemoteLaneId(laneId),
+      remote.machineKey != focusedMachineKey
+    else { return nil }
+    return machineFleet?.connection(for: remote.machineKey)
+  }
+
+  /// Whether the machine that owns `laneId` advertises `action`.
+  ///
+  /// Feature-detected rather than assumed: `apple.*` is an optional action
+  /// set, so a Mac that predates the Apple device environment simply omits it
+  /// and the phone's Simulator card says "update the host" instead of putting
+  /// an unknown command on the wire behind a poll.
+  func supportsAppleAction(_ action: String, laneId: String?) -> Bool {
+    if let connection = appleLaneConnection(laneId: laneId) {
+      return connection.supportsAction(action)
+    }
+    return supportsRemoteAction(action)
+  }
+
+  /// Whether the lane's machine lets this phone drive its simulator.
+  ///
+  /// Both input commands, and both callable by a controller: `apple.input`
+  /// for touches and text, `apple.invoke` for the Home button. A host that
+  /// refuses either would show a Control switch whose first gesture fails.
+  func supportsAppleDeviceControl(laneId: String?) -> Bool {
+    ["apple.input", "apple.invoke"].allSatisfy { action in
+      let policy: SyncRemoteCommandPolicy?
+      if let connection = appleLaneConnection(laneId: laneId) {
+        policy = connection.commandDescriptor(for: action)?.policy
+      } else {
+        policy = commandDescriptor(for: action)?.policy
+      }
+      guard let policy else { return false }
+      return policy.viewerAllowed != false || policy.controllerAllowed == true
+    }
+  }
+
+  /// Whether the focused Mac can describe its lanes' Apple devices at all.
   var supportsAppleDeviceStatus: Bool {
     supportsRemoteAction("apple.status")
   }
@@ -16501,8 +16542,8 @@ final class SyncService: ObservableObject {
   /// run on a timer behind a card the user may not be looking at, so a slow
   /// cellular round trip must be dropped and retried, never escalated into a
   /// socket teardown.
-  private func requireAppleAction(_ action: String) throws {
-    guard supportsRemoteAction(action) else {
+  private func requireAppleAction(_ action: String, laneId: String?) throws {
+    guard supportsAppleAction(action, laneId: laneId) else {
       throw NSError(
         domain: "ADE",
         code: 17,
@@ -16520,8 +16561,8 @@ final class SyncService: ObservableObject {
   /// sets it: this is a poll behind a card, and a read-only card must not be
   /// able to drop the user's whole sync connection.
   func fetchAppleDeviceStatus(laneId: String) async throws -> AppleDeviceStatus {
-    try requireAppleAction("apple.status")
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleAction("apple.status", laneId: trimmed)
     return try decode(
       try await sendCommand(
         action: "apple.status",
@@ -16540,8 +16581,8 @@ final class SyncService: ObservableObject {
   /// the phone never constructs one from a guess about its own route. Video
   /// never rides this JSON envelope; only the address of the pipe does.
   func requestAppleStreamTicket(laneId: String) async throws -> AppleStreamTicket {
-    try requireAppleAction("apple.streamTicket")
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleAction("apple.streamTicket", laneId: trimmed)
     return try decode(
       try await sendCommand(
         action: "apple.streamTicket",
@@ -16553,11 +16594,71 @@ final class SyncService: ObservableObject {
     )
   }
 
-  /// The port to resolve a relative ticket URL against. Only used when the host
-  /// hands back a path rather than a whole URL; an absolute URL always wins,
-  /// because it is the only one that knows about the relay.
-  var appleStreamFallbackPort: Int {
-    activeHostProfile?.port ?? 4599
+  /// Where the lane's video socket resolves a ticket path: the live address of
+  /// the machine that minted the ticket, and its port for a bare host.
+  ///
+  /// A ticket is single-use and lives on one brain. Resolving a ticket from
+  /// another machine against the focused machine's address dials a brain that
+  /// never issued it, which reads to the viewer as an expired pass.
+  func appleStreamEndpoint(laneId: String) -> (address: String?, fallbackPort: Int) {
+    if let connection = appleLaneConnection(laneId: laneId) {
+      return (connection.liveAddress, connection.profile.port)
+    }
+    return (currentAddress, activeHostProfile?.port ?? 4599)
+  }
+
+  /// One gesture or one string of text on the lane's simulator.
+  ///
+  /// `payload` is `apple.input`'s own shape (`kind` plus its fields, device
+  /// POINTS). Never queued and never retried: a tap replayed after a
+  /// reconnect lands on whatever the device shows by then, which is a
+  /// different gesture. A timeout leaves the sync socket alone; the viewer
+  /// reports the failure and the person taps again.
+  func sendAppleDeviceInput(laneId: String, payload: [String: Any]) async throws {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleControl(laneId: trimmed)
+    var args = payload
+    args["laneId"] = trimmed
+    _ = try await sendCommand(
+      action: "apple.input",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.appleInputTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// A hardware button (`home`, `lock`, …) through the host's allowlisted
+  /// passthrough, under the same ownership guard as a tap.
+  func pressAppleDeviceButton(laneId: String, chatSessionId: String?, name: String) async throws {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleControl(laneId: trimmed)
+    var args: [String: Any] = ["laneId": trimmed, "method": "pressButton", "args": ["name": name]]
+    if let chatSessionId { args["chatSessionId"] = chatSessionId }
+    _ = try await sendCommand(
+      action: "apple.invoke",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.appleInputTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// Long enough for a drag the host replays at its real duration (up to 2s)
+  /// behind a queued tap; short enough that a dead route says so.
+  private static let appleInputTimeoutNanoseconds: UInt64 = 8_000_000_000
+
+  private func requireAppleControl(laneId: String) throws {
+    guard supportsAppleDeviceControl(laneId: laneId) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Controlling this simulator needs a newer ADE on the Mac.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
   }
 
   func createPullRequest(

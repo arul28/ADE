@@ -3403,7 +3403,9 @@ sends no `laneDevice` shows no simulator chip). Each
 read is gated on its own action (`supportsWorkToolsState`,
 `supportsAppleDeviceStatus`), and the chips are hidden in personal chats
 and while the composer is input-locked, like the PR chip. Each chip opens
-one surface. The simulator opens `AppleDeviceViewer`. macOS opens
+one surface. The simulator opens `AppleDeviceViewer` (View only by default;
+hold Control to drive it — see
+[Apple device › The phone: watch and control](../apple-device/README.md#the-phone-watch-and-control)). macOS opens
 `MacDesktopViewer` when the host advertises the stream, otherwise its own
 sheet. The browser opens its own sheet. App Control opens `AppControlViewer`
 when the host is streaming, otherwise its own sheet. `WorkToolsSheet` shows

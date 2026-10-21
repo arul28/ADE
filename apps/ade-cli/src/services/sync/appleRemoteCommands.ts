@@ -18,9 +18,11 @@ import {
  *   scoped to its chat. A remote viewer is not, so a web client driving a lane
  *   another chat claimed must be refused with the ordinary cooperative error
  *   rather than silently stealing the device.
- * - **The phone never sends input.** `apple.input` is `controllerAllowed` and
- *   not `viewerAllowed`; the phone is a viewer, so the policy alone makes the
- *   view-only rule true on the wire instead of only in the iOS UI.
+ * - **Input is a person's.** `apple.input` is `controllerAllowed` and not
+ *   `viewerAllowed`: the owner's phone and a hosted web tab are interactive
+ *   controllers and may drive a device nobody claimed; a desktop pairing may
+ *   not. Every gesture here comes from someone looking at the screen, so it is
+ *   stamped `source: "user"` and never starts an agent's auto-recording.
  * - **Status carries no secret.** The stream address and token exist only
  *   inside `apple.streamTicket`, which mints a fresh single-use pair per
  *   viewer. `apple.status` is polled into transcripts and must stay printable.
@@ -29,17 +31,31 @@ import {
 /** The slice of the simulator service these commands need. */
 export type AppleDeviceRemoteService = {
   getStatus(args: { laneId?: string | null }): Promise<unknown>;
+  /** The claiming chat from memory; `getStatus` is the fallback without it. */
+  getControlOwner?(args: { laneId?: string | null }): string | null;
   startStream(args: {
     laneId?: string | null;
     chatSessionId?: string | null;
     bitrateKbps?: number | null;
   }): Promise<unknown>;
   stopStream(args: { laneId?: string | null }): Promise<unknown>;
-  tap(args: { laneId?: string | null; chatSessionId?: string | null; x: number; y: number }): Promise<unknown>;
-  typeText(args: { laneId?: string | null; chatSessionId?: string | null; text: string }): Promise<unknown>;
+  tap(args: {
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    x: number;
+    y: number;
+    source?: "user" | "agent";
+  }): Promise<unknown>;
+  typeText(args: {
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    text: string;
+    source?: "user" | "agent";
+  }): Promise<unknown>;
   drag(args: {
     laneId?: string | null;
     chatSessionId?: string | null;
+    source?: "user" | "agent";
     startX: number;
     startY: number;
     endX: number;
@@ -49,6 +65,7 @@ export type AppleDeviceRemoteService = {
   scroll(args: {
     laneId?: string | null;
     chatSessionId?: string | null;
+    source?: "user" | "agent";
     direction: string;
     amount?: number | null;
     anchorX?: number | null;
@@ -66,7 +83,14 @@ export type AppleDeviceRemoteService = {
 
 /** The slice of `appleStreamRelay` these commands need. */
 export type AppleStreamTicketIssuer = {
-  issue(args: { laneId: string; codec?: string | null; width?: number | null; height?: number | null }): {
+  issue(args: {
+    laneId: string;
+    codec?: string | null;
+    width?: number | null;
+    height?: number | null;
+    pointWidth?: number | null;
+    pointHeight?: number | null;
+  }): {
     url: string | null;
     path: string;
     token: string;
@@ -74,6 +98,8 @@ export type AppleStreamTicketIssuer = {
     codec: string | null;
     width: number | null;
     height: number | null;
+    pointWidth: number | null;
+    pointHeight: number | null;
     expiresAt: string;
   };
 };
@@ -256,7 +282,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
  * than treated as the owner.
  */
 export function assertAppleInputAllowed(
-  status: AppleStatusPayload,
+  status: Pick<AppleStatusPayload, "owner">,
   chatSessionId: string | null,
 ): void {
   const owner = status.owner?.chatSessionId ?? null;
@@ -293,6 +319,11 @@ const APPLE_UNGUARDED_METHODS: ReadonlySet<string> = new Set([
   "listPreviewTargets",
   "getPreviewCapability",
 ]);
+
+function ownerOf(chatSessionId: string | null): AppleStatusPayload["owner"] {
+  const owner = asString(chatSessionId);
+  return owner ? { chatSessionId: owner, chatTitle: null } : null;
+}
 
 export type AppleRemoteCommandHandler = (payload: Record<string, unknown>) => Promise<unknown>;
 
@@ -356,7 +387,11 @@ export function createAppleRemoteCommandHandlers(deps: {
   ): Promise<{ laneId: string; chatSessionId: string | null }> => {
     const laneId = laneOf(payload, action);
     const chatSessionId = asString(payload.chatSessionId);
-    assertAppleInputAllowed(await statusFor(laneId), chatSessionId);
+    // The in-memory owner when the service has it: this runs once per tap.
+    const status = service.getControlOwner
+      ? { owner: ownerOf(service.getControlOwner({ laneId })) }
+      : await statusFor(laneId);
+    assertAppleInputAllowed(status, chatSessionId);
     return { laneId, chatSessionId };
   };
 
@@ -397,6 +432,9 @@ export function createAppleRemoteCommandHandlers(deps: {
           codec: asString(transport.codec),
           width: asNumber(transport.width),
           height: asNumber(transport.height),
+          // Points per pixel is what turns a touch on the picture into a tap.
+          pointWidth: asNumber(transport.pointWidth),
+          pointHeight: asNumber(transport.pointHeight),
         });
       },
     },
@@ -411,6 +449,7 @@ export function createAppleRemoteCommandHandlers(deps: {
             await service.tap({
               laneId,
               chatSessionId,
+              source: "user",
               x: requireFiniteNumber(payload.x, "x"),
               y: requireFiniteNumber(payload.y, "y"),
             });
@@ -419,6 +458,7 @@ export function createAppleRemoteCommandHandlers(deps: {
             await service.typeText({
               laneId,
               chatSessionId,
+              source: "user",
               text: requireString(payload.text, "apple.input type requires text."),
             });
             return { ok: true };
@@ -426,6 +466,7 @@ export function createAppleRemoteCommandHandlers(deps: {
             await service.drag({
               laneId,
               chatSessionId,
+              source: "user",
               startX: requireFiniteNumber(payload.startX, "startX"),
               startY: requireFiniteNumber(payload.startY, "startY"),
               endX: requireFiniteNumber(payload.endX, "endX"),
@@ -437,6 +478,7 @@ export function createAppleRemoteCommandHandlers(deps: {
             await service.scroll({
               laneId,
               chatSessionId,
+              source: "user",
               direction: requireString(payload.direction, "apple.input scroll requires a direction."),
               amount: asNumber(payload.amount),
               anchorX: asNumber(payload.anchorX),
