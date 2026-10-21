@@ -23,7 +23,7 @@ import { Dialog } from "../ui/dialog";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import { issueChatLaunchArgs } from "../../lib/linearBatchLaunch";
-import { defaultNativeControls } from "../../lib/nativeLaunchControls";
+import { askFirstNativeControls } from "../../lib/nativeLaunchControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { SessionLaunchModelControls, type SessionLaunchModelConfig } from "../shared/SessionLaunchModelControls";
@@ -117,7 +117,7 @@ export function MoveProjectDialog({
     sessionType: "chat",
     // Ask-first permissions: the check promises to ask before it changes
     // anything. The person can still widen them in the picker.
-    nativeControls: defaultNativeControls(),
+    nativeControls: askFirstNativeControls(),
   }));
   const checkModelId = checkConfig.modelId || defaultModelId;
   const checkRequest = useRef(0);

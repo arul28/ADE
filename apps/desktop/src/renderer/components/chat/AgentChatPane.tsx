@@ -506,7 +506,10 @@ import {
   CLAUDE_SESSION_QUOTA_CARD_VARIANT,
   CLAUDE_SESSION_QUOTA_FORK_NOTE,
 } from "../../../shared/claudeSessionQuota";
-import { summarizeNativeControls as summarizeNativeLaunchControls } from "../../lib/nativeLaunchControls";
+import {
+  defaultNativeControls,
+  summarizeNativeControls as summarizeNativeLaunchControls,
+} from "../../lib/nativeLaunchControls";
 import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
@@ -2045,35 +2048,6 @@ function composerDraftStorageKeys(scope: {
   return [...new Set(keys)];
 }
 
-function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
-  if (profile === "persistent_identity") {
-    return {
-      interactionMode: "default",
-      claudePermissionMode: "bypassPermissions",
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
-      opencodePermissionMode: "full-auto",
-      droidPermissionMode: "auto-high",
-      musePermissionMode: "allowAll",
-      cursorModeId: "full-auto",
-      cursorConfigValues: {},
-    };
-  }
-  return {
-    interactionMode: "default",
-    claudePermissionMode: "default",
-    codexApprovalPolicy: "on-request",
-    codexSandbox: "workspace-write",
-    codexConfigSource: "flags",
-    opencodePermissionMode: "edit",
-    droidPermissionMode: "auto-low",
-    musePermissionMode: "onRequest",
-    cursorModeId: "agent",
-    cursorConfigValues: {},
-  };
-}
-
 type ChatRuntimeProviderKey =
   | "claude"
   | "codex"
@@ -2932,6 +2906,24 @@ type LaunchConfigSessionSource = Pick<
   | "cursorModeId"
   | "cursorConfigValues"
 >;
+
+/** The permission ladder family a chat runtime provider belongs to; null for providers off the ladder. */
+function permissionLadderFamilyForProvider(provider: string): PermissionLadderFamily | null {
+  switch (provider) {
+    case "claude": return "claude";
+    case "codex": return "codex";
+    case "opencode": return "opencode";
+    case "droid": return "droid";
+    case "muse": return "muse";
+    case "cursor": return "cursor";
+    // Every ACP provider shares one permission round-trip, grok included.
+    case "qwen":
+    case "kimi":
+    case "grok":
+    case "copilot": return "acp";
+    default: return null;
+  }
+}
 
 function nativeControlsFromLaunchSource(
   source: Partial<LaunchConfigSessionSource>,
@@ -4077,7 +4069,8 @@ export function AgentChatPane({
   const draftLaunchConfigLaneScopeId = forceDraft ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
   const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
-  const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
+  // Full access on every provider unless the lane remembers another choice.
+  const initialNativeControls = useMemo(() => defaultNativeControls(), []);
   const lastLaunchConfigStorageKeys = useMemo(() => {
     const [primary, migration] = launchConfigStorageKeys({
       bindingKey: projectBinding?.key ?? null,
@@ -6893,8 +6886,19 @@ export function AgentChatPane({
 
   const modelCatalogScopeKeyRef = useRef(modelCatalogScopeKey);
   modelCatalogScopeKeyRef.current = modelCatalogScopeKey;
+  // Families whose permission controls carry a deliberate choice in this
+  // composer (picked, or restored with the launch config); the permission
+  // ladder below never overwrites them.
+  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
     setModelId(config.modelId);
+    // The restored model's own permissions were chosen when it launched. With
+    // full access as the default, "equals the default" no longer tells a
+    // restored choice from an untouched one, so mark it.
+    const restoredFamily = permissionLadderFamilyForProvider(
+      resolveChatRuntimeProvider(resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current)),
+    );
+    if (restoredFamily) visitedLadderFamiliesRef.current.add(restoredFamily);
     // Every caller of this hydrates a DRAFT, so the same rule as a draft model
     // change applies: a persisted thinking level or fast flag must not survive a
     // model that no longer exposes that control. Without this, a stale stored
@@ -10726,25 +10730,11 @@ export function AgentChatPane({
   // Only families the user has not visited in this composer are overwritten.
   // An exact earlier choice (Droid's `agi`, say) is remembered and restored,
   // which is why the visited set exists.
-  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(() => {
-    const provider = resolveChatRuntimeProvider(selectedModelDesc);
-    switch (provider) {
-      case "claude": return "claude";
-      case "codex": return "codex";
-      case "opencode": return "opencode";
-      case "droid": return "droid";
-      case "muse": return "muse";
-      case "cursor": return "cursor";
-      // Every ACP provider shares one permission round-trip, grok included.
-      case "qwen":
-      case "kimi":
-      case "grok":
-      case "copilot": return "acp";
-      default: return null;
-    }
-  }, [selectedModelDesc]);
+  const activeLadderFamily = useMemo<PermissionLadderFamily | null>(
+    () => permissionLadderFamilyForProvider(resolveChatRuntimeProvider(selectedModelDesc)),
+    [selectedModelDesc],
+  );
   const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
-  const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
   useEffect(() => {
     const next = activeLadderFamily;
     const previous = previousLadderFamilyRef.current;
@@ -10754,11 +10744,12 @@ export function AgentChatPane({
     if (!previous || previous === next) return;
     if (visitedLadderFamiliesRef.current.has(next)) return;
 
-    // Never overwrite a family that already carries a deliberate choice. The
-    // target's controls differ from this surface's defaults when the user set
-    // them, or when they were restored from the remembered launch config —
-    // switching the model must not discard either. Only a family still sitting
-    // on its untouched default inherits the level.
+    // Never overwrite a family that already carries a deliberate choice: one
+    // the user set (its controls differ from this surface's defaults) or the
+    // one a remembered launch config restored (in the visited set, since a
+    // restored full-access choice equals the full-access default). Switching
+    // the model must not discard either. Only a family still sitting on its
+    // untouched default inherits the level.
     const targetIsUntouched = (() => {
       switch (next) {
         case "claude": return claudePermissionMode === initialNativeControls.claudePermissionMode;

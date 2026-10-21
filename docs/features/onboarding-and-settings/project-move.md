@@ -68,7 +68,8 @@ untouched original.
 - **Done** offers the check agent and the old-copy choice; neither is
   required. *Set up…* opens the issue launchers' picker in place
   (`SessionLaunchModelControls`: model, effort, permissions) with the check
-  prompt editable. Permissions start ask-first (the standard profile), since
+  prompt editable. Permissions start ask-first (`askFirstNativeControls`, not the usual
+  full-access default), since
   the prompt promises to ask before changing anything; nothing launches until
   *Start agent*, and the chat shows the whole prompt. The old
   copy's Keep / Remind me / Delete can wait: the card says it can be cleaned

@@ -1543,6 +1543,16 @@ Two rules keep it honest:
   per-family choice is remembered separately, so returning to Droid restores
   `agi` even though the ladder itself only ever writes `auto-high`.
 
+**Where a new chat starts.** The desktop composer, the batch and Linear
+launchers start every family on `full-auto` (`defaultNativeControls` in
+`renderer/lib/nativeLaunchControls.ts`) unless the lane remembers a launch
+config. Only launches whose own copy promises to ask first (the Settings
+health fixes, the project-move check) use `askFirstNativeControls`. Because a
+restored full-access choice now equals the default, restoring a launch config
+marks its model's family as visited, so a later family switch never "inherits"
+over it. Chats created without any controls (CLI, phone, automations) still
+take the main process's per-project fallback (`resolveChatConfig`).
+
 Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
 reverse, and Codex is where it matters: both axes are required for `full-auto`,
 because "never ask" with `workspace-write` is a user who still wants a sandbox.
