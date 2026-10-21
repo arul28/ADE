@@ -4672,6 +4672,34 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   // The scope fields are omitted so a fresh literal cannot smuggle a scope past
   // the resolved root. Omit is structural, so an existing args object still
   // type-checks here; the root always arrives out of band from the caller.
+  /**
+   * Whether a device has more than one integrated panel (the iPhone Duo),
+   * read once per device from `simctl io enumerate`. `simctl io screenshot`
+   * without `--display` captures the inner panel, which is black while the
+   * phone is closed.
+   */
+  const foldableByUdid = new Map<string, Promise<boolean>>();
+  const isFoldableDevice = (udid: string): Promise<boolean> => {
+    let known = foldableByUdid.get(udid);
+    if (!known) {
+      known = run("xcrun", ["simctl", "io", udid, "enumerate"], { timeoutMs: 15_000 })
+        .then(({ stdout }) => (stdout.match(/Screen Type:\s*Integrated/g) ?? []).length > 1)
+        .catch(() => {
+          foldableByUdid.delete(udid);
+          return false;
+        });
+      foldableByUdid.set(udid, known);
+    }
+    return known;
+  };
+
+  /** `--display=<id>` for a foldable's live panel; nothing for every other device. */
+  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
+    if (!(await isFoldableDevice(udid))) return [];
+    const active = await readPosture(udid).then((posture) => posture.activeScreenId).catch(() => null);
+    return typeof active === "number" ? [`--display=${active}`] : [];
+  };
+
   const captureScreenshot = async (
     arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">,
     root: string,
@@ -4717,7 +4745,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const capturePath = path.join(os.tmpdir(), `ade-sim-shot-${randomUUID().slice(0, 8)}.png`);
     let buffer: Buffer;
     try {
-      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", capturePath], { timeoutMs: 30_000 });
+      const display = await screenshotDisplayArgs(device.udid);
+      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: 30_000 });
       buffer = await fs.promises.readFile(capturePath);
     } finally {
       await fs.promises.rm(capturePath, { force: true }).catch(() => {});
