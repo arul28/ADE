@@ -8373,7 +8373,7 @@ function AgentChatComposerImpl({
                 <ReasoningEffortPicker
                   modelId={modelId}
                   reasoningEffort={reasoningEffort}
-                  suggestedEffort={modelHint.suggestedEffort}
+                  squeezed={modelHint.chip != null}
                   onChange={handleReasoningEffortPickerChange}
                   disabled={modelSelectionLocked}
                   compact

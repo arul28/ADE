@@ -2,26 +2,22 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
-import { MODEL_REGISTRY_AA_ATTRIBUTION } from "../../../shared/routerRegistry";
 import type { UserModelCatalog } from "../../../main/services/router/modelCatalog";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { reasoningEffortTierLabel } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
-  adviseModelHint,
   buildModelHintRequest,
-  harnessOfCatalogModel,
+  hintChoices,
+  hintFromAnswer,
   isModelHintPrompt,
-  readModelHintAnswers,
+  makerOf,
+  resolveCurrentModel,
+  type HintChoice,
   type ModelHint,
-  type ModelHintRead,
+  type ModelHintAnswers,
 } from "./modelHint";
-import {
-  backfillModelHintProfile,
-  readModelHintProfile,
-  recordModelHintOutcome,
-  recordModelHintSend,
-} from "./modelHintProfile";
+import { readModelHintHistory, recordModelHintHistory } from "./modelHintHistory";
 
 const DEBOUNCE_MS = 700;
 /** Text that moved less than this share since the last ask keeps that answer. */
@@ -82,7 +78,13 @@ function effortWord(effort: string | null): string {
   return effort ? reasoningEffortTierLabel(effort).toLowerCase() : "";
 }
 
-type Answered = { text: string; read: ModelHintRead; catalog: UserModelCatalog; mode: HintMode };
+type Answered = {
+  text: string;
+  catalog: UserModelCatalog;
+  choices: HintChoice[];
+  answers: ModelHintAnswers | null;
+  fromHistory: boolean;
+};
 
 export type ComposerModelHintArgs = {
   draft: string;
@@ -95,10 +97,7 @@ export type ComposerModelHintArgs = {
   allowedModelIds: readonly string[] | null;
   /** The machine the chat runs on: its catalogue, its Jev. */
   pin: OpenProjectBinding | null;
-  /**
-   * The user chose this model (picked it by hand, or the chat already ran
-   * turns on it): it is only ever suggested a stronger model, never another.
-   */
+  /** The user picked this model by hand: it is only ever suggested a stronger model. */
   modelChosen: boolean;
   /** True whenever the picker itself could not change the model (a turn running, a locked or fixed model). */
   hidden: boolean;
@@ -112,19 +111,18 @@ export type ComposerModelHintArgs = {
 };
 
 export type ComposerModelHint = {
-  /** The effort that fits the prompt being typed, for the effort picker to mark; null when there is no read. */
-  suggestedEffort: string | null;
-  /** The chip, when the current pick is clearly off. */
+  /** The chip, when Jev's pick is clearly off from the current one. */
   chip: { hint: ModelHint; apply: () => void; dismiss: () => void } | null;
-  /** Call as the prompt is sent: what was sent with what, for the user's profile. */
+  /** Call as a new chat's first prompt is sent: it joins the history Jev reads. */
   recordSend: () => void;
 };
 
 /**
- * Jev's model and effort advice for the composer: the effort that fits the
- * prompt (marked in the effort picker) and, when the current pick is clearly
- * off, a chip beside the controls. A click applies it through the picker's own
- * handlers; nothing changes on its own. Any failure gives no advice.
+ * Jev's model and effort hint for a new chat: a chip beside the controls when
+ * Jev's pick, read from the prompt and how this user started similar chats,
+ * is clearly off from the current one. A click applies it through the
+ * picker's own handlers; nothing changes on its own. Any failure shows
+ * nothing. A chat that already has turns gets no hint.
  */
 export function useComposerModelHint({
   draft,
@@ -148,54 +146,68 @@ export function useComposerModelHint({
   const seqRef = useRef(0);
   const pinRef = useRef(pin);
   pinRef.current = pin;
-  const contextRef = useRef({ attachments, laneName, chatHasHistory });
-  contextRef.current = { attachments, laneName, chatHasHistory };
+  const contextRef = useRef({ attachments, laneName, modelId, allowedModelIds });
+  contextRef.current = { attachments, laneName, modelId, allowedModelIds };
+  // The machine's catalogue, for the history entry a send records.
+  const catalogRef = useRef<UserModelCatalog | null>(null);
   const text = draft.trim();
-  const active = !hidden && isModelHintPrompt(text);
+  const active = !hidden && !chatHasHistory && isModelHintPrompt(text);
+  // Jev chose among one provider's and maker's models; another model is another question.
+  const outsideChoices = answered != null && !answered.choices.some((choice) => choice.modelId === modelId);
 
   // A new machine reads another catalogue and Jev.
   useEffect(() => {
     seqRef.current++;
     askedTextRef.current = null;
+    catalogRef.current = null;
     setAnswered(null);
   }, [pin?.key]);
 
   useEffect(() => {
     if (!active) return;
     const asked = askedTextRef.current;
-    if (asked != null && changeShare(asked, text) < MIN_CHANGE_SHARE) return;
+    if (!outsideChoices && asked != null && changeShare(asked, text) < MIN_CHANGE_SHARE) return;
     const timer = window.setTimeout(() => {
       const seq = ++seqRef.current;
       askedTextRef.current = text;
       const target = pinRef.current;
-      const { attachments: files, laneName: lane, chatHasHistory: history } = contextRef.current;
+      const { attachments: files, laneName: lane, modelId: currentModelId, allowedModelIds: allowed } = contextRef.current;
       const imageCount = files.filter((file) => file.type === "image" || file.type === "image-url").length;
       void (async () => {
         const mode = await hintMode(target);
         if (mode === "off") return;
         const catalog = await loadCatalog(target);
         if (!catalog || seq !== seqRef.current) return;
+        catalogRef.current = catalog;
+        const current = resolveCurrentModel(catalog, currentModelId);
+        if (!current) return;
+        const maker = makerOf(current);
+        const history = readModelHintHistory(current.harness, maker);
+        const choices = hintChoices({
+          catalog,
+          current,
+          history,
+          allowedModelIds: allowed,
+          effortOnly: mode === "effort_only",
+          needsImages: imageCount > 0,
+        });
+        if (choices.length < 2) return;
         const answers = await window.ade.ai.jevDecide(buildModelHintRequest({
           prompt: text,
           laneName: lane,
-          chatHasHistory: history,
           fileCount: files.length - imageCount,
           imageCount,
+          provider: PROVIDER_LABEL[current.harness] ?? current.harness,
+          maker,
+          history,
+          choices,
         }), target);
         if (seq !== seqRef.current) return;
-        const read = readModelHintAnswers(answers, imageCount);
-        setAnswered(read ? { text, read, catalog, mode } : null);
-        // Jev answers here: learn from recent chats in the background, at most daily.
-        if (read) {
-          void backfillModelHintProfile({
-            pin: target,
-            harnessOf: (id) => harnessOfCatalogModel(catalog, id),
-          }).catch(() => {});
-        }
+        setAnswered({ text, catalog, choices, answers, fromHistory: history.length > 0 });
       })().catch(() => {});
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [active, text]);
+  }, [active, text, outsideChoices]);
 
   // An effort picked by hand is the user's answer for this prompt.
   const textRef = useRef(text);
@@ -206,30 +218,25 @@ export function useComposerModelHint({
     effortPicksSeenRef.current = effortPickedByHand;
     if (textRef.current) setDismissedFor(textRef.current);
   }, [effortPickedByHand]);
-  // Bumped when an outcome changes what the profile allows.
-  const [profileTick, setProfileTick] = useState(0);
-  const advice = useMemo(() => {
-    if (!answered || !modelId) return null;
-    return adviseModelHint({
+  const hint = useMemo(() => {
+    if (!answered || !modelId || outsideChoices) return null;
+    const current = resolveCurrentModel(answered.catalog, modelId);
+    if (!current) return null;
+    return hintFromAnswer({
+      answers: answered.answers,
+      choices: answered.choices,
       catalog: answered.catalog,
-      read: answered.read,
-      currentModelId: modelId,
+      current,
       currentEffort: reasoningEffort,
-      allowedModelIds,
-      modelPinned: modelChosen,
-      modelsAllowed: answered.mode !== "effort_only",
-      profile: readModelHintProfile(),
+      modelChosen,
+      fromHistory: answered.fromHistory,
     });
-    // `profileTick` re-reads the stored profile.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answered, modelId, reasoningEffort, allowedModelIds, modelChosen, profileTick]);
-  const hint = advice?.hint ?? null;
+  }, [answered, modelId, reasoningEffort, modelChosen, outsideChoices]);
 
   // An answer about other text never shows under this text.
   const fresh = answered != null && changeShare(answered.text, text) < MIN_CHANGE_SHARE;
   const dismissed = dismissedFor != null && changeShare(dismissedFor, text) < MIN_CHANGE_SHARE;
   const visible = active && fresh && !dismissed && hint != null;
-  const suggestedEffort = active && fresh ? advice?.suggestedEffort ?? null : null;
 
   // Outcome log: what the hint offered and what the user did with it.
   const shownRef = useRef<{ hint: ModelHint; from: { modelId: string; effort: string | null } } | null>(null);
@@ -240,13 +247,12 @@ export function useComposerModelHint({
     if (!shown) return;
     logRendererDebugEvent("model_hint.outcome", {
       outcome,
-      difficulty: shown.hint.read.difficulty,
-      kind: shown.hint.read.kind,
       fromModel: shown.from.modelId,
       fromEffort: shown.from.effort,
       toModel: shown.hint.modelId,
       toEffort: shown.hint.effort,
       effortOnly: shown.hint.effortOnly,
+      fromHistory: answered?.fromHistory ?? false,
     });
   };
 
@@ -270,35 +276,25 @@ export function useComposerModelHint({
     onReasoningEffortChange(pending.effort);
   }, [modelId, onReasoningEffortChange]);
 
-  const outcome = (shown: ModelHint, result: "accept" | "dismiss") => {
-    recordModelHintOutcome({
-      kind: shown.read.kind,
-      type: shown.effortOnly ? "effort" : "model",
-      direction: shown.direction,
-      outcome: result,
-    });
-    setProfileTick((tick) => tick + 1);
-  };
-
   const recordSend = () => {
-    const sent = answered;
-    if (!sent || !modelId || changeShare(sent.text, textRef.current) >= MIN_CHANGE_SHARE) return;
-    const harness = harnessOfCatalogModel(sent.catalog, modelId);
-    if (!harness) return;
-    recordModelHintSend({
-      kind: sent.read.kind,
-      difficulty: sent.read.difficulty,
-      harness,
+    const catalog = catalogRef.current;
+    if (chatHasHistory || !catalog || !modelId) return;
+    const current = resolveCurrentModel(catalog, modelId);
+    if (!current) return;
+    recordModelHintHistory({
+      harness: current.harness,
+      maker: makerOf(current),
       modelId,
+      displayName: current.displayName,
       effort: reasoningEffort,
+      prompt: textRef.current,
     });
   };
 
-  if (!visible || !hint) return { suggestedEffort, chip: null, recordSend };
+  if (!visible || !hint) return { chip: null, recordSend };
 
   const apply = () => {
     logOutcome("accept");
-    outcome(hint, "accept");
     // Taken: like a dismissal, it stays down for the rest of this prompt.
     setDismissedFor(text);
     if (hint.effortOnly) {
@@ -310,11 +306,17 @@ export function useComposerModelHint({
   };
   const dismiss = () => {
     logOutcome("dismiss");
-    outcome(hint, "dismiss");
     setDismissedFor(text);
   };
-  return { suggestedEffort, chip: { hint, apply, dismiss }, recordSend };
+  return { chip: { hint, apply, dismiss }, recordSend };
 }
+
+const PROVIDER_LABEL: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+};
 
 /** The chip for `useComposerModelHint`'s advice. */
 export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip }: { chip: ComposerModelHint["chip"] }) {
@@ -328,7 +330,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip 
   return (
     <SmartTooltip
       forceEnabled
-      content={{ label: hint.effortOnly ? "Suggested effort" : "Suggested model", description: hint.reason, effect: MODEL_REGISTRY_AA_ATTRIBUTION }}
+      content={{ label: hint.effortOnly ? "Suggested effort" : "Suggested model", description: hint.reason }}
     >
       <span
         data-chat-composer-model-hint=""

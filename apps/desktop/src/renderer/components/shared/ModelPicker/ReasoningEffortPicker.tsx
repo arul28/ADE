@@ -43,10 +43,10 @@ export type ReasoningEffortPickerProps = {
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
   copilotAutoTierPending?: boolean;
   /**
-   * The level Jev's hint says fits the prompt being typed: marked with a dot
-   * on its segment, and on the trigger while the current level differs.
+   * Space is tight (a hint chip sits beside the picker): below a wide
+   * composer the trigger shows only its bars and caret, no level name.
    */
-  suggestedEffort?: string | null;
+  squeezed?: boolean;
 };
 
 export function reasoningChipLabel(
@@ -225,7 +225,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   copilotAutoTier,
   onCopilotAutoTierChange,
   copilotAutoTierPending = false,
-  suggestedEffort = null,
+  squeezed = false,
 }: ReasoningEffortPickerProps) {
   const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
@@ -563,7 +563,6 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   if (tiers.length === 0) return null;
 
   const shortLabel = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
-  const suggested = suggestedEffort && tiers.includes(suggestedEffort) ? suggestedEffort : null;
 
   return (
     <Popover.Root
@@ -587,7 +586,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           disabled={disabled}
           open={open}
           ultra={isUltraActive}
-          suggested={suggested && suggested !== displayedEffort ? tierLabel(suggested, useCodex56Labels) : null}
+          squeezed={squeezed}
           className={cn(triggerClassName, className)}
         />
       </Popover.Trigger>
@@ -689,13 +688,6 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                     style={isActive ? { color: toneText(activeTone.color) } : undefined}
                   >
                     <span className="block truncate">{reasoningEffortTrackLabel(tier, tiers.length, tierLabel(tier, useCodex56Labels))}</span>
-                    {suggested === tier ? (
-                      <span
-                        data-reasoning-suggested
-                        title="Suggested for this prompt"
-                        className="absolute bottom-[3px] left-1/2 h-[3px] w-[3px] -translate-x-1/2 rounded-full bg-violet-300/80"
-                      />
-                    ) : null}
                   </button>
                 );
               })}
@@ -747,15 +739,14 @@ type TriggerProps = {
   disabled: boolean;
   open: boolean;
   ultra: boolean;
-  /** The suggested level's label, while it differs from the current one. */
-  suggested: string | null;
+  squeezed: boolean;
   className?: string;
 };
 
 const ReasoningEffortTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ReasoningEffortTrigger(
-      { label, shortLabel, tone, tiers, activeIndex, compact, disabled, open, ultra, suggested, className, ...rest },
+      { label, shortLabel, tone, tiers, activeIndex, compact, disabled, open, ultra, squeezed, className, ...rest },
       ref,
     ) {
       return (
@@ -767,8 +758,8 @@ const ReasoningEffortTrigger = memo(
           data-reasoning-effort-picker-trigger="true"
           data-reasoning-ultra={ultra ? "true" : undefined}
           disabled={disabled}
-          aria-label={suggested ? `Reasoning effort, ${suggested} suggested` : "Reasoning effort"}
-          title={suggested ? `Reasoning effort · ${suggested} suggested for this prompt` : "Reasoning effort"}
+          aria-label="Reasoning effort"
+          title={squeezed ? `Reasoning effort: ${label}` : "Reasoning effort"}
           aria-haspopup="dialog"
           aria-expanded={open}
           className={cn(
@@ -792,10 +783,15 @@ const ReasoningEffortTrigger = memo(
             )}
             style={{ color: toneText(tone.color) }}
           >
-            <span className="hidden @sm:inline">{label}</span>
-            <span className="@sm:hidden">{shortLabel}</span>
+            {squeezed ? (
+              <span className="hidden @3xl:inline">{label}</span>
+            ) : (
+              <>
+                <span className="hidden @sm:inline">{label}</span>
+                <span className="@sm:hidden">{shortLabel}</span>
+              </>
+            )}
           </span>
-          {suggested ? <span aria-hidden className="h-[4px] w-[4px] shrink-0 rounded-full bg-violet-300/80" /> : null}
           <CaretDown
             size={compact ? 9 : 10}
             weight="bold"
