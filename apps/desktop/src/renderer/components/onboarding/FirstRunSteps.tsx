@@ -64,7 +64,10 @@ export function useFirstRunSteps({
         setPhase((current) => (current === "checking" ? (fresh ? "welcome" : "done") : current));
       })
       .catch(() => {
-        if (!cancelled) setPhase((current) => (current === "checking" ? "done" : current));
+        if (!cancelled) {
+          console.warn("[onboarding] welcome state could not be read");
+          setPhase((current) => (current === "checking" ? "done" : current));
+        }
       });
     return () => {
       cancelled = true;
