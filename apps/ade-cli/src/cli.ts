@@ -2894,6 +2894,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
     $ ade apple button app-switcher --text       Open the App Switcher (two home presses)
     $ ade apple rotate landscape-left --text     Set orientation
+    $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
+    $ ade apple posture --text                   A foldable's hinge angle and active panel
+    $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
     $ ade apple accessibility reduce-motion on   Set one accessibility option
@@ -13285,7 +13288,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
             backendName: "ade-cli",
             toolName: "proof attach",
             ...proofCallerRootArgs(),
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             inputs: [
               {
                 kind: inferAttachedProofKind(attachedPath),
@@ -13374,7 +13377,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           "result",
           "screenshot_environment",
           collectGenericObjectArgs(args, {
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             // `ade proof capture` is the explicit proof interface; the bare
             // tool is scratch agent vision and files nothing.
             proof: true,
@@ -13411,7 +13414,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           "result",
           "record_environment",
           collectGenericObjectArgs(args, {
-            ...proofOwnerBase(),
+            ...readProofOwnerBase(args),
             // Same rule as `capture`: the proof command files, the tool alone
             // does not.
             proof: true,
@@ -14843,6 +14846,82 @@ function buildIosSimulatorPlan(
       deviceUdid: readIosSimulatorDevice(args),
       ...(laneId ? { laneId } : {}),
     });
+  }
+  if (sub === "fold" || sub === "posture-set" || sub === "set-posture") {
+    // `ade apple fold closed|open|laptop|book|tent`, `--angle 0-180`, or
+    // `--sequence closed,open,tent`: one pose after another, each with a step
+    // caption for a running recording, so an agent's demo shows every pose.
+    const poses = ["closed", "open", "laptop", "book", "tent"] as const;
+    const sequence = readValue(args, ["--sequence", "--poses"]);
+    if (sequence) {
+      const wanted = sequence.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+      const unknown = wanted.find((value) => !(poses as readonly string[]).includes(value));
+      if (unknown || !wanted.length) {
+        throw new CliUsageError(`ios-sim ${sub}: --sequence takes poses from ${poses.join(", ")}, comma separated.`);
+      }
+      const deviceUdid = readIosSimulatorDevice(args);
+      return {
+        kind: "execute",
+        label: "Apple device fold sequence",
+        steps: wanted.flatMap((pose, index) => [
+          actionCallStep(`caption${index}`, "note_demo_step", {
+            ...readProofOwnerBase(args),
+            ...proofCallerRootArgs(),
+            ...(laneId ? { laneId } : {}),
+            text: `Fold the iPhone Duo: ${pose}`,
+          }),
+          iosStep(`pose${index}`, "setPosture", {
+            pose,
+            deviceUdid,
+            ...(laneId ? { laneId } : {}),
+          }),
+        ]),
+      };
+    }
+    const angle = readNumberOption(args, ["--angle", "--degrees"]);
+    if (angle !== undefined) {
+      if (!Number.isFinite(angle) || angle < 0 || angle > 180) {
+        throw new CliUsageError(`ios-sim ${sub}: --angle must be between 0 and 180.`);
+      }
+      return iosAction("Apple device fold", "setPosture", {
+        angle,
+        deviceUdid: readIosSimulatorDevice(args),
+        ...(laneId ? { laneId } : {}),
+      });
+    }
+    const pose = readIosSimulatorEnum(args, {
+      sub,
+      names: ["--pose"],
+      label: "pose",
+      noun: "pose",
+      valid: ["closed", "open", "laptop", "book", "tent"] as const,
+    });
+    return iosAction("Apple device fold", "setPosture", {
+      pose,
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
+    return iosAction("Apple device posture", "getPosture", {
+      deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "runtimes" || sub === "runtime") {
+    // `ade apple runtimes [list|install|cancel]`. Removing one is the
+    // person's call, from the Apple panel; it is not offered here.
+    const verb = firstPositional(args) ?? "list";
+    const scope = laneId ? { laneId } : {};
+    if (verb === "list" || verb === "status") return iosAction("Apple runtimes", "runtimeList", scope);
+    if (verb === "install") {
+      const version = readValue(args, ["--version", "--build-version"]);
+      return iosAction("Apple runtime install", "runtimeInstall", { ...scope, ...(version ? { version } : {}) });
+    }
+    if (verb === "cancel") return iosAction("Apple runtime install cancel", "runtimeInstallCancel", scope);
+    throw new CliUsageError(
+      `ios-sim ${sub}: unknown action '${verb}'. Use list, install or cancel. Removing a runtime is done from the Apple Development panel.`,
+    );
   }
   if (sub === "rotate" || sub === "orientation") {
     const orientation = readIosSimulatorEnum(args, {

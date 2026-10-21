@@ -153,9 +153,13 @@ a different kind and calling it done.
 ## The lane's device
 
 One simulator per lane. ADE creates one on first ask, or binds one you already
-have. **ADE never downloads a runtime.** With none installed you get
-`APPLE_NO_INSTALLED_SIMULATORS` — tell the user to open Xcode ▸ Settings ▸
-Components.
+have. Creating a device never downloads anything. With no runtime installed you
+get `APPLE_NO_INSTALLED_SIMULATORS`: run `ade apple runtimes` to see what this
+Xcode needs, and `ade apple runtimes install` to fetch it (about 8 GB per
+runtime, in the background; re-run `ade apple runtimes` for progress). Tell the
+user before you start a download. Removing a runtime erases or moves every
+simulator on it, so it is the user's call, from the Apple Development panel's
+Runtimes section; agents cannot do it.
 
 Two facts that decide what you should do:
 
@@ -236,6 +240,14 @@ Name elements, not pixels.
   refusal as a broken simulator. `verification: already-on-axis` means the
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
+
+- Folding (iPhone Duo only): `fold closed|open|laptop|book|tent` or
+  `fold --angle 120`, then read `posture` back. The answer is what the
+  simulator did: `activeScreenId` 1 is the cover, 3 the inner display, and the
+  live view, taps and typing follow it. On any other device it answers
+  `supported: false`. Test a layout in more than one pose, and fold during a
+  session, not only at launch. For a demo, `fold --sequence closed,open,tent`
+  inside a recording adds a caption per pose.
 
 Agent launches stay in the background; `apple show` brings the device up at
 any time.
