@@ -109,6 +109,7 @@ import {
 } from "../../desktop/src/main/services/cto/linearLaneCardService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { createJevService, jevTallyFileStore, type JevService } from "../../desktop/src/main/services/jev/jevService";
+import { jevEnabled } from "../../desktop/src/shared/jevSettings";
 import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
@@ -1438,7 +1439,7 @@ export async function createAdeRuntime(args: {
 
     const jevService = createJevService({
       logger,
-      isEnabled: () => projectConfigService.get().effective.ai?.chat?.smartDecisionsEnabled !== false,
+      isEnabled: (feature) => jevEnabled(projectConfigService.get().effective.ai?.chat, feature),
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       tallyStore: jevTallyFileStore(
         path.join(resolveMachineAdeLayout().adeDir, "jev", `tallies-${sha256Hex(projectId).slice(0, 16)}.json`),

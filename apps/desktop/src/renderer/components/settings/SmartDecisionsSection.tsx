@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ElementType, type ReactNode } from "react";
+import { CheckCircle, Command, Gauge, HandWaving, Smiley } from "@phosphor-icons/react";
 import type { AiChatConfig } from "../../../shared/types";
+import { JEV_GROUP_CONFIG_KEY } from "../../../shared/jevSettings";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
 import type { JevAvailabilityReason } from "../../../shared/types/jev";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
@@ -11,10 +13,9 @@ import { useChatConfigToggle } from "./useChatConfigToggle";
 
 type HintMode = NonNullable<AiChatConfig["modelHintMode"]>;
 
-const HINT_OPTIONS: ReadonlyArray<{ value: HintMode; label: string }> = [
+const HINT_OPTIONS: ReadonlyArray<{ value: Exclude<HintMode, "off">; label: string }> = [
   { value: "model_and_effort", label: "Model and effort" },
   { value: "effort_only", label: "Effort only" },
-  { value: "off", label: "Off" },
 ];
 
 /** Jev's sign-in is OpenCode Zen's: the `opencode` provider in OpenCode. */
@@ -26,10 +27,11 @@ const ZEN_PROVIDER_ID = "opencode";
 const STATUS_SETTLE_MS = 61_000;
 
 /**
- * "Smart decisions (OpenCode Jev)" and the composer's model hint, which asks
- * the same Jev. On the Chat page because both act on chats and the composer.
- * Saved to this project's `.ade/local.yaml` on the machine this settings page
- * is scoped to, and read from that machine's Jev.
+ * "Smart decisions (OpenCode Jev)": one master switch, then, while it is on,
+ * one switch per group of things Jev decides (`shared/jevSettings.ts`), each
+ * with its own options under it. On the Chat page because they act on chats
+ * and the composer. Saved to this project's `.ade/local.yaml` on the machine
+ * this settings page is scoped to, and read from that machine's Jev.
  *
  * With no OpenCode Zen sign-in on that machine the switch would do nothing, so
  * the row offers the sign-in instead, through the same dialog Providers uses.
@@ -122,8 +124,42 @@ export function SmartDecisionsSection() {
             />
           )}
         />
-        {signedOut ? null : <ModelHintRow />}
       </ModernRows>
+      {signedOut || !enabled || status !== "loaded" ? null : (
+        <div style={{ marginTop: 10 }}>
+          <ModernRows>
+            <GroupRow
+              anchor="smart-chat-status"
+              configKey={JEV_GROUP_CONFIG_KEY.chatStatus}
+              icon={HandWaving}
+              title="Waiting on you"
+              hint="Whether a chat's last reply asked you something or is waiting on its own background work, whether a terminal CLI is waiting for your input, and whether a status line still matches the final reply."
+            />
+            <GroupRow
+              anchor="smart-settle-nudge"
+              configKey={JEV_GROUP_CONFIG_KEY.settleNudge}
+              icon={CheckCircle}
+              title="Settle finished chats"
+              hint="Suggests settling a chat that has sat idle for 3 hours when its last turn reads as done."
+            />
+            <ModelHintRow />
+            <GroupRow
+              anchor="smart-palette"
+              configKey={JEV_GROUP_CONFIG_KEY.palette}
+              icon={Command}
+              title="⌘K suggestions"
+              hint="Puts the command that fits what you type at the top of ⌘K, under Suggested."
+            />
+            <GroupRow
+              anchor="smart-lane-emoji"
+              configKey={JEV_GROUP_CONFIG_KEY.laneEmoji}
+              icon={Smiley}
+              title="Lane emoji"
+              hint="Picks an emoji for a new lane from its name."
+            />
+          </ModernRows>
+        </div>
+      )}
       {signIn ? (
         <OAuthConnectModal
           providerId={ZEN_PROVIDER_ID}
@@ -141,18 +177,55 @@ export function SmartDecisionsSection() {
   );
 }
 
-/** Jev's model and effort hint in the composer. Needs Smart decisions on. */
+function GroupTitle({ icon: Icon, children }: { icon: ElementType; children: ReactNode }) {
+  return (
+    <span className="ade-smart-group-title">
+      <span className="ade-smart-group-icon" aria-hidden>
+        <Icon size={15} weight="duotone" />
+      </span>
+      {children}
+    </span>
+  );
+}
+
+/** One group of Jev decisions. Off, its features use ADE's built-in rules. */
+function GroupRow({ anchor, configKey, icon, title, hint }: {
+  anchor: string;
+  configKey: (typeof JEV_GROUP_CONFIG_KEY)[keyof typeof JEV_GROUP_CONFIG_KEY];
+  icon: ElementType;
+  title: string;
+  hint: string;
+}) {
+  const { status, saving, enabled, save } = useChatConfigToggle(configKey, { defaultOn: true });
+  return (
+    <ModernRow
+      anchor={anchor}
+      title={<GroupTitle icon={icon}>{title}</GroupTitle>}
+      hint={status === "failed" ? "Couldn't load the configuration." : hint}
+      control={(
+        <SettingsToggle label={title} checked={enabled} disabled={status !== "loaded" || saving} onChange={(value) => void save(value)} />
+      )}
+    />
+  );
+}
+
+/** Jev's model and effort hint in the composer: its switch is `modelHintMode` off, its option what it may suggest. */
 function ModelHintRow() {
   const { pin } = useSettingsMachineScope();
   const pinKey = pin?.key ?? null;
   const [mode, setMode] = useState<HintMode | null>(null);
   const [saving, setSaving] = useState(false);
+  // What switching it back on restores.
+  const [lastOn, setLastOn] = useState<Exclude<HintMode, "off">>("model_and_effort");
 
   useEffect(() => {
     let cancelled = false;
     setMode(null);
     void window.ade.projectConfig.get(pin).catch(() => null).then((config) => {
-      if (!cancelled) setMode(config ? config.effective.ai?.chat?.modelHintMode ?? "model_and_effort" : null);
+      if (cancelled) return;
+      const next = config ? config.effective.ai?.chat?.modelHintMode ?? "model_and_effort" : null;
+      setMode(next);
+      if (next && next !== "off") setLastOn(next);
     });
     return () => {
       cancelled = true;
@@ -165,6 +238,7 @@ function ModelHintRow() {
     const previous = mode;
     setSaving(true);
     setMode(next);
+    if (next !== "off") setLastOn(next);
     try {
       await window.ade.ai.updateConfig({ chat: { modelHintMode: next } }, pin);
     } catch (error) {
@@ -179,22 +253,35 @@ function ModelHintRow() {
     }
   };
 
+  const on = mode != null && mode !== "off";
   return (
     <ModernRow
       anchor="model-hint"
-      title="Suggest a model and effort while typing"
+      title={<GroupTitle icon={Gauge}>Model and effort hint</GroupTitle>}
       hint={mode == null
         ? "Loading…"
-        : "Jev reads the prompt, and ADE suggests the cheapest model and effort that do it well, beside the model picker. A model you pick in the composer, or a chat that has already run, keeps its model: then only its effort is suggested. Needs Smart decisions on."}
+        : "Suggests a model and effort beside the composer's pickers for a new chat, from how you picked for your last few similar ones. Sends the prompt and the first line of those chats. It never moves a model you picked to a weaker one."}
       control={(
-        <SettingsSegmented
-          ariaLabel="Suggest a model and effort while typing"
-          value={mode ?? "model_and_effort"}
-          options={HINT_OPTIONS}
+        <SettingsToggle
+          label="Model and effort hint"
+          checked={on}
           disabled={mode == null || saving}
-          onChange={(next) => void save(next)}
+          onChange={(value) => void save(value ? lastOn : "off")}
         />
       )}
-    />
+    >
+      {on ? (
+        <div className="ade-smart-group-options">
+          <span className="ade-ap-rowhint">Suggest</span>
+          <SettingsSegmented
+            ariaLabel="What the hint may suggest"
+            value={mode === "effort_only" ? "effort_only" : "model_and_effort"}
+            options={HINT_OPTIONS}
+            disabled={saving}
+            onChange={(next) => void save(next)}
+          />
+        </div>
+      ) : null}
+    </ModernRow>
   );
 }

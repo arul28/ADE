@@ -345,6 +345,10 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (promptSuggestionsEnabled != null) chat.promptSuggestionsEnabled = promptSuggestionsEnabled;
   const smartDecisionsEnabled = asBool(value.smartDecisionsEnabled);
   if (smartDecisionsEnabled != null) chat.smartDecisionsEnabled = smartDecisionsEnabled;
+  for (const key of ["smartChatStatusEnabled", "smartSettleNudgeEnabled", "smartPaletteEnabled", "smartLaneEmojiEnabled"] as const) {
+    const enabled = asBool(value[key]);
+    if (enabled != null) chat[key] = enabled;
+  }
   const modelHintMode = asString(value.modelHintMode)?.trim();
   if (modelHintMode === "model_and_effort" || modelHintMode === "effort_only" || modelHintMode === "off") {
     chat.modelHintMode = modelHintMode;

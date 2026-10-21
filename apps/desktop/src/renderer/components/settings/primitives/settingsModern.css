@@ -261,3 +261,11 @@
 .ade-modern-field[data-mono="true"] { font-family: var(--font-mono); font-size: 12px; }
 .ade-ap-rowcard { row-gap: 10px; }
 .ade-modern-field[data-mono="true"]::placeholder { font-family: var(--font-sans); }
+
+/* Smart decisions groups: an icon chip before the title, options indented under it. */
+.ade-smart-group-title { display: inline-flex; align-items: center; gap: 8px; }
+.ade-smart-group-icon {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; flex: none;
+  color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.ade-smart-group-options { display: flex; align-items: center; gap: 10px; padding-left: 32px; }

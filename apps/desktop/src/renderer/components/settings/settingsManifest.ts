@@ -622,11 +622,55 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Smart decisions",
   },
   {
+    id: "chat.smart-chat-status",
+    label: "Waiting on you",
+    keywords: ["jev", "needs you", "question", "waiting", "cli", "status line", "turn end"],
+    tab: "chat",
+    anchor: "smart-chat-status",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
+    id: "chat.smart-settle-nudge",
+    label: "Settle finished chats",
+    keywords: ["jev", "settle", "done", "finished", "idle"],
+    tab: "chat",
+    anchor: "smart-settle-nudge",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
     id: "chat.model-hint",
-    label: "Suggest a model and effort while typing",
-    keywords: ["jev", "model hint", "effort", "suggest", "cheapest model", "opencode", "composer"],
+    label: "Model and effort hint",
+    keywords: ["jev", "model hint", "effort", "suggest", "model", "opencode", "composer"],
     tab: "chat",
     anchor: "model-hint",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
+    id: "chat.smart-palette",
+    label: "⌘K suggestions",
+    keywords: ["jev", "command palette", "cmd k", "suggested", "commands"],
+    tab: "chat",
+    anchor: "smart-palette",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Smart decisions",
+  },
+  {
+    id: "chat.smart-lane-emoji",
+    label: "Lane emoji",
+    keywords: ["jev", "emoji", "lane", "icon"],
+    tab: "chat",
+    anchor: "smart-lane-emoji",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",

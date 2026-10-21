@@ -2110,10 +2110,20 @@ export type AiChatConfig = {
    */
   smartDecisionsEnabled?: boolean;
   /**
+   * The Smart decisions groups (`shared/jevSettings.ts`), each on unless set
+   * to false and only asked while `smartDecisionsEnabled` is on: whether a
+   * chat or CLI is waiting on you and status lines are current; settle
+   * suggestions for finished chats; ⌘K's Suggested commands; new lanes' emoji.
+   */
+  smartChatStatusEnabled?: boolean;
+  smartSettleNudgeEnabled?: boolean;
+  smartPaletteEnabled?: boolean;
+  smartLaneEmojiEnabled?: boolean;
+  /**
    * Jev's model and effort hint beside the composer's pickers (needs Smart
-   * decisions on). `model_and_effort` (the default) may suggest another model
-   * while the model is the untouched default; `effort_only` only suggests an
-   * effort on the chosen model; `off` shows nothing.
+   * decisions on). `model_and_effort` (the default) may suggest another model;
+   * `effort_only` only suggests an effort on the chosen model; `off` shows
+   * nothing and is the group's switch.
    */
   modelHintMode?: "model_and_effort" | "effort_only" | "off";
 };

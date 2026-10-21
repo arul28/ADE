@@ -989,9 +989,9 @@ chat pane mount, which happens either way.
   itself, and is hidden while a turn runs, when the picker is locked, for a
   Custom (preset) pick, and in parallel launch. It needs Smart decisions
   (`ai.chat.smartDecisionsEnabled`), an OpenCode Zen sign-in, and Settings ›
-  Chat › Smart decisions › **Suggest a model and effort while typing**
+  Chat › Smart decisions › **Model and effort hint**
   (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
-  or `off`). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
+  or `off` when its switch is off). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
   minutes and 1 minute) and every call goes to the composer's
   `modelRuntimePin`.
 - **Model hint history.** `modelHintHistory.ts` keeps the last 100 new chats

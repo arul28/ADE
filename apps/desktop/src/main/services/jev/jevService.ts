@@ -410,8 +410,8 @@ export type JevTallyStore = {
 
 export type JevServiceDeps = {
   logger: Logger;
-  /** The "Smart decisions (OpenCode Jev)" setting; read per call. */
-  isEnabled: () => boolean;
+  /** The Smart decisions switches, read per call: the master switch, and with a feature, its group's too. */
+  isEnabled: (feature?: JevFeature) => boolean;
   appVersion?: string | null;
   tallyStore?: JevTallyStore | null;
 };
@@ -637,7 +637,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
       if (feature) record(feature, "invalid_request");
       return null;
     }
-    if (!deps.isEnabled()) {
+    if (!deps.isEnabled(feature)) {
       record(feature, "disabled");
       return null;
     }

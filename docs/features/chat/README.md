@@ -4557,10 +4557,22 @@ config service):
   `ai.jevStatus` once the brain's one-minute sign-in cache has expired. Defaults to **true**. Off makes every `ai.jevDecide` answer `null`
   with no network call, so every feature uses its built-in rules. See
   [Jev decisions](#jev-decisions).
-- `ai.chat.modelHintMode` -- "Suggest a model and effort while typing" in
-  Settings › Chat, under Smart decisions and shown once Zen is signed in: `model_and_effort`
-  (default), `effort_only` or `off`. See the composer's model hint in
-  [Composer and UI](composer-and-ui.md#composer).
+- Smart decisions groups -- shown under the master switch while it is on
+  and Zen is signed in, one row each with an icon, a switch and what it
+  decides; each defaults to **true**, and off answers `null` for its
+  features with no network call (`jevEnabled` in `shared/jevSettings.ts`,
+  read per call by `jevService`):
+  - `ai.chat.smartChatStatusEnabled` -- "Waiting on you": `turn_end`,
+    `cli_status`, `status_line`.
+  - `ai.chat.smartSettleNudgeEnabled` -- "Settle finished chats":
+    `settle_nudge`.
+  - `ai.chat.modelHintMode` -- "Model and effort hint": `model_hint`. The
+    switch sets `off`; while on, its option row picks `model_and_effort`
+    (default) or `effort_only`, and switching back on restores the last
+    one. See the composer's model hint in
+    [Composer and UI](composer-and-ui.md#composer).
+  - `ai.chat.smartPaletteEnabled` -- "⌘K suggestions": `palette`.
+  - `ai.chat.smartLaneEmojiEnabled` -- "Lane emoji": `lane_emoji`.
 
 ### Jev decisions
 
@@ -4592,7 +4604,9 @@ its label, and one probability per criterion.
   remotely); the renderer calls `window.ade.ai.jevDecide(request, pin)` and
   `window.ade.ai.jevStatus(pin)`, routed to the pinned machine, and both answer
   `null` instead of throwing. `feature` is a closed union (`JEV_FEATURES`):
-  `turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`.
+  `turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`,
+  `model_hint`, `status_line`. A feature whose Smart decisions group is off
+  answers `null` (outcome `disabled`) before any sign-in check.
 
 ### Next prompt suggestions
 
