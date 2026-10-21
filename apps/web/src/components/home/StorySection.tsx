@@ -413,6 +413,7 @@ function FilmStory({ film }: { film: Film }) {
     if (!section) return;
     let started = false;
     let cancelled = false;
+    const abort = new AbortController();
     const urls: string[] = [];
     const start = () => {
       if (started) return;
@@ -423,26 +424,27 @@ function FilmStory({ film }: { film: Film }) {
       void (async () => {
         for (const shot of film.shots) {
           if (cancelled) return;
-          const load = (src: string) => {
+          // A streamed video can only seek where it has buffered, so it waits for enough to play through.
+          const load = (src: string, readyOn: "loadeddata" | "canplaythrough") => {
             const video = els.videos[shot.name];
             if (!video) return;
-            video.addEventListener("loadeddata", () => {
+            video.addEventListener(readyOn, () => {
               video.dataset.ready = "1";
               setReady((current) => ({ ...current, [shot.name]: true }));
             }, { once: true });
             video.src = src;
           };
           try {
-            const response = await fetch(`/film/${shot.name}.mp4`);
+            const response = await fetch(`/film/${shot.name}.mp4`, { signal: abort.signal });
             if (!response.ok) throw new Error(`film ${shot.name}: ${response.status}`);
             const blob = await response.blob();
             if (cancelled) return;
             const url = URL.createObjectURL(blob);
             urls.push(url);
-            load(url);
+            load(url, "loadeddata");
           } catch {
             // A failed download falls back to streaming, so the shot still plays instead of holding a still.
-            if (!cancelled) load(`/film/${shot.name}.mp4`);
+            if (!cancelled) load(`/film/${shot.name}.mp4`, "canplaythrough");
           }
         }
       })();
@@ -453,6 +455,7 @@ function FilmStory({ film }: { film: Film }) {
     observer.observe(section);
     return () => {
       cancelled = true;
+      abort.abort();
       observer.disconnect();
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
