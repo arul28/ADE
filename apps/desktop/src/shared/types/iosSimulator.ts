@@ -185,6 +185,8 @@ export const APPLE_AGENT_ACTIONS = [
   "getDuoModel",
   /* Both iPhone Duo displays at App Store Connect's sizes, filed as proof. */
   "duoAppStoreScreenshots",
+  /* Apple's app-resizability agent skill from this Mac's Xcode, into the lane. */
+  "addDuoSkill",
   /* 3D renders, made by the Apple pane open for the lane on a desktop. */
   "requestRender",
   "renderAck",
@@ -1002,6 +1004,15 @@ export type AppleDuoModelResult = {
   base64: string | null;
   /** Where it was read from, for diagnostics. */
   path: string | null;
+};
+
+/** Apple's `app-resizability` skill, exported from Xcode into the lane's `.agents/skills`. */
+export type AppleAddDuoSkillResult = {
+  skill: "app-resizability";
+  /** The skill's folder in the lane's worktree. */
+  path: string;
+  /** False when the lane already had the skill and it was left as it was. */
+  added: boolean;
 };
 
 export type AppleDuoAppStoreScreenshotsResult = {

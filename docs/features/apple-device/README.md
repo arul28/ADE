@@ -386,7 +386,20 @@ app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
 within 4°; arrow keys stay exact. ⌥[ and ⌥] fold and unfold by the step. A
 fold to closed or open reports its posture once the guest has switched panels.
 The floating player reads the posture too, so it draws the inner panel upright
-and follows folds.
+and follows folds. Screenshots of a foldable (more than one integrated panel in
+`simctl io enumerate`) capture the live panel with `--display`.
+
+**Apple's Duo skill.** The Duo menu's **Add Apple's Duo skill to this lane**
+(`addDuoSkill`, `ade apple duo-skill`) exports Xcode's agent skills
+(`xcrun agent skills export`) and copies `app-resizability` into the lane's
+`.agents/skills`; a lane that has it keeps its copy. Tested before shipping: an
+ADE agent (GPT-6 Luna) following it took a legacy UIKit sample that did not
+launch on the iOS 27 SDK (no scene life cycle) and laid itself out from
+`UIScreen.main`, to one that refilled the cover (3 columns, 382 pt) and the
+inner panel (5 columns, 867 pt) across folds without relaunching. The skill
+asks once whether the scene manifest goes in Info.plist or code. Xcode's other
+Duo skill, `device-interaction`, drives Xcode's own MCP tools, so ADE leaves it
+out: `ade apple` covers the same ground.
 
 ### 3D renders
 

@@ -331,6 +331,7 @@ export function createAppleDeviceNamespace(
     getPosture: (async (args?: unknown) => invoke("getPosture", args ?? {}, true)) as never,
     getDuoModel: (async () => invoke("getDuoModel", {}, true)) as never,
     duoAppStoreScreenshots: (async (args?: unknown) => invoke("duoAppStoreScreenshots", args ?? {}, false)) as never,
+    addDuoSkill: (async (args?: unknown) => invoke("addDuoSkill", args ?? {}, false)) as never,
     frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
     // SwiftUI preview lab. The drawer mounts these on open, so a web tab that
     // lacked them threw in an effect rather than degrading.

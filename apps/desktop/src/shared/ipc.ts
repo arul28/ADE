@@ -568,6 +568,7 @@ export const IPC = {
   iosSimulatorGetPosture: "ade.iosSimulator.getPosture",
   iosSimulatorGetDuoModel: "ade.iosSimulator.getDuoModel",
   iosSimulatorDuoAppStoreScreenshots: "ade.iosSimulator.duoAppStoreScreenshots",
+  iosSimulatorAddDuoSkill: "ade.iosSimulator.addDuoSkill",
   iosSimulatorRenderAck: "ade.iosSimulator.renderAck",
   iosSimulatorRenderComplete: "ade.iosSimulator.renderComplete",
   iosSimulatorScroll: "ade.iosSimulator.scroll",

@@ -1528,6 +1528,17 @@ export function AppleDevicePane({
                   }))
                   .catch((cause: unknown) => setError(cause));
               }}
+              onDuoAddSkill={typeof window.ade.iosSimulator.addDuoSkill === "function" ? () => {
+                void window.ade.iosSimulator
+                  .addDuoSkill({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+                  .then((result) => showToast({
+                    id: "apple-duo-skill",
+                    tone: "success",
+                    title: result.added ? "Apple's Duo skill added to this lane" : "This lane already has Apple's Duo skill",
+                    message: "Agents in the lane find it in .agents/skills/app-resizability. Ask one to get the app ready for the iPhone Duo.",
+                  }))
+                  .catch((cause: unknown) => setError(cause));
+              } : undefined}
               onDuoNudge={(delta) => {
                 const next = clampAppleDuoAngle(duoState.pose.angle + delta);
                 setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));

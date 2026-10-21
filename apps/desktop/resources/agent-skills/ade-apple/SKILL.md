@@ -251,6 +251,14 @@ Name elements, not pixels.
   session, not only at launch. For a demo, `fold --sequence closed,open,tent`
   inside a recording adds a caption per pose.
 
+- Getting an app ready for the Duo: `duo-skill` copies Apple's
+  `app-resizability` skill (from Xcode 27) into the lane's
+  `.agents/skills`; read it and follow it. It moves a UIKit app onto the scene
+  life cycle (iOS 27 SDK apps without one do not launch) and off
+  `UIScreen.main`, the idiom and the interface orientation. Then prove it:
+  `fold closed`, `screenshot`, `fold open`, `screenshot`, without relaunching.
+  It stops to ask whether the scene setup goes in Info.plist or code.
+
 - 3D renders: `render --angles front,three-quarter-left --poses closed,open`
   (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
   of the 3D device with its live screen to the proof drawer. It needs the

@@ -2897,6 +2897,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
     $ ade apple posture --text                   A foldable's hinge angle and active panel
     $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
+    $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
     $ ade apple render --poses closed,open --text  3D renders (needs the Apple pane open), as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
@@ -14945,6 +14946,10 @@ function buildIosSimulatorPlan(
       deviceUdid: readIosSimulatorDevice(args),
       ...(laneId ? { laneId } : {}),
     });
+  }
+  if (sub === "duo-skill" || sub === "resizability-skill") {
+    // Apple's app-resizability agent skill, from this Mac's Xcode into the lane.
+    return iosAction("Apple Duo agent skill", "addDuoSkill", laneId ? { laneId } : {});
   }
   if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
     return iosAction("Apple device posture", "getPosture", {

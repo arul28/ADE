@@ -1200,6 +1200,21 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --device, --udid <id>  Simulator device.
     --lane, --lane-id <id> Lane whose device to read.
 `,
+  "duo-skill": `${ADE_BANNER}
+  Apple device: Apple's Duo agent skill
+
+  Copies Apple's app-resizability agent skill (from this Mac's Xcode 27,
+  \`xcrun agent skills export\`) into the lane's .agents/skills, where the
+  lane's agents find it. It moves a UIKit app off UIScreen.main, the idiom and
+  the interface orientation, and onto the scene life cycle, so its layout
+  refills each panel of the iPhone Duo as it folds. A lane that already has
+  the skill keeps its copy.
+
+    $ ade apple duo-skill --text
+
+  Flags:
+    --lane, --lane-id <id> Lane to add the skill to.
+`,
   runtimes: `${ADE_BANNER}
   Apple runtimes
 

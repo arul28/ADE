@@ -1007,6 +1007,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleDevicePosture,
   AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
   AppleSetPostureResult,
@@ -9746,6 +9747,12 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDuoAppStoreScreenshotsResult> =>
       callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
+    /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
+    addDuoSkill: (
+      args: { laneId?: string | null; chatSessionId?: string | null } = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleAddDuoSkillResult> =>
+      callIosSimulatorMutation(pin, "addDuoSkill", args, IPC.iosSimulatorAddDuoSkill),
     /** The Apple pane took an `ade apple render` request, or finished it. */
     renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
       callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),

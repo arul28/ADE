@@ -7796,6 +7796,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getPosture: resolvedArg({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null } as any),
       getDuoModel: resolved({ base64: null, path: null } as any),
       duoAppStoreScreenshots: resolvedArg({ shots: [] } as any),
+      addDuoSkill: resolvedArg({ skill: "app-resizability", path: "", added: false } as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),

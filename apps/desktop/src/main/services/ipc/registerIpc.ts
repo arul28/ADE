@@ -10432,6 +10432,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorGetPosture, async (_event, arg = {}) => ensureIosSimulator().getPosture(arg));
   ipcMain.handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
   ipcMain.handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
+  ipcMain.handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
   ipcMain.handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
   ipcMain.handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
   ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));

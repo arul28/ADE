@@ -18,6 +18,7 @@ import {
   Power,
   Record,
   SlidersHorizontal,
+  Sparkle,
   SpeakerHigh,
   SpeakerLow,
   SquaresFour,
@@ -85,6 +86,8 @@ export type AppleDeviceRailProps = {
   } | undefined;
   /** Capture both Duo displays at App Store Connect's sizes. */
   onDuoAppStoreShots?: (() => void) | undefined;
+  /** Add Apple's app-resizability agent skill to the lane. */
+  onDuoAddSkill?: (() => void) | undefined;
   onDuoStance?: (stance: AppleDuoStanceId) => void;
   onDuoNudge?: (delta: number) => void;
   /** The hinge slider moved: preview the angle (the 3D body follows at once). */
@@ -162,6 +165,7 @@ export function AppleDeviceRail({
   onDuoAngle,
   onDuoAngleCommit,
   onDuoAppStoreShots,
+  onDuoAddSkill,
   onOrientation,
   onScreenshot,
   onRender,
@@ -301,6 +305,12 @@ export function AppleDeviceRail({
                   <Camera size={14} />
                   App Store screenshots
                 </DropdownMenu.Item>
+                {onDuoAddSkill ? (
+                  <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onDuoAddSkill()}>
+                    <Sparkle size={14} />
+                    Add Apple's Duo skill to this lane
+                  </DropdownMenu.Item>
+                ) : null}
               </>
             ) : null}
           </RailMenu>

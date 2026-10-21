@@ -11,6 +11,7 @@ import type {
   AppleRenderRequestResult,
   AppleDevicePose,
   AppleDuoAppStoreScreenshotsResult,
+  AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleDevicePosture,
   AppleSetPostureArgs,
@@ -5920,6 +5921,42 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * inner display open (2853×2007), each captured from its own panel, filed
    * as proof. Folds the simulator to take them and puts the hinge back.
    */
+  /**
+   * Apple's `app-resizability` agent skill (Xcode 27's `xcrun agent skills
+   * export`), copied into the lane's `.agents/skills`, where every ADE agent
+   * in the lane finds it. It is the skill Apple points at for the iPhone Duo;
+   * an ADE agent following it moved a legacy UIKit app to the scene life
+   * cycle and size-driven layout that refilled each panel on fold. A lane
+   * that already has the skill keeps its copy (it may be edited).
+   */
+  const addDuoSkill = async (
+    skillArgs: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
+  ): Promise<AppleAddDuoSkillResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(skillArgs);
+    const root = await resolveScopedRootForSession({ projectRoot: skillArgs.projectRoot, laneId: skillArgs.laneId }, runtime);
+    const skill = "app-resizability" as const;
+    const target = path.join(root, ".agents", "skills", skill);
+    if (fs.existsSync(path.join(target, "SKILL.md"))) return { skill, path: target, added: false };
+    const exportDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-apple-skills-"));
+    try {
+      try {
+        await run("xcrun", ["agent", "skills", "export", "--output-dir", exportDir], { timeoutMs: 60_000 });
+      } catch {
+        throw new Error("This Mac's Xcode has no agent skills to export. Apple's app-resizability skill needs Xcode 27 or later.");
+      }
+      const source = path.join(exportDir, skill);
+      if (!fs.existsSync(path.join(source, "SKILL.md"))) {
+        throw new Error("This Mac's Xcode does not include Apple's app-resizability skill.");
+      }
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.cp(source, target, { recursive: true, errorOnExist: false, force: false });
+      return { skill, path: target, added: true };
+    } finally {
+      await fs.promises.rm(exportDir, { recursive: true, force: true }).catch(() => {});
+    }
+  };
+
   const duoAppStoreScreenshots = async (
     shotArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> & { projectRoot?: string | null } = {},
   ): Promise<AppleDuoAppStoreScreenshotsResult> => {
@@ -6975,6 +7012,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     getPosture,
     getDuoModel,
     duoAppStoreScreenshots,
+    addDuoSkill,
     requestRender,
     renderAck,
     renderComplete,

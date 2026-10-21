@@ -534,7 +534,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",
       "deviceStop", "deviceDetach", "deviceDelete", "deviceCleanup", "runTests", "startStream",
       "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
-      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "requestRender", "renderAck", "renderComplete", "selectPoint",
+      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "requestRender", "renderAck", "renderComplete", "selectPoint",
       "inspectPoint", "findElement", "tapElement", "fillElement", "waitForElement",
       "assertVisible", "setAppearance", "setContentSize", "setAccessibilityOption",
       "setLocation", "clearLocation", "setPermission", "sendPushNotification", "setStatusBar",
