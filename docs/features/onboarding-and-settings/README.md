@@ -1945,8 +1945,10 @@ video it replaced), so a computer set up before it existed never sees it.
    the newest 300 sessions each with a 2.5s budget per provider. It maps each
    folder to its git project (an ADE lane or linked worktree counts toward
    its main checkout), drops scratch, temp, Downloads and projects already in
-   ADE, and returns them newest first. A project with at least two chats in
-   the last 30 days starts ticked. Each row shows its worktrees (they open as
+   ADE, and returns them newest first. If discovery fails, setup reports that
+   it couldn't load the projects and offers a retry instead of showing an
+   empty result. A project with at least two chats in the last 30 days starts
+   ticked. Each row shows its worktrees (they open as
    lanes) and when it was last active; a row with recent chats also has an
    **Import N chats** pill with its providers' marks (the draft page's import
    pill, per project), off by default. The pill has two targets. Its box (and
