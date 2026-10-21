@@ -185,7 +185,7 @@ Main process:
   archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
   by the service, the Settings page, the reminder, ADE Code, and `ade archive`.
 - `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
-  per-machine Settings → Archive tab: the list split at the two-week line, the
+  Project → Storage & cleanup → Archive page: the list split at the two-week line, the
   selection bar, restore, and delete. Deleting batches non-lane items together
   and at most five lanes per request, then offers a single forced retry by name
   for lanes with uncommitted changes.
@@ -975,7 +975,11 @@ Renderer — settings:
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.
 - `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
-  — toggles `prTranscriptGists.enabled` in project local config.
+  — toggles `prTranscriptGists.enabled` in project local config under Project
+  → Agents.
+- `apps/desktop/src/renderer/components/settings/AgentNotesSection.tsx` — the
+  read-only Project → Agents list of project notes visible to agents on the
+  project machine. Notes are written with `ade notes`.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — About (version, runtime); rendered in General.
 - `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
@@ -1212,7 +1216,7 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
   `settings/storage/StorageCleanupDialog.tsx`, `StorageDiagnostics.tsx`,
   `StorageMaintenanceJournal.tsx`, `storageView.ts`, and `storageUiConstants.ts`
-  — Settings > Storage. Uses plain language to explain lane cleanup rules,
+  — Project → Storage & cleanup. Uses plain language to explain lane cleanup rules,
   automatic safety checks, and the difference between Archive (files stay),
   Archive & Reclaim (lane/branch/chat stay; managed files are removed), and
   Delete. Its review table lists archived lanes, orphaned worktrees,
@@ -2854,7 +2858,7 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 
 Archiving **hides** a lane, chat, or shell; ADE never deletes one on its own.
 The archive is the one place the three kinds are listed together, so it has a
-per-machine Settings tab (Settings → Archive), an `ade archive` CLI, an ADE Code
+Project → Storage & cleanup → Archive page, an `ade archive` CLI, an ADE Code
 weekly notice, and a weekly desktop banner that all read the same
 `archive.list` / `archive.summary` result.
 

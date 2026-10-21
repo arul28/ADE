@@ -3,6 +3,7 @@ import { GithubLogo } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { captureError } from "../../../shared/sentry/capture";
 
 export function PrChatTranscriptsSection() {
   // A per-checkout switch in `.ade/local.yaml`, on the machine the page shows.
@@ -24,7 +25,12 @@ export function PrChatTranscriptsSection() {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        captureError(error, {
+          tags: { feature: "pr_transcripts", action: "load" },
+          fingerprint: ["pr_transcripts", "settings_load"],
+          handled: true,
+        });
         if (!cancelled) setLoadFailed(true);
       });
     return () => {

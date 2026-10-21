@@ -3,6 +3,7 @@ import type { ProjectNotesListResult } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { captureError } from "../../../shared/sentry/capture";
 
 /**
  * Project notes agents saved, read-only. Agents write them silently with
@@ -32,7 +33,12 @@ export function AgentNotesSection() {
       .then((next) => {
         if (!cancelled) setResult(next);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        captureError(error, {
+          tags: { feature: "project_notes", action: "load" },
+          fingerprint: ["project_notes", "settings_list"],
+          handled: true,
+        });
         if (!cancelled) setLoadFailed(true);
       });
     return () => {

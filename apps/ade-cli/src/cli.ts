@@ -3652,8 +3652,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Unarchive items (needs the CTO role)
 
   Each item reports done or failed on its own; the command exits non-zero when
-  any item failed. Deleting is yours alone: do it in Settings → Archive on the
-  desktop, the web client, or the phone. Agents and automations can't delete.
+  any item failed. Deleting is yours alone: do it in Project → Storage &
+  cleanup → Archive on desktop or web. Agents and automations can't delete.
 `,
   health: `${ADE_BANNER}
   Project health
@@ -3674,10 +3674,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
-  volume's free space, mirroring the desktop Settings storage dashboard. The
-  snapshot is read-only; compression is lossless and safe. Maintenance runs the
-  policy-driven ledger sweep (prune/compress/vacuum). Target-scoped cleanup
-  (which deletes files) is intentionally left to the action bridge.
+  volume's free space, like Settings → Project → Storage & cleanup on the
+  desktop. The snapshot is read-only; compression is lossless and safe.
+  Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
+  Target-scoped cleanup (which deletes files) is left to the action bridge.
 
     $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
     $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
@@ -17939,7 +17939,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Settings → Archive (desktop, web, or phone). The command line can list and restore them.",
+      "Delete archived items in ADE: Project → Storage & cleanup → Archive (desktop or web). The command line can list and restore them.",
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
