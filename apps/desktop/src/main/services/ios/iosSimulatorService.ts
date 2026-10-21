@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleRenderRequestArgs,
+  AppleRenderRequestResult,
   AppleDevicePose,
   AppleDuoAppStoreScreenshotsResult,
   AppleDuoModelResult,
@@ -5936,6 +5938,69 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }, APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS);
   };
 
+  /**
+   * `ade apple render`: renders need a mounted 3D view, so the request goes
+   * to the Apple pane open for the lane (on any desktop pinned to this
+   * machine), which acks within 5 s and reports when it has filed the proof.
+   */
+  const pendingRenders = new Map<string, {
+    /** True for the first pane to take it; every later one stands down. */
+    ack: () => boolean;
+    complete: (result: AppleRenderRequestResult) => void;
+  }>();
+  const requestRender = async (renderArgs: AppleRenderRequestArgs): Promise<AppleRenderRequestResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(renderArgs);
+    const request = renderArgs?.request;
+    if (!request || !Array.isArray(request.angles) || request.angles.length === 0) {
+      throw new Error("A render needs at least one angle.");
+    }
+    const requestId = randomUUID();
+    let acked = false;
+    const result = new Promise<AppleRenderRequestResult>((resolve, reject) => {
+      const ackTimer = setTimeout(() => {
+        if (acked) return;
+        pendingRenders.delete(requestId);
+        reject(new Error(
+          "No Apple Development pane is open for this lane. Open it in ADE (3D view available), then render again.",
+        ));
+      }, 5_000);
+      const doneTimer = setTimeout(() => {
+        pendingRenders.delete(requestId);
+        reject(new Error("The render did not finish within 4 minutes."));
+      }, 240_000);
+      (doneTimer as unknown as { unref?: () => void }).unref?.();
+      pendingRenders.set(requestId, {
+        ack: () => {
+          if (acked) return false;
+          acked = true;
+          clearTimeout(ackTimer);
+          return true;
+        },
+        complete: (value) => {
+          clearTimeout(ackTimer);
+          clearTimeout(doneTimer);
+          pendingRenders.delete(requestId);
+          resolve(value);
+        },
+      });
+    });
+    emit({ type: "apple.render.request", laneId: runtime.key ?? null, requestId, request });
+    return result;
+  };
+  const renderAck = async (ackArgs: { requestId?: string }): Promise<{ ok: boolean }> => {
+    const pending = typeof ackArgs?.requestId === "string" ? pendingRenders.get(ackArgs.requestId) : undefined;
+    return { ok: pending ? pending.ack() : false };
+  };
+  const renderComplete = async (doneArgs: { requestId?: string; filed?: number; error?: string | null }): Promise<{ ok: boolean }> => {
+    const pending = typeof doneArgs?.requestId === "string" ? pendingRenders.get(doneArgs.requestId) : undefined;
+    pending?.complete({
+      filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
+      error: typeof doneArgs.error === "string" ? doneArgs.error : null,
+    });
+    return { ok: Boolean(pending) };
+  };
+
   /** The lane whose device this is, for an event about a device no stream is showing. */
   const laneIdHoldingUdid = (udid: string): string | null =>
     laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
@@ -6872,6 +6937,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     getPosture,
     getDuoModel,
     duoAppStoreScreenshots,
+    requestRender,
+    renderAck,
+    renderComplete,
     typeText,
     drag,
     swipe: drag,

@@ -183,6 +183,7 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Windows Desktop actions that wait on a person at the Windows PC (UAC,

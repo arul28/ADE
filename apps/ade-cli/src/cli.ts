@@ -2897,6 +2897,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
     $ ade apple posture --text                   A foldable's hinge angle and active panel
     $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
+    $ ade apple render --poses closed,open --text  3D renders (needs the Apple pane open), as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -14905,6 +14906,36 @@ function buildIosSimulatorPlan(
     return iosAction("Apple device fold", "setPosture", {
       pose,
       deviceUdid: readIosSimulatorDevice(args),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (sub === "render") {
+    // `ade apple render --angles front,three-quarter-left --poses closed,open
+    // --lighting studio --video --sheet --no-shadow`: the Apple pane open for
+    // the lane renders it and files the proof.
+    const listOf = <T extends string>(flag: string[], valid: readonly T[], fallback: T[]): T[] => {
+      const raw = readValue(args, flag);
+      if (!raw) return fallback;
+      const values = raw.split(",").map((value) => value.trim());
+      const bad = values.find((value) => !(valid as readonly string[]).includes(value));
+      if (bad !== undefined) throw new CliUsageError(`ios-sim render: '${bad}' is not one of ${valid.join(", ")}.`);
+      return values as T[];
+    };
+    const angles = listOf(["--angles", "--angle"], ["front", "three-quarter-left", "three-quarter-right", "current"] as const, ["front", "three-quarter-left"]);
+    const poses = listOf(["--poses", "--pose"], ["closed", "open", "laptop", "book", "tent"] as const, []);
+    const lighting = readValue(args, ["--lighting", "--background"]) ?? "transparent";
+    if (!["transparent", "studio", "dusk"].includes(lighting)) {
+      throw new CliUsageError("ios-sim render: --lighting must be transparent, studio or dusk.");
+    }
+    return iosAction("Apple device render", "requestRender", {
+      request: {
+        angles,
+        poses,
+        lighting,
+        shadow: !readFlag(args, ["--no-shadow"]),
+        video: readFlag(args, ["--video", "--turntable"]),
+        contactSheet: readFlag(args, ["--sheet", "--contact-sheet"]),
+      },
       ...(laneId ? { laneId } : {}),
     });
   }

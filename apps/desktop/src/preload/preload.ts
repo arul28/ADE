@@ -9746,6 +9746,14 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDuoAppStoreScreenshotsResult> =>
       callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
+    /** The Apple pane took an `ade apple render` request, or finished it. */
+    renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),
+    renderComplete: (
+      args: { requestId: string; filed: number; error: string | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> =>
+      callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderComplete", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderComplete, args)),
     getDuoModel: (pin?: OpenProjectBinding | null): Promise<AppleDuoModelResult> =>
       callIosSimulatorActionOr<AppleDuoModelResult>(pin, "getDuoModel", {}, () => ipcRenderer.invoke(IPC.iosSimulatorGetDuoModel)),
     /**

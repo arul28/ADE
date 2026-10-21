@@ -3158,6 +3158,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDevicePosture>;
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
+        renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        renderComplete: (
+          args: { requestId: string; filed: number; error: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (
           args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
           pin?: OpenProjectBinding | null,

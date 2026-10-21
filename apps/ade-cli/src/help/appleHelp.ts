@@ -1167,6 +1167,27 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --device, --udid <id>  Simulator device.
     --lane, --lane-id <id> Lane whose device to fold.
 `,
+  render: `${ADE_BANNER}
+  Apple device: render
+
+  Renders the device in 3D with its live screen and files the images (and an
+  optional turntable video) to the proof drawer. The Apple Development pane
+  must be open for the lane in ADE on a desktop: it does the rendering. For an
+  iPhone Duo, each pose folds the real simulator first.
+
+    $ ade apple render --text
+    $ ade apple render --angles front,three-quarter-right --lighting studio --text
+    $ ade apple render --poses closed,laptop,open --sheet --video --text
+
+  Flags:
+    --angles <a,b>         front, three-quarter-left, three-quarter-right, current.
+    --poses <a,b>          Duo only: closed, open, laptop, book, tent.
+    --lighting <l>         transparent (default), studio, dusk.
+    --sheet                Also file a labelled contact sheet.
+    --video                Also file a 6 s turntable (WebM).
+    --no-shadow            No contact shadow.
+    --lane, --lane-id <id> Lane whose device to render.
+`,
   posture: `${ADE_BANNER}
   Apple device: posture (iPhone Duo)
 

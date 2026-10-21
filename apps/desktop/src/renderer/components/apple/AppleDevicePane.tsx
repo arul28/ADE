@@ -31,6 +31,7 @@ import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure, AppleDeviceDuoProps, AppleDeviceRenderer } from "./AppleDevice3DView";
 import {
   appleDeviceSupportsDuo,
+  APPLE_DUO_NUDGE_DEGREES,
   clampAppleDuoAngle,
   createAppleDuoState,
   nearestAppleDuoStance,
@@ -368,7 +369,11 @@ export function AppleDevicePane({
   const state: AppleDeviceState = resolveAppleDeviceState({
     supported: status ? status.supported : true,
     helperAvailable: helperAvailable(status),
-    hasDevice: Boolean(deviceUdid),
+    // A lane bound to a simulator that is no longer installed (deleted in
+    // Xcode or simctl, or its runtime removed) has no device to start: the
+    // picker says so and offers Create, instead of an Off card whose Start
+    // can only fail. Until the list has loaded, the binding is trusted.
+    hasDevice: Boolean(deviceUdid) && (!listLoaded || installed.some((entry) => entry.udid === deviceUdid)),
     booted,
     starting: pendingStart !== null,
     previewing: preview !== null,
@@ -968,11 +973,11 @@ export function AppleDevicePane({
    * waits for it to settle, so every shot shows the panel and layout that
    * pose really has. Every image (and the video) is filed to the proof drawer.
    */
-  const runRender = useCallback(async (request: AppleRenderRequest) => {
+  const runRender = useCallback(async (request: AppleRenderRequest): Promise<number> => {
     const renderer = rendererRef.current;
     if (!renderer) {
       showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
-      return;
+      throw new Error("The 3D view is still loading.");
     }
     setRendering(true);
     const options = {
@@ -1047,12 +1052,65 @@ export function AppleDevicePane({
       }
       showToast({ id: "apple-render", tone: "success", title: `Rendered ${filed} item${filed === 1 ? "" : "s"} to the proof drawer` });
       setRenderOpen(false);
+      return filed;
     } catch (cause) {
       setError(cause);
+      throw cause;
     } finally {
       setRendering(false);
     }
   }, [deviceName, laneId, sessionId]);
+
+  /*
+   * `ade apple render`: the service asks the pane open for this lane. Ack at
+   * once (so the CLI knows a pane took it), bring up the 3D view if the flat
+   * one is on, render, and report what was filed.
+   */
+  const runRenderRef = useRef(runRender);
+  runRenderRef.current = runRender;
+  const renderStateRef = useRef({ laneId, live: false, stalled: false });
+  // A stalled stream (the window was in the background) still renders: the
+  // pane reconnects first so the shots get fresh frames.
+  renderStateRef.current = {
+    laneId,
+    live: (state === "live" || state === "video-lost") && canUse3d,
+    stalled: state === "video-lost",
+  };
+  const reconnectStreamRef = useRef(stream.reconnect);
+  reconnectStreamRef.current = stream.reconnect;
+  useEffect(() => {
+    return window.ade.iosSimulator.onEvent((event) => {
+      if (event.type !== "apple.render.request") return;
+      const current = renderStateRef.current;
+      if (!current.live || (event.laneId && current.laneId && event.laneId !== current.laneId)) return;
+      const pin = runtimePinRef.current;
+      void (async () => {
+        const ack = await window.ade.iosSimulator.renderAck({ requestId: event.requestId }, pin).catch(() => null);
+        // Another window's pane took it first.
+        if (!ack?.ok) return;
+        setMode("3d");
+        if (renderStateRef.current.stalled) {
+          reconnectStreamRef.current();
+          const liveBy = Date.now() + 10_000;
+          while (renderStateRef.current.stalled && Date.now() < liveBy) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        }
+        const deadline = Date.now() + 10_000;
+        while (!rendererRef.current && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        let filed = 0;
+        let error: string | null = null;
+        try {
+          filed = await runRenderRef.current(event.request);
+        } catch (cause) {
+          error = cause instanceof Error ? cause.message : String(cause);
+        }
+        await window.ade.iosSimulator.renderComplete({ requestId: event.requestId, filed, error }, pin).catch(() => undefined);
+      })();
+    });
+  }, []);
 
   /** Read the pose once the Duo is live; posture events keep it current after that. */
   const duoLive = duoCapable && state === "live";
@@ -1220,7 +1278,19 @@ export function AppleDevicePane({
               rendererRef={rendererRef}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
-              onDeviceKey={input.key}
+              onDeviceKey={(event) => {
+                // ⌥[ folds and ⌥] unfolds a Duo by 15°. Plain brackets still
+                // type into the device.
+                if (duoCapable && event.altKey && !event.metaKey && !event.ctrlKey && (event.key === "[" || event.key === "]"
+                  || event.key === "“" || event.key === "‘")) {
+                  const delta = event.key === "[" || event.key === "“" ? -APPLE_DUO_NUDGE_DEGREES : APPLE_DUO_NUDGE_DEGREES;
+                  const next = clampAppleDuoAngle(duoState.pose.angle + delta);
+                  setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
+                  sendDuoPosture({ angle: next });
+                  return true;
+                }
+                return input.key(event);
+              }}
               onReaderStatus={stream.handleReaderStatus}
               onDimensions={stream.handleDimensions}
               onFrame={stream.noteFrame}
@@ -1551,7 +1621,7 @@ export function AppleDevicePane({
           duo={duoCapable}
           rendering={rendering}
           onClose={() => setRenderOpen(false)}
-          onRender={(request) => void runRender(request)}
+          onRender={(request) => void runRender(request).catch(() => undefined)}
         />
       ) : null}
     </div>

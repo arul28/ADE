@@ -185,6 +185,10 @@ export const APPLE_AGENT_ACTIONS = [
   "getDuoModel",
   /* Both iPhone Duo displays at App Store Connect's sizes, filed as proof. */
   "duoAppStoreScreenshots",
+  /* 3D renders, made by the Apple pane open for the lane on a desktop. */
+  "requestRender",
+  "renderAck",
+  "renderComplete",
 
   /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
   "runTests",
@@ -920,7 +924,35 @@ export type IosSimulatorEventPayload =
   | AppleDeviceStateEvent
   | AppleRecordingStateEvent
   | AppleRuntimeInstallEvent
-  | AppleDevicePostureEvent;
+  | AppleDevicePostureEvent
+  | AppleRenderRequestEvent;
+
+/** What `ade apple render` asks the lane's open Apple pane to render. */
+export type AppleRenderRequestSpec = {
+  angles: Array<"front" | "three-quarter-left" | "three-quarter-right" | "current">;
+  /** Duo only. */
+  poses: AppleDevicePose[];
+  lighting: "transparent" | "studio" | "dusk";
+  shadow: boolean;
+  video: boolean;
+  contactSheet: boolean;
+};
+
+export type AppleRenderRequestArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  request: AppleRenderRequestSpec;
+};
+
+export type AppleRenderRequestResult = { filed: number; error: string | null };
+
+/** The service asks the lane's mounted Apple pane to render; it acks, then reports. */
+export type AppleRenderRequestEvent = {
+  type: "apple.render.request";
+  laneId: string | null;
+  requestId: string;
+  request: AppleRenderRequestSpec;
+};
 
 /* ------------------------------------------------------------------------- *
  * Foldable posture (the iPhone Duo).
