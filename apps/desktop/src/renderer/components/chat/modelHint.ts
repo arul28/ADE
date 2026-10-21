@@ -21,8 +21,12 @@ const MIN_PROMPT_CHARS = 12;
 const STATE_PROMPT_CHARS = 2_000;
 /** Below this the pick reads as no answer. */
 const MIN_CONFIDENCE = 0.5;
-/** History lines sent to Jev, newest first. */
-const HISTORY_LINES = 40;
+/**
+ * History lines sent to Jev, newest first. Free Jev has a daily allowance
+ * shared by every Jev feature on the network, and a long history makes a call
+ * several times slower and costlier (40 lines ≈ 1 s and 4× the tokens of 10).
+ */
+const HISTORY_LINES = 15;
 /** Models offered besides the current one and the ones in the history: the strongest few. */
 const EXTRA_MODELS = 4;
 /** Effort levels apart before an effort-only hint shows. */
@@ -149,7 +153,9 @@ function historyLine(entry: ModelHintHistoryEntry): string {
 }
 
 export function buildModelHintRequest(context: ModelHintContext) {
-  const history = context.history.slice(0, HISTORY_LINES);
+  // Only chats on a model still offered: older ones are a past era of habits.
+  const offered = new Set(context.choices.map((choice) => choice.modelId));
+  const history = context.history.filter((entry) => offered.has(entry.modelId)).slice(0, HISTORY_LINES);
   const lines = [
     `New chat request: ${context.prompt.trim().slice(0, STATE_PROMPT_CHARS)}`,
     context.laneName ? `Lane: ${context.laneName}` : null,

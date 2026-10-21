@@ -966,8 +966,8 @@ chat pane mount, which happens either way.
   and not again until the text has changed by 10% or more; an answer about
   older text never shows under newer text. One interactive `ai.jevDecide`
   call (feature `model_hint`, `modelHint.ts`) sends the prompt, this user's
-  recent new chats with the same provider and the same model maker (up to 40,
-  newest first: model · effort and the prompt's start, from
+  recent new chats with the same provider and the same model maker (up to 15,
+  newest first, only on models still offered: model · effort and the prompt's start, from
   `modelHintHistory.ts`), and one `choice` question over that provider's
   model × effort options for that maker (`hintChoices`: the current model,
   every model in the history, and the four strongest others; only image

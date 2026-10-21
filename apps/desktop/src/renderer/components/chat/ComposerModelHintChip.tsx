@@ -203,7 +203,13 @@ export function useComposerModelHint({
           choices,
         }), target);
         if (seq !== seqRef.current) return;
-        setAnswered({ text, catalog, choices, answers, fromHistory: history.length > 0 });
+        setAnswered({
+          text,
+          catalog,
+          choices,
+          answers,
+          fromHistory: history.some((entry) => choices.some((choice) => choice.modelId === entry.modelId)),
+        });
       })().catch(() => {});
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
