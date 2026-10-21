@@ -196,6 +196,20 @@ export function parseRuntimeDownloadProgress(line: string): Partial<AppleRuntime
   return null;
 }
 
+/** `iOS`, `watchOS`, `tvOS` or `visionOS`; anything else is refused before it reaches xcodebuild. */
+function normalizePlatform(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "iOS";
+  if (typeof value === "string" && ["iOS", "watchOS", "tvOS", "visionOS"].includes(value.trim())) return value.trim();
+  throw new Error("platform must be iOS, watchOS, tvOS or visionOS.");
+}
+
+/** `27.1` or `27.1.2`; anything else is refused before it reaches xcodebuild. */
+function normalizeVersion(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string" && /^\d{1,3}(\.\d{1,3}){1,2}$/u.test(value.trim())) return value.trim();
+  throw new Error("version must look like 27.1.");
+}
+
 /* ───────────────────────── the manager ───────────────────────── */
 
 /** CoreSimulator wants headroom beyond the image itself while it stages and verifies. */
@@ -368,22 +382,22 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     return { runtimes: read.entries, missing: missingFrom(read), install: install ? { ...install } : null, xcode, freeBytes };
   };
 
+  const installActive = () => Boolean(install && (install.phase === "checking" || install.phase === "preparing"
+    || install.phase === "downloading" || install.phase === "installing"));
+
   const runtimeInstall = async (args: AppleRuntimeInstallArgs = {}): Promise<AppleRuntimeInstallState> => {
-    if (child && install && (install.phase === "checking" || install.phase === "preparing" || install.phase === "downloading" || install.phase === "installing")) {
-      return { ...install };
-    }
-    const platform = args.platform?.trim() || "iOS";
+    // Guarded on the phase, not on the child: the child only exists after the
+    // SDK lookup and the free-space check, and a second call in that window
+    // would start a second 8 GB download nothing can cancel.
+    if (install && installActive()) return { ...install };
+    const platform = normalizePlatform(args.platform);
     // An explicit version pins `-buildVersion`. Without one, Xcode fetches every
     // runtime it needs: Xcode 27.1 needs iOS 27.0 (every iPhone) AND iOS 27.1
     // (only the Duo), and pinning 27.1 alone would leave the other iPhones out.
-    const pinnedVersion = args.version?.trim() || null;
-    const version = pinnedVersion ?? await deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 })
-      .then(({ stdout }) => parseIosSimulatorSdkVersion(stdout))
-      .catch(() => null);
-    if (!version) throw new Error("Could not read which iOS runtime this Xcode expects. Open Xcode once, then try again.");
+    const pinnedVersion = normalizeVersion(args.version);
     install = {
       platform,
-      version,
+      version: pinnedVersion ?? "",
       phase: "checking",
       percent: null,
       received: null,
@@ -392,8 +406,20 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
       startedAt: now().toISOString(),
       finishedAt: null,
     };
+    const ticket = install;
+    const version = pinnedVersion ?? await deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 })
+      .then(({ stdout }) => parseIosSimulatorSdkVersion(stdout))
+      .catch(() => null);
+    if (install !== ticket || install.phase === "cancelled") return { ...install! };
+    if (!version) {
+      finish("failed", "Could not read which iOS runtime this Xcode expects. Open Xcode once, then try again.");
+      return { ...install };
+    }
+    install = { ...install, version };
     emitInstall(true);
     const free = await deps.freeBytes().catch(() => null);
+    // Cancelled while it was checking: never spawn.
+    if (install.phase === "cancelled") return { ...install };
     if (free !== null && free < INSTALL_FREE_BYTES_FLOOR) {
       const gb = (free / 1024 ** 3).toFixed(1);
       finish("failed", `Only ${gb} GB free. A runtime needs about 10 GB while it installs; remove an older runtime first.`);
@@ -439,14 +465,17 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
   };
 
   const runtimeInstallCancel = async (): Promise<AppleRuntimeInstallState | null> => {
+    if (!install || !installActive()) return install ? { ...install } : null;
     const running = child;
-    if (!running || !install) return install ? { ...install } : null;
     install = { ...install, phase: "cancelled", message: "Cancelled", finishedAt: now().toISOString() };
     child = null;
-    try {
-      running.kill("SIGTERM");
-    } catch {
-      // Already gone.
+    // Still checking: there is no process yet, and the phase stops the spawn.
+    if (running) {
+      try {
+        running.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
     }
     deps.invalidate();
     emitInstall(true);
@@ -470,6 +499,8 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     all: AppleRuntimeEntry[],
     disposition: AppleRuntimeSimulatorDisposition,
     result: AppleRuntimeDeleteResult,
+    /** Runtimes this same removal deletes: never a place to move a simulator to. */
+    deleting: ReadonlySet<string> = new Set(),
   ) => {
     if (!entry.id || !entry.deletable) {
       result.errors.push({ id: entry.id, udid: null, message: `${entry.name} is part of Xcode and cannot be removed here.` });
@@ -479,17 +510,23 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     // only the Duo, so an iPhone 17 on iOS 26.3 moves to iOS 27.0, not 27.1.
     const newer = all
       .filter((candidate) => candidate.platform === entry.platform
+        && !deleting.has(candidate.runtimeIdentifier)
         && appleRuntimeScore(candidate.version) > appleRuntimeScore(entry.version))
       .sort((a, b) => appleRuntimeScore(b.version) - appleRuntimeScore(a.version));
     const targetFor = (simulator: AppleRuntimeSimulator): AppleRuntimeEntry | null => (simulator.deviceTypeIdentifier
       ? newer.find((candidate) => candidate.deviceTypes.some((type) => type.identifier === simulator.deviceTypeIdentifier)) ?? null
       : null);
-    const stuck = entry.simulators.filter((simulator) => simulator.laneHeld && !targetFor(simulator));
+    // "Move" means move: a simulator no remaining newer runtime runs is never
+    // erased behind it. Lane devices always move, so they always count.
+    const stuck = entry.simulators.filter((simulator) =>
+      (simulator.laneHeld || disposition === "upgrade") && !targetFor(simulator));
     if (stuck.length) {
       result.errors.push({
         id: entry.id,
         udid: stuck[0]!.udid,
-        message: `${stuck.map((simulator) => simulator.name).join(", ")} belongs to a lane and no newer runtime runs its model. Delete it from that lane first.`,
+        message: stuck.some((simulator) => simulator.laneHeld)
+          ? `${stuck.map((simulator) => simulator.name).join(", ")} belongs to a lane and no newer runtime runs its model. Delete it from that lane first.`
+          : `No newer runtime runs ${stuck.map((simulator) => simulator.name).join(", ")}, so it cannot move. Remove ${entry.name} again and choose to erase it, or keep the runtime.`,
       });
       return;
     }
@@ -527,6 +564,9 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
 
   const runtimeDelete = async (args: AppleRuntimeDeleteArgs): Promise<AppleRuntimeDeleteResult> => {
     assertConfirmed(args?.confirmedByUser);
+    if (typeof args.id !== "string" || !/^[0-9A-Fa-f-]{36}$/u.test(args.id)) {
+      throw new Error("Runtime id must be the runtime's UUID, as runtimeList reports it.");
+    }
     const { entries } = await readRuntimes();
     const entry = entries.find((candidate) => candidate.id === args.id);
     if (!entry) throw new Error(`No installed runtime has id ${args.id}.`);
@@ -545,8 +585,10 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     const { entries } = await readRuntimes();
     const result: AppleRuntimeDeleteResult = { deleted: [], moved: [], erased: [], errors: [] };
     try {
-      for (const entry of entries.filter((candidate) => candidate.superseded && candidate.deletable)) {
-        await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result);
+      const doomed = entries.filter((candidate) => candidate.superseded && candidate.deletable);
+      const deleting = new Set(doomed.map((candidate) => candidate.runtimeIdentifier));
+      for (const entry of doomed) {
+        await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result, deleting);
       }
     } finally {
       deps.invalidate();

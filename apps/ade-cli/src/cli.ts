@@ -14855,18 +14855,23 @@ function buildIosSimulatorPlan(
     const poses = ["closed", "open", "laptop", "book", "tent"] as const;
     const sequence = readValue(args, ["--sequence", "--poses"]);
     if (sequence) {
-      const wanted = sequence.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+      // Every entry is checked before any fold runs: `closed,,open` is a typo,
+      // not a request for two poses.
+      const wanted = sequence.split(",").map((value) => value.trim().toLowerCase());
       const unknown = wanted.find((value) => !(poses as readonly string[]).includes(value));
-      if (unknown || !wanted.length) {
+      if (unknown !== undefined || !wanted.length) {
         throw new CliUsageError(`ios-sim ${sub}: --sequence takes poses from ${poses.join(", ")}, comma separated.`);
       }
       const deviceUdid = readIosSimulatorDevice(args);
+      // Read once: reading takes `--owner`/`--owner-id` out of `args`, so a
+      // second read would drop the owner from every later caption.
+      const owner = readProofOwnerBase(args);
       return {
         kind: "execute",
         label: "Apple device fold sequence",
         steps: wanted.flatMap((pose, index) => [
           actionCallStep(`caption${index}`, "note_demo_step", {
-            ...readProofOwnerBase(args),
+            ...owner,
             ...proofCallerRootArgs(),
             ...(laneId ? { laneId } : {}),
             text: `Fold the iPhone Duo: ${pose}`,

@@ -101,6 +101,10 @@ public actor SimHelperRuntime {
     /// `device-reset` before it powers a device off and after it boots one,
     /// which is the same cure without taking every other device's stream down.
     public func resetDevice(_ udid: String) async -> Bool {
+        // CoreDevice's capability handles (the Duo's digitizer and keyboard
+        // services) belong to one boot too; the next session must look them up
+        // again rather than reuse a dead boot's.
+        await CoreDeviceBridge.shared.resetForNewCapture(udid: udid)
         // Removed before the teardown awaits, so anything that reaches the
         // actor in between gets a new session rather than the dying one.
         guard let session = sessions.removeValue(forKey: udid) else { return false }

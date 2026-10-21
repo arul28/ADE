@@ -19,7 +19,12 @@ function loadFor(key: string, pin: OpenProjectBinding | null): Promise<Group | n
       // An older host has no model action: the drawn body stands in.
       if (typeof window.ade.iosSimulator.getDuoModel !== "function") return null;
       const result = await window.ade.iosSimulator.getDuoModel(pin);
-      if (!result.base64) return null;
+      if (!result.base64) {
+        // No model on that Xcode right now (or a transient miss): ask again
+        // on the next mount rather than keeping the miss for the window.
+        models.delete(key);
+        return null;
+      }
       const binary = atob(result.base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);

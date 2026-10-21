@@ -43,6 +43,42 @@ enum DevicePosture {
         }
     }
 
+    /// Each integrated panel's pixel size by screen id, from `simctl io
+    /// enumerate` ("Screen ID: 1 … Pixel Size: {1398, 2034}"). Used to map a
+    /// tap when no capture is running to measure the panel.
+    static func panelPixelSizes(udid: String) -> [UInt32: (width: Int, height: Int)] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["simctl", "io", udid, "enumerate"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return [:]
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(decoding: data, as: UTF8.self)
+        var sizes: [UInt32: (width: Int, height: Int)] = [:]
+        var screen: UInt32?
+        var integrated = false
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Screen ID:") {
+                screen = UInt32(trimmed.dropFirst("Screen ID:".count).trimmingCharacters(in: .whitespaces))
+                integrated = false
+            } else if trimmed.hasPrefix("Screen Type:") {
+                integrated = trimmed.contains("Integrated")
+            } else if trimmed.hasPrefix("Pixel Size:"), let screen, integrated {
+                let digits = trimmed.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+                if digits.count >= 2 { sizes[screen] = (digits[0], digits[1]) }
+            }
+        }
+        return sizes
+    }
+
     static func displays(udid: String) async -> [Display] {
         let read = (try? await CoreDeviceDisplayInfo.read(udid: udid)) ?? nil
         return (read ?? []).map { Display(screenID: $0.screenID, active: $0.isActive, orientation: $0.orientation) }
@@ -112,17 +148,25 @@ enum DevicePosture {
 /// read on each change so the pane knows which panel to show and route input to.
 actor DevicePostureWatchers {
     private var stops: [String: @Sendable () async -> Void] = [:]
-    /// The newest device-state revision per device. A sweep delivers a burst of
-    /// snapshots whose display re-reads finish out of order; only the newest
-    /// may be reported, or a stale mid-sweep angle lands last.
-    private var latestRevision: [String: UInt64] = [:]
+    /// The newest device-state snapshot per device, as (generation, revision).
+    /// A sweep delivers a burst of snapshots whose display re-reads finish out
+    /// of order; only the newest may be reported, or a stale mid-sweep angle
+    /// lands last. The generation leads: a reset (`resetForNewCapture`) starts
+    /// revisions again at 0 under a new generation, and must not be mistaken
+    /// for an old snapshot.
+    private var latest: [String: (generation: UInt64, revision: UInt64)] = [:]
 
-    private func note(udid: String, revision: UInt64) {
-        latestRevision[udid] = max(latestRevision[udid] ?? 0, revision)
+    private func note(udid: String, generation: UInt64, revision: UInt64) {
+        if let current = latest[udid],
+           current.generation > generation || (current.generation == generation && current.revision >= revision) {
+            return
+        }
+        latest[udid] = (generation, revision)
     }
 
-    private func isLatest(udid: String, revision: UInt64) -> Bool {
-        (latestRevision[udid] ?? 0) <= revision
+    private func isLatest(udid: String, generation: UInt64, revision: UInt64) -> Bool {
+        guard let current = latest[udid] else { return true }
+        return generation > current.generation || (generation == current.generation && revision >= current.revision)
     }
 
     func start(udid: String, onChange: @escaping @Sendable (DevicePosture.State) -> Void) async -> Bool {
@@ -130,7 +174,7 @@ actor DevicePostureWatchers {
         guard await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) else { return false }
         let stop = await CoreDeviceBridge.shared.subscribeDeviceState(udid: udid) { snapshot in
             Task {
-                await self.note(udid: udid, revision: snapshot.revision)
+                await self.note(udid: udid, generation: snapshot.generation, revision: snapshot.revision)
                 // The guest elects the new panel a moment after the hinge
                 // moves, so one read right away still names the old one.
                 // Re-read over the next second; report each read that changes
@@ -146,7 +190,7 @@ actor DevicePostureWatchers {
                         displays: await DevicePosture.displays(udid: udid)
                     )
                     // A newer snapshot owns the report from here on.
-                    guard await self.isLatest(udid: udid, revision: snapshot.revision) else { return }
+                    guard await self.isLatest(udid: udid, generation: snapshot.generation, revision: snapshot.revision) else { return }
                     if case let .some(previous) = lastActive, previous == state.activeScreenID { continue }
                     lastActive = .some(state.activeScreenID)
                     onChange(state)
@@ -158,6 +202,7 @@ actor DevicePostureWatchers {
     }
 
     func stop(udid: String) async {
+        latest.removeValue(forKey: udid)
         guard let stop = stops.removeValue(forKey: udid) else { return }
         await stop()
     }
@@ -165,6 +210,7 @@ actor DevicePostureWatchers {
     func stopAll() async {
         let all = stops
         stops.removeAll()
+        latest.removeAll()
         for stop in all.values { await stop() }
     }
 }

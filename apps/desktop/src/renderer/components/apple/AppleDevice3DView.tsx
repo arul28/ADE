@@ -1145,6 +1145,9 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.duo?.enabled,
     props.duo?.angle,
     props.duo?.lowerFlat,
+    props.duo?.model,
+    props.duo?.activeScreenId,
+    props.duo?.physicalOrientation,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Info, X } from "@phosphor-icons/react";
 import type {
   AppleRuntimeEntry,
   AppleRuntimeInstallState,
@@ -8,13 +7,15 @@ import type {
   AppleXcodeStatus,
 } from "../../../shared/types/iosSimulator";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice/Banner";
+import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { cn } from "../ui/cn";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
 import { appleRuntimeInstallActive } from "./useAppleRuntimes";
 
 /** The Mac App Store page for Xcode. */
 const XCODE_APP_STORE_URL = "macappstore://apps.apple.com/app/xcode/id497799835";
-const XCODE_NOTE_DISMISSED_KEY = "ade.apple.xcodeNoteDismissed";
+const XCODE_UPDATE_BANNER_KEY = "apple-xcode-update";
 
 const Spinner = () => (
   <span
@@ -53,8 +54,22 @@ function simulatorsLabel(entry: AppleRuntimeEntry): string {
 async function confirmRemoval(input: {
   title: string;
   entries: AppleRuntimeEntry[];
+  /** Every installed runtime, to tell which simulators have somewhere to go. */
+  all: AppleRuntimeEntry[];
 }): Promise<AppleRuntimeSimulatorDisposition | null> {
   const simulators = input.entries.flatMap((entry) => entry.simulators);
+  const removing = new Set(input.entries.map((entry) => entry.runtimeIdentifier));
+  const entryOf = new Map(input.entries.flatMap((entry) => entry.simulators.map((simulator) => [simulator.udid, entry] as const)));
+  // A simulator can move only to a newer runtime that stays and runs its model.
+  const canMove = (udid: string, typeId: string | null) => {
+    const from = entryOf.get(udid);
+    return Boolean(from && typeId && input.all.some((candidate) =>
+      !removing.has(candidate.runtimeIdentifier)
+      && candidate.platform === from.platform
+      && candidate.version.localeCompare(from.version, undefined, { numeric: true }) > 0
+      && candidate.deviceTypes.some((type) => type.identifier === typeId)));
+  };
+  const stranded = simulators.filter((simulator) => !canMove(simulator.udid, simulator.deviceTypeIdentifier));
   const yours = simulators.filter((simulator) => !simulator.ade);
   const bytes = input.entries.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
   const freed = bytes ? gigabytes(bytes) : null;
@@ -71,6 +86,9 @@ async function confirmRemoval(input: {
           <li key={simulator.udid} className="break-words">
             {simulator.name}
             <span className="text-muted-fg">{simulator.ade ? " · ADE" : " · yours"}</span>
+            {stranded.includes(simulator) ? (
+              <span className="text-warning">{" · no newer runtime runs it"}</span>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -78,7 +96,9 @@ async function confirmRemoval(input: {
     checkboxes: yours.length
       ? [{
         key: "move",
-        label: "Move my simulators to a newer runtime (keeps their apps and data). Unchecked erases them.",
+        label: stranded.length
+          ? "Move my simulators to a newer runtime (keeps their apps and data). Ones no newer runtime runs stop the removal; uncheck to erase everything instead."
+          : "Move my simulators to a newer runtime (keeps their apps and data). Unchecked erases them.",
         defaultChecked: true,
       }]
       : [],
@@ -143,7 +163,7 @@ export function AppleRuntimesSection({
                 disabled={busy}
                 aria-label={`Remove ${entry.name}`}
                 onClick={() => {
-                  void confirmRemoval({ title: `Remove ${entry.name}?`, entries: [entry] }).then((choice) => {
+                  void confirmRemoval({ title: `Remove ${entry.name}?`, entries: [entry], all: inventory.runtimes }).then((choice) => {
                     if (choice && entry.id) onRemove(entry.id, choice);
                   });
                 }}
@@ -163,6 +183,7 @@ export function AppleRuntimesSection({
               void confirmRemoval({
                 title: `Remove ${replaceable.map((entry) => entry.name).join(" and ")}?`,
                 entries: replaceable,
+                all: inventory.runtimes,
               }).then((choice) => {
                 if (choice) onPrune(choice);
               });
@@ -229,18 +250,10 @@ export function AppleRuntimeInstallProgress({
   );
 }
 
-function dismissedVersion(): string | null {
-  try {
-    return window.localStorage.getItem(XCODE_NOTE_DISMISSED_KEY);
-  } catch {
-    return null;
-  }
-}
-
 /**
- * The quiet line at the top of the picker, only when there is something to do:
+ * The note at the top of the picker, only when there is something to do:
  * Xcode's first-launch setup has not run, or Apple has shipped a newer Xcode.
- * A dismissal holds for that version only.
+ * The update note's dismissal is durable and holds for that version only.
  */
 export function AppleXcodeNote({
   xcode,
@@ -249,63 +262,48 @@ export function AppleXcodeNote({
   xcode: AppleXcodeStatus | null | undefined;
   onRunSetup: () => Promise<void>;
 }) {
-  const [dismissed, setDismissed] = useState(dismissedVersion);
+  const dismissals = useBannerDismissals();
   const [running, setRunning] = useState(false);
   if (!xcode?.version) return null;
-  const update = xcode.updateAvailable && xcode.latest && dismissed !== xcode.latest.version ? xcode.latest : null;
-  if (!xcode.firstLaunchPending && !update) return null;
+  const update = xcode.updateAvailable && xcode.latest
+    && !dismissals.isDismissed(XCODE_UPDATE_BANNER_KEY, xcode.latest.version)
+    ? xcode.latest
+    : null;
+  if (xcode.firstLaunchPending) {
+    return (
+      <Banner
+        layout="inline"
+        model={{
+          id: "apple-xcode-setup",
+          tone: "warning",
+          title: `Xcode ${xcode.version} hasn't finished its first-launch setup, so simulators may not start.`,
+          busy: running,
+          actions: [{
+            label: "Run setup",
+            onClick: () => {
+              setRunning(true);
+              void onRunSetup().finally(() => setRunning(false));
+            },
+            disabled: running,
+          }],
+          dismiss: false,
+        }}
+      />
+    );
+  }
+  if (!update) return null;
   return (
-    <div
-      data-apple-xcode-note={xcode.firstLaunchPending ? "setup" : "update"}
-      className="ade-tool-card ade-tool-card-solid flex min-w-0 items-start gap-2 px-3 py-2"
-    >
-      <Info size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-accent" />
-      <span className="min-w-0 flex-1 break-words font-sans text-[12px] leading-5 text-fg/85">
-        {xcode.firstLaunchPending
-          ? `Xcode ${xcode.version} hasn't finished its first-launch setup, so simulators may not start.`
-          : `Xcode ${update!.version} is out (you have ${xcode.version}). Update it in the App Store.`}
-      </span>
-      {xcode.firstLaunchPending ? (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={running}
-          onClick={() => {
-            setRunning(true);
-            void onRunSetup().finally(() => setRunning(false));
-          }}
-          className="h-6 shrink-0 px-2 text-[11px]"
-        >
-          {running ? <Spinner /> : null}
-          Run setup
-        </Button>
-      ) : (
-        <>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void window.ade.app.openExternal(XCODE_APP_STORE_URL)}
-            className="h-6 shrink-0 px-2 text-[11px]"
-          >
-            Open
-          </Button>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => {
-              try {
-                window.localStorage.setItem(XCODE_NOTE_DISMISSED_KEY, update!.version);
-              } catch {
-                // A dismissal that cannot persist still hides it for now.
-              }
-              setDismissed(update!.version);
-            }}
-            className="mt-0.5 shrink-0 text-muted-fg hover:text-fg"
-          >
-            <X size={12} />
-          </button>
-        </>
-      )}
-    </div>
+    <Banner
+      layout="inline"
+      model={{
+        id: "apple-xcode-update",
+        tone: "info",
+        title: `Xcode ${update.version} is out (you have ${xcode.version}).`,
+        detail: "Update it in the App Store.",
+        actions: [{ label: "Open", href: XCODE_APP_STORE_URL }],
+        dismiss: { key: XCODE_UPDATE_BANNER_KEY, fingerprint: update.version },
+      }}
+      onDurableDismiss={({ key, fingerprint }) => dismissals.dismiss(key, fingerprint)}
+    />
   );
 }

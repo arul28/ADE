@@ -3059,8 +3059,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * queue moves on.
    */
   const CONTROL_TIMEOUT_MS = 8_000;
+  /** Two folds (each up to 8 s to settle), two captures and the hinge restore. */
+  const APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS = 60_000;
 
-  const enqueueControl = async <T>(action: string, runControl: () => Promise<T>): Promise<T> => {
+  /**
+   * `timeoutMs` overrides the per-input budget for the few controls that are
+   * multi-step by design (App Store shots fold twice). The race does not
+   * cancel the work, so a budget that is too short would release the queue
+   * while the device is still moving.
+   */
+  const enqueueControl = async <T>(action: string, runControl: () => Promise<T>, timeoutMs = CONTROL_TIMEOUT_MS): Promise<T> => {
     const queuedAt = Date.now();
     const task = controlQueue.then(async () => {
       const startedAt = Date.now();
@@ -3072,9 +3080,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           new Promise<never>((_resolve, reject) => {
             expiry = setTimeout(() => {
               reject(new Error(
-                `The simulator did not accept ${action} within ${Math.round(CONTROL_TIMEOUT_MS / 1000)}s.`,
+                `The simulator did not accept ${action} within ${Math.round(timeoutMs / 1000)}s.`,
               ));
-            }, CONTROL_TIMEOUT_MS);
+            }, timeoutMs);
             (expiry as unknown as { unref?: () => void }).unref?.();
           }),
         ]);
@@ -5925,7 +5933,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
       }
       return { shots };
-    });
+    }, APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS);
   };
 
   /** The lane whose device this is, for an event about a device no stream is showing. */

@@ -163,8 +163,10 @@ Runtimes section; agents cannot do it.
 
 Two facts that decide what you should do:
 
-- A **runtime** is the iOS image. It is the large download, one per iOS
-  version, and ADE will not fetch one.
+- A **runtime** is the iOS image. It is the large download (about 8 GB),
+  one per iOS version, fetched only by `ade apple runtimes install` after you
+  tell the user. Point releases can be narrow: iOS 27.1 runs only the iPhone
+  Duo, and every other current iPhone runs on iOS 27.0.
 - A **device** is an instance made from a runtime. Creating one copies no iOS,
   so it is cheap. A new lane device is empty: it copies nothing from any other
   simulator and grows only with what the lane installs. A device that is

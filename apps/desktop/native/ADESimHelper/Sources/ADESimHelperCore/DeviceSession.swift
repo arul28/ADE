@@ -22,6 +22,9 @@ public actor DeviceSession {
     private var foldable: FoldableInput?
     private var foldableChecked = false
     private var activeScreenID: UInt32?
+    /// Each panel's metrics, measured from its framebuffer while streaming or
+    /// read once from `simctl io enumerate` for input without a stream.
+    private var panelMetrics: [UInt32: DeviceMetrics] = [:]
     private var engine: CaptureEngine?
     private var server: FrameStreamServer?
     private var unsubscribeAVCC: (@Sendable () async -> Void)?
@@ -348,14 +351,37 @@ public actor DeviceSession {
             if size.width > 0, size.height > 0,
                size.width != metrics.pixelWidth || size.height != metrics.pixelHeight {
                 metrics = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
+                panelMetrics[screenID] = metrics
                 return metrics
             }
         }
         return nil
     }
 
+    /**
+     * Input without a stream (a caller that only taps): nothing has told the
+     * session which panel is on, or measured it. Ask CoreDevice, and size the
+     * panel from the simulator's own screen list, rather than defaulting to
+     * the cover while the inner display is showing.
+     */
+    private func resolvePanelForInput() async {
+        if engine != nil, activeScreenID != nil { return }
+        let active = await DevicePosture.displays(udid: udid).first(where: \.active)?.screenID
+        guard let active else { return }
+        activeScreenID = active
+        if panelMetrics[active] == nil {
+            let udid = self.udid
+            let sizes = await Task.detached { DevicePosture.panelPixelSizes(udid: udid) }.value
+            for (screen, size) in sizes {
+                panelMetrics[screen] = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
+            }
+        }
+        if engine == nil, let measured = panelMetrics[active] { metrics = measured }
+    }
+
     private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
         guard let foldable = await foldableInput() else { return false }
+        if phase == .begin { await resolvePanelForInput() }
         let phaseName = phase.hidType
         try await foldable.touch(
             phase: phaseName,
