@@ -4752,6 +4752,8 @@ export type AgentChatCrossMachineBatchMoveApproval = {
   batchId: string;
   machineName: string;
   chats: Array<{ sessionId: string; title: string | null }>;
+  /** Number of lanes imported alongside the chats, if the host supports lane counts. */
+  laneCount?: number;
 };
 
 export type AgentChatGetCrossMachineBatchMoveArgs = { batchId: string };

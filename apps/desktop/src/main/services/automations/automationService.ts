@@ -3713,6 +3713,7 @@ export function createAutomationService({
     // HandoffLaunchJob for the chat this run just created.
     let handoffSessionId: string | null = null;
     let heldForMovedChat = false;
+    let completedActionBeforeOrAfterHold = false;
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
@@ -3727,6 +3728,7 @@ export function createAutomationService({
               lastOutput = result.output ?? null;
               if (result.handoffSessionId) handoffSessionId = result.handoffSessionId;
               if (result.heldForMovedChat) heldForMovedChat = true;
+              if (result.status === "succeeded") completedActionBeforeOrAfterHold = true;
               if (result.status === "failed") {
                 const message = result.output ?? "Action failed";
                 throw result.retryable === false ? new NonRetryableActionError(message) : new Error(message);
@@ -3770,12 +3772,13 @@ export function createAutomationService({
         runId: run.id,
         ...(handoffSessionId ? { handoffSessionId } : {}),
       });
-      if (heldForMovedChat && runStatus === "succeeded") {
+      if (heldForMovedChat && runStatus === "succeeded" && !completedActionBeforeOrAfterHold) {
         // A step was held because its chat continues on another machine: the
         // rule's job was not done, so the attempt goes back to the budget
         // rather than counting toward `maxRuns` (a one-shot rule would
-        // otherwise be retired as "max-runs" without ever running). A run
-        // that also failed still spends its attempt below.
+        // otherwise be retired as "max-runs" without ever running). Once any
+        // action has completed, keep the attempt spent: earlier work may have
+        // had an outside effect even though the chat action was held.
         logger.info("automations.rule_budget.released_for_moved_chat", { automationId: rule.id, runId: run.id });
         budget.release();
       } else {

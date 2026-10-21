@@ -439,12 +439,20 @@ struct WorkCrossMachineBatchMoveApprovalBanner: View {
     return "An agent wants to move \(count) chat\(count == 1 ? "" : "s") to \(machineName)"
   }
 
+  private var detail: String {
+    let laneCount = max(0, approval.laneCount)
+    let laneSentence = laneCount > 0
+      ? " This batch also imports \(laneCount) lane\(laneCount == 1 ? "" : "s")."
+      : ""
+    return "Approve or deny the whole batch. Each chat keeps its own permission level.\(laneSentence)"
+  }
+
   var body: some View {
     WorkCrossMachineCardShell(
       tint: ADEColor.warning,
       symbol: "questionmark.circle",
       title: title,
-      detail: "Approve or deny the whole batch. Each chat keeps its own permission level.",
+      detail: detail,
       accessibilityIdentifier: "work-cross-machine-batch-approval-banner"
     ) {
       // A long batch scrolls inside a bounded list, so Approve and Deny stay

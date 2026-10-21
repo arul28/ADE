@@ -391,6 +391,7 @@ struct WorkSessionDestinationView: View {
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
+  @State var chatSummaryRefreshGeneration = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -1872,6 +1873,8 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshChatSummaryFromHost() async {
+    chatSummaryRefreshGeneration &+= 1
+    let refreshGeneration = chatSummaryRefreshGeneration
     if chatSummary == nil, let cached = syncService.chatSummaryCache[sessionId] {
       chatSummary = cached
     }
@@ -1890,6 +1893,7 @@ struct WorkSessionDestinationView: View {
 
     if syncService.supportsChatRemoteAction("chat.getSummary", sessionId: sessionId),
        let rawSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      guard refreshGeneration == chatSummaryRefreshGeneration else { return }
       // A fetch that started before the brain cleared the move still carries it.
       let fetchedSummary = syncService.withCrossMachineHandoffClearApplied(rawSummary)
       if chatSummary != fetchedSummary {
@@ -1910,6 +1914,7 @@ struct WorkSessionDestinationView: View {
           let summaries = try? await syncService.listChatSessions(laneId: laneId),
           let rawFallback = summaries.first(where: { $0.sessionId == sessionId })
     else { return }
+    guard refreshGeneration == chatSummaryRefreshGeneration else { return }
     let fallbackSummary = syncService.withCrossMachineHandoffClearApplied(rawFallback)
 
     if chatSummary != fallbackSummary {

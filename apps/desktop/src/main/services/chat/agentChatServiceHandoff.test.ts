@@ -35,6 +35,7 @@ import {
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
+import { landHandoffGitBundle } from "./handoffGitBundle";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -3111,8 +3112,37 @@ describe("createAgentChatService", () => {
             sourceSequence: 7,
             crossMachineHandoffId: "first-arrival",
           }),
-          envelope(3, "arrival-prompt", "Continue from the brief"),
-          envelope(4, "after-arrival", "Work completed on the destination"),
+          {
+            ...envelope(3, "arrival-prompt", "Continue from the brief"),
+            event: {
+              type: "user_message",
+              messageId: "arrival-prompt",
+              text: "Continue from the brief",
+              metadata: { kind: "cross_machine_handoff", crossMachineHandoffId: "first-arrival" },
+            },
+          },
+          {
+            sessionId: source.id,
+            sequence: 4,
+            timestamp: "2026-07-10T10:00:00.000Z",
+            event: {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "cross_machine_handoff_arrived",
+              message: "Arrived from MacBook",
+              detail: {
+                crossMachineHandoffArrival: {
+                  handoffId: "first-arrival",
+                  sourceMachineName: "MacBook",
+                  sourceSessionId: "arrived-chat",
+                  mode: "brief",
+                  unpushedCommits: 0,
+                  changedFiles: 0,
+                },
+              },
+            },
+          },
+          envelope(5, "after-arrival", "Work completed on the destination"),
         ]);
 
         const prepared = await service.prepareCrossMachineHandoff({
@@ -3133,9 +3163,22 @@ describe("createAgentChatService", () => {
           "base64",
         )).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as AgentChatEventEnvelope);
         expect(returned.map((item) => item.event.type === "user_message" ? item.event.messageId : null)).toEqual([
-          "arrival-prompt",
           "after-arrival",
         ]);
+        expect(returned.some((item) =>
+          item.event.type === "system_notice" && item.event.status === "cross_machine_handoff_arrived",
+        )).toBe(false);
+
+        const briefReturn = await service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "return-brief-1",
+          destinationMachineKey: "machine-a",
+          targetModelId: "openai/gpt-5.5",
+          mode: "brief",
+        });
+        expect(briefReturn.capsule.returnTo).toMatchObject({ sessionId: "original-chat", arrivalHandoffId: "first-arrival" });
+        expect(briefReturn.capsule.brief).not.toContain("Continue from the brief");
+        expect(briefReturn.capsule.brief).not.toContain("Arrived from MacBook");
       });
 
       it("packages an ADE-originated Codex rollout for fork (no external-import originator filter)", async () => {
@@ -3701,7 +3744,7 @@ describe("createAgentChatService", () => {
         nextWakeAt: vi.fn(() => null),
         refreshGlobalPause: vi.fn(async () => {}),
         setSessionPaused: vi.fn(async () => {}),
-        cancel: vi.fn(async () => null),
+        cancel: vi.fn(async (_id: string) => null),
         markFired: vi.fn(async () => null),
         setSchedulePaused: vi.fn(async () => null),
         claimNativeFire: vi.fn(() => null),
@@ -3756,6 +3799,318 @@ describe("createAgentChatService", () => {
       };
       expect(persistedMove.record).toMatchObject({ state: "returned", targetSessionId: null, continuedOn: null });
       expect(crossMachineMoveLock(persistedMove.record)).toBeNull();
+    });
+
+    it("carries scheduled work on a single move and cancels only recreated jobs", async () => {
+      installCleanCrossMachineGitFixture();
+      const scheduled = [
+        { id: "carry-one", kind: "wakeup", prompt: "Carry this wake", status: "scheduled", fireAt: Date.parse("2026-07-10T13:00:00.000Z") },
+        { id: "stay-here", kind: "cron", prompt: "Keep this cron", status: "scheduled", cron: "0 * * * *" },
+        { id: "carry-paused", kind: "wakeup", prompt: "Carry this paused wake", status: "paused", fireAt: Date.parse("2026-07-10T14:00:00.000Z"), pausedFlag: true },
+      ];
+      const scheduler = {
+        start: vi.fn(async () => {}),
+        dispose: vi.fn(),
+        upsert: vi.fn(async () => ({ id: "schedule-new" })),
+        list: vi.fn(() => scheduled),
+        isSessionPaused: vi.fn(() => false),
+        isGlobalPaused: vi.fn(() => false),
+        nextWakeAt: vi.fn(() => null),
+        refreshGlobalPause: vi.fn(async () => {}),
+        setSessionPaused: vi.fn(async () => {}),
+        cancel: vi.fn(async (_id: string) => null),
+        markFired: vi.fn(async () => null),
+        setSchedulePaused: vi.fn(async () => null),
+        claimNativeFire: vi.fn(() => null),
+        recordTurnStarted: vi.fn(async () => {}),
+        recordTurnFinished: vi.fn(async () => {}),
+      };
+      const accepted: AgentChatCrossMachineHandoffCapsule[] = [];
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+        all: vi.fn(() => []),
+      };
+      const machine = { machineKey: "machine-b", name: "Mac mini" };
+      const transport = {
+        listMachines: async () => [{ ...machine, online: true, isThisMachine: false }],
+        callAction: async (input: { action: string; args: Record<string, unknown> }) => {
+          if (input.action === "preflightCrossMachineDestination") {
+            return {
+              machine,
+              result: {
+                providerAuthorized: true,
+                modelAvailable: true,
+                remoteBranchHeadSha: HANDOFF_TEST_SHA,
+                existingLaneId: null,
+                blockingErrors: [],
+                warnings: [],
+              },
+            };
+          }
+          const { capsule } = input.args as { capsule: AgentChatCrossMachineHandoffCapsule };
+          accepted.push(capsule);
+          return {
+            machine,
+            result: {
+              handoffId: capsule.handoffId,
+              laneId: "lane-destination",
+              session: { id: "chat-destination", laneId: "lane-destination", provider: "droid", model: "droid/custom" },
+              reusedLane: false,
+              reusedSession: false,
+              // This destination recreated only these two; the cron remains on the source.
+              scheduledWorkIds: ["carry-one", "carry-paused"],
+            },
+          };
+        },
+      };
+      const { service } = createService({
+        db,
+        getLocalMachineKey: () => "machine-a",
+        createScheduledWorkScheduler: (() => scheduler as any) as any,
+        crossMachineHandoffTransport: () => transport as any,
+      });
+      let sourceSessionId: string | null = null;
+      try {
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "custom:claude-sonnet-5-thinking-32000",
+          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        });
+        sourceSessionId = source.id;
+        const started = await service.startCrossMachineHandoff({
+          sourceSessionId: source.id,
+          machine: "Mac mini",
+          targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
+          mode: "brief",
+          requestedBy: "user",
+        });
+        expect(started.state).toBe("sending");
+        const moveKey = `agent-chat-cross-machine-move:v1:${source.id}`;
+        await vi.waitFor(() => {
+          const current = values.get(moveKey) as { record?: { state?: string } } | undefined;
+          expect(["continued", "failed", "unknown"]).toContain(current?.record?.state);
+        });
+        const finalMove = values.get(moveKey) as { record?: { state?: string; reason?: string | null } } | undefined;
+        expect(finalMove?.record, finalMove?.record?.reason ?? "move did not reach a terminal state")
+          .toMatchObject({ state: "continued" });
+        await vi.waitFor(() => expect(scheduler.cancel).toHaveBeenCalledTimes(2));
+
+        expect(accepted).toHaveLength(1);
+        expect(accepted[0]?.scheduledWork?.map((item) => item.id)).toEqual([
+          "carry-one",
+          "stay-here",
+          "carry-paused",
+        ]);
+        expect(scheduler.cancel.mock.calls.map(([id]) => id)).toEqual(["carry-one", "carry-paused"]);
+      } finally {
+        if (sourceSessionId) await service.dispose({ sessionId: sourceSessionId });
+      }
+    });
+
+    it("runs lane setup only for lanes this import created and reclaims it after a crash", async () => {
+      installCleanCrossMachineGitFixture("feature/imported");
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+        all: vi.fn(() => []),
+      };
+      let announceFirstSetup!: () => void;
+      const firstSetupStarted = new Promise<void>((resolve) => { announceFirstSetup = resolve; });
+      const firstSetup = vi.fn(async () => {
+        announceFirstSetup();
+        // Model the owner brain exiting after it claimed setup but before it finished.
+        await new Promise<void>(() => {});
+      });
+      const payload = {
+        importId: "setup-crash-import",
+        sourceMachineName: "MacBook",
+        sourceMachineKey: "machine-a",
+        sourceLane: { laneId: "source-lane", parentLaneId: null, name: "Feature lane" },
+        branchRef: "feature/imported",
+        headSha: HANDOFF_TEST_SHA,
+        originUrl: "https://github.com/example/ade.git",
+      };
+      const first = createService({
+        db,
+        getLocalMachineKey: () => "machine-b",
+        runCrossMachineLaneSetup: firstSetup,
+      });
+      const initial = await first.service.importCrossMachineHandoffLane(payload);
+      expect(initial).toMatchObject({ reusedLane: false, setupStatus: "running" });
+      await firstSetupStarted;
+      const importedLane = await first.laneService.getSummary(initial.laneId);
+      expect(importedLane?.laneType).toBe("feature");
+      installCleanCrossMachineGitFixture("feature/imported");
+      const retrySetup = vi.fn(async () => {});
+      const secondService = createService({
+        db,
+        getLocalMachineKey: () => "machine-b",
+        runCrossMachineLaneSetup: retrySetup,
+      });
+      const availableLanes = [
+        ...(await secondService.laneService.list({ includeArchived: false, includeStatus: true })),
+        importedLane!,
+      ];
+      secondService.laneService.list = vi.fn(async () => availableLanes as any);
+      secondService.laneService.getSummary = vi.fn(async (laneId: string) =>
+        availableLanes.find((lane) => lane.id === laneId) as any ?? null,
+      );
+
+      const retried = await secondService.service.importCrossMachineHandoffLane(payload);
+      expect(retried).toMatchObject({ laneId: initial.laneId, reusedLane: false, setupStatus: "running" });
+      await vi.waitFor(() => expect(retrySetup).toHaveBeenCalledWith(initial.laneId));
+      await vi.waitFor(() => expect(values.get("agent-chat-cross-machine-lane-import:v1:setup-crash-import"))
+        .toMatchObject({ state: "complete", setupStatus: "completed", setupRunnerId: null }));
+
+      const reused = await secondService.service.importCrossMachineHandoffLane({
+        ...payload,
+        importId: "setup-reused-import",
+      });
+      expect(reused).toMatchObject({ reusedLane: true, setupStatus: "not_needed" });
+
+      installCleanCrossMachineGitFixture("feature/selected");
+      const returned = await secondService.service.importCrossMachineHandoffLane({
+        ...payload,
+        importId: "setup-return-import",
+        branchRef: "feature/selected",
+        returnToLaneId: "lane-2",
+      });
+      expect(returned).toMatchObject({ laneId: "lane-2", reusedLane: true, setupStatus: "not_needed" });
+
+      installCleanCrossMachineGitFixture("feature/primary");
+      const primary = await secondService.service.importCrossMachineHandoffLane({
+        ...payload,
+        importId: "setup-primary-import",
+        branchRef: "feature/primary",
+      });
+      expect(primary).toMatchObject({ laneId: "lane-1", reusedLane: true, setupStatus: "not_needed" });
+      expect(retrySetup).toHaveBeenCalledTimes(1);
+    });
+
+    it("coalesces a duplicate lane import before validating its contents", async () => {
+      installCleanCrossMachineGitFixture("feature/single-flight");
+      const values = new Map<string, unknown>();
+      const db = {
+        getJson: vi.fn((key: string) => values.get(key) ?? null),
+        setJson: vi.fn((key: string, value: unknown) => values.set(key, structuredClone(value))),
+        all: vi.fn(() => []),
+      };
+      const { service, laneService } = createService({ db });
+      const originalList = laneService.list.bind(laneService);
+      let announceList!: () => void;
+      let releaseList!: () => void;
+      const listEntered = new Promise<void>((resolve) => { announceList = resolve; });
+      const listGate = new Promise<void>((resolve) => { releaseList = resolve; });
+      laneService.list = vi.fn(async () => {
+        announceList();
+        await listGate;
+        return originalList();
+      }) as typeof laneService.list;
+      const payload = {
+        importId: "single-flight-import",
+        sourceMachineName: "MacBook",
+        sourceMachineKey: "machine-a",
+        sourceLane: { laneId: "source-lane", parentLaneId: null, name: "Feature lane" },
+        branchRef: "feature/single-flight",
+        headSha: HANDOFF_TEST_SHA,
+        originUrl: "https://github.com/example/ade.git",
+      };
+      try {
+        const first = service.importCrossMachineHandoffLane(payload);
+        await listEntered;
+        const duplicate = service.importCrossMachineHandoffLane({ ...payload, sourceMachineName: "Different sender" });
+        releaseList();
+
+        const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+        expect(duplicateResult).toEqual(firstResult);
+        expect(laneService.importBranch).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseList();
+      }
+    });
+
+    it("refuses primary-checkout bundle landing and serializes imports by branch", async () => {
+      const head = HANDOFF_TEST_SHA;
+      const bundle = {
+        contentBase64: Buffer.from("bundle").toString("base64"),
+        bytes: Buffer.byteLength("bundle"),
+        branchHeadSha: head,
+        snapshotSha: null,
+        unpushedCommitCount: 1,
+        changedFileCount: 0,
+      };
+      const baseArgs = {
+        projectRoot: tmpRoot,
+        capsule: { gitBundle: bundle, source: { laneName: "Feature", machineName: "MacBook" } },
+        branchRef: "feature/serialized",
+        existingLane: null,
+        importLane: vi.fn(async () => ({ id: "lane-imported", worktreePath: path.join(tmpRoot, "imported"), laneType: "feature" })),
+        deleteLane: vi.fn(async () => {}),
+        onLaneImported: vi.fn(),
+      };
+
+      vi.mocked(runGit).mockClear();
+      await expect(landHandoffGitBundle({
+        ...baseArgs,
+        handoffId: "primary-refusal",
+        existingLane: { id: "lane-primary", worktreePath: tmpRoot, laneType: "primary" },
+      })).rejects.toThrow(/never land in this machine's primary checkout/);
+      expect(runGit).not.toHaveBeenCalled();
+
+      let releaseFirstVerify!: () => void;
+      let announceFirstVerify!: () => void;
+      const firstVerifyReached = new Promise<void>((resolve) => { announceFirstVerify = resolve; });
+      const firstVerifyGate = new Promise<void>((resolve) => { releaseFirstVerify = resolve; });
+      let announceSecondVerify!: () => void;
+      const secondVerifyReached = new Promise<void>((resolve) => { announceSecondVerify = resolve; });
+      let verifyCalls = 0;
+      let branchExists = false;
+      vi.mocked(runGit).mockImplementation(async (args) => {
+        if (args[0] === "bundle" && args[1] === "verify") {
+          verifyCalls += 1;
+          if (verifyCalls === 1) {
+            announceFirstVerify();
+            await firstVerifyGate;
+          } else if (verifyCalls === 2) {
+            announceSecondVerify();
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        if (args[0] === "bundle" && args[1] === "list-heads") {
+          return { stdout: `${head} refs/heads/feature/serialized\n`, stderr: "", exitCode: 0 };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet") {
+          const ref = args[3] ?? "";
+          if (ref.includes("refs/ade-handoff/") || ref === "HEAD^{commit}") {
+            return { stdout: `${head}\n`, stderr: "", exitCode: 0 };
+          }
+          if (ref === "refs/heads/feature/serialized^{commit}" && branchExists) {
+            return { stdout: `${head}\n`, stderr: "", exitCode: 0 };
+          }
+          return { stdout: "", stderr: "missing", exitCode: 1 };
+        }
+        if (args[0] === "update-ref" && args[1] === "refs/heads/feature/serialized") branchExists = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      const first = landHandoffGitBundle({ ...baseArgs, handoffId: "same-branch-one" });
+      await firstVerifyReached;
+      const second = landHandoffGitBundle({ ...baseArgs, handoffId: "same-branch-two" });
+      try {
+        const secondStartedBeforeRelease = await Promise.race([
+          secondVerifyReached.then(() => true),
+          new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+        ]);
+        expect(secondStartedBeforeRelease).toBe(false);
+      } finally {
+        releaseFirstVerify();
+        await Promise.all([first, second]);
+      }
+      expect(verifyCalls).toBe(2);
     });
 
     it("appends a returned transcript suffix once when a retry resumes after provider replacement", async () => {
@@ -3853,7 +4208,7 @@ describe("createAgentChatService", () => {
       ["dirty", { dirtyPorcelain: " M src/dirty.ts\n" }],
       ["diverged", { laneHead: HANDOFF_DIVERGED_SHA, ancestorExitCode: 1 }],
     ] as const)("refuses to return into a %s original lane without unlocking it", async (_kind, gitOptions) => {
-      installCrossMachineDestinationLaneGitFixture(gitOptions);
+      installCrossMachineDestinationLaneGitFixture({ ...gitOptions, branchRef: "feature/selected" });
       const values = new Map<string, unknown>();
       const db = {
         getJson: vi.fn((key: string) => values.get(key) ?? null),
@@ -3861,7 +4216,7 @@ describe("createAgentChatService", () => {
       };
       const { service, sessionService } = createService({ db, getLocalMachineKey: () => "machine-a" });
       const original = await service.createSession({
-        laneId: "lane-1",
+        laneId: "lane-2",
         provider: "droid",
         model: "custom:claude-sonnet-5-thinking-32000",
         modelId: "droid/custom:claude-sonnet-5-thinking-32000",
@@ -3872,6 +4227,9 @@ describe("createAgentChatService", () => {
         originalSessionId: original.id,
         arrivalHandoffId: "original-handoff",
       });
+      capsule.source.branchRef = "feature/selected";
+      capsule.origin!.laneId = "lane-2";
+      capsule.returnTo!.laneId = "lane-2";
       const fingerprint = createHash("sha256").update(stableStringify(capsule), "utf8").digest("hex");
 
       await expect(service.acceptCrossMachineHandoff({ capsule, capsuleFingerprint: fingerprint }))

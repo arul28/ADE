@@ -233,7 +233,9 @@ and only the ADE transcript events written while the chat was away: the
 imported prefix, the arrived copy's own **Arrived from** notice and the
 continuation prompt ADE sent on arrival (brief or fork) are left out, so the
 original chat never gets them twice. A brief return appends the brief and the
-continuation instruction without replacing the provider session.
+continuation instruction without replacing the provider session. Its summary
+contains only activity after the destination arrival boundary; it excludes the
+arrival notice and the first continuation prompt, as a fork return does.
 
 The original lane is reused. ADE fast-forwards it only when it is clean and
 strictly behind, accepts it when it is already at the returned commit, and

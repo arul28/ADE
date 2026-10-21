@@ -353,6 +353,7 @@ export function CrossMachineBatchApprovalBanner({
 
   const machine = approval.machineName.trim() || "another machine";
   const count = approval.chats.length;
+  const laneCount = Math.max(0, approval.laneCount ?? 0);
   const resolve = async (approve: boolean) => {
     if (busy) return;
     setBusy(approve ? "approve" : "deny");
@@ -380,7 +381,9 @@ export function CrossMachineBatchApprovalBanner({
     icon: <ArrowBendUpRight size={13} weight="bold" />,
     title: `An agent wants to move ${plural(count, "chat")} to ${machine}`,
     detail: [
-      "Approve or deny the whole batch. Each chat keeps its own permission level.",
+      `Approve or deny the whole batch. Each chat keeps its own permission level.${laneCount > 0
+        ? ` This batch also imports ${plural(laneCount, "lane")}.`
+        : ""}`,
       titles.length ? titles.join(", ") : null,
     ].filter(Boolean).join(" "),
     actions: [

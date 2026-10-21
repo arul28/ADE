@@ -10107,10 +10107,13 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("Use either --status <batch-id> or --retry <batch-id>.");
     }
     if (statusBatchId !== null || retryBatchId !== null) {
-      if (firstStandalonePositional(args) !== null) {
-        throw new CliUsageError("chat move --status/--retry takes only a batch id.");
+      if (args.length > 0) {
+        throw new CliUsageError("chat move --status/--retry accepts only its batch id.");
       }
       const batchId = statusBatchId ?? retryBatchId!;
+      if (!batchId.trim()) {
+        throw new CliUsageError("chat move --status/--retry requires a non-empty batch id.");
+      }
       const action = statusBatchId !== null ? "getCrossMachineBatchMove" : "retryCrossMachineBatchMove";
       return {
         kind: "execute",

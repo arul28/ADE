@@ -106,6 +106,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
   });
   let validate: () => Promise<void> = async () => {};
   let failPrepare: string | null = null;
+  let returnToOnPrepare = false;
   const waiters: Array<() => void> = [];
 
   const orchestrator = createCrossMachineHandoffOrchestrator({
@@ -176,6 +177,9 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
           originUrl: ORIGIN,
         },
         target: { targetModelId: args.targetModelId },
+        ...(returnToOnPrepare && !args.omitReturnTo ? {
+          returnTo: { sessionId: "origin-chat", laneId: "lane-origin", arrivalHandoffId: "arrival-1" },
+        } : {}),
         brief: "Continue.",
         artifacts: { fileChanges: [], commands: [], errors: [] },
         linearIssues: [],
@@ -207,13 +211,17 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
       await new Promise<void>((resolve) => waiters.push(resolve));
     }
   };
-  const start = (args: Partial<AgentChatStartCrossMachineHandoffArgs> = {}, requestedBy: "user" | "agent" = "user") =>
+  const start = (
+    args: Partial<AgentChatStartCrossMachineHandoffArgs> = {},
+    requestedBy: "user" | "agent" = "user",
+    requestedFor?: "self" | "descendant" | "other",
+  ) =>
     orchestrator.start({
       sourceSessionId: SESSION,
       machine: "Mac mini",
       targetModelId: "anthropic/claude-fable-5-1",
       ...args,
-    }, { requestedBy });
+    }, { requestedBy, ...(requestedFor ? { requestedFor } : {}) });
 
   return {
     orchestrator,
@@ -238,6 +246,9 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
     },
     setValidate: (behavior: () => Promise<void>) => {
       validate = behavior;
+    },
+    setReturnToOnPrepare: (enabled: boolean) => {
+      returnToOnPrepare = enabled;
     },
     /** The next prepare (packing) fails with this message. */
     failNextPrepare: (message: string) => {
@@ -289,6 +300,20 @@ function createBatchHarness() {
       model: "anthropic/claude-opus-5-5",
       modelId: "anthropic/claude-opus-5-5",
       title: "Parent task",
+    },
+    {
+      sessionId: "chat-away",
+      laneId: "lane-other",
+      parentSessionId: null,
+      spawnKind: "subagent" as const,
+      isWorkChat: true,
+      turnActive: false,
+      awaitingInput: false,
+      permissionLevel: "full-auto",
+      provider: "claude",
+      model: "anthropic/claude-opus-5-5",
+      modelId: "anthropic/claude-opus-5-5",
+      title: "Already moved task",
     },
   ];
   const lanes = [
@@ -499,6 +524,23 @@ function createBatchHarness() {
     accepted,
     laneImportCalls,
     record: (batchId: string) => persistedBatches.get(batchId) ?? null,
+    markChatContinuedElsewhere: (sessionId: string) => persistedMoves.set(sessionId, {
+      record: {
+        handoffId: "separate-move",
+        state: "continued",
+        targetMachineName: "Mac Studio",
+        targetSessionId: "chat-destination",
+        resumedHere: false,
+      } as AgentChatCrossMachineHandoffRecord,
+      request: {
+        targetModelId: "anthropic/claude-opus-5-5",
+        machine: "Mac Studio",
+        mode: "fork",
+        continuationPrompt: null,
+        includeChanges: false,
+        clone: false,
+      },
+    }),
     waitFor: (batchId: string, predicate: (record: AgentChatCrossMachineBatchMoveRecord) => boolean) => {
       const current = persistedBatches.get(batchId);
       if (current && predicate(current)) return Promise.resolve(structuredClone(current));
@@ -515,9 +557,10 @@ const lostAnswer = () => {
 describe("cross-machine move orchestrator", () => {
   it("resumes batch trees in dependency order while an unknown branch leaves unrelated work moving", async () => {
     const h = createBatchHarness();
+    h.markChatContinuedElsewhere("chat-away");
     const started = await h.orchestrator.startBatch({
       machine: "Mac Studio",
-      sessionIds: ["chat-parent", "chat-other"],
+      allWorkOnThisMachine: true,
       mode: "fork",
       includeChanges: false,
     }, { requestedBy: "user" });
@@ -532,12 +575,14 @@ describe("cross-machine move orchestrator", () => {
       "chat:chat-child": "blocked",
       "chat:chat-other": "continued",
     });
+    expect(partial.items.some((item) => item.id === "chat:chat-away")).toBe(false);
     expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual(["lane-other", "lane-root"]);
     expect(h.accepted.map((capsule) => capsule.source.sessionId)).toEqual(["chat-other"]);
 
     await h.orchestrator.retryBatch(started.batchId);
     const completed = await h.waitFor(started.batchId, (record) => record.state === "completed");
     expect(completed.items.every((item) => item.state === "continued")).toBe(true);
+    expect(completed.items.some((item) => item.id === "chat:chat-away")).toBe(false);
     expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual([
       "lane-other",
       "lane-root",
@@ -550,6 +595,7 @@ describe("cross-machine move orchestrator", () => {
     const childIndex = h.accepted.findIndex((capsule) => capsule.source.sessionId === "chat-child");
     expect(parentIndex).toBeGreaterThanOrEqual(0);
     expect(childIndex).toBeGreaterThan(parentIndex);
+    expect(h.accepted.some((capsule) => capsule.source.sessionId === "chat-away")).toBe(false);
     expect(h.accepted[childIndex]?.parentLink).toEqual({
       destinationParentSessionId: deterministicChatSessionId(`cross-machine-handoff:${started.batchId}:chat:chat-parent`),
       spawnKind: "peer",
@@ -635,7 +681,7 @@ describe("cross-machine move orchestrator", () => {
       codexSandbox: "danger-full-access",
       opencodePermissionMode: "full-auto",
       acpPermissionMode: "yolo",
-    } as Partial<AgentChatStartCrossMachineHandoffArgs>, "agent");
+    } as Partial<AgentChatStartCrossMachineHandoffArgs>, "agent", "self");
 
     expect(record).toMatchObject({ state: "sending", requestedBy: "agent", targetPermissionLabel: label });
     expect(h.cards).toEqual([]);
@@ -652,7 +698,7 @@ describe("cross-machine move orchestrator", () => {
     // The person lowered the chat to ask while the move waited for the turn
     // to end. The move proceeds at that lower level without approval.
     const h = createHarness({ permissionLevel: "full-auto", turnActive: true });
-    const queued = await h.start({ whenTurnEnds: true, targetModelId: "anthropic/claude-fable-5-1" }, "agent");
+    const queued = await h.start({ whenTurnEnds: true, targetModelId: "anthropic/claude-fable-5-1" }, "agent", "self");
     expect(queued.state).toBe("pending");
     h.chat.permissionLevel = "ask";
     h.chat.turnActive = false;
@@ -701,9 +747,6 @@ describe("cross-machine move orchestrator", () => {
   // would bypass the destination's record and could start a second agent.
   it.each(["unknown", "failed"] as const)("refuses a stale %s move and keeps it as it was", async (state) => {
     const h = createHarness();
-    const first = await h.start();
-    const landed = await h.settled();
-    expect(landed?.continuedOn?.handoffId).toBe(first.handoffId);
     h.setAccept(state === "unknown" ? lostAnswer : () => {
       throw new Error("Mac mini refused the move: that capsule doesn't match.");
     });
@@ -716,10 +759,9 @@ describe("cross-machine move orchestrator", () => {
     });
     await expect(h.orchestrator.retry(SESSION)).rejects.toThrow(/changed after the move was sent/);
     expect(h.record()).toMatchObject({ handoffId: second.handoffId, state });
-    expect(h.record()?.continuedOn?.handoffId).toBe(first.handoffId);
     expect(h.hasOutbox(second.handoffId)).toBe(true);
-    expect(h.prepared.map((args) => args.handoffId)).toEqual([first.handoffId, second.handoffId]);
-    expect(h.accepted).toHaveLength(2);
+    expect(h.prepared.map((args) => args.handoffId)).toEqual([second.handoffId]);
+    expect(h.accepted).toHaveLength(1);
   });
 
   it("a new move revokes an earlier Work here instead choice", async () => {
@@ -733,12 +775,55 @@ describe("cross-machine move orchestrator", () => {
       record: { ...persisted.record, resumedHere: true },
     });
 
-    const second = await h.start();
+    // A coded refusal survives the machine bridge. The next move to that
+    // machine starts a new chat there instead of carrying the same returnTo.
+    h.setReturnToOnPrepare(true);
+    h.setAccept(() => {
+      throw new Error("Remote ADE service method chat.acceptCrossMachineHandoff failed (code 400): cross_machine_return_refused: Original lane is busy.");
+    });
+    const refusedReturn = await h.start();
     expect(await h.settled()).toMatchObject({
-      handoffId: second.handoffId,
+      handoffId: refusedReturn.handoffId,
+      state: "failed",
+      resumedHere: true,
+      returnRefused: { handoffId: refusedReturn.handoffId, machineKey: "mk-mini" },
+    });
+    expect(h.hasOutbox(refusedReturn.handoffId)).toBe(false);
+
+    h.setAccept(() => ({
+      handoffId: "accepted-after-refusal",
+      laneId: "lane-there",
+      session: { id: "chat-there", laneId: "lane-there", provider: "claude", model: "m" },
+      reusedLane: false,
+      reusedSession: false,
+    }));
+    const next = await h.start();
+    expect(await h.settled()).toMatchObject({
+      handoffId: next.handoffId,
       state: "continued",
       resumedHere: false,
     });
+    expect(h.prepared.at(-1)).toMatchObject({ omitReturnTo: true });
+    expect(h.accepted.at(-1)?.capsule.returnTo).toBeUndefined();
+
+    // Work here instead remains in force if the person's next move is later
+    // cancelled or denied.
+    const afterSuccess = h.store.readMove(SESSION)!;
+    h.store.writeMove(SESSION, { ...afterSuccess, record: { ...afterSuccess.record, resumedHere: true } });
+    h.chat.turnActive = true;
+    const queued = await h.start({ whenTurnEnds: true });
+    expect(queued.state).toBe("pending");
+    expect(h.orchestrator.cancel(SESSION)).toMatchObject({ state: "cancelled", resumedHere: true });
+    h.chat.turnActive = false;
+
+    const denied = await h.start({}, "agent", "other");
+    expect(denied.state).toBe("awaiting_approval");
+    expect(h.orchestrator.resolveApproval(SESSION, denied.handoffId, false))
+      .toMatchObject({ handoffId: denied.handoffId, state: "cancelled", resumedHere: true });
+
+    h.setAccept(() => { throw new Error("The destination refused the move."); });
+    const failed = await h.start();
+    expect(await h.settled()).toMatchObject({ handoffId: failed.handoffId, state: "failed", resumedHere: true });
   });
 
   it.each(["unknown", "failed"] as const)(
@@ -907,7 +992,7 @@ describe("cross-machine move orchestrator", () => {
       h.chat.exists = false;
       return { ...READY_PREFLIGHT };
     });
-    const started = await h.start({}, "agent");
+    const started = await h.start({}, "agent", "self");
     expect(started.state).toBe("sending");
     expect(await h.settled()).toBeNull();
     expect(h.hasOutbox(started.handoffId)).toBe(false);

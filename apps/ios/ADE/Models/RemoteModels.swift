@@ -8452,11 +8452,13 @@ struct AgentChatCrossMachineBatchMoveApproval: Codable, Equatable {
   var batchId: String
   var machineName: String
   var chats: [AgentChatCrossMachineBatchMoveApprovalChat]
+  var laneCount: Int = 0
 
-  init(batchId: String, machineName: String, chats: [AgentChatCrossMachineBatchMoveApprovalChat]) {
+  init(batchId: String, machineName: String, chats: [AgentChatCrossMachineBatchMoveApprovalChat], laneCount: Int = 0) {
     self.batchId = batchId
     self.machineName = machineName
     self.chats = chats
+    self.laneCount = max(0, laneCount)
   }
 
   init(from decoder: Decoder) throws {
@@ -8465,6 +8467,7 @@ struct AgentChatCrossMachineBatchMoveApproval: Codable, Equatable {
     machineName = ((try? c?.decodeIfPresent(String.self, forKey: .machineName)) ?? nil) ?? ""
     chats = (((try? c?.decodeIfPresent([AgentChatCrossMachineBatchMoveApprovalChat].self, forKey: .chats)) ?? nil) ?? [])
       .filter { !$0.sessionId.isEmpty }
+    laneCount = max(0, ((try? c?.decodeIfPresent(Int.self, forKey: .laneCount)) ?? nil) ?? 0)
   }
 }
 

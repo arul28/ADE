@@ -540,6 +540,13 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     }
     deps.noticeEnded(sessionId, crossMachineMoveEndedNotice(next.record));
     deps.onMoveOutcome?.({ sessionId, handoffId: next.record.handoffId, outcome: state });
+    if (state !== "cancelled") {
+      deps.logger.warn("agent_chat.cross_machine_handoff_recovered_error", {
+        sessionId,
+        handoffId: next.record.handoffId,
+        state,
+      });
+    }
     deps.logger.info("agent_chat.cross_machine_handoff_ended", {
       sessionId,
       handoffId: next.record.handoffId,

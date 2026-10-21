@@ -5170,6 +5170,26 @@ describe("ADE CLI", () => {
       .toThrow(/only the user .* settles a session.*chat note/i);
   });
 
+  it("rejects extra options in chat move status and retry modes", () => {
+    const status = expectExecutePlan(buildCliPlan(["chat", "move", "--status", "batch-1"]));
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "getCrossMachineBatchMove", args: { batchId: "batch-1" } },
+    });
+    const retry = expectExecutePlan(buildCliPlan(["chat", "move", "--retry=batch-2"]));
+    expect(retry.steps[0]?.params).toMatchObject({
+      arguments: { domain: "chat", action: "retryCrossMachineBatchMove", args: { batchId: "batch-2" } },
+    });
+
+    for (const args of [
+      ["chat", "move", "--status", "batch-1", "--brief"],
+      ["chat", "move", "--retry", "batch-2", "--all"],
+      ["chat", "move", "--status", "batch-1", "extra"],
+      ["chat", "move", "--retry", "   "],
+    ]) {
+      expect(() => buildCliPlan(args)).toThrow(/chat move --status\/--retry/);
+    }
+  });
+
   it.each([
     ["ask", ["q"], "requestSessionAttention", { message: "q" }],
     ["note", ["working"], "setSessionStatusNote", { note: "working" }],

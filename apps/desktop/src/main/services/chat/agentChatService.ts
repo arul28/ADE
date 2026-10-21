@@ -48914,16 +48914,42 @@ export function createAgentChatService(args: {
       return next;
     };
     const snapshotCreatedAt = nowIso();
+    const transcriptSourceEnvelopes = readTranscriptEnvelopes(managed);
+    const briefEnvelopes = returnSuffix
+      ? selectCrossMachineReturnSuffix(transcriptSourceEnvelopes, returnSuffix)
+      : transcriptSourceEnvelopes;
     const rawTranscript = await getChatTranscript({ sessionId: sourceSessionId, limit: 12, maxChars: 12_000 });
+    const selectedBriefEntries = returnSuffix
+      ? transcriptEntriesFromEnvelopes(sourceSessionId, briefEnvelopes)
+      : rawTranscript.entries;
+    const briefEntries = selectedBriefEntries.slice(-12);
+    let remainingBriefChars = 12_000;
+    const boundedBriefEntries: AgentChatTranscriptEntry[] = [];
+    for (let index = briefEntries.length - 1; index >= 0; index -= 1) {
+      const entry = briefEntries[index]!;
+      if (remainingBriefChars <= 0) break;
+      const entryChars = transcriptEntryCharCount(entry);
+      if (entryChars <= remainingBriefChars) {
+        boundedBriefEntries.push(entry);
+        remainingBriefChars -= entryChars;
+      } else {
+        boundedBriefEntries.push(boundTranscriptEntry(entry, remainingBriefChars));
+        remainingBriefChars = 0;
+      }
+    }
     const transcript = {
       ...rawTranscript,
-      entries: rawTranscript.entries.map((entry) => ({
+      entries: boundedBriefEntries.reverse().map((entry) => ({
         ...entry,
         text: portableText(entry.text),
         ...(entry.displayText ? { displayText: portableText(entry.displayText) } : {}),
       })),
+      ...(returnSuffix ? {
+        totalEntries: selectedBriefEntries.length,
+        truncated: briefEntries.length < selectedBriefEntries.length || boundedBriefEntries.length < briefEntries.length,
+      } : {}),
     };
-    const rawArtifacts = collectHandoffArtifacts(readTranscriptEnvelopes(managed));
+    const rawArtifacts = collectHandoffArtifacts(briefEnvelopes);
     const artifacts: HandoffArtifacts = {
       fileChanges: rawArtifacts.fileChanges.map(portableText),
       commands: rawArtifacts.commands.map(portableText),
@@ -50353,6 +50379,12 @@ export function createAgentChatService(args: {
           lastError: error instanceof Error ? error.message : String(error),
         };
         crossMachineDestination.persistHandoffRecord(record);
+      }
+      if (!capsule.returnTo) {
+        logger.warn("agent_chat.cross_machine_handoff_accept_failed", {
+          handoffId,
+          state: record.state,
+        });
       }
       throw error;
     }

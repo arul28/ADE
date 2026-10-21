@@ -5197,10 +5197,16 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const startCrossMachineHandoff = vi.fn(async (_args: Record<string, unknown>) => ({ handoffId: "handoff-2", state: "sending" }));
     (fixture.runtime.agentChatService as any).startCrossMachineHandoff = startCrossMachineHandoff;
+    (fixture.runtime.agentChatService as any).getChatParentSessionId = vi.fn((sessionId: string) => ({
+      "chat-2": "middle",
+      middle: "chat-1",
+    } as Record<string, string>)[sessionId] ?? null);
     (fixture.runtime.sessionService.get as any).mockImplementation((sessionId: string) => {
+      // The session rows intentionally have no chat ancestry. Only the chat
+      // service owns this lineage; tracked CLI rows are the fallback case.
       if (sessionId === "chat-1") return { id: "chat-1", title: "Parent chat" };
-      if (sessionId === "chat-2") return { id: "chat-2", orchestrationParentSessionId: "middle" };
-      if (sessionId === "middle") return { id: "middle", orchestrationParentSessionId: "chat-1" };
+      if (sessionId === "chat-2") return { id: "chat-2" };
+      if (sessionId === "middle") return { id: "middle" };
       if (sessionId === "chat-3") return { id: "chat-3", title: "Other chat" };
       return null;
     });
@@ -5216,15 +5222,23 @@ describe("adeRpcServer", () => {
           targetModelId: "openai/gpt-5.5",
           requestedFor: "self",
           requestedBySessionId: "spoofed",
+          batchMove: { batchId: "forged-batch" },
+          parentLink: { parentSessionId: "forged-parent" },
+          approvedByPerson: true,
+          handoffId: "forged-handoff",
         },
       });
       expect(result?.isError).toBeUndefined();
-      expect(startCrossMachineHandoff.mock.calls.at(-1)?.[0]).toMatchObject({
+      const forwarded = startCrossMachineHandoff.mock.calls.at(-1)?.[0];
+      expect(forwarded).toMatchObject({
         sourceSessionId,
         requestedFor,
         requestedBySessionId: "chat-1",
         requestedByTitle: "Parent chat",
       });
+      for (const field of ["batchMove", "parentLink", "approvedByPerson", "handoffId"]) {
+        expect(forwarded).not.toHaveProperty(field);
+      }
     }
   });
 

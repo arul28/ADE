@@ -5293,11 +5293,15 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineBatchMove({
       batchId: requireString(payload.batchId, "chat.retryCrossMachineBatchMove requires batchId."),
     }));
-  register("chat.resolveCrossMachineBatchMoveApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineBatchMoveApproval({
+  register("chat.resolveCrossMachineBatchMoveApproval", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.approve !== "boolean") {
+      throw new Error("chat.resolveCrossMachineBatchMoveApproval requires a boolean approve value.");
+    }
+    return requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineBatchMoveApproval({
       batchId: requireString(payload.batchId, "chat.resolveCrossMachineBatchMoveApproval requires batchId."),
-      approve: payload.approve === true,
-    }));
+      approve: payload.approve,
+    });
+  });
   register("chat.cancelCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").cancelCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.cancelCrossMachineHandoff requires sourceSessionId."),
@@ -5307,12 +5311,16 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       sourceSessionId: requireString(payload.sourceSessionId, "chat.retryCrossMachineHandoff requires sourceSessionId."),
       ...(payload.asBrief === true ? { asBrief: true } : {}),
     }));
-  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
+  register("chat.resolveCrossMachineHandoffApproval", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.approve !== "boolean") {
+      throw new Error("chat.resolveCrossMachineHandoffApproval requires a boolean approve value.");
+    }
+    return requireService(args.agentChatService, "Agent chat service not available.").resolveCrossMachineHandoffApproval({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.resolveCrossMachineHandoffApproval requires sourceSessionId."),
       handoffId: requireString(payload.handoffId, "chat.resolveCrossMachineHandoffApproval requires handoffId."),
-      approve: payload.approve === true,
-    }));
+      approve: payload.approve,
+    });
+  });
   register("chat.acknowledgeCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").acknowledgeCrossMachineHandoff({
       sourceSessionId: requireString(payload.sourceSessionId, "chat.acknowledgeCrossMachineHandoff requires sourceSessionId."),

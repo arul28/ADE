@@ -449,7 +449,13 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
       let raw: string;
       try {
         raw = fs.readFileSync(laneOutboxPath(importId), "utf8");
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          deps.logger?.warn("agent_chat.cross_machine_lane_outbox_read_failed", {
+            importId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         return null;
       }
       try {
@@ -475,8 +481,12 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     removeLane: (importId) => {
       try {
         fs.rmSync(laneOutboxPath(importId), { force: true });
-      } catch {
+      } catch (error) {
         // A leftover lane payload is reconciled by importId at the destination.
+        deps.logger?.warn("agent_chat.cross_machine_lane_outbox_cleanup_failed", {
+          importId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     },
   };

@@ -227,6 +227,7 @@ export function crossMachineBatchMoveApproval(
   return {
     batchId: record.batchId,
     machineName: record.machineName,
+    laneCount: record.items.filter((item) => item.kind === "lane").length,
     chats: record.items
       .filter((item): item is AgentChatCrossMachineBatchMoveChatItem => item.kind === "chat")
       .map((item) => ({ sessionId: item.sourceSessionId, title: item.sourceChatTitle?.trim() || null })),
@@ -237,19 +238,20 @@ function crossMachineBatchMoveApprovalCard(
   record: AgentChatCrossMachineBatchMoveRecord,
   live: boolean,
 ): CrossMachineBatchMoveApprovalCard {
-  const { chats } = crossMachineBatchMoveApproval(record);
+  const { chats, laneCount = 0 } = crossMachineBatchMoveApproval(record);
   const titles = chats.map((chat) => chat.title ?? chat.sessionId);
   const list = titles.map((title) => `• ${title}`).join("\n");
   const count = chats.length;
   const noun = count === 1 ? "chat" : "chats";
+  const laneDetail = laneCount > 0 ? ` This batch also imports ${laneCount} ${laneCount === 1 ? "lane" : "lanes"}.` : "";
   const title = live
     ? `An agent wants to move ${count} ${noun} to ${record.machineName}`
     : "Batch move request answered";
   const subtitle = live
-    ? "Approve or deny the whole batch above the composer. Each chat keeps its own permission level."
+    ? `Approve or deny the whole batch above the composer. Each chat keeps its own permission level.${laneDetail}`
     : null;
   const fallbackText = live
-    ? `${title}. Each chat keeps its own permission level.\n${list}\nApprove or deny the whole batch above the composer.`
+    ? `${title}. Each chat keeps its own permission level.${laneDetail}\n${list}\nApprove or deny the whole batch above the composer.`
     : "The batch move request was answered.";
   return {
     cardId: `${BATCH_APPROVAL_CARD_PREFIX}${record.batchId}`,
@@ -326,6 +328,15 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       ? { ...item, ...patch, updatedAt: moves.laterThan(item.updatedAt) } as AgentChatCrossMachineBatchMoveItem
       : item);
     return writeBatch(batchId, { ...record, items });
+  };
+
+  const warnBatchItemFailure = (batchId: string, itemId: string, operation: string, error: unknown): void => {
+    moves.logger.warn("agent_chat.cross_machine_batch_item_recovered_error", {
+      batchId,
+      itemId,
+      operation,
+      error: errorText(error),
+    });
   };
 
   /** A chat item takes its move's state (or `pending` when its move is gone). */
@@ -715,6 +726,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     try {
       answer = await moves.importLane(transport, batch.machineKey, payload);
     } catch (error) {
+      warnBatchItemFailure(batchId, item.id, "lane_import_transport", error);
       updateBatchItem(batchId, item.id, {
         state: moves.isLostAnswer(transport, error) ? "unknown" : "failed",
         error: errorText(error),
@@ -728,6 +740,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     } catch (error) {
       // It answered, but not in a shape ADE can read: the lane may be there.
       // Keep the payload; a retry resends it and the destination reconciles.
+      warnBatchItemFailure(batchId, item.id, "lane_import_response", error);
       updateBatchItem(batchId, item.id, {
         state: "unknown",
         error: `${batch.machineName} answered without readable lane import details (${errorText(error)}). Retry the batch to check again.`,
@@ -785,6 +798,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     try {
       await startChatItemMove(batchId, item, batch);
     } catch (error) {
+      warnBatchItemFailure(batchId, item.id, "chat_move_start", error);
       updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
     }
   };
@@ -857,6 +871,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         try {
           await deps.interruptBatchChat(item.sourceSessionId);
         } catch (error) {
+          warnBatchItemFailure(batchId, item.id, "chat_interrupt", error);
           updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
         }
       }
@@ -879,6 +894,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       try {
         await importLaneItem(batchId, item, batch);
       } catch (error) {
+        warnBatchItemFailure(batchId, item.id, "lane_import_prepare", error);
         updateBatchItem(batchId, item.id, { state: "failed", error: errorText(error) });
       }
     }
@@ -977,6 +993,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       try {
         await moves.retry(item.sourceSessionId);
       } catch (error) {
+        warnBatchItemFailure(batchId, item.id, "chat_move_retry", error);
         updateBatchItem(batchId, item.id, { state: move.state, error: errorText(error) });
       }
     }

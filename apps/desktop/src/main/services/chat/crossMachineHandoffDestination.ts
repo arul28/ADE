@@ -79,6 +79,10 @@ type CrossMachineReturnReceipt = {
   updatedAt: string;
 };
 
+// Sync commands and run_ade_action can deliver the same durable import at the
+// same time. Keep one operation per destination project and import id.
+const laneImportsInFlight = new Map<string, Promise<AgentChatCrossMachineLaneImportResult>>();
+
 export type CrossMachineReturnRefusalReason =
   | "return_address_invalid"
   | "original_chat_missing"
@@ -448,9 +452,10 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
   };
 
   /** `rawPayload` is decoded here: every transport (sync command, run_ade_action) passes what it received. */
-  const importLane = async (rawPayload: unknown): Promise<AgentChatCrossMachineLaneImportResult> => {
-    const payload = decodeCrossMachineLaneImportArgs(rawPayload);
-    const importId = requireHandoffId(payload.importId);
+  const importLaneOnce = async (
+    payload: ReturnType<typeof decodeCrossMachineLaneImportArgs>,
+    importId: string,
+  ): Promise<AgentChatCrossMachineLaneImportResult> => {
     const sourceMachineKey = payload.sourceMachineKey?.trim() || "";
     const rememberLaneOrigin = (destinationLaneId: string): void => {
       if (!sourceMachineKey || payload.returnToLaneId) return;
@@ -668,8 +673,30 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
     } catch (error) {
       record = { ...record, state: "failed", updatedAt: nowIso(), lastError: error instanceof Error ? error.message : String(error) };
       persistLaneImport(record);
+      logger.warn("agent_chat.cross_machine_lane_import_failed", {
+        importId,
+        laneId: record.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
+  };
+
+  /** A repeated delivery for an import id joins the first attempt, including while it is still validating. */
+  const importLane = (rawPayload: unknown): Promise<AgentChatCrossMachineLaneImportResult> => {
+    const payload = decodeCrossMachineLaneImportArgs(rawPayload);
+    const importId = requireHandoffId(payload.importId);
+    const inFlightKey = `${deps.projectRoot}\u0000${importId}`;
+    const inFlight = laneImportsInFlight.get(inFlightKey);
+    if (inFlight) return inFlight;
+
+    const operation = importLaneOnce(payload, importId);
+    let tracked: Promise<AgentChatCrossMachineLaneImportResult>;
+    tracked = operation.finally(() => {
+      if (laneImportsInFlight.get(inFlightKey) === tracked) laneImportsInFlight.delete(inFlightKey);
+    });
+    laneImportsInFlight.set(inFlightKey, tracked);
+    return tracked;
   };
 
   // ---------------------------------------------------------------------------
@@ -783,6 +810,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
   ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
     const address = capsule.returnTo;
     const refuse = (reason: CrossMachineReturnRefusalReason, message: string): never => {
+      logger.warn("agent_chat.cross_machine_return_refused", { handoffId, reason });
       throw new CrossMachineHandoffReturnRefusedError(reason, message);
     };
     if (!address) return refuse("return_address_invalid", "The return address is missing.");
@@ -1090,6 +1118,13 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       const reason = error instanceof Error ? error.message : String(error);
       if (transaction.state !== "complete" && transaction.state !== "dispatched") {
         saveDestinationState("failed", reason);
+      }
+      if (!(error instanceof CrossMachineHandoffReturnRefusedError)) {
+        logger.warn("agent_chat.cross_machine_return_accept_failed", {
+          handoffId,
+          state: transaction.state,
+          error: reason,
+        });
       }
       throw error;
     }
