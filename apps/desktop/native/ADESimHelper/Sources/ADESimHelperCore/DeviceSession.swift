@@ -18,9 +18,13 @@ public actor DeviceSession {
     private let hid = HIDInjector()
     private var hidReady = false
     /// Foldable devices only (the iPhone Duo): CoreDevice input, and the panel
-    /// capture and input follow. Decided once per session, on first need.
+    /// capture and input follow. A yes is kept for the session; a no is asked
+    /// again after `foldableRecheckInterval`, because CoreDevice can fail the
+    /// question for a Duo that is still coming up, and that path (the legacy
+    /// Indigo inner target) can abort `backboardd` on a Duo.
     private var foldable: FoldableInput?
-    private var foldableChecked = false
+    private var foldableCheckedAt: ContinuousClock.Instant?
+    private static let foldableRecheckInterval: Duration = .seconds(10)
     private var activeScreenID: UInt32?
     /// Each panel's metrics, measured from its framebuffer while streaming or
     /// read once from `simctl io enumerate` for input without a stream.
@@ -324,11 +328,12 @@ public actor DeviceSession {
 
     /// The CoreDevice input path, for a device with a hinge; nil for every other device.
     private func foldableInput() async -> FoldableInput? {
-        if !foldableChecked {
-            foldableChecked = true
-            if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
-                foldable = FoldableInput(udid: udid)
-            }
+        if let foldable { return foldable }
+        let now = ContinuousClock.now
+        if let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
+        foldableCheckedAt = now
+        if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
+            foldable = FoldableInput(udid: udid)
         }
         return foldable
     }
@@ -382,10 +387,9 @@ public actor DeviceSession {
     private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
         guard let foldable = await foldableInput() else { return false }
         if phase == .begin { await resolvePanelForInput() }
-        let phaseName = phase.hidType
         try await foldable.touch(
-            phase: phaseName,
-            screenID: activeScreenID ?? 1,
+            phase: phase,
+            screenID: activeScreenID ?? DuoScreen.cover,
             points: points.map { metrics.normalize($0) }
         )
         return true

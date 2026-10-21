@@ -1014,6 +1014,7 @@ import type {
   AppleRuntimeDeleteArgs,
   AppleRuntimeDeleteResult,
   AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
   AppleRuntimeInstallState,
   AppleRuntimeInventory,
   AppleRuntimePruneArgs,
@@ -9647,8 +9648,11 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleRuntimeInstallState> =>
       callIosSimulatorMutation(pin, "runtimeInstall", args, IPC.iosSimulatorRuntimeInstall),
-    runtimeInstallCancel: (pin?: OpenProjectBinding | null): Promise<AppleRuntimeInstallState | null> =>
-      callIosSimulatorMutation(pin, "runtimeInstallCancel", undefined, IPC.iosSimulatorRuntimeInstallCancel),
+    runtimeInstallCancel: (
+      args: AppleRuntimeScope = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleRuntimeInstallState | null> =>
+      callIosSimulatorMutation(pin, "runtimeInstallCancel", args, IPC.iosSimulatorRuntimeInstallCancel),
     /** Remove one runtime, moving or erasing the simulators on it. The person confirms first. */
     runtimeDelete: (
       args: AppleRuntimeDeleteArgs,
@@ -9662,7 +9666,7 @@ const adeBridge = {
     ): Promise<AppleRuntimeDeleteResult> =>
       callIosSimulatorMutation(pin, "runtimePrune", args, IPC.iosSimulatorRuntimePrune),
     xcodeRunFirstLaunch: (
-      args: { confirmedByUser?: boolean } = {},
+      args: AppleRuntimeScope & { confirmedByUser?: boolean } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<AppleXcodeStatus> =>
       callIosSimulatorMutation(pin, "xcodeRunFirstLaunch", args, IPC.iosSimulatorXcodeRunFirstLaunch),
@@ -9747,6 +9751,12 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleDuoAppStoreScreenshotsResult> =>
       callIosSimulatorMutation(pin, "duoAppStoreScreenshots", args, IPC.iosSimulatorDuoAppStoreScreenshots),
+    /** File a 3D render (PNG or WebM) to the proof drawer on the machine that owns the lane's device. */
+    attachRenderProof: (
+      args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ proofArtifactId: string | null }> =>
+      callIosSimulatorMutation(pin, "attachRenderProof", args, IPC.iosSimulatorAttachRenderProof),
     /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
     addDuoSkill: (
       args: { laneId?: string | null; chatSessionId?: string | null } = {},

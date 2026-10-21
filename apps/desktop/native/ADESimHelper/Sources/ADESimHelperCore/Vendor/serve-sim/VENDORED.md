@@ -116,7 +116,7 @@ Verbatim, byte for byte:
 | `ADESimHelperCore/Vendor/serve-sim/CoreDeviceHIDServices.swift` | `d041f5db91db1f829ce897cdbbe9500aa45ed8438fb2049df5f835ca8d37297e` |
 | `ADESimHelperCore/Vendor/serve-sim/DeviceStateDelivery.swift` | `dc483f5227caf43d7d5ab652fe761af096711d9323916c6b223cad0e22e21bc8` |
 
-ADE's own code on top of it lives outside `Vendor/`: `DevicePosture.swift` and the `posture`, `posture-get`, `posture-watch` commands in `Protocol.swift` / `SimHelperRuntime.swift`.
+ADE's own code on top of it lives outside `Vendor/`: `DevicePosture.swift` and the `posture` and `posture-get` commands (streaming starts the posture watcher itself) in `Protocol.swift` / `SimHelperRuntime.swift`.
 
 ### ADE patches for foldables (2026-10-21)
 

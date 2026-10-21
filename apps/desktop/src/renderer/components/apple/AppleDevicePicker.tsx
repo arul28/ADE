@@ -51,7 +51,8 @@ import {
   partitionApplePickerDevices,
 } from "./applePickerInventory";
 import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } from "./AppleRuntimesSection";
-import { appleRuntimeInstallActive } from "./useAppleRuntimes";
+import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
+import { AppleSpinner } from "./AppleSpinner";
 
 /**
  * The pane's front door: an "Available" heading with one glyph per installed
@@ -122,14 +123,6 @@ const FAMILY_GLYPH: Record<AppleDeviceFamilyId, Icon> = {
   vision: AppleDeviceVisionGlyph,
   other: AppleDeviceIPhoneGlyph,
 };
-
-const Spinner = () => (
-  <span
-    aria-hidden="true"
-    data-apple-spinner=""
-    className="h-3 w-3 shrink-0 animate-spin rounded-full border border-muted-fg/35 border-t-accent"
-  />
-);
 
 /**
  * `iOS 26.3 · iPhone 15 Pro`, which is the OS and the device the owner asked
@@ -475,7 +468,7 @@ function DeviceCard({
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">
               {simulator.name}
             </span>
-            {pending ? <Spinner /> : mine ? (
+            {pending ? <AppleSpinner /> : mine ? (
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
@@ -723,7 +716,7 @@ function CreateSection({
             }}
             className="shrink-0"
           >
-            {creating || (pickedMissing && installing) ? <Spinner /> : null}
+            {creating || (pickedMissing && installing) ? <AppleSpinner /> : null}
             {pickedMissing ? "Install & create" : "Create"}
           </Button>
         </div>
@@ -806,7 +799,7 @@ function StorageSection({
               onClick={onCleanup}
               className="shrink-0"
             >
-              {cleaning ? <Spinner /> : null}
+              {cleaning ? <AppleSpinner /> : null}
               Clean up
             </Button>
           ) : null}

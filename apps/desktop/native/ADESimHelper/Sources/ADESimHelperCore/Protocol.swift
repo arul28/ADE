@@ -98,8 +98,6 @@ public enum SimHelperCommand: Equatable, Sendable {
     case posture(id: String, udid: String, pose: String?, angle: Double?)
     /// The hinge angle, physical orientation and which display is active.
     case postureGet(id: String, udid: String)
-    /// Start or stop `posture-changed` events for one device.
-    case postureWatch(id: String, udid: String, enabled: Bool)
     case axDescribe(id: String, udid: String)
     case axFrontmost(id: String, udid: String)
     case screenshot(id: String, udid: String, path: String)
@@ -137,7 +135,6 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .orientation(id, _, _): return id
         case let .posture(id, _, _, _): return id
         case let .postureGet(id, _): return id
-        case let .postureWatch(id, _, _): return id
         case let .axDescribe(id, _): return id
         case let .axFrontmost(id, _): return id
         case let .screenshot(id, _, _): return id
@@ -165,7 +162,6 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .orientation(_, udid, _): return udid
         case let .posture(_, udid, _, _): return udid
         case let .postureGet(_, udid): return udid
-        case let .postureWatch(_, udid, _): return udid
         case let .axDescribe(_, udid): return udid
         case let .axFrontmost(_, udid): return udid
         case let .screenshot(_, udid, _): return udid
@@ -355,10 +351,6 @@ public enum SimHelperCommandParser {
 
             case "posture-get":
                 return .success(.postureGet(id: id, udid: try requireUdid()))
-
-            case "posture-watch":
-                let udid = try requireUdid()
-                return .success(.postureWatch(id: id, udid: udid, enabled: (dictionary["enabled"] as? Bool) ?? true))
 
             case "ax-describe":
                 return .success(.axDescribe(id: id, udid: try requireUdid()))

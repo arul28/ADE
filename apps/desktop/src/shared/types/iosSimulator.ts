@@ -291,6 +291,8 @@ export const APPLE_USER_ONLY_ACTIONS = [
   "runtimePrune",
   /* `xcodebuild -runFirstLaunch` installs system packages. */
   "xcodeRunFirstLaunch",
+  /* Files a 3D render the pane drew; agents render through `requestRender`. */
+  "attachRenderProof",
 ] as const;
 
 /** The live recording, as `getStatus` reports it. */
@@ -930,11 +932,16 @@ export type IosSimulatorEventPayload =
   | AppleRenderRequestEvent;
 
 /** What `ade apple render` asks the lane's open Apple pane to render. */
+export const APPLE_RENDER_ANGLE_IDS = ["front", "three-quarter-left", "three-quarter-right", "current"] as const;
+export type AppleRenderAngleId = (typeof APPLE_RENDER_ANGLE_IDS)[number];
+export const APPLE_RENDER_LIGHTINGS = ["transparent", "studio", "dusk"] as const;
+export type AppleRenderLighting = (typeof APPLE_RENDER_LIGHTINGS)[number];
+
 export type AppleRenderRequestSpec = {
-  angles: Array<"front" | "three-quarter-left" | "three-quarter-right" | "current">;
-  /** Duo only. */
+  angles: AppleRenderAngleId[];
+  /** Duo only: each pose folds the simulator before its shots. */
   poses: AppleDevicePose[];
-  lighting: "transparent" | "studio" | "dusk";
+  lighting: AppleRenderLighting;
   shadow: boolean;
   video: boolean;
   contactSheet: boolean;
@@ -967,6 +974,20 @@ export type AppleDevicePose = (typeof APPLE_DEVICE_POSES)[number];
 /** The Duo's panels by SimScreen id: 1 is the cover (outer) display, 3 the inner one. */
 export const APPLE_DUO_COVER_SCREEN_ID = 1;
 export const APPLE_DUO_INNER_SCREEN_ID = 3;
+
+/**
+ * What each pose does to the simulator: the hinge angle Device Hub's preset
+ * folds it to (the helper's `DevicePosture.poseAngles`) and the panel the
+ * guest lights there. The one table every caller reads: the pane's view,
+ * its stances and hinge detents, the service's settle, and renders.
+ */
+export const APPLE_DEVICE_POSE_TARGETS: Readonly<Record<AppleDevicePose, { angle: number; screenId: number }>> = {
+  closed: { angle: 0, screenId: APPLE_DUO_COVER_SCREEN_ID },
+  tent: { angle: 80, screenId: APPLE_DUO_COVER_SCREEN_ID },
+  laptop: { angle: 90, screenId: APPLE_DUO_INNER_SCREEN_ID },
+  book: { angle: 90, screenId: APPLE_DUO_INNER_SCREEN_ID },
+  open: { angle: 180, screenId: APPLE_DUO_INNER_SCREEN_ID },
+};
 
 /** A foldable simulator's physical pose, as CoreDevice reports it. */
 export type AppleDevicePosture = {
@@ -1681,8 +1702,9 @@ export type AppleSimulatorDeviceType = {
 };
 
 /**
- * A simulator runtime this Mac has installed. ADE downloads one only when the
- * person asks (`runtimeInstall`); creating a device never downloads anything.
+ * A simulator runtime this Mac has installed. ADE downloads one only on an
+ * explicit `runtimeInstall` (the person, or an agent that cleared it with them);
+ * creating a device never downloads anything.
  */
 export type AppleInstalledRuntime = {
   identifier: string;
@@ -1795,7 +1817,14 @@ export type AppleRuntimeInventory = {
   freeBytes: number | null;
 };
 
-export type AppleRuntimeInstallArgs = {
+/**
+ * Runtimes belong to the machine, not a lane; the lane id only tells the
+ * remote command path (web client, phone) which machine's lane is asking.
+ * Reads (`runtimeList`) need none: they are unguarded machine-wide reads.
+ */
+export type AppleRuntimeScope = { laneId?: string | null };
+
+export type AppleRuntimeInstallArgs = AppleRuntimeScope & {
   /** `27.1`. Omitted: whatever runtimes this Xcode needs (Xcode 27.1 fetches both iOS 27.0 and 27.1). */
   version?: string | null;
   platform?: string | null;
@@ -1804,7 +1833,7 @@ export type AppleRuntimeInstallArgs = {
 /** What to do with the simulators on a runtime being removed. */
 export type AppleRuntimeSimulatorDisposition = "upgrade" | "erase";
 
-export type AppleRuntimeDeleteArgs = {
+export type AppleRuntimeDeleteArgs = AppleRuntimeScope & {
   /** `AppleRuntimeEntry.id`. */
   id: string;
   /** Applies to the person's simulators. ADE's lane devices are always moved when they can be. */
@@ -1813,7 +1842,7 @@ export type AppleRuntimeDeleteArgs = {
   confirmedByUser?: boolean;
 };
 
-export type AppleRuntimePruneArgs = {
+export type AppleRuntimePruneArgs = AppleRuntimeScope & {
   simulators: AppleRuntimeSimulatorDisposition;
   confirmedByUser?: boolean;
 };

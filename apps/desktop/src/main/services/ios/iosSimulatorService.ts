@@ -7,19 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
-  AppleRenderRequestArgs,
-  AppleRenderRequestResult,
-  AppleDevicePose,
-  AppleDuoAppStoreScreenshotsResult,
-  AppleAddDuoSkillResult,
-  AppleDuoModelResult,
-  AppleDevicePosture,
-  AppleSetPostureArgs,
-  AppleSetPostureResult,
   AppleRuntimeDeleteArgs,
   AppleRuntimeInstallArgs,
   AppleRuntimePruneArgs,
-  AppleXcodeStatus,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStatePhase,
@@ -130,9 +120,6 @@ import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
-  APPLE_DEVICE_POSES,
-  APPLE_DUO_COVER_SCREEN_ID,
-  APPLE_DUO_INNER_SCREEN_ID,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
   APPLE_ROTATE_UNMEASURABLE_CODE,
@@ -156,13 +143,11 @@ import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessT
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry } from "./laneDeviceRegistry";
-import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, appleRuntimeScore, parseSimctlDevices } from "./appleSimulatorCatalog";
-import { createAppleRuntimeManager, parseLatestXcodeFromReleasesFeed, type AppleRuntimeManager } from "./appleRuntimeManager";
+import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
+import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
-/** Apple's developer releases feed, for the "newer Xcode" note. */
-const APPLE_RELEASES_FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss";
-const APPLE_LATEST_XCODE_KEY = "apple.xcode.latestRelease";
 import { appleAppOnDevice, appleLaneDerivedDataPath } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
 import type { LaneDeviceStore } from "./laneDeviceRows";
@@ -184,6 +169,7 @@ import {
   type SimRecordingServiceDeps,
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
+import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 
@@ -2169,18 +2155,6 @@ function readPngSize(filePath: string): { width: number; height: number } | null
   }
 }
 
-/** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
-function parseHelperPosture(payload: Record<string, unknown>): AppleDevicePosture {
-  const supported = payload.supported !== false && (payload.supported === true || typeof payload.angle === "number");
-  return {
-    supported,
-    angle: typeof payload.angle === "number" ? payload.angle : null,
-    orientation: typeof payload.orientation === "string" ? payload.orientation : null,
-    tableMode: typeof payload.tableMode === "boolean" ? payload.tableMode : null,
-    activeScreenId: typeof payload.activeScreenId === "number" ? payload.activeScreenId : null,
-  };
-}
-
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let lastSelectedItem: IosElementContextItem | null = null;
   let controlQueue: Promise<void> = Promise.resolve();
@@ -3062,8 +3036,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * queue moves on.
    */
   const CONTROL_TIMEOUT_MS = 8_000;
-  /** Two folds (each up to 8 s to settle), two captures and the hinge restore. */
-  const APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS = 60_000;
 
   /**
    * `timeoutMs` overrides the per-input budget for the few controls that are
@@ -4673,34 +4645,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   // The scope fields are omitted so a fresh literal cannot smuggle a scope past
   // the resolved root. Omit is structural, so an existing args object still
   // type-checks here; the root always arrives out of band from the caller.
-  /**
-   * Whether a device has more than one integrated panel (the iPhone Duo),
-   * read once per device from `simctl io enumerate`. `simctl io screenshot`
-   * without `--display` captures the inner panel, which is black while the
-   * phone is closed.
-   */
-  const foldableByUdid = new Map<string, Promise<boolean>>();
-  const isFoldableDevice = (udid: string): Promise<boolean> => {
-    let known = foldableByUdid.get(udid);
-    if (!known) {
-      known = run("xcrun", ["simctl", "io", udid, "enumerate"], { timeoutMs: 15_000 })
-        .then(({ stdout }) => (stdout.match(/Screen Type:\s*Integrated/g) ?? []).length > 1)
-        .catch(() => {
-          foldableByUdid.delete(udid);
-          return false;
-        });
-      foldableByUdid.set(udid, known);
-    }
-    return known;
-  };
-
-  /** `--display=<id>` for a foldable's live panel; nothing for every other device. */
-  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
-    if (!(await isFoldableDevice(udid))) return [];
-    const active = await readPosture(udid).then((posture) => posture.activeScreenId).catch(() => null);
-    return typeof active === "number" ? [`--display=${active}`] : [];
-  };
-
   const captureScreenshot = async (
     arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">,
     root: string,
@@ -4746,7 +4690,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const capturePath = path.join(os.tmpdir(), `ade-sim-shot-${randomUUID().slice(0, 8)}.png`);
     let buffer: Buffer;
     try {
-      const display = await screenshotDisplayArgs(device.udid);
+      const display = await duo.screenshotDisplayArgs(device.udid);
       await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: 30_000 });
       buffer = await fs.promises.readFile(capturePath);
     } finally {
@@ -4811,6 +4755,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     shot: Pick<IosSimulatorScreenshot, "deviceUdid" | "filePath" | "capturedAt" | "width" | "height">,
     arg: IosSimulatorScreenshotArgs,
     runtime: LaneRuntime,
+    /** A 3D render of the device rather than a capture of its screen. */
+    render?: { kind: "screenshot" | "video_recording"; mimeType: string },
   ): string | null => {
     const filer = args.recordingDeps?.artifactFiler;
     if (!filer) return null;
@@ -4837,17 +4783,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     ];
     try {
       const result = filer.ingest({
-        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
+        backend: { name: "apple-device", style: "local_fallback", toolName: render ? "apple_render" : "apple_screenshot" },
         ...(owners.length ? { owners } : {}),
         ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
         provenance: { source: "ade-capture" },
         inputs: [
           {
-            kind: "screenshot",
+            kind: render?.kind ?? "screenshot",
             title: caption,
-            description: `Screen of the lane's Apple device at ${shot.capturedAt}.`,
+            description: render
+              ? `3D render of the lane's Apple device at ${shot.capturedAt}.`
+              : `Screen of the lane's Apple device at ${shot.capturedAt}.`,
             path: shot.filePath,
-            mimeType: "image/png",
+            mimeType: render?.mimeType ?? "image/png",
             metadata: {
               laneId: runtime.key || null,
               udid: shot.deviceUdid,
@@ -5873,6 +5821,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /** The lane whose device this is, for an event about a device no stream is showing. */
+  const laneIdHoldingUdid = (udid: string): string | null =>
+    laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
+
+  /** The iPhone Duo's own surface: posture, panels, model, skill, renders. */
+  const duo = createAppleDuoService<LaneRuntime>({
+    assertDarwin,
+    run: (command, commandArgs, options) => run(command, commandArgs, options),
+    helperSend: (command) => helper().send(command),
+    resolveRuntime,
+    resolveControlDeviceUdid,
+    resolveScopedRootForSession,
+    enqueueControl,
+    fileScreenshotAsProof,
+    emit,
+    logger: args.logger,
+    readPngSize,
+    nowIso,
+    screenshotSegments: SCREENSHOT_CACHE_SEGMENTS,
+  });
+
   /**
    * Set the device orientation, and then go and look.
    *
@@ -5893,234 +5862,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * `applied: false` with a reason, because the alternative is a viewer that
    * draws an upright screen on its side.
    */
-  /**
-   * Apple's Duo model from this machine's Xcode, for the 3D view and renders.
-   * Read once per Xcode path and kept: it is ~6 MB and does not change under
-   * a running Xcode.
-   */
-  let duoModelCache: { path: string; base64: string } | null = null;
-  const getDuoModel = async (): Promise<AppleDuoModelResult> => {
-    assertDarwin();
-    const developer = await run("xcode-select", ["-p"], { timeoutMs: 10_000 })
-      .then(({ stdout }) => stdout.trim())
-      .catch(() => "");
-    if (!developer) return { base64: null, path: null };
-    const modelPath = path.join(
-      path.dirname(developer),
-      "SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/V68.usdz",
-    );
-    if (duoModelCache?.path === modelPath) return { base64: duoModelCache.base64, path: modelPath };
-    const bytes = await fs.promises.readFile(modelPath).catch(() => null);
-    if (!bytes) return { base64: null, path: modelPath };
-    duoModelCache = { path: modelPath, base64: bytes.toString("base64") };
-    return { base64: duoModelCache.base64, path: modelPath };
-  };
-
-  /**
-   * The App Store Connect iPhone Duo set: the cover closed (1398×2034) and the
-   * inner display open (2853×2007), each captured from its own panel, filed
-   * as proof. Folds the simulator to take them and puts the hinge back.
-   */
-  /**
-   * Apple's `app-resizability` agent skill (Xcode 27's `xcrun agent skills
-   * export`), copied into the lane's `.agents/skills`, where every ADE agent
-   * in the lane finds it. It is the skill Apple points at for the iPhone Duo;
-   * an ADE agent following it moved a legacy UIKit app to the scene life
-   * cycle and size-driven layout that refilled each panel on fold. A lane
-   * that already has the skill keeps its copy (it may be edited).
-   */
-  const addDuoSkill = async (
-    skillArgs: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
-  ): Promise<AppleAddDuoSkillResult> => {
-    assertDarwin();
-    const runtime = resolveRuntime(skillArgs);
-    const root = await resolveScopedRootForSession({ projectRoot: skillArgs.projectRoot, laneId: skillArgs.laneId }, runtime);
-    const skill = "app-resizability" as const;
-    const target = path.join(root, ".agents", "skills", skill);
-    if (fs.existsSync(path.join(target, "SKILL.md"))) return { skill, path: target, added: false };
-    const exportDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-apple-skills-"));
-    try {
-      try {
-        await run("xcrun", ["agent", "skills", "export", "--output-dir", exportDir], { timeoutMs: 60_000 });
-      } catch {
-        throw new Error("This Mac's Xcode has no agent skills to export. Apple's app-resizability skill needs Xcode 27 or later.");
-      }
-      const source = path.join(exportDir, skill);
-      if (!fs.existsSync(path.join(source, "SKILL.md"))) {
-        throw new Error("This Mac's Xcode does not include Apple's app-resizability skill.");
-      }
-      await fs.promises.mkdir(path.dirname(target), { recursive: true });
-      await fs.promises.cp(source, target, { recursive: true, errorOnExist: false, force: false });
-      return { skill, path: target, added: true };
-    } finally {
-      await fs.promises.rm(exportDir, { recursive: true, force: true }).catch(() => {});
-    }
-  };
-
-  const duoAppStoreScreenshots = async (
-    shotArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> & { projectRoot?: string | null } = {},
-  ): Promise<AppleDuoAppStoreScreenshotsResult> => {
-    assertDarwin();
-    const runtime = resolveRuntime(shotArgs);
-    const deviceUdid = await resolveControlDeviceUdid(shotArgs.deviceUdid, runtime);
-    const before = await readPosture(deviceUdid);
-    if (!before.supported) throw new Error("App Store Duo screenshots need an iPhone Duo simulator.");
-    const root = await resolveScopedRootForSession({ projectRoot: shotArgs.projectRoot, laneId: shotArgs.laneId }, runtime);
-    const directory = path.join(root, ...SCREENSHOT_CACHE_SEGMENTS);
-    await fs.promises.mkdir(directory, { recursive: true });
-    const settleOn = async (screenId: number) => {
-      const deadline = Date.now() + 8_000;
-      while (Date.now() < deadline) {
-        if ((await readPosture(deviceUdid)).activeScreenId === screenId) break;
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-      // iOS animates into the new panel's layout after the switch.
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-    };
-    const shots: AppleDuoAppStoreScreenshotsResult["shots"] = [];
-    const take = async (display: "cover" | "inner", pose: AppleDevicePose, screenId: number) => {
-      await helper().send({ type: "posture", udid: deviceUdid, pose });
-      await settleOn(screenId);
-      const filePath = path.join(directory, `app-store-duo-${display}-${randomUUID().slice(0, 8)}.png`);
-      await run("xcrun", ["simctl", "io", deviceUdid, "screenshot", `--display=${screenId}`, filePath], { timeoutMs: 30_000 });
-      const size = readPngSize(filePath);
-      const shot = { deviceUdid, filePath, capturedAt: nowIso(), width: size?.width ?? 0, height: size?.height ?? 0 };
-      const proofArtifactId = fileScreenshotAsProof(shot, {
-        ...shotArgs,
-        caption: `App Store · iPhone Duo ${display} display ${shot.width}×${shot.height}`,
-      }, runtime);
-      shots.push({ display, width: shot.width, height: shot.height, filePath, proofArtifactId });
-    };
-    return enqueueControl("posture", async () => {
-      try {
-        await take("cover", "closed", APPLE_DUO_COVER_SCREEN_ID);
-        await take("inner", "open", APPLE_DUO_INNER_SCREEN_ID);
-      } finally {
-        if (before.angle !== null) {
-          await helper().send({ type: "posture", udid: deviceUdid, angle: before.angle }).catch(() => undefined);
-        }
-      }
-      return { shots };
-    }, APPLE_DUO_APP_STORE_SHOTS_TIMEOUT_MS);
-  };
-
-  /**
-   * `ade apple render`: renders need a mounted 3D view, so the request goes
-   * to the Apple pane open for the lane (on any desktop pinned to this
-   * machine), which acks within 5 s and reports when it has filed the proof.
-   */
-  const pendingRenders = new Map<string, {
-    /** True for the first pane to take it; every later one stands down. */
-    ack: () => boolean;
-    complete: (result: AppleRenderRequestResult) => void;
-  }>();
-  const requestRender = async (renderArgs: AppleRenderRequestArgs): Promise<AppleRenderRequestResult> => {
-    assertDarwin();
-    const runtime = resolveRuntime(renderArgs);
-    const request = renderArgs?.request;
-    if (!request || !Array.isArray(request.angles) || request.angles.length === 0) {
-      throw new Error("A render needs at least one angle.");
-    }
-    const requestId = randomUUID();
-    let acked = false;
-    const result = new Promise<AppleRenderRequestResult>((resolve, reject) => {
-      const ackTimer = setTimeout(() => {
-        if (acked) return;
-        pendingRenders.delete(requestId);
-        reject(new Error(
-          "No Apple Development pane is open for this lane. Open it in ADE (3D view available), then render again.",
-        ));
-      }, 5_000);
-      const doneTimer = setTimeout(() => {
-        pendingRenders.delete(requestId);
-        reject(new Error("The render did not finish within 4 minutes."));
-      }, 240_000);
-      (doneTimer as unknown as { unref?: () => void }).unref?.();
-      pendingRenders.set(requestId, {
-        ack: () => {
-          if (acked) return false;
-          acked = true;
-          clearTimeout(ackTimer);
-          return true;
-        },
-        complete: (value) => {
-          clearTimeout(ackTimer);
-          clearTimeout(doneTimer);
-          pendingRenders.delete(requestId);
-          resolve(value);
-        },
-      });
-    });
-    emit({ type: "apple.render.request", laneId: runtime.key ?? null, requestId, request });
-    return result;
-  };
-  const renderAck = async (ackArgs: { requestId?: string }): Promise<{ ok: boolean }> => {
-    const pending = typeof ackArgs?.requestId === "string" ? pendingRenders.get(ackArgs.requestId) : undefined;
-    return { ok: pending ? pending.ack() : false };
-  };
-  const renderComplete = async (doneArgs: { requestId?: string; filed?: number; error?: string | null }): Promise<{ ok: boolean }> => {
-    const pending = typeof doneArgs?.requestId === "string" ? pendingRenders.get(doneArgs.requestId) : undefined;
-    pending?.complete({
-      filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
-      error: typeof doneArgs.error === "string" ? doneArgs.error : null,
-    });
-    return { ok: Boolean(pending) };
-  };
-
-  /** The lane whose device this is, for an event about a device no stream is showing. */
-  const laneIdHoldingUdid = (udid: string): string | null =>
-    laneDevices.list().find((device) => device.udid === udid)?.laneId ?? null;
-
-  /**
-   * Fold the lane's iPhone Duo to a preset or an angle. Answers
-   * `applied: false, supported: false` for a device without a hinge rather
-   * than throwing: "this is not a foldable" is a state, not a failure.
-   */
-  const setPosture = async (postureArgs: AppleSetPostureArgs): Promise<AppleSetPostureResult> => {
-    assertDarwin();
-    const pose = typeof postureArgs.pose === "string" ? postureArgs.pose.trim().toLowerCase() : null;
-    const angle = typeof postureArgs.angle === "number" && Number.isFinite(postureArgs.angle) ? postureArgs.angle : null;
-    if (pose && !(APPLE_DEVICE_POSES as readonly string[]).includes(pose)) {
-      throw new Error(`pose must be ${APPLE_DEVICE_POSES.join(", ")}.`);
-    }
-    if (!pose && (angle === null || angle < 0 || angle > 180)) {
-      throw new Error("Give a pose, or an angle between 0 and 180 degrees.");
-    }
-    const runtime = resolveRuntime(postureArgs);
-    const deviceUdid = await resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
-    return enqueueControl("posture", async () => {
-      const payload = await helper().send({
-        type: "posture",
-        udid: deviceUdid,
-        ...(pose ? { pose } : { angle }),
-      });
-      // The hinge sweeps and the guest elects its panel a moment later; read
-      // the pose back once that has settled, so the answer is what happened.
-      // Fully closed or flat has a known panel: wait (briefly) until the guest
-      // has switched to it, or the answer names the panel it is leaving.
-      const target = pose === "closed" ? 0 : pose === "open" ? 180 : angle;
-      const expectedScreen = target === 0 ? APPLE_DUO_COVER_SCREEN_ID : target === 180 ? APPLE_DUO_INNER_SCREEN_ID : null;
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      let posture = await readPosture(deviceUdid);
-      for (let waited = 600; expectedScreen !== null && payload.applied === true
-        && posture.activeScreenId !== expectedScreen && waited < 2_400; waited += 300) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        posture = await readPosture(deviceUdid);
-      }
-      return { applied: payload.applied === true, posture };
-    });
-  };
-
-  const readPosture = async (deviceUdid: string): Promise<AppleDevicePosture> =>
-    parseHelperPosture(await helper().send({ type: "posture-get", udid: deviceUdid }));
-
-  const getPosture = async (postureArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> = {}): Promise<AppleDevicePosture> => {
-    assertDarwin();
-    const runtime = resolveRuntime(postureArgs);
-    const deviceUdid = await resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
-    return readPosture(deviceUdid);
-  };
-
   const rotate = async (rotateArgs: AppleRotateArgs): Promise<AppleRotateResult> => {
     assertDarwin();
     const rawOrientation = typeof rotateArgs.orientation === "string" ? rotateArgs.orientation.trim() : "";
@@ -6865,35 +6606,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── simulator runtimes ───────────────────────── */
 
-  /** Apple's newest Xcode, read from the releases feed at most once a day per machine. */
-  let latestXcodeCache: { at: number; value: AppleXcodeStatus["latest"] } | null = null;
-  const latestXcode = async (): Promise<AppleXcodeStatus["latest"]> => {
-    const dayMs = 24 * 60 * 60_000;
-    if (latestXcodeCache && Date.now() - latestXcodeCache.at < dayMs) return latestXcodeCache.value;
-    const stored = args.laneDeviceStore?.getJson<{ at: number; value: AppleXcodeStatus["latest"] }>(APPLE_LATEST_XCODE_KEY) ?? null;
-    if (stored && typeof stored.at === "number" && Date.now() - stored.at < dayMs) {
-      latestXcodeCache = stored;
-      return stored.value;
-    }
-    try {
-      const response = await fetch(APPLE_RELEASES_FEED_URL, { signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const value = parseLatestXcodeFromReleasesFeed(await response.text());
-      latestXcodeCache = { at: Date.now(), value };
-      try {
-        args.laneDeviceStore?.setJson(APPLE_LATEST_XCODE_KEY, latestXcodeCache);
-      } catch {
-        // The cache is a courtesy; the in-memory copy still holds for today.
-      }
-      return value;
-    } catch (error) {
-      args.logger.debug("apple.xcode_release_feed_failed", { error: error instanceof Error ? error.message : String(error) });
-      // Try again in an hour rather than on every list.
-      latestXcodeCache = { at: Date.now() - dayMs + 60 * 60_000, value: latestXcodeCache?.value ?? stored?.value ?? null };
-      return latestXcodeCache.value;
-    }
-  };
-
   let runtimeManagerInstance: AppleRuntimeManager | null = null;
   const runtimeManager = (): AppleRuntimeManager => {
     runtimeManagerInstance ??= createAppleRuntimeManager({
@@ -6907,17 +6619,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       },
       laneHeldUdids: () => new Set(laneDevices.list().map((device) => device.udid)),
       isAdeSimulator: (udid) => readAppleDeviceMarker(appleDeviceDataRoot(), udid) !== null,
-      releaseHolds: async (udid) => {
-        await stopDeviceRecording(udid, "device-off");
+      powerOff: async (udid) => {
         await lifecycle.releaseUnlanedHolds(udid);
+        await power.powerOffDevice(udid, "delete");
       },
       invalidate: () => {
         invalidateDeviceList();
         for (const runtime of runtimes.values()) invalidateStatus(runtime);
       },
-      latestXcode,
+      releasesFeed: async () => {
+        const response = await fetch(APPLE_RELEASES_FEED_URL, { signal: AbortSignal.timeout(15_000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.text();
+      },
+      store: args.laneDeviceStore ?? null,
     });
     return runtimeManagerInstance;
+  };
+  /** Every runtime action is macOS-only, and runs against the machine's one manager. */
+  const darwinRuntimeManager = (): AppleRuntimeManager => {
+    assertDarwin();
+    return runtimeManager();
   };
 
   /**
@@ -7008,14 +6730,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     pressButton,
     rotate,
     /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
-    setPosture,
-    getPosture,
-    getDuoModel,
-    duoAppStoreScreenshots,
-    addDuoSkill,
-    requestRender,
-    renderAck,
-    renderComplete,
+    setPosture: duo.setPosture,
+    getPosture: duo.getPosture,
+    getDuoModel: duo.getDuoModel,
+    duoAppStoreScreenshots: duo.duoAppStoreScreenshots,
+    addDuoSkill: duo.addDuoSkill,
+    attachRenderProof: duo.attachRenderProof,
+    requestRender: duo.requestRender,
+    renderAck: duo.renderAck,
+    renderComplete: duo.renderComplete,
     typeText,
     drag,
     swipe: drag,
@@ -7039,30 +6762,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceCleanup,
 
     /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
-    runtimeList: async () => {
-      assertDarwin();
-      return runtimeManager().runtimeList();
-    },
-    runtimeInstall: async (installArgs: AppleRuntimeInstallArgs = {}) => {
-      assertDarwin();
-      return runtimeManager().runtimeInstall(installArgs);
-    },
-    runtimeInstallCancel: async () => {
-      assertDarwin();
-      return runtimeManager().runtimeInstallCancel();
-    },
-    runtimeDelete: async (deleteArgs: AppleRuntimeDeleteArgs) => {
-      assertDarwin();
-      return runtimeManager().runtimeDelete(deleteArgs);
-    },
-    runtimePrune: async (pruneArgs: AppleRuntimePruneArgs) => {
-      assertDarwin();
-      return runtimeManager().runtimePrune(pruneArgs);
-    },
-    xcodeRunFirstLaunch: async (setupArgs: { confirmedByUser?: boolean } = {}) => {
-      assertDarwin();
-      return runtimeManager().xcodeRunFirstLaunch(setupArgs);
-    },
+    runtimeList: async () => darwinRuntimeManager().runtimeList(),
+    runtimeInstall: async (installArgs: AppleRuntimeInstallArgs = {}) => darwinRuntimeManager().runtimeInstall(installArgs),
+    runtimeInstallCancel: async () => darwinRuntimeManager().runtimeInstallCancel(),
+    runtimeDelete: async (deleteArgs: AppleRuntimeDeleteArgs) => darwinRuntimeManager().runtimeDelete(deleteArgs),
+    runtimePrune: async (pruneArgs: AppleRuntimePruneArgs) => darwinRuntimeManager().runtimePrune(pruneArgs),
+    xcodeRunFirstLaunch: async (setupArgs: { confirmedByUser?: boolean } = {}) =>
+      darwinRuntimeManager().xcodeRunFirstLaunch(setupArgs),
     /** The lane is being archived or deleted: let go of its device in this process. */
     stopForLane,
 

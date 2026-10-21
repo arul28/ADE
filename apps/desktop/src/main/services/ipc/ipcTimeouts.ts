@@ -82,6 +82,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     runtimeDelete: IPC.iosSimulatorRuntimeDelete,
     duoAppStoreScreenshots: IPC.iosSimulatorDuoAppStoreScreenshots,
     addDuoSkill: IPC.iosSimulatorAddDuoSkill,
+    attachRenderProof: IPC.iosSimulatorAttachRenderProof,
     runtimePrune: IPC.iosSimulatorRuntimePrune,
     xcodeRunFirstLaunch: IPC.iosSimulatorXcodeRunFirstLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
@@ -279,6 +280,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorDeviceDetach:
     case IPC.iosSimulatorDuoAppStoreScreenshots:
     case IPC.iosSimulatorAddDuoSkill:
+    case IPC.iosSimulatorAttachRenderProof:
       return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
     // Mapped from the remote `ios_simulator.deviceCleanup` above, but with no
     // case of its own it fell to 30s against a 15 minute cleanup pass.

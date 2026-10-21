@@ -80,7 +80,12 @@ instead `device-attach` an installed simulator the user names.
 
 `appleRuntimeManager.ts` owns the machine's simulator runtimes, reached as
 `ios_simulator.runtime*` actions with the lane's pin (so a laptop manages the
-desktop's runtimes):
+desktop's runtimes). There is one download per machine: every open project's
+manager shares the install and hears its progress, and a window with no event
+stream (the web client) re-reads the list while an install is quiet. Where a
+simulator moves when its runtime goes, and which runtime Install & create
+builds on, is one rule (`shared/appleRuntimeVersions.ts`): the newest runtime
+that runs that model.
 
 - `runtimeList`: every installed runtime with its size (`simctl runtime list`),
   the simulators on it (ADE's or the person's), `newest`, and `superseded` — a
@@ -352,7 +357,7 @@ name is never an input.
 `HIDVendorDefined` send (usage page `0xFF61`, usage `0x5B`, an
 IOCFSerialize'd `{provider, source: hinge-slider-control|orientation-picker-control, type, value}`)
 reaching `dtuhidd` in the guest. ADE's `DevicePosture.swift` adds the
-`posture`, `posture-get` and `posture-watch` commands. Folds **sweep** in 10°
+`posture` and `posture-get` commands, and streaming a Duo starts its posture watcher (`posture-changed`). Folds **sweep** in 10°
 steps: SpringBoard's fold state machine can stick on a 0°↔180° jump, leaving
 the wrong panel lit. A raw angle releases Tent's Table Mode and stands a
 face-down phone up. Service: `setPosture` / `getPosture`, events
@@ -411,9 +416,10 @@ out: `ade apple` covers the same ground.
 The rail's **Render** sheet renders the live 3D body: Front, ¾ left, ¾ right or
 the current camera; Transparent, Studio or Dusk; a contact shadow; a labelled
 contact sheet; a 6 s WebM turntable. For a Duo each chosen pose folds the real
-simulator and waits for its reported angle and active panel before the shot.
-Everything files to the proof drawer through the scene proof route (which takes
-PNG or WebM).
+simulator (`setPosture` answers once it has landed on the pose's panel) before
+the shot. Each image and the video go to `attachRenderProof` on the device's
+own machine, which files them to the chat's and lane's proof drawer there, so a
+window pinned to another machine files where the chat lives.
 
 `ade apple render` asks for the same thing from the CLI. The service emits
 `apple.render.request`; the first open pane for the lane to `renderAck` it
@@ -474,6 +480,8 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
+| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoHingeBar.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the hinge bar under the device, and Apple's physical Duo body. |
 | `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |

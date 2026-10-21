@@ -1,9 +1,13 @@
 import { useState } from "react";
-import type { AppleDevicePose } from "../../../shared/types/iosSimulator";
+import {
+  APPLE_RENDER_LIGHTINGS,
+  type AppleDevicePose,
+  type AppleRenderAngleId,
+  type AppleRenderLighting,
+  type AppleRenderRequestSpec,
+} from "../../../shared/types/iosSimulator";
 import { Dialog } from "../ui/dialog";
-import type { AppleDeviceRenderLighting, AppleDeviceRenderShot } from "./AppleDevice3DView";
-
-export type AppleRenderAngleId = "front" | "three-quarter-left" | "three-quarter-right" | "current";
+import type { AppleDeviceRenderShot } from "./AppleDevice3DView";
 
 export const APPLE_RENDER_ANGLES: ReadonlyArray<{ id: AppleRenderAngleId; label: string; shot: AppleDeviceRenderShot }> = [
   { id: "front", label: "Front", shot: { yaw: 0, pitch: 0.04 } },
@@ -20,16 +24,6 @@ const DUO_POSES: ReadonlyArray<{ id: AppleDevicePose; label: string }> = [
   { id: "open", label: "Open" },
 ];
 
-export type AppleRenderRequest = {
-  angles: AppleRenderAngleId[];
-  /** Duo only: each pose folds the real simulator before its shots. */
-  poses: AppleDevicePose[];
-  lighting: AppleDeviceRenderLighting;
-  shadow: boolean;
-  video: boolean;
-  contactSheet: boolean;
-};
-
 function Check({ checked, label, onChange }: { checked: boolean; label: string; onChange: (next: boolean) => void }) {
   return (
     <label className="inline-flex cursor-pointer items-center gap-1.5 font-sans text-[12px] text-fg/85">
@@ -44,23 +38,21 @@ function Check({ checked, label, onChange }: { checked: boolean; label: string; 
  * extras. Every image is filed to the proof drawer; nothing leaves the Mac.
  */
 export function AppleRenderSheet({
-  open,
   deviceName,
   duo,
   rendering,
   onClose,
   onRender,
 }: {
-  open: boolean;
   deviceName: string;
   duo: boolean;
   rendering: boolean;
   onClose: () => void;
-  onRender: (request: AppleRenderRequest) => void;
+  onRender: (request: AppleRenderRequestSpec) => void;
 }) {
   const [angles, setAngles] = useState<AppleRenderAngleId[]>(["front", "three-quarter-left"]);
   const [poses, setPoses] = useState<AppleDevicePose[]>(["closed", "tent", "laptop", "open"]);
-  const [lighting, setLighting] = useState<AppleDeviceRenderLighting>("transparent");
+  const [lighting, setLighting] = useState<AppleRenderLighting>("transparent");
   const [shadow, setShadow] = useState(true);
   const [video, setVideo] = useState(false);
   const [contactSheet, setContactSheet] = useState(true);
@@ -68,7 +60,8 @@ export function AppleRenderSheet({
   const imageCount = angles.length * (duo ? Math.max(1, poses.length) : 1);
   return (
     <Dialog
-      open={open}
+      // Mounted only while open, so each render starts from the defaults.
+      open
       onOpenChange={(next) => {
         if (!next && !rendering) onClose();
       }}
@@ -118,7 +111,7 @@ export function AppleRenderSheet({
         <div className="flex flex-col gap-1.5">
           <span className="font-sans text-[11px] uppercase tracking-[0.08em] text-muted-fg">Background</span>
           <div className="flex flex-wrap gap-3">
-            {(["transparent", "studio", "dusk"] as const).map((value) => (
+            {APPLE_RENDER_LIGHTINGS.map((value) => (
               <label key={value} className="inline-flex cursor-pointer items-center gap-1.5 font-sans text-[12px] text-fg/85">
                 <input type="radio" name="apple-render-lighting" checked={lighting === value} onChange={() => setLighting(value)} />
                 {value === "transparent" ? "Transparent" : value === "studio" ? "Studio" : "Dusk"}

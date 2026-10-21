@@ -2,12 +2,13 @@
 // apps/web/src/components/device/phoneTrackpad.ts (MIT, T3 Tools Inc.) — the
 // trackpad rule that ctrl-wheel and pinch are camera zoom while a plain wheel
 // is the DEVICE's scroll. The body and display live in `appleDeviceScene.ts`.
+import type { AppleRenderLighting } from "../../../shared/types/iosSimulator";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { CanvasTexture, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
-import { createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
+import { appleEaseFactor, createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
 import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
 import { createProceduralDuoBody } from "./appleDuoScene";
@@ -188,12 +189,11 @@ type ViewerHooks = {
 /** One render angle: yaw/pitch in radians, or the camera exactly as the person left it. */
 export type AppleDeviceRenderShot = { yaw: number; pitch: number } | { current: true };
 
-export type AppleDeviceRenderLighting = "transparent" | "studio" | "dusk";
 
 export type AppleDeviceRenderOptions = {
   width: number;
   height: number;
-  lighting: AppleDeviceRenderLighting;
+  lighting: AppleRenderLighting;
   /** A soft contact shadow under the phone. */
   shadow: boolean;
 };
@@ -327,7 +327,7 @@ function createViewer(
     body.root.quaternion.copy(motion.rotation);
     // A physical body (Apple's Duo model) turns itself to the device's
     // physical orientation; only the others take the display's turn here.
-    if (!("physicalOrientation" in body)) body.orientation.rotation.z = layout.rotation;
+    if (!body.physical) body.orientation.rotation.z = layout.rotation;
   };
 
   const fitCamera = () => {
@@ -352,7 +352,7 @@ function createViewer(
 
   function draw() {
     raf = 0;
-    if (disposed || !viewport.width || !viewport.height) return;
+    if (disposed || renderingOffscreen || !viewport.width || !viewport.height) return;
     try {
       if (
         drawingBuffer.width !== viewport.width
@@ -378,11 +378,10 @@ function createViewer(
         poseDirty = true;
         notifyPose(false);
       }
-      const dt = lastDistanceAt ? Math.min(0.1, (now - lastDistanceAt) / 1000) : 1 / 60;
       const easing = Math.abs(fitDistance - shownDistance) > 0.001;
       if (easing) {
+        shownDistance += (fitDistance - shownDistance) * appleEaseFactor(lastDistanceAt, now, 0.12);
         lastDistanceAt = now;
-        shownDistance += (fitDistance - shownDistance) * (1 - Math.exp(-dt / 0.12));
       } else {
         shownDistance = fitDistance;
         lastDistanceAt = 0;
@@ -584,7 +583,7 @@ function createViewer(
       // answered in the continuous inner-display space either way.
       const hit = body.duo.pickInner(raycaster);
       if (!hit) return null;
-      if ("physicalOrientation" in body) {
+      if (body.physical) {
         // Apple's model answers in the live panel's own framebuffer, which
         // is what the device takes, exactly as the flat view sends it.
         const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
@@ -632,7 +631,7 @@ function createViewer(
     // Apple's Duo model is physical (its inner display is landscape), so the
     // display-orientation turn that stands a raw portrait frame up does not
     // apply to it; its panels map their framebuffers themselves.
-    if (body && !("physicalOrientation" in body)) {
+    if (body && !body.physical) {
       body.orientation.rotation.z = layout.rotation;
       body.rewriteUvs(THREE, layout);
     }
@@ -646,12 +645,8 @@ function createViewer(
         installDuoBody(props);
       } else if (body?.duo) {
         body.duo.setHinge(duo.angle, duo.lowerFlat);
-        const physical = body.duo as {
-          setActivePanel?: (screenId: number | null) => void;
-          setPhysicalOrientation?: (orientation: string | null) => void;
-        };
-        physical.setActivePanel?.(duo.activeScreenId ?? null);
-        physical.setPhysicalOrientation?.(duo.physicalOrientation ?? null);
+        body.duo.setActivePanel?.(duo.activeScreenId ?? null);
+        body.duo.setPhysicalOrientation?.(duo.physicalOrientation ?? null);
         applyPose();
         // Folding changes the phone's shape: frame it again.
         fitCamera();
@@ -733,11 +728,22 @@ function createViewer(
     return shadowMesh;
   };
 
+  /**
+   * True while a render owns the renderer: the live loop does not draw, or it
+   * would resize the drawing buffer back to the pane between a turntable's
+   * frames (and flash the person's lighting into the recording).
+   */
+  let renderingOffscreen = false;
+  /** A resize that arrived while a render owned the viewport, applied when it ends. */
+  let pendingViewport: typeof viewport | null = null;
+
   const withRenderSetup = <T,>(options: AppleDeviceRenderOptions, run: () => T): T => {
     if (!body) throw new Error("There is no device body to render yet.");
+    // The body this render turns; restored even if a model swap replaced it.
+    const turned = body;
     const saved = {
       viewport: { ...viewport },
-      quaternion: body.root.quaternion.clone(),
+      quaternion: turned.root.quaternion.clone(),
       background: scene.background,
       key: { color: key.color.clone(), intensity: key.intensity },
       rim: { color: rim.color.clone(), intensity: rim.intensity },
@@ -760,9 +766,11 @@ function createViewer(
     if (shadow) scene.add(shadow);
     viewport = { width: options.width, height: options.height, pixelRatio: 1 };
     renderer.setDrawingBufferSize(options.width, options.height, 1);
-    try {
-      return run();
-    } finally {
+    renderingOffscreen = true;
+    const restore = () => {
+      renderingOffscreen = false;
+      if (pendingViewport) saved.viewport = pendingViewport;
+      pendingViewport = null;
       if (shadow) scene.remove(shadow);
       scene.background = saved.background;
       key.color.copy(saved.key.color);
@@ -771,12 +779,23 @@ function createViewer(
       rim.intensity = saved.rim.intensity;
       fill.color.copy(saved.fill.color);
       fill.intensity = saved.fill.intensity;
-      body.root.quaternion.copy(saved.quaternion);
+      turned.root.quaternion.copy(saved.quaternion);
       viewport = saved.viewport;
       drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
       fitCamera();
       invalidate();
+    };
+    let result: T;
+    try {
+      result = run();
+    } catch (error) {
+      restore();
+      throw error;
     }
+    // An async render (the turntable) restores when it settles, not now.
+    if (result instanceof Promise) return result.finally(restore) as T;
+    restore();
+    return result;
   };
 
   const renderOne = (shot: AppleDeviceRenderShot, options: AppleDeviceRenderOptions) => {
@@ -827,24 +846,34 @@ function createViewer(
       });
       recorder.start();
       const frames = Math.max(30, Math.round(options.seconds * 30));
-      for (let frame = 0; frame < frames; frame++) {
-        const yaw = -0.6 + (Math.PI * 2 * frame) / frames;
-        withRenderSetup(options, () => {
-          renderOne({ yaw, pitch: 0.12 }, options);
-          ctx.clearRect(0, 0, options.width, options.height);
-          ctx.drawImage(renderer.domElement, 0, 0, options.width, options.height);
+      try {
+        await withRenderSetup(options, async () => {
+          for (let frame = 0; frame < frames; frame++) {
+            if (disposed) throw new Error("The 3D view closed during the render.");
+            const yaw = -0.6 + (Math.PI * 2 * frame) / frames;
+            renderOne({ yaw, pitch: 0.12 }, options);
+            ctx.clearRect(0, 0, options.width, options.height);
+            ctx.drawImage(renderer.domElement, 0, 0, options.width, options.height);
+            await new Promise((resolve) => setTimeout(resolve, 1000 / 30));
+          }
         });
-        await new Promise((resolve) => setTimeout(resolve, 1000 / 30));
+      } finally {
+        // The recorder and its stream stop whether the loop finished or threw.
+        if (recorder.state !== "inactive") recorder.stop();
+        await stopped;
+        for (const track of stream.getTracks()) track.stop();
       }
-      recorder.stop();
-      await stopped;
-      for (const track of stream.getTracks()) track.stop();
       return new Blob(chunks, { type: "video/webm" });
     },
     resize(width, height, pixelRatio) {
       if (disposed) return;
       if (![width, height, pixelRatio].every(Number.isFinite) || width <= 0 || height <= 0) return;
       const ratio = Math.min(2, Math.max(1, pixelRatio));
+      // A render owns the viewport: keep the pane's new size for when it ends.
+      if (renderingOffscreen) {
+        pendingViewport = { width, height, pixelRatio: ratio };
+        return;
+      }
       if (viewport.width === width && viewport.height === height && viewport.pixelRatio === ratio) return;
       viewport = { width, height, pixelRatio: ratio };
       fitCamera();
@@ -853,7 +882,8 @@ function createViewer(
       notifyPose(true);
     },
     pointerDown(nx, ny, now, forceOrbit) {
-      if (disposed) return "none";
+      // During a render the viewport is the render's, so a tap would map wrong.
+      if (disposed || renderingOffscreen) return "none";
       const props = getProps();
       // §A3: a drag that starts ON the screen is input; one that starts off it
       // orbits; Alt forces the orbit even over the glass.

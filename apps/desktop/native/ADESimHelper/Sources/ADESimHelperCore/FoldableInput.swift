@@ -64,17 +64,17 @@ actor FoldableInput {
         keyboard = services.keyboard
     }
 
-    /// `phase` is `begin`, `move` or `end`; points are 0…1 of the panel.
-    func touch(phase: String, screenID: UInt32, points: [CGPoint]) async throws {
+    /// Points are 0…1 of the panel.
+    func touch(phase: TouchPhase, screenID: UInt32, points: [CGPoint]) async throws {
         try await setup()
         guard let digitizer else { return }
-        if phase == "begin" || gestureService == nil { gestureService = 0x100 + screenID }
+        if phase == .begin || gestureService == nil { gestureService = 0x100 + screenID }
         let service = gestureService ?? (0x100 + screenID)
         let contacts = points.map { SSCoreDeviceTouch(x: Double($0.x), y: Double($0.y)) }
         let sent = contacts.withUnsafeBufferPointer {
-            SSCoreDeviceSendTouches(digitizer.storage, service, $0.baseAddress, UInt8($0.count), phase != "end", 0)
+            SSCoreDeviceSendTouches(digitizer.storage, service, $0.baseAddress, UInt8($0.count), phase != .end, 0)
         }
-        if phase == "end" { gestureService = nil }
+        if phase == .end { gestureService = nil }
         if !sent { fputs("[hid] CoreDevice touch delivery failed for service \(service)\n", stderr) }
     }
 

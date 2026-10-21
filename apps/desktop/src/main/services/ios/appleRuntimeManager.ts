@@ -16,7 +16,9 @@ import type {
   IosSimulatorEventPayload,
 } from "../../../shared/types/iosSimulator";
 import type { Logger } from "../logging/logger";
-import { appleDeviceFamily, appleRuntimeScore, parseAppleInstalledRuntimes } from "./appleSimulatorCatalog";
+import { appleDeviceFamily, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleRuntimeScore, newestAppleRuntimeRunning } from "../../../shared/appleRuntimeVersions";
+import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
 
 /**
  * Simulator runtimes: list what is installed and what depends on it, fetch the
@@ -52,12 +54,19 @@ export type AppleRuntimeManagerDeps = {
   laneHeldUdids: () => Set<string>;
   /** ADE made this simulator (marker file or lane row). */
   isAdeSimulator: (udid: string) => boolean;
-  /** Stop recordings, streams and helper sessions on a simulator before it is shut down. */
-  releaseHolds: (udid: string) => Promise<void>;
+  /**
+   * Power a simulator off the way the service does everywhere else: its
+   * recording and streams stop, the helper drops its HID and CoreDevice
+   * handles, then `simctl shutdown` (an already-off device is fine). Throws
+   * only when the shutdown really failed.
+   */
+  powerOff: (udid: string) => Promise<void>;
   /** Device lists and statuses changed. */
   invalidate: () => void;
-  /** Apple's newest Xcode, from the releases feed; cached by the caller. */
-  latestXcode: () => Promise<AppleXcodeStatus["latest"]>;
+  /** Apple's developer releases feed (`APPLE_RELEASES_FEED_URL`), as text. */
+  releasesFeed: () => Promise<string>;
+  /** Where the newest-Xcode answer is kept between launches; null keeps it in memory only. */
+  store: { getJson: <T>(key: string) => T | null; setJson: (key: string, value: unknown) => void } | null;
   arch?: string;
   now?: () => Date;
 };
@@ -99,25 +108,13 @@ export function parseSimctlRuntimeImages(stdout: string): Map<string, RuntimeIma
 
 type RuntimeDevice = { udid: string; name: string; state: string; deviceTypeIdentifier: string | null };
 
-/** `simctl list devices --json`, every device grouped by runtime identifier (available or not). */
+/** `simctl list devices --json`, every device (available or not) grouped by the runtime it is on. */
 export function parseSimctlDevicesByRuntime(stdout: string): Map<string, RuntimeDevice[]> {
-  const parsed = JSON.parse(stdout) as { devices?: Record<string, Array<Record<string, unknown>>> };
-  if (!parsed || typeof parsed.devices !== "object" || parsed.devices === null) {
-    throw new Error("simctl list devices returned no device set");
-  }
   const byRuntime = new Map<string, RuntimeDevice[]>();
-  for (const [runtimeIdentifier, devices] of Object.entries(parsed.devices)) {
-    const list: RuntimeDevice[] = [];
-    for (const device of devices ?? []) {
-      if (typeof device.udid !== "string") continue;
-      list.push({
-        udid: device.udid,
-        name: typeof device.name === "string" ? device.name : device.udid,
-        state: typeof device.state === "string" ? device.state : "Unknown",
-        deviceTypeIdentifier: typeof device.deviceTypeIdentifier === "string" ? device.deviceTypeIdentifier : null,
-      });
-    }
-    byRuntime.set(runtimeIdentifier, list);
+  for (const device of parseSimctlDevices(stdout).values()) {
+    const list = byRuntime.get(device.runtimeIdentifier) ?? [];
+    list.push({ udid: device.udid, name: device.name, state: device.state, deviceTypeIdentifier: device.deviceTypeIdentifier });
+    byRuntime.set(device.runtimeIdentifier, list);
   }
   return byRuntime;
 }
@@ -212,6 +209,11 @@ function normalizeVersion(value: unknown): string | null {
 
 /* ───────────────────────── the manager ───────────────────────── */
 
+/** Apple's developer releases feed, for the "newer Xcode" note. */
+export const APPLE_RELEASES_FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss";
+const APPLE_LATEST_XCODE_KEY = "apple.xcode.latestRelease";
+const DAY_MS = 24 * 60 * 60_000;
+
 /** CoreSimulator wants headroom beyond the image itself while it stages and verifies. */
 const INSTALL_FREE_BYTES_FLOOR = 10 * 1024 ** 3;
 /** At most four progress events a second; xcodebuild prints far more often. */
@@ -219,33 +221,64 @@ const PROGRESS_EVENT_INTERVAL_MS = 250;
 
 export type AppleRuntimeManager = ReturnType<typeof createAppleRuntimeManager>;
 
+type InstallListener = { emit: AppleRuntimeManagerDeps["emit"]; invalidate: () => void };
+
+/**
+ * One runtime download per MACHINE, not per project: the manager is built by
+ * each project's simulator service, but `xcodebuild -downloadPlatform` and
+ * its progress belong to the Mac. Every open project's manager registers
+ * here, sees the same install, and hears its progress; the download is
+ * stopped only when the last of them goes away.
+ */
+const installer: {
+  install: AppleRuntimeInstallState | null;
+  child: ChildProcess | null;
+  lastEmitAt: number;
+  /** Bumped by every new install; a call that wakes to a newer one stands down. */
+  generation: number;
+  listeners: Set<InstallListener>;
+} = { install: null, child: null, lastEmitAt: 0, generation: 0, listeners: new Set() };
+
 export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
   const now = () => (deps.now ? deps.now() : new Date());
-  let install: AppleRuntimeInstallState | null = null;
-  let child: ChildProcess | null = null;
-  let lastEmitAt = 0;
+  /**
+   * A read that can fail without failing the list (an Xcode mid-update, a
+   * missing first-launch package): log the cause, answer the fallback. The
+   * panel then shows less, and the log says why.
+   */
+  const fallingBack = <T,>(event: string, fallback: T) => (error: unknown): T => {
+    deps.logger.warn(event, { error: error instanceof Error ? error.message : String(error) });
+    return fallback;
+  };
+
+  const listener: InstallListener = { emit: deps.emit, invalidate: deps.invalidate };
+  installer.listeners.add(listener);
+  const invalidateAll = () => {
+    for (const each of installer.listeners) each.invalidate();
+  };
 
   const emitInstall = (force = false) => {
-    if (!install) return;
+    if (!installer.install) return;
     const at = Date.now();
-    if (!force && at - lastEmitAt < PROGRESS_EVENT_INTERVAL_MS) return;
-    lastEmitAt = at;
-    deps.emit({ type: "apple.runtime.install", install: { ...install } });
+    if (!force && at - installer.lastEmitAt < PROGRESS_EVENT_INTERVAL_MS) return;
+    installer.lastEmitAt = at;
+    const event = { type: "apple.runtime.install" as const, install: { ...installer.install } };
+    for (const each of installer.listeners) each.emit(event);
   };
 
   const finish = (phase: "done" | "failed" | "cancelled", message: string | null) => {
-    if (!install) return;
-    install = { ...install, phase, message, finishedAt: now().toISOString() };
-    child = null;
-    deps.invalidate();
+    if (!installer.install) return;
+    installer.install = { ...installer.install, phase, message, finishedAt: now().toISOString() };
+    installer.child = null;
+    invalidateAll();
     emitInstall(true);
-    deps.logger.info("apple.runtime_install_finished", { version: install.version, phase, message });
+    deps.logger.info("apple.runtime_install_finished", { version: installer.install.version, phase, message });
   };
 
   const readXcode = async (): Promise<Omit<AppleXcodeStatus, "latest" | "updateAvailable">> => {
     const version = await deps.run("xcodebuild", ["-version"], { timeoutMs: 20_000 })
       .then(({ stdout }) => parseXcodeVersionOutput(stdout))
-      .catch(() => ({ version: null, build: null }));
+      .catch(fallingBack("apple.xcode_version_unreadable", { version: null, build: null }));
     // Exit 0 means nothing is pending; anything else (including a missing
     // Xcode) is reported as pending only when an Xcode version was read.
     const firstLaunchPending = version.version
@@ -254,8 +287,38 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     return { ...version, firstLaunchPending };
   };
 
+  /**
+   * The newest released Xcode, read from Apple's feed at most once a day (kept
+   * in the store across launches). A failed read is retried in an hour, not on
+   * every list.
+   */
+  let latestXcodeCache: { at: number; value: AppleXcodeStatus["latest"] } | null = null;
+  const latestXcode = async (): Promise<AppleXcodeStatus["latest"]> => {
+    if (latestXcodeCache && Date.now() - latestXcodeCache.at < DAY_MS) return latestXcodeCache.value;
+    const stored = deps.store?.getJson<{ at: number; value: AppleXcodeStatus["latest"] }>(APPLE_LATEST_XCODE_KEY) ?? null;
+    if (stored && typeof stored.at === "number" && Date.now() - stored.at < DAY_MS) {
+      latestXcodeCache = stored;
+      return stored.value;
+    }
+    try {
+      const value = parseLatestXcodeFromReleasesFeed(await deps.releasesFeed());
+      latestXcodeCache = { at: Date.now(), value };
+      try {
+        deps.store?.setJson(APPLE_LATEST_XCODE_KEY, latestXcodeCache);
+      } catch (error) {
+        // The in-memory copy still holds for today.
+        deps.logger.warn("apple.xcode_latest_not_stored", { error: error instanceof Error ? error.message : String(error) });
+      }
+      return value;
+    } catch (error) {
+      deps.logger.debug("apple.xcode_release_feed_failed", { error: error instanceof Error ? error.message : String(error) });
+      latestXcodeCache = { at: Date.now() - DAY_MS + 60 * 60_000, value: latestXcodeCache?.value ?? stored?.value ?? null };
+      return latestXcodeCache.value;
+    }
+  };
+
   const xcodeStatus = async (): Promise<AppleXcodeStatus> => {
-    const [local, latest] = await Promise.all([readXcode(), deps.latestXcode().catch(() => null)]);
+    const [local, latest] = await Promise.all([readXcode(), latestXcode()]);
     const updateAvailable = Boolean(local.version && latest
       && appleRuntimeScore(latest.version) > appleRuntimeScore(local.version));
     return { ...local, latest, updateAvailable };
@@ -277,10 +340,13 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
   const readRuntimes = async () => {
     const [runtimesOut, imagesOut, devicesOut, typesOut, sdkOut] = await Promise.all([
       deps.run("xcrun", ["simctl", "list", "runtimes", "--json"], { timeoutMs: 30_000 }),
-      deps.run("xcrun", ["simctl", "runtime", "list", "-j"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "{}", stderr: "" })),
+      deps.run("xcrun", ["simctl", "runtime", "list", "-j"], { timeoutMs: 30_000 })
+        .catch(fallingBack("apple.runtime_images_unreadable", { stdout: "{}", stderr: "" })),
       deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 }),
-      deps.run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "{}", stderr: "" })),
-      deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 }).catch(() => ({ stdout: "[]", stderr: "" })),
+      deps.run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 })
+        .catch(fallingBack("apple.device_types_unreadable", { stdout: "{}", stderr: "" })),
+      deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 })
+        .catch(fallingBack("apple.sdks_unreadable", { stdout: "[]", stderr: "" })),
     ]);
     const installed = parseAppleInstalledRuntimes(runtimesOut.stdout);
     const images = parseSimctlRuntimeImages(imagesOut.stdout);
@@ -288,15 +354,15 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     const types = (() => {
       try {
         return parseSimctlDeviceTypes(typesOut.stdout);
-      } catch {
-        return [] as DeviceTypeRecord[];
+      } catch (error) {
+        return fallingBack("apple.device_types_unparsable", [] as DeviceTypeRecord[])(error);
       }
     })();
     const sdkVersion = (() => {
       try {
         return parseIosSimulatorSdkVersion(sdkOut.stdout);
-      } catch {
-        return null;
+      } catch (error) {
+        return fallingBack("apple.sdks_unparsable", null)(error);
       }
     })();
     const sdkScore = sdkVersion ? appleRuntimeScore(sdkVersion) : null;
@@ -377,25 +443,24 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     const [read, xcode, freeBytes] = await Promise.all([
       readRuntimes(),
       xcodeStatus(),
-      deps.freeBytes().catch(() => null),
+      deps.freeBytes().catch(fallingBack("apple.free_space_unreadable", null)),
     ]);
-    return { runtimes: read.entries, missing: missingFrom(read), install: install ? { ...install } : null, xcode, freeBytes };
+    return { runtimes: read.entries, missing: missingFrom(read), install: installer.install ? { ...installer.install } : null, xcode, freeBytes };
   };
 
-  const installActive = () => Boolean(install && (install.phase === "checking" || install.phase === "preparing"
-    || install.phase === "downloading" || install.phase === "installing"));
+  const installActive = () => appleRuntimeInstallActive(installer.install);
 
   const runtimeInstall = async (args: AppleRuntimeInstallArgs = {}): Promise<AppleRuntimeInstallState> => {
     // Guarded on the phase, not on the child: the child only exists after the
     // SDK lookup and the free-space check, and a second call in that window
     // would start a second 8 GB download nothing can cancel.
-    if (install && installActive()) return { ...install };
+    if (installer.install && installActive()) return { ...installer.install };
     const platform = normalizePlatform(args.platform);
     // An explicit version pins `-buildVersion`. Without one, Xcode fetches every
     // runtime it needs: Xcode 27.1 needs iOS 27.0 (every iPhone) AND iOS 27.1
     // (only the Duo), and pinning 27.1 alone would leave the other iPhones out.
     const pinnedVersion = normalizeVersion(args.version);
-    install = {
+    installer.install = {
       platform,
       version: pinnedVersion ?? "",
       phase: "checking",
@@ -406,32 +471,36 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
       startedAt: now().toISOString(),
       finishedAt: null,
     };
-    const ticket = install;
+    const generation = ++installer.generation;
+    emitInstall(true);
+    // Every await below can wake to a cancel, or to a newer install that a
+    // cancel let start; either way this call no longer owns the download.
+    const superseded = () => installer.generation !== generation || installer.install?.phase === "cancelled";
     const version = pinnedVersion ?? await deps.run("xcodebuild", ["-showsdks", "-json"], { timeoutMs: 30_000 })
       .then(({ stdout }) => parseIosSimulatorSdkVersion(stdout))
-      .catch(() => null);
-    if (install !== ticket || install.phase === "cancelled") return { ...install! };
+      .catch(fallingBack("apple.sdks_unreadable", null));
+    if (superseded()) return { ...installer.install! };
     if (!version) {
       finish("failed", "Could not read which iOS runtime this Xcode expects. Open Xcode once, then try again.");
-      return { ...install };
+      return { ...installer.install };
     }
-    install = { ...install, version };
+    installer.install = { ...installer.install, version };
     emitInstall(true);
-    const free = await deps.freeBytes().catch(() => null);
-    // Cancelled while it was checking: never spawn.
-    if (install.phase === "cancelled") return { ...install };
+    const free = await deps.freeBytes().catch(fallingBack("apple.free_space_unreadable", null));
+    // Cancelled (or replaced) while it was checking: never spawn.
+    if (superseded()) return { ...installer.install! };
     if (free !== null && free < INSTALL_FREE_BYTES_FLOOR) {
       const gb = (free / 1024 ** 3).toFixed(1);
       finish("failed", `Only ${gb} GB free. A runtime needs about 10 GB while it installs; remove an older runtime first.`);
-      return { ...install };
+      return { ...installer.install };
     }
     const commandArgs = ["-downloadPlatform", platform];
     if (pinnedVersion) commandArgs.push("-buildVersion", pinnedVersion);
     if ((deps.arch ?? process.arch) === "arm64") commandArgs.push("-architectureVariant", "arm64");
     deps.logger.info("apple.runtime_install_started", { platform, version });
     const spawned = deps.spawn("xcodebuild", commandArgs);
-    child = spawned;
-    install = { ...install, phase: "preparing" };
+    installer.child = spawned;
+    installer.install = { ...installer.install, phase: "preparing" };
     emitInstall(true);
     let tail = "";
     let lastLine = "";
@@ -444,31 +513,31 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
         if (!line.trim()) continue;
         lastLine = line.trim();
         const update = parseRuntimeDownloadProgress(line);
-        if (!update || !install || child !== spawned) continue;
-        install = { ...install, ...update, phase: update.phase === "done" ? "installing" : update.phase ?? install.phase };
+        if (!update || !installer.install || installer.child !== spawned) continue;
+        installer.install = { ...installer.install, ...update, phase: update.phase === "done" ? "installing" : update.phase ?? installer.install.phase };
         emitInstall(update.phase !== "downloading");
       }
     };
     spawned.stdout?.on("data", onChunk);
     spawned.stderr?.on("data", onChunk);
     spawned.on("error", (error) => {
-      if (child !== spawned) return;
+      if (installer.child !== spawned) return;
       finish("failed", error.message);
     });
     spawned.on("close", (code, signal) => {
-      if (child !== spawned) return;
-      if (install?.phase === "cancelled") return;
+      if (installer.child !== spawned) return;
+      if (installer.install?.phase === "cancelled") return;
       if (code === 0) finish("done", null);
       else finish("failed", lastLine || `xcodebuild exited with ${signal ?? code}`);
     });
-    return { ...install };
+    return { ...installer.install };
   };
 
   const runtimeInstallCancel = async (): Promise<AppleRuntimeInstallState | null> => {
-    if (!install || !installActive()) return install ? { ...install } : null;
-    const running = child;
-    install = { ...install, phase: "cancelled", message: "Cancelled", finishedAt: now().toISOString() };
-    child = null;
+    if (!installer.install || !installActive()) return installer.install ? { ...installer.install } : null;
+    const running = installer.child;
+    installer.install = { ...installer.install, phase: "cancelled", message: "Cancelled", finishedAt: now().toISOString() };
+    installer.child = null;
     // Still checking: there is no process yet, and the phase stops the spawn.
     if (running) {
       try {
@@ -477,14 +546,9 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
         // Already gone.
       }
     }
-    deps.invalidate();
+    invalidateAll();
     emitInstall(true);
-    return { ...install };
-  };
-
-  const shutdown = async (udid: string) => {
-    await deps.releaseHolds(udid).catch(() => undefined);
-    await deps.run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 }).catch(() => undefined);
+    return { ...installer.install };
   };
 
   /**
@@ -508,14 +572,8 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     }
     // The newest newer runtime that runs THIS simulator's model: iOS 27.1 runs
     // only the Duo, so an iPhone 17 on iOS 26.3 moves to iOS 27.0, not 27.1.
-    const newer = all
-      .filter((candidate) => candidate.platform === entry.platform
-        && !deleting.has(candidate.runtimeIdentifier)
-        && appleRuntimeScore(candidate.version) > appleRuntimeScore(entry.version))
-      .sort((a, b) => appleRuntimeScore(b.version) - appleRuntimeScore(a.version));
-    const targetFor = (simulator: AppleRuntimeSimulator): AppleRuntimeEntry | null => (simulator.deviceTypeIdentifier
-      ? newer.find((candidate) => candidate.deviceTypes.some((type) => type.identifier === simulator.deviceTypeIdentifier)) ?? null
-      : null);
+    const targetFor = (simulator: AppleRuntimeSimulator): AppleRuntimeEntry | null =>
+      newestAppleRuntimeRunning(all, simulator.deviceTypeIdentifier, { after: entry, excluding: deleting });
     // "Move" means move: a simulator no remaining newer runtime runs is never
     // erased behind it. Lane devices always move, so they always count.
     const stuck = entry.simulators.filter((simulator) =>
@@ -534,7 +592,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
       const target = targetFor(simulator);
       const move = simulator.laneHeld || (disposition === "upgrade" && target !== null);
       try {
-        await shutdown(simulator.udid);
+        await deps.powerOff(simulator.udid);
         if (move && target) {
           await deps.run("xcrun", ["simctl", "upgrade", simulator.udid, target.runtimeIdentifier], { timeoutMs: 5 * 60_000 });
           result.moved.push({ udid: simulator.udid, name: simulator.name, to: target.name });
@@ -574,7 +632,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     try {
       await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result);
     } finally {
-      deps.invalidate();
+      invalidateAll();
     }
     return result;
   };
@@ -591,7 +649,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
         await deleteOne(entry, entries, args.simulators === "erase" ? "erase" : "upgrade", result, deleting);
       }
     } finally {
-      deps.invalidate();
+      invalidateAll();
     }
     return result;
   };
@@ -610,13 +668,23 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
   };
 
   const dispose = () => {
-    if (child) {
+    installer.listeners.delete(listener);
+    // Another project still watches this Mac's download: leave it running.
+    if (installer.listeners.size > 0) return;
+    // The last watcher is gone: stop the download for good. The phase says
+    // so (a later manager must not see a running install nobody owns), and
+    // the generation bump stops a call still checking from spawning one.
+    if (installActive() && installer.install) {
+      installer.generation += 1;
+      installer.install = { ...installer.install, phase: "cancelled", message: "Stopped when ADE closed the project", finishedAt: now().toISOString() };
+    }
+    if (installer.child) {
       try {
-        child.kill("SIGTERM");
+        installer.child.kill("SIGTERM");
       } catch {
         // Already gone.
       }
-      child = null;
+      installer.child = null;
     }
   };
 

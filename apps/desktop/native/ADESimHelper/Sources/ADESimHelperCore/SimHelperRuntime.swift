@@ -67,6 +67,15 @@ public actor SimHelperRuntime {
         return started
     }
 
+    /// A Duo can answer "no hinge" while CoreDevice is still coming up, so a
+    /// capture started then never began watching. The first posture command
+    /// that finds a hinge on a streaming device starts the watch (a watch
+    /// already running is left as it is).
+    private func watchPostureIfStreaming(udid: String) async {
+        guard sessions[udid] != nil, !(await postureWatchers.isWatching(udid: udid)) else { return }
+        _ = await watchPosture(udid: udid)
+    }
+
     private func postureChanged(udid: String, state: DevicePosture.State) async {
         var payload = state.payload
         if let session = sessions[udid] {
@@ -232,18 +241,12 @@ public actor SimHelperRuntime {
                 let applied = await DevicePosture.apply(udid: udid, pose: pose, angle: angle)
                 // Reported, not thrown: "this device has no hinge" is a state.
                 emit(.ok(id: id, payload: ["applied": applied]))
+                if applied { await watchPostureIfStreaming(udid: udid) }
 
             case let .postureGet(_, udid):
-                emit(.ok(id: id, payload: await DevicePosture.read(udid: udid).payload))
-
-            case let .postureWatch(_, udid, enabled):
-                if enabled {
-                    let watching = await watchPosture(udid: udid)
-                    emit(.ok(id: id, payload: ["watching": watching]))
-                } else {
-                    await postureWatchers.stop(udid: udid)
-                    emit(.ok(id: id, payload: ["watching": false]))
-                }
+                let state = await DevicePosture.read(udid: udid)
+                emit(.ok(id: id, payload: state.payload))
+                if state.supported { await watchPostureIfStreaming(udid: udid) }
 
             case let .axDescribe(_, udid):
                 let json = try await offMainThread {

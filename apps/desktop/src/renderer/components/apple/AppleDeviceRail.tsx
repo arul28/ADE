@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Aperture,
@@ -88,7 +88,6 @@ export type AppleDeviceRailProps = {
   onDuoAddSkill?: (() => void) | undefined;
   onDuoStance?: (stance: AppleDuoStanceId) => void;
   onDuoNudge?: (delta: number) => void;
-
   /**
    * Press one of the device's physical buttons (lock, volume, Siri, app
    * switcher). `shake` is deliberately absent: this Xcode's `simctl` and the

@@ -223,6 +223,9 @@ import {
   IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
   IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
+  APPLE_DEVICE_POSES,
+  APPLE_RENDER_ANGLE_IDS,
+  APPLE_RENDER_LIGHTINGS,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_COST_BREAKDOWN_BY,
@@ -14860,7 +14863,7 @@ function buildIosSimulatorPlan(
     // `ade apple fold closed|open|laptop|book|tent`, `--angle 0-180`, or
     // `--sequence closed,open,tent`: one pose after another, each with a step
     // caption for a running recording, so an agent's demo shows every pose.
-    const poses = ["closed", "open", "laptop", "book", "tent"] as const;
+    const poses = APPLE_DEVICE_POSES;
     const sequence = readValue(args, ["--sequence", "--poses"]);
     if (sequence) {
       // Every entry is checked before any fold runs: `closed,,open` is a typo,
@@ -14908,7 +14911,7 @@ function buildIosSimulatorPlan(
       names: ["--pose"],
       label: "pose",
       noun: "pose",
-      valid: ["closed", "open", "laptop", "book", "tent"] as const,
+      valid: APPLE_DEVICE_POSES,
     });
     return iosAction("Apple device fold", "setPosture", {
       pose,
@@ -14930,11 +14933,11 @@ function buildIosSimulatorPlan(
       if (bad !== undefined) throw new CliUsageError(`ios-sim render: '${bad}' is not one of ${valid.join(", ")}.`);
       return values as T[];
     };
-    const angles = listOf(["--angles", "--angle"], ["front", "three-quarter-left", "three-quarter-right", "current"] as const, ["front", "three-quarter-left"]);
-    const poses = listOf(["--poses", "--pose"], ["closed", "open", "laptop", "book", "tent"] as const, []);
+    const angles = listOf(["--angles", "--angle"], APPLE_RENDER_ANGLE_IDS, ["front", "three-quarter-left"]);
+    const poses = listOf(["--poses", "--pose"], APPLE_DEVICE_POSES, []);
     const lighting = readValue(args, ["--lighting", "--background"]) ?? "transparent";
-    if (!["transparent", "studio", "dusk"].includes(lighting)) {
-      throw new CliUsageError("ios-sim render: --lighting must be transparent, studio or dusk.");
+    if (!(APPLE_RENDER_LIGHTINGS as readonly string[]).includes(lighting)) {
+      throw new CliUsageError(`ios-sim render: --lighting must be ${APPLE_RENDER_LIGHTINGS.join(", ")}.`);
     }
     return iosAction("Apple device render", "requestRender", {
       request: {

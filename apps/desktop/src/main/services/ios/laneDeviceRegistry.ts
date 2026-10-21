@@ -73,9 +73,12 @@ import { deleteAppleSimulator } from "./simulatorPower";
  *
  * Creating a device never downloads a runtime. `simctl` will happily fetch
  * several gigabytes for a runtime that is merely *known*; a lane asking for a
- * device must not start that (a download is the person's call, from the
- * Runtimes section — `appleRuntimeManager.ts`), so every runtime comes from the installed list and an empty list
- * is a refusal (`APPLE_NO_INSTALLED_SIMULATORS`) rather than a download.
+ * device must not start that. A download is an explicit `runtimeInstall`
+ * (`appleRuntimeManager.ts`): the Runtimes section, Install & create, or an
+ * agent's `ade apple runtimes install`, which the agent skill says to clear
+ * with the user first. So every runtime a device is made on comes from the
+ * installed list, and an empty list is a refusal
+ * (`APPLE_NO_INSTALLED_SIMULATORS`) rather than a download.
  */
 
 /** KV key holding the device type this project made its last lane device from. */

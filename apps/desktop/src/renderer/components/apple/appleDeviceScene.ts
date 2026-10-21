@@ -65,6 +65,10 @@ export type DuoBodyControls = {
    * pose leave it out.
    */
   animate?: (now: number) => boolean;
+  /** Apple's physical body only: which panel is live (it shows the stream). */
+  setActivePanel?: (screenId: number | null) => void;
+  /** Apple's physical body only: the device as held (`landscape-left`, …). */
+  setPhysicalOrientation?: (orientation: string | null) => void;
 };
 
 export type DeviceBody = {
@@ -81,6 +85,13 @@ export type DeviceBody = {
   rewriteUvs: (THREE: ThreeNS, layout: DisplayLayout) => void;
   /** Foldable bodies only; undefined for every imported GLB. */
   duo?: DuoBodyControls;
+  /**
+   * True for a body that is built as the hardware is (Apple's Duo model): each
+   * panel maps its own framebuffer, so the view neither applies the display
+   * orientation's turn nor rewrites its UVs, and taps answer in the live
+   * panel's raw framebuffer.
+   */
+  physical?: boolean;
   dispose: () => void;
 };
 

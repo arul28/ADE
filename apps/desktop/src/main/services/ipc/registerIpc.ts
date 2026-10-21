@@ -1092,7 +1092,7 @@ import {
 } from "../../../shared/mcpApp";
 import {
   resolveSceneCaptureRect,
-  decodeScenePngDataUrl, decodeSceneWebmDataUrl,
+  decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
 import {
@@ -10075,13 +10075,10 @@ export function registerIpc({
         const broker = ctx.computerUseArtifactBrokerService;
         const projectRoot = ctx.project?.rootPath ?? null;
         if (!projectRoot) return false;
-        // A PNG still, or a rendered WebM video (the Apple panel's 3D renders).
-        const png = decodeScenePngDataUrl(arg?.dataUrl ?? null);
-        const webm = png ? null : decodeSceneWebmDataUrl(arg?.dataUrl ?? null);
-        const bytes = png ?? webm;
+        const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
         if (!bytes) return false;
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
-        const artifactPath = createComputerUseArtifactPath(projectRoot, title, webm ? "webm" : "png");
+        const artifactPath = createComputerUseArtifactPath(projectRoot, title, "png");
         fs.writeFileSync(artifactPath, bytes);
 
         // The bytes have to be on disk before either route can be taken: the
@@ -10123,21 +10120,13 @@ export function registerIpc({
               // The desktop drew these pixels; ADE captured them.
               provenance: { source: "ade-capture" as const },
               ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
-              inputs: [webm
-                ? {
-                  kind: "video_recording",
-                  title: title.slice(0, 200),
-                  path: artifactPath,
-                  mimeType: "video/webm",
-                  description: "A rendered video of a device.",
-                }
-                : {
-                  kind: "screenshot",
-                  title: title.slice(0, 200),
-                  path: artifactPath,
-                  mimeType: "image/png",
-                  description: "Snapshot of an agent-authored scene.",
-                }],
+              inputs: [{
+                kind: "screenshot",
+                title: title.slice(0, 200),
+                path: artifactPath,
+                mimeType: "image/png",
+                description: "Snapshot of an agent-authored scene.",
+              }],
             });
             outcome = "filed";
             return true;
@@ -10433,6 +10422,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
   ipcMain.handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
   ipcMain.handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
+  ipcMain.handle(IPC.iosSimulatorAttachRenderProof, async (_event, arg = {}) => ensureIosSimulator().attachRenderProof(arg));
   ipcMain.handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
   ipcMain.handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
   ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));

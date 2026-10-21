@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
 
 /**
  * The iPhone Duo's hinge, under the device: the control you reach for most
@@ -10,9 +11,9 @@ import { useEffect, useState } from "react";
  * on the pose, as a real hinge clicks into place. Arrow keys stay exact.
  */
 const DETENTS = [
-  { angle: 0, label: "Closed" },
-  { angle: 90, label: "Laptop" },
-  { angle: 180, label: "Open" },
+  { angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, label: "Closed" },
+  { angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, label: "Laptop" },
+  { angle: APPLE_DEVICE_POSE_TARGETS.open.angle, label: "Open" },
 ] as const;
 const DETENT_RANGE = 4;
 
@@ -70,8 +71,10 @@ export function AppleDuoHingeBar({
             onPreview(next);
           }}
           onPointerUp={commit}
+          // A cancelled drag (the window lost the pointer) still lets go.
+          onPointerCancel={commit}
           onKeyUp={(event) => {
-            if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") commit();
+            if (event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) commit();
           }}
         />
         <div aria-hidden="true" className="pointer-events-none mt-0.5 flex justify-between font-sans text-[9px] uppercase tracking-[0.06em] text-white/40">

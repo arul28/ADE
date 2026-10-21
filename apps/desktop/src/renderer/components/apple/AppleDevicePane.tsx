@@ -16,8 +16,6 @@ import type {
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
   AppleLaneDevice,
-  AppleDevicePose,
-  AppleDevicePosture,
   AppleRuntimeDeleteResult,
   AppleRuntimeSimulatorDisposition,
   IosElementContextItem,
@@ -28,7 +26,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Banner } from "../ui/notice";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
-import type { AppleDevice3DFailure, AppleDeviceDuoProps, AppleDeviceRenderer } from "./AppleDevice3DView";
+import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
 import {
   appleDeviceSupportsDuo,
   APPLE_DUO_NUDGE_DEGREES,
@@ -39,7 +37,7 @@ import {
 } from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
-import { showToast } from "../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -74,11 +72,13 @@ import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleD
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
 import { useAppleDuoModel } from "./useAppleDuoModel";
-import { APPLE_RENDER_ANGLES, AppleRenderSheet, appleRenderContactSheet, type AppleRenderRequest } from "./AppleRenderSheet";
+import { AppleRenderSheet } from "./AppleRenderSheet";
 import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import { AppleDuoHingeBar } from "./AppleDuoHingeBar";
+import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
+import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 
@@ -150,20 +150,6 @@ const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOff
   "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
 };
 
-/**
- * The inner panel's picture, a quarter turn on from the device's orientation
- * (the panel is mounted that way; see `displayOrientation`).
- */
-const APPLE_DUO_INNER_ORIENTATION: Record<AppleDeviceOrientation, AppleDeviceOrientation> = {
-  portrait: "landscape-left",
-  "landscape-left": "portrait-upside-down",
-  "portrait-upside-down": "landscape-right",
-  "landscape-right": "portrait",
-};
-
-/** The hinge angle each preset folds the simulator to (as the helper's `poseAngles`). */
-const APPLE_DUO_POSE_ANGLES: Record<AppleDevicePose, number> = { closed: 0, tent: 80, laptop: 90, book: 90, open: 180 };
-
 /** What a runtime remove did, as one toast. Counts only; the details are in the log. */
 function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
   const freed = result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
@@ -180,7 +166,7 @@ function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
       ? (result.deleted.length ? "Some runtimes were not removed" : "The runtime was not removed")
       : `Freed ${(freed / 1e9).toFixed(1)} GB`,
     message: [parts.length ? `${parts.join(", ")}.` : null, failed ? result.errors[0]!.message : null].filter(Boolean).join(" "),
-    ...(failed ? { durationMs: 18_000 } : {}),
+    ...(failed ? { durationMs: READABLE_TOAST_DURATION_MS } : {}),
   });
 }
 
@@ -230,12 +216,6 @@ export function AppleDevicePane({
    * but does nothing when `duoCapable` is false.
    */
   const [duoState, setDuoState] = useState(() => createAppleDuoState());
-  /** What the simulator itself reports: its hinge and the panel that is on. */
-  const [duoPosture, setDuoPosture] = useState<AppleDevicePosture | null>(null);
-  /** The fold ADE asked for and until when its sweep's reports are ignored. */
-  const duoFoldTargetRef = useRef<{ angle: number; until: number } | null>(null);
-  const duoPostureRef = useRef<AppleDevicePosture | null>(null);
-  duoPostureRef.current = duoPosture;
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -406,25 +386,6 @@ export function AppleDevicePane({
   useEffect(() => {
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
       switch (event.type) {
-        case "apple.device.posture": {
-          if (event.udid !== deviceUdidRef.current) return;
-          setDuoPosture(event.posture);
-          const angle = event.posture.angle;
-          // ADE asked for this fold: the simulator sweeps there in 10° steps,
-          // and drawing each step pulled the hinge back toward where it came
-          // from. Hold the asked-for angle until the sweep lands (or gives up).
-          const fold = duoFoldTargetRef.current;
-          if (fold && angle !== null) {
-            if (Date.now() < fold.until && Math.abs(angle - fold.angle) > 2) return;
-            duoFoldTargetRef.current = null;
-          }
-          if (angle !== null) {
-            setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
-              ? current
-              : reduceAppleDuoState(current, { type: "angle", angle })));
-          }
-          return;
-        }
         case "apple.device.state": {
           if (event.laneId && laneId && event.laneId !== laneId) return;
           if (event.phase === "failed") {
@@ -639,55 +600,18 @@ export function AppleDevicePane({
 
   /* ── simulator runtimes ──────────────────────────────────────────────── */
 
-  /**
-   * "Install & create": the model the person picked while its runtime was
-   * missing. When the download settles as done, it is created on the newest
-   * runtime that now runs it.
-   */
-  const installThenCreateRef = useRef<string | null>(null);
   const [runtimesNonce, setRuntimesNonce] = useState(0);
   const runtimes$ = useAppleRuntimes({
     runtimePinRef,
     pinKey: runtimePin?.key ?? null,
+    laneId,
     enabled: !hidden,
     refreshNonce: runtimesNonce,
     onError: (cause) => setError(cause),
-    onInstallSettled: (install) => {
-      const wanted = installThenCreateRef.current;
-      installThenCreateRef.current = null;
-      refreshList();
-      if (install.phase === "failed") {
-        showToast({ id: "apple-runtime-install", tone: "error", title: `iOS ${install.version} didn't install`, message: install.message ?? undefined, durationMs: 18_000 });
-        return;
-      }
-      if (install.phase !== "done") return;
-      void window.ade.iosSimulator.runtimeList(runtimePinRef.current).then((inventory) => {
-        const target = wanted
-          ? inventory.runtimes
-            .filter((entry) => entry.deviceTypes.some((type) => type.identifier === wanted))
-            .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0] ?? null
-          : null;
-        const model = target?.deviceTypes.find((type) => type.identifier === wanted) ?? null;
-        if (target && model) {
-          showToast({ id: "apple-runtime-install", tone: "success", title: `iOS ${install.version} is installed`, message: `Creating ${model.name}…` });
-          createDevice({ runtime: target.runtimeIdentifier, deviceType: model.identifier });
-          return;
-        }
-        const duo = inventory.runtimes.flatMap((entry) => entry.deviceTypes.map((type) => ({ entry, type })))
-          .find(({ type }) => /duo/i.test(type.name)) ?? null;
-        showToast({
-          id: "apple-runtime-install",
-          tone: "success",
-          title: `iOS ${install.version} is installed`,
-          ...(duo ? { actions: [{ label: `Create ${duo.type.name}`, onClick: () => createDevice({ runtime: duo.entry.runtimeIdentifier, deviceType: duo.type.identifier }) }] } : {}),
-        });
-      }).catch(() => undefined);
-    },
+    onInstallSettled: () => refreshList(),
+    createDevice,
   });
-  const installAndCreate = useCallback((deviceType: string) => {
-    installThenCreateRef.current = deviceType;
-    void runtimes$.install();
-  }, [runtimes$]);
+  const installAndCreate = runtimes$.installAndCreate;
   const removeRuntime = useCallback((id: string, simulators: AppleRuntimeSimulatorDisposition) => {
     void runtimes$.remove(id, simulators).then((result) => {
       if (result) showRuntimeRemoval(result);
@@ -920,9 +844,23 @@ export function AppleDevicePane({
    */
   const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
   const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin?.key ?? null, runtimePinRef });
-  // The rail's fold controls drive the real simulator, so they show in flat
-  // mode too; only the articulated body needs the 3D view.
-  const duoControlsEnabled = duoCapable;
+  /** What the simulator reports (its hinge and live panel), and how to fold it. */
+  const {
+    posture: duoPosture,
+    sendPosture: sendDuoPosture,
+    sendAngleSoon: sendDuoAngleSoon,
+  } = useAppleDuoPosture({
+    enabled: duoCapable && state === "live",
+    deviceUdid,
+    laneId,
+    chatSessionId: sessionId,
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    onAngle: (angle) => setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
+      ? current
+      : reduceAppleDuoState(current, { type: "angle", angle }))),
+    onError: (cause) => setError(cause),
+  });
   const duoProps: AppleDeviceDuoProps | undefined = duoCapable && canUse3d
     ? {
         enabled: true,
@@ -937,221 +875,26 @@ export function AppleDevicePane({
         },
       }
     : undefined;
-  /*
-   * The inner panel is mounted a quarter turn from the cover: its raw
-   * framebuffer is portrait while its picture is landscape. The stage already
-   * turns a raw frame for a sideways device, so the inner panel is drawn as one
-   * quarter turn further on (and taps are inverted by the same turn).
-   */
-  const displayOrientation: AppleDeviceOrientation = duoCapable && duoPosture?.activeScreenId === APPLE_DUO_INNER_SCREEN_ID
-    ? APPLE_DUO_INNER_ORIENTATION[orientation]
-    : orientation;
-
-  /**
-   * Fold the real simulator. Every caller here is the person at the rail or
-   * the 3D hinge; the view moves first and the simulator's own posture events
-   * settle it (the readback is what the guest actually did).
-   */
-  const sendDuoPosture = useCallback((target: { pose?: AppleDevicePose; angle?: number }) => {
-    const angle = target.pose ? APPLE_DUO_POSE_ANGLES[target.pose] : target.angle;
-    if (typeof angle === "number") duoFoldTargetRef.current = { angle, until: Date.now() + 4_000 };
-    void window.ade.iosSimulator
-      .setPosture({ laneId, chatSessionId: sessionId, ...target }, runtimePinRef.current)
-      .then((result) => setDuoPosture(result.posture))
-      .catch((cause: unknown) => setError(cause));
-  }, [laneId, sessionId]);
-  /** A hinge drag sends its latest angle once the drag pauses, not every frame. */
-  const duoAngleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sendDuoAngleSoon = useCallback((angle: number) => {
-    if (duoAngleTimerRef.current) clearTimeout(duoAngleTimerRef.current);
-    duoAngleTimerRef.current = setTimeout(() => {
-      duoAngleTimerRef.current = null;
-      sendDuoPosture({ angle: Math.round(angle) });
-    }, 250);
-  }, [sendDuoPosture]);
-  useEffect(() => () => {
-    if (duoAngleTimerRef.current) clearTimeout(duoAngleTimerRef.current);
-  }, []);
+  // The posture is null for a device without a hinge, which draws as held.
+  const displayOrientation = appleDuoDisplayOrientation(orientation, duoPosture);
 
   /* ── 3D renders ────────────────────────────────────────────────────────── */
 
-  const rendererRef = useRef<AppleDeviceRenderer | null>(null);
-  const [renderOpen, setRenderOpen] = useState(false);
-  const [rendering, setRendering] = useState(false);
-  const openRender = useCallback(() => {
-    // Renders come from the 3D body; bring it up if the flat view is on.
-    if (effectiveMode !== "3d") setMode("3d");
-    setRenderOpen(true);
-  }, [effectiveMode]);
-
-  /**
-   * Render the device: for a Duo each pose folds the REAL simulator first and
-   * waits for it to settle, so every shot shows the panel and layout that
-   * pose really has. Every image (and the video) is filed to the proof drawer.
-   */
-  const runRender = useCallback(async (request: AppleRenderRequest): Promise<number> => {
-    const renderer = rendererRef.current;
-    if (!renderer) {
-      showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
-      throw new Error("The 3D view is still loading.");
-    }
-    setRendering(true);
-    const options = {
-      width: 1600,
-      height: 1600,
-      lighting: request.lighting,
-      shadow: request.shadow,
-    };
-    const shots = APPLE_RENDER_ANGLES.filter((angle) => request.angles.includes(angle.id));
-    const images: Array<{ dataUrl: string; label: string }> = [];
-    /*
-     * A pose is ready to shoot once the simulator itself says so: its hinge
-     * at the pose's angle and the panel that pose lights on. Then iOS still
-     * animates its interface into the new orientation, so give that time too.
-     * A fixed wait shot the closed phone before its cover came on.
-     */
-    const POSE_TARGETS: Record<AppleDevicePose, { angle: number; screen: number }> = {
-      closed: { angle: 0, screen: APPLE_DUO_COVER_SCREEN_ID },
-      tent: { angle: 80, screen: APPLE_DUO_COVER_SCREEN_ID },
-      laptop: { angle: 90, screen: APPLE_DUO_INNER_SCREEN_ID },
-      book: { angle: 90, screen: APPLE_DUO_INNER_SCREEN_ID },
-      open: { angle: 180, screen: APPLE_DUO_INNER_SCREEN_ID },
-    };
-    const settle = async (pose: AppleDevicePose) => {
-      const target = POSE_TARGETS[pose];
-      const deadline = Date.now() + 8_000;
-      while (Date.now() < deadline) {
-        const posture = duoPostureRef.current;
-        if (posture?.angle != null && Math.abs(posture.angle - target.angle) <= 3
-          && posture.activeScreenId === target.screen) break;
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-    };
-    try {
-      const passes: Array<AppleDevicePose | null> = request.poses.length ? request.poses : [null];
-      for (const pose of passes) {
-        if (pose) {
-          await window.ade.iosSimulator.setPosture({ laneId, chatSessionId: sessionId, pose }, runtimePinRef.current);
-          await settle(pose);
-        }
-        const rendered = rendererRef.current?.renderShots(shots.map((angle) => angle.shot), options) ?? [];
-        rendered.forEach((dataUrl, index) => images.push({
-          dataUrl,
-          label: [pose ? pose[0]!.toUpperCase() + pose.slice(1) : null, shots[index]!.label].filter(Boolean).join(" · "),
-        }));
-      }
-      const name = deviceName ?? "device";
-      // The scene bridge files a PNG or WebM to this chat's proof drawer. A
-      // window without it (the web client) has nowhere to put renders.
-      const attachRenderProof = (args: { dataUrl: string; title: string; sessionId: string | null }) =>
-        window.ade.scene?.attachProof(args) ?? Promise.resolve(false);
-      let filed = 0;
-      for (const image of images) {
-        if (await attachRenderProof({ dataUrl: image.dataUrl, title: `${name} · ${image.label}`, sessionId })) filed++;
-      }
-      if (request.contactSheet && images.length > 1) {
-        const sheet = await appleRenderContactSheet(images);
-        if (sheet && await attachRenderProof({ dataUrl: sheet, title: `${name} · contact sheet`, sessionId })) filed++;
-      }
-      if (request.video) {
-        const blob = await rendererRef.current?.renderTurntable({ ...options, width: 1280, height: 1280, seconds: 6 });
-        if (blob) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result).replace(/^data:video\/webm;[^,]*,/, "data:video/webm;base64,"));
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(blob);
-          });
-          if (await attachRenderProof({ dataUrl, title: `${name} · turntable`, sessionId })) filed++;
-        }
-      }
-      showToast({ id: "apple-render", tone: "success", title: `Rendered ${filed} item${filed === 1 ? "" : "s"} to the proof drawer` });
-      setRenderOpen(false);
-      return filed;
-    } catch (cause) {
-      setError(cause);
-      throw cause;
-    } finally {
-      setRendering(false);
-    }
-  }, [deviceName, laneId, sessionId]);
-
-  /*
-   * `ade apple render`: the service asks the pane open for this lane. Ack at
-   * once (so the CLI knows a pane took it), bring up the 3D view if the flat
-   * one is on, render, and report what was filed.
-   */
-  const runRenderRef = useRef(runRender);
-  runRenderRef.current = runRender;
-  const renderStateRef = useRef({ laneId, live: false, stalled: false });
-  // A stalled stream (the window was in the background) still renders: the
-  // pane reconnects first so the shots get fresh frames.
-  renderStateRef.current = {
+  const { rendererRef, renderOpen, setRenderOpen, rendering, openRender, runRender } = useAppleRenderRequests({
     laneId,
+    sessionId,
+    deviceName,
+    duoCapable,
+    runtimePinRef,
+    pinKey: runtimePin?.key ?? null,
+    effectiveMode,
+    setMode,
     live: (state === "live" || state === "video-lost") && canUse3d,
     stalled: state === "video-lost",
-  };
-  const reconnectStreamRef = useRef(stream.reconnect);
-  reconnectStreamRef.current = stream.reconnect;
-  useEffect(() => {
-    return window.ade.iosSimulator.onEvent((event) => {
-      if (event.type !== "apple.render.request") return;
-      const current = renderStateRef.current;
-      if (!current.live || (event.laneId && current.laneId && event.laneId !== current.laneId)) return;
-      const pin = runtimePinRef.current;
-      void (async () => {
-        const ack = await window.ade.iosSimulator.renderAck({ requestId: event.requestId }, pin).catch(() => null);
-        // Another window's pane took it first.
-        if (!ack?.ok) return;
-        setMode("3d");
-        if (renderStateRef.current.stalled) {
-          reconnectStreamRef.current();
-          const liveBy = Date.now() + 10_000;
-          while (renderStateRef.current.stalled && Date.now() < liveBy) {
-            await new Promise((resolve) => setTimeout(resolve, 200));
-          }
-        }
-        const deadline = Date.now() + 10_000;
-        while (!rendererRef.current && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-        }
-        let filed = 0;
-        let error: string | null = null;
-        try {
-          filed = await runRenderRef.current(event.request);
-        } catch (cause) {
-          error = cause instanceof Error ? cause.message : String(cause);
-        }
-        await window.ade.iosSimulator.renderComplete({ requestId: event.requestId, filed, error }, pin).catch(() => undefined);
-      })();
-    });
-  }, []);
+    reconnect: stream.reconnect,
+    onError: (cause) => setError(cause),
+  });
 
-  /** Read the pose once the Duo is live; posture events keep it current after that. */
-  const duoLive = duoCapable && state === "live";
-  useEffect(() => {
-    if (!duoLive) {
-      setDuoPosture(null);
-      return;
-    }
-    // An older host has no posture action: the Duo body still draws.
-    if (typeof window.ade.iosSimulator.getPosture !== "function") return;
-    let cancelled = false;
-    void window.ade.iosSimulator
-      .getPosture({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
-      .then((posture) => {
-        if (cancelled) return;
-        setDuoPosture(posture);
-        if (posture.angle !== null) {
-          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle: posture.angle! }));
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [duoLive, laneId, sessionId, runtimePin?.key]);
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -1324,7 +1067,8 @@ export function AppleDevicePane({
               powered-off lane device read as one that was about to come up. The
               label sits outside the stage so the dimming does not fade it too.
             */}
-            {duoControlsEnabled && state === "live" ? (
+            {/* The hinge drives the real simulator, so it shows in flat mode too. */}
+            {duoCapable && state === "live" ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-4 z-[3] flex justify-center">
                 <AppleDuoHingeBar
                   angle={duoState.pose.angle}
@@ -1526,7 +1270,7 @@ export function AppleDevicePane({
               screenshotPending={screenshotPending}
               onHome={pressHome}
               onHardwareButton={pressHardwareButton}
-              duo={duoControlsEnabled
+              duo={duoCapable
                 ? {
                     capable: true,
                     angle: duoState.pose.angle,
@@ -1549,7 +1293,7 @@ export function AppleDevicePane({
                   }))
                   .catch((cause: unknown) => setError(cause));
               }}
-              onDuoAddSkill={typeof window.ade.iosSimulator.addDuoSkill === "function" ? () => {
+              onDuoAddSkill={() => {
                 void window.ade.iosSimulator
                   .addDuoSkill({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
                   .then((result) => showToast({
@@ -1559,7 +1303,7 @@ export function AppleDevicePane({
                     message: "Agents in the lane find it in .agents/skills/app-resizability. Ask one to get the app ready for the iPhone Duo.",
                   }))
                   .catch((cause: unknown) => setError(cause));
-              } : undefined}
+              }}
               onDuoNudge={(delta) => {
                 const next = clampAppleDuoAngle(duoState.pose.angle + delta);
                 setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
@@ -1648,7 +1392,6 @@ export function AppleDevicePane({
       </div>
       {renderOpen ? (
         <AppleRenderSheet
-          open
           deviceName={deviceName}
           duo={duoCapable}
           rendering={rendering}

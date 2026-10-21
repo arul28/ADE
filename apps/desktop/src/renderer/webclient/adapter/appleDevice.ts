@@ -221,7 +221,7 @@ export function createAppleDeviceNamespace(
     deviceCleanup: (async (args?: unknown) => invoke("deviceCleanup", args ?? {}, false)) as never,
     runtimeList: (async () => invoke("runtimeList", {}, true)) as never,
     runtimeInstall: (async (args?: unknown) => invoke("runtimeInstall", args ?? {}, false)) as never,
-    runtimeInstallCancel: (async () => invoke("runtimeInstallCancel", {}, false)) as never,
+    runtimeInstallCancel: (async (args?: unknown) => invoke("runtimeInstallCancel", args ?? {}, false)) as never,
     runtimeDelete: (async (args?: unknown) => invoke("runtimeDelete", args ?? {}, false)) as never,
     runtimePrune: (async (args?: unknown) => invoke("runtimePrune", args ?? {}, false)) as never,
     xcodeRunFirstLaunch: (async (args?: unknown) => invoke("xcodeRunFirstLaunch", args ?? {}, false)) as never,
@@ -332,6 +332,7 @@ export function createAppleDeviceNamespace(
     getDuoModel: (async () => invoke("getDuoModel", {}, true)) as never,
     duoAppStoreScreenshots: (async (args?: unknown) => invoke("duoAppStoreScreenshots", args ?? {}, false)) as never,
     addDuoSkill: (async (args?: unknown) => invoke("addDuoSkill", args ?? {}, false)) as never,
+    attachRenderProof: (async (args?: unknown) => invoke("attachRenderProof", args ?? {}, false)) as never,
     frame: (async (args?: unknown) => invoke("frame", args ?? {}, false)) as never,
     // SwiftUI preview lab. The drawer mounts these on open, so a web tab that
     // lacked them threw in an effect rather than degrading.

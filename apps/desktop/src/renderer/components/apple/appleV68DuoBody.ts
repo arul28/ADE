@@ -1,6 +1,8 @@
 import type { BufferGeometry, Group, Material, Mesh, Object3D, Raycaster, Texture, Vector3 } from "three";
 import { disposeImportedSubtree, type DeviceBody, type DuoBodyControls, type ThreeNS } from "./appleDeviceScene";
 import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
+import { clampAppleDuoAngle } from "./appleDuo";
+import { appleEaseFactor } from "./appleDeviceOrbit";
 
 /**
  * The iPhone Duo on Apple's own model (`V68.usdz` from the local Xcode,
@@ -10,7 +12,7 @@ import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../s
  *
  * Unlike every other body, this one is PHYSICAL: the model's inner display is
  * landscape and its cover portrait, exactly as the phone is. So it opts out of
- * the 3D view's display-orientation turn (`physicalOrientation`) and maps each
+ * the 3D view's display-orientation turn (`physical`) and maps each
  * panel's raw framebuffer onto its own mesh:
  *
  * - inner: the panel is mounted a quarter turn from its framebuffer, so a
@@ -79,10 +81,9 @@ export function createV68DuoBody(
     angle: number;
     activeScreenId: number | null;
   },
-): DeviceBody & { physicalOrientation: true } {
+): DeviceBody {
   const root = new THREE.Group();
   const orientation = new THREE.Group();
-  root.add(orientation);
   // A deep clone shares geometry with the cached model; this body writes its
   // own UVs, so every mesh gets its own geometry.
   const model = options.model.clone(true);
@@ -187,7 +188,6 @@ export function createV68DuoBody(
   let coverYaw = 0;
   let lastAnimateAt = 0;
   const holder = new THREE.Group();
-  root.remove(orientation);
   holder.add(orientation);
   root.add(holder);
   const activeMap = () => (activeScreenId === APPLE_DUO_COVER_SCREEN_ID ? coverMap : innerMap);
@@ -232,9 +232,8 @@ export function createV68DuoBody(
 
   /** Exponential ease: ~90% of the way in 230 ms, whatever the frame rate. */
   const animate = (now: number): boolean => {
-    const dt = lastAnimateAt ? Math.min(0.1, Math.max(0, (now - lastAnimateAt) / 1000)) : 1 / 60;
+    const k = appleEaseFactor(lastAnimateAt, now, 0.1);
     lastAnimateAt = now;
-    const k = 1 - Math.exp(-dt / 0.1);
     const yawGoal = targetCoverYaw();
     const settled = Math.abs(targetAngle - angle) < 0.05
       && Math.abs(targetTurn - physicalTurn) < 0.001
@@ -264,12 +263,9 @@ export function createV68DuoBody(
     return map.toFrame(local.x, local.y);
   };
 
-  const duo: DuoBodyControls & {
-    setActivePanel: (screenId: number | null) => void;
-    setPhysicalOrientation: (orientation: string | null) => void;
-  } = {
+  const duo: DuoBodyControls = {
     setHinge(next) {
-      targetAngle = Math.min(180, Math.max(0, next));
+      targetAngle = clampAppleDuoAngle(next);
     },
     setPhysicalOrientation(value) {
       targetTurn = value === "landscape-left" ? Math.PI / 2 : value === "landscape-right" ? -Math.PI / 2 : 0;
@@ -317,7 +313,7 @@ export function createV68DuoBody(
     // Fixed by the hardware: the panel mapping never depends on orientation.
     rewriteUvs: () => undefined,
     duo,
-    physicalOrientation: true,
+    physical: true,
     dispose() {
       for (const [mesh, material] of originalMaterials) mesh.material = material;
       liveMaterial.dispose();

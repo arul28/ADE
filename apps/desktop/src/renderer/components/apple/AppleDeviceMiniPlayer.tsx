@@ -24,7 +24,7 @@ import { showToast } from "../app/toast/toastStore";
 import { useAppleRecordings } from "./appleRecording";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
-import { APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
+import { appleDuoDisplayOrientation, appleDuoInnerPanelLive, useAppleDuoPosture } from "./useAppleDuoPosture";
 
 /**
  * The device, floating over the chat.
@@ -167,29 +167,20 @@ function AppleMiniPlayerFrameView({
   }, [target.deviceUdid, target.runtimePin, pinRef]);
 
   /*
-   * The Duo's inner panel is mounted a quarter turn from its framebuffer, so
-   * while it is the live panel the picture is drawn landscape-left (as the
-   * pane draws it for a portrait phone). Read once, then follow the folds.
+   * A Duo's inner panel is mounted a quarter turn from its framebuffer, so
+   * while it is the live panel the picture is drawn turned (as the pane draws
+   * it for a portrait phone), and the box takes the panel's landscape shape.
    */
-  const [innerPanelLive, setInnerPanelLive] = useState(false);
-  useEffect(() => {
-    const iosSimulator = window.ade?.iosSimulator;
-    if (typeof iosSimulator?.getPosture !== "function") return;
-    let cancelled = false;
-    void iosSimulator.getPosture({ deviceUdid: target.deviceUdid }, pinRef.current)
-      .then((posture) => {
-        if (!cancelled) setInnerPanelLive(posture.supported && posture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID);
-      })
-      .catch(() => undefined);
-    const unsubscribe = iosSimulator.onEvent((event) => {
-      if (event.type !== "apple.device.posture" || event.udid !== target.deviceUdid) return;
-      setInnerPanelLive(event.posture.supported && event.posture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID);
-    }, pinRef.current);
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [target.deviceUdid, target.runtimePin?.key, pinRef]);
+  const { posture } = useAppleDuoPosture({
+    enabled: streaming,
+    deviceUdid: target.deviceUdid,
+    laneId: target.laneId,
+    chatSessionId: target.chatSessionId,
+    runtimePinRef: pinRef,
+    pinKey: target.runtimePin?.key ?? null,
+  });
+  const displayOrientation = appleDuoDisplayOrientation("portrait", posture);
+  const innerPanelLive = appleDuoInnerPanelLive(posture);
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
@@ -390,7 +381,7 @@ function AppleMiniPlayerFrameView({
           viewNonce={0}
           family={target.family}
           deviceTypeName={target.deviceName}
-          orientation={innerPanelLive ? "landscape-left" : "portrait"}
+          orientation={displayOrientation}
           devicePointSize={stream.devicePointSize}
           // Concealed, the screen must not take focus or keys you cannot see.
           interactive={!pipActive}

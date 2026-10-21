@@ -331,6 +331,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.duoAppStoreScreenshots", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.addDuoSkill", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.attachRenderProof", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   // A render folds the Duo per pose and records a turntable.
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],

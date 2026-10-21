@@ -16,6 +16,8 @@
  * - `vFromBottom` is the continuous-canvas v in [0, 1], 0 at the bottom.
  */
 
+import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
+
 export type AppleDuoStanceId = "open" | "laptop" | "tent" | "closed";
 
 export type AppleDuoPose = {
@@ -49,10 +51,12 @@ export const APPLE_DUO_NUDGE_DEGREES = 15;
  * and Closed are the extremes; Tent is symmetric; Laptop rests on a flat base.
  */
 export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
-  { id: "open", label: "Open", angle: 180, lowerFlat: false },
-  { id: "laptop", label: "Laptop", angle: 105, lowerFlat: true },
-  { id: "tent", label: "Tent", angle: 70, lowerFlat: false },
-  { id: "closed", label: "Closed", angle: 0, lowerFlat: false },
+  { id: "open", label: "Open", angle: APPLE_DEVICE_POSE_TARGETS.open.angle, lowerFlat: false },
+  // The simulator's own preset angles (APPLE_DEVICE_POSE_TARGETS): drawn at
+  // anything else, the hinge jumped when the simulator's report landed.
+  { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: true },
+  { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle, lowerFlat: false },
+  { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, lowerFlat: false },
 ];
 
 export function clampAppleDuoAngle(angle: number): number {

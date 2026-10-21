@@ -9,7 +9,7 @@ import Foundation
 /// "posture" means to the pane and the CLI.
 enum DevicePosture {
     /// Device Hub's presets, as `HingePoseControl` spells them.
-    static let poses: Set<String> = ["closed", "open", "laptop", "book", "tent"]
+    static let poses: Set<String> = Set(poseAngles.keys)
 
     struct Display: Equatable {
         let screenID: UInt32
@@ -121,7 +121,7 @@ enum DevicePosture {
         // which end the hinge is nearer: the cover shows only when closed.
         var current = await bridge.hingeState(udid: udid).angle
         if current == nil, let active = await displays(udid: udid).first(where: \.active)?.screenID {
-            current = active == 1 ? 0 : 180
+            current = active == DuoScreen.cover ? 0 : 180
         }
         if let current, abs(current - target) > 10 {
             let steps = Int((abs(current - target) / 10).rounded(.up))
@@ -142,6 +142,13 @@ enum DevicePosture {
         }
         return true
     }
+}
+
+/// The iPhone Duo's panels by SimScreen id (the TS side's
+/// `APPLE_DUO_COVER_SCREEN_ID` / `APPLE_DUO_INNER_SCREEN_ID`).
+enum DuoScreen {
+    static let cover: UInt32 = 1
+    static let inner: UInt32 = 3
 }
 
 /// One watcher per device: CoreDevice's device-state stream, plus a display
@@ -168,6 +175,8 @@ actor DevicePostureWatchers {
         guard let current = latest[udid] else { return true }
         return generation > current.generation || (generation == current.generation && revision >= current.revision)
     }
+
+    func isWatching(udid: String) -> Bool { stops[udid] != nil }
 
     func start(udid: String, onChange: @escaping @Sendable (DevicePosture.State) -> Void) async -> Bool {
         if stops[udid] != nil { return true }

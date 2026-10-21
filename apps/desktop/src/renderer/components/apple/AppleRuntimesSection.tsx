@@ -7,23 +7,20 @@ import type {
   AppleXcodeStatus,
 } from "../../../shared/types/iosSimulator";
 import { Button } from "../ui/Button";
-import { Banner } from "../ui/notice/Banner";
+import { Banner } from "../ui/notice";
+import { AppleSpinner } from "./AppleSpinner";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { cn } from "../ui/cn";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
-import { appleRuntimeInstallActive } from "./useAppleRuntimes";
+import { newestAppleRuntimeRunning } from "../../../shared/appleRuntimeVersions";
+import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
 import { showToast } from "../app/toast/toastStore";
 
 /** The Mac App Store page for Xcode. */
-const XCODE_APP_STORE_URL = "macappstore://apps.apple.com/app/xcode/id497799835";
+// https, not macappstore://: external links allow only http(s) and mailto,
+// and macOS hands an apps.apple.com link to the App Store anyway.
+const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
 const XCODE_UPDATE_BANNER_KEY = "apple-xcode-update";
-
-const Spinner = () => (
-  <span
-    aria-hidden="true"
-    className="h-3 w-3 shrink-0 animate-spin rounded-full border border-muted-fg/35 border-t-accent"
-  />
-);
 
 /**
  * Decimal gigabytes, as Xcode and `xcodebuild -downloadPlatform` print them, so
@@ -61,14 +58,11 @@ async function confirmRemoval(input: {
   const simulators = input.entries.flatMap((entry) => entry.simulators);
   const removing = new Set(input.entries.map((entry) => entry.runtimeIdentifier));
   const entryOf = new Map(input.entries.flatMap((entry) => entry.simulators.map((simulator) => [simulator.udid, entry] as const)));
-  // A simulator can move only to a newer runtime that stays and runs its model.
+  // A simulator can move only to a newer runtime that stays and runs its model
+  // (the same rule the removal itself follows).
   const canMove = (udid: string, typeId: string | null) => {
     const from = entryOf.get(udid);
-    return Boolean(from && typeId && input.all.some((candidate) =>
-      !removing.has(candidate.runtimeIdentifier)
-      && candidate.platform === from.platform
-      && candidate.version.localeCompare(from.version, undefined, { numeric: true }) > 0
-      && candidate.deviceTypes.some((type) => type.identifier === typeId)));
+    return Boolean(from && newestAppleRuntimeRunning(input.all, typeId, { after: from, excluding: removing }));
   };
   const stranded = simulators.filter((simulator) => !canMove(simulator.udid, simulator.deviceTypeIdentifier));
   // A lane's device always moves and is never erased behind its lane, so one
@@ -192,8 +186,10 @@ export function AppleRuntimesSection({
           </div>
         ))}
         {replaceable.length ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            casing="sentence"
             disabled={busy}
             data-apple-runtime-prune=""
             onClick={() => {
@@ -205,17 +201,14 @@ export function AppleRuntimesSection({
                 if (choice) onPrune(choice);
               });
             }}
-            className={cn(
-              "mt-1 flex min-w-0 items-center gap-2 rounded border-t border-border/40 px-1.5 pb-1 pt-2 text-left font-sans text-[12px] leading-5 text-accent",
-              "hover:text-accent/80 disabled:opacity-50",
-            )}
+            className="mt-1 h-auto w-full min-w-0 justify-start gap-2 rounded-none border-t border-border/40 px-1.5 pb-1 pt-2 text-left text-[12px] leading-5 text-accent"
           >
-            {removing ? <Spinner /> : null}
+            {removing ? <AppleSpinner /> : null}
             <span className="min-w-0 flex-1">
               {`Free ${replaceableBytes ? gigabytes(replaceableBytes) : "space"}: remove ${replaceable.length} older runtime${replaceable.length === 1 ? "" : "s"}`}
             </span>
             <span aria-hidden="true">▸</span>
-          </button>
+          </Button>
         ) : null}
       </div>
       <p className="min-w-0 break-words px-0.5 font-sans text-[11px] leading-4 text-muted-fg">

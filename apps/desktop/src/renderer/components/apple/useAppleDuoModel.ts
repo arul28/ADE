@@ -16,8 +16,6 @@ function loadFor(key: string, pin: OpenProjectBinding | null): Promise<Group | n
   let pending = models.get(key);
   if (!pending) {
     pending = (async () => {
-      // An older host has no model action: the drawn body stands in.
-      if (typeof window.ade.iosSimulator.getDuoModel !== "function") return null;
       const result = await window.ade.iosSimulator.getDuoModel(pin);
       if (!result.base64) {
         // No model on that Xcode right now (or a transient miss): ask again

@@ -57,6 +57,7 @@ import type {
   AppleRuntimeDeleteArgs,
   AppleRuntimeDeleteResult,
   AppleRuntimeInstallArgs,
+  AppleRuntimeScope,
   AppleRuntimeInstallState,
   AppleRuntimeInventory,
   AppleRuntimePruneArgs,
@@ -3094,7 +3095,10 @@ declare global {
           args?: AppleRuntimeInstallArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRuntimeInstallState>;
-        runtimeInstallCancel: (pin?: OpenProjectBinding | null) => Promise<AppleRuntimeInstallState | null>;
+        runtimeInstallCancel: (
+          args?: AppleRuntimeScope,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRuntimeInstallState | null>;
         runtimeDelete: (
           args: AppleRuntimeDeleteArgs,
           pin?: OpenProjectBinding | null,
@@ -3104,7 +3108,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleRuntimeDeleteResult>;
         xcodeRunFirstLaunch: (
-          args?: { confirmedByUser?: boolean },
+          args?: AppleRuntimeScope & { confirmedByUser?: boolean },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleXcodeStatus>;
         frame: (
@@ -3168,6 +3172,10 @@ declare global {
           args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDuoAppStoreScreenshotsResult>;
+        attachRenderProof: (
+          args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ proofArtifactId: string | null }>;
         addDuoSkill: (
           args?: { laneId?: string | null; chatSessionId?: string | null },
           pin?: OpenProjectBinding | null,

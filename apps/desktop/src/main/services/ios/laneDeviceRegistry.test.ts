@@ -11,11 +11,11 @@ import {
 import {
   appleDeviceDataRoot,
   appleDeviceFamily,
-  appleRuntimeScore,
   parseAppleDeviceDiskUsage,
   pickAppleDeviceSpec,
 } from "./appleSimulatorCatalog";
 import { endLaneDeviceRow, releaseLaneAppleDevice } from "./laneDeviceRelease";
+import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { AppleDeviceAttachedNotDeletableError } from "./appleDeviceErrors";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
