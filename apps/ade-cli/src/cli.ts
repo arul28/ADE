@@ -25124,7 +25124,7 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout, isMachineAdeHome },
+    { resolveMachineAdeLayout, isSyncCapableAdeHome },
     { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
@@ -25241,10 +25241,10 @@ async function runServe(
     });
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
-  const isMachineSecretsHome = isMachineAdeHome(path.dirname(layout.secretsDir));
+  const isMachineSecretsHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
   const syncEnabled = !readFlag(args, ["--no-sync"]) && isMachineSecretsHome;
   if (!isMachineSecretsHome && !readFlag(args, ["--no-sync"])) {
-    process.stderr.write("ADE: sync disabled because ADE_HOME is not the machine's default home.\n");
+    process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
   }
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.

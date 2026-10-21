@@ -3,13 +3,28 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { isMachineAdeHome, resolveMachineAdeLayout } from "./machineLayout";
+import { isMachineAdeHome, isSyncCapableAdeHome, resolveMachineAdeLayout } from "./machineLayout";
 
 describe("isMachineAdeHome", () => {
   it("accepts only the default machine state root", () => {
     const machineHome = path.join(os.homedir(), ".ade");
     expect(isMachineAdeHome(machineHome, machineHome)).toBe(true);
     expect(isMachineAdeHome(path.join(os.tmpdir(), "ade-isolated-home"), machineHome)).toBe(false);
+  });
+});
+
+describe("isSyncCapableAdeHome", () => {
+  // Alpha and Beta must keep phone sync: they are how a build is tested end to
+  // end. Any other home, and a channel brain in someone else's home, must not.
+  it.each([
+    ["the default home", ".ade", {}, true],
+    ["Alpha in its own home", ".ade-alpha", { ADE_PACKAGE_CHANNEL: "alpha" }, true],
+    ["Beta in its own home", ".ade-beta", { ADE_PACKAGE_CHANNEL: "beta" }, true],
+    ["Alpha's home without the channel", ".ade-alpha", {}, false],
+    ["Alpha pointed at Beta's home", ".ade-beta", { ADE_PACKAGE_CHANNEL: "alpha" }, false],
+    ["a scratch home", ".ade-scratch", { ADE_PACKAGE_CHANNEL: "alpha" }, false],
+  ])("%s", (_label, home, env, expected) => {
+    expect(isSyncCapableAdeHome(path.join(os.homedir(), home), env)).toBe(expected);
   });
 });
 

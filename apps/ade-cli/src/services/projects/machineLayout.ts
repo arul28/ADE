@@ -39,6 +39,24 @@ export function isMachineAdeHome(adeDir: string, machineHome = resolveMachineAde
     : actual === expected;
 }
 
+/**
+ * Whether a brain in this home may run machine sync: the user's default home,
+ * or a packaged channel (Alpha, Beta) in its own channel home.
+ *
+ * Any other home is an isolated copy of machine state (a scratch home, a
+ * hand-started brain) whose device identity must not claim the projects it
+ * shares with the real brain. A channel build is not that: it is the way a
+ * build is tested end to end, phone included, and the sync-host singleton
+ * already keeps two channels from syncing at once. Dev apps never get here
+ * with sync on; their launcher starts the brain with `--no-sync`.
+ */
+export function isSyncCapableAdeHome(adeDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (isMachineAdeHome(adeDir)) return true;
+  const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  if (channel !== "alpha" && channel !== "beta") return false;
+  return isMachineAdeHome(adeDir, path.join(os.homedir(), `.ade-${channel}`));
+}
+
 function windowsUserIdentity(env: NodeJS.ProcessEnv): string {
   const sid = env.ADE_WINDOWS_USER_SID?.trim() || env.USER_SID?.trim();
   if (sid) return `sid:${sid.toLowerCase()}`;
