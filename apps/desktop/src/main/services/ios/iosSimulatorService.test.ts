@@ -2327,11 +2327,21 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       await service.touch({ ...lane, phase: "move", x: 50, y: 50 });
       expect(touches()).toHaveLength(3);
 
-      // The viewer goes quiet with the finger down: lifted where it last was.
+      // A finger held still: the viewer repeats its point, which keeps it down
+      // past the idle limit and costs the helper nothing.
       await service.touch({ ...lane, phase: "begin", x: 10, y: 20 });
-      await vi.advanceTimersByTimeAsync(1_501);
+      for (let beat = 0; beat < 4; beat += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await vi.advanceTimersByTimeAsync(1_000);
+        // eslint-disable-next-line no-await-in-loop
+        await service.touch({ ...lane, phase: "move", x: 10, y: 20 });
+      }
+      expect(touches().slice(3)).toEqual(["begin 10,20"]);
+
+      // The viewer goes quiet with the finger down: lifted where it last was.
+      await vi.advanceTimersByTimeAsync(4_001);
       expect(touches().slice(3)).toEqual(["begin 10,20", "end 10,20"]);
-      await expect(service.touch({ ...lane, phase: "wiggle", x: 1, y: 1 })).rejects.toThrow(/begin, move or end/);
+      await expect(service.touch({ ...lane, phase: "wiggle" as never, x: 1, y: 1 })).rejects.toThrow(/begin, move or end/);
     } finally {
       service.dispose();
       restoreHelper();

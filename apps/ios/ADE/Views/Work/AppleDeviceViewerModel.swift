@@ -244,11 +244,12 @@ final class AppleDeviceViewerModel: ObservableObject {
   var usesLiveTouch: Bool { ticket?.liveTouch == true }
 
   /// A live finger on the picture. The latency clock starts when it lands.
-  func touch(_ phase: String, at point: CGPoint) {
-    guard mode == .controlling || phase == "end" else { return }
+  /// An `end` always goes out, so a finger is never left down.
+  func touch(_ phase: AppleTouchPhase, at point: CGPoint) {
+    guard mode == .controlling || phase == .end else { return }
     let now = Date()
     lastControlActivity = now
-    if phase == "begin" { latency.gestureSent(at: now) }
+    if phase == .begin { latency.gestureSent(at: now) }
     liveTouch.push(phase, at: point)
   }
 

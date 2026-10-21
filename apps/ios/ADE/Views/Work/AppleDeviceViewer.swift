@@ -157,8 +157,8 @@ struct AppleDeviceViewer: View {
         showsKeyboard = false
         keyboardFocused = false
         // Control ended under a held finger: lift it, never leave it down.
-        if let held = gesture, model.usesLiveTouch {
-          model.touch("end", at: held.last)
+        if let held = gesture, held.isLive {
+          model.touch(.end, at: held.last)
         }
         gesture = nil
       }
@@ -261,12 +261,15 @@ struct AppleDeviceViewer: View {
           addTouchMark(at: value.startLocation)
           // A host that takes a live finger gets it as it lands, so the
           // device moves under the finger instead of once it lifts.
-          if model.usesLiveTouch { model.touch("begin", at: start) }
+          if model.usesLiveTouch {
+            gesture?.isLive = true
+            model.touch(.begin, at: start)
+          }
         }
         if let point = model.devicePoint(for: value.location, in: rect, rotation: rotation),
            point != gesture?.last {
           gesture?.move(to: point)
-          if model.usesLiveTouch { model.touch("move", at: point) }
+          if gesture?.isLive == true { model.touch(.move, at: point) }
         }
       }
       .onEnded { value in
@@ -278,12 +281,13 @@ struct AppleDeviceViewer: View {
           watchingTap()
           return
         }
-        guard let rect, let started = gesture,
-              let end = model.devicePoint(for: value.location, in: rect, rotation: rotation)
-        else { return }
-        if model.usesLiveTouch {
-          model.touch("end", at: end)
-        } else {
+        guard let started = gesture else { return }
+        let end = rect.flatMap { model.devicePoint(for: value.location, in: $0, rotation: rotation) }
+        if started.isLive {
+          // Even with nothing left to map against (a reconnect mid-gesture),
+          // the finger comes up where it last was.
+          model.touch(.end, at: end ?? started.last)
+        } else if let end {
           model.send(gesture: started, endingAt: end)
         }
       }

@@ -704,13 +704,17 @@ normalises against portrait. When the stream ticket says `liveTouch: true`,
 the finger is sent as it moves: `apple.input` kind `touch` with phase `begin`,
 `move` and `end`, one call in flight, a waiting `move` replaced by the newer one
 (`AppleLiveTouchSender`). The device moves under the finger rather than after
-it lifts. The host (`touch` in `iosSimulatorService.ts`) holds at most one
-finger per lane and lifts one the viewer stops updating after 1.5 s, so a phone
-that drops off the network never leaves a touch held down. Against an older
-host the gesture leaves as one call instead: a `tap` under 10 points of
-travel, else a `drag` replayed at its real duration (60 ms–2 s). Buttons are
-`apple.invoke pressButton`. Text is `apple.input type`. Calls are never queued
-or retried.
+it lifts. While the finger is down its point is repeated every 500 ms, so a
+long press or a pause mid-drag keeps it held. The host (`touch` in
+`iosSimulatorService.ts`) holds at most one finger per lane, lifts one the
+viewer stops updating after 4 s (a phone off the network never leaves a touch
+held down), lifts it before any other tap or drag on the lane, and changes its
+held state before calling the helper so a failed or slow send cannot strand
+one. Against an older host the gesture leaves as one call instead: a `tap`
+under 10 points of travel, else a `drag` replayed at its real duration
+(60 ms–2 s). Buttons are `apple.invoke pressButton`. Text is `apple.input
+type`. Nothing is retried, and nothing but a live finger's own moves waits
+behind another call.
 
 On the host, `apple.input` stamps `source: "user"` (a person's tap never
 starts an agent's auto-recording) and reads the owner from memory

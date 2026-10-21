@@ -25241,9 +25241,9 @@ async function runServe(
     });
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
-  const isMachineSecretsHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
-  const syncEnabled = !readFlag(args, ["--no-sync"]) && isMachineSecretsHome;
-  if (!isMachineSecretsHome && !readFlag(args, ["--no-sync"])) {
+  const syncCapableHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
+  const syncEnabled = !readFlag(args, ["--no-sync"]) && syncCapableHome;
+  if (!syncCapableHome && !readFlag(args, ["--no-sync"])) {
     process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
   }
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
@@ -25946,7 +25946,7 @@ async function runServe(
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
-      hostStartupEnabled: isMachineSecretsHome,
+      hostStartupEnabled: syncCapableHome,
       // The machine's own brain may claim the cluster record for any project it
       // serves, including before that project is selected as the host.
       mayClaimCluster: syncEnabled,

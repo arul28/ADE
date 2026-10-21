@@ -62,7 +62,7 @@ export type AppleDeviceRemoteService = {
     deviceUdid?: string | null;
     chatSessionId?: string | null;
     source?: "user" | "agent";
-    phase: string;
+    phase: "begin" | "move" | "end";
     x: number;
     y: number;
   }): Promise<unknown>;
@@ -514,12 +514,16 @@ export function createAppleRemoteCommandHandlers(deps: {
             if (typeof service.touch !== "function") {
               throw new Error("apple.input touch is not available in this runtime.");
             }
+            const phase = requireString(payload.phase, "apple.input touch requires a phase.");
+            if (phase !== "begin" && phase !== "move" && phase !== "end") {
+              throw new Error("apple.input touch phase must be begin, move or end.");
+            }
             await service.touch({
               laneId,
               deviceUdid,
               chatSessionId,
               source: "user",
-              phase: requireString(payload.phase, "apple.input touch requires a phase."),
+              phase,
               x: requireFiniteNumber(payload.x, "x"),
               y: requireFiniteNumber(payload.y, "y"),
             });

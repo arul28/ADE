@@ -154,8 +154,8 @@ enum AppleDeviceTouchMapping {
 
 /// What one control leaves the phone as. Device POINTS throughout.
 enum AppleDeviceInput: Equatable {
-  /// One phase of a live finger: `begin`, `move` or `end`.
-  case touch(phase: String, at: CGPoint)
+  /// One phase of a live finger.
+  case touch(phase: AppleTouchPhase, at: CGPoint)
   case tap(CGPoint)
   case drag(from: CGPoint, to: CGPoint, durationMs: Int)
   case type(String)
@@ -171,7 +171,7 @@ enum AppleDeviceInput: Equatable {
     switch self {
     case .touch(let phase, let point):
       args["kind"] = "touch"
-      args["phase"] = phase
+      args["phase"] = phase.rawValue
       args["x"] = Self.round(point.x)
       args["y"] = Self.round(point.y)
     case .tap(let point):
@@ -216,6 +216,9 @@ struct AppleDeviceGesture: Equatable {
 
   let start: CGPoint
   let startedAt: Date
+  /// Sent as a live finger from its `begin`, so it must end the same way
+  /// whatever happens to the stream meanwhile.
+  var isLive = false
   private(set) var last: CGPoint
   private(set) var travel: Double = 0
 
@@ -243,24 +246,55 @@ struct AppleDeviceGesture: Equatable {
   }
 }
 
+/// The phases of a live finger, as `apple.input` kind `touch` names them.
+enum AppleTouchPhase: String, Equatable {
+  case begin
+  case move
+  case end
+}
+
 /// A live finger, sent as it moves, one call in flight at a time.
 ///
 /// `begin` and `end` are never dropped and never reordered; a `move` that has
 /// not left yet is replaced by the newer one, because a finger is where it is
 /// now, not the trail behind it. On a slow link the device sees fewer points
 /// along the way, never stale ones after the finger has moved on.
+///
+/// While a finger is down, its point is repeated every `heartbeat`. A finger
+/// held still sends nothing of its own, and the host lifts a finger it has
+/// not heard about for a few seconds (the guard against a phone that drops
+/// off the network mid-gesture), so a long press would otherwise be cut short.
 @MainActor
 final class AppleLiveTouchSender {
-  private var pending: [(phase: String, point: CGPoint)] = []
-  private var busy = false
-  private let send: (String, CGPoint) async -> Void
+  static let heartbeat: Duration = .milliseconds(500)
 
-  init(send: @escaping (String, CGPoint) async -> Void) {
+  private var pending: [(phase: AppleTouchPhase, point: CGPoint)] = []
+  private var busy = false
+  private var heldPoint: CGPoint?
+  private var heartbeatTask: Task<Void, Never>?
+  private let send: (AppleTouchPhase, CGPoint) async -> Void
+
+  init(send: @escaping (AppleTouchPhase, CGPoint) async -> Void) {
     self.send = send
   }
 
-  func push(_ phase: String, at point: CGPoint) {
-    if phase == "move", let last = pending.last, last.phase == "move" {
+  func push(_ phase: AppleTouchPhase, at point: CGPoint) {
+    switch phase {
+    case .begin:
+      heldPoint = point
+      startHeartbeat()
+    case .move:
+      heldPoint = point
+    case .end:
+      heldPoint = nil
+      heartbeatTask?.cancel()
+      heartbeatTask = nil
+    }
+    enqueue(phase, at: point)
+  }
+
+  private func enqueue(_ phase: AppleTouchPhase, at point: CGPoint) {
+    if phase == .move, let last = pending.last, last.phase == .move {
       pending[pending.count - 1] = (phase, point)
     } else {
       pending.append((phase, point))
@@ -268,6 +302,17 @@ final class AppleLiveTouchSender {
     guard !busy else { return }
     busy = true
     Task { await drain() }
+  }
+
+  private func startHeartbeat() {
+    heartbeatTask?.cancel()
+    heartbeatTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.heartbeat)
+        guard !Task.isCancelled, let self, let point = self.heldPoint else { return }
+        self.enqueue(.move, at: point)
+      }
+    }
   }
 
   private func drain() async {

@@ -5746,6 +5746,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     return enqueueControl("tap", async () => {
+      // Whoever taps now, a live finger still held on this lane comes up first.
+      await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
@@ -5987,6 +5989,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const durationMs = input.durationMs;
     const deltaValue = input.delta;
     return enqueueControl("drag", async () => {
+      await liftLiveTouch(runtime.key, "drag", runtime.laneId);
       if (durationMs != null && !Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
       // `delta` was idb's step size and the helper owns its own stepping now.
       // Still validated rather than ignored: a caller passing a nonsense delta
@@ -6003,30 +6006,49 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * A finger held on a device by a live viewer, per lane: where it started,
    * where it is, and the timer that lifts it if the viewer goes quiet.
    */
-  const liveTouches = new Map<string, {
+  type LiveTouch = {
     udid: string;
     startX: number;
     startY: number;
     x: number;
     y: number;
     release: ReturnType<typeof setTimeout>;
-  }>();
+  };
+  const liveTouches = new Map<string, LiveTouch>();
 
   /**
-   * A held finger the viewer stops updating is lifted after this. A phone that
-   * drops off the network mid-gesture must not leave a touch held down on
-   * someone's simulator.
+   * A held finger the viewer stops updating is lifted after this. The viewer
+   * repeats a still finger's point well inside it, so only a viewer that is
+   * gone (a phone off the network mid-gesture) gets here, and one slow round
+   * trip does not.
    */
-  const LIVE_TOUCH_IDLE_RELEASE_MS = 1_500;
+  const LIVE_TOUCH_IDLE_RELEASE_MS = 4_000;
+
+  const sendTouch = (udid: string, phase: "begin" | "move" | "end", x: number, y: number): Promise<unknown> =>
+    helper().send({ type: "touch", udid, phase, x, y });
+
+  /** Lift a lane's held finger, if any. Best-effort: the device may be gone. */
+  const liftLiveTouch = async (laneKey: string, reason: string, laneId: string | null): Promise<void> => {
+    const held = liveTouches.get(laneKey);
+    if (!held) return;
+    clearTimeout(held.release);
+    liveTouches.delete(laneKey);
+    await sendTouch(held.udid, "end", held.x, held.y).catch((error: unknown) => {
+      args.logger.warn("apple.live_touch_lift_failed", {
+        laneId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   const armLiveTouchRelease = (laneKey: string, runtime: LaneRuntime): ReturnType<typeof setTimeout> => {
     const timer = setTimeout(() => {
+      if (disposed) return;
       void enqueueControl("touch-release", async () => {
-        const held = liveTouches.get(laneKey);
-        if (!held || held.release !== timer) return;
-        liveTouches.delete(laneKey);
+        if (liveTouches.get(laneKey)?.release !== timer) return;
         args.logger.warn("apple.live_touch_released", { laneId: runtime.laneId, reason: "idle" });
-        await helper().send({ type: "touch", udid: held.udid, phase: "end", x: held.x, y: held.y });
+        await liftLiveTouch(laneKey, "idle", runtime.laneId);
       }).catch(() => null);
     }, LIVE_TOUCH_IDLE_RELEASE_MS);
     (timer as unknown as { unref?: () => void }).unref?.();
@@ -6040,36 +6062,34 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    *
    * At most one finger per lane. A `begin` while one is held lifts the old one
    * first; a `move` or `end` with none held (it was already lifted for being
-   * idle) does nothing. Input is noted once, when the finger lifts.
+   * idle) does nothing. A `move` to the point already held only keeps the
+   * finger alive. The held state changes before the helper is called, so a
+   * send that fails or outlives its timeout cannot leave a finger without its
+   * release timer or bring back one that was lifted. Input is noted once, when
+   * the finger lifts.
    */
   const touch = async (input: {
     laneId?: string | null;
     chatSessionId?: string | null;
     deviceUdid?: string | null;
-    phase: string;
+    phase: "begin" | "move" | "end";
     x: number;
     y: number;
     source?: AppleInputSource;
   }): Promise<{ ok: true }> => {
     assertDarwin();
-    if (input.phase !== "begin" && input.phase !== "move" && input.phase !== "end") {
+    const phase: unknown = input.phase;
+    if (phase !== "begin" && phase !== "move" && phase !== "end") {
       throw new Error("touch phase must be begin, move or end.");
     }
-    const phase = input.phase;
     const runtime = resolveRuntime(input);
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
     const x = normalizeCoordinate(input.x, "x");
     const y = normalizeCoordinate(input.y, "y");
     const laneKey = runtime.key;
     return enqueueControl("touch", async () => {
-      const held = liveTouches.get(laneKey);
       if (phase === "begin") {
-        if (held) {
-          clearTimeout(held.release);
-          liveTouches.delete(laneKey);
-          await helper().send({ type: "touch", udid: held.udid, phase: "end", x: held.x, y: held.y });
-        }
-        await helper().send({ type: "touch", udid: deviceUdid, phase: "begin", x, y });
+        await liftLiveTouch(laneKey, "replaced", runtime.laneId);
         liveTouches.set(laneKey, {
           udid: deviceUdid,
           startX: x,
@@ -6079,16 +6099,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           release: armLiveTouchRelease(laneKey, runtime),
         });
         runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+        await sendTouch(deviceUdid, "begin", x, y);
         return { ok: true };
       }
+      const held = liveTouches.get(laneKey);
       if (!held) return { ok: true };
       clearTimeout(held.release);
-      await helper().send({ type: "touch", udid: held.udid, phase, x, y });
       if (phase === "move") {
+        const still = held.x === x && held.y === y;
         liveTouches.set(laneKey, { ...held, x, y, release: armLiveTouchRelease(laneKey, runtime) });
+        if (!still) await sendTouch(held.udid, "move", x, y);
         return { ok: true };
       }
       liveTouches.delete(laneKey);
+      await sendTouch(held.udid, "end", x, y);
       const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
       noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source });
       return { ok: true };
@@ -6928,6 +6952,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     dispose: () => {
       disposed = true;
       maintenance?.stop();
+      for (const held of liveTouches.values()) clearTimeout(held.release);
+      liveTouches.clear();
       for (const runtime of runtimes.values()) {
         runtime.hub?.dispose();
         runtime.hub = null;

@@ -54,7 +54,13 @@ export function isSyncCapableAdeHome(adeDir: string, env: NodeJS.ProcessEnv = pr
   if (isMachineAdeHome(adeDir)) return true;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel !== "alpha" && channel !== "beta") return false;
-  return isMachineAdeHome(adeDir, path.join(os.homedir(), `.ade-${channel}`));
+  return isMachineAdeHome(adeDir, adeHomeForChannel(channel));
+}
+
+/** The default ADE home of a package channel: `~/.ade`, `~/.ade-alpha`, `~/.ade-beta`. */
+export function adeHomeForChannel(channel: string | null): string {
+  if (channel === "alpha" || channel === "beta") return path.join(os.homedir(), `.ade-${channel}`);
+  return path.join(os.homedir(), ".ade");
 }
 
 function windowsUserIdentity(env: NodeJS.ProcessEnv): string {
