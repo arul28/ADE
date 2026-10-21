@@ -2404,6 +2404,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Message queued — will be sent when the current turn completes.")).toBeTruthy();
   });
 
+  it("keeps a title-only detail visible when the row opens", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session entered plan mode",
+          detail: { title: "Plan mode entered" },
+        },
+      },
+    ]);
+
+    fireEvent.click(within(screen.getByTestId("quiet-notice")).getByRole("button"));
+    expect(screen.getByText("Plan mode entered")).toBeTruthy();
+  });
+
   it("draws a warning notice as one compact line that expands to the full message and detail", () => {
     const message = "⚠ Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings. user (/Users/me/.codex/config.toml): `features.rmcp_client` is ignored.";
     renderMessageList([

@@ -878,9 +878,13 @@ function renderNoticeDetail(
     return <div className={`whitespace-pre-wrap break-words ${textClass}`}>{detail}</div>;
   }
 
+  // A quiet row's own message already names what happened, so its title is
+  // redundant — unless the title is all the detail has, and dropping it would
+  // open an empty panel.
+  const detailHasBody = Boolean(detail.summary?.trim() || detail.metrics?.length || detail.sections?.length);
   return (
     <div className={`space-y-3 ${textClass}`}>
-      {!quiet && detail.title?.trim() ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
+      {detail.title?.trim() && (!quiet || !detailHasBody) ? <div className="font-medium text-fg/75">{detail.title.trim()}</div> : null}
       {detail.summary?.trim() ? <div className="whitespace-pre-wrap break-words">{detail.summary.trim()}</div> : null}
       {detail.metrics?.length ? (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -1469,7 +1473,10 @@ function QuietNoticeRow({
   const summary = (
     <>
       <Icon size={12} weight="regular" className="shrink-0 text-fg/35" aria-hidden />
-      <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
+      <span
+        className="min-w-0 break-words text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55"
+        title={event.message}
+      >
         {event.message}
       </span>
       {extraCount > 0 ? (
@@ -1529,7 +1536,7 @@ function QuietNoticeRow({
               {grouped ? (
                 <div className="flex min-w-0 items-center gap-2 text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
                   <QuietEntryIcon event={entry.event} />
-                  <span className="min-w-0 truncate">{entry.event.message}</span>
+                  <span className="min-w-0 break-words">{entry.event.message}</span>
                 </div>
               ) : null}
               {entry.event.detail ? renderNoticeDetail(entry.event.detail, { quiet: true }) : null}
