@@ -350,18 +350,16 @@ struct HubScreen: View {
     )
   }
 
-  /// Two pages with the filter and the rest of the controls in the edge bar
-  /// (see `DuoHomeWide`); Chats pushes on the projects page.
+  /// Two pages: every project, and the agents across them by status (see
+  /// `DuoHomeWide`); Chats pushes on the projects page.
   private var wideHome: some View {
     DuoHomeWide(
       machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
-      needsYou: duoNeedsYouItems(from: hubProjectPresentations),
+      presentations: hubProjectPresentations,
       actions: hubToolbarActions,
-      filter: $rosterFilter,
-      filterCounts: hubRosterFilterCounts,
       account: account.identity,
       showsOverview: canShowProjects || !hubProjectPresentations.isEmpty,
-      onOpenNeedsYou: { item in
+      onOpenAgent: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },
       chatsPresented: $personalChatsPresented,
@@ -409,10 +407,11 @@ struct HubScreen: View {
 
   private var rosterList: some View {
     ScrollView {
+      // The grid sizes its own columns to the width, so it fills the page
+      // edge to edge (with the usual margins) at any width.
       LazyVStack(spacing: 8) {
         rosterRows
       }
-      .frame(maxWidth: 640)
       .frame(maxWidth: .infinity)
       .padding(.horizontal, 16)
       .padding(.top, 8)
@@ -433,21 +432,17 @@ struct HubScreen: View {
     } else if syncService.projects.isEmpty && hubProjectPresentations.isEmpty {
       HubEmptyProjectsCard()
     } else if filteredHubProjectPresentations.isEmpty {
-      HubRosterFilterEmptyState(filter: rosterFilter)
+      HubRosterFilterEmptyState(filter: effectiveRosterFilter)
     } else {
+      LazyVGrid(columns: HubProjectGridMetrics.columns, spacing: HubProjectGridMetrics.spacing) {
       ForEach(filteredHubProjectPresentations) { presentation in
         let project = presentation.project
-        let honoursCollapse = rosterFilter == .all
-        HubProjectCard(
+        let honoursCollapse = effectiveRosterFilter == .all
+        HubProjectTile(
           presentation: presentation,
-          isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
           collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
           collapsedLaneKeys: $collapsedLaneKeys,
           allowsCollapse: honoursCollapse,
-          onToggleCollapse: {
-            guard honoursCollapse else { return }
-            withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
-          },
           onOpenProject: { openHubProject(project) },
           onOpenChat: { chat, lane in openHubChat(chat, lane: lane, project: project) },
           onViewLaneInWork: { lane in
@@ -482,6 +477,7 @@ struct HubScreen: View {
         // stays visible but non-interactive (M12).
         .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
         .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
+      }
       }
     }
   }
@@ -590,7 +586,14 @@ struct HubScreen: View {
   }
 
   private var filteredHubProjectPresentations: [HubProjectPresentation] {
-    hubProjectPresentations.compactMap { hubProjectPresentation($0, matching: rosterFilter) }
+    hubProjectPresentations.compactMap { hubProjectPresentation($0, matching: effectiveRosterFilter) }
+  }
+
+  /// The filter the project list honours. On the inner display the status
+  /// filters choose the agent list beside it, and the projects page always
+  /// shows every project.
+  private var effectiveRosterFilter: HubRosterFilter {
+    duo.isWide ? .all : rosterFilter
   }
 
   private var hubPresentationKey: String? {

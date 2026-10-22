@@ -29,10 +29,10 @@ struct HubToolbarActions {
 ///   filter (when the layout has no filter row), Add and Settings, then the
 ///   account.
 /// - `.rail`: the inner display's trailing page held landscape, whose bar is
-///   the edge bar. The account heads it and opens Settings, Activity and Chats
-///   follow in their own capsule; the roster filters close it at the bottom,
-///   one button per state with its count, next to the composer. Add belongs to
-///   the projects list, so that page's header holds it.
+///   the edge bar. The account's picture heads it (it opens Settings), then
+///   Activity and Chats; at the bottom, Machines (the machine list, badged
+///   with how many are connected) and Settings. Add belongs to the projects
+///   list, so that page's header holds it.
 /// - `.pageBar`: Activity and Chats alone (Settings too without an account),
 ///   for the projects page's top bar where there is no edge bar (the inner
 ///   display held upright, an iPad). Held upright the overview page's bar
@@ -43,26 +43,34 @@ struct HubToolbar: ToolbarContent {
 
   let form: Form
   let actions: HubToolbarActions
-  /// The roster filter: the rail's bottom group, or a menu in the bar for a
-  /// layout without the phone's filter row.
+  /// The roster filter, as a menu in the bar for a layout without the phone's
+  /// filter row.
   var filter: Binding<HubRosterFilter>?
   var filterCounts: [HubRosterFilter: Int] = [:]
   /// The signed-in account, shown where there is room for it.
   var account: AccountIdentity?
+  /// The machines the rail's Machines menu lists (the connection menu's).
+  var machines: [DuoHomeMachine] = []
 
   var body: some ToolbarContent {
     switch form {
     case .rail:
       if let account {
-        // A system label, so it joins the edge bar as its first capsule.
+        // A system label, so it joins the edge bar; no glass behind it, so
+        // the picture itself is the circle.
         ToolbarItem(placement: .topBarTrailing) {
           HubRailAccountButton(identity: account, action: actions.onOpenSettings)
         }
+        .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
       }
       activityAndChats
-      if let filter {
-        HubRailFilterGroup(filter: filter, counts: filterCounts)
+      ToolbarItemGroup(placement: .bottomBar) {
+        HubRailMachinesMenu(machines: machines, onOpenSettings: actions.onOpenSettings)
+        Button(action: actions.onOpenSettings) {
+          Label("Settings", systemImage: "gearshape")
+        }
+        .tint(ADEColor.textPrimary)
       }
     case .pageBar:
       activityAndChats
@@ -91,17 +99,12 @@ struct HubToolbar: ToolbarContent {
 
   private var activityAndChats: some ToolbarContent {
     ToolbarItemGroup(placement: .topBarTrailing) {
-      activityAndChatsButtons
-    }
-  }
-
-  @ViewBuilder
-  private var activityAndChatsButtons: some View {
-    HubActivityToolbarButton(action: actions.onOpenActivity)
-    chatsButton
-    // Without an account picture to stand for it, Settings joins them.
-    if account == nil {
-      settingsButton
+      HubActivityToolbarButton(action: actions.onOpenActivity)
+      chatsButton
+      // Without an account picture to stand for it, Settings joins them.
+      if account == nil && form != .rail {
+        settingsButton
+      }
     }
   }
 
@@ -187,92 +190,44 @@ struct HubFilterMenu: View {
   }
 }
 
-/// The roster filters as the edge bar's bottom group, beside the composer:
-/// one button per state, its glyph over its count, the same five the phone's
-/// chip row shows. The chosen one is tinted in its state's colour on a soft
-/// wash of it, never a solid fill; the rest stay quiet.
-struct HubRailFilterGroup: ToolbarContent {
-  @Binding var filter: HubRosterFilter
-  let counts: [HubRosterFilter: Int]
+/// The rail's Machines button: the machine list the connection menu has
+/// always shown, behind a desktop glyph with how many machines are connected
+/// under it.
+struct HubRailMachinesMenu: View {
+  let machines: [DuoHomeMachine]
+  let onOpenSettings: () -> Void
 
-  var body: some ToolbarContent {
-    if #available(iOS 27.0, *) {
-      group.visibilityPriority(.high)
-    } else {
-      group
-    }
-  }
-
-  private var group: some ToolbarContent {
-    ToolbarItemGroup(placement: .bottomBar) {
-      ForEach(HubRosterFilter.allCases) { option in
-        HubRailFilterButton(
-          option: option,
-          count: counts[option, default: 0],
-          isSelected: filter == option
-        ) {
-          guard filter != option else { return }
-          ADEHaptics.light()
-          withAnimation(.snappy(duration: 0.2)) { filter = option }
-        }
-      }
-    }
-  }
-}
-
-private struct HubRailFilterButton: View {
-  let option: HubRosterFilter
-  let count: Int
-  let isSelected: Bool
-  let action: () -> Void
-
-  /// The state's hue; All (no state) uses the accent.
-  private var hue: Color {
-    option.tone.map(activityToneColor) ?? ADEColor.accent
-  }
-
-  /// Outlined at rest, filled when chosen, the way a tab bar marks the
-  /// current tab.
-  private var symbol: String {
-    let outline = option.systemImage.replacingOccurrences(of: ".fill", with: "")
-    guard isSelected else { return outline }
-    return outline == "circle.dashed" || outline == "square.grid.2x2"
-      ? outline
-      : "\(outline).fill"
-  }
+  private var liveCount: Int { machines.filter(\.isLive).count }
 
   var body: some View {
-    Button(action: action) {
-      // The edge bar only keeps an item vertical when it is a system label,
-      // and it draws a label's icon alone. So the glyph and its count are
-      // one image: at rest the bar tints it like any other item, and the
-      // count stays quiet digits instead of a red badge that would read as
-      // an alarm on every state.
+    Menu {
+      HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
+    } label: {
       Label {
-        Text(option.title)
+        Text("Machines")
       } icon: {
-        HubRailFilterGlyph(symbol: symbol, count: count, isSelected: isSelected, hue: hue)
+        HubRailCountGlyph(
+          symbol: liveCount == 0
+            ? "desktopcomputer.trianglebadge.exclamationmark"
+            : liveCount > 1 ? "desktopcomputer.and.macbook" : "desktopcomputer",
+          count: liveCount
+        )
       }
     }
-    .tint(isSelected ? hue : ADEColor.textPrimary)
-    .accessibilityLabel("\(option.accessibilityTitle), \(count)")
-    .accessibilityHint("Shows matching chats from every project.")
-    .accessibilityAddTraits(isSelected ? .isSelected : [])
-    .accessibilityIdentifier("Hub.RailFilter.\(option.rawValue)")
+    .tint(ADEColor.textPrimary)
+    .accessibilityLabel("Machines, \(liveCount) connected")
+    .accessibilityHint("Shows your machines and connection settings.")
   }
 }
 
-/// A filter's glyph over its count, rendered once per change into an image
-/// (see `HubRailFilterButton`). At rest it is a template the bar tints like
-/// its other items; chosen, it keeps its own colours: the state's hue on a
-/// soft wash of it, so the choice reads at a glance without a solid blob.
-private struct HubRailFilterGlyph: View {
+/// A glyph with a count under it, rendered once per change into a template
+/// image: the edge bar only keeps a system label in its capsules and draws a
+/// label's icon as one image, so the count rides inside it rather than as a
+/// red badge.
+struct HubRailCountGlyph: View {
   let symbol: String
   let count: Int
-  let isSelected: Bool
-  let hue: Color
   @Environment(\.displayScale) private var displayScale
-  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     if let image = rendered {
@@ -289,34 +244,25 @@ private struct HubRailFilterGlyph: View {
         Image(systemName: symbol)
           .font(.system(size: 16, weight: .medium))
           .frame(height: 19)
-        Text(count > 999 ? "999+" : "\(count)")
-          .font(.system(size: 11, weight: isSelected ? .bold : .semibold))
+        Text(count > 99 ? "99+" : "\(count)")
+          .font(.system(size: 11, weight: .semibold))
           .monospacedDigit()
           .lineLimit(1)
           .fixedSize()
       }
-      .foregroundStyle(isSelected ? hue : .black)
+      .foregroundStyle(.black)
       .frame(minWidth: 24)
-      .padding(.horizontal, isSelected ? 6 : 0)
-      .padding(.vertical, isSelected ? 4 : 0)
-      .background {
-        if isSelected {
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(hue.opacity(0.18))
-        }
-      }
-      .environment(\.colorScheme, colorScheme)
     )
     renderer.scale = displayScale
-    return renderer.uiImage?.withRenderingMode(isSelected ? .alwaysOriginal : .alwaysTemplate)
+    return renderer.uiImage?.withRenderingMode(.alwaysTemplate)
   }
 }
 
-/// The account's picture as the edge bar's first item. The bar only takes a
-/// system label into its capsules, and draws a label's icon as an image, so
-/// the picture is rendered into one: the photo once it has loaded (the same
-/// URL, from the same cache, the Settings avatar reads), the initials until
-/// then.
+/// The account's picture as the edge bar's first item, filling its circle the
+/// way an avatar does. The bar only takes a system label into its column and
+/// draws a label's icon as an image, so the picture is rendered into one: the
+/// photo once it has loaded (the same URL, from the same cache, the Settings
+/// avatar reads), the initials until then.
 struct HubRailAccountButton: View {
   let identity: AccountIdentity
   let action: () -> Void
@@ -331,7 +277,7 @@ struct HubRailAccountButton: View {
         if let image = rendered {
           Image(uiImage: image)
         } else {
-          Image(systemName: "person.crop.circle")
+          Image(systemName: "person.crop.circle.fill")
         }
       }
     }
@@ -355,18 +301,18 @@ struct HubRailAccountButton: View {
   private var rendered: UIImage? {
     let renderer = ImageRenderer(content:
       ZStack {
-        Circle().fill(identity.accent.opacity(0.18))
+        Circle().fill(identity.accent.opacity(0.22))
         if let photo {
           Image(uiImage: photo).resizable().aspectRatio(contentMode: .fill)
         } else {
           Text(initials)
-            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .font(.system(size: 15, weight: .bold, design: .rounded))
             .foregroundStyle(identity.accent)
         }
       }
-      .frame(width: 28, height: 28)
+      .frame(width: 40, height: 40)
       .clipShape(Circle())
-      .overlay(Circle().stroke(identity.accent.opacity(0.4), lineWidth: 1))
+      .overlay(Circle().stroke(identity.accent.opacity(0.35), lineWidth: 1))
     )
     renderer.scale = displayScale
     return renderer.uiImage?.withRenderingMode(.alwaysOriginal)
@@ -488,18 +434,7 @@ struct HubConnectionMenu: View {
 
   var body: some View {
     Menu {
-      Section("Machines") {
-        ForEach(machines) { machine in
-          Button(action: onOpenSettings) {
-            Text(machine.name)
-            Text(machine.summary)
-            Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
-          }
-        }
-      }
-      Button(action: onOpenSettings) {
-        Label("Connection settings", systemImage: "gearshape")
-      }
+      HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
     } label: {
       HStack(spacing: 8) {
         Image("BrandMark")
@@ -538,6 +473,28 @@ struct HubConnectionMenu: View {
     }
     .accessibilityLabel(status.accessibilityLabel)
     .accessibilityHint("Shows your machines and connection settings.")
+  }
+}
+
+/// The machine list the Hub's connection menu (and the Duo rail's Machines
+/// button) shows: each machine with its state, then connection settings.
+struct HubMachinesMenuContent: View {
+  let machines: [DuoHomeMachine]
+  let onOpenSettings: () -> Void
+
+  var body: some View {
+    Section("Machines") {
+      ForEach(machines) { machine in
+        Button(action: onOpenSettings) {
+          Text(machine.name)
+          Text(machine.summary)
+          Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
+        }
+      }
+    }
+    Button(action: onOpenSettings) {
+      Label("Connection settings", systemImage: "gearshape")
+    }
   }
 }
 
@@ -1111,6 +1068,231 @@ struct HubProjectCard: View, Equatable {
       && lhs.isCollapsed == rhs.isCollapsed
       && lhs.allowsCollapse == rhs.allowsCollapse
       && lhs.collapsedLaneSignature == rhs.collapsedLaneSignature
+  }
+}
+
+// MARK: - Project grid
+
+/// The Hub's projects as a grid of square-ish tiles: two across on a phone and
+/// the closed Duo, three (or more, as width allows) on the Duo's projects page
+/// and an iPad. Each tile is the row's data and actions in a card: tapping it
+/// opens the project, its corner button lists the project's lanes and chats.
+enum HubProjectGridMetrics {
+  /// The narrowest a tile gets before the grid drops a column.
+  static let minTileWidth: CGFloat = 140
+  static let spacing: CGFloat = 12
+  static let tileHeight: CGFloat = 138
+
+  static var columns: [GridItem] {
+    [GridItem(.adaptive(minimum: minTileWidth), spacing: spacing, alignment: .top)]
+  }
+}
+
+/// One project as a grid tile: its icon, name (two lines at most), how its
+/// agents stand (the coloured per-state counts), its lane count, and the open
+/// chevron. The whole tile opens the project; the corner button shows its
+/// chats.
+struct HubProjectTile: View, Equatable {
+  let presentation: HubProjectPresentation
+  let collapsedLaneKeysSnapshot: Set<String>
+  @Binding var collapsedLaneKeys: Set<String>
+  var allowsCollapse: Bool = true
+  let onOpenProject: () -> Void
+  let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
+  let onViewLaneInWork: (RemoteRosterLane) -> Void
+  let onViewLaneInLanes: (RemoteRosterLane) -> Void
+  let onArchiveChat: (RemoteRosterChat) -> Void
+  let onDeleteChat: (RemoteRosterChat) -> Void
+  let onForget: () -> Void
+
+  @State private var chatsShown = false
+
+  private var project: MobileProjectSummary { presentation.project }
+  private var hasChats: Bool { !presentation.lanes.isEmpty }
+
+  var body: some View {
+    Button(action: onOpenProject) {
+      VStack(alignment: .leading, spacing: 0) {
+        HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
+        Spacer(minLength: 8)
+        Text(project.displayName)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Spacer(minLength: 6)
+        // Bound to a local because `stateCounts` walks the whole lane tree.
+        let stateCounts = presentation.stateCounts
+        HStack(alignment: .lastTextBaseline, spacing: 6) {
+          VStack(alignment: .leading, spacing: 3) {
+            if stateCounts.isEmpty {
+              Text("No agents")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(ADEColor.textMuted)
+            } else {
+              HubStateSummary(counts: stateCounts)
+            }
+            Text(presentation.metaLine)
+              .font(.system(size: 11))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+          Spacer(minLength: 4)
+          if presentation.isSwitching {
+            ProgressView().controlSize(.small)
+          } else {
+            ADESettingsChevron()
+          }
+        }
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, minHeight: HubProjectGridMetrics.tileHeight,
+             maxHeight: HubProjectGridMetrics.tileHeight, alignment: .topLeading)
+      .adeKitCard(padding: nil)
+      .overlay {
+        // The accent marks the one selected thing: the project open on the phone.
+        if presentation.isActive {
+          RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+            .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
+        }
+      }
+      .contentShape(RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(tileSpokenLabel)
+    .accessibilityHint("Opens the full project view.")
+    // Outside the open button, so a tap on it never also opens the project.
+    .overlay(alignment: .topTrailing) {
+      if hasChats {
+        Button {
+          chatsShown = true
+        } label: {
+          Image(systemName: "list.bullet")
+            .font(.system(size: 13, weight: .semibold))
+            .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .tint(ADEColor.textPrimary)
+        .padding(8)
+        .accessibilityLabel("Show chats in \(project.displayName)")
+        .popover(isPresented: $chatsShown, arrowEdge: .bottom) {
+          HubProjectChatsPanel(
+            presentation: presentation,
+            collapsedLaneKeysSnapshot: collapsedLaneKeysSnapshot,
+            collapsedLaneKeys: $collapsedLaneKeys,
+            allowsCollapse: allowsCollapse,
+            onOpenProject: { chatsShown = false; onOpenProject() },
+            onOpenChat: { chat, lane in chatsShown = false; onOpenChat(chat, lane) },
+            onViewLaneInWork: { lane in chatsShown = false; onViewLaneInWork(lane) },
+            onViewLaneInLanes: { lane in chatsShown = false; onViewLaneInLanes(lane) },
+            onArchiveChat: onArchiveChat,
+            onDeleteChat: onDeleteChat
+          )
+          .frame(minWidth: 340, idealWidth: 400, minHeight: 280, idealHeight: 460)
+          .presentationCompactAdaptation(.sheet)
+          .presentationDetents([.medium, .large])
+        }
+      }
+    }
+    .contextMenu {
+      Button { onOpenProject() } label: { Label("Open project", systemImage: "rectangle.stack") }
+      if hasChats {
+        Button { chatsShown = true } label: { Label("Show chats", systemImage: "list.bullet") }
+      }
+      Button(role: .destructive, action: onForget) { Label("Remove from list", systemImage: "trash") }
+    }
+  }
+
+  private var tileSpokenLabel: String {
+    var parts = [project.displayName]
+    if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
+    parts.append(presentation.metaLine)
+    return parts.joined(separator: ", ")
+  }
+
+  private var collapsedLaneSignature: [String] {
+    presentation.lanes.map { "\(project.id)/\($0.lane.id)" }
+      .filter { collapsedLaneKeysSnapshot.contains($0) }
+      .sorted()
+  }
+
+  static func == (lhs: HubProjectTile, rhs: HubProjectTile) -> Bool {
+    lhs.presentation == rhs.presentation
+      && lhs.allowsCollapse == rhs.allowsCollapse
+      && lhs.collapsedLaneSignature == rhs.collapsedLaneSignature
+  }
+}
+
+/// A project's lanes and chats, from its tile's corner button: the same lane
+/// sections the project row expanded to, under the project's name and Open.
+/// A popover beside the tile on a wide screen, a sheet on a phone.
+struct HubProjectChatsPanel: View {
+  let presentation: HubProjectPresentation
+  let collapsedLaneKeysSnapshot: Set<String>
+  @Binding var collapsedLaneKeys: Set<String>
+  let allowsCollapse: Bool
+  let onOpenProject: () -> Void
+  let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
+  let onViewLaneInWork: (RemoteRosterLane) -> Void
+  let onViewLaneInLanes: (RemoteRosterLane) -> Void
+  let onArchiveChat: (RemoteRosterChat) -> Void
+  let onDeleteChat: (RemoteRosterChat) -> Void
+
+  private var project: MobileProjectSummary { presentation.project }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: 10) {
+        HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 28)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(project.displayName)
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          Text(presentation.metaLine)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Spacer(minLength: 8)
+        Button("Open", action: onOpenProject)
+          .buttonStyle(.borderedProminent)
+          .buttonBorderShape(.capsule)
+          .tint(ADEColor.accent)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 12)
+      Divider()
+      ScrollView {
+        VStack(alignment: .leading, spacing: 6) {
+          ForEach(presentation.lanes) { lanePresentation in
+            let key = "\(project.id)/\(lanePresentation.lane.id)"
+            HubLaneSection(
+              project: project,
+              presentation: lanePresentation,
+              isCollapsed: collapsedLaneKeysSnapshot.contains(key),
+              allowsCollapse: allowsCollapse,
+              onToggle: {
+                guard allowsCollapse else { return }
+                withAnimation(.easeOut(duration: 0.16)) {
+                  if collapsedLaneKeys.contains(key) { collapsedLaneKeys.remove(key) } else { collapsedLaneKeys.insert(key) }
+                }
+              },
+              onOpenChat: { chat in onOpenChat(chat, lanePresentation.lane) },
+              onViewInWork: { onViewLaneInWork(lanePresentation.lane) },
+              onViewInLanes: { onViewLaneInLanes(lanePresentation.lane) },
+              onArchiveChat: onArchiveChat,
+              onDeleteChat: onDeleteChat
+            )
+            .equatable()
+          }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+      }
+    }
+    .background(ADEColor.pageBackground)
   }
 }
 
