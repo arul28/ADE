@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import os from "node:os";
-import path from "node:path";
-import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import { AccountAttestationError, verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import {
@@ -13,18 +10,11 @@ import {
   isRemoteMcpScope,
   type RemoteMcpAction,
   type RemoteMcpActivityEntry,
-  type RemoteMcpActivityOutcome,
   type RemoteMcpConnectionSummary,
   type RemoteMcpCreatedToken,
   type RemoteMcpScope,
   type RemoteMcpStatus,
 } from "../../../../desktop/src/shared/types/remoteMcp";
-import {
-  checkRemoteAdeCommand,
-  describeReadOnlyCommands,
-  redactedCommandForLog,
-  splitCommandLine,
-} from "./remoteMcpCommandPolicy";
 import { createRemoteMcpActivityLog } from "./remoteMcpActivityLog";
 import {
   AUTHORIZE_PAGE_HEADERS,
@@ -42,8 +32,10 @@ import {
   scopeToOAuth,
   verifyPkce,
 } from "./remoteMcpOAuth";
-import { DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, runAdeForRemote, type RemoteRunResult } from "./remoteMcpRunner";
 import { createRemoteMcpStore } from "./remoteMcpStore";
+import { createRemoteMcpProtocol, type JsonRpcMessage, type RemoteMcpProject } from "./remoteMcpProtocol";
+
+export { MAX_CONCURRENT_REMOTE_RUNS, MAX_CONCURRENT_RUNS_PER_CONNECTION, type RemoteMcpProject } from "./remoteMcpProtocol";
 
 /**
  * ADE MCP: an MCP server for this computer, reached through ADE Relay.
@@ -78,15 +70,8 @@ export type RemoteMcpRelayEndpoint = {
   connected: boolean;
 };
 
-export type RemoteMcpProject = { projectId: string; rootPath: string; displayName: string; lastOpenedAt: number };
 
-export const MAX_CONCURRENT_REMOTE_RUNS = 4;
 const MAX_REQUEST_BODY_CHARS = 1024 * 1024;
-const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
-const TOOL_NAME = "ade";
-
-type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown };
 
 function withoutTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
@@ -160,7 +145,6 @@ export function createRemoteMcpService(args: {
   const enabledListeners = new Set<(enabled: boolean) => void>();
   let relayEndpoint: () => RemoteMcpRelayEndpoint | null = () => null;
   let analytics: FeatureAnalytics | null = null;
-  let activeRuns = 0;
 
   const base = (): string | null => {
     const endpoint = relayEndpoint();
@@ -184,188 +168,12 @@ export function createRemoteMcpService(args: {
     activity.append({ at: new Date().toISOString(), ...entry });
   };
 
-  // ── Projects ──────────────────────────────────────────────────────────────
-
-  const resolveProject = (requested: unknown): { cwd: string } | { error: string } => {
-    const projects = args.listProjects();
-    if (typeof requested !== "string" || !requested.trim()) {
-      const recent = [...projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
-      return { cwd: recent?.rootPath ?? os.homedir() };
-    }
-    const wanted = requested.trim();
-    const lower = wanted.toLowerCase();
-    const exact = projects.filter((project) =>
-      project.projectId === wanted
-      || (path.isAbsolute(wanted) && samePathOnPlatform(project.rootPath, wanted)));
-    if (exact.length === 1) return { cwd: exact[0]!.rootPath };
-    const named = projects.filter((project) =>
-      project.displayName.toLowerCase() === lower || path.basename(project.rootPath).toLowerCase() === lower);
-    if (named.length === 1) return { cwd: named[0]!.rootPath };
-    const known = projects.map((project) => project.displayName).join(", ") || "none";
-    return named.length > 1
-      ? { error: `More than one project is called "${wanted}". Pass its id or path instead (see ["projects","list","--text"]).` }
-      : { error: `No project "${wanted}" on this computer. Projects: ${known}.` };
-  };
-
-  // ── MCP ───────────────────────────────────────────────────────────────────
-
-  const toolDefinition = (scope: RemoteMcpScope) => ({
-    name: TOOL_NAME,
-    title: "Run an ADE command",
-    description: [
-      `Runs ADE's \`ade\` command on ${args.machineName()} and returns its output.`,
-      "Pass the words after `ade` as `args`, e.g. [\"lanes\",\"list\",\"--text\"]. Add --text for readable output.",
-      "Start with [\"help\"] to see every command, or [\"help\",\"<command>\"] for one.",
-      "Commands run in `project` (a name, id or path from [\"projects\",\"list\",\"--text\"]), or the most recently opened project.",
-      scope === "read"
-        ? `This connection is READ-ONLY. Allowed: ${describeReadOnlyCommands()}.`
-        : "This connection has full access: it can do anything the person could do with `ade` in a terminal.",
-    ].join("\n"),
-    inputSchema: {
-      type: "object",
-      properties: {
-        args: {
-          type: "array",
-          items: { type: "string" },
-          description: "The command as a list of words, without the leading `ade`.",
-        },
-        command: {
-          type: "string",
-          description: "Instead of `args`: the same command as one string, e.g. \"lanes list --text\". Quotes group words; no shell runs it.",
-        },
-        project: { type: "string", description: "Project name, id or path. Defaults to the most recently opened project." },
-        timeout_seconds: {
-          type: "integer",
-          minimum: 5,
-          maximum: MAX_TIMEOUT_MS / 1000,
-          description: `Stop the command after this many seconds. Default ${DEFAULT_TIMEOUT_MS / 1000}.`,
-        },
-      },
-    },
-    annotations: {
-      title: "Run an ADE command",
-      readOnlyHint: scope === "read",
-      destructiveHint: scope === "write",
-      idempotentHint: false,
-      openWorldHint: true,
-    },
+  const protocol = createRemoteMcpProtocol({
+    machineName: args.machineName,
+    listProjects: args.listProjects,
+    record,
+    warn: (event, data) => args.logger?.warn?.(event, data),
   });
-
-  const instructions = (scope: RemoteMcpScope): string => [
-    `This server is ADE on ${args.machineName()}. ADE manages coding lanes (git worktrees), agent chats, PRs and proof.`,
-    "Everything goes through one tool, `ade`, which runs the ade command line on that computer.",
-    "Good first calls: [\"doctor\",\"--text\"], [\"projects\",\"list\",\"--text\"], [\"lanes\",\"list\",\"--text\"], [\"help\"].",
-    scope === "read" ? "This connection is read-only." : "This connection has full access.",
-  ].join("\n");
-
-  const toolText = (result: RemoteRunResult): string => {
-    const parts: string[] = [];
-    const stdout = result.stdout.trimEnd();
-    const stderr = result.stderr.trimEnd();
-    if (stdout) parts.push(stdout);
-    if (stderr) parts.push(stdout ? `stderr:\n${stderr}` : stderr);
-    if (result.truncated) parts.push(`[Output was cut off at ${MAX_OUTPUT_BYTES / 1024} KB. Narrow the command, e.g. with --text, filters or --limit.]`);
-    if (result.timedOut) parts.push(`[Stopped: the command ran past its time limit after ${Math.round(result.durationMs / 1000)}s.]`);
-    else if (result.exitCode !== 0) parts.push(`[exit code ${result.exitCode ?? "unknown"}]`);
-    return parts.join("\n\n") || "(no output)";
-  };
-
-  const toolError = (text: string) => ({ content: [{ type: "text", text }], isError: true });
-
-  const callTool = async (connection: RemoteMcpConnectionSummary, params: Record<string, unknown>) => {
-    if (params.name !== TOOL_NAME) return toolError(`Unknown tool "${String(params.name)}". The only tool is "${TOOL_NAME}".`);
-    const input = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
-    let words: unknown = input.args;
-    if (words === undefined && typeof input.command === "string") {
-      words = splitCommandLine(input.command);
-      if (words === null) return toolError("The command has an unclosed quote.");
-    }
-    const verdict = checkRemoteAdeCommand(words, connection.scope);
-    const logBase = { connectionId: connection.id, label: connection.label, scope: connection.scope };
-    const loggedCommand = Array.isArray(words) ? redactedCommandForLog(words.filter((w): w is string => typeof w === "string")) : "";
-    if (!verdict.ok) {
-      record({ ...logBase, command: loggedCommand, outcome: "refused", exitCode: null, durationMs: 0, detail: verdict.reason });
-      return toolError(verdict.reason);
-    }
-    const project = resolveProject(input.project);
-    if ("error" in project) {
-      record({ ...logBase, command: loggedCommand, outcome: "refused", exitCode: null, durationMs: 0, detail: project.error });
-      return toolError(project.error);
-    }
-    if (activeRuns >= MAX_CONCURRENT_REMOTE_RUNS) {
-      record({ ...logBase, command: loggedCommand, outcome: "busy", exitCode: null, durationMs: 0 });
-      return toolError(`This computer is already running ${MAX_CONCURRENT_REMOTE_RUNS} remote commands. Wait for one to finish, then retry.`);
-    }
-    const timeoutSeconds = typeof input.timeout_seconds === "number" && Number.isFinite(input.timeout_seconds)
-      ? input.timeout_seconds
-      : DEFAULT_TIMEOUT_MS / 1000;
-    activeRuns += 1;
-    let result: RemoteRunResult;
-    try {
-      result = await runAdeForRemote({
-        argv: verdict.args,
-        cwd: project.cwd,
-        timeoutMs: Math.round(timeoutSeconds * 1000),
-        connectionId: connection.id,
-        role: connection.scope === "write" ? "cto" : "agent",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      record({ ...logBase, command: loggedCommand, outcome: "failed", exitCode: null, durationMs: 0, detail: message });
-      return toolError(message);
-    } finally {
-      activeRuns -= 1;
-    }
-    const outcome: RemoteMcpActivityOutcome = result.timedOut ? "timeout" : result.exitCode === 0 ? "ok" : "failed";
-    record({ ...logBase, command: loggedCommand, outcome, exitCode: result.exitCode, durationMs: result.durationMs });
-    return {
-      content: [{ type: "text", text: toolText(result) }],
-      isError: result.timedOut || result.exitCode !== 0,
-    };
-  };
-
-  const handleRpc = async (
-    connection: RemoteMcpConnectionSummary,
-    message: JsonRpcMessage | null,
-  ): Promise<Record<string, unknown> | null> => {
-    if (!message || typeof message !== "object" || Array.isArray(message)) {
-      return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request." } };
-    }
-    const id = message.id;
-    const isRequest = id !== undefined && id !== null && (typeof id === "string" || typeof id === "number");
-    const method = typeof message.method === "string" ? message.method : "";
-    // Notifications and stray responses need no answer.
-    if (!isRequest) return null;
-    const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
-    const fail = (code: number, text: string) => ({ jsonrpc: "2.0", id, error: { code, message: text } });
-    if (message.jsonrpc !== "2.0" || !method) return fail(-32600, "Invalid JSON-RPC request.");
-    const params = message.params && typeof message.params === "object" && !Array.isArray(message.params)
-      ? message.params as Record<string, unknown>
-      : {};
-    switch (method) {
-      case "initialize": {
-        const requested = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
-        return reply({
-          protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : DEFAULT_PROTOCOL_VERSION,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "ade", title: `ADE on ${args.machineName()}`, version: "1.0.0" },
-          instructions: instructions(connection.scope),
-        });
-      }
-      case "ping":
-        return reply({});
-      case "tools/list":
-        return reply({ tools: [toolDefinition(connection.scope)] });
-      case "tools/call":
-        return reply(await callTool(connection, params));
-      case "resources/list":
-        return reply({ resources: [] });
-      case "prompts/list":
-        return reply({ prompts: [] });
-      default:
-        return fail(-32601, `Method not found: ${method}`);
-    }
-  };
 
   const unauthorized = (serverBase: string, presented: boolean): RemoteMcpHttpResponse => json(
     401,
@@ -396,14 +204,18 @@ export function createRemoteMcpService(args: {
       if (parsed.length === 0 || parsed.length > 20) {
         return json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Send 1 to 20 messages." } });
       }
-      const replies = (await Promise.all(parsed.map((entry) => handleRpc(connection, entry as JsonRpcMessage))))
-        .filter((entry): entry is Record<string, unknown> => entry !== null);
+      // One at a time: run together, a batch would trip the run limit on itself.
+      const replies: Record<string, unknown>[] = [];
+      for (const entry of parsed) {
+        const answer = await protocol.handleRpc(connection, entry as JsonRpcMessage);
+        if (answer !== null) replies.push(answer);
+      }
       return replies.length ? json(200, replies) : { status: 202, headers: {}, body: "" };
     }
     if (!parsed || typeof parsed !== "object") {
       return json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request." } });
     }
-    const replyMessage = await handleRpc(connection, parsed as JsonRpcMessage);
+    const replyMessage = await protocol.handleRpc(connection, parsed as JsonRpcMessage);
     return replyMessage ? json(200, replyMessage) : { status: 202, headers: {}, body: "" };
   };
 

@@ -1301,6 +1301,8 @@ export type AgentChatBoardMoveMetadata = {
 };
 
 export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Identifies the outside app that sent this person-side message through ADE MCP. */
+  remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
   /** Rides a `subagent` completion delivery so the renderer can render its

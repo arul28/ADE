@@ -443,8 +443,11 @@ or off, `token_created` and `connection_removed` from Settings (`desktop`) or
 `ade mcp` (`api`), and `app_connected` when an app finishes signing in
 (`api`). Each is deduplicated per action and outcome for an hour, so the worst
 case is five events a day inside the existing `ade_feature_used` ceilings. The
-commands connected apps run are never captured; they are counted only in the
-local activity log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows.
+commands connected apps run are never captured, typed tools, prompts and the
+`ade://commands` resource included; they are counted only in the local activity
+log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows. A skill folder
+the prompts list cannot read, and a failed read of the command catalog, log
+`remote_mcp.skill_unreadable` / `remote_mcp.catalog_failed` warnings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the

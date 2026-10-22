@@ -13,6 +13,8 @@ import { signalChildProcessTree, terminateChildProcessTree } from "../../../../d
  */
 
 export const MAX_OUTPUT_BYTES = 200 * 1024;
+/** Text a call may pipe to the command's stdin (`files write --stdin`). */
+export const MAX_STDIN_BYTES = 256 * 1024;
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 600_000;
 const KILL_GRACE_MS = 2_000;
@@ -93,20 +95,40 @@ export async function runAdeForRemote(args: {
    * user-only actions (granting remote access among them) to any CLI.
    */
   role: "cto" | "agent";
+  /** The app's name, so turns it sends to a chat can say who sent them. */
+  connectionLabel: string;
+  /** Piped to the command's stdin; without it, stdin is closed. */
+  stdin?: string | null;
+  /** Per-stream cap. Typed tools raise it, then trim the parsed JSON themselves. */
+  maxOutputBytes?: number;
 }): Promise<RemoteRunResult> {
   const launch = await resolveLaunch();
   const started = Date.now();
   const timeoutMs = Math.max(1_000, Math.min(MAX_TIMEOUT_MS, args.timeoutMs));
+  const maxOutputBytes = args.maxOutputBytes ?? MAX_OUTPUT_BYTES;
+  const hasStdin = typeof args.stdin === "string";
   return await new Promise<RemoteRunResult>((resolve) => {
     const child = spawn(launch.command, [...launch.prefixArgs, "--socket", ...args.argv], {
       cwd: args.cwd,
-      env: { ...launch.env, ADE_DEFAULT_ROLE: args.role, ADE_REMOTE_MCP_CONNECTION_ID: args.connectionId },
-      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...launch.env,
+        ADE_DEFAULT_ROLE: args.role,
+        ADE_REMOTE_MCP_CONNECTION_ID: args.connectionId,
+        ADE_REMOTE_MCP_CONNECTION_LABEL: args.connectionLabel,
+        // What the connection may run, so `ade help` lists only that.
+        ADE_REMOTE_MCP_SCOPE: args.role === "cto" ? "write" : "read",
+      },
+      stdio: [hasStdin ? "pipe" : "ignore", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
       shell: false,
     });
     running.add(child);
+    if (hasStdin && child.stdin) {
+      // A command that exits without reading its stdin closes the pipe early.
+      child.stdin.on("error", () => {});
+      child.stdin.end(args.stdin, "utf8");
+    }
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;
@@ -115,7 +137,7 @@ export async function runAdeForRemote(args: {
     let timedOut = false;
     let settled = false;
     const collect = (target: Buffer[], chunk: Buffer, size: number): number => {
-      const room = MAX_OUTPUT_BYTES - size;
+      const room = maxOutputBytes - size;
       if (room <= 0) {
         truncated = true;
         return size;
@@ -123,7 +145,7 @@ export async function runAdeForRemote(args: {
       if (chunk.length > room) {
         truncated = true;
         target.push(chunk.subarray(0, room));
-        return MAX_OUTPUT_BYTES;
+        return maxOutputBytes;
       }
       target.push(chunk);
       return size + chunk.length;

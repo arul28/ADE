@@ -82,7 +82,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
     "list", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
-    "linear-issues", "actions",
+    "linear-issues", "actions", "wait", "watch",
   ])],
   ["terminal", new Set(["list", "read", "active"])],
   ["history", new Set(["list", "show", "commits"])],
@@ -105,6 +105,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["storage", new Set(["snapshot", "actions"])],
   ["archive", new Set(["list", "summary"])],
   ["skill", new Set(["list", "show"])],
+  ["skills", new Set(["list", "show"])],
   ["work-tools", new Set(["state", "actions"])],
   ["sync", new Set(["status"])],
   ["update", new Set(["status"])],
@@ -131,7 +132,11 @@ export type RemoteCommandVerdict =
  * Normalizes and checks one remote `ade` invocation. Returns the argv to run
  * (without the program name), or a sentence a model can act on.
  */
-export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): RemoteCommandVerdict {
+export function checkRemoteAdeCommand(
+  input: unknown,
+  scope: RemoteMcpScope,
+  options: { hasStdin?: boolean } = {},
+): RemoteCommandVerdict {
   if (!Array.isArray(input) || input.length === 0) {
     return { ok: false, reason: "Pass `args` as a non-empty list of words, e.g. [\"lanes\", \"list\", \"--text\"]." };
   }
@@ -194,6 +199,13 @@ export function checkRemoteAdeCommand(input: unknown, scope: RemoteMcpScope): Re
   if (command === "actions") {
     const actionVerdict = checkActionsCommand(words, scope);
     if (actionVerdict) return actionVerdict;
+  }
+  // With stdin closed, `files write --stdin` would write an empty file.
+  if (!options.hasStdin && readsStdin(args)) {
+    return {
+      ok: false,
+      reason: "This command reads its input from stdin. Pass the text as the `stdin` parameter.",
+    };
   }
   if (scope === "write") return { ok: true, args };
   return checkReadOnly([command, ...args.slice(1)], words);
@@ -297,6 +309,37 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): R
   return null;
 }
 
+/** Flags that make a command read its input from stdin. */
+const STDIN_FLAGS: ReadonlySet<string> = new Set(["--stdin", "--json-stdin", "--token-stdin"]);
+
+/** `--stdin`, or `-` as the value of a file or prompt flag (`--body-file -`, `--prompt -`). */
+function readsStdin(args: readonly string[]): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === "--") return false;
+    if (STDIN_FLAGS.has(word)) return true;
+    const isInputFlag = /^--[a-z-]*(?:file|prompt)$/.test(word);
+    if (isInputFlag && args[index + 1] === "-") return true;
+    if (/^--[a-z-]*(?:file|prompt)=-$/.test(word)) return true;
+  }
+  return false;
+}
+
+/**
+ * `<command> [<sub>…] --help` only prints help, so a read-only connection may
+ * ask for any page. Only that exact shape: after a flag that takes a value
+ * (`--project-root --help`), the CLI reads `--help` as the value and runs the
+ * command.
+ */
+function asksForHelp(args: readonly string[]): boolean {
+  const last = args[args.length - 1];
+  if (last !== "--help" && last !== "-h") return false;
+  return args.slice(0, -1).every((word) => COMMAND_WORD.test(word));
+}
+
+/** `chat wait` flags that arm, hold or cancel a wait instead of only watching. */
+const CHAT_WAIT_WRITE_FLAGS = /^--(?:async|background|cancel|cancel-wait)(?:=|$)/;
+
 function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
@@ -305,6 +348,7 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
       + "Ask the person to give this app full access in ADE Settings → ADE MCP if it needs more.",
   });
   const command = args[0]!;
+  if (asksForHelp(args)) return { ok: true, args };
   const group = args[1] && !args[1].startsWith("-") ? `${command} ${args[1]}` : null;
   if (group && NESTED_GROUPS.has(group)) {
     const allowed = READ_ONLY_COMMANDS.get(group);
@@ -313,6 +357,8 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
     return refuse();
   }
   if (command === "search" && args.some((word) => SEARCH_WRITE_FLAGS.has(word))) return refuse();
+  const isChatWait = command === "chat" && (args[1] === "wait" || args[1] === "watch");
+  if (isChatWait && args.some((word) => CHAT_WAIT_WRITE_FLAGS.test(word))) return refuse();
   const allowed = READ_ONLY_COMMANDS.get(command);
   if (allowed === true) return { ok: true, args };
   if (!(allowed instanceof Set)) return refuse();
@@ -421,4 +467,60 @@ export function redactedCommandForLog(args: readonly string[]): string {
   }
   const line = out.join(" ");
   return line.length > 300 ? `${line.slice(0, 297)}...` : line;
+}
+
+/** Describes which part of a command is available to an MCP connection. */
+export function remoteCommandAvailability(
+  topic: string,
+  scope: RemoteMcpScope,
+): { command: string; allowed: boolean; subcommands: readonly string[] | null; reason?: string } {
+  const words = topic.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words[0] === "ade") words.shift();
+  const requestedCommand = words[0] ?? "";
+  const command = COMMAND_ALIASES.get(requestedCommand) ?? requestedCommand;
+  const blocked = BLOCKED_COMMANDS.get(command);
+  if (blocked) return { command, allowed: false, subcommands: null, reason: blocked };
+  if (!FULL_ACCESS_COMMANDS.has(requestedCommand) && !FULL_ACCESS_COMMANDS.has(command)) {
+    return {
+      command,
+      allowed: false,
+      subcommands: null,
+      reason: "This command is not enabled for ADE MCP.",
+    };
+  }
+  const group = words[1] ? `${command} ${words[1]}` : null;
+  const nestedGroup = group && NESTED_GROUPS.has(group) ? group : null;
+  const policyCommand = nestedGroup ?? command;
+  // A subcommand topic gets the same verdict as running it (`github app-auth
+  // login` is refused even with full access).
+  const namesOnlyGroup = nestedGroup !== null && words.length === 2;
+  if (words.length >= 2 && !namesOnlyGroup) {
+    const verdict = checkRemoteAdeCommand(words, scope, { hasStdin: true });
+    if (!verdict.ok) return { command: policyCommand, allowed: false, subcommands: null, reason: verdict.reason };
+  }
+  if (scope === "write") return { command: policyCommand, allowed: true, subcommands: null };
+
+  const allowed = nestedGroup
+    ? READ_ONLY_COMMANDS.get(nestedGroup)
+    : READ_ONLY_COMMANDS.get(command);
+  if (allowed === true) return { command: policyCommand, allowed: true, subcommands: null };
+  if (!(allowed instanceof Set)) {
+    return {
+      command: policyCommand,
+      allowed: false,
+      subcommands: null,
+      reason: "This command is not available to read-only connections.",
+    };
+  }
+
+  const subcommand = words[nestedGroup ? 2 : 1];
+  if (subcommand && !allowed.has(subcommand)) {
+    return {
+      command: policyCommand,
+      allowed: false,
+      subcommands: [...allowed],
+      reason: "This subcommand is not available to read-only connections.",
+    };
+  }
+  return { command: policyCommand, allowed: true, subcommands: [...allowed] };
 }
