@@ -754,9 +754,9 @@ struct WorkSessionListRow: View {
   let onToggleSelect: (TerminalSessionSummary) -> Void
   let onOpen: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
-  let onRename: (TerminalSessionSummary) -> Void
+  var onRename: (TerminalSessionSummary) -> Void
   let onStopRuntime: (TerminalSessionSummary) -> Void
-  let onDelete: (TerminalSessionSummary) -> Void
+  var onDelete: (TerminalSessionSummary) -> Void
   let onCopyId: (TerminalSessionSummary) -> Void
   let onCopyDeepLink: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
@@ -824,20 +824,20 @@ struct WorkSessionListRow: View {
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
 
   /// Mute only applies to chat sessions.
-  private var isMuted: Bool {
+  fileprivate var isMuted: Bool {
     isChatSession(session)
       && pushNotificationService.prefs.mutedSessionIds.contains(session.id)
   }
 
-  private var canonicalPhase: CanonicalSessionPhase {
+  fileprivate var canonicalPhase: CanonicalSessionPhase {
     workCanonicalSessionState(session: session, summary: chatSummary).phase
   }
 
-  private var isSnoozed: Bool {
+  fileprivate var isSnoozed: Bool {
     session.isSnoozed()
   }
 
-  private var isChat: Bool { isChatSession(session) }
+  fileprivate var isChat: Bool { isChatSession(session) }
 
   /// Mid-flight. Desktop hides Settle for these (`sessionIsMidFlight` in
   /// `renderer/lib/terminalAttention.ts`): filing away a row the machine is
@@ -854,7 +854,7 @@ struct WorkSessionListRow: View {
   /// reads `ready`/`idle` here and Settle is already offered. The two agree on
   /// behaviour by different routes; if iOS ever gains the promotion, it must
   /// gain the `liveness == .turn` clause with it.
-  private var isActivelyRunning: Bool {
+  fileprivate var isActivelyRunning: Bool {
     canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
   }
 
@@ -877,13 +877,13 @@ struct WorkSessionListRow: View {
   /// clear and throws, so offering "Dismiss & settle" could only ever produce
   /// an error toast and a rolled-back optimistic write. Falling through to the
   /// disabled "Resolve input to settle" row is the honest answer.
-  private var canDismissNeedsYou: Bool {
+  fileprivate var canDismissNeedsYou: Bool {
     canonicalPhase != .needsYou
       || isChat
       || session.attentionRequestedAt != nil
   }
 
-  private var canSettle: Bool {
+  fileprivate var canSettle: Bool {
     lifecycleAvailable
       && canonicalPhase != .settled
       && !isActivelyRunning
@@ -893,18 +893,18 @@ struct WorkSessionListRow: View {
   /// The settle for a needs-you row also clears the pending prompt, and says so.
   /// The host REJECTS the dismiss flag on a row with nothing pending, so this is
   /// the only condition under which the dismissing variant may be sent.
-  private var settleDismissesPendingInput: Bool {
+  fileprivate var settleDismissesPendingInput: Bool {
     canonicalPhase == .needsYou
   }
 
   /// Needs-you with an ask nothing can dismiss. Desktop renders a DISABLED row
   /// here rather than nothing: an item that silently disappears reads as a bug,
   /// while "Resolve input to settle" states the precondition.
-  private var settleBlockedOnInput: Bool {
+  fileprivate var settleBlockedOnInput: Bool {
     lifecycleAvailable && canonicalPhase == .needsYou && !canDismissNeedsYou
   }
 
-  private var canUnsettle: Bool {
+  fileprivate var canUnsettle: Bool {
     lifecycleAvailable && canonicalPhase == .settled
   }
 
@@ -912,14 +912,14 @@ struct WorkSessionListRow: View {
   /// agent, user, operator or merge policy wrote into `settled_at`. A settle the
   /// UI merely derived has no column for the pin to hold down, so desktop
   /// restricts the item the same way (`SessionContextMenu.tsx:209`, `:250`).
-  private var canKeepActive: Bool {
+  fileprivate var canKeepActive: Bool {
     lifecycleAvailable
       && session.settledAt != nil
       && session.resolvedSettleOverride != .active
       && canonicalPhase == .settled
   }
 
-  private var canDemoteToPeer: Bool {
+  fileprivate var canDemoteToPeer: Bool {
     workCanDemoteChatToPeer(
       isChat: isChat,
       spawnKind: chatSummary?.spawnKind,
@@ -928,7 +928,7 @@ struct WorkSessionListRow: View {
     )
   }
 
-  private var canPromoteToSubagent: Bool {
+  fileprivate var canPromoteToSubagent: Bool {
     workCanPromoteChatToSubagent(
       isChat: isChat,
       spawnKind: chatSummary?.spawnKind,
@@ -937,7 +937,7 @@ struct WorkSessionListRow: View {
     )
   }
 
-  private var snoozeOptions: [WorkSnoozeOption] {
+  fileprivate var snoozeOptions: [WorkSnoozeOption] {
     workSnoozeOptions()
   }
 
@@ -1048,14 +1048,7 @@ struct WorkSessionListRow: View {
     // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
     // is exactly where the deletes used to sit.
     .contextMenu {
-      nameMenuSection
-      fileMenuSection
-      lifecycleMenuSection(status: rowStatus)
-      handoffMenuSection
-      agentMenuSection
-      laneMenuSection
-      copyMenuSection
-      destructiveMenuSection(status: rowStatus)
+      WorkSessionActionsMenuContent(row: self, includesSelect: true)
     }
     .overlay {
       if isLaneDeleting {
@@ -1074,26 +1067,26 @@ struct WorkSessionListRow: View {
     .accessibilityHint(isLaneDeleting ? "This lane is being deleted" : "")
   }
 
-  private var shouldShowDeleteAction: Bool {
+  fileprivate var shouldShowDeleteAction: Bool {
     isChatSession(session)
   }
 
   /// Stop-then-delete for a live CLI/shell row: desktop's "Stop & delete".
-  private func canStopAndDeleteSession(status: String) -> Bool {
+  fileprivate func canStopAndDeleteSession(status: String) -> Bool {
     deleteSessionAvailable && isStoppableRuntimeStatus(session, status: status)
   }
 
   /// Plain delete for a CLI/shell row that is already stopped. `work.delete
   /// Session` handles both, but the labels differ because the consequences do.
-  private func canDeleteStoppedSession(status: String) -> Bool {
+  fileprivate func canDeleteStoppedSession(status: String) -> Bool {
     deleteSessionAvailable && !isChat && !isStoppableRuntimeStatus(session, status: status)
   }
 
-  private var settleLabel: String {
+  fileprivate var settleLabel: String {
     settleDismissesPendingInput ? "Dismiss & settle" : "Settle"
   }
 
-  private func settle() {
+  fileprivate func settle() {
     if settleDismissesPendingInput {
       onDismissAndSettle(session)
     } else {
@@ -1109,20 +1102,20 @@ struct WorkSessionListRow: View {
   // Every item calls the command the desktop item calls, and an item the
   // session type or the host cannot honour is hidden, not greyed.
 
-  private var canRename: Bool {
+  fileprivate var canRename: Bool {
     !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
       && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
   }
 
   /// Desktop shows "Set tag…" only on a running Claude chat: tag writes need a
   /// live Claude SDK runtime.
-  private var canSetTag: Bool {
+  fileprivate var canSetTag: Bool {
     tagAvailable && session.toolType == "claude-chat" && session.status == "running"
   }
 
   /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
-  private var nameMenuSection: some View {
+  fileprivate var nameMenuSection: some View {
     Section {
       if canRename {
         Button {
@@ -1136,7 +1129,7 @@ struct WorkSessionListRow: View {
   }
 
   @ViewBuilder
-  private var generateNamesMenu: some View {
+  fileprivate var generateNamesMenu: some View {
     if isChat && generateNamesAvailable {
       let cloudOwned = !canRename
       Menu {
@@ -1174,7 +1167,7 @@ struct WorkSessionListRow: View {
   /// Section 2 — how the row is filed: Pin, Set tag…, plus the phone-only
   /// Mute and Select (the one way into multi-select).
   @ViewBuilder
-  private var fileMenuSection: some View {
+  fileprivate func fileMenuSection(includesSelect: Bool) -> some View {
     Section {
       Button {
         onPin(session)
@@ -1196,10 +1189,12 @@ struct WorkSessionListRow: View {
                 systemImage: isMuted ? "bell" : "bell.slash")
         }
       }
-      Button {
-        onLongPressSelect(session)
-      } label: {
-        Label("Select", systemImage: "checkmark.circle")
+      if includesSelect {
+        Button {
+          onLongPressSelect(session)
+        } label: {
+          Label("Select", systemImage: "checkmark.circle")
+        }
       }
     }
   }
@@ -1209,7 +1204,7 @@ struct WorkSessionListRow: View {
   /// native nested `Menu`. Keep it exhaustive: a row that reaches the end of
   /// this block with nothing rendered is a row the user cannot un-hide.
   @ViewBuilder
-  private func lifecycleMenuSection(status: String) -> some View {
+  fileprivate func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
     Section {
       if canSettle {
@@ -1275,7 +1270,7 @@ struct WorkSessionListRow: View {
 
   /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
   /// sheets it opens).
-  private var handoffMenuSection: some View {
+  fileprivate var handoffMenuSection: some View {
     WorkSessionHandoffMenu(
       session: session,
       record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
@@ -1292,7 +1287,7 @@ struct WorkSessionListRow: View {
 
   /// Section 5 — the agent itself: restart, promote / demote.
   @ViewBuilder
-  private var agentMenuSection: some View {
+  fileprivate var agentMenuSection: some View {
     if isChat && (restartAvailable || canDemoteToPeer || canPromoteToSubagent) {
       Section {
         if restartAvailable {
@@ -1323,7 +1318,7 @@ struct WorkSessionListRow: View {
   /// Section 6 — the lane: Go to lane, Manage lane, the PR shortcut, and the
   /// `Lane ▸` submenu with the rest of the lane's own menu.
   @ViewBuilder
-  private var laneMenuSection: some View {
+  fileprivate var laneMenuSection: some View {
     Section {
       Button {
         onGoToLane(session)
@@ -1355,7 +1350,7 @@ struct WorkSessionListRow: View {
   }
 
   /// Section 7 — Copy ▸.
-  private var copyMenuSection: some View {
+  fileprivate var copyMenuSection: some View {
     Section {
       Menu {
         Button {
@@ -1376,7 +1371,7 @@ struct WorkSessionListRow: View {
 
   /// Destructive, last, and behind a divider — the whole point of the reorder.
   @ViewBuilder
-  private func destructiveMenuSection(status: String) -> some View {
+  fileprivate func destructiveMenuSection(status: String) -> some View {
     if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
       Section {
       if canStopAndDeleteSession(status: status) {
@@ -1402,6 +1397,51 @@ struct WorkSessionListRow: View {
       }
       }
     }
+  }
+}
+
+/// The session's actions, in desktop's order (`SessionContextMenu.tsx`):
+/// identity, filing, lifecycle, hand off, agent, lane, copy, then the deletes
+/// behind a divider. ONE list for every place a session offers its actions:
+/// the Work list row's long-press menu and the open chat's ⋯ (phone header,
+/// the Duo's rail, the iPad toolbar). Only the list offers Select, the way
+/// into multi-select.
+struct WorkSessionActionsMenuContent: View {
+  let row: WorkSessionListRow
+  var includesSelect: Bool
+  /// Observed here too: the Mute item's label follows a mute flipped anywhere.
+  @ObservedObject private var pushNotificationService = PushNotificationService.shared
+
+  var body: some View {
+    let status = normalizedWorkChatSessionStatus(session: row.session, summary: row.chatSummary)
+    row.nameMenuSection
+    row.fileMenuSection(includesSelect: includesSelect)
+    row.lifecycleMenuSection(status: status)
+    row.handoffMenuSection
+    row.agentMenuSection
+    row.laneMenuSection
+    row.copyMenuSection
+    row.destructiveMenuSection(status: status)
+  }
+}
+
+/// Builds the Work list's own, fully wired row for a session, so a chat opened
+/// from the list offers exactly the list row's actions in its ⋯ (each routed
+/// to the machine that owns the chat, as the row's are). Set by the Work root
+/// on every chat it opens; nil elsewhere (a chat opened from the Hub, Lanes or
+/// CTO), where the ⋯ falls back to the chat's own items.
+struct WorkSessionActionsMenuProvider {
+  let row: (TerminalSessionSummary) -> WorkSessionListRow
+}
+
+private struct WorkSessionActionsMenuProviderKey: EnvironmentKey {
+  static let defaultValue: WorkSessionActionsMenuProvider? = nil
+}
+
+extension EnvironmentValues {
+  var workSessionActionsMenu: WorkSessionActionsMenuProvider? {
+    get { self[WorkSessionActionsMenuProviderKey.self] }
+    set { self[WorkSessionActionsMenuProviderKey.self] = newValue }
   }
 }
 

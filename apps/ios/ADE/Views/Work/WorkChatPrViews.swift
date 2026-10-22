@@ -85,6 +85,7 @@ func workChatLinkableCatalog(
 
 struct WorkChatPrActivePopup: View {
   let badge: WorkChatPrBadgeModel
+  var isSelected: Bool? = nil
   let onOpen: () -> Void
 
   private var tint: Color {
@@ -137,6 +138,7 @@ struct WorkChatPrActivePopup: View {
       tint: tint,
       strokeOpacity: 0.24,
       accessibilityLabel: accessibilityText,
+      selection: isSelected,
       onOpen: onOpen
     ) {
       // No text label: the chip is icon + CI glyph + state tint. Everything the

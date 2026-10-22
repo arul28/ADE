@@ -925,7 +925,8 @@ struct WorkRootListScreen: View, Equatable {
   private var duoWideBody: some View {
     GeometryReader { proxy in
       let fold = DuoFoldReading.fold(in: proxy)
-      let family = duoLayout.family(for: proxy.size)
+      let family = duoFamily(fold: fold)
+      let listFits = duoSessionsColumnFits(size: proxy.size, fold: fold)
       ZStack {
         duoColumns(family: family, fold: fold, size: proxy.size)
         if !path.isEmpty {
@@ -955,7 +956,16 @@ struct WorkRootListScreen: View, Equatable {
         if duoWideFold != next { duoWideFold = next }
       }
       .onChange(of: family, initial: true) { _, next in
-        handleDuoFamilyChange(next)
+        handleDuoFamilyChange(next, listFits: listFits)
+      }
+      // Turning the open display upright narrows the screen: the chat keeps a
+      // readable width and the sessions column steps aside (and comes back
+      // when the room does).
+      .onChange(of: listFits, initial: true) { _, fits in
+        guard family == .wide, !duoPane.isOpen else { return }
+        withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
+          duoShowsSessionList = fits
+        }
       }
       // Opening the tools pane cedes the sessions column, exactly like the
       // desktop sidebar; closing it hands the column back (held landscape
@@ -1211,16 +1221,30 @@ struct WorkRootListScreen: View, Equatable {
     return detail - pane
   }
 
+  /// Side by side on every open, flat display, held either way (an iPad too);
+  /// stacked (tools over the chat) only while the hinge is bent with the fold
+  /// across the screen: laptop and tent.
+  private func duoFamily(fold: DuoFold) -> DuoFamily {
+    fold.isStacked && duoLayout.bend > 0 ? .tall : .wide
+  }
+
+  /// Whether the sessions column leaves the chat a readable width. Held
+  /// upright the Duo is about as wide as an iPad mini: the column starts away.
+  private func duoSessionsColumnFits(size: CGSize, fold: DuoFold) -> Bool {
+    let column = DuoWorkMetrics.sessionsColumn(total: size.width, fold: fold)
+    return size.width - column.width >= DuoWorkMetrics.comfortableChatWidth
+  }
+
   /// Rotating between held landscape and held portrait resets what the list
   /// is: a column beside the chat, or an overlay that starts away.
-  private func handleDuoFamilyChange(_ family: DuoFamily) {
+  private func handleDuoFamilyChange(_ family: DuoFamily, listFits: Bool) {
     guard duoWorkFamily != family else { return }
     duoWorkFamily = family
     switch family {
     case .tall:
       duoShowsSessionList = false
     case .wide:
-      duoShowsSessionList = !duoPane.isOpen
+      duoShowsSessionList = !duoPane.isOpen && listFits
     case .compact:
       break
     }
@@ -1273,7 +1297,18 @@ struct WorkRootListScreen: View, Equatable {
 
   private func applyDuoPreviewSelectionIfNeeded() {
     #if DEBUG
-    guard duoLayout.isWide, WorkRootPreviewFixture.active != nil else { return }
+    guard WorkRootPreviewFixture.active != nil else { return }
+    // The phone layout (closed Duo, any iPhone): the fixture chat pushed, as
+    // a tap on its row would.
+    if !duoLayout.isWide {
+      if !DuoWorkPreviewState.pushedCompact, path.isEmpty,
+         let requested = DuoWorkPreviewState.sessionId,
+         mergedSessions.contains(where: { $0.id == requested }) {
+        DuoWorkPreviewState.pushedCompact = true
+        path.append(WorkSessionRoute(sessionId: requested))
+      }
+      return
+    }
     if DuoWorkPreviewState.compose, duoComposeRoute == nil {
       DuoWorkPreviewState.compose = false
       duoComposeRoute = WorkNewChatRoute(preferredLaneId: nil)
@@ -1382,6 +1417,16 @@ struct WorkRootListScreen: View, Equatable {
       .equatable()
     }
     .id(route.openId)
+    // The chat's ⋯ is the list row's own menu (Select aside), wired to the
+    // same actions, so the two can never offer different things.
+    .environment(\.workSessionActionsMenu, WorkSessionActionsMenuProvider { session in
+      sessionListRow(
+        mergedSessions.first(where: { $0.id == session.id }) ?? session,
+        compact: false,
+        showsLaneIdentity: true,
+        transitionNamespace: nil
+      )
+    })
     .environmentObject(syncService)
     .environmentObject(dictationController)
   }

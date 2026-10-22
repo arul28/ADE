@@ -18,6 +18,14 @@ struct PrDetailView: View {
   /// Called after a lane was made or linked on another machine, so the list
   /// reads that machine again and this screen gets its new link.
   let onRemoteLinksChanged: (@MainActor () async -> Void)?
+  /// Shown inside another screen's surface (a chat's PR, in the Duo's tools
+  /// pane) rather than pushed: the phone layout at the pane's width, with no
+  /// toolbar of its own (the pane sits in the chat's navigation stack, whose
+  /// toolbar is the chat's). Its title and ⋯ go to the pane's header row.
+  var embedded = false
+  /// Embedded only: the host's own control beside the ⋯ in the pane header
+  /// (the chat's PR watch).
+  var embeddedHeaderAccessory: AnyView?
 
   init(
     prId: String,
@@ -427,7 +435,9 @@ struct PrDetailView: View {
       // The Duo's inner display: desktop's structure, the thread with its
       // push rail and the dock as the column's toolbar. Every other size
       // keeps the phone screen.
-      if duoLayout.isWide {
+      if embedded {
+        embeddedDetail
+      } else if duoLayout.isWide {
         duoDetail
       } else {
         phoneDetail
@@ -461,6 +471,62 @@ struct PrDetailView: View {
   /// The phone screen: header, the tab picker and the tab as one list, with
   /// the next-step bar at the bottom.
   private var phoneDetail: some View {
+    detailList
+      .navigationTitle("")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar(.visible, for: .navigationBar)
+      .toolbar {
+        if !isAwaitingInitialPrDetail && !isPrDetailUnavailable {
+          ToolbarItem(placement: .principal) {
+            PrFlatDetailNavTitle(
+              number: displayedPrNumber ?? currentPr.githubPrNumber,
+              author: snapshot?.detail?.author.login ?? githubItem?.author,
+              authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
+              state: displayedState
+            )
+          }
+          .sharedBackgroundVisibility(.hidden)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+          moreMenu
+        }
+      }
+  }
+
+  /// The phone screen inside a pane: the same list, its title and ⋯ handed
+  /// to the pane's header instead of a toolbar.
+  private var embeddedDetail: some View {
+    detailList
+      .duoPaneHeader(status: embeddedStatus) {
+        if let embeddedHeaderAccessory { embeddedHeaderAccessory }
+        Menu {
+          moreMenuItems
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Pull request actions")
+      }
+  }
+
+  /// "#1304 · Open · arul28", the pane header's line under its title.
+  private var embeddedStatus: String? {
+    guard !isAwaitingInitialPrDetail, !isPrDetailUnavailable else { return nil }
+    var parts: [String] = []
+    if let number = displayedPrNumber ?? (currentPr.githubPrNumber > 0 ? currentPr.githubPrNumber : nil) {
+      parts.append("#\(number)")
+    }
+    parts.append(lanePrStateLabel(displayedState))
+    if let author = snapshot?.detail?.author.login ?? githubItem?.author, !author.isEmpty {
+      parts.append(author)
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  private var detailList: some View {
     List {
       if isAwaitingInitialPrDetail {
         Section {
@@ -543,25 +609,6 @@ struct PrDetailView: View {
     // with nothing between them.
     .scrollEdgeEffectStyle(.hard, for: .top)
     .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail")
-    .navigationTitle("")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar(.visible, for: .navigationBar)
-    .toolbar {
-      if !isAwaitingInitialPrDetail && !isPrDetailUnavailable {
-        ToolbarItem(placement: .principal) {
-          PrFlatDetailNavTitle(
-            number: displayedPrNumber ?? currentPr.githubPrNumber,
-            author: snapshot?.detail?.author.login ?? githubItem?.author,
-            authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
-            state: displayedState
-          )
-        }
-        .sharedBackgroundVisibility(.hidden)
-      }
-      ToolbarItem(placement: .topBarTrailing) {
-        moreMenu
-      }
-    }
     .safeAreaInset(edge: .bottom) {
       if hasPrDetailData {
         nextStepBar

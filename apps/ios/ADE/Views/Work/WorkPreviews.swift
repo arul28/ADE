@@ -618,6 +618,17 @@ func workPreviewDuoThreadModel(sessionId: String) -> ChatThreadModel {
   )
 }
 
+/// `duo-work-plain`: a quiet chat, the opening exchange only and no proof.
+@MainActor
+func workPreviewDuoPlainThreadModel(sessionId: String) -> ChatThreadModel {
+  workPreviewThreadModel(
+    sessionId: sessionId,
+    transcript: Array(WorkPreviewData.duoTranscript.prefix(2)),
+    artifacts: [],
+    provider: WorkPreviewData.chatSummary.provider
+  )
+}
+
 /// A thread model holding one frame folded from a fixed transcript, for
 /// previews that have no host to stream from.
 @MainActor

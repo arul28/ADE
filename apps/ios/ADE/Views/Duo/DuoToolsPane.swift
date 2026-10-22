@@ -7,13 +7,12 @@ import SwiftUI
 /// One surface the Work tools pane can show for a chat.
 ///
 /// Two kinds. The four lane **tools** mirror the composer's lane tool chips
-/// exactly and are what the pane header's segmented control switches between.
-/// The three **pages** are the chat actions the rail opens in the same area
-/// (desktop's chat actions drawer), each with a title and Close instead of the
-/// tool switcher. A tab exists only while its surface exists (see
-/// `DuoWorkPaneModel`), the same availability the chips and menu items use.
+/// exactly (the Tools menu lists them). The **pages** are Chat info (desktop's
+/// chat actions drawer), its Proof, and the chat's Pull Request. A tab exists
+/// only while its surface exists, the same availability the pills and menu
+/// items use.
 ///
-/// Declaration order is the order the tools appear in the switcher.
+/// Declaration order is the order the tools appear in the Tools menu.
 enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   case simulator
   case macDesktop
@@ -94,9 +93,10 @@ struct DuoToolSeed: Equatable {
 /// What the Work tab's tools pane is showing, and whether it is up.
 ///
 /// One model per Work root, shared by the sessions column (it collapses while
-/// this is open, like the desktop sidebar), the chat's rail (Tools, Chat Info,
-/// Proof, Pull Request open it), and the destination (it lays the pane out
-/// beside the thread).
+/// this is open, like the desktop sidebar), the chat's pills and its Tools /
+/// Chat info buttons (they open it), and the destination (it lays the pane out
+/// beside the thread). The pane shows ONE surface at a time; another tool is
+/// one tap away on the Tools button or its pill.
 @MainActor
 final class DuoWorkPaneModel: ObservableObject {
   @Published private(set) var isOpen = false
@@ -104,28 +104,20 @@ final class DuoWorkPaneModel: ObservableObject {
   /// The lane tools the chat's chips can show, published by the chat's own poll.
   @Published private(set) var toolTabs: [DuoToolTab] = []
   @Published private(set) var seed = DuoToolSeed()
-  /// The last state the chips reported, so a tool opened from the rail's Tools
-  /// button starts where a chip tap would have. Not published: it only seeds
-  /// the next open.
+  /// Where the pane grows from: the corner nearest the pill or button that
+  /// opened it, so it reads as coming out of what was tapped.
+  @Published private(set) var origin: UnitPoint = .topTrailing
+  /// The last state the chips reported, so a tool opened from the Tools menu
+  /// starts where a chip tap would have. Not published: it only seeds the
+  /// next open.
   private var chipSeed = DuoToolSeed()
-  /// The tool the pane last showed, for the rail's Tools button.
-  private var lastTool: DuoToolTab?
-
-  /// The tools the header switches between: what the chips offer, plus the
-  /// open tool if its chip has just gone (it stays reachable for this
-  /// presentation rather than vanishing under the reader).
-  var switcherTabs: [DuoToolTab] {
-    var offered = Set(toolTabs)
-    if let tab, tab.isTool { offered.insert(tab) }
-    return DuoToolTab.allCases.filter { $0.isTool && offered.contains($0) }
-  }
 
   /// Opens a tab. The pane appears if it was closed, and switches if it was not.
-  func open(_ tab: DuoToolTab, seed: DuoToolSeed? = nil) {
+  func open(_ tab: DuoToolTab, seed: DuoToolSeed? = nil, origin: UnitPoint = .topTrailing) {
     let next = seed ?? (tab.isTool ? chipSeed : DuoToolSeed())
     if self.seed != next { self.seed = next }
+    if !isOpen, self.origin != origin { self.origin = origin }
     if self.tab != tab { self.tab = tab }
-    if tab.isTool { lastTool = tab }
     if !isOpen { isOpen = true }
   }
 
@@ -133,7 +125,8 @@ final class DuoWorkPaneModel: ObservableObject {
   func open(
     chip: WorkToolChip,
     tools: WorkLaneToolsModel,
-    macDesktopStream: Bool
+    macDesktopStream: Bool,
+    origin: UnitPoint = .topTrailing
   ) {
     open(chip.duoToolTab, seed: DuoToolSeed(
       appleStatus: tools.appleStatus,
@@ -141,32 +134,19 @@ final class DuoWorkPaneModel: ObservableObject {
       appControl: tools.appControlState,
       appControlStream: tools.appControlStream,
       macDesktopStream: macDesktopStream
-    ))
+    ), origin: origin)
   }
 
   /// True while the pane shows one of the lane tools (not a page).
   var showsTool: Bool { isOpen && (tab?.isTool ?? false) }
 
-  /// The rail's Tools button: puts a showing tool away, or brings back the
-  /// tool the pane last showed (else the first one the lane has).
-  func toggleTools() {
-    if showsTool {
-      close()
-      return
-    }
-    if let lastTool, toolTabs.contains(lastTool) {
-      open(lastTool)
-    } else if let first = toolTabs.first {
-      open(first)
-    }
-  }
-
-  /// A rail page button: opens its page, or closes it when it is already up.
-  func togglePage(_ page: DuoToolTab) {
-    if isOpen, tab == page {
+  /// A button or pill for one surface: opens it, or puts it away when it is
+  /// already up.
+  func toggle(_ tab: DuoToolTab, origin: UnitPoint = .topTrailing) {
+    if isOpen, self.tab == tab {
       close()
     } else {
-      open(page)
+      open(tab, origin: origin)
     }
   }
 
@@ -184,6 +164,31 @@ final class DuoWorkPaneModel: ObservableObject {
     chipSeed = seed
     guard toolTabs != tabs else { return }
     toolTabs = tabs
+  }
+}
+
+/// Reads which surface the pane shows, for a view that is not otherwise
+/// observing the pane (the chat's pill row draws that pill selected). With no
+/// pane (the phone) it reports nil.
+struct DuoPaneSelectionReader<Content: View>: View {
+  let pane: DuoWorkPaneModel?
+  @ViewBuilder var content: (DuoToolTab?) -> Content
+
+  var body: some View {
+    if let pane {
+      Observed(pane: pane, content: content)
+    } else {
+      content(nil)
+    }
+  }
+
+  private struct Observed: View {
+    @ObservedObject var pane: DuoWorkPaneModel
+    let content: (DuoToolTab?) -> Content
+
+    var body: some View {
+      content(pane.isOpen ? pane.tab : nil)
+    }
   }
 }
 
@@ -271,14 +276,13 @@ struct DuoToolsPane<Content: View>: View {
   @ViewBuilder var content: (DuoToolTab, DuoToolSeed) -> Content
   @State private var status: String?
 
-  private var headerHeight: CGFloat { 52 }
-  private var statusHeight: CGFloat { 20 }
+  private var headerHeight: CGFloat { 56 }
 
   var body: some View {
     let tab = model.tab
     VStack(spacing: 0) {
       Color.clear
-        .frame(height: headerHeight + (status != nil && tab?.isTool == true ? statusHeight : 0))
+        .frame(height: headerHeight)
       Group {
         if let tab {
           content(tab, model.seed)
@@ -300,14 +304,18 @@ struct DuoToolsPane<Content: View>: View {
     .accessibilityIdentifier("Duo.Work.ToolsPane")
   }
 
+  /// One row: the surface's name (and its status line under it), the open
+  /// tool's own controls, then Close. No switcher: the pane shows one tool,
+  /// and the Tools button or a pill switches it.
   @ViewBuilder
   private func header(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 8) {
-        if let tab, tab.isTool {
-          toolSwitcher(actions: actions)
-        } else if let tab {
-          // A page: its title, and its status line under it.
+    HStack(spacing: 8) {
+      if let tab {
+        HStack(spacing: 8) {
+          Image(systemName: tab.symbolName)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 22)
           VStack(alignment: .leading, spacing: 0) {
             Text(tab.title)
               .font(.headline)
@@ -316,124 +324,24 @@ struct DuoToolsPane<Content: View>: View {
               Text(status)
                 .font(.footnote)
                 .foregroundStyle(ADEColor.textSecondary)
+                .truncationMode(.middle)
             }
           }
           .lineLimit(1)
-          .accessibilityElement(children: .combine)
-          .accessibilityAddTraits(.isHeader)
-          Spacer(minLength: 8)
-          if let actions {
-            HStack(spacing: 6) { actions.content }
-              .fixedSize()
-          }
         }
-        closeButton
-      }
-      .padding(.horizontal, 14)
-      .frame(height: headerHeight)
-
-      if let status, tab?.isTool == true {
-        Text(status)
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .frame(height: statusHeight)
-          .padding(.horizontal, 14)
-      }
-    }
-  }
-
-  /// The tools as a segmented control, then the open tool's actions. Titles
-  /// when they fit, symbols when they do not, a pull-down menu when even the
-  /// symbols would crowd the actions.
-  @ViewBuilder
-  private func toolSwitcher(actions: DuoPaneHeaderActions?) -> some View {
-    let tabs = model.switcherTabs
-    ViewThatFits(in: .horizontal) {
-      switcherRow(tabs: tabs, style: .titles, actions: actions)
-      switcherRow(tabs: tabs, style: .symbols, actions: actions)
-      switcherRow(tabs: tabs, style: .menu, actions: actions)
-    }
-  }
-
-  private enum SwitcherStyle { case titles, symbols, menu }
-
-  @ViewBuilder
-  private func switcherRow(tabs: [DuoToolTab], style: SwitcherStyle, actions: DuoPaneHeaderActions?) -> some View {
-    HStack(spacing: 8) {
-      switcher(tabs: tabs, style: style)
-        .fixedSize()
-      Spacer(minLength: 8)
-      if let actions {
-        HStack(spacing: 6) {
-          actions.content
-        }
-        .fixedSize()
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func switcher(tabs: [DuoToolTab], style: SwitcherStyle) -> some View {
-    let selection = Binding<DuoToolTab>(
-      get: { model.tab ?? tabs.first ?? .simulator },
-      set: { next in
-        ADEHaptics.light()
-        model.open(next)
-      }
-    )
-    if tabs.count <= 1, let only = tabs.first {
-      Label(only.title, systemImage: only.symbolName)
-        .font(.headline)
-        .foregroundStyle(ADEColor.textPrimary)
-        .labelStyle(.titleOnly)
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
-    } else {
-      switch style {
-      case .titles:
-        Picker("Tool", selection: selection) {
-          ForEach(tabs) { tab in
-            Text(tab.title).tag(tab)
-          }
+        .layoutPriority(-1)
+        Spacer(minLength: 8)
+        if let actions {
+          HStack(spacing: 6) { actions.content }
+            .fixedSize()
         }
-        .pickerStyle(.segmented)
-        .accessibilityIdentifier("Duo.Work.ToolsPane.Switcher")
-      case .symbols:
-        Picker("Tool", selection: selection) {
-          ForEach(tabs) { tab in
-            Image(systemName: tab.symbolName)
-              .accessibilityLabel(tab.title)
-              .tag(tab)
-          }
-        }
-        .pickerStyle(.segmented)
-        .frame(width: CGFloat(tabs.count) * 52)
-        .accessibilityIdentifier("Duo.Work.ToolsPane.Switcher")
-      case .menu:
-        // The open tool's name as the pane's title, with the other tools a
-        // tap away in a menu.
-        Menu {
-          Picker("Tool", selection: selection) {
-            ForEach(tabs) { tab in
-              Label(tab.title, systemImage: tab.symbolName).tag(tab)
-            }
-          }
-        } label: {
-          HStack(spacing: 4) {
-            Text((model.tab ?? tabs.first ?? .simulator).title)
-              .font(.headline)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          .foregroundStyle(ADEColor.textPrimary)
-          .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Tool, \((model.tab ?? tabs.first ?? .simulator).title)")
-        .accessibilityIdentifier("Duo.Work.ToolsPane.Switcher")
       }
+      closeButton
     }
+    .padding(.horizontal, 14)
+    .frame(height: headerHeight)
   }
 
   private var closeButton: some View {
@@ -446,27 +354,35 @@ struct DuoToolsPane<Content: View>: View {
 
 /// The chat column and the tools pane, laid out around the fold.
 ///
-/// Wide (held landscape): the thread and the pane share the width half and
-/// half; on a book fold each takes one page, split exactly on the fold. Tall
-/// (held portrait): the pane takes the top half and the thread, composer
-/// included, the bottom — exactly the halves on a laptop fold, a little under
-/// half for the pane when flat. The seam between them is a hairline when flat
-/// and the fold itself when folded, so no control lands on the hinge.
-struct DuoWorkChatPaneSplit<Chat: View, Tools: View>: View {
+/// Side by side (every flat posture, held either way, and an iPad): the
+/// thread and the pane share the width half and half; on a book fold each
+/// takes one page, split exactly on the fold. The pane grows out of the pill
+/// or button that opened it.
+///
+/// Stacked (laptop and tent: hinge bent, fold across): the top half is always
+/// the tool area, the thread with its composer the bottom half. With nothing
+/// open the top half offers what can open there (`idle`).
+struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.duoWorkFamily) private var family
   let isOpen: Bool
+  let origin: UnitPoint
   let chat: () -> Chat
   let tools: () -> Tools
+  let idle: () -> Idle
 
   init(
     isOpen: Bool,
+    origin: UnitPoint = .topTrailing,
     @ViewBuilder chat: @escaping () -> Chat,
-    @ViewBuilder tools: @escaping () -> Tools
+    @ViewBuilder tools: @escaping () -> Tools,
+    @ViewBuilder idle: @escaping () -> Idle
   ) {
     self.isOpen = isOpen
+    self.origin = origin
     self.chat = chat
     self.tools = tools
+    self.idle = idle
   }
 
   var body: some View {
@@ -479,18 +395,32 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View>: View {
     .animation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion), value: isOpen)
   }
 
+  private var paneTransition: AnyTransition {
+    reduceMotion
+      ? .opacity
+      : .asymmetric(
+          insertion: .scale(scale: 0.12, anchor: origin).combined(with: .opacity),
+          removal: .scale(scale: 0.6, anchor: origin).combined(with: .opacity)
+        )
+  }
+
   @ViewBuilder
   private func layout(fold: DuoFold, size: CGSize) -> some View {
     if family == .tall {
       let split = DuoWorkMetrics.tallSplit(height: size.height, fold: fold)
       VStack(spacing: 0) {
-        if isOpen {
-          tools()
-            .frame(maxWidth: .infinity)
-            .frame(height: split.top)
-            .transition(.move(edge: .top).combined(with: .opacity))
-          DuoSeam(axis: .horizontal, foldRect: split.fold)
+        ZStack {
+          if isOpen {
+            tools()
+              .transition(.opacity)
+          } else {
+            idle()
+              .transition(.opacity)
+          }
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: split.top)
+        DuoSeam(axis: .horizontal, foldRect: split.fold)
         chat()
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
@@ -506,12 +436,81 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View>: View {
           DuoSeam(axis: .vertical, foldRect: split.fold)
           tools()
             .frame(width: split.trailing)
-            // The pane slides in from the trailing edge while the sessions
-            // column slides out; one animation owns both.
-            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .transition(paneTransition)
         }
       }
     }
+  }
+}
+
+/// The stacked layout's top half with nothing open: what can open there, as
+/// a quiet grid of large tiles (the running tools, Chat info, the PR). A tile
+/// opens its surface in the same half.
+struct DuoToolTiles: View {
+  struct Tile: Identifiable {
+    let tab: DuoToolTab
+    /// One quiet line under the name ("16 Pro · live", "3 tabs", "#1304").
+    let detail: String?
+    var id: DuoToolTab { tab }
+  }
+
+  let tiles: [Tile]
+  let onOpen: (DuoToolTab) -> Void
+
+  var body: some View {
+    GeometryReader { proxy in
+      let columns = max(2, min(4, Int(proxy.size.width / 170)))
+      VStack(alignment: .leading, spacing: 12) {
+        Text(tiles.contains(where: { $0.tab.isTool }) ? "Open beside the chat" : "No tools are running")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        LazyVGrid(
+          columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns),
+          spacing: 12
+        ) {
+          ForEach(tiles) { tile in
+            Button {
+              ADEHaptics.light()
+              onOpen(tile.tab)
+            } label: {
+              VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: tile.tab.symbolName)
+                  .font(.system(size: 22, weight: .regular))
+                  .foregroundStyle(tile.tab.isTool ? ADEColor.accent : ADEColor.textSecondary)
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 1) {
+                  Text(tile.tab.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                  if let detail = tile.detail {
+                    Text(detail)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textSecondary)
+                  }
+                }
+                .lineLimit(1)
+              }
+              .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+              .padding(14)
+              .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+              .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel([tile.tab.title, tile.detail].compactMap { $0 }.joined(separator: ", "))
+          }
+        }
+        if !tiles.contains(where: { $0.tab.isTool }) {
+          Text("Ask the agent to start a simulator, the browser or a desktop; it shows up here.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 20)
+      .padding(.top, 16)
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .accessibilityIdentifier("Duo.Work.ToolTiles")
   }
 }
 

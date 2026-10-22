@@ -181,22 +181,25 @@ private func duoMachineFleetStateTone(_ state: MachineFleet.MachineState) -> ADE
 
 // MARK: - The wide Home
 
-/// The all-projects Hub on the inner display.
+/// The all-projects Hub on the inner display (and an iPad).
 ///
-/// Held landscape it is two pages, each its own navigation stack: the
-/// projects on the left (the brand and the connection are its only title),
-/// and on the right Needs you and Machines as two widgets that share the page
-/// height above the composer. The right page's toolbar is the edge bar: the
-/// account, Activity and Chats, the filter and Add, then the app tabs and
-/// Settings at the bottom. Book-folded each part is one page; flat, the
-/// projects get the larger share.
+/// Two pages, each its own navigation stack, whenever the screen is flat or
+/// book-folded, held either way: the projects on the left (the connection is
+/// its title, Add its one action), and on the right Needs you and Machines as
+/// two widgets that share the page above the composer.
 ///
-/// Held portrait (open tall, laptop, tent) it is one stack: the projects on
-/// the top half, the two widgets side by side and the composer on the bottom
-/// half, and the controls in the top bar.
+/// - Held landscape the right page's toolbar is the edge bar: the account,
+///   Activity and Chats at the top, the roster filters at the bottom beside
+///   the composer, whose bottom lines up with the bar's.
+/// - Held upright, or on an iPad, there is no edge bar: the projects page's
+///   top bar holds Activity, Chats and Add, and the page leads with the
+///   phone's filter row; the right page's bar holds the account.
+/// - Folded laptop or tent it is one stack: the projects on the top half, the
+///   two widgets side by side and the composer on the bottom half.
 ///
-/// Nothing scrolls the right page (or the bottom half): each widget scrolls
-/// inside itself, and the composer is always the bottom-most thing, full width.
+/// The Hub is above every project: it never shows the app tabs. Nothing
+/// scrolls the right page (or the bottom half): each widget scrolls inside
+/// itself, and the composer is always the bottom-most thing, full width.
 struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination: View>: View {
   let machines: [DuoHomeMachine]
   let needsYou: [DuoNeedsYouItem]
@@ -218,73 +221,88 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @ViewBuilder var chatsDestination: () -> ChatsDestination
 
   @Environment(\.duoLayout) private var duo
+  /// The projects page's width, so its title can make room for Activity,
+  /// Chats and Add where they share its bar.
+  @State private var projectsPageWidth: CGFloat = 0
 
   var body: some View {
-    DuoLocalFoldReader { _, size in
-      if duo.family(for: size) == .tall {
-        tallLayout
+    Group {
+      if duo.fold.isStacked {
+        stackedLayout
       } else {
-        wideLayout
+        pagesLayout
       }
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
-  // MARK: Held landscape
+  // MARK: Two pages
 
-  private var wideLayout: some View {
-    DuoTwoPages(flatShare: 0.54) {
+  private var pagesLayout: some View {
+    DuoTwoPages(flatShare: 0.54, sideBySideWhenUpright: true) {
       NavigationStack {
-        projects()
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-          .background(ADEColor.pageBackground.ignoresSafeArea())
-          .navigationBarTitleDisplayMode(.inline)
-          .toolbar {
-            ToolbarItem(placement: .topBarLeading) { title() }
-            ToolbarItem(placement: .topBarTrailing) {
-              HubFilterMenu(filter: $filter, counts: filterCounts)
-            }
+        VStack(spacing: 0) {
+          if !duo.hasEdgeBar {
+            // No edge bar to hold the filters: the phone's chip row, at the
+            // head of the list it filters.
+            filterRow
           }
-          .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
+          projects()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { projectsPageWidth = $0 }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            title()
+              .environment(\.hubConnectionTitleCompact, !duo.hasEdgeBar && projectsPageWidth < 440)
+          }
+          if !duo.hasEdgeBar {
+            HubToolbar(form: .pageBar, actions: actions, account: account)
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+          }
+          ToolbarItem(placement: .topBarTrailing) { addButton }
+        }
+        .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
       }
     } second: {
       NavigationStack {
         VStack(spacing: 0) {
-          if showsOverview {
-            DuoHomeWidgets(
-              axis: .vertical,
-              machines: machines,
-              needsYou: needsYou,
-              onOpenNeedsYou: onOpenNeedsYou,
-              onOpenActivity: actions.onOpenActivity,
-              onOpenMachines: actions.onOpenSettings
-            )
-            .padding(.horizontal, 16)
+          overview(axis: .vertical)
             .padding(.top, 4)
-            .padding(.bottom, 10)
-          } else {
-            HubConnectingCard()
-              .frame(maxHeight: .infinity)
-          }
+            .padding(.bottom, 12)
           composer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .duoEdgeBarAlignedBottom(contentBottomPadding: HubInlineComposer.bottomPadding)
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .toolbar {
-          HubToolbar(
-            form: .rail,
-            actions: actions,
-            account: account,
-            includesAppTabs: true
-          )
+          if duo.hasEdgeBar {
+            HubToolbar(
+              form: .rail,
+              actions: actions,
+              filter: $filter,
+              filterCounts: filterCounts,
+              account: account
+            )
+          } else if let account {
+            // Held upright this bar sits beside the status bar, with room for
+            // one item: the account. Activity and Chats are on the projects
+            // page's bar.
+            ToolbarItem(placement: .topBarTrailing) {
+              HubAccountButton(identity: account, action: actions.onOpenSettings)
+            }
+            .sharedBackgroundVisibility(.hidden)
+          }
         }
       }
     }
   }
 
-  // MARK: Held portrait
+  // MARK: Laptop / tent
 
-  private var tallLayout: some View {
+  private var stackedLayout: some View {
     NavigationStack {
       DuoLocalFoldReader { localFold, localSize in
         let top: CGFloat = {
@@ -293,12 +311,7 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
         }()
         VStack(spacing: 0) {
           VStack(spacing: 0) {
-            // Held portrait the bar has no room for the filter: it is the
-            // phone's chip row, at the head of the list it filters.
-            HubRosterFilterBar(counts: filterCounts, selection: $filter)
-              .padding(.horizontal, 16)
-              .padding(.top, 4)
-              .padding(.bottom, 8)
+            filterRow
             projects()
           }
           .frame(height: top)
@@ -309,22 +322,9 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
             DuoSeam(axis: .horizontal)
           }
           VStack(spacing: 0) {
-            if showsOverview {
-              DuoHomeWidgets(
-                axis: .horizontal,
-                machines: machines,
-                needsYou: needsYou,
-                onOpenNeedsYou: onOpenNeedsYou,
-                onOpenActivity: actions.onOpenActivity,
-                onOpenMachines: actions.onOpenSettings
-              )
-              .padding(.horizontal, 16)
+            overview(axis: .horizontal)
               .padding(.top, 14)
               .padding(.bottom, 4)
-            } else {
-              HubConnectingCard()
-                .frame(maxHeight: .infinity)
-            }
             composer()
           }
           .frame(maxHeight: .infinity)
@@ -333,28 +333,57 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        // The app tabs menu heads the bar, as on every screen held portrait.
-        DuoAppTabsToolbar(includesUtilities: true)
         ToolbarItem(placement: .topBarLeading) { title() }
-        HubToolbar(
-          form: .bar,
-          actions: actions,
-          account: account,
-          includesAppTabs: true
-        )
+        HubToolbar(form: .bar, actions: actions, account: account)
       }
       .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
     }
+  }
+
+  // MARK: Pieces
+
+  private var filterRow: some View {
+    HubRosterFilterBar(counts: filterCounts, selection: $filter)
+      .padding(.horizontal, 16)
+      .padding(.top, 4)
+      .padding(.bottom, 8)
+  }
+
+  @ViewBuilder
+  private func overview(axis: Axis) -> some View {
+    if showsOverview {
+      DuoHomeWidgets(
+        axis: axis,
+        machines: machines,
+        needsYou: needsYou,
+        onOpenNeedsYou: onOpenNeedsYou,
+        onOpenActivity: actions.onOpenActivity,
+        onOpenMachines: actions.onOpenSettings
+      )
+      .padding(.horizontal, 16)
+    } else {
+      HubConnectingCard()
+        .frame(maxHeight: .infinity)
+    }
+  }
+
+  /// Add relates to the project list, so it is that page's one action.
+  private var addButton: some View {
+    Button(action: actions.onAdd) {
+      Label("Add project", systemImage: "plus")
+    }
+    .tint(ADEColor.textPrimary)
+    .accessibilityHint("Adds a project from one of your machines.")
   }
 }
 
 // MARK: - Widgets
 
-/// Needs you and Machines as two widgets that fill the room they are given
-/// and never scroll it: each scrolls inside itself. Stacked (held landscape)
-/// Machines sizes to its rows up to two fifths of the height and Needs you
-/// takes the rest; side by side (held portrait) Needs you takes a little over
-/// half the width, so a machine's summary line still fits.
+/// Needs you and Machines as two dense widgets that fill the room they are
+/// given and never scroll it: each scrolls inside itself, with a soft fade at
+/// the bottom edge while there is more below. Stacked (two pages) Machines
+/// sizes to its rows up to a little over half the height and Needs you takes the
+/// rest; side by side (laptop) Needs you takes a little over half the width.
 struct DuoHomeWidgets: View {
   let axis: Axis
   let machines: [DuoHomeMachine]
@@ -371,9 +400,8 @@ struct DuoHomeWidgets: View {
     GeometryReader { proxy in
       if axis == .vertical {
         let available = max(0, proxy.size.height - spacing)
-        // Header + rows + bottom inset, between a usable floor and 2/5.
-        let wanted = DuoHomeWidget<EmptyView>.headerHeight + machinesContentHeight + 8
-        let machinesHeight = min(max(wanted, min(150, available * 0.5)), available * 0.42)
+        let wanted = DuoHomeWidget<EmptyView>.headerHeight + machinesContentHeight + 6
+        let machinesHeight = min(max(wanted, min(120, available * 0.4)), available * 0.55)
         VStack(spacing: spacing) {
           needsYouWidget
             .frame(height: max(0, available - machinesHeight))
@@ -406,18 +434,16 @@ struct DuoHomeWidgets: View {
           message: "Your agents are working on their own."
         )
       } else {
-        ScrollView {
+        DuoWidgetList {
           LazyVStack(spacing: 0) {
             ForEach(Array(needsYou.enumerated()), id: \.element.id) { index, item in
-              DuoOverviewChatRow(item: item) { onOpenNeedsYou(item) }
+              DuoWidgetChatRow(item: item) { onOpenNeedsYou(item) }
               if index < needsYou.count - 1 {
-                Divider().padding(.leading, 54)
+                Divider().padding(.leading, DuoWidgetRowMetrics.textInset)
               }
             }
           }
-          .padding(.bottom, 6)
         }
-        .scrollIndicators(.automatic)
       }
     }
   }
@@ -429,27 +455,58 @@ struct DuoHomeWidgets: View {
       actionTitle: "Manage",
       action: onOpenMachines
     ) {
-      ScrollView {
+      DuoWidgetList {
         VStack(spacing: 0) {
           ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
-            DuoOverviewMachineRow(machine: machine, action: onOpenMachines)
+            DuoWidgetMachineRow(machine: machine, action: onOpenMachines)
             if index < machines.count - 1 {
-              Divider().padding(.leading, 54)
+              Divider().padding(.leading, DuoWidgetRowMetrics.textInset)
             }
           }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { machinesContentHeight = $0 }
       }
-      .scrollBounceBehavior(.basedOnSize)
-      .scrollIndicators(.automatic)
     }
   }
 }
 
-/// One Home widget: a rounded card on the page with its title, count and one
-/// text action in the header, and its own scrolling body.
+/// A widget's scrolling body. While rows continue below the card's edge the
+/// last visible one fades out instead of being cut mid-line; at the end of
+/// the list (or when everything fits) nothing fades.
+private struct DuoWidgetList<Content: View>: View {
+  @ViewBuilder var content: () -> Content
+  @State private var hasMoreBelow = false
+
+  var body: some View {
+    ScrollView {
+      content()
+        .padding(.bottom, 6)
+    }
+    .scrollBounceBehavior(.basedOnSize)
+    .scrollIndicators(.hidden)
+    .onScrollGeometryChange(for: Bool.self) { geometry in
+      geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 8
+    } action: { _, more in
+      hasMoreBelow = more
+    }
+    .mask {
+      VStack(spacing: 0) {
+        Rectangle()
+        LinearGradient(
+          colors: [.black, .black.opacity(hasMoreBelow ? 0 : 1)],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+        .frame(height: 36)
+      }
+    }
+  }
+}
+
+/// One Home widget: a rounded card on the page with a compact header (title,
+/// count, one text action) and its own scrolling body.
 struct DuoHomeWidget<Content: View>: View {
-  static var headerHeight: CGFloat { 50 }
+  static var headerHeight: CGFloat { 42 }
 
   let title: String
   var count: Int?
@@ -459,24 +516,25 @@ struct DuoHomeWidget<Content: View>: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 5) {
         Text(title)
-          .font(.headline)
+          .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         if let count {
           Text("\(count)")
-            .font(.headline)
+            .font(.subheadline.weight(.semibold))
             .monospacedDigit()
             .foregroundStyle(ADEColor.textMuted)
         }
         Spacer(minLength: 8)
         if let actionTitle {
           Button(actionTitle, action: action)
-            .font(.subheadline.weight(.medium))
+            .font(.subheadline)
             .buttonStyle(.borderless)
         }
       }
-      .padding(.horizontal, 18)
+      .padding(.horizontal, 16)
+      .padding(.top, 4)
       .frame(height: Self.headerHeight)
       .accessibilityElement(children: .combine)
       .accessibilityAddTraits(.isHeader)
@@ -486,7 +544,7 @@ struct DuoHomeWidget<Content: View>: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(ADEColor.cardBackground)
-    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
   }
 }
 
@@ -530,12 +588,16 @@ struct DuoTwoPages<First: View, Second: View>: View {
   var fold: Arrangement = .automatic
   /// The share the first part takes when the screen is flat, 0…1.
   var flatShare: CGFloat = 0.5
+  /// Keep the parts side by side when the screen is taller than wide, as long
+  /// as it is not folded laptop or tent: upright and flat, the inner display
+  /// (or an iPad) is the same two columns, just narrower.
+  var sideBySideWhenUpright = false
   @ViewBuilder var first: () -> First
   @ViewBuilder var second: () -> Second
 
   var body: some View {
     DuoLocalFoldReader { fold, size in
-      let sideBySide = size.width > size.height
+      let sideBySide = size.width > size.height || (sideBySideWhenUpright && !fold.isStacked)
       switch fold {
       case .sideBySide(let rect) where sideBySide:
         let lead = max(0, min(rect.minX, size.width))
@@ -746,6 +808,118 @@ struct DuoOverviewMachineRow: View {
   }
 }
 
+// MARK: - Widget rows (dense)
+
+enum DuoWidgetRowMetrics {
+  /// Where a row's text starts: the divider's leading inset.
+  static let textInset: CGFloat = 44
+}
+
+/// One chat in the Needs you widget: the state glyph, the title on one line,
+/// project · lane under it, and how long ago. The glyph carries the state (a
+/// red triangle is a failure); the row speaks the word. Taps open the chat.
+struct DuoWidgetChatRow: View {
+  let item: DuoNeedsYouItem
+  let action: () -> Void
+
+  private var context: String {
+    let project = item.project.displayName
+    guard let lane = item.lane?.name.trimmingCharacters(in: .whitespacesAndNewlines),
+          !lane.isEmpty else { return project }
+    return "\(project) · \(lane)"
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 0) {
+        HubStateGlyph(state: item.boardState, size: 12)
+          .frame(width: DuoWidgetRowMetrics.textInset - 16, alignment: .center)
+        VStack(alignment: .leading, spacing: 1) {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(item.row.title)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if let activity = item.row.activityLabel {
+              Text(activity)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .fixedSize()
+            }
+          }
+          Text(context)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 6)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(DuoWidgetRowButtonStyle())
+    .accessibilityLabel("\(item.row.title), \(item.stateLabel ?? "Needs you"), \(context)")
+    .accessibilityHint("Opens the chat.")
+  }
+}
+
+/// One machine in the Machines widget, on one line: its glyph and name, then
+/// a status dot and either how many agents run there or its state word. This phone's machine
+/// carries the checkmark. The full summary (projects too) is spoken.
+struct DuoWidgetMachineRow: View {
+  let machine: DuoHomeMachine
+  let action: () -> Void
+
+  /// The dot's colour already says the machine is up, so a machine with
+  /// agents running says how many; otherwise its state word.
+  private var shortStatus: String {
+    machine.workingCount > 0 ? "\(machine.workingCount) working" : machine.statusWord
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 0) {
+        Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: DuoWidgetRowMetrics.textInset - 16, alignment: .center)
+        Text(machine.name)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Spacer(minLength: 10)
+        // A few words at most: it keeps its width and the name gives way.
+        HStack(spacing: 5) {
+          ADEKitDot(tone: machine.tone, size: 6)
+          Text(shortStatus)
+            .lineLimit(1)
+        }
+        .fixedSize()
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        Image(systemName: "checkmark")
+          .font(.caption.weight(.bold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(width: 22, alignment: .trailing)
+          .opacity(machine.isFocused ? 1 : 0)
+          .accessibilityHidden(true)
+      }
+      .padding(.horizontal, 16)
+      .frame(minHeight: 40)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(DuoWidgetRowButtonStyle())
+    .accessibilityLabel(
+      machine.isFocused
+        ? "\(machine.name), this phone's machine, \(machine.summary)"
+        : "\(machine.name), \(machine.summary)"
+    )
+    .accessibilityHint("Opens connection settings.")
+  }
+}
+
 /// A widget row's pressed state: the row's own band, briefly tinted.
 private struct DuoWidgetRowButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
@@ -759,12 +933,14 @@ private struct DuoWidgetRowButtonStyle: ButtonStyle {
 ///
 ///     duo-home        the Hub at real volume (16 projects, 19 need you, 5 machines)
 ///     duo-home-quiet  the same Hub with nothing needing you
+///     duo-home-filtered  the Hub with the Needs you filter on
 enum DuoHomePreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
     switch name {
     case "duo-home", "duo-home-outer": return AnyView(DuoHomeFixtureScreen())
     case "duo-home-quiet": return AnyView(DuoHomeFixtureScreen(quiet: true))
+    case "duo-home-filtered": return AnyView(DuoHomeFixtureScreen(initialFilter: .needsYou))
     case "duo-nomachine": return AnyView(DuoConnectFixtures.noMachine)
     case "duo-signin": return AnyView(DuoConnectFixtures.gate)
     case "duo-signin-sheet": return AnyView(DuoConnectFixtures.gate(sheet: .signIn))
@@ -869,6 +1045,7 @@ private struct DuoConnectGateFixture: View {
 /// No pairing, socket or network is touched.
 private struct DuoHomeFixtureScreen: View {
   var quiet = false
+  var initialFilter: HubRosterFilter = .all
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.duoLayout) private var duo
   @State private var composerExpanded = false
@@ -932,6 +1109,7 @@ private struct DuoHomeFixtureScreen: View {
         }
       }
     }
+    .onAppear { rosterFilter = initialFilter }
     // The toolbar's Activity item reads the drawer, and every control the
     // app's tint; the app sets both at the root, which the fixture stands in for.
     .environmentObject(syncService.attentionDrawer)

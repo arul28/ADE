@@ -2040,8 +2040,7 @@ private struct WorkNewChatComposerBar: View {
           ),
           provider: provider,
           modelId: modelId,
-          runtimeMode: runtimeMode,
-          extraMenuContent: AnyView(sessionSettingsMenu)
+          runtimeMode: runtimeMode
         )
       },
       controls: {
@@ -2082,29 +2081,6 @@ private struct WorkNewChatComposerBar: View {
       attachments: $attachments,
       onDismiss: {}
     )
-  }
-
-  /// Model and access in the ⋯ menu too, like the chat's folded composer:
-  /// the controls row that normally shows them is hidden while folded.
-  @ViewBuilder
-  private var sessionSettingsMenu: some View {
-    Section {
-      Button {
-        onOpenModelPicker()
-      } label: {
-        Label("Model · \(modelName)", systemImage: "cpu")
-      }
-      if runtimeOptions.count > 1 {
-        Picker(selection: Binding(get: { runtimeMode }, set: { runtimeMode = $0 })) {
-          ForEach(runtimeOptions, id: \.id) { option in
-            Text(option.title).tag(option.id)
-          }
-        } label: {
-          Label("Access · \(workRuntimeModeLabel(provider: provider, mode: runtimeMode))", systemImage: "lock.shield")
-        }
-        .pickerStyle(.menu)
-      }
-    }
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph

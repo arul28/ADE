@@ -21,32 +21,38 @@ struct HubToolbarActions {
 /// The Hub's controls in the system toolbar, so iOS places them: a top bar on
 /// a phone, the vertical bar on the curved edge of the Duo's displays.
 ///
-/// - `.bar`: one stack's top bar (the phone, the outer display, the inner
-///   display held portrait). Activity and Chats, then the filter, Add and
-///   Settings. Held portrait the caller puts the app tabs menu at the head of
-///   the bar (`includesAppTabs`), and Settings moves into that menu, since
-///   four controls is what fits beside the title.
-/// - `.rail`: the inner display's trailing page held landscape. The account
-///   heads the page and opens Settings; Activity and Chats, then Add, top the
-///   rail, each group a capsule of its own; the app tabs close it at the
-///   bottom (with Settings only when there is no account to stand for it).
-///   The filter belongs to the projects list, so that page's header holds it.
+/// The Hub is above every project, so it never carries the app tabs (Work,
+/// Lanes, PRs, Files, CTO only exist inside a project).
+///
+/// - `.bar`: one stack's top bar (the phone, the outer display, the Duo's
+///   inner display folded laptop or tent). Activity and Chats, then the
+///   filter (when the layout has no filter row), Add and Settings, then the
+///   account.
+/// - `.rail`: the inner display's trailing page held landscape, whose bar is
+///   the edge bar. The account heads it and opens Settings, Activity and Chats
+///   follow in their own capsule; the roster filters close it at the bottom,
+///   one button per state with its count, next to the composer. Add belongs to
+///   the projects list, so that page's header holds it.
+/// - `.pageBar`: Activity and Chats alone (Settings too without an account),
+///   for the projects page's top bar where there is no edge bar (the inner
+///   display held upright, an iPad). Held upright the overview page's bar
+///   beside the status bar has room for one item, the account, so the caller
+///   puts it there and adds Add after these.
 struct HubToolbar: ToolbarContent {
-  enum Form { case bar, rail }
+  enum Form { case bar, rail, pageBar }
 
   let form: Form
   let actions: HubToolbarActions
-  /// The roster filter, for layouts without the phone's filter row.
+  /// The roster filter: the rail's bottom group, or a menu in the bar for a
+  /// layout without the phone's filter row.
   var filter: Binding<HubRosterFilter>?
   var filterCounts: [HubRosterFilter: Int] = [:]
   /// The signed-in account, shown where there is room for it.
   var account: AccountIdentity?
-  /// The inner display's app tabs: in the rail, their bottom group; in the
-  /// bar, their menu is the caller's (it heads the bar, before the title).
-  var includesAppTabs = false
 
   var body: some ToolbarContent {
-    if form == .rail {
+    switch form {
+    case .rail:
       if let account {
         ToolbarItem(placement: .topBarTrailing) {
           HubAccountButton(identity: account, action: actions.onOpenSettings)
@@ -54,31 +60,13 @@ struct HubToolbar: ToolbarContent {
         .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
       }
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        HubActivityToolbarButton(action: actions.onOpenActivity)
-        chatsButton
+      activityAndChats
+      if let filter {
+        HubRailFilterGroup(filter: filter, counts: filterCounts)
       }
-      ToolbarSpacer(.fixed, placement: .topBarTrailing)
-      // The page's primary action, filled, the way Slack's rail and Voice
-      // Memos' record button stand apart from the rest.
-      ToolbarItem(placement: .topBarTrailing) {
-        addButton
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-      }
-      if includesAppTabs {
-        DuoAppTabsToolbar(includesUtilities: false)
-      }
-      // The rail holds nine items before it overflows, and the six
-      // destinations need six: Settings is the account picture at the head of
-      // the page (Settings is where the account lives), and Machines' Manage.
-      if account == nil {
-        ToolbarSpacer(.fixed, placement: .bottomBar)
-        ToolbarItem(placement: .bottomBar) {
-          settingsButton
-        }
-      }
-    } else {
+    case .pageBar:
+      activityAndChats
+    case .bar:
       ToolbarItemGroup(placement: .topBarTrailing) {
         HubActivityToolbarButton(action: actions.onOpenActivity)
         chatsButton
@@ -90,18 +78,30 @@ struct HubToolbar: ToolbarContent {
         }
         addButton
           .tint(ADEColor.textPrimary)
-        // Beside the app tabs menu (the inner display held portrait) the bar
-        // has room for four controls; Settings is then in that menu.
-        if !includesAppTabs {
-          settingsButton
-        }
+        settingsButton
       }
-      if !includesAppTabs, let account {
+      if let account {
         ToolbarItem(placement: .topBarTrailing) {
           HubAccountButton(identity: account, action: actions.onOpenSettings)
         }
         .sharedBackgroundVisibility(.hidden)
       }
+    }
+  }
+
+  private var activityAndChats: some ToolbarContent {
+    ToolbarItemGroup(placement: .topBarTrailing) {
+      activityAndChatsButtons
+    }
+  }
+
+  @ViewBuilder
+  private var activityAndChatsButtons: some View {
+    HubActivityToolbarButton(action: actions.onOpenActivity)
+    chatsButton
+    // Without an account picture to stand for it, Settings joins them.
+    if account == nil {
+      settingsButton
     }
   }
 
@@ -184,6 +184,118 @@ struct HubFilterMenu: View {
     // narrowed.
     .tint(filter == .all ? ADEColor.textPrimary : ADEColor.accent)
     .accessibilityLabel("Show \(filter.title)")
+  }
+}
+
+/// The roster filters as the edge bar's bottom group, beside the composer:
+/// one button per state, its glyph over its count, the same five the phone's
+/// chip row shows. The chosen one is tinted in its state's colour on a soft
+/// wash of it, never a solid fill; the rest stay quiet.
+struct HubRailFilterGroup: ToolbarContent {
+  @Binding var filter: HubRosterFilter
+  let counts: [HubRosterFilter: Int]
+
+  var body: some ToolbarContent {
+    if #available(iOS 27.0, *) {
+      group.visibilityPriority(.high)
+    } else {
+      group
+    }
+  }
+
+  private var group: some ToolbarContent {
+    ToolbarItemGroup(placement: .bottomBar) {
+      ForEach(HubRosterFilter.allCases) { option in
+        HubRailFilterButton(
+          option: option,
+          count: counts[option, default: 0],
+          isSelected: filter == option
+        ) {
+          guard filter != option else { return }
+          ADEHaptics.light()
+          withAnimation(.snappy(duration: 0.2)) { filter = option }
+        }
+      }
+    }
+  }
+}
+
+private struct HubRailFilterButton: View {
+  let option: HubRosterFilter
+  let count: Int
+  let isSelected: Bool
+  let action: () -> Void
+
+  /// The state's hue; All (no state) uses the accent.
+  private var hue: Color {
+    option.tone.map(activityToneColor) ?? ADEColor.accent
+  }
+
+  /// Outlined at rest, filled when chosen, the way a tab bar marks the
+  /// current tab.
+  private var symbol: String {
+    let outline = option.systemImage.replacingOccurrences(of: ".fill", with: "")
+    guard isSelected else { return outline }
+    return outline == "circle.dashed" || outline == "square.grid.2x2"
+      ? outline
+      : "\(outline).fill"
+  }
+
+  var body: some View {
+    Button(action: action) {
+      // The edge bar only keeps an item vertical when it is a system label,
+      // and it draws a label's icon alone. So the glyph and its count are
+      // one template image: the bar tints it like any other item, and the
+      // count stays quiet digits instead of a red badge that would read as
+      // an alarm on every state.
+      Label {
+        Text(option.title)
+      } icon: {
+        HubRailFilterGlyph(symbol: symbol, count: count, isSelected: isSelected)
+      }
+    }
+    .tint(isSelected ? hue : ADEColor.textPrimary)
+    .accessibilityLabel("\(option.accessibilityTitle), \(count)")
+    .accessibilityHint("Shows matching chats from every project.")
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+    .accessibilityIdentifier("Hub.RailFilter.\(option.rawValue)")
+  }
+}
+
+/// A filter's glyph over its count, rendered once per change into a template
+/// image (see `HubRailFilterButton`).
+private struct HubRailFilterGlyph: View {
+  let symbol: String
+  let count: Int
+  let isSelected: Bool
+  @Environment(\.displayScale) private var displayScale
+
+  var body: some View {
+    if let image = rendered {
+      Image(uiImage: image)
+    } else {
+      Image(systemName: symbol)
+    }
+  }
+
+  @MainActor
+  private var rendered: UIImage? {
+    let renderer = ImageRenderer(content:
+      VStack(spacing: 1) {
+        Image(systemName: symbol)
+          .font(.system(size: 16, weight: .medium))
+          .frame(height: 19)
+        Text(count > 999 ? "999+" : "\(count)")
+          .font(.system(size: 11, weight: isSelected ? .bold : .semibold))
+          .monospacedDigit()
+          .lineLimit(1)
+          .fixedSize()
+      }
+      .foregroundStyle(.black)
+      .frame(minWidth: 24)
+    )
+    renderer.scale = displayScale
+    return renderer.uiImage?.withRenderingMode(.alwaysTemplate)
   }
 }
 
@@ -278,12 +390,27 @@ func hubConnectionStatus(
   )
 }
 
+private struct HubConnectionTitleCompactKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// The Hub's title drops the machine's name and keeps the brand and the
+  /// status dot: a narrow page whose bar also holds Activity, Chats and Add.
+  /// The name stays in the title's menu (and the Machines widget).
+  var hubConnectionTitleCompact: Bool {
+    get { self[HubConnectionTitleCompactKey.self] }
+    set { self[HubConnectionTitleCompactKey.self] = newValue }
+  }
+}
+
 /// The Hub's title: the brand, then the connection, as one toolbar item whose
 /// menu lists every machine and opens connection settings.
 struct HubConnectionMenu: View {
   let status: HubConnectionStatus
   let machines: [DuoHomeMachine]
   let onOpenSettings: () -> Void
+  @Environment(\.hubConnectionTitleCompact) private var compact
 
   var body: some View {
     Menu {
@@ -312,13 +439,17 @@ struct HubConnectionMenu: View {
           if let switching = status.switchingProjectName {
             HStack(spacing: 6) {
               ProgressView().controlSize(.mini)
-              Text("Opening \(switching)…")
+              if !compact {
+                Text("Opening \(switching)…")
+              }
             }
             .id("switching")
           } else {
             HStack(spacing: 6) {
               ADEKitDot(tone: status.tone, size: 7)
-              Text(status.label)
+              if !compact {
+                Text(status.label)
+              }
             }
             .id("machine")
           }

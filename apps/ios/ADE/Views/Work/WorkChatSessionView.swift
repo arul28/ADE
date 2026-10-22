@@ -27,6 +27,22 @@ let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
 
+/// The composer ⋯'s Attach Issue, handed down to the composer's menu.
+struct WorkChatAttachIssueAction {
+  let run: () -> Void
+}
+
+private struct WorkChatAttachIssueKey: EnvironmentKey {
+  static let defaultValue: WorkChatAttachIssueAction? = nil
+}
+
+extension EnvironmentValues {
+  var workChatAttachIssue: WorkChatAttachIssueAction? {
+    get { self[WorkChatAttachIssueKey.self] }
+    set { self[WorkChatAttachIssueKey.self] = newValue }
+  }
+}
+
 struct WorkChatOlderHistoryLoadResult {
   let succeeded: Bool
   let hasMoreHistory: Bool
@@ -663,6 +679,9 @@ struct WorkChatSessionView: View {
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   var scheduledWorkSnapshotsRenderSignature: Int = 0
   var onOpenChatInfo: (() -> Void)? = nil
+  /// What the Chat info pill says, or nil when it should not show: only while
+  /// a subagent or background work is running, or proof was filed.
+  var chatInfoPill: WorkChatInfoPillModel? = nil
   /// Fork the current Claude thread in this lane (session-quota card).
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
@@ -730,6 +749,11 @@ struct WorkChatSessionView: View {
   /// The tools pane is open beside this chat. Its tools are then in the pane's
   /// toolbar, so the composer drops its lane tool chips (never the chat's own).
   var duoPaneOpen = false
+  /// Hands the lane tool chips up to the destination's header menus.
+  var toolsRelay: WorkChatToolsRelay? = nil
+  /// Attach a Linear issue to this chat, from the composer's ⋯ (as on
+  /// desktop). Nil when the host cannot.
+  var onAttachIssue: (() -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
@@ -1094,27 +1118,21 @@ struct WorkChatSessionView: View {
     return "Answer the waiting prompt above, or decline it before sending another message."
   }
 
-  /// How many items the Chat Info sheet would show. Drives both the badge's
-  /// count and whether it exists at all.
-  var composerBadgeChatInfoCount: Int {
-    workChatInfoItemCount(
-      subagents: subagentSnapshots,
-      scheduledWork: scheduledWorkSnapshots
-    )
-  }
-
+  /// The Chat info pill: shown only while something is going on (a subagent
+  /// or background work running, or proof filed), not for every chat that
+  /// ever had a subagent.
   var showsComposerChatInfoBadge: Bool {
-    duoPane == nil && inputLockMessage == nil && composerBadgeChatInfoCount > 0 && onOpenChatInfo != nil
+    inputLockMessage == nil && chatInfoPill != nil && onOpenChatInfo != nil
   }
 
   var showsComposerPrBadge: Bool {
-    duoPane == nil && inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
+    inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
   }
 
   /// Lane tool chips: the lane's running simulator, browser tabs and App
   /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
   var showsComposerLaneToolChips: Bool {
-    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty && duoPane == nil
+    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
   }
 
   /// The thread-comments chip: only while the chat has at least one comment
@@ -1131,74 +1149,86 @@ struct WorkChatSessionView: View {
     showsComposerThreadCommentsChip && workThreadCommentsHaveSendable(threadComments)
   }
 
-  /// Whether the floating badge row is on screen. The row is part of the
+  /// Whether the floating pill row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
-  ///
-  /// In the Duo's Work column the chat actions are the rail and the lane tools
-  /// are the tools pane, so only the composer's own hint stays above it: the
-  /// thread-comments chip, which says what the next send carries.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
       || showsComposerThreadCommentsChip
   }
 
-  /// Chat-info / PR / lane tool badges: small glass capsules sitting just
-  /// above the composer, with the jump-to-latest button at the right end of
-  /// the same line. The thread scrolls behind them.
+  /// The floating pills (desktop's floating previews), one row directly above
+  /// the composer, on every device: a pill per running lane tool, Chat info
+  /// while something is going on, the chat's PR, and its thread comments.
+  /// A pill opens exactly what the matching ⋯ item opens; on a wide display
+  /// that is the tools pane beside the thread, and the pill of what the pane
+  /// shows renders selected. The row scrolls sideways when it overflows and
+  /// never narrows the prompt box.
   @ViewBuilder
   var composerBadgeChipRow: some View {
-    let chatInfoCount = composerBadgeChatInfoCount
-    let chips = HStack(spacing: 8) {
-      // First: it is the one chip that changes what the next send carries.
-      if showsComposerThreadCommentsChip {
-        WorkThreadCommentsChip(comments: threadComments) {
-          ADEHaptics.light()
-          threadCommentsSheetPresented = true
-        }
-      }
-      if showsComposerChatInfoBadge, let onOpenChatInfo {
-        WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
-      }
-      if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
-        WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
-        if let prWatch, let onSetPrWatch {
-          WorkChatPrWatchChip(model: prWatch, onSelect: onSetPrWatch)
-        }
-      }
-      if showsComposerLaneToolChips {
-        ForEach(laneTools.chips) { chip in
-          WorkLaneToolChipView(chip: chip) {
+    DuoPaneSelectionReader(pane: duoPane) { selected in
+      let chips = HStack(spacing: 8) {
+        // First: it is the one chip that changes what the next send carries.
+        if showsComposerThreadCommentsChip {
+          WorkThreadCommentsChip(comments: threadComments) {
             ADEHaptics.light()
-            if let duoPane {
-              // Wide display: the tool opens beside the thread as a pane tab,
-              // seeded from the state this chip is already showing.
-              duoPane.open(
-                chip: chip,
-                tools: laneTools,
-                macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false
-              )
-            } else {
-              laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+            threadCommentsSheetPresented = true
+          }
+        }
+        if showsComposerLaneToolChips {
+          ForEach(laneTools.chips) { chip in
+            WorkLaneToolChipView(chip: chip, isSelected: pillSelection(chip.duoToolTab, selected)) {
+              ADEHaptics.light()
+              if let duoPane {
+                // Wide display: the tool opens beside the thread, seeded from
+                // the state this chip is already showing; tapped again, away.
+                if selected == chip.duoToolTab {
+                  duoPane.close()
+                } else {
+                  duoPane.open(
+                    chip: chip,
+                    tools: laneTools,
+                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false,
+                    origin: .bottomLeading
+                  )
+                }
+              } else {
+                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+              }
             }
           }
         }
+        if showsComposerChatInfoBadge, let chatInfoPill, let onOpenChatInfo {
+          WorkChatInfoActivePopup(model: chatInfoPill, isSelected: pillSelection(.chatInfo, selected)) {
+            if selected == .chatInfo { duoPane?.close() } else { onOpenChatInfo() }
+          }
+        }
+        if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
+          WorkChatPrActivePopup(badge: prBadge, isSelected: pillSelection(.pr, selected)) {
+            if selected == .pr { duoPane?.close() } else { onOpenPrDetails() }
+          }
+        }
       }
-    }
-    // The common case fits, and a plain HStack leaves the rest of the
-    // row non-interactive — important now that the row floats over the
-    // transcript, since a full-width horizontal ScrollView would swallow
-    // vertical drags in that band. A row that overflows (chat info, PR and
-    // several lane tools on a narrow phone) gets the scroller, and then the
-    // band is genuinely its own.
-    ViewThatFits(in: .horizontal) {
-      chips
-      ScrollView(.horizontal, showsIndicators: false) {
-        chips.padding(.trailing, 8)
+      // The common case fits, and a plain HStack leaves the rest of the
+      // row non-interactive — important now that the row floats over the
+      // transcript, since a full-width horizontal ScrollView would swallow
+      // vertical drags in that band. A row that overflows gets the scroller,
+      // and then the band is genuinely its own.
+      ViewThatFits(in: .horizontal) {
+        chips
+        ScrollView(.horizontal, showsIndicators: false) {
+          chips.padding(.trailing, 8)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
       }
-      .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(height: workChatComposerChipRowHeight, alignment: .leading)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .frame(height: workChatComposerChipRowHeight, alignment: .leading)
+  }
+
+  /// Nil on the phone (a pill opens a sheet); on a wide display, whether the
+  /// pane shows this pill's surface.
+  private func pillSelection(_ tab: DuoToolTab, _ selected: DuoToolTab?) -> Bool? {
+    duoPane == nil ? nil : selected == tab
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -2120,6 +2150,9 @@ struct WorkChatSessionView: View {
     }
     .padding(.bottom, workChatComposerBottomGap)
     .padding(.leading, duoComposerLeadingInset)
+    // Held landscape on the Duo, the prompt box's bottom lines up with the
+    // bottom of the edge bar's last capsule.
+    .duoEdgeBarAlignedBottom(contentBottomPadding: workChatComposerBottomGap)
     .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
     .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
   }
@@ -2432,6 +2465,7 @@ struct WorkChatSessionView: View {
         timelineScrollHandlers(chatColumn)
       )
       .modifier(laneToolsPresenter)
+      .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
     )
   }
 
@@ -2442,7 +2476,8 @@ struct WorkChatSessionView: View {
       laneId: session.laneId,
       chatSessionId: session.id,
       enabled: !isPersonalChat,
-      duoPane: duoPane
+      duoPane: duoPane,
+      relay: toolsRelay
     )
     #if DEBUG
     presenter.preview = previewLaneTools
@@ -2769,6 +2804,7 @@ private struct WorkChatComposerCard: View {
 }
 
 private struct WorkChatComposerDraftInput: View {
+  @Environment(\.workChatAttachIssue) private var onAttachIssue
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
@@ -3401,8 +3437,20 @@ private struct WorkChatComposerDraftInput: View {
       // The render context already carries this: its `runtimeMode` is
       // `workInitialRuntimeMode` of the summary it was built from.
       runtimeMode: chatSummary.runtimeMode,
-      extraMenuContent: AnyView(stopAndSendSettingsMenu)
+      extraMenuContent: AnyView(composerExtraMenuContent)
     )
+  }
+
+  @ViewBuilder
+  private var composerExtraMenuContent: some View {
+    stopAndSendSettingsMenu
+    if let onAttachIssue {
+      Section {
+        Button(action: onAttachIssue.run) {
+          Label("Attach Issue", systemImage: "link.badge.plus")
+        }
+      }
+    }
   }
 
   /// Mirrors `providerSupportsStopModeChoice` on desktop: every provider gets

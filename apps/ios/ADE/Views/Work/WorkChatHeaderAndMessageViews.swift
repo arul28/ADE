@@ -111,29 +111,149 @@ struct WorkChatHeaderMenuModel: Equatable {
   var showsRename: Bool = true
   /// The host has `chat.restartSession`.
   var showsRestartAgent: Bool = false
+  /// The lane tools running now (the same set the pills show), for Tools ▸.
+  var tools: [WorkChatToolMenuItem] = []
+  /// The chat has a pull request to show.
+  var hasPullRequest: Bool = false
+  /// No PR yet, and one can be made for the chat's lane.
+  var canCreatePullRequest: Bool = false
+  /// Changes whenever something the shared actions list draws changes (pin,
+  /// mute, lifecycle, hand off), so the open menu is rebuilt only then.
+  var actionsKey: String = ""
 }
 
-/// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
-/// compared via `.equatable()` on `model` only.
+/// One running lane tool, as the Tools menus list it.
+struct WorkChatToolMenuItem: Equatable, Identifiable {
+  let tab: DuoToolTab
+  /// The pill's own text ("16 Pro", "3 tabs", "App").
+  let detail: String?
+  var id: DuoToolTab { tab }
+}
+
+/// What Tools ▸ (phone ⋯) and the Tools button (Duo rail, iPad) list: the lane
+/// tools running now, each marked live, then the chat's pull request. Mobile
+/// never starts a tool; with none running it says how one appears.
+struct WorkChatToolsMenuItems: View {
+  let tools: [WorkChatToolMenuItem]
+  let hasPullRequest: Bool
+  let canCreatePullRequest: Bool
+  /// The tool the pane shows now, checked (wide displays only).
+  var selected: DuoToolTab? = nil
+  let onOpen: (DuoToolTab) -> Void
+  var onCreatePullRequest: (() -> Void)? = nil
+
+  var body: some View {
+    Section {
+      if tools.isEmpty {
+        Button {} label: {
+          Label("No Tools Running", systemImage: "square.dashed")
+          Text("Ask the agent to start a simulator, the browser or a desktop.")
+        }
+        .disabled(true)
+      }
+      ForEach(tools) { tool in
+        Button {
+          ADEHaptics.light()
+          onOpen(tool.tab)
+        } label: {
+          Label(tool.tab.title, systemImage: selected == tool.tab ? "checkmark" : tool.tab.symbolName)
+          Text(["Running", tool.detail].compactMap { $0 }.joined(separator: " · "))
+        }
+      }
+    }
+    if hasPullRequest {
+      Section {
+        Button {
+          ADEHaptics.light()
+          onOpen(.pr)
+        } label: {
+          Label("Pull Request", systemImage: selected == .pr ? "checkmark" : DuoToolTab.pr.symbolName)
+        }
+      }
+    } else if canCreatePullRequest, let onCreatePullRequest {
+      Section {
+        Button {
+          ADEHaptics.light()
+          onCreatePullRequest()
+        } label: {
+          Label("Create Pull Request", systemImage: "plus")
+        }
+      }
+    }
+  }
+}
+
+/// The chat's own actions: the Work list row's long-press menu, minus Select
+/// (`WorkSessionActionsMenuContent`), when the chat was opened from Work. A
+/// chat opened anywhere else keeps its own short list.
+struct WorkChatActionsMenuItems: View {
+  let session: TerminalSessionSummary?
+  let model: WorkChatHeaderMenuModel
+  var onOpenLane: () -> Void
+  var onRename: () -> Void
+  var onDelete: () -> Void
+  var onCopySessionId: () -> Void
+  var onCopySessionDeepLink: () -> Void
+  var onTogglePinned: () -> Void
+  var onRestartAgent: (() -> Void)?
+  @Environment(\.workSessionActionsMenu) private var provider
+
+  var body: some View {
+    if let provider, let session {
+      WorkSessionActionsMenuContent(row: row(provider, session), includesSelect: false)
+    } else {
+      if model.showsLaneActions, model.laneAvailable {
+        Section {
+          Button(action: onOpenLane) {
+            Label("Go to lane", systemImage: "arrow.triangle.branch")
+          }
+        }
+      }
+      Section {
+        WorkChatSessionMenuItems(
+          model: model,
+          deleteLast: true,
+          onRename: onRename,
+          onDelete: onDelete,
+          onCopySessionId: onCopySessionId,
+          onCopySessionDeepLink: onCopySessionDeepLink,
+          onTogglePinned: onTogglePinned,
+          onRestartAgent: onRestartAgent
+        )
+      }
+    }
+  }
+
+  /// The list's row, with Rename and Delete taken by the open chat: renaming
+  /// asks in place, and deleting also leaves the chat.
+  private func row(_ provider: WorkSessionActionsMenuProvider, _ session: TerminalSessionSummary) -> WorkSessionListRow {
+    var row = provider.row(session)
+    let rename = onRename
+    let delete = onDelete
+    row.onRename = { _ in rename() }
+    row.onDelete = { _ in delete() }
+    return row
+  }
+}
+
+/// The chat's ⋯ on the phone (and any compact width): there is room for one
+/// button, so it holds all three of the chat's buckets — Chat info, Tools ▸
+/// (the running tools and the PR), then the chat's actions, which are the
+/// Work list row's own menu.
 ///
-/// The destination view re-renders continuously while a chat streams
-/// (transcript signatures, artifact/subagent refreshes, PR lookup keys). Every
-/// re-evaluation of an open `Menu` rebuilds the presented UIMenu, which makes
-/// the liquid-glass menu flicker and instantly dismisses any open nested
-/// submenu. Gating on `model` means the presented menu is only rebuilt when
-/// something the menu actually displays has changed.
+/// Compared via `.equatable()` on `model` only. The destination re-renders
+/// continuously while a chat streams; every re-evaluation of an open `Menu`
+/// rebuilds the presented UIMenu, which makes the glass menu flicker and
+/// dismisses an open submenu. Gating on `model` rebuilds it only when
+/// something the menu displays changed.
 struct WorkChatHeaderMenu: View, Equatable {
   var model: WorkChatHeaderMenuModel
-  /// In a system toolbar (the Duo's wide chat column): a plain ellipsis label
-  /// the toolbar styles itself, instead of the phone header's glass circle.
-  var toolbarLabel = false
+  /// The session the actions act on. Not compared: `model.actionsKey` stands
+  /// for the parts the menu draws.
+  var session: TerminalSessionSummary?
   var onShowChatInfo: () -> Void
-  var onShowProof: () -> Void
-  var onViewPrDetails: () -> Void
-  var onOpenPrsTab: () -> Void
-  var onOpenGitHub: () -> Void
-  var onCopyPrLink: () -> Void
-  var onOpenPrCreation: () -> Void
+  var onOpenTool: (DuoToolTab) -> Void
+  var onCreatePullRequest: () -> Void
   var onOpenLane: () -> Void
   var onRename: () -> Void
   var onDelete: () -> Void
@@ -143,133 +263,51 @@ struct WorkChatHeaderMenu: View, Equatable {
   /// Fresh provider process, same conversation: picks up new skills, plugins,
   /// and MCP servers (desktop "Restart agent session").
   var onRestartAgent: (() -> Void)? = nil
-  var onAttachIssue: (() -> Void)? = nil
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
-    lhs.model == rhs.model && lhs.toolbarLabel == rhs.toolbarLabel
+    lhs.model == rhs.model
   }
 
   var body: some View {
-    if toolbarLabel {
-      menu
-        .accessibilityLabel("More")
-    } else {
-      menu
-        .buttonStyle(.plain)
-        .accessibilityLabel("Chat actions")
-    }
-  }
-
-  private var menu: some View {
     Menu {
-      Button(action: onShowChatInfo) {
-        if model.chatInfoCount == 0 {
+      Section {
+        Button(action: onShowChatInfo) {
           Label("Chat Info", systemImage: "info.circle")
-        } else {
-          Label("Chat Info (\(model.chatInfoCount))", systemImage: "info.circle")
-        }
-      }
-
-      if model.canAttachIssue {
-        Button(action: { onAttachIssue?() }) {
-          Label("Attach issue", systemImage: "link.badge.plus")
-        }
-      }
-
-      Divider()
-
-      if model.showsProof {
-        Button(action: onShowProof) {
-          if model.artifactCount == 0 {
-            Label("Proof", systemImage: "cube.transparent")
-          } else {
-            Label("Proof (\(model.artifactCount))", systemImage: "cube.transparent")
+          if model.chatInfoCount > 0 {
+            Text("\(model.chatInfoCount) agent\(model.chatInfoCount == 1 ? "" : "s") and jobs")
           }
         }
-        .accessibilityHint("Opens the proof drawer")
+        Menu {
+          WorkChatToolsMenuItems(
+            tools: model.tools,
+            hasPullRequest: model.hasPullRequest,
+            canCreatePullRequest: model.canCreatePullRequest,
+            onOpen: onOpenTool,
+            onCreatePullRequest: onCreatePullRequest
+          )
+        } label: {
+          Label("Tools", systemImage: "square.split.2x1")
+          if !model.tools.isEmpty {
+            Text("\(model.tools.count) running")
+          }
+        }
       }
-
-      if model.showsLaneActions {
-        Divider()
-
-        pullRequestItems
-      }
-
-      Divider()
-
-      sessionItems
+      WorkChatActionsMenuItems(
+        session: session,
+        model: model,
+        onOpenLane: onOpenLane,
+        onRename: onRename,
+        onDelete: onDelete,
+        onCopySessionId: onCopySessionId,
+        onCopySessionDeepLink: onCopySessionDeepLink,
+        onTogglePinned: onTogglePinned,
+        onRestartAgent: onRestartAgent
+      )
     } label: {
-      if toolbarLabel {
-        Label("More", systemImage: "ellipsis")
-      } else {
-        WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
-      }
+      WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
     }
-  }
-
-  @ViewBuilder
-  private var pullRequestItems: some View {
-    if let tag = model.prTag {
-      Menu {
-        Button(action: onViewPrDetails) {
-          Label("View PR details", systemImage: "sidebar.trailing")
-        }
-
-        Button(action: onOpenPrsTab) {
-          Label("PRs tab", systemImage: "rectangle.grid.1x2")
-        }
-        .accessibilityHint("Opens \(formatLanePrBadgeLabel(tag)) in the PRs tab")
-
-        Button(action: onOpenGitHub) {
-          Label("Open on GitHub", systemImage: "link")
-        }
-        .disabled(!model.prGitHubUrlAvailable)
-      } label: {
-        Label(formatLanePrBadgeLabel(tag), systemImage: "arrow.triangle.pull")
-      }
-
-      Button(action: onCopyPrLink) {
-        if model.prLinkCopied {
-          Label("Copied link", systemImage: "checkmark")
-        } else {
-          Label("Copy link", systemImage: "doc.on.doc")
-        }
-      }
-      .disabled(!model.prGitHubUrlAvailable)
-    } else {
-      Button(action: onViewPrDetails) {
-        Label("View PR details", systemImage: "sidebar.trailing")
-      }
-
-      Button(action: onOpenPrCreation) {
-        Label("Open PR in PRs tab", systemImage: "rectangle.grid.1x2")
-      }
-      .disabled(!model.laneAvailable)
-
-      if let blockedReason = model.createPrBlockedReason {
-        Button {} label: {
-          Label(blockedReason, systemImage: "info.circle")
-        }
-        .disabled(true)
-      }
-    }
-
-    Button(action: onOpenLane) {
-      Label("Open lane", systemImage: "arrow.triangle.branch")
-    }
-  }
-
-  private var sessionItems: some View {
-    WorkChatSessionMenuItems(
-      model: model,
-      deleteLast: false,
-      onRename: onRename,
-      onDelete: onDelete,
-      onCopySessionId: onCopySessionId,
-      onCopySessionDeepLink: onCopySessionDeepLink,
-      onTogglePinned: onTogglePinned,
-      onRestartAgent: onRestartAgent
-    )
+    .buttonStyle(.plain)
+    .accessibilityLabel("Chat actions")
   }
 }
 

@@ -347,6 +347,24 @@ struct WorkLaneToolsPreview {
 }
 #endif
 
+/// The lane tool chips, handed up from the chat view (which owns their poll)
+/// to the destination around it, whose header lists the same tools. Publishes
+/// only when the chip set changes.
+@MainActor
+final class WorkChatToolsRelay: ObservableObject {
+  @Published private(set) var chips: [WorkToolChip] = []
+  /// Opens a chip's tool exactly as tapping the chip does (phone layout).
+  var openChip: ((WorkToolChip) -> Void)?
+
+  func publish(_ next: [WorkToolChip]) {
+    if chips != next { chips = next }
+  }
+
+  func open(_ chip: WorkToolChip) {
+    openChip?(chip)
+  }
+}
+
 /// The chips' poll and the surfaces they open, on the chat view.
 struct WorkLaneToolsPresenter: ViewModifier {
   @ObservedObject var model: WorkLaneToolsModel
@@ -359,6 +377,9 @@ struct WorkLaneToolsPresenter: ViewModifier {
   /// The wide display's tools column. While the chips poll, it publishes which
   /// tool tabs exist; the chip tap opens the pane instead of a cover.
   var duoPane: DuoWorkPaneModel?
+  /// The chat's header (its ⋯ Tools menu, the Duo's Tools button) lists the
+  /// same tools the chips show and opens them the way a chip tap does.
+  var relay: WorkChatToolsRelay?
   #if DEBUG
   var preview: WorkLaneToolsPreview?
   #endif
@@ -378,7 +399,14 @@ struct WorkLaneToolsPresenter: ViewModifier {
       }
       // Which tools exist is the same answer the chips give; the pane only
       // needs the identities, and this fires only when the chip set changes.
+      .onAppear {
+        let macDesktopStream = syncService.supportsMacDesktopStream
+        relay?.openChip = { [weak model = self.model] chip in
+          model?.open(chip, macDesktopStream: macDesktopStream)
+        }
+      }
       .onChange(of: model.chips, initial: true) { _, chips in
+        relay?.publish(chips)
         duoPane?.setToolTabs(chips.map(\.duoToolTab), seed: DuoToolSeed(
           appleStatus: model.appleStatus,
           macDesktop: model.macDesktopState,
@@ -429,6 +457,8 @@ struct WorkLaneToolsPresenter: ViewModifier {
 /// info chips (`WorkComposerBadgeCapsule`), so the row reads as one set.
 struct WorkLaneToolChipView: View {
   let chip: WorkToolChip
+  /// Nil on the phone; on a wide display, whether the pane shows this tool.
+  var isSelected: Bool? = nil
   let onOpen: () -> Void
 
   var body: some View {
@@ -436,6 +466,7 @@ struct WorkLaneToolChipView: View {
       tint: tint,
       spacing: 6,
       accessibilityLabel: accessibilityText,
+      selection: isSelected,
       onOpen: onOpen
     ) {
       Image(systemName: symbol)

@@ -92,10 +92,13 @@ private struct DuoAppNavigationRootModifier: ViewModifier {
       .onChange(of: duo.isWide, initial: true) { _, _ in
         publish()
       }
+      .onChange(of: duo.hasEdgeBar) { _, _ in
+        publish()
+      }
   }
 
   private func publish() {
-    DuoAppNavigation.shared.setFamily(duo.family(for: size))
+    DuoAppNavigation.shared.setFamily(duo.family(for: size), hasEdgeBar: duo.hasEdgeBar)
   }
 }
 
@@ -147,6 +150,9 @@ final class DuoAppNavigation: ObservableObject {
   @Published private(set) var selectedId: String?
   /// The window's family, published by `.duoAppNavigationRoot()`.
   @Published private(set) var family: DuoFamily = .compact
+  /// The window shows the Duo's edge bar (inner display, held landscape).
+  /// An iPad's wide window does not: it gets the tall form's menu.
+  @Published private(set) var hasEdgeBar = false
   private var onSelect: (String) -> Void = { _ in }
 
   func configure(items: [DuoAppTabItem], selectedId: String?, onSelect: @escaping (String) -> Void) {
@@ -155,9 +161,9 @@ final class DuoAppNavigation: ObservableObject {
     self.onSelect = onSelect
   }
 
-  func setFamily(_ family: DuoFamily) {
-    guard self.family != family else { return }
-    self.family = family
+  func setFamily(_ family: DuoFamily, hasEdgeBar: Bool) {
+    if self.family != family { self.family = family }
+    if self.hasEdgeBar != hasEdgeBar { self.hasEdgeBar = hasEdgeBar }
   }
 
   func select(_ id: String) {
@@ -182,12 +188,13 @@ final class DuoAppNavigation: ObservableObject {
 /// column. Add it after the screen's own items; it picks its form from the
 /// window's family:
 ///
-/// - wide (held landscape): one item per destination at the bottom of the
-///   vertical edge bar, Activity and Settings last at low priority so they are
-///   the first to overflow;
-/// - tall (held portrait): one menu on the leading side of the top bar,
-///   labelled with the current tab's symbol and badged with what waits
-///   elsewhere — never a bar under content;
+/// - the edge bar (the Duo's inner display held landscape): one item per
+///   destination at the bottom of the vertical edge bar, Activity and Settings
+///   last at low priority so they are the first to overflow;
+/// - any other wide window (the inner display held upright, an iPad in either
+///   orientation): one menu on the leading side of the top bar, labelled with
+///   the current tab's symbol and badged with what waits elsewhere — never a
+///   bar under content, which on an iPad would sit under the composer;
 /// - compact: nothing (the phone's tab bar is still there).
 ///
 /// `includesUtilities: false` leaves Activity and Settings out, for a screen
@@ -197,13 +204,13 @@ struct DuoAppTabsToolbar: ToolbarContent {
   var includesUtilities = true
 
   var body: some ToolbarContent {
-    if navigation.family == .wide {
+    if navigation.hasEdgeBar {
       DuoAppDestinationsToolbarGroup(navigation: navigation)
       if includesUtilities {
         ToolbarSpacer(.fixed, placement: .bottomBar)
         DuoAppUtilitiesToolbarGroup(navigation: navigation)
       }
-    } else if navigation.family == .tall {
+    } else if navigation.family != .compact {
       DuoAppTabsMenuItem(navigation: navigation, includesUtilities: includesUtilities)
     }
   }

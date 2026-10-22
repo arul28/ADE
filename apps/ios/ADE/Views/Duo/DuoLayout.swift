@@ -36,6 +36,16 @@ struct DuoLayout: Equatable {
   var fold: DuoFold = .none
   /// The hinge angle in degrees, or nil on a device without a hinge.
   var hingeAngle: Double?
+  /// The display has a fold at all (the Duo's inner display), folded or flat.
+  /// False on an iPad, the outer display and every other iPhone.
+  var hasFold = false
+  /// The window is wider than tall.
+  var isLandscape = false
+
+  /// iOS draws the trailing column's toolbar as the vertical bar on the
+  /// display's curved right edge: the Duo's inner display, held landscape.
+  /// Never on an iPad (same size class, no fold) and never held upright.
+  var hasEdgeBar: Bool { isWide && hasFold && isLandscape }
 
   /// How far the hinge is bent away from flat, 0 (flat or closed) to 1
   /// (folded to a right angle). Drives the fold's depth effects.
@@ -74,7 +84,9 @@ private struct DuoLayoutRootModifier: ViewModifier {
         .environment(\.duoLayout, DuoLayout(
           isWide: horizontalSizeClass == .regular,
           fold: DuoFoldReading.fold(in: proxy),
-          hingeAngle: hingeAngle
+          hingeAngle: hingeAngle,
+          hasFold: DuoFoldReading.hasFold(in: proxy),
+          isLandscape: proxy.size.width > proxy.size.height
         ))
     }
     .modifier(DuoHingeObserver(angle: $hingeAngle))
@@ -90,6 +102,59 @@ enum DuoFoldReading {
     guard let region = regions.first(where: { $0.isActive }) else { return .none }
     let frame = region.frame
     return frame.width >= frame.height ? .stacked(frame) : .sideBySide(frame)
+  }
+
+  /// Whether the display has a fold, active or not: the Duo's inner display
+  /// reports its (inactive) division even while flat.
+  static func hasFold(in proxy: GeometryProxy) -> Bool {
+    guard #available(iOS 27.1, *) else { return false }
+    return !proxy.reservedRegions(kind: .division, options: .includeInactive).isEmpty
+  }
+}
+
+// MARK: - Edge bar alignment
+
+/// The Duo's edge bar, as far as content has to line up with it.
+///
+/// iOS insets the bar concentrically into the display's bottom-right corner:
+/// the bottom of its last capsule sits as far above the window's bottom edge
+/// as its right side sits in from the window's right edge. Measured on the
+/// inner display, open flat and book-folded: 24pt both ways.
+enum DuoEdgeBar {
+  /// From the window's bottom edge to the bottom of the bar's last capsule.
+  static let bottomInset: CGFloat = 24
+}
+
+extension View {
+  /// Lines the bottom of a column's last view (its composer) up with the
+  /// bottom of the edge bar's last capsule while the edge bar is showing (the
+  /// Duo's inner display held landscape); elsewhere it changes nothing.
+  ///
+  /// Apply it to the column itself — the stack whose last child is the
+  /// composer, filling the edge bar's column — not to the composer: the
+  /// column then runs to the window's bottom edge (past the home indicator's
+  /// safe area, which the bar ignores too) and stops `DuoEdgeBar.bottomInset`
+  /// above it, so nothing above the composer loses height.
+  ///
+  /// `contentBottomPadding` is the padding the composer already draws under
+  /// its visible box (`HubInlineComposer.bottomPadding`), so the box, not the
+  /// padding, lines up. Identity never changes with the posture, so a draft
+  /// survives a rotation. The keyboard still pushes the column up.
+  func duoEdgeBarAlignedBottom(contentBottomPadding: CGFloat = 0) -> some View {
+    modifier(DuoEdgeBarAlignedBottom(contentBottomPadding: contentBottomPadding))
+  }
+}
+
+private struct DuoEdgeBarAlignedBottom: ViewModifier {
+  let contentBottomPadding: CGFloat
+  @Environment(\.duoLayout) private var duo
+
+  func body(content: Content) -> some View {
+    let active = duo.hasEdgeBar
+    content
+      .padding(.bottom, active ? max(0, DuoEdgeBar.bottomInset - contentBottomPadding) : 0)
+      // Measured from the window's edge, not the home indicator's safe area.
+      .ignoresSafeArea(.container, edges: active ? .bottom : [])
   }
 }
 
