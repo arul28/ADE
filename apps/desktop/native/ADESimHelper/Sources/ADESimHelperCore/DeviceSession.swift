@@ -367,11 +367,10 @@ public actor DeviceSession {
      * Input without a stream (a caller that only taps): nothing has told the
      * session which panel is on, or measured it. Ask CoreDevice, and size the
      * panel from the simulator's own screen list, rather than defaulting to
-     * the cover while the inner display is showing.
+     * the cover while the inner display is showing. Returns the displays it
+     * read, so the gesture's other questions reuse them; nil when a running
+     * stream already knew.
      */
-    /// Returns the displays it read, for the gesture's other questions; nil
-    /// when a running stream already knew.
-    @discardableResult
     private func resolvePanelForInput() async -> [DevicePosture.Display]? {
         if engine != nil, activeScreenID != nil { return nil }
         let displays = await DevicePosture.displays(udid: udid)

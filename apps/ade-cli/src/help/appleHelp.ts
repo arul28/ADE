@@ -1198,7 +1198,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Renders the device in 3D with its live screen and files the images (and an
   optional turntable video) to the proof drawer. No pane needs to be open:
   any ADE desktop window with the project open does the rendering, off screen
-  (the lane's Apple pane does it when one is live). The device must be on;
+  (the lane's Apple pane does it when one is live; a project on another
+  machine must be the window's front tab). The device must be on;
   a render never boots it. For an iPhone Duo, each pose folds the real
   simulator first.
 
@@ -1234,7 +1235,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --wait <seconds>       How long to wait in line; default 0 (answer at once). Max 540.
     --ttl <seconds>        How long the lease lasts unless renewed; default 600.
-    --holder <name>        Who is asking; defaults to this chat (or, with no chat, this shell).
+    --holder <name>        Who is asking; defaults to this chat (or, with no chat, this shell:
+                           a caller that runs each command in a new shell passes the same
+                           --holder every time, or its renewals queue behind itself).
     --token <t>            For release: the token the lease printed.
     --lane, --lane-id <id> Lane whose device.
 `,

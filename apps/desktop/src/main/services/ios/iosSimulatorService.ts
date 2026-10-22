@@ -2316,7 +2316,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * poll while it is on screen, so this is where "someone is using this lane's
    * device" is recorded for idle power-off.
    */
-
   const resolveRuntime = (
     scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
   ): LaneRuntime => {
@@ -4218,6 +4217,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     device: IosSimulatorDevice,
     projectRoot: string,
     configuration: string,
+    /** The caller asked for this configuration, rather than taking Debug. */
+    configurationNamed: boolean,
   ): Promise<string | null> => {
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     if (!target.projectPath || !target.scheme) {
@@ -4271,10 +4272,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
       args.logger.info("ios_simulator.build.complete", { projectPath: relativeProjectPath, scheme: target.scheme, derivedDataPath });
     }
-    // This configuration's products only: a lane that has built both Debug
-    // and Release has two apps with one bundle id.
+    // A named configuration's products only: a lane that has built both
+    // Debug and Release has two apps with one bundle id, and a configuration
+    // that was never built must not quietly install the other one. With none
+    // named, Debug's products first, else anything the lane built, as before.
     const productRoot = path.join(derivedDataPath, "Build", "Products", `${configuration}-iphonesimulator`);
-    return findAppBundle(fs.existsSync(productRoot) ? productRoot : derivedDataPath, {
+    const built = fs.existsSync(productRoot);
+    if (configurationNamed && !built) {
+      throw new Error(`${configuration} has not been built for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    return findAppBundle(built ? productRoot : derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
       // productName lives on the underlying launch target (ResolvedLaunchTarget
@@ -4533,7 +4540,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, buildStepExtra);
       }
       const appBundle = target.shouldBuild || target.shouldInstall
-        ? await buildProjectApp(target, device, projectRoot, buildConfiguration)
+        ? await buildProjectApp(target, device, projectRoot, buildConfiguration, Boolean(launchArgs.configuration?.trim()))
         : target.appBundlePath;
       emitLaunchProgress(
         launchId,

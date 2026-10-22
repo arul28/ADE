@@ -636,7 +636,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       await tools.launchApp(udid, args.bundleId, launchArguments);
       recordAction(
         `Relaunched ${args.bundleId}.`,
-        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}${launchArguments.length ? ` -- ${launchArguments.join(" ")}` : ""}`,
+        // The arguments are not recorded: one can carry a token, and the
+        // action log ends up in proof bundles.
+        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}${launchArguments.length ? ` -- <${launchArguments.length} launch arguments>` : ""}`,
       );
       return tools.getAppState(udid, args.bundleId);
     },

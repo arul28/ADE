@@ -1,6 +1,6 @@
 /**
- * What a launch may be given, checked once for `launch` and `relaunch` alike,
- * before anything boots, builds or terminates.
+ * The inputs a launch may be given, checked before anything boots, builds or
+ * terminates. `launch` takes both; `relaunch` takes the arguments.
  */
 
 /**

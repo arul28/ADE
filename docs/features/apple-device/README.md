@@ -460,7 +460,8 @@ window pinned to another machine files where the chat lives.
 
 `ade apple render` asks for the same thing from the CLI, and needs no pane:
 only an ADE desktop window with the project open, on the device's machine or
-bound to it. The service emits `apple.render.request` (with the asking chat)
+bound to it (a project on another machine must be that window's front tab: a
+parked remote tab does not hear the request). The service emits `apple.render.request` (with the asking chat)
 to every such window, and the first `renderAck` takes the job:
 
 - A live Apple pane for the lane acks at once (a pane whose video stalled
@@ -478,8 +479,8 @@ to every such window, and the first `renderAck` takes the job:
 Either way the job answers `renderComplete` with the count filed or the
 reason it failed (the lane has no device, the device is off, the picture never
 came up, the window closed mid-render). The host never boots a device. No ack
-within 7.5 s means no desktop window has the project open, and the error says
-so: rendering needs a desktop renderer.
+within 7.5 s means no desktop window took it, and the error says so:
+rendering needs a desktop renderer.
 
 ## Agent discovery
 

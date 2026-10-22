@@ -586,23 +586,28 @@ function createViewer(
     pointerNdc.set(nx * 2 - 1, 1 - ny * 2);
     raycaster.setFromCamera(pointerNdc, camera);
     const props = getProps();
-    const points = orientedPointSize(
-      props.orientation,
-      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
-    );
+    /**
+     * A hit on the panel (u across, v up) as the device point it sends. A
+     * portrait frame lies on the panel as is, whichever way the phone is
+     * turned, so the hit is a point on the framebuffer: what the flat view
+     * sends and the device takes (`source: "user"` input is frame space). Only
+     * a frame the helper already turned wide is the picture.
+     */
+    const framePoint = (u: number, vFromBottom: number, framePictured: boolean): ScreenHit => {
+      const size = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
+      if (!framePictured) return { x: u * size.width, y: (1 - vFromBottom) * size.height };
+      const points = orientedPointSize(props.orientation, size);
+      const oriented = portraitToOriented(u, vFromBottom, props.orientation);
+      return { x: oriented.x * points.width, y: oriented.y * points.height };
+    };
     if (body.duo) {
       // The foldable body is two panels, so the hit is resolved across both and
       // answered in the continuous inner-display space either way.
       const hit = body.duo.pickInner(raycaster);
       if (!hit) return null;
-      if (body.physical) {
-        // Apple's model answers in the live panel's own framebuffer, which
-        // is what the device takes, exactly as the flat view sends it.
-        const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
-        return { x: hit.u * raw.width, y: (1 - hit.vFromBottom) * raw.height };
-      }
-      const oriented = portraitToOriented(hit.u, hit.vFromBottom, props.orientation);
-      return { x: oriented.x * points.width, y: oriented.y * points.height };
+      // Apple's model answers in the live panel's own framebuffer, whatever
+      // shape the frame arrives in.
+      return framePoint(hit.u, hit.vFromBottom, !body.physical && layout.rawLandscape);
     }
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
@@ -618,16 +623,7 @@ function createViewer(
     }
     const u = Math.min(1, Math.max(0, (localHit.x + body.screenWidth / 2) / body.screenWidth));
     const vFromBottom = Math.min(1, Math.max(0, (localHit.y + body.screenHeight / 2) / body.screenHeight));
-    if (!layout.rawLandscape) {
-      // A portrait frame lies on the panel as is, whichever way the phone is
-      // turned: the hit is a point on the framebuffer, which is what the flat
-      // view sends and the device takes (`source: "user"` input is frame
-      // space). Only a frame the helper already turned wide is the picture.
-      const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
-      return { x: u * raw.width, y: (1 - vFromBottom) * raw.height };
-    }
-    const oriented = portraitToOriented(u, vFromBottom, props.orientation);
-    return { x: oriented.x * points.width, y: oriented.y * points.height };
+    return framePoint(u, vFromBottom, layout.rawLandscape);
   };
 
   const sync = (props: AppleDevice3DViewProps) => {

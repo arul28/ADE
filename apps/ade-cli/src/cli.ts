@@ -5066,9 +5066,14 @@ export function readNumberOption(
  * a bare `--wait` reads `bareValue`, no flag reads undefined.
  */
 function readOptionalNumberOption(args: string[], names: string[], bareValue: number): number | undefined {
-  const value = readNumberOption(args, names);
-  if (value != null) return value;
-  return readFlag(args, names) ? bareValue : undefined;
+  const index = args.findIndex((token) => names.includes(token));
+  // Bare: last, or followed by another flag. `readNumberOption` would take
+  // that next token as the value.
+  if (index >= 0 && (index === args.length - 1 || args[index + 1]!.startsWith("-"))) {
+    args.splice(index, 1);
+    return bareValue;
+  }
+  return readNumberOption(args, names);
 }
 
 function readJsonOption(
@@ -15210,7 +15215,8 @@ function buildIosSimulatorPlan(
     const waitSeconds = readNumberOption(args, ["--wait"]);
     const ttlSeconds = readNumberOption(args, ["--ttl"]);
     // A shell with no chat is its own holder (its parent, the shell), so two
-    // terminals queue instead of both renewing one anonymous lease.
+    // terminals queue instead of both renewing one anonymous lease. A caller
+    // that runs each command in a fresh shell names itself with --holder.
     const holder = readValue(args, ["--holder", "--name"])
       ?? (claimArgs.chatSessionId ? null : `shell ${process.ppid}`);
     const tokenFlag = readValue(args, ["--token"]);

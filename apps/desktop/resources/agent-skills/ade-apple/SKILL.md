@@ -290,7 +290,8 @@ Name elements, not pixels.
   (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
   of the 3D device with its live screen to the proof drawer. No pane needs to
   be open: any ADE desktop window with the project open renders it off
-  screen; with none, it says so. The device must be on (`apple start`). On a
+  screen (a project on another machine must be the window's front tab);
+  with none, it says so. The device must be on (`apple start`). On a
   Duo each pose folds the simulator first.
 
 Agent launches stay in the background; `apple show` brings the device up at
