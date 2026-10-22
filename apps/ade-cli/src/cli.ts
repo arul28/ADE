@@ -169,7 +169,18 @@ import {
   displayPercent as usageWindowDisplayPercent,
   windowLabel as usageWindowDisplayLabel,
 } from "../../desktop/src/shared/usageWindowPresentation";
-import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import type {
+  AgentChatApprovalDecision,
+  AgentChatDispatchSteerMode,
+  PendingInputRequest,
+} from "../../desktop/src/shared/types/chat";
+import { buildAnswers, optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
+import {
+  describePendingInputForAgent,
+  pendingInputIsAnswerable,
+  pendingInputItemId,
+} from "../../desktop/src/shared/pendingInputCommand";
+import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
 import {
   isAgentChatStopMode,
   type AgentChatStopMode,
@@ -620,6 +631,8 @@ export type FormatterId =
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
+  | "chat-pending-inputs"
+  | "actions-describe"
   | "drafts-list"
   | "drafts-entry"
   | "drafts-show"
@@ -1254,7 +1267,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
-    $ ade actions list | run | status | wait        Escape hatch for every ADE service action
+    $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
@@ -2111,7 +2124,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   stops being listed. Most commands accept either --lane <lane-id> or a
   positional lane id.
 
-    $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
+  The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
+  stand in). --project-root <dir>, before or after the subcommand, names
+  another one; then the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT are ignored.
+
+  "lanes create" pushes the new branch to origin with upstream tracking right
+  away (best effort; the lane still works locally if the push fails), so the
+  branch is ready for a PR.
+
+    $ ade lanes list --text                        Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
@@ -2456,8 +2477,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat show <session>                       Session summary (title, provider, model, activity report)
-    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
-                                                    Exit 0 running, 1 idle, 2 blocked. Use --text.
+    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
+                                                    Exit 0 running or waiting (turn ended, background
+                                                    agents/shells still running), 1 idle, 2 blocked. Use --text.
+                                                    Adds a 'pending' line while an effort/fast-mode change
+                                                    waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
@@ -2472,6 +2496,19 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
+                                                    and the exact 'chat respond' command for each
+    $ ade chat respond <session> --option 2         Answer the chat's pending question (alias: answer). Finds the one
+                                                    open input itself; --item <id> picks one when several are open.
+                                                    Question: --option <number|value|label> (repeat for multi-select),
+                                                    --answer <question>=<value> per question (number from 1, or the
+                                                    question id), --text "<answer>" for a free answer or a note on
+                                                    the pick, --answers-json '{"<questionId>":"..."}' for the raw map.
+                                                    Approval: --approve | --approve-session | --deny (--text is the
+                                                    reason). --deny/--cancel also decline a question. While a chat
+                                                    waits on input, 'chat message' and 'chat send' are refused
+                                                    (error -32011) until it is answered. A subagent's question is
+                                                    also sent to its parent chat with these commands filled in.
     $ ade chat generate-names                       Regenerate chat title, lane name, and status line
     $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
                                                     Also: ade chat update --title, ade lanes rename.
@@ -2559,6 +2596,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
+                                                    <session> is the chat that owns the job (first), <id> the job id;
+                                                    also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
     $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -4034,6 +4073,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
+    $ ade actions describe chat.respondToInput --text
+                                                    One action: read/write access, description, documented
+                                                    input fields and an example (alias: show, schema)
     $ ade --role cto actions list --domain attention --text
                                                     Discover account-wide Activity actions
     $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
@@ -5732,8 +5774,14 @@ const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
 const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--text", "--prompt", "--kickoff", "--kickoff-prompt", "--note", "--handoff-note", "--message",
   "--question", "--objective", "--goal", "--set", "--title", "--reason", "--steer",
+  "--answer", "--option", "--response",
+]);
+const LANES_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--description", "--desc", "--branch-name", "--linear-issue-json", "--reason",
 ]);
 const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["lanes", LANES_VALUE_FLAGS],
+  ["lane", LANES_VALUE_FLAGS],
   ["secrets", SECRETS_VALUE_FLAGS],
   ["secret", SECRETS_VALUE_FLAGS],
   ["chat", CHAT_VALUE_FLAGS],
@@ -10277,6 +10325,186 @@ function readHandoffTarget(args: string[], sub: string): {
   };
 }
 
+/** `--option 2`, `--option manual`, `--option "Manual"`: the option's value, or null. */
+function matchPendingInputOption(
+  raw: string,
+  options: readonly { label: string; value: string }[],
+): string | null {
+  const wanted = raw.trim().toLowerCase();
+  if (!wanted) return null;
+  const byIndex = /^\d+$/.test(wanted) ? options[Number(wanted) - 1] : undefined;
+  const match = byIndex
+    ?? options.find((option) => option.value.toLowerCase() === wanted)
+    ?? options.find((option) => option.label.trim().toLowerCase() === wanted);
+  return match?.value ?? null;
+}
+
+/**
+ * `ade chat respond <session>`: answer the question or approval the chat is
+ * blocked on. Reads the chat's pending inputs first so the caller needs no
+ * item id when exactly one is open, and so `--option` / `--answer` can name an
+ * option by number or label; then calls `chat.respondToInput`.
+ */
+function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
+  const requestedItemId = readValue(args, ["--item", "--item-id"]);
+  const optionArgs = readRepeatedValues(args, ["--option", "--choice"]);
+  const answerArgs = readRepeatedValues(args, ["--answer"]);
+  const answersJson = readJsonOption(args, ["--answers-json"], "--answers-json");
+  if (answersJson !== undefined && !isRecord(answersJson)) {
+    throw new CliUsageError("--answers-json takes an object of question id to answer string (or array of strings).");
+  }
+  const text = readValue(args, ["--text", "--message", "--response"]);
+  const decisionFlags: Array<[boolean, AgentChatApprovalDecision]> = [
+    [readFlag(args, ["--approve", "--accept", "--allow"]), "accept"],
+    [readFlag(args, ["--approve-session", "--accept-for-session", "--always-allow"]), "accept_for_session"],
+    [readFlag(args, ["--deny", "--decline", "--reject"]), "decline"],
+    [readFlag(args, ["--cancel"]), "cancel"],
+  ];
+  const chosenDecisions = decisionFlags.filter(([set]) => set).map(([, decision]) => decision);
+  if (chosenDecisions.length > 1) {
+    throw new CliUsageError("Use only one of --approve, --approve-session, --deny, or --cancel.");
+  }
+  const explicitDecision = chosenDecisions[0] ?? null;
+  const hasAnswer = optionArgs.length > 0 || answerArgs.length > 0 || answersJson !== undefined || Boolean(text?.trim());
+  if (!explicitDecision && !hasAnswer) {
+    throw new CliUsageError(
+      `chat respond needs an answer: --option <n|label>, --answer <question>=<value>, --text "<answer>", or --approve / --deny. `
+      + `See the question with: ade chat pending ${sessionId} --text`,
+    );
+  }
+  const resolved: JsonObject = { sessionId };
+  return {
+    kind: "execute",
+    label: "chat respond",
+    shapeResult: (values) => ({ answered: true, ...resolved }),
+    steps: [
+      {
+        ...actionStep("pending", "chat", "listPendingInputs", { sessionId }),
+        // With an explicit item an older brain without the read still answers.
+        ...(requestedItemId ? { optional: true } : {}),
+      },
+      {
+        key: "result",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        params: (values) => {
+          const pendingValue = values.pending;
+          const listedOk = !(isRecord(pendingValue) && pendingValue.ok === false);
+          const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
+          let request: PendingInputRequest | null = null;
+          if (requestedItemId) {
+            request = requests.find((entry) => pendingInputItemId(entry) === requestedItemId) ?? null;
+          } else if (requests.length === 0) {
+            throw new CliUsageError(`Chat ${sessionId} has no pending question or approval to answer.`);
+          } else if (requests.length > 1) {
+            throw new CliUsageError(
+              `Chat ${sessionId} has ${requests.length} pending inputs; pick one with --item <id>:\n`
+              + requests.map((entry) => `  ${pendingInputItemId(entry)}  ${entry.kind}  ${entry.title ?? entry.description ?? ""}`.trimEnd()).join("\n"),
+            );
+          } else {
+            request = requests[0] ?? null;
+          }
+          if (requestedItemId && !request && listedOk && requests.length > 0) {
+            throw new CliUsageError(
+              `Chat ${sessionId} has no pending input ${requestedItemId}. Pending: ${requests.map(pendingInputItemId).join(", ")}`,
+            );
+          }
+          const itemId = request ? pendingInputItemId(request) : requestedItemId!;
+          const answerable = request ? pendingInputIsAnswerable(request) : true;
+          const questions = request?.questions ?? [];
+          if ((optionArgs.length > 0 || answerArgs.length > 0) && !request) {
+            throw new CliUsageError(
+              `Could not read input ${itemId} on chat ${sessionId} to match --option/--answer; use --answers-json or --text.`,
+            );
+          }
+          if ((optionArgs.length > 0 || answerArgs.length > 0) && !answerable) {
+            throw new CliUsageError(`Input ${itemId} is an approval, not a question: use --approve, --approve-session, or --deny.`);
+          }
+          let decision: AgentChatApprovalDecision;
+          if (explicitDecision) {
+            decision = explicitDecision;
+          } else if (answerable) {
+            decision = "accept";
+          } else {
+            throw new CliUsageError(
+              `Input ${itemId} is an approval (${request?.title ?? request?.description ?? request?.kind}): add --approve, --approve-session, or --deny.`,
+            );
+          }
+
+          const picksById: Record<string, string[]> = Object.create(null);
+          const notesById: Record<string, string> = Object.create(null);
+          let selection: string[] = [];
+          const describeOptions = (options: readonly { label: string }[]): string =>
+            options.map((option, index) => `${index + 1}) ${option.label}`).join(", ");
+          const applyValue = (questionIndex: number, raw: string, mustMatch: boolean): void => {
+            const question = questions[questionIndex];
+            const options = question
+              ? optionsForQuestion(request, question, questionIndex)
+              : request?.options ?? [];
+            const matched = matchPendingInputOption(raw, options);
+            if (!question) {
+              if (!matched) {
+                throw new CliUsageError(`"${raw}" matches no option. Options: ${describeOptions(options) || "(none)"}`);
+              }
+              selection = [...selection, matched];
+              return;
+            }
+            if (matched) {
+              const picks = picksById[question.id] ?? [];
+              picksById[question.id] = question.multiSelect ? [...picks, matched] : [matched];
+              return;
+            }
+            if (mustMatch || question.allowsFreeform === false) {
+              throw new CliUsageError(
+                `"${raw}" matches no option of question ${questionIndex + 1}. Options: ${describeOptions(options) || "(none)"}`,
+              );
+            }
+            notesById[question.id] = notesById[question.id] ? `${notesById[question.id]}, ${raw.trim()}` : raw.trim();
+          };
+          for (const option of optionArgs) applyValue(0, option, true);
+          for (const spec of answerArgs) {
+            const separator = spec.indexOf("=");
+            if (separator <= 0) throw new CliUsageError(`--answer takes <question>=<value>, for example --answer 1=2. Got "${spec}".`);
+            const key = spec.slice(0, separator).trim();
+            const value = spec.slice(separator + 1);
+            const questionIndex = /^\d+$/.test(key)
+              ? Number(key) - 1
+              : questions.findIndex((question) => question.id === key);
+            if (questionIndex < 0 || questionIndex >= Math.max(questions.length, 1)) {
+              throw new CliUsageError(`--answer ${key}: input ${itemId} has ${questions.length} question(s); number them from 1 or use a question id.`);
+            }
+            applyValue(questionIndex, value, false);
+          }
+          const answers: Record<string, string | string[]> = {
+            ...buildAnswers(questions, picksById, notesById),
+            ...(selection.length ? { selection: selection.length === 1 ? selection[0]! : selection } : {}),
+            ...(isRecord(answersJson) ? answersJson as Record<string, string | string[]> : {}),
+          };
+          const trimmedText = text?.trim() ?? "";
+          resolved.itemId = itemId;
+          resolved.decision = decision;
+          if (request?.kind) resolved.kind = request.kind;
+          if (request?.title) resolved.title = request.title;
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: "chat",
+              action: "respondToInput",
+              args: {
+                sessionId,
+                itemId,
+                decision,
+                ...(Object.keys(answers).length ? { answers } : {}),
+                ...(trimmedText ? { responseText: trimmedText } : {}),
+              },
+            },
+          };
+        },
+      },
+    ],
+  };
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -10566,7 +10794,7 @@ function buildChatPlan(args: string[]): CliPlan {
         // straight off the top level.
         const record = isRecord(result) ? result : {};
         const phase = asString(record.phase) as ChatTurnStatusPhase | undefined;
-        if (phase === "running" || phase === "idle" || phase === "blocked") {
+        if (phase === "running" || phase === "idle" || phase === "blocked" || phase === "waiting") {
           return chatTurnStatusExitCode(phase);
         }
         return 1;
@@ -11068,6 +11296,22 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "pending" || sub === "pending-inputs") {
+    const targetSession = requireSession();
+    return {
+      kind: "execute",
+      label: "chat pending",
+      formatter: "chat-pending-inputs",
+      shapeResult: (values) => {
+        const listed = unwrapActionEnvelope(values.result);
+        return { sessionId: targetSession, requests: firstArray(listed, ["requests"]) };
+      },
+      steps: [actionStep("result", "chat", "listPendingInputs", { sessionId: targetSession })],
+    };
+  }
+  if (sub === "respond" || sub === "answer") {
+    return buildChatRespondPlan(args, requireSession());
+  }
   if (sub === "waits") {
     const input: JsonObject = {};
     maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
@@ -11530,8 +11774,23 @@ function buildChatPlan(args: string[]): CliPlan {
       };
     }
     if (scheduledWorkOperation === "cancel") {
-      const targetSession = requireValue(sessionId, "sessionId");
-      const scheduleId = requireValue(firstStandalonePositional(args), "scheduleId");
+      // `cancel <session> <id>`, `cancel --session <s> --id <id>`, or, from
+      // inside a chat, `cancel <id>` for that chat's own job.
+      const scheduleIdFlag = readValue(args, ["--id", "--schedule-id", "--job-id"]);
+      const secondPositional = scheduleIdFlag ? null : firstStandalonePositional(args);
+      const callerChat = asString(process.env.ADE_CHAT_SESSION_ID);
+      let targetSession: string | null = sessionId;
+      let scheduleId: string | null = scheduleIdFlag ?? secondPositional;
+      if (!scheduleId && !explicitSessionId && sessionId) {
+        scheduleId = sessionId;
+        targetSession = callerChat;
+      } else if (!targetSession) {
+        targetSession = callerChat;
+      }
+      const cancelUsage = "Usage: ade chat scheduled-work cancel <session> <id>  (or --session <session> --id <id>; "
+        + "the job id and its session are in 'ade chat scheduled-work list --text').";
+      if (!scheduleId) throw new CliUsageError(`scheduled-work cancel needs the job id. ${cancelUsage}`);
+      if (!targetSession) throw new CliUsageError(`scheduled-work cancel needs the chat that owns the job. ${cancelUsage}`);
       return {
         kind: "execute",
         label: "chat scheduled-work cancel",
@@ -18903,6 +19162,16 @@ function buildActionsPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "describe" || sub === "show" || sub === "schema") {
+    const target = parseActionRunTarget(args);
+    return {
+      kind: "execute",
+      label: "actions describe",
+      formatter: "actions-describe",
+      steps: [listActionsStep("catalog", target.domain)],
+      shapeResult: (values) => describeActionFromCatalog(values.catalog, target.domain, target.action),
+    };
+  }
   if (sub === "call" || sub === "direct" || sub === "tool") {
     const toolName = requireValue(firstPositional(args), "toolName");
     return {
@@ -18957,7 +19226,7 @@ function buildActionsPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  throw new CliUsageError("actions supports list, run, call, status, or wait.");
+  throw new CliUsageError("actions supports list, describe, run, call, status, or wait.");
 }
 
 function buildAgentPlan(args: string[]): CliPlan {
@@ -20545,6 +20814,16 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   // positional readers by the browser builder only. Merging it here once made
   // `--text` a CLI-wide carrier and `ade session show --text s1` silently read
   // the ambient session instead of "s1".
+  // `chat respond` / `chat scheduled-work cancel` values; a session given
+  // after them must not be read as their value.
+  "--item",
+  "--item-id",
+  "--option",
+  "--choice",
+  "--answer",
+  "--answers-json",
+  "--schedule-id",
+  "--job-id",
   "-b",
   "-m",
   "-q",
@@ -30183,6 +30462,54 @@ function statusWord(value: unknown): string {
   return raw.toUpperCase();
 }
 
+/**
+ * One action's entry from the brain's catalog (`list_ade_actions`), for
+ * `ade actions describe`. The input shape is the documented contract from
+ * `actionInputContracts.ts`, a one-line type sketch rather than a JSON schema;
+ * an action without one says so instead of guessing.
+ */
+function describeActionFromCatalog(catalog: unknown, domain: string, action: string): JsonObject {
+  const entry = firstArray(catalog, ["actions"]).find((candidate) =>
+    asString(candidate.name) === `${domain}.${action}`
+    || (asString(candidate.domain) === domain && asString(candidate.action) === action));
+  if (!entry) {
+    throw new CliUsageError(
+      `${domain}.${action} is not an action this caller can run here. List them with: ade actions list --domain ${domain} --text`,
+    );
+  }
+  const input = asString(entry.input);
+  return {
+    name: `${domain}.${action}`,
+    access: asString(entry.access) ?? adeActionAccess(domain, action) ?? "unknown",
+    description: asString(entry.description) ?? null,
+    input: input ?? null,
+    example: asString(entry.example) ?? null,
+    ...(input
+      ? {}
+      : {
+          note: "No documented input contract for this action. It takes the service method's own arguments: "
+            + "usually one object (--input-json), sometimes positional (--args-list-json) or one scalar (--scalar). "
+            + "A wrong shape is refused with an error naming the missing field.",
+        }),
+  };
+}
+
+function formatActionDescription(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const name = asString(record.name) ?? "(unknown)";
+  const lines = [
+    name,
+    `  access:      ${asString(record.access) ?? "unknown"}`,
+    `  description: ${asString(record.description) ?? "(none recorded)"}`,
+    `  input:       ${asString(record.input) ?? "(not documented)"}`,
+  ];
+  const example = asString(record.example);
+  lines.push(`  example:     ${example ?? `ade actions run ${name} --input-json '{"key":"value"}'`}`);
+  const note = asString(record.note);
+  if (note) lines.push("", `  ${note}`);
+  return lines.join("\n");
+}
+
 function formatActionsList(value: unknown): string {
   const actionResult =
     isRecord(value) && isRecord(value.actions) ? value.actions : value;
@@ -33394,6 +33721,18 @@ function formatTextOutput(
       return formatDraftDetail(value, { fullPrompt: true });
     case "drafts-confirm":
       return formatDraftConfirmation(value);
+    case "chat-pending-inputs": {
+      const record = isRecord(value) ? value : {};
+      const sessionId = asString(record.sessionId) ?? "<session>";
+      const requests = firstArray(record, ["requests"]) as unknown as PendingInputRequest[];
+      if (requests.length === 0) return `Chat ${sessionId} is not waiting on any question or approval.`;
+      return [
+        `Chat ${sessionId} is waiting on ${requests.length === 1 ? "1 input" : `${requests.length} inputs`}:`,
+        ...requests.map((request) => describePendingInputForAgent(sessionId, request)),
+      ].join("\n\n");
+    }
+    case "actions-describe":
+      return formatActionDescription(value);
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};
@@ -35503,7 +35842,51 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
-  if (!parsed.options.machine) return await runParsedCli(parsed);
+  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
+  try {
+    if (!parsed.options.machine) return await runParsedCli(parsed);
+    return await runOnMachine(parsed);
+  } finally {
+    restoreShellScope();
+  }
+}
+
+/**
+ * An agent's shell carries its own lane: `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`
+ * and `ADE_LANE_ID` all name the project the agent works in. A command that
+ * names another project with `--project-root` must not pick that lane or
+ * worktree up as its default: the lane is not in the named project, and a
+ * worktree there would route the call back to the shell's project. For this
+ * run only, the shell's lane and worktree are dropped (an explicit
+ * `--workspace-root` still wins). Returns the undo.
+ */
+function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+  const explicitRoot = options.projectRoot;
+  const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
+  if (!explicitRoot || !shellRoot || path.resolve(shellRoot) === path.resolve(explicitRoot)) return () => {};
+  const saved: Array<[string, string | undefined]> = [];
+  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
+    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
+    saved.push([name, process.env[name]]);
+    delete process.env[name];
+  }
+  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+    process.stderr.write(
+      `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
+      + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
+    );
+  }
+  return () => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
+async function runOnMachine(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   // This shell's lane is a lane on THIS machine. Plan builders that default
   // to it would name a lane the other machine has never heard of; there the
   // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the

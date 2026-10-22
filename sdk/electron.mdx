@@ -339,7 +339,7 @@ Do not pick a model inside the hook for a resume. A model pick can fail, for exa
 
 `refresh.mcpServers` on every open is safe. Every renderer `threads.open` reaches the hook, including a key the renderer already holds, and the SDK sends the servers to the runtime only when they differ from what it last sent for that key. An unchanged token does not restart the provider.
 
-If a turn is running when a changed `refresh` arrives, the runtime refuses the update. The open still succeeds and returns the live thread, and the SDK logs one line. The thread keeps its old servers until a later open, or a `thread.updateMcpServers()` call from main, succeeds after the turn ends.
+If a turn is running when a changed `refresh` arrives, the runtime queues the new servers and installs them when the turn ends. The open returns the live thread at once. (A runtime without `capabilities.personalChats.deferredMcpUpdates` refuses instead: the open still succeeds, the SDK logs one line, and the thread keeps its old servers until a later open, or a `thread.updateMcpServers()` call from main, succeeds after the turn ends.)
 
 **Without the hook**, the bridge forwards four renderer fields and drops the rest:
 

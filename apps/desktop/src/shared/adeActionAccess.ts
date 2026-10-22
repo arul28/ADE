@@ -168,7 +168,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
       "getContextUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
       "getCodexRealtimeState", "getCodexGoal", "listClaudeOutputStyles",
-      "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "getSlashCommands",
+      "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "listPendingInputs", "getSlashCommands",
       "getTurnFileDiff", "getParallelLaunchState", "waitFor", "listWaits", "getLaunch",
       "listLaunches", "listScheduledWork", "getScheduledWorkState", "listInterruptedChats",
       "listClaudePlugins", "listCodexPlugins", "listClaudeSessions", "listSessions",

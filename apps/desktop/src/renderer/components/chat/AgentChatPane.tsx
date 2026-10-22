@@ -14,7 +14,7 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -254,6 +254,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { pendingSettingsAfterBackgroundLabel } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -17072,6 +17073,21 @@ export function AgentChatPane({
       runtimePin={renderedChatRuntimePin}
     />
   ) : null;
+  // An effort / fast-mode change the host holds until the chat's background
+  // work ends (applying it restarts the agent process, which would stop that
+  // work). Read off the session summary; it clears when the change applies.
+  const pendingSettingsAfterBackground = renderedSession?.pendingSettingsAfterBackground ?? [];
+  const pendingSettingsChip = composerSessionId && pendingSettingsAfterBackground.length ? (
+    <StatusChip
+      tone="neutral"
+      icon={<ClockCountdown size={10} weight="bold" />}
+      label={pendingSettingsAfterBackground.length > 1
+        ? "Settings pending"
+        : pendingSettingsAfterBackground[0] === "fastMode" ? "Fast mode pending" : "Effort pending"}
+      tooltip={`The ${pendingSettingsAfterBackgroundLabel(pendingSettingsAfterBackground)} finishes. Applying it now would restart the agent and stop that work.`}
+      testId="chat-pending-settings-chip"
+    />
+  ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
     && selectedSession.orchestrationParentSessionId
@@ -17728,6 +17744,7 @@ export function AgentChatPane({
         {usageLimitChip}
         <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
+        {pendingSettingsChip}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"

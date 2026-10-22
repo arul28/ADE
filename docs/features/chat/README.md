@@ -1457,7 +1457,13 @@ come):
   boundary if not).
 - **Waiting on background work** (`chat.holdBackgroundWork`,
   `ade chat wait --background [--job <id>]`) is the agent's call, with no UI. A
-  chat with live background work already shows as working. Claude and OpenCode
+  chat with live background work already shows as working: **Background work ×N**
+  on its Work row (desktop, iOS, `ade code`), and `ade chat status` reports the
+  `waiting` phase (`◐ WAITING on N background jobs`; `phase: "waiting"` in
+  `--json`) instead of `idle` while the turn is over but the work runs. It exits
+  0 like `running`, so a caller polling until a chat is no longer running does
+  not stop early. Both read the session summary's
+  `activeBackgroundTaskCount`, so there is no extra polling. Claude and OpenCode
   wake their agent themselves when a background job finishes, so the action
   only says so there; Codex does not, so ADE re-reads the held terminals every
   15 s and wakes the agent with the commands that ended.
@@ -1478,8 +1484,60 @@ Codex thread id, OpenCode/ACP session id, Cursor agent id, Pi session). A turn
 in progress is not stopped silently: the action refuses unless `stopFirst`,
 and the desktop asks "Stop the turn and restart?" first. Background work the
 process owned ends with it; the result and the toast say how many jobs
-stopped, and the chat records a notice. No runtime running is fine — the next
-message starts one either way.
+stopped, and the chat records a notice naming them. A chat that had ended its
+turn to wait on that work gets one automatic turn telling the agent which work
+stopped so it re-runs it (see [Background work lost with the agent process](#background-work-lost-with-the-agent-process)).
+No runtime running is fine — the next message starts one either way.
+
+### Background work lost with the agent process
+
+Background subagents, workflows and shells (`run_in_background`) live inside
+the provider process and report back only into it. When that process ends,
+they end too, and a chat that had finished its turn to wait on them would
+otherwise wait forever.
+
+**Spared first.** ADE does not end a Claude process for its own convenience
+while it still runs background work: the idle sweep, the warm-runtime budget
+and compact-first all skip it (until the 3 h silence backstop below), the
+compaction-settings refresh waits, and a reasoning-effort or fast-mode change
+(from Settings, `updateSession`, or a send carrying a new effort) stays armed
+as `pendingSessionReset` (`claudeQueryResetMustWait`). It applies on the first
+turn after the background work is gone (the send path, or the end of a turn).
+Until then the old setting stays in force, and the session summary's
+`pendingSettingsAfterBackground` (`reasoningEffort` / `fastMode`) says so: the
+composer's effort and fast-mode chips show "applies after background work", and
+`ade chat status` prints a `pending` row (`pendingSettingsAfterBackground` in
+`--json`). Every query reset clears it, since the next query is built from the
+current settings.
+
+**Told when it is lost anyway.** For Claude, every path that ends the process —
+`teardownRuntime` (model switch, caller-MCP replacement, account move,
+settings restart, `restartSession`, close, shutdown, eviction),
+`resetClaudeQuerySession`, and the idle reader seeing the process end — reads
+what was still running (`collectClaudeLostBackgroundWork`) before the rows are
+settled, and `reportLostBackgroundWork`:
+
+- adds a warning notice naming the jobs and saying what happens next,
+- merges a note (`buildBackgroundWorkLostNote`) into `pendingRestartNote`, so the
+  next turn's prompt tells the agent which work stopped and to start again what
+  it still needs (persisted, so a brain restart keeps it),
+- wakes the chat with `BACKGROUND_WORK_LOST_RESUME_PROMPT`
+  (`hostContinuation.reason: "background_work_lost"`) when the turn had ended,
+  the chat was waiting on non-monitor work, and the cause was a reconfigure,
+  the process exiting on its own, or a restart asked for by name. The wake waits
+  a tick and is skipped when a turn has started meanwhile, since that turn
+  carries the note. One wake per chain (`backgroundLossWakeState`): while a wake
+  is scheduled, or dispatched with no other turn prepared since, a further loss
+  only merges into the note. A second restart does not stack a wake, and work
+  the wake turn itself started never earns another.
+- On shutdown or project close the wake is instead recorded
+  (`backgroundLossWakePending`, persisted) for restart recovery.
+
+A user stop, a closed chat, an eviction, and a
+query reset (which mostly comes from a send that is about to run, a stop, or a
+failed turn) only tell: notice plus note, no turn. Other providers keep their
+existing notices (OpenCode stops its shells and children on teardown; Codex
+reports through its held-terminal wake).
 
 ### Continue chats after restarts
 
@@ -1494,7 +1552,12 @@ chats after restarts** on (Settings → Chat, the default; config
   `update_restart` tag as an update resume, so a chat an update already armed
   is not armed twice, and the user typing into the chat cancels it.
 - Settled and archived chats stay asleep. A chat whose turn had already ended,
-  or that the user stopped, has no unsettled turn and is not resumed.
+  or that the user stopped, has no unsettled turn and is not resumed — unless it
+  was waiting on background work the restart (or the shutdown before it)
+  stopped: non-monitor work the transcript still showed running, or the
+  persisted `backgroundLossWakePending` flag. That chat gets a notice and the
+  same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
+  what it still needs instead of waiting for a report that cannot come.
 - Recovery is lazy (a detached chat is repaired when it is first loaded), so a
   startup sweep loads the chats a restart cut off in the last 6 hours (at most
   25, only chats this brain may adopt) and each recovers and resumes on its own.
@@ -2819,7 +2882,8 @@ message, in which case the record is kept and delivery resumes after a restart.
    steer was delivered or queued.    `ade chat send` uses the auto route, while
    `ade chat message --kind ...` exposes the explicit primitive. `ade chat show`
    stays on `chat.getSessionSummary`; `ade chat status` is the dedicated live
-   turn snapshot (`chat.getTurnStatus`, RUNNING / BLOCKED / IDLE). Provider
+   turn snapshot (`chat.getTurnStatus`, RUNNING / BLOCKED / WAITING / IDLE;
+   WAITING is a finished turn whose background work still runs). Provider
    dispatch and event streaming continue asynchronously after acceptance.
    `ade chat create --prompt` uses this same follow-up send after the session is
    created, and `ade chat read <session>` calls bounded
@@ -3414,6 +3478,25 @@ logos. `ade chat list` stays a flat table; it appends the lane's tracked CLI
 children as `kind: "cli"` rows with their terminal status, exit code, and
 parent. See
 [Session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
+
+### A subagent's question reaches its parent
+
+A turn waiting on an answer never ends, so the completion wake below never
+fires for a child blocked on a question. `relayChildQuestionToParent` in
+`agentChatService.ts` covers that gap: when a `subagent` child emits an
+`approval_request` for a blocking question (`question`, `structured_question`,
+`model_selection`), ADE sends the parent chat one message (trusted `wake`,
+`hostContinuation.reason: "subagent_question"`) with the question, its numbered
+options, and the exact `ade chat respond <child> --item <id> …` commands,
+written by `describePendingInputForAgent` (`shared/pendingInputCommand.ts`, also
+what `ade chat pending --text` prints). Once per child item (in memory); the
+card stays in the child so the person can still answer it there. Not relayed:
+approvals and permission prompts (an agent approving its child's tool call
+would grant itself access), secret questions, user-only consent cards, peers,
+and parents that are not a chat in this service (a CLI terminal, another
+project or machine). `ade chat respond` lists the chat's inputs through
+`chat.listPendingInputs` and answers through `chat.respondToInput`; a send to a
+chat with an open card is refused with a message that names both commands.
 
 ### Type-decided completion reporting
 

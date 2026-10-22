@@ -21,10 +21,13 @@ import {
 } from "./hostConfig.js";
 import { normalizeMcpCapability } from "./mcpCapability.js";
 import {
+  hasMcpToolFilters,
   mcpServersFingerprint,
   missingHeadersWarning,
+  storedMcpServersNeedHeaders,
   withResolvedHeaders,
   type McpHeadersResolver,
+  type StoredMcpServerConfig,
 } from "./mcpHeaders.js";
 import { modelSelectionOf, type ModelSummaryFields } from "./modelSelection.js";
 import { isSupportedProvider } from "./permissions.js";
@@ -247,6 +250,11 @@ export interface AdeThread {
    * operation — `setModel`, `dispose` — either await the completion event on
    * `on("status")` or check the thread's status; `setModel` enforces this for
    * you and throws rather than silently ending the turn.
+   *
+   * With an `mcpHeaders` callback and remote MCP servers, the headers are
+   * resolved again first (see `refreshMcpHeaders`), so a token that expired
+   * since the last turn is replaced before this one. A refresh that fails is
+   * logged and the message is still sent, on the headers the session has.
    */
   send(text: string, opts?: SendOptions): Promise<void>;
   /**
@@ -322,11 +330,20 @@ export interface AdeThread {
    * A remote server passed without `headers` gets them from the client's
    * `mcpHeaders` callback, when there is one.
    *
-   * Refused by the runtime while a turn is in flight (`invalid_option`), and by
-   * the SDK on a runtime that does not advertise
+   * Mid-turn, the runtime validates the servers at once (a bad map still
+   * rejects) and queues them for the end of the running turn — completed,
+   * interrupted or failed — and the call resolves. A later call replaces a
+   * queued map. Until the swap the summary reports `mcpServersPending: true`,
+   * and `mcpCapability` keeps describing the servers the running turn has. A
+   * runtime without `capabilities.personalChats.deferredMcpUpdates` refuses
+   * mid-turn instead (`turn_in_flight`).
+   *
+   * Refused by the SDK on a runtime that does not advertise
    * `capabilities.personalChats.updateMcpServers` (`invalid_option`) — an older
    * runtime would ignore the field and leave the old credentials in place,
-   * which is worse than failing.
+   * which is worse than failing. The same goes for `allowedTools` /
+   * `disallowedTools` on a runtime without `mcpToolFilters`, and for a filter
+   * the thread's provider cannot enforce (see `McpToolFilter`).
    *
    * A map identical to the one this client last sent for the thread — header
    * values included — is not sent again: the call resolves with the current
@@ -336,6 +353,25 @@ export interface AdeThread {
    * Resolves with the thread's new `mcpCapability`.
    */
   updateMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null>;
+  /**
+   * Resolve this thread's MCP header values again through the client's
+   * `mcpHeaders` callback and push them when they changed.
+   *
+   * `send`, `retry` and `editLast` already do this before every turn; call it
+   * yourself right after rotating a token, so the swap does not wait for the
+   * next message. The servers are the thread's own (the last map it was
+   * opened or updated with); only the header values of its remote servers
+   * that carry headers are re-resolved, and a thread with none is a no-op. Values
+   * identical to the last ones sent push nothing. Mid-turn the push is queued
+   * for the end of the turn, as `updateMcpServers` is.
+   *
+   * Throws `invalid_option` without an `mcpHeaders` callback, on a runtime
+   * without `updateMcpServers`, and when the callback supplies nothing for a
+   * server that needs headers: pushing would replace that server's live
+   * credentials with none. A callback that throws rejects this call with its
+   * error. Resolves with the thread's `mcpCapability`.
+   */
+  refreshMcpHeaders(): Promise<McpCapabilityReport | null>;
   /**
    * Switch this thread's model, including across providers — the runtime tears
    * the old one down and replays the transcript into the new one.
@@ -473,6 +509,13 @@ export type ThreadHostConfig = {
   approvalTimeoutMs?: number;
   /** Whether the CURRENT runtime advertises `capabilities.personalChats.updateMcpServers`. */
   updateMcpServersSupported?: () => boolean;
+  /** Whether the CURRENT runtime advertises `capabilities.personalChats.mcpToolFilters`. */
+  mcpToolFiltersSupported?: () => boolean;
+  /**
+   * The thread's MCP servers as last recorded (header names, no values), for
+   * re-resolving header values before a turn. From the thread store.
+   */
+  storedMcpServers?: () => Promise<Record<string, StoredMcpServerConfig> | undefined>;
   /** Whether the CURRENT runtime lists the `getEventHistoryPage` action. */
   historyPageSupported?: () => boolean;
   /** Whether the CURRENT runtime lists the `rerunLastTurn` action. */
@@ -553,6 +596,10 @@ export class Thread implements AdeThread {
   /** Approvals seen on the wire, minus the ones seen settled. */
   private readonly approvals: ApprovalTracker;
   private warnedAboutDerivedApprovals = false;
+  /** A header refresh in flight, shared by concurrent sends. */
+  private mcpRefreshInFlight: Promise<McpCapabilityReport | null> | null = null;
+  /** The last before-turn refresh problem logged, so one gap is said once, not per turn. */
+  private lastMcpRefreshProblem: string | null = null;
   /** The constructor's subscription to the shared stream, released by `dispose()`. */
   private unsubscribeEvents: Unsubscribe | null = null;
 
@@ -733,6 +780,7 @@ export class Thread implements AdeThread {
     if (!text.trim() && !(opts.attachments?.length)) {
       throw new AdeError("invalid_option", "send() needs text or at least one attachment.");
     }
+    await this.refreshMcpHeadersBeforeTurn();
     await this.chats.send({
       sessionId: this.id,
       text,
@@ -837,6 +885,7 @@ export class Thread implements AdeThread {
     // A running turn is refused by the runtime itself (code `turn_in_flight`),
     // under its own per-session lock; a pre-check here would add a round trip
     // and still race.
+    await this.refreshMcpHeadersBeforeTurn();
     const result = await this.chats.rerunLastTurn({
       sessionId: this.id,
       ...(text !== undefined ? { text } : {}),
@@ -863,16 +912,106 @@ export class Thread implements AdeThread {
           "Upgrade the runtime, or open a new thread key with the new servers.",
       );
     }
-    const resolved = withResolvedHeaders(this.key, servers, this.hostConfig.resolveMcpHeaders);
+    const resolved = await withResolvedHeaders(this.key, servers, this.hostConfig.resolveMcpHeaders);
     const warning = missingHeadersWarning(this.key, resolved.missing);
     if (warning) this.logger(warning);
-    const fingerprint = mcpServersFingerprint(resolved.servers);
+    return await this.pushMcpServers(resolved.servers);
+  }
+
+  async refreshMcpHeaders(): Promise<McpCapabilityReport | null> {
+    this.assertUsable();
+    if (!this.hostConfig.resolveMcpHeaders) {
+      throw new AdeError(
+        "invalid_option",
+        "refreshMcpHeaders() needs an mcpHeaders callback on createAdeChat. Without one, send the new headers with updateMcpServers().",
+      );
+    }
+    if (!this.hostConfig.updateMcpServersSupported?.()) {
+      throw new AdeError(
+        "invalid_option",
+        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
+      );
+    }
+    return await this.refreshResolvedMcpHeaders();
+  }
+
+  /**
+   * The servers this client resolved, sent unless they are the ones it last
+   * sent. The one push both `updateMcpServers` and a header refresh use, so
+   * the fingerprint bookkeeping cannot drift between them.
+   *
+   * A deferred push (mid-turn, `mcpServersPending` on the reply) still counts
+   * as sent: the runtime holds those servers and installs them at the turn's
+   * end, so repeating them must not queue them again. The capability report
+   * is kept as it was until then, because the reply describes the servers the
+   * running turn has, not the queued ones.
+   */
+  private async pushMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null> {
+    if (hasMcpToolFilters(servers) && !this.hostConfig.mcpToolFiltersSupported?.()) {
+      throw new AdeError(
+        "invalid_option",
+        "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
+          "and would drop allowedTools / disallowedTools without a word. Upgrade the runtime or drop the filters.",
+      );
+    }
+    const fingerprint = mcpServersFingerprint(servers);
     if (this.hostConfig.mcpPushed?.get() === fingerprint) return this.mcpCapability;
-    const updated = await this.chats.updateSession({ sessionId: this.id, mcpServers: resolved.servers });
+    const updated = await this.chats.updateSession({ sessionId: this.id, mcpServers: servers });
     this.hostConfig.mcpPushed?.set(fingerprint);
-    this.mcpCapability = normalizeMcpCapability(updated?.mcpCapability) ?? this.mcpCapability;
-    await this.hostConfig.onRecordChanged?.({ mcpServers: resolved.servers });
+    if (updated?.mcpServersPending !== true) {
+      this.mcpCapability = normalizeMcpCapability(updated?.mcpCapability) ?? this.mcpCapability;
+    }
+    await this.hostConfig.onRecordChanged?.({ mcpServers: servers });
     return this.mcpCapability;
+  }
+
+  /**
+   * Resolve the recorded servers' header values again and push them when they
+   * changed. One at a time per thread: concurrent sends share the refresh
+   * rather than asking the host for the same token twice.
+   */
+  private refreshResolvedMcpHeaders(): Promise<McpCapabilityReport | null> {
+    if (this.mcpRefreshInFlight) return this.mcpRefreshInFlight;
+    const run = (async (): Promise<McpCapabilityReport | null> => {
+      const stored = await this.hostConfig.storedMcpServers?.();
+      if (!stored || !storedMcpServersNeedHeaders(stored)) return this.mcpCapability;
+      const resolved = await withResolvedHeaders(this.key, stored, this.hostConfig.resolveMcpHeaders);
+      if (resolved.missing.length > 0) {
+        throw new AdeError(
+          "invalid_option",
+          `The mcpHeaders callback supplied no header values for ${resolved.missing
+            .map((entry) => `${entry.server} (${entry.headerNames.join(", ")})`)
+            .join("; ")} on thread "${this.key}"; the session keeps the headers it has rather than lose them.`,
+        );
+      }
+      return await this.pushMcpServers(resolved.servers);
+    })();
+    const shared = run.finally(() => {
+      if (this.mcpRefreshInFlight === shared) this.mcpRefreshInFlight = null;
+    });
+    this.mcpRefreshInFlight = shared;
+    return shared;
+  }
+
+  /**
+   * The before-turn refresh: a no-op without a callback or remote servers,
+   * and never a reason to drop the user's message. A failure is logged (once
+   * per distinct problem) and the turn runs on the headers the session has.
+   */
+  private async refreshMcpHeadersBeforeTurn(): Promise<void> {
+    if (!this.hostConfig.resolveMcpHeaders || !this.hostConfig.updateMcpServersSupported?.()) return;
+    try {
+      await this.refreshResolvedMcpHeaders();
+      this.lastMcpRefreshProblem = null;
+    } catch (error) {
+      const problem = error instanceof Error ? error.message : String(error);
+      if (problem === this.lastMcpRefreshProblem) return;
+      this.lastMcpRefreshProblem = problem;
+      this.logger(
+        `ade sdk: thread "${this.key}" could not refresh its MCP headers before the turn: ${problem}. ` +
+          `The turn runs with the headers the session already has.`,
+      );
+    }
   }
 
   async interrupt(): Promise<void> {

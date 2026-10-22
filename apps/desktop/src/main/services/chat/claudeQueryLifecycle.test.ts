@@ -296,7 +296,7 @@ describe("Claude query lifecycle", () => {
     );
   });
 
-  it("emits an orphan notice when reset stops an open background task", async () => {
+  it("keeps the agent process while a background task runs when a setting changes", async () => {
     const { service, events, reaper, session } = await createDrivenSession([
       {
         type: "system",
@@ -319,11 +319,13 @@ describe("Claude query lifecycle", () => {
 
     await resetReasoningEffort(service, session.id);
 
-    expect(reaper.reapForSession).toHaveBeenCalledWith(
+    // A reset would end the process and the background task with it, so the
+    // reset stays pending until the background work is gone.
+    expect(reaper.reapForSession).not.toHaveBeenCalledWith(
       session.id,
       expect.stringMatching(/^claude_/),
     );
-    expect(lifecycleRestartNotices(events)).toHaveLength(1);
+    expect(lifecycleRestartNotices(events)).toHaveLength(0);
   });
 
   it("does not emit an orphan notice when reset has no open background task", async () => {

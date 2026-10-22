@@ -879,6 +879,16 @@ describe("ADE CLI", () => {
     },
     { argv: ["chats", "list", "--project-root=/tmp/other"], root: "/tmp/other", command: ["chats", "list"] },
     {
+      argv: ["lanes", "create", "--project-root", "/tmp/other", "--name", "x", "--base", "origin/main"],
+      root: "/tmp/other",
+      command: ["lanes", "create", "--name", "x", "--base", "origin/main"],
+    },
+    {
+      argv: ["lanes", "create", "--description", "--project-root"],
+      root: null,
+      command: ["lanes", "create", "--description", "--project-root"],
+    },
+    {
       argv: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
       root: null,
       command: ["chat", "create", "--lane", "l1", "--prompt", "--project-root"],
@@ -8951,9 +8961,15 @@ describe("ADE CLI", () => {
         args: { sessionId: "chat-1", scheduleId: "cron-1" },
       },
     });
-    expect(() => buildCliPlan(["chat", "scheduled-work", "cancel", "chat-1"])).toThrow(
-      /scheduleId is required/,
+    // One positional is the job id: outside a chat there is no owner to name.
+    expect(() => buildCliPlan(["chat", "scheduled-work", "cancel", "cron-1"])).toThrow(
+      /needs the chat that owns the job/,
     );
+    process.env.ADE_CHAT_SESSION_ID = "chat-self";
+    const ownCancel = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "cancel", "cron-1"]));
+    expect(ownCancel.steps[0]?.params).toMatchObject({
+      arguments: { args: { sessionId: "chat-self", scheduleId: "cron-1" } },
+    });
   });
 
   it("builds typed ade drafts commands", () => {

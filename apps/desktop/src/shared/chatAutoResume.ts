@@ -384,6 +384,57 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
 }
 
 /**
+ * Work the chat is waiting on, as opposed to a watch loop. A lost monitor is
+ * reported, but it does not earn a turn of its own: nobody is waiting on it.
+ */
+export function isAwaitedCancelledWork(work: RestartCancelledWork): boolean {
+  return work.kind !== "monitor";
+}
+
+/**
+ * Sent as the turn that tells a chat its background work was lost while it
+ * waited on it. The list itself rides the pending restart note, which every
+ * provider puts ahead of this prompt.
+ */
+export const BACKGROUND_WORK_LOST_RESUME_PROMPT =
+  "Background work you were waiting on was stopped before it reported back (ADE's notice above lists it). Re-run what you still need, then carry on; do not redo work that already finished.";
+
+export const BACKGROUND_WORK_LOST_RESUME_REASON = "Resume after background work was lost";
+
+/**
+ * The one-time note the next turn carries when ADE ended the agent process
+ * while background work it started was still running, without a brain restart
+ * (a model or MCP change, a restart of the agent session, the process exiting).
+ * `cause` says why the process ended, as a parenthetical ("ADE shut down").
+ */
+export function buildBackgroundWorkLostNote(args: {
+  cause: string;
+  lost: readonly RestartCancelledWork[];
+}): string | null {
+  if (args.lost.length === 0) return null;
+  const lines = [
+    `This chat's agent process ended (${args.cause}). This background work you started ended with it and will not report back:`,
+  ];
+  for (const work of args.lost.slice(0, RESTART_CANCELLED_WORK_LIMIT)) {
+    lines.push(`- ${work.kind}: ${clampLabel(work.label) || work.kind}`);
+  }
+  if (args.lost.length > RESTART_CANCELLED_WORK_LIMIT) {
+    lines.push(`- and ${args.lost.length - RESTART_CANCELLED_WORK_LIMIT} more`);
+  }
+  lines.push("Start again whatever of it you still need.");
+  return lines.join("\n");
+}
+
+/** Append a note to a pending one; a note already pending is not repeated. */
+export function mergePendingRestartNote(existing: string | null | undefined, next: string): string {
+  const current = existing?.trim() ?? "";
+  const addition = next.trim();
+  if (!current) return addition;
+  if (!addition || current.includes(addition)) return current;
+  return `${current}\n\n${addition}`;
+}
+
+/**
  * The one-time note the next turn carries after a restart. It goes to the
  * model only — never a user bubble — and is cleared once delivered.
  */

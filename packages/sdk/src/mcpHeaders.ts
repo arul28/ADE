@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { McpServerConfig } from "./types.js";
+import type { McpServerConfig, McpToolFilter } from "./types.js";
 
 /**
  * MCP header values are credentials, and they never touch disk here.
@@ -11,7 +11,9 @@ import type { McpServerConfig } from "./types.js";
  * every resume after the host rotated it, so old threads failed MCP auth for
  * good. The durable record now keeps only the header NAMES. The values are
  * resolved again at every create, resume and restart, from the caller's
- * `refresh.mcpServers` or from the client's `mcpHeaders` callback.
+ * `refresh.mcpServers` or from the client's `mcpHeaders` callback — and, with
+ * a callback, before every turn too, so a token that expires mid-chat is
+ * replaced without the host restarting anything (`Thread.refreshMcpHeaders`).
  *
  * RUNTIME TWIN. The runtime withholds header values from its own durable
  * session record the same way: `withholdCallerMcpHeaderValues` (and
@@ -21,22 +23,26 @@ import type { McpServerConfig } from "./types.js";
  * `Authorization` and `authorization` are one header), first spelling kept.
  */
 
-/** A caller MCP server as it is persisted: header names, never header values. */
+/**
+ * A caller MCP server as it is persisted: header names, never header values.
+ * Tool filters are kept: tool names are not credentials.
+ */
 export type StoredMcpServerConfig =
-  | { type: "http" | "sse"; url: string; headerNames?: string[] }
-  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+  | ({ type: "http" | "sse"; url: string; headerNames?: string[] } & McpToolFilter)
+  | ({ type: "stdio"; command: string; args?: string[]; env?: Record<string, string> } & McpToolFilter);
 
 /**
  * Supplies MCP header values for one server of one thread.
  *
- * Called at every create, resume and restart that needs them; the result is
- * sent to the runtime and never persisted by the SDK. Return undefined for a
- * server that needs no headers.
+ * Called at every create, resume and restart that needs them, and before each
+ * turn of a thread with remote servers; the result is sent to the runtime and
+ * never persisted by the SDK. May return a Promise, so a host can refresh an
+ * OAuth token first. Return undefined for a server that needs no headers.
  */
 export type McpHeadersResolver = (
   key: string,
   serverName: string,
-) => Record<string, string> | undefined;
+) => Record<string, string> | undefined | Promise<Record<string, string> | undefined>;
 
 function isRemote(
   server: McpServerConfig | StoredMcpServerConfig,
@@ -59,6 +65,40 @@ function uniqueHeaderNames(names: Iterable<unknown>): string[] {
     out.push(name);
   }
   return out;
+}
+
+/** A server's tool filter lists, copied; empty or malformed lists dropped. */
+function toolFilterOf(server: unknown): McpToolFilter {
+  if (!server || typeof server !== "object") return {};
+  const entry = server as Record<string, unknown>;
+  const list = (value: unknown): string[] | null =>
+    Array.isArray(value) && value.length > 0 && value.every((name) => typeof name === "string")
+      ? [...(value as string[])]
+      : null;
+  const allowedTools = list(entry.allowedTools);
+  const disallowedTools = list(entry.disallowedTools);
+  return {
+    ...(allowedTools ? { allowedTools } : {}),
+    ...(disallowedTools ? { disallowedTools } : {}),
+  };
+}
+
+/** Whether any server carries an `allowedTools` or `disallowedTools` list. */
+export function hasMcpToolFilters(
+  servers: Record<string, McpServerConfig | StoredMcpServerConfig> | undefined,
+): boolean {
+  return Object.values(servers ?? {}).some((server) => Object.keys(toolFilterOf(server)).length > 0);
+}
+
+/**
+ * Whether a stored map has a remote server whose record names headers — the
+ * only kind a header refresh can change. A server that never had headers is
+ * left alone, so re-reading it cannot restart a provider for nothing.
+ */
+export function storedMcpServersNeedHeaders(servers: Record<string, StoredMcpServerConfig> | undefined): boolean {
+  return Object.values(servers ?? {}).some(
+    (server) => (server.type === "http" || server.type === "sse") && (server.headerNames?.length ?? 0) > 0,
+  );
 }
 
 function headerNamesOf(headers: unknown): string[] {
@@ -84,6 +124,7 @@ export function toStoredMcpServers(
         type: server.type,
         url: server.url,
         ...(headerNames.length > 0 ? { headerNames } : {}),
+        ...toolFilterOf(server),
       };
     } else {
       stored[name] = { ...server };
@@ -115,6 +156,7 @@ export function readStoredMcpServers(
         type: entry.type,
         url: entry.url,
         ...(names.length > 0 ? { headerNames: names } : {}),
+        ...toolFilterOf(entry),
       };
     } else if (entry.type === "stdio" && typeof entry.command === "string") {
       servers[name] = entry as StoredMcpServerConfig;
@@ -131,12 +173,16 @@ export function readStoredMcpServers(
  * stored record names headers that neither source supplied is listed in
  * `missing` — it is still sent (unauthenticated), because refusing to open
  * the thread would take the transcript away too, and the caller logs the gap.
+ *
+ * The callback may be async; its servers are resolved one after another so a
+ * host refreshing one token is not asked for the same token in parallel. A
+ * callback that throws rejects the whole call.
  */
-export function withResolvedHeaders(
+export async function withResolvedHeaders(
   key: string,
   servers: Record<string, McpServerConfig | StoredMcpServerConfig>,
   resolve: McpHeadersResolver | undefined,
-): { servers: Record<string, McpServerConfig>; missing: Array<{ server: string; headerNames: string[] }> } {
+): Promise<{ servers: Record<string, McpServerConfig>; missing: Array<{ server: string; headerNames: string[] }> }> {
   const out: Record<string, McpServerConfig> = {};
   const missing: Array<{ server: string; headerNames: string[] }> = [];
   for (const [name, server] of Object.entries(servers)) {
@@ -150,14 +196,14 @@ export function withResolvedHeaders(
         : undefined;
     let headers = explicit;
     if (!headers && resolve) {
-      const supplied = resolve(key, name);
+      const supplied = await resolve(key, name);
       if (supplied && typeof supplied === "object" && Object.keys(supplied).length > 0) {
         headers = { ...supplied };
       }
     }
     const wanted = "headerNames" in server && Array.isArray(server.headerNames) ? server.headerNames : [];
     if (!headers && wanted.length > 0) missing.push({ server: name, headerNames: [...wanted] });
-    out[name] = { type: server.type, url: server.url, ...(headers ? { headers } : {}) };
+    out[name] = { type: server.type, url: server.url, ...(headers ? { headers } : {}), ...toolFilterOf(server) };
   }
   return { servers: out, missing };
 }

@@ -17,6 +17,7 @@ import {
 } from "./hostConfig.js";
 import { normalizeMcpCapability } from "./mcpCapability.js";
 import {
+  hasMcpToolFilters,
   mcpServersFingerprint,
   missingHeadersWarning,
   toStoredMcpServers,
@@ -127,6 +128,8 @@ export type ThreadOpenerContext = {
     reportsCapabilities(): boolean;
     mcpServers(): boolean;
     updateMcpServers(): boolean;
+    /** Whether the runtime enforces or refuses per-server tool filters (rather than dropping them). */
+    mcpToolFilters(): boolean;
     pendingInputs(): boolean;
     historyPage(): boolean;
     rerunLastTurn(): boolean;
@@ -204,6 +207,8 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(approvalTimeoutMs !== undefined ? { approvalTimeoutMs } : {}),
       pendingInputsSupported: ctx.runtime.pendingInputs,
       updateMcpServersSupported: ctx.runtime.updateMcpServers,
+      mcpToolFiltersSupported: ctx.runtime.mcpToolFilters,
+      storedMcpServers: async () => (await store.get(init.key))?.mcpServers,
       historyPageSupported: ctx.runtime.historyPage,
       rerunLastTurnSupported: ctx.runtime.rerunLastTurn,
       ...(ctx.mcpHeaders ? { resolveMcpHeaders: ctx.mcpHeaders } : {}),
@@ -269,7 +274,15 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     const source: Record<string, McpServerConfig | StoredMcpServerConfig> | undefined =
       refreshServers ?? (ctx.mcpHeaders && needsHeaderValues(record.mcpServers) ? record.mcpServers : undefined);
     if (!source) return null;
-    const resolved = withResolvedHeaders(key, source, ctx.mcpHeaders);
+    let resolved: Awaited<ReturnType<typeof withResolvedHeaders>>;
+    try {
+      resolved = await withResolvedHeaders(key, source, ctx.mcpHeaders);
+    } catch (error) {
+      // The callback threw (a token refresh that failed). Same rule as a
+      // refused push: the thread opens on the servers it already has.
+      recordError(`resolve mcpHeaders for "${key}"`, error);
+      return null;
+    }
     if (!refreshServers) {
       const needing = Object.values(source).filter(isRemoteWithHeaders).length;
       if (resolved.missing.length >= needing) {
@@ -287,6 +300,13 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       logger(
         `ade sdk: thread "${key}" could not refresh its MCP servers: this runtime does not advertise ` +
           `capabilities.personalChats.updateMcpServers, so it keeps the servers it already has`,
+      );
+      return null;
+    }
+    if (hasMcpToolFilters(resolved.servers) && !ctx.runtime.mcpToolFilters()) {
+      logger(
+        `ade sdk: thread "${key}" could not refresh its MCP servers: they carry allowedTools / disallowedTools ` +
+          `and this runtime does not advertise capabilities.personalChats.mcpToolFilters, so it would drop them`,
       );
       return null;
     }
@@ -488,7 +508,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       opts.refresh?.mcpServers ??
       (record?.mcpServers && Object.keys(record.mcpServers).length > 0 ? record.mcpServers : undefined) ??
       suppliedMcp;
-    const resolvedMcp = mcpSource ? withResolvedHeaders(key, mcpSource, ctx.mcpHeaders) : undefined;
+    const resolvedMcp = mcpSource ? await withResolvedHeaders(key, mcpSource, ctx.mcpHeaders) : undefined;
     const headersWarning = resolvedMcp ? missingHeadersWarning(key, resolvedMcp.missing) : null;
     if (headersWarning) logger(headersWarning);
     const mcpServers = resolvedMcp?.servers;
@@ -509,6 +529,14 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       throw new AdeError(
         "invalid_option",
         "This ADE runtime does not support per-thread MCP servers (capabilities.personalChats.mcpServers is not set). Upgrade the runtime or drop `mcpServers`.",
+      );
+    }
+    if (suppliedServers && hasMcpToolFilters(mcpServers) && !ctx.runtime.mcpToolFilters()) {
+      // The same rule one level down: an older runtime drops the filter
+      // fields, which would hand the agent the very tools the host hid.
+      throw new AdeError(
+        "invalid_option",
+        "This ADE runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set). Upgrade the runtime or drop `allowedTools` / `disallowedTools`.",
       );
     }
 

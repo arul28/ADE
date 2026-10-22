@@ -73,6 +73,18 @@ export type PersonalChatCapabilities = {
    * replacing the caller servers wholesale. Absent on runtimes before 1.2.81.
    */
   updateMcpServers?: boolean;
+  /**
+   * `create` and `updateSession` accept per-server `allowedTools` /
+   * `disallowedTools` and enforce or refuse them per provider. Absent on older
+   * runtimes, which drop the fields without a word.
+   */
+  mcpToolFilters?: boolean;
+  /**
+   * `updateSession({ mcpServers })` mid-turn queues the servers for the turn's
+   * end (the reply's summary carries `mcpServersPending: true`) instead of
+   * failing with `turn_in_flight`.
+   */
+  deferredMcpUpdates?: boolean;
 };
 
 export type AdeInitializeResult = {
