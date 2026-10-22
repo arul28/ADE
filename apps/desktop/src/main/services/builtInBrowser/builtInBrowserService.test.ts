@@ -3841,9 +3841,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(1);
+    // A lane-only caller sees its lane's chat-owned tab (so it can tell why the
+    // browser is full) but must not reuse it: the open landed in a new tab.
+    expect(status.tabs).toHaveLength(2);
     expect(status.activeTabId).not.toBe(firstTabId);
-    expect(status.tabs.find((tab) => tab.id === firstTabId)).toBeUndefined();
+    expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
+      url: "https://chat-owned.test/",
+      ownerChatSessionId: "chat-1",
+    });
     expect(service.getStatus().tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
       url: "https://chat-owned.test/",
       ownerChatSessionId: "chat-1",

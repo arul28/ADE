@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePathWithinRoot } from "../shared/utils";
 import {
@@ -327,6 +328,32 @@ function harQueryString(url: string): Array<{ name: string; value: string }> {
  * cache, and the OS temp dir are allowed, and each candidate must resolve
  * inside one of them.
  */
+
+/** The most files one upload or drop may name. */
+export const MAX_UPLOAD_FILE_COUNT = 20;
+
+/**
+ * Resolve and validate the files an upload, drop or clipboard image names.
+ *
+ * One jail (`builtInBrowserUploadRoots`), one count cap and one readability
+ * check; only the noun in the error differs.
+ */
+export async function resolveReadableBrowserFiles(
+  rawPaths: readonly unknown[],
+  verb: string,
+  roots: readonly string[],
+): Promise<string[]> {
+  const paths = resolveBuiltInBrowserUploadPaths(rawPaths, roots);
+  if (paths.length > MAX_UPLOAD_FILE_COUNT) {
+    throw new Error(`Browser ${verb} accepts at most ${MAX_UPLOAD_FILE_COUNT} files.`);
+  }
+  for (const filePath of paths) {
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) throw new Error(`Browser ${verb} path is not a readable file: ${filePath}`);
+  }
+  return paths;
+}
+
 export function builtInBrowserUploadRoots(args: {
   projectRoot: string | null;
   observationRoot: string | null;

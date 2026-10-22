@@ -477,6 +477,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "ADE browser",
   },
+  {
+    id: "general.browser-settings",
+    label: "Tabs and downloads",
+    // No "browser" here on purpose: the access entry already owns that word in
+    // search, and a second match reordered the command palette's thread results.
+    keywords: ["tabs", "tab limit", "downloads", "download folder", "save", "directory"],
+    tab: "behaviour",
+    anchor: "browser-settings",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
+  {
+    id: "general.browser-auto-grant",
+    label: "Agents and site permissions",
+    keywords: ["camera", "microphone", "location", "geolocation", "permission", "auto", "approve"],
+    tab: "behaviour",
+    anchor: "browser-auto-grant",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
 
   // ── Project → Location ───────────────────────────────────────────────────
   {

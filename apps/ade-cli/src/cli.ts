@@ -3386,6 +3386,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
     $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
     $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade --socket browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
+    $ ade --socket browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
+    $ ade --socket browser downloads --tab <tab-id> --text
+    $ ade --socket browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
+    $ ade --socket browser clipboard --text
+    $ ade --socket browser clipboard write --value "hello" --text
+    $ ade --socket browser paste --selector "#editor" --text
     $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
     $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
     $ ade --socket browser emulate --tab <tab-id> --off
@@ -3449,14 +3456,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --test-id <id>       Click by data-testid/data-test-id/data-cy.
     --element <n>        Click an element index from the current DOM observation.
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
-    --value <text>       Explicit value for browser fill, including an empty string.
+    --value <text>       Explicit value for browser fill, including an empty string,
+                         or the text for browser clipboard write.
+    --html <markup>      HTML flavor for browser clipboard write.
+    --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
     --keep <n>           Keep only the latest n scratch observations per tab (default 3).
     --dom, --no-dom      Include or skip the DOM element list in observations.
     --diagnostics, --no-diagnostics
                          Include or skip console/network diagnostics in observations.
     --max-elements <n>   Cap DOM elements captured per observation (default 80).
-    --limit <n>          Trace/network entries to show for browser trace or network (default 20/50).
+    --limit <n>          Trace/network entries to show for browser trace or network, or
+                         downloads for browser downloads (default 20/50).
     --device <preset>    Emulation preset for browser emulate/open: desktop, iphone-17,
                          iphone-17-pro, iphone-17-pro-max, ipad, pixel, responsive.
     --width/--height <n> Custom emulation viewport for browser emulate.
@@ -3480,6 +3491,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --option-value/--option-label/--option-index
                          Option to pick for browser select-option.
     --file <path>        Repeatable file path for browser upload.
+    --trigger <selector>
+                         Browser upload: click this element and hand the files to the
+                         file picker it opens. For pages that build their input on
+                         demand (X's media button is one), where --selector has no
+                         input to point at.
     --fps <30|60>        Frame rate for browser record start.
     --plain              Browser record start/stop: file the video as recorded (no cuts,
                          zoom, pointer or captions). Otherwise it becomes a demo at stop.
@@ -15951,6 +15967,10 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   drag: ["drag", "drag-and-drop"],
   selectOption: ["select-option", "choose", "option"],
   upload: ["upload", "upload-file", "attach-file"],
+  drop: ["drop", "drop-file", "drop-files", "drag-file"],
+  downloads: ["downloads", "download", "downloaded-files"],
+  clipboard: ["clipboard", "clip"],
+  paste: ["paste"],
   record: ["record", "recording"],
   trace: ["trace", "action-trace", "timeline"],
   proof: ["proof", "promote"],
@@ -17182,8 +17202,13 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   if (isBrowserSubcommand(sub, "upload")) {
     const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--upload"]);
     const targetArgs = readBrowserClickTargetArgs(args);
-    if (Object.keys(targetArgs).length === 0) {
-      throw new CliUsageError("browser upload requires --selector, --text-match, --test-id, --element, or --handle.");
+    // `--trigger` names the button that opens the picker, so it is a complete
+    // target on its own: the page has no input for `--selector` to point at.
+    const triggerSelector = readValue(args, ["--trigger", "--trigger-selector"]);
+    if (!triggerSelector && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "browser upload requires --selector, --text-match, --test-id, --element, or --handle (or --trigger for a button that opens the file picker).",
+      );
     }
     const actionArgs = readBrowserAgentActionArgs(args);
     // `browserPositionals`, not a raw filter: the filter both kept flag values
@@ -17201,7 +17226,137 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
+            ...(triggerSelector ? { triggerSelector } : {}),
             paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "drop")) {
+    const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--drop"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser drop requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const paths = explicitPaths.length ? explicitPaths : browserPositionals(args);
+    if (!paths.length) throw new CliUsageError("browser drop requires at least one file path.");
+    return {
+      kind: "execute",
+      label: "browser drop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "dropFiles",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...targetArgs,
+            paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "downloads")) {
+    const mode = (firstBrowserPositional(args) ?? "list").toLowerCase();
+    if (mode !== "list" && mode !== "wait" && mode !== "next") {
+      throw new CliUsageError("browser downloads takes no word (a list) or `wait`.");
+    }
+    const limit = readNumberOption(args, ["--limit", "--entries"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    if (mode === "wait" || mode === "next") {
+      const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
+      return {
+        kind: "execute",
+        label: "browser downloads wait",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "waitForDownload",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              ...(timeoutMs == null ? {} : { timeoutMs }),
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser downloads",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "listDownloads",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(limit == null ? {} : { limit }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "clipboard")) {
+    const mode = (firstBrowserPositional(args) ?? "read").toLowerCase();
+    if (mode !== "read" && mode !== "write" && mode !== "set") {
+      throw new CliUsageError("browser clipboard takes no word (read today), `read`, or `write`.");
+    }
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    // `--value` / `--html`, not `--text`: `--text` is this CLI's human-readable
+    // output switch, and reading it as content would eat the flag.
+    const value = readValue(args, ["--value", "--content"]);
+    const html = readValue(args, ["--html"]);
+    const imagePath = readValue(args, ["--image", "--image-path"]);
+    if (mode === "write" || mode === "set" || value != null || html != null || imagePath != null) {
+      if (!value && !html && !imagePath) {
+        throw new CliUsageError("browser clipboard write requires --value, --html or --image.");
+      }
+      return {
+        kind: "execute",
+        label: "browser clipboard write",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "writeClipboard",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              ...(value ? { text: value } : {}),
+              ...(html ? { html } : {}),
+              ...(imagePath ? { imagePath } : {}),
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser clipboard",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "readClipboard",
+          collectGenericObjectArgs(args, targetArgs),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "paste")) {
+    return {
+      kind: "execute",
+      label: "browser paste",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "paste",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...readBrowserClickTargetArgs(args),
           }),
         ),
       ],
@@ -20080,6 +20235,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--chat-session",
   "--chat-session-id",
   "--click-count",
+  "--content",
   "--count",
   "--css",
   "--data-cy",
@@ -20093,6 +20249,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--device-scale-factor",
   "--dock",
   "--dpr",
+  "--drop",
   "--dx",
   "--dy",
   "--element",
@@ -20103,6 +20260,9 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--entries",
   "--factor",
   "--file",
+  "--html",
+  "--image",
+  "--image-path",
   "--filter",
   "--find",
   "--for",
@@ -20184,6 +20344,8 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--to-text-match",
   "--to-x",
   "--to-y",
+  "--trigger",
+  "--trigger-selector",
   "--ua",
   "--upload",
   "--url",
@@ -23583,6 +23745,11 @@ function buildInitializeParams(
       callerId:
         envChatSessionId ?? envAttemptId ?? syntheticCallerId(clientName),
       role: options.role,
+      // The remote MCP runner launches this CLI for an outside AI app; the
+      // browser gate has to know that even when the call has no chat.
+      ...(asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID)
+        ? { remoteMcpConnectionId: asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID) }
+        : {}),
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envRunId ? { runId: envRunId } : {}),
       ...(envStepId ? { stepId: envStepId } : {}),
@@ -31569,10 +31736,28 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
+  // Collection occupancy, not the scoped list: an agent needs to see that one
+  // more tab hits the limit even when some tabs belong to another chat.
+  const tabCount = typeof status.tabCount === "number" ? status.tabCount : tabs.length;
+  const tabLimit = typeof status.tabLimit === "number" ? status.tabLimit : null;
+  const tabUsage = tabLimit == null
+    ? String(tabCount)
+    : `${tabCount} of ${tabLimit}${tabCount >= tabLimit ? " — at the limit; close a tab before opening another" : ""}`;
   // `claimable` marks a tab with no owner or an expired lease. It is visible
   // so an agent can discover it instead of starting a duplicate tab, but every
   // action on it still fails until the caller claims it — so the owner column
   // says exactly that, with the command that fixes it.
+  // How long since the owner last touched it. A tab with a live lease can
+  // still be stale, and "idle 24m" is what tells an agent to reuse or close it
+  // instead of opening another.
+  const idleForTab = (tab: Record<string, unknown>): string | null => {
+    const last = asString(tab.ownerLastActiveAt);
+    if (!last) return null;
+    const elapsed = Date.now() - Date.parse(last);
+    if (!Number.isFinite(elapsed) || elapsed < 60_000) return null;
+    const minutes = Math.round(elapsed / 60_000);
+    return minutes < 60 ? `idle ${minutes}m` : `idle ${Math.round(minutes / 60)}h`;
+  };
   const ownerForTab = (tab: Record<string, unknown>): string => {
     if (tab.claimable === true) {
       const id = asString(tab.id) ?? "<id>";
@@ -31586,10 +31771,25 @@ function formatBrowserStatus(value: unknown): string {
     const chat = asString(tab.ownerChatSessionId);
     // The caller's own tab says so in words; anyone else's shows full ids,
     // never a truncated one that looks copyable and is not.
-    if (chat && chat === callerChatSessionId) return "this chat";
-    return [lane, chat].filter(Boolean).join(" / ");
+    const owner = chat && chat === callerChatSessionId
+      ? "this chat"
+      : [lane, chat].filter(Boolean).join(" / ");
+    const idle = idleForTab(tab);
+    return idle ? `${owner} · ${idle}` : owner;
   };
   const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  // Who created the tab, independent of who holds it now: a tab an agent
+  // opened and released still says so.
+  const openedForTab = (tab: Record<string, unknown>): string => {
+    const by = asString(tab.openedBy);
+    if (by === "chat") {
+      const chat = asString(tab.openedByChatSessionId);
+      if (chat && chat === callerChatSessionId) return "this chat";
+      return chat ? `chat ${chat}` : "agent";
+    }
+    if (by === "human") return "you";
+    return "";
+  };
   const signInForTab = (tab: Record<string, unknown>): string => {
     const profile = asString(tab.isolatedProfile);
     return profile ? `isolated profile "${profile}"` : "shared (the user's)";
@@ -31633,6 +31833,7 @@ function formatBrowserStatus(value: unknown): string {
       ["visible", status.visible],
       ["attached", status.attached],
       ["active tab", activeTabId],
+      ["tabs", tabUsage],
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
@@ -31647,11 +31848,12 @@ function formatBrowserStatus(value: unknown): string {
     ]),
     "",
     renderTable(
-      ["active", "tab", "owner", "title", "url"],
+      ["active", "tab", "owner", "opened", "title", "url"],
       tabs.map((tab) => [
         asString(tab.id) === activeTabId ? "*" : "",
         tab.id,
         ownerForTab(tab),
+        openedForTab(tab),
         tab.title,
         tab.url,
       ]),

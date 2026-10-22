@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
+import { BUILT_IN_BROWSER_TAB_LIMIT_MAX } from "../../../shared/types/builtInBrowser";
 
 /**
  * v1 persisted whatever the pane had open, including the google.com home page
@@ -32,7 +33,10 @@ function isLegacyDefaultTabUrl(value: string): boolean {
   return LEGACY_DEFAULT_TAB_URL_PATTERN.test(value.trim());
 }
 const MAX_COLLECTIONS = 100;
-const MAX_TABS_PER_COLLECTION = 10;
+// Persist the maximum the setting allows; the live limit slices on restore.
+// Capping at the default 10 dropped every tab an agent opened above 10 when
+// the machine was configured for more.
+const MAX_TABS_PER_COLLECTION = BUILT_IN_BROWSER_TAB_LIMIT_MAX;
 const WRITE_DEBOUNCE_MS = 200;
 
 export type BuiltInBrowserRestoredCollection = {

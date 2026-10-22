@@ -72,6 +72,7 @@ const RECEIVED_FILE_DIR_CAP = 40;
 /** The CLI words for the commands that stay on this machine, for a message an agent can act on. */
 const LOCAL_FILE_COMMAND_WORDS: Record<BuiltInBrowserLocalFileMethod, string> = {
   uploadFile: "`ade browser upload`",
+  dropFiles: "`ade browser drop`",
   exportHar: "`ade browser har`",
   startRecording: "`ade browser record start`",
   stopRecording: "`ade browser record stop`",

@@ -165,7 +165,14 @@ export function normalizeTab(value: unknown): BrowserTab | null {
     ownerLaneId: stringField(value.ownerLaneId),
     ownerChatSessionId: stringField(value.ownerChatSessionId),
     ownerClaimedAt: stringField(value.ownerClaimedAt),
+    ownerLastActiveAt: stringField(value.ownerLastActiveAt),
     ownerLeaseExpiresAt: stringField(value.ownerLeaseExpiresAt),
+    // An older desktop can omit these; the canonical tab type is total, so a
+    // missing opener reads as the person and a missing time as now.
+    openedBy: value.openedBy === "chat" ? "chat" : "human",
+    openedByChatSessionId: stringField(value.openedByChatSessionId),
+    openedByLaneId: stringField(value.openedByLaneId),
+    createdAt: stringField(value.createdAt) ?? new Date().toISOString(),
     zoomFactor: numberField(value.zoomFactor) || 1,
     devToolsOpen: booleanField(value.devToolsOpen, false),
     emulation: (isRecord(value.emulation) ? value.emulation : null) as BuiltInBrowserTab["emulation"],

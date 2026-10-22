@@ -336,3 +336,11 @@
 .ade-ar-icon-btn[data-danger]:hover:not(:disabled) { background: color-mix(in srgb, var(--kit-crit) 12%, transparent); color: var(--kit-crit); }
 .ade-ar-icon-btn:disabled { opacity: 0.4; pointer-events: none; }
 .ade-ar-selection { display: flex; align-items: center; gap: 8px; width: 100%; }
+
+/* Two buttons that act on one Settings row. */
+.ade-modern-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}

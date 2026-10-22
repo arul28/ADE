@@ -1000,6 +1000,10 @@ import {
   isBuiltInBrowserNoTabError,
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
+  parseBuiltInBrowserSettingsPatch,
+} from "../../../shared/types/builtInBrowser";
 import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
 import { runRemoteAgentBrowserCall } from "../builtInBrowser/builtInBrowserRemoteCalls";
 import {
@@ -2806,6 +2810,8 @@ export function registerIpc({
         bounds: { x: 0, y: 0, width: 0, height: 0 },
         activeTabId: null,
         tabs: [],
+        tabCount: 0,
+        tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
         url: null,
         title: null,
         isLoading: false,
@@ -2816,6 +2822,7 @@ export function registerIpc({
         ownerLaneId: null,
         ownerChatSessionId: null,
         ownerClaimedAt: null,
+        ownerLastActiveAt: null,
         ownerLeaseExpiresAt: null,
       };
     }
@@ -10844,6 +10851,25 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessGet, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().getAgentAccess();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessSetEnabled, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetEnabled, { windowMs: 10_000, max: 20 });
+    const enabled = isRecord(arg) ? arg.enabled : arg;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${IPC.builtInBrowserAgentAccessSetEnabled}: enabled must be a boolean.`);
+    }
+    return ensureBuiltInBrowser().setAgentAccessEnabled(enabled);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsGet, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsGet, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().getBrowserSettings();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsSet, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().updateBrowserSettings(parseBuiltInBrowserSettingsPatch(arg));
   });
 
   ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {

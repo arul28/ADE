@@ -43,7 +43,13 @@ import {
   showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
 } from "./browserMockRecovery";
-import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
+import {
+  BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
+  applyBuiltInBrowserSettingsPatch,
+  type BuiltInBrowserAgentAccessSnapshot,
+  type BuiltInBrowserSettings,
+  type BuiltInBrowserSettingsPatch,
+} from "../shared/types/builtInBrowser";
 import type {
   AppControlEventPayload,
   AppControlRecordingStatus,
@@ -184,9 +190,32 @@ const resolved =
  * `window.__adeMockBrowserAgentPrompt()` opens a sample prompt so the dialog
  * can be looked at without a live agent.
  */
+function createMockBrowserSettings() {
+  let settings: BuiltInBrowserSettings = {
+    ...BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
+    autoGrant: { ...BUILT_IN_BROWSER_SETTINGS_DEFAULTS.autoGrant },
+  };
+  const listeners = new Set<(next: BuiltInBrowserSettings) => void>();
+  const emit = () => {
+    for (const listener of listeners) listener(settings);
+    return settings;
+  };
+  return {
+    get: async () => settings,
+    set: async (patch: BuiltInBrowserSettingsPatch) => {
+      settings = applyBuiltInBrowserSettingsPatch(settings, patch);
+      return emit();
+    },
+    onChange: (cb: (next: BuiltInBrowserSettings) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
+
 function createMockBrowserAgentAccess() {
   type Snapshot = BuiltInBrowserAgentAccessSnapshot;
-  let snapshot: Snapshot = { mode: "all", laneGrants: [], chatGrants: [], prompts: [] };
+  let snapshot: Snapshot = { enabled: true, mode: "all", laneGrants: [], chatGrants: [], prompts: [] };
   const listeners = new Set<(next: Snapshot) => void>();
   const emit = () => {
     for (const listener of listeners) listener(snapshot);
@@ -214,6 +243,10 @@ function createMockBrowserAgentAccess() {
   }
   return {
     get: async () => snapshot,
+    setEnabled: async (enabled: boolean) => {
+      snapshot = { ...snapshot, enabled, prompts: enabled ? snapshot.prompts : [] };
+      return emit();
+    },
     setMode: async (mode: Snapshot["mode"]) => {
       snapshot = { ...snapshot, mode, prompts: mode === "all" ? [] : snapshot.prompts };
       return emit();
@@ -223,6 +256,7 @@ function createMockBrowserAgentAccess() {
       if (!prompt) return snapshot;
       const now = new Date().toISOString();
       snapshot = {
+        enabled: snapshot.enabled,
         mode: answer === "all" ? "all" : snapshot.mode,
         laneGrants: answer === "lane" && prompt.laneId
           ? [{ projectRoot: prompt.projectRoot, laneId: prompt.laneId, laneName: prompt.laneName, grantedAt: now }, ...snapshot.laneGrants]
@@ -8326,6 +8360,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      browserSettings: createMockBrowserSettings(),
       agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
         capabilities: resolved({ platform: "other" as const, anySupported: false, browsers: [] }),

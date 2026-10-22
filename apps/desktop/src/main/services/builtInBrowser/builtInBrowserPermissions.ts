@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { dialog } from "electron";
 import type { BrowserWindow, Session, WebContents } from "electron";
-import type { BuiltInBrowserPermissionDecision } from "../../../shared/types";
+import type { BuiltInBrowserAutoGrant, BuiltInBrowserPermissionDecision } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 
@@ -53,6 +53,12 @@ export function createBuiltInBrowserPermissionController(args: {
   isManagedWebContents: (webContents: WebContents | null) => boolean;
   resolveParentWindow: () => BrowserWindow | null;
   getLogger?: () => Logger | null;
+  /**
+   * Standing grants from Settings, or null when they do not apply to this
+   * `WebContents` (a tab no agent opened or holds, or agents are switched off).
+   * Read synchronously on every check, so it must be an in-memory read.
+   */
+  getAutoGrant?: (webContents: WebContents | null) => BuiltInBrowserAutoGrant | null;
   prompt?: (input: {
     parent: BrowserWindow | null;
     permission: string;
@@ -106,6 +112,12 @@ export function createBuiltInBrowserPermissionController(args: {
     if (sessionDecision) return sessionDecision.decision === "allow";
     const stored = decisions.get(key);
     if (stored) return stored.decision === "allow";
+
+    // A standing grant is evaluated after the explicit per-site answers, so a
+    // remembered Block still wins. It is never persisted as a decision: the
+    // setting is the one place to turn it off.
+    const auto = args.getAutoGrant?.(webContents) ?? null;
+    if (auto && autoGrants(auto, request.permission)) return true;
 
     const existingPrompt = pendingPrompts.get(key);
     if (existingPrompt) return existingPrompt;
@@ -166,7 +178,13 @@ export function createBuiltInBrowserPermissionController(args: {
         const key = permissionDecisionKey(request);
         const sessionDecision = sessionDecisions.get(key);
         const stored = decisions.get(key);
-        const allowed = sessionDecision?.decision === "allow" || stored?.decision === "allow";
+        // An explicit answer for this site wins even when it is a Block: a
+        // standing grant must not undo what the person said about this origin.
+        const explicit = sessionDecision ?? stored ?? null;
+        const auto = args.getAutoGrant?.(webContents) ?? null;
+        const allowed = explicit
+          ? explicit.decision === "allow"
+          : Boolean(auto && autoGrants(auto, request.permission));
         logger()?.debug(allowed ? "built_in_browser.permission_check_allowed" : "built_in_browser.permission_check_denied", {
           permission: request.permission,
           origin: request.origin,
@@ -289,6 +307,23 @@ function permissionRequest(
     origin,
     embeddingOrigin: normalizedEmbeddingOrigin(origin, null, webContents.getURL()),
   };
+}
+
+/**
+ * Does a standing grant cover this already-scoped permission?
+ *
+ * Media arrives as one permission, scoped to `media:audio`, `media:video` or
+ * `media:audio+video`, so camera and microphone stay independent switches. A
+ * combined request needs both: never open the microphone because camera was on.
+ * Anything else (clipboard, MIDI, notifications) is not covered by this
+ * setting and still prompts.
+ */
+function autoGrants(auto: BuiltInBrowserAutoGrant, scoped: string): boolean {
+  if (scoped === "geolocation") return auto.geolocation;
+  if (scoped === "media:audio") return auto.microphone;
+  if (scoped === "media:video") return auto.camera;
+  if (scoped === "media:audio+video") return auto.camera && auto.microphone;
+  return false;
 }
 
 function scopedPermission(permission: string, mediaTypes: string[]): string {
