@@ -703,6 +703,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSessionCapabilities",
     "getSessionSummary",
     "getTurnStatus",
+    // The questions/approvals a chat is blocked on, so `ade chat respond` can
+    // find the item and its options (`chat.respondToInput` answers it).
+    "listPendingInputs",
     "getSlashCommands",
     "getTurnFileDiff",
     "getParallelLaunchState",

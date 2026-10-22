@@ -22,7 +22,7 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 | `channel` | `string` | Downloader channel: `latest` (default) or a release tag. |
 | `logger` | `(line: string) => void` | Sidecar / client log sink. |
 | `instructions` | `string \| { mode, text }` | Default instructions for every thread. A per-thread value replaces it. |
-| `mcpHeaders` | `(key, serverName) => Record<string, string> \| undefined` | Supplies MCP header values at every create, resume, recreate and restart. Header values are never stored. See [MCP](/sdk/mcp#credentials-that-change). |
+| `mcpHeaders` | `(key, serverName) => Record<string, string> \| undefined \| Promise<…>` | Supplies MCP header values at every create, resume, recreate and restart, and before each turn of a thread with remote servers (a changed value is pushed before the turn). May be async. Header values are never stored. See [MCP](/sdk/mcp#credentials-that-change). |
 | `autoRestart` | `boolean \| { maxAttempts?, backoffMs? }` | Default off. Respawns the runtime after an unexpected exit and re-opens every live thread. `true` = 5 attempts, 1 s backoff that doubles. |
 | `requireCompatibleRuntime` | `boolean` | Default off. `true` throws `runtime_incompatible` for a runtime outside `SUPPORTED_RUNTIME_RANGE`. |
 | `source` | `"packaged"` | Set by `resolvePackagedRuntime()`. Makes `doctor().runtime.source` report `packaged`. |
@@ -102,7 +102,8 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. Returns the selection plus `capabilities` (the four reports for the new provider), and emits `capabilities_changed` on the `status` channel. |
 | `update({ title?, reasoningEffort?, fastMode? }, { force? }?)` | Rename, or change effort or fast mode. A rename always works; the other two are refused mid-turn with `turn_in_flight` unless `{ force: true }`. Returns `{ title, model }`. |
 | `retry()` / `editLast(text, { displayText?, attachments? }?)` | Run the last user message again, or a new one in its place. The old turn leaves the history. Claude and Codex, runtime 1.2.82. Returns `{ retractedFromSequence, historyGeneration, conversationRollback }`. See [Retry and edit](/sdk/threads#retry-and-edit). SDK 0.4. |
-| `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn. Returns the new `mcpCapability`. Needs runtime 1.2.81 or later. |
+| `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn; mid-turn the runtime queues them for the turn's end. Returns the `mcpCapability`. Needs runtime 1.2.81 or later. |
+| `refreshMcpHeaders()` | Re-resolve the thread's MCP header values through `mcpHeaders` and push them if they changed. `send`, `retry` and `editLast` already do this before each turn. |
 | `history({ limit }?)` | Envelopes in transcript order. |
 | `historyPage({ beforeSequence?, limit? }?)` | One page: `{ events, hasMore, nextBeforeSequence }`. Omit `beforeSequence` for the newest page. |
 | `approve(itemId, decision, responseText?)` | Answer an approval. `"accept"` \| `"accept_always"` \| `"reject"`. Throws `approval_not_found` when it is already settled, and `invalid_option` for a question-shaped request. |

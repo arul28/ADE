@@ -24,9 +24,12 @@ npm install @ade-dev/sdk
 Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
-SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
-lower bound did not move in 0.5 — nothing in that line needs a new wire, so a
-host on runtime 1.2.82 keeps working. An older or newer runtime still
+SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
+lower bound did not move in 0.5 or 0.6, so a host on runtime 1.2.82 keeps
+working. On an older runtime, MCP tool filters are refused before they are
+sent (they need `capabilities.personalChats.mcpToolFilters`), and a mid-turn
+`updateMcpServers` is refused with `turn_in_flight` instead of queued; the
+header refresh needs nothing new. An older or newer runtime still
 connects, logs one warning, and degrades feature by feature. Pass
 `requireCompatibleRuntime: true` to refuse it with
 `runtime_incompatible`. `doctor().runtime.compatibility` reports the verdict.
@@ -215,8 +218,19 @@ await thread.updateMcpServers({ app: { type: "http", url: newUrl, headers: newHe
 
 `refresh.mcpServers` replaces the servers on a resume or a recreate.
 `thread.updateMcpServers()` replaces them on a live thread, for the next turn;
-it is refused mid-turn and on a runtime before 1.2.81. Without any of the
-three, a server connects without its headers and the SDK logs a line. URL query
+mid-turn the runtime queues them for the end of the turn, and a runtime before
+1.2.81 refuses. Without any of the three, a server connects without its
+headers and the SDK logs a line.
+
+`mcpHeaders` may be async, and it runs before every `send`, `retry` and
+`editLast` of a thread with remote servers: a token that changed (an OAuth
+access token that expired) is pushed before the turn, and the provider resumes
+the same conversation with it. `thread.refreshMcpHeaders()` does the same on
+demand, right after you rotate a token.
+
+Each server can also carry `allowedTools` / `disallowedTools` (bare tool
+names). Codex enforces both; Claude enforces `disallowedTools` only; other
+providers refuse both rather than ignore them. URL query
 strings and stdio `env` values are still stored; do not put secrets there.
 
 Tool results carry MCP `resource_link` items as `event.resourceLinks` on Codex

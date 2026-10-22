@@ -19,8 +19,8 @@ const thread = await ade.threads.open("ops", {
 
 Supported shapes:
 
-- `{ type: "http" | "sse", url, headers? }`
-- `{ type: "stdio", command, args?, env? }`
+- `{ type: "http" | "sse", url, headers?, allowedTools?, disallowedTools? }`
+- `{ type: "stdio", command, args?, env?, allowedTools?, disallowedTools? }`
 
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
@@ -47,6 +47,28 @@ Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode a
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
+
+## Filtering a server's tools
+
+`allowedTools` and `disallowedTools` choose which of one server's tools reach the model. They take bare tool names, as the server lists them.
+
+```ts
+mcpServers: {
+  files: { type: "http", url, disallowedTools: ["delete_file", "move_file"] },
+}
+```
+
+Not every provider can enforce both. A filter the provider cannot enforce is refused with `invalid_option`, at open, at `updateMcpServers`, and at a `setModel` onto that provider. It is never dropped.
+
+| Provider | `allowedTools` | `disallowedTools` |
+|---|---|---|
+| codex | yes (`enabled_tools`) | yes (`disabled_tools`) |
+| claude | refused: list the tools to hide in `disallowedTools` | yes, removed from the model's context |
+| cursor, droid, opencode, muse, pi | refused | refused |
+
+OpenCode refuses both because every personal chat shares one OpenCode server config, so a filter for one thread would hide those tools in every thread.
+
+`disallowedTools` is applied after `allowedTools`, so a tool in both stays hidden. An empty `allowedTools` is refused; leave the server out instead. The tool names are kept in the thread store. Filters need a runtime that advertises `capabilities.personalChats.mcpToolFilters`; the SDK refuses to send them to an older one, which would drop them.
 
 ## `mcpCapability`
 
@@ -131,9 +153,26 @@ const ade = await createAdeChat({
 });
 ```
 
-The SDK calls it synchronously, each time it needs header values for a server that you passed without headers: at a create, a resume, a recreate and an `autoRestart`. Return `undefined` for a server that needs no headers. The SDK sends the result to the runtime and does not store it.
+The SDK calls it each time it needs header values for a server that you passed without headers: at a create, a resume, a recreate and an `autoRestart`, and before every `send`, `retry` and `editLast` of a thread with remote servers. It may return a Promise, so you can refresh an OAuth token first. Return `undefined` for a server that needs no headers. The SDK sends the result to the runtime and does not store it.
 
 On a resume, the SDK pushes the resolved servers to the runtime when the stored record names headers. It does this automatically when you pass `mcpHeaders`.
+
+### Tokens that expire during a chat
+
+A remote server with a short-lived access token (OAuth, one hour) would start returning 401 partway through a long chat. With `mcpHeaders`, it does not: before each turn the SDK asks the callback again, and when the values differ from the ones it last sent, it pushes them. The runtime restarts the provider between turns and resumes the same conversation, so the next turn runs on the new token. Unchanged values send nothing, so return a cached token until it is close to expiry.
+
+```ts
+const ade = await createAdeChat({
+  home,
+  mcpHeaders: async (key, serverName) =>
+    serverName === "app" ? { Authorization: `Bearer ${await oauth.validAccessToken()}` } : undefined,
+});
+
+// After rotating a token yourself, push it now rather than at the next message:
+await thread.refreshMcpHeaders();
+```
+
+`thread.refreshMcpHeaders()` re-resolves the header values of the thread's own servers (the map it was opened or last updated with). It throws `invalid_option` without an `mcpHeaders` callback, and when the callback returns nothing for a server that needs headers, because pushing would replace that server's live token with none. The refresh before a turn follows the same rules, but never blocks the message: a failure is logged once and the turn runs on the headers the session already has.
 
 ### `refresh.mcpServers`
 
@@ -170,14 +209,16 @@ Replaces the servers of a live thread. It returns the new `mcpCapability`. The p
 
 The same checks as a create apply: provider shape, reserved names, and at most 32 servers.
 
+During a turn, the runtime checks the servers at once (a bad map still throws) and queues them; the call resolves. The queued servers go in when the turn ends, whether it completes, is interrupted or fails. A second call before then replaces the queued servers. Until the swap, the session summary reports `mcpServersPending: true`, and `mcpCapability` still describes the servers the running turn uses. A runtime that does not advertise `capabilities.personalChats.deferredMcpUpdates` refuses mid-turn with `turn_in_flight` instead.
+
 It throws `invalid_option`:
 
-- While a turn is in flight. Wait for the turn to end, or call `interrupt()`.
 - On a runtime that does not advertise `capabilities.personalChats.updateMcpServers` (before 1.2.81). An older runtime would ignore the servers and keep the old credentials, which is worse than an error.
+- For a tool filter the provider cannot enforce, or on a runtime without `mcpToolFilters`. See [Filtering a server's tools](#filtering-a-servers-tools).
 
 On that older runtime, a resume with `refresh` or `mcpHeaders` keeps the old servers and logs a warning.
 
-`thread.updateMcpServers` is not on the [Electron bridge](/sdk/electron#what-crosses-the-bridge). Only main may change a thread's servers.
+`thread.updateMcpServers` and `thread.refreshMcpHeaders` are not on the [Electron bridge](/sdk/electron#what-crosses-the-bridge). Only main may change a thread's servers. A `send` from the renderer still runs the before-turn refresh in main.
 
 ### After a runtime restart
 
@@ -185,7 +226,7 @@ The runtime does not keep header values either. After it restarts, a server whos
 
 ### Redaction
 
-The runtime removes secrets from MCP error and notice text before it writes them to the transcript or the log: the query string, fragment and user info of a URL, `Bearer` tokens, and the exact header and stdio environment values of the server. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors. This protects returned text from echoing a secret; it does not change the fact that stdio `env` values are stored in plaintext.
+The runtime removes secrets from MCP error and notice text before it writes them to the transcript or the log: the query string, fragment and user info of a URL, `Bearer` tokens, and the exact header and stdio environment values of the server — both the live values and any queued by a mid-turn update. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors. This protects returned text from echoing a secret; it does not change the fact that stdio `env` values are stored in plaintext.
 
 ## Resource links
 

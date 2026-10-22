@@ -464,6 +464,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getTurnStatus --scalar chat-123",
     },
+    listPendingInputs: {
+      description: "List the questions and approvals a chat is blocked on right now, with each item id, kind, questions and options. Empty after a restart: the provider request died with the process.",
+      input: "object { sessionId: string }",
+      example: "ade chat pending chat-123 --text",
+    },
+    respondToInput: {
+      description: "Answer a chat's pending question or approval (an item from listPendingInputs). Unblocks a chat whose sends are refused with \"Answer or decline the pending request\". Cards only the person may answer (screen-control consent) are refused to agents.",
+      input: "object { sessionId: string, itemId: string, decision?: \"accept\" | \"accept_for_session\" | \"decline\" | \"cancel\" (default decline: send accept to answer a question), answers?: { [questionId]: string | string[] } (option values or free text; \"selection\" for a model pick), responseText?: string (free answer, or the reason for a decline) }",
+      example: "ade chat respond chat-123 --option 2   (or: ade actions run chat.respondToInput --input-json '{\"sessionId\":\"chat-123\",\"itemId\":\"item-1\",\"decision\":\"accept\",\"answers\":{\"q1\":\"staging\"}}')",
+    },
     createScheduledWork: {
       description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
       input: "object { sessionId?: string, prompt: string, exactly one of cron?: string | runAt?: ISO 8601 string with offset/Z | delaySeconds?: positive integer, recurring?: boolean, reason?: string }",

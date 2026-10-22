@@ -130,6 +130,59 @@ describe("caller MCP isolation", () => {
     expect(servers.embedder).toMatchObject({ enabled: true });
   });
 
+  // An SDK host rotates a remote MCP token while a turn runs, and queues a
+  // message behind it. The new servers wait for the turn AND the queued
+  // message's own turn: swapping them restarts the process, which would end
+  // the turn with no completion and drop the queued message.
+  it("queues MCP servers sent mid-turn, keeps the queued message, and launches with them next", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let finishTurn!: () => void;
+    const gate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    let launches = 0;
+    const launch = () => {
+      launches += 1;
+      return makeTurnSession(`sdk-mcp-midturn-${launches}`, launches === 1 ? gate : null) as any;
+    };
+    vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(launch);
+    vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(launch);
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const vault = (token: string) => ({
+      vault: { type: "http" as const, url: "https://example.test/mcp", headers: { Authorization: `Bearer ${token}` } },
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      mcpServers: vault("tok-1"),
+    } as never);
+
+    const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "long job", timeoutMs: 15_000 });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope => event.event.type === "text" && event.event.text.includes("Still working"),
+    );
+    await service.updateSession({ sessionId: session.id, mcpServers: vault("tok-2") });
+    expect((await service.getSessionSummary(session.id))?.mcpServersPending).toBe(true);
+    const steer = await service.sendMessage({ sessionId: session.id, text: "also this" }, { routeActiveToSteer: true });
+    expect(steer).toMatchObject({ queued: true });
+
+    finishTurn();
+    await activeTurn;
+    // The queued message runs as its own turn on the same process.
+    await vi.waitFor(() => {
+      expect(events.filter((event) => event.event.type === "done")).toHaveLength(2);
+    });
+    expect(launches).toBe(1);
+
+    await service.runSessionTurn({ sessionId: session.id, text: "next question", timeoutMs: 15_000 });
+    expect(launches).toBe(2);
+    const relaunch = claudeLaunches().at(-1) as { mcpServers?: Record<string, { headers?: Record<string, string> }> };
+    expect(relaunch.mcpServers?.vault?.headers?.Authorization).toBe("Bearer tok-2");
+    expect((await service.getSessionSummary(session.id))?.mcpServersPending).toBeUndefined();
+  });
+
 });
 
 

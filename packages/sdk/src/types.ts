@@ -119,18 +119,43 @@ export type AgentChatInstructions = {
 export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
 
 /**
+ * Which of one MCP server's tools reach the model. Bare tool names, as the
+ * server lists them (`"search"`, not `"mcp__docs__search"`). Names are not
+ * secrets: the thread store keeps them.
+ *
+ * Not every provider can enforce both, and a filter a provider cannot enforce
+ * is refused (`invalid_option`) at open, `updateMcpServers` and `setModel` —
+ * never dropped:
+ *
+ * | provider | `allowedTools` | `disallowedTools` |
+ * | --- | --- | --- |
+ * | codex | yes (`enabled_tools`) | yes (`disabled_tools`) |
+ * | claude | refused | yes (removed from the model's context) |
+ * | cursor, droid, opencode, muse, pi | refused | refused |
+ *
+ * Needs a runtime advertising `capabilities.personalChats.mcpToolFilters`;
+ * an older one would drop the fields, so the SDK refuses to send them there.
+ */
+export type McpToolFilter = {
+  /** Only these tools reach the model. Never empty. */
+  allowedTools?: string[];
+  /** These tools never reach the model. Applied after `allowedTools`. */
+  disallowedTools?: string[];
+};
+
+/**
  * Per-thread MCP server definition. Mirrors `AgentChatMcpServerConfig` on the
  * engine side (unit 1). Passing these sets `mcpServers` on the create call;
  * `loadUserMcpServers: false` additionally sets `strictMcpConfig: true`.
  */
 export type McpServerConfig =
-  | { type: "http" | "sse"; url: string; headers?: Record<string, string> }
-  | {
+  | ({ type: "http" | "sse"; url: string; headers?: Record<string, string> } & McpToolFilter)
+  | ({
       type: "stdio";
       command: string;
       args?: string[];
       env?: Record<string, string>;
-    };
+    } & McpToolFilter);
 
 /**
  * What the provider could actually do with a caller's MCP request.
@@ -577,6 +602,11 @@ export type AgentChatSessionSummary = {
   modelId?: string;
   /** Present only when the chat was created with an MCP request. */
   mcpCapability?: McpCapabilityReport;
+  /**
+   * True while MCP servers sent mid-turn wait for that turn to end.
+   * `mcpCapability` still describes the servers the running turn has.
+   */
+  mcpServersPending?: boolean;
   /**
    * Present only when the chat was created with `instructions`. Absent means
    * nothing was requested — NOT that the request was dropped.

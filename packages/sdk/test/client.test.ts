@@ -294,6 +294,84 @@ describe("threads", () => {
     expect(second!.createArgs.strictMcpConfig).toBe(false);
   });
 
+  it("pushes a rotated MCP token before the next send, and nothing while it is unchanged", async () => {
+    const runtime = await startRuntime({ mcpServers: true, updateMcpServers: true });
+    const home = makeHome();
+    let token = "tok-1";
+    const client = await connect(runtime, {
+      home,
+      // Async, like a host that refreshes an OAuth token first.
+      mcpHeaders: async () => ({ Authorization: `Bearer ${token}` }),
+    });
+    const thread = await client.threads.open("rotating", {
+      provider: "claude",
+      model: "m",
+      mcpServers: { vault: { type: "http", url: "https://example.test/mcp" } },
+    });
+    const pushedHeaders = () => runtime.calls
+      .filter((call) => call.method === "personalChats.call")
+      .map((call) => call.params as { action?: string; args?: { mcpServers?: Record<string, { headers?: Record<string, string> }> } })
+      .filter((params) => params.action === "updateSession" && params.args?.mcpServers)
+      .map((params) => params.args!.mcpServers!.vault?.headers?.Authorization);
+
+    await thread.send("same token");
+    expect(pushedHeaders()).toEqual([]);
+
+    token = "tok-2";
+    await thread.send("rotated token");
+    expect(pushedHeaders()).toEqual(["Bearer tok-2"]);
+
+    await thread.send("still tok-2");
+    expect(pushedHeaders()).toEqual(["Bearer tok-2"]);
+    // The push rewrites the record; the rotated value must not reach disk.
+    expect(fs.readFileSync(path.join(home, "threads.json"), "utf8")).not.toContain("tok-");
+  });
+
+  it("never sends an MCP tool filter to a runtime that would drop it", async () => {
+    // An older runtime ignores `disallowedTools`, so the agent would get back
+    // the destructive tool the host hid. The SDK has to refuse, not send.
+    const servers = {
+      files: { type: "http" as const, url: "https://example.test/mcp", disallowedTools: ["delete_file"] },
+    };
+    const old = await startRuntime({ mcpServers: true, updateMcpServers: true });
+    const oldClient = await connect(old);
+    await expect(
+      oldClient.threads.open("filters-old", { provider: "claude", model: "m", mcpServers: servers }),
+    ).rejects.toMatchObject({ code: "invalid_option" });
+    expect(old.sessions.size).toBe(0);
+    const plain = await oldClient.threads.open("filters-old-update", { provider: "claude", model: "m" });
+    await expect(plain.updateMcpServers(servers)).rejects.toMatchObject({ code: "invalid_option" });
+
+    const current = await startRuntime({ mcpServers: true, updateMcpServers: true, mcpToolFilters: true });
+    const client = await connect(current);
+    await client.threads.open("filters", { provider: "claude", model: "m", mcpServers: servers });
+    const [session] = [...current.sessions.values()];
+    expect(session!.createArgs.mcpServers).toMatchObject({ files: { disallowedTools: ["delete_file"] } });
+  });
+
+  it("counts a mid-turn MCP update the runtime queued as sent", async () => {
+    // The runtime queues it for the turn's end and answers `mcpServersPending`.
+    // Repeating the same map must not queue it again, and the call must not
+    // fail the way it did before deferred updates.
+    const runtime = await startRuntime({ mcpServers: true, updateMcpServers: true, deferredMcpUpdates: true });
+    const client = await connect(runtime);
+    const thread = await client.threads.open("deferred", {
+      provider: "codex",
+      model: "m",
+      mcpServers: { app: { type: "http", url: "https://example.test/a" } },
+    });
+    runtime.sessions.get(thread.id)!.status = "active";
+    const updates = () => runtime.calls.filter(
+      (call) => (call.params as { action?: string } | undefined)?.action === "updateSession",
+    ).length;
+    const next = { app: { type: "http" as const, url: "https://example.test/b" } };
+
+    await thread.updateMcpServers(next);
+    expect(updates()).toBe(1);
+    await thread.updateMcpServers(next);
+    expect(updates()).toBe(1);
+  });
+
   it("treats an empty mcpServers map as no MCP request at all", async () => {
     // `{}` is truthy. A truthiness check sent it on the wire AND turned strict
     // mode on, while every local decision read it as "nothing supplied" — so

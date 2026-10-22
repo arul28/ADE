@@ -486,9 +486,11 @@ private enum WorkPreviewData {
 func workPreviewChatSessionView(
   laneTools: WorkLaneToolsPreview? = nil,
   compactFirst: Bool = false,
+  pendingSettingsAfterBackground: [String]? = nil,
   transcript: [WorkChatEnvelope] = WorkPreviewData.transcript
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
+  summary.pendingSettingsAfterBackground = pendingSettingsAfterBackground
   if compactFirst {
     summary.compactionIdleMode = "ask"
     summary.compactFirstMinTokens = 1_000
@@ -1329,6 +1331,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real chat, idle past its prompt cache, with the Compact first chip
   /// floating above the composer.
   case compactFirst = "compact-first"
+  /// The real chat with an effort change held until background work ends: the
+  /// "Effort pending" chip floating above the composer.
+  case pendingSettings = "pending-settings"
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
@@ -1523,6 +1528,10 @@ struct ADEPreviewScreenHost: View {
     case .compactFirst:
       NavigationStack {
         workPreviewChatSessionView(compactFirst: true)
+      }
+    case .pendingSettings:
+      NavigationStack {
+        workPreviewChatSessionView(pendingSettingsAfterBackground: ["reasoningEffort"])
       }
     case .toolChips:
       NavigationStack {

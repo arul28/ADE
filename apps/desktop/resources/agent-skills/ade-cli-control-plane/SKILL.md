@@ -21,6 +21,7 @@ to inspect or control an existing ADE-owned terminal session.
 2. Run `ade help <command>` or `ade help <command> <subcommand>` before guessing flags.
 3. Prefer `--text` for human-readable output and JSON output when scripting.
 4. Use `ade actions list --text` or `ade actions list --domain <domain> --text` as the escape hatch for service methods without a typed command.
+5. Before running an action, `ade actions describe <domain.action> --text` prints its read/write access, description, documented input fields and an example (actions without a documented contract say so).
 
 ## Project secrets
 
@@ -159,7 +160,9 @@ and receive the same lineage environment. The parent thread shows a CLI child
 as a subagent card, but the card closes (and a `subagent` wakes the parent with
 the CLI's last message) only when the CLI process exits. An interactive CLI
 that finishes its task and stays open reports nothing until it is closed.
-Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
+Poll CLI children with `ade chat status <id>` (running / blocked / waiting / idle;
+`waiting` means the turn ended but background agents or shells it started still
+run and report back, so it is not done yet; it exits 0 like running), find
 them with `ade chat list` (archived ones need `--include-archived`), and read their last message plus terminal tail with
 `ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
 to `--mode chat` for a subagent that must report back**: a chat child reports
@@ -214,6 +217,20 @@ a chat you do not own:
 - To be woken when your own background job ends, `ade chat wait --background
   [--job <id>]`, then end your turn (Claude and OpenCode already wake you on
   their own; this matters for Codex).
+- **A child blocked on a question.** While a chat waits on a question or an
+  approval, `ade chat message` / `ade chat send` to it are refused ("Answer or
+  decline the pending request…", error -32011). When your `--type subagent`
+  child asks a question, ADE also sends it to you as a message with the
+  options and the exact command. See what it waits on with
+  `ade chat pending <session> --text`, then answer:
+  `ade chat respond <session> --option 2` (number, value or label; repeat for
+  multi-select), `--text "<answer>"` for a free answer or a note on the pick,
+  `--answer 1=<value> --answer 2=<value>` for several questions, and
+  `--approve` / `--approve-session` / `--deny --text "<why>"` for an approval.
+  Add `--item <id>` when more than one input is open. Questions that need the
+  person (money, credentials, a product call) are theirs: ask them, or leave
+  the card for them. Approvals and secret questions are never relayed to you.
+  Approvals are the person's to answer unless you were told you may approve.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
@@ -491,6 +508,7 @@ ade actions run chat.createScheduledWork --input-json '{"delaySeconds":720,"prom
 ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report" --text
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --text
 ade chat scheduled-work list --all --text
+ade chat scheduled-work cancel <session> <id> --text   # session first; inside your own chat, 'cancel <id>' is enough
 ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
 ```
 

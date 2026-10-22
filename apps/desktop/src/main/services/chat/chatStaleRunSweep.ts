@@ -101,6 +101,15 @@ export type StaleRunSweepDeps<TManaged extends StaleRunSweepManagedSession> = {
   /** Scheduled-work emission, so a live runtime's row bookkeeping stays in sync. */
   emitScheduledWorkUpdate: (managed: TManaged, event: ScheduledWorkEvent) => void;
   persistChatState: (managed: TManaged) => void;
+  /**
+   * The timer sweep closed rows a dead process left running in a chat no
+   * runtime here owns. That is a restart's damage reaching a chat nobody has
+   * touched, so the host runs its restart recovery from here (the row may not
+   * be marked detached for minutes, or ever, on a headless brain).
+   * Must not throw: the sweep calls it unguarded, mid-pass, and a throw would
+   * back the chat off as a failed look after its rows were already closed.
+   */
+  onSweptStaleRows?: (managed: TManaged, swept: { leftRunningIds: readonly string[] }) => void;
   logger: {
     info: (message: string, meta?: Record<string, unknown>) => void;
     warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -120,6 +129,13 @@ export type StaleRunSweep<TManaged extends StaleRunSweepManagedSession> = {
     attribution: OrphanStopAttribution,
     envelopes?: AgentChatEventEnvelope[],
   ) => StaleRunSweepOutcome;
+  /**
+   * Still-"running" subagent rows in this transcript whose delegate is alive
+   * (a live child chat, or a tracked CLI child another path closes): the rows
+   * the sweep leaves running. Restart recovery excludes them from the lost
+   * work on every path, not only the one the sweep hands it.
+   */
+  liveDelegateRowIds: (sessionId: string, envelopes: AgentChatEventEnvelope[]) => string[];
   /** One sweep pass over the chats this brain may reconcile. */
   reconcileStaleRuns: () => void;
   /** Arm the start-up pass and the recurring timer. Idempotent. */
@@ -227,11 +243,12 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     };
   };
 
+  /** Also returns the subagent rows left running because their delegate is alive. */
   const emitStaleTerminals = (
     managed: TManaged,
     attribution: OrphanStopAttribution,
     stale: StaleRows,
-  ): StaleRunSweepOutcome => {
+  ): StaleRunSweepOutcome & { leftRunningIds: string[] } => {
     const sessionId = managed.session.id;
     const decisions = stale.subagents.map((snapshot) => {
       const child = resolveOrphanChildChat(sessionId, snapshot.id);
@@ -246,8 +263,11 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
       };
     });
     const emittable = decisions.filter((entry) => entry.terminal !== null);
+    const leftRunningIds = decisions
+      .filter((entry) => entry.terminal === null)
+      .map((entry) => entry.snapshot.id);
     if (stale.background.length === 0 && emittable.length === 0) {
-      return { ...EMPTY_OUTCOME, subagentsLeftRunning: decisions.length };
+      return { ...EMPTY_OUTCOME, subagentsLeftRunning: decisions.length, leftRunningIds };
     }
 
     for (const snapshot of stale.background) {
@@ -282,10 +302,11 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
       });
     }
     persistChatState(managed);
-    const outcome: StaleRunSweepOutcome = {
+    const outcome = {
       backgroundStopped: stale.background.length,
       subagentsTerminalized: emittable.length,
       subagentsLeftRunning: decisions.length - emittable.length,
+      leftRunningIds,
     };
     logger.info("agent_chat.stale_run_rows_reconciled", {
       sessionId,
@@ -297,6 +318,8 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     return outcome;
   };
 
+  const withoutIds = ({ leftRunningIds: _ids, ...outcome }: StaleRunSweepOutcome & { leftRunningIds: string[] }): StaleRunSweepOutcome => outcome;
+
   const terminalizeStaleRowsForSession = (
     managed: TManaged,
     attribution: OrphanStopAttribution,
@@ -306,7 +329,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     if (source.length === 0) return EMPTY_OUTCOME;
     const stale = collectStaleRows(source);
     if (stale.background.length === 0 && stale.subagents.length === 0) return EMPTY_OUTCOME;
-    return emitStaleTerminals(managed, attribution, stale);
+    return withoutIds(emitStaleTerminals(managed, attribution, stale));
   };
 
   /**
@@ -340,7 +363,12 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     // than trusting the verdict the candidate list was built from.
     if (!chatRuntimeAdoptable(sessionId, { quiet: true })) return null;
 
-    return emitStaleTerminals(managed, restartRecoveryStopAttribution(sessionId), stale);
+    const detailed = emitStaleTerminals(managed, restartRecoveryStopAttribution(sessionId), stale);
+    // The host's recovery logs its own failures; it must never fail the pass.
+    if (detailed.backgroundStopped > 0 || detailed.subagentsTerminalized > 0) {
+      deps.onSweptStaleRows?.(managed, { leftRunningIds: detailed.leftRunningIds });
+    }
+    return withoutIds(detailed);
   };
 
   /** Chats this brain should look at, newest first, already cheaply filtered. */
@@ -424,8 +452,14 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
   let timer: ReturnType<typeof setInterval> | null = null;
   let kickoff: ReturnType<typeof setTimeout> | null = null;
 
+  const liveDelegateRowIds = (sessionId: string, envelopes: AgentChatEventEnvelope[]): string[] =>
+    collectStaleRows(envelopes).subagents
+      .filter((snapshot) => resolveOrphanChildChat(sessionId, snapshot.id)?.state === "active")
+      .map((snapshot) => snapshot.id);
+
   return {
     terminalizeStaleRowsForSession,
+    liveDelegateRowIds,
     reconcileStaleRuns,
     start: () => {
       if (timer) return;

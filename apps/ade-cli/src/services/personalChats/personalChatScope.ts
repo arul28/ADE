@@ -228,6 +228,8 @@ export class PersonalChatScope {
       pushEvents: true,
       mcpServers: true,
       updateMcpServers: true,
+      mcpToolFilters: true,
+      deferredMcpUpdates: true,
     };
   }
 

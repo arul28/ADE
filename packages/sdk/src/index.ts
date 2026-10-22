@@ -135,6 +135,7 @@ export type {
   KnownAgentChatEvent,
   McpCapabilityReport,
   McpServerConfig,
+  McpToolFilter,
   ModelCatalogEntry,
   PendingInputKind,
   PendingInputOption,

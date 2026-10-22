@@ -16,7 +16,11 @@ import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
 import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
 import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
-import type { AgentChatEventEnvelope } from "./types/chat";
+import {
+  CHAT_STOP_REASON_BRAIN_RESTARTED,
+  CHAT_STOP_REASON_FOREIGN_BRAIN,
+  type AgentChatEventEnvelope,
+} from "./types/chat";
 
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
 export const AUTO_RESUME_SCHEDULED_WORK_SOURCE = "auto_resume_limit";
@@ -323,7 +327,18 @@ export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 export type RestartCancelledWork = {
   kind: "command" | "monitor" | "subagent" | "workflow" | "task";
   label: string;
+  /**
+   * The row this came from (`command:<task id>` / `subagent:<task id>`), set by
+   * `collectRestartCancelledWork` so a chat can remember what it already reported.
+   */
+  id?: string;
 };
+
+/** Stop reasons the orphan sweep stamps when the process that owned a row is gone. */
+const RESTART_STOP_REASONS: ReadonlySet<string> = new Set([
+  CHAT_STOP_REASON_BRAIN_RESTARTED,
+  CHAT_STOP_REASON_FOREIGN_BRAIN,
+]);
 
 /** The summaries the orphan sweep gives rows whose process died. */
 const ORPHAN_RESTART_SUMMARIES = new Set<string>([
@@ -346,8 +361,17 @@ function clampLabel(label: string): string {
  * The background work a transcript still shows as running — exactly what the
  * dead process took with it. Spawned ADE chats (`chat:` task ids) are not in
  * the list: they are chats of their own and survive the restart.
+ *
+ * `options.excludeIds` drops rows by their `id` (`command:…` / `subagent:…`):
+ * ones a previous recovery already reported, and ones the stale-run sweep
+ * leaves running because their delegate is still alive.
  */
-export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): RestartCancelledWork[] {
+export function collectRestartCancelledWork(
+  events: AgentChatEventEnvelope[],
+  options?: { excludeIds?: ReadonlySet<string> },
+): RestartCancelledWork[] {
+  const excluded = (kindPrefix: "command" | "subagent", id: string): boolean =>
+    options?.excludeIds?.has(`${kindPrefix}:${id}`) === true;
   const out: RestartCancelledWork[] = [];
   const seen = new Set<string>();
   // The orphan sweep may already have closed the dead process's rows by the
@@ -357,30 +381,210 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
   for (const envelope of events) {
     if (envelope.event.type === "done" && envelope.timestamp > lastDoneAt) lastDoneAt = envelope.timestamp;
   }
-  const closedByRestart = (summary: string | null | undefined, at: string | null | undefined): boolean =>
-    Boolean(summary && ORPHAN_RESTART_SUMMARIES.has(summary) && (at ?? "") > lastDoneAt);
+  // The stale-run sweep closes a dead process's rows before recovery reads them
+  // (it is what runs recovery for an untouched chat). It closes a subagent row
+  // with the agent's last progress text or "Stopped: the ADE brain restarted",
+  // not one of the summaries above, so its attribution (the brain restarted,
+  // or another brain took the chat over) is what marks the row as this
+  // restart's damage. Spawn names come from `subagent_started`: a row's label
+  // follows its progress ("Running Sleep 590 seconds…"), not what the agent
+  // was asked to do.
+  const restartClosedIds = new Set<string>();
+  const spawnNameById = new Map<string, string>();
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "subagent_started") {
+      const name = event.description?.trim();
+      if (name && !spawnNameById.has(event.taskId)) spawnNameById.set(event.taskId, name);
+      continue;
+    }
+    if (event.type === "subagent_result" || event.type === "scheduled_work_update") {
+      const id = event.type === "subagent_result" ? event.taskId : event.id;
+      if (event.stopReason && RESTART_STOP_REASONS.has(event.stopReason) && envelope.timestamp > lastDoneAt) {
+        restartClosedIds.add(id);
+      }
+    }
+  }
+  const closedByRestart = (
+    summary: string | null | undefined,
+    at: string | null | undefined,
+    id: string,
+  ): boolean =>
+    restartClosedIds.has(id)
+    || Boolean(summary && ORPHAN_RESTART_SUMMARIES.has(summary) && (at ?? "") > lastDoneAt);
   for (const item of deriveBackgroundItems(events)) {
     const live = item.status === "running" || item.status === "scheduled";
-    if (!live && !closedByRestart(item.summary, item.updatedAt)) continue;
+    if (!live && !closedByRestart(item.summary, item.updatedAt, item.id)) continue;
     const label = clampLabel(backgroundCommandLabel(item.title) || item.title || item.summary || "background command");
     const key = `command:${item.sourceTaskId ?? item.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ kind: /monitor/i.test(item.title) ? "monitor" : "command", label });
+    if (excluded("command", item.sourceTaskId ?? item.id) || excluded("command", item.id)) continue;
+    out.push({ kind: /monitor/i.test(item.title) ? "monitor" : "command", label, id: key });
   }
   for (const snapshot of subagentSnapshotsFromEvents(events)) {
     const live = snapshot.status === "running";
-    if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt)) continue;
+    if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt, snapshot.id)) continue;
     if (snapshot.id.startsWith("chat:")) continue;
     const key = `subagent:${snapshot.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    if (excluded("subagent", snapshot.id)) continue;
     const kind: RestartCancelledWork["kind"] = snapshot.taskType === "local_workflow"
       ? "workflow"
       : snapshot.taskType === "subagent" || snapshot.kind === "teammate" ? "subagent" : "task";
-    out.push({ kind, label: clampLabel(snapshot.label || snapshot.name || snapshot.workflowName || "subagent") });
+    out.push({
+      kind,
+      label: clampLabel(spawnNameById.get(snapshot.id) || snapshot.label || snapshot.name || snapshot.workflowName || "subagent"),
+      id: key,
+    });
   }
   return out;
+}
+
+/**
+ * Work the chat is waiting on, as opposed to a watch loop. A lost monitor is
+ * reported, but it does not earn a turn of its own: nobody is waiting on it.
+ */
+export function isAwaitedCancelledWork(work: RestartCancelledWork): boolean {
+  return work.kind !== "monitor";
+}
+
+/**
+ * Sent as the turn that tells a chat its background work was lost while it
+ * waited on it. The list itself rides the pending restart note, which every
+ * provider puts ahead of this prompt.
+ */
+export const BACKGROUND_WORK_LOST_RESUME_PROMPT =
+  "Background work you were waiting on was stopped before it reported back (ADE's notice above lists it). Re-run what you still need, then carry on; do not redo work that already finished.";
+
+export const BACKGROUND_WORK_LOST_RESUME_REASON = "Resume after background work was lost";
+
+/**
+ * The one-time note the next turn carries when ADE ended the agent process
+ * while background work it started was still running, without a brain restart
+ * (a model or MCP change, a restart of the agent session, the process exiting).
+ * `cause` says why the process ended, as a parenthetical ("ADE shut down").
+ */
+export function buildBackgroundWorkLostNote(args: {
+  cause: string;
+  lost: readonly RestartCancelledWork[];
+}): string | null {
+  if (args.lost.length === 0) return null;
+  const lines = [
+    `This chat's agent process ended (${args.cause}). This background work you started ended with it and will not report back:`,
+  ];
+  for (const work of args.lost.slice(0, RESTART_CANCELLED_WORK_LIMIT)) {
+    lines.push(`- ${work.kind}: ${clampLabel(work.label) || work.kind}`);
+  }
+  if (args.lost.length > RESTART_CANCELLED_WORK_LIMIT) {
+    lines.push(`- and ${args.lost.length - RESTART_CANCELLED_WORK_LIMIT} more`);
+  }
+  lines.push("Start again whatever of it you still need.");
+  return lines.join("\n");
+}
+
+/**
+ * Why ADE ended an agent process that still ran background work. Decides the
+ * notice copy and whether the chat gets a turn to re-run the work:
+ *   • reconfigure / runtime_exit / explicit_restart — a chat that sat waiting
+ *     on the work is woken now (once per chain),
+ *   • shutdown — same, but the wake is armed for restart recovery,
+ *   • brain_restart — found by restart recovery (a crash, or a shutdown that
+ *     could not record it); the recovery wake is a durable resume row,
+ *   • user_stop / closed / eviction — the agent is told on its next turn and
+ *     nothing starts on its own.
+ */
+export type BackgroundLossCause =
+  | "reconfigure"
+  | "runtime_exit"
+  | "shutdown"
+  | "brain_restart"
+  | "explicit_restart"
+  | "user_stop"
+  | "closed"
+  | "eviction";
+
+/** The parenthetical that says why the process ended, for the note and the notice. */
+export const BACKGROUND_LOSS_CAUSE_COPY: Record<BackgroundLossCause, string> = {
+  reconfigure: "ADE restarted it after the chat's model, MCP servers, account or settings changed",
+  runtime_exit: "it exited on its own",
+  shutdown: "ADE shut down",
+  brain_restart: "ADE restarted",
+  explicit_restart: "the agent session was restarted",
+  user_stop: "the chat was stopped",
+  closed: "the chat was closed",
+  eviction: "it was silent for hours and ADE reclaimed it",
+};
+
+/** The cause a runtime teardown reason stands for. */
+export function backgroundLossCauseForTeardown(reason: string): BackgroundLossCause {
+  switch (reason) {
+    case "idle_ttl":
+    case "budget_eviction":
+      return "eviction";
+    case "pool_compaction":
+    case "model_switch":
+    case "restart":
+    case "paused_run":
+      return "reconfigure";
+    case "project_close":
+    case "shutdown":
+      return "shutdown";
+    default:
+      return "closed";
+  }
+}
+
+/** The cause a Claude query reset reason stands for. */
+export function backgroundLossCauseForQueryReset(reason: string): BackgroundLossCause {
+  if (reason === "interrupt") return "user_stop";
+  if (reason === "timeout") return "runtime_exit";
+  return "reconfigure";
+}
+
+/** What happens next for a loss: a turn now, one already pending, one after restart, or none. */
+export type BackgroundLossWake = "now" | "already_pending" | "after_restart" | "this_turn" | "none";
+
+const BACKGROUND_LOSS_WAKE_COPY: Record<BackgroundLossWake, string> = {
+  now: "ADE asked the agent to re-run what it still needs.",
+  already_pending: "The agent's pending re-run turn is told about it too.",
+  after_restart: "When ADE starts again, it asks the agent to re-run what it still needs.",
+  this_turn: "The agent is told on this turn.",
+  none: "The agent is told on its next turn.",
+};
+
+const LOSS_NOTICE_NAMES = 3;
+const LOSS_NOTICE_NAME_CHARS = 60;
+
+/** The chat notice for background work lost with the agent process. */
+export function formatBackgroundLossNotice(args: {
+  cause: BackgroundLossCause;
+  lost: readonly RestartCancelledWork[];
+  wake: BackgroundLossWake;
+}): string {
+  const { lost } = args;
+  const names = lost
+    .slice(0, LOSS_NOTICE_NAMES)
+    .map((work) => {
+      const flat = work.label.replace(/\s+/g, " ").trim() || work.kind;
+      return flat.length > LOSS_NOTICE_NAME_CHARS
+        ? `${flat.slice(0, LOSS_NOTICE_NAME_CHARS - 1).trimEnd()}…`
+        : flat;
+    })
+    .join(", ");
+  const more = lost.length > LOSS_NOTICE_NAMES ? ` and ${lost.length - LOSS_NOTICE_NAMES} more` : "";
+  const count = lost.length === 1 ? "1 background job" : `${lost.length} background jobs`;
+  return `${count} ended with the agent process (${BACKGROUND_LOSS_CAUSE_COPY[args.cause]}): ${names}${more}. ${BACKGROUND_LOSS_WAKE_COPY[args.wake]}`;
+}
+
+/** Append a note to a pending one; a note already pending is not repeated. */
+export function mergePendingRestartNote(existing: string | null | undefined, next: string): string {
+  const current = existing?.trim() ?? "";
+  const addition = next.trim();
+  if (!current) return addition;
+  if (!addition || current.includes(addition)) return current;
+  return `${current}\n\n${addition}`;
 }
 
 /**

@@ -1264,6 +1264,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// Settings the user changed that the host holds until this chat's background
+  /// work ends (`reasoningEffort`, `fastMode`): applying them restarts the agent
+  /// process, which would stop that work. Live only; older hosts omit it.
+  var pendingSettingsAfterBackground: [String]? = nil
   /// Work the live turn still has open (commands, tools, foreground subagents,
   /// pending approvals). Present, zero included, while a turn is live; an older
   /// host omits it, which means unknown, never zero.
@@ -1361,6 +1365,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
       && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd

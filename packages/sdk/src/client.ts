@@ -333,6 +333,7 @@ export async function createAdeChat(
       reportsCapabilities: () => runtime.capabilities() !== null,
       mcpServers: () => runtime.capabilities()?.mcpServers === true,
       updateMcpServers: () => runtime.capabilities()?.updateMcpServers === true,
+      mcpToolFilters: () => runtime.capabilities()?.mcpToolFilters === true,
       /**
        * Whether the runtime lists the read-only `pendingInputs` action.
        *

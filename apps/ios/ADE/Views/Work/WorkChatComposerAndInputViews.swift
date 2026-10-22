@@ -614,6 +614,49 @@ struct WorkComposerControlsRow: View {
   }
 }
 
+/// Mirrors desktop `pendingSettingsAfterBackgroundShortLabel`
+/// (apps/desktop/src/shared/chatTurnStatus.ts): one held setting is named,
+/// several read "Settings pending". Nil when nothing waits.
+func workPendingSettingsAfterBackgroundShortLabel(_ settings: [String]?) -> String? {
+  guard let settings, !settings.isEmpty else { return nil }
+  guard settings.count == 1 else { return "Settings pending" }
+  switch settings[0] {
+  case "reasoningEffort": return "Effort pending"
+  case "fastMode": return "Fast mode pending"
+  default: return "Setting pending"
+  }
+}
+
+/// A setting change the host holds until the chat's background work ends
+/// (desktop's "Effort pending" composer chip). Read-only status that floats
+/// just above the prompt box in the Compact first pill's style, so the narrow
+/// control strip never scrolls it out of view.
+struct WorkPendingSettingsChip: View {
+  let label: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "clock")
+        .font(.system(size: 10, weight: .bold))
+      Text(label)
+        .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .workChatGlass(in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(ADEColor.textSecondary.opacity(0.22), lineWidth: 0.75)
+    )
+    .padding(.bottom, 8)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(label). Applies after background work finishes.")
+    .accessibilityIdentifier("Work.Chat.Composer.PendingSettingsChip")
+  }
+}
+
 /// Compact horizontal strip matching the desktop composer toolbar: small
 /// single-line pills for access, model, pending status chips,
 /// and nothing else. Reasoning is summarized in the model chip and changed
