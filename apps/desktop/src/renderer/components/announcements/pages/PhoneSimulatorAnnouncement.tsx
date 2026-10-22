@@ -1,0 +1,25 @@
+import { DeviceMobile } from "@phosphor-icons/react";
+import type { AnnouncementPageProps } from "../announcementPages";
+import { WhatsNewFeature } from "./WhatsNewFeature";
+import gif from "./assets/phone-stream.gif";
+import still from "./assets/phone-stream-still.webp";
+
+/** The simulator, streamed to the iPhone app and driven by touch. */
+export default function PhoneSimulatorAnnouncement({ close }: AnnouncementPageProps) {
+  return (
+    <WhatsNewFeature
+      close={close}
+      place={{ icon: <DeviceMobile size={17} weight="fill" />, name: "iPhone app" }}
+      headline="Use the simulator from your iPhone."
+      sentence="ADE streams the simulator to your phone. Tap and swipe it like a real iPhone, and see each change as it lands."
+      media={{
+        gif,
+        still,
+        width: 460,
+        height: 548,
+        alt: "The simulator on a Mac beside a real iPhone showing the same screen, where a finger taps to open an app",
+      }}
+      action={{ tipId: "phone", label: "Pair your iPhone" }}
+    />
+  );
+}

@@ -1,0 +1,115 @@
+/*
+ * A "What's new" feature page (WhatsNewFeature.tsx): the words on the left,
+ * the recording on the right, both centred on one line. Theme tokens only, so
+ * light and dark themes both read. No colour of its own: the only colour on
+ * the page is the recording and a brand's mark.
+ *
+ * Every page is the same height, so Back and Next never make the dialog jump.
+ * The recording keeps its aspect ratio and fits its half (container units),
+ * never larger than it was recorded.
+ */
+
+.ade-wnf {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  column-gap: 56px;
+  height: clamp(400px, calc(90vh - 128px), 560px);
+  padding: 56px 56px 20px 64px;
+}
+
+.ade-wnf-text {
+  min-width: 0;
+  animation: ade-wnf-in 480ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.ade-wnf-place {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-wnf-place-mark {
+  display: inline-flex;
+  color: var(--color-fg);
+}
+
+.ade-wnf-headline {
+  margin: 14px 0 0;
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  color: var(--color-fg);
+  text-wrap: balance;
+}
+
+.ade-wnf-sentence {
+  margin: 14px 0 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--kit-text-2);
+  text-wrap: pretty;
+}
+
+.ade-wnf-action.kit-btn { margin-top: 28px; }
+
+/* The recording: a plate with a hairline edge, lifted off the page. */
+.ade-wnf-media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  container-type: size;
+  animation: ade-wnf-in 560ms cubic-bezier(0.16, 1, 0.3, 1) 70ms backwards;
+}
+.ade-wnf-media img {
+  display: block;
+  /* Fit the half: as wide as it can be at full height, but never wider than the half. */
+  width: min(100cqw, 100cqh * var(--wnf-ratio, 1.4));
+  max-width: 100%;
+  height: auto;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: #0b0b10;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.18),
+    0 28px 70px -24px rgba(0, 0, 0, 0.6);
+  user-select: none;
+}
+[data-theme="light"] .ade-wnf-media img {
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.08),
+    0 24px 60px -28px rgba(0, 0, 0, 0.3);
+}
+
+/* A narrow window: the words above, the recording below. */
+@media (max-width: 860px) {
+  .ade-wnf {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    row-gap: 24px;
+    align-items: start;
+    padding: 44px 32px 16px;
+  }
+  .ade-wnf-headline { font-size: 28px; }
+}
+
+@keyframes ade-wnf-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-wnf-text,
+  .ade-wnf-media { animation: none; }
+}
+html[data-motion="reduced"] .ade-wnf-text,
+html[data-motion="reduced"] .ade-wnf-media { animation: none; }
