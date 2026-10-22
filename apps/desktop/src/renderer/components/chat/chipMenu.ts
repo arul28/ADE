@@ -13,14 +13,17 @@
 import {
   ArrowSquareOut,
   At,
+  Browser,
   ChatCircle,
   Copy,
   File,
   FolderOpen,
+  GearSix,
   GitBranch,
   GitCommit,
   GitPullRequest,
   Hash,
+  Images,
   Link,
   Rows,
   TerminalWindow,
@@ -55,6 +58,9 @@ const OPEN_LABEL: Partial<Record<Chip["kind"], { label: string; icon: Icon }>> =
   pr: { label: "Open pull request", icon: GitPullRequest },
   commit: { label: "Open commit", icon: GitCommit },
   branch: { label: "Open branch", icon: GitBranch },
+  artifact: { label: "Open proof", icon: Images },
+  browser_tab: { label: "Show tab", icon: Browser },
+  mcp: { label: "Open MCP settings", icon: GearSix },
 };
 
 function copyRow(key: string, label: string, text: string, icon: Icon = Copy): ContextMenuEntry {

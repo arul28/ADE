@@ -8204,6 +8204,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     let cancelled = false;
     const query = range.query.trim().toLowerCase();
+    const mcpFilterQuery = /^(?:mcp|servers?)(?:\s|:|$)/i.test(query);
+    const mcpSearchText = mcpFilterQuery ? query : query ? `mcp ${query}` : "mcp";
+    const suggestionRankQuery = query.replace(/^(?:mcp|servers?)(?:\s+|:)?/i, "").trim();
     const fileQuery = composerFileSearchQuery(range.query).toLowerCase();
     const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {
       if (!query) return true;
@@ -8264,7 +8267,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const localCandidates = query ? local : local.slice(0, localBudget);
       const ranked = rankMentionSuggestions(
         [...localCandidates, ...remote, ...attachedSuggestions()],
-        query,
+        suggestionRankQuery,
       );
       const next = modelsFirst
         ? [...modelSuggestions, ...ranked].slice(0, MENTION_MAX_ROWS)
@@ -8319,7 +8322,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               return safePrs;
             })
             .catch(() => []);
-        const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
+        const [files, commits, prs, mcpMentions] = await Promise.all([
+          filesPromise,
+          commitsPromise,
+          prsPromise,
+          conn.action<{ suggestions?: Array<{ kind: string; id: string; title: string; subtitle?: string }> }>(
+            "chat",
+            "listMentionSuggestions",
+            { query: mcpSearchText, ...(activeSession?.sessionId ? { excludeSessionId: activeSession.sessionId } : {}) },
+          ).catch(() => ({ suggestions: [] })),
+        ]);
+        remote.push(...(mcpMentions.suggestions ?? [])
+          .filter((row) => row.kind === "mcp")
+          .map((row) => ({
+            kind: "mcp" as const,
+            label: row.title,
+            insertText: `@mcp:${row.id}`,
+            detail: row.subtitle ?? "MCP server reference",
+          })));
         remote.push(...files.map((file) => {
           // A folder is a POINTER, not an attachment: it has no bytes to
           // upload, and the desktop composer deliberately inserts a chip and

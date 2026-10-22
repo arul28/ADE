@@ -36,7 +36,7 @@ import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browser
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
-import { getModelById } from "./modelRegistry";
+import { getModelById, resolveProviderGroupForModel } from "./modelRegistry";
 import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
@@ -71,6 +71,8 @@ export type ChipKind =
   | "ade_link"
   /** An ADE account machine, from a `@mac:` mention. */
   | "machine"
+  /** A configured MCP server, from an `@mcp:` mention. */
+  | "mcp"
   /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
   | "attachment"
   /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
@@ -137,6 +139,7 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   skill: "/",
   ade_link: "A",
   machine: "▢",
+  mcp: "⚙",
   attachment: "▣",
   browser_tab: "🌐",
 };
@@ -170,6 +173,7 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   skill: "/",
   ade_link: "A",
   machine: "M",
+  mcp: "m",
   attachment: "I",
   browser_tab: "B",
 };
@@ -234,13 +238,14 @@ export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?
  * knows the model, and the last segment of the id when it does not.
  */
 export function chipFromModelMention(mention: ModelMention, token: string): Chip {
-  const displayName = getModelById(mention.modelId)?.displayName
+  const descriptor = getModelById(mention.modelId);
+  const displayName = descriptor?.displayName
     ?? mention.modelId.split("/").pop()
     ?? mention.modelId;
   return {
     kind: "model",
     token,
-    label: modelMentionChipLabel(mention, displayName),
+    label: modelMentionChipLabel(mention, displayName, descriptor ? resolveProviderGroupForModel(descriptor) : null),
     source: { origin: "model", mention },
   };
 }
@@ -250,6 +255,7 @@ function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "lane") return `Lane ${shortId(id)}`;
   if (mentionKind === "pr") return `PR ${shortId(id)}`;
   if (mentionKind === "machine") return `Machine ${shortId(id)}`;
+  if (mentionKind === "mcp") return `MCP ${id}`;
   return `Terminal ${shortId(id)}`;
 }
 

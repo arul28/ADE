@@ -14,6 +14,7 @@ import {
   ChatCircleDots,
   Command,
   Desktop,
+  GearSix,
   File,
   GitBranch,
   GitPullRequest,
@@ -269,6 +270,7 @@ const MENTION_SECTION_ICON: Record<ChatMentionKind, PhosphorIcon> = {
   terminal: TerminalIcon,
   pr: GitPullRequest,
   machine: Desktop,
+  mcp: GearSix,
 };
 
 const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
@@ -277,10 +279,11 @@ const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
   terminal: "Terminals",
   pr: "Pull requests",
   machine: "Machines",
+  mcp: "MCP servers",
 };
 
 /** The fixed section order after the best-match section leads. */
-const AT_SECTION_ORDER = ["models", "chats", "lanes", "files", "terminals", "prs", "machines"];
+const AT_SECTION_ORDER = ["models", "chats", "lanes", "files", "terminals", "prs", "machines", "mcp"];
 
 /** Checks rollup as one glyph: passing, pending, failing. Nothing for "none"/"not run". */
 function prChecksGlyph(checks: PrChecksStatus): { glyph: string; className: string; label: string } | null {

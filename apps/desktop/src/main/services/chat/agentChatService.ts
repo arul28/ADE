@@ -415,6 +415,15 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import {
+  mcpOAuthTokenState,
+  mcpOAuthVaultKey,
+  mcpRegistryState,
+  parseMcpOAuthToken,
+  type McpRegistryServer,
+  type McpRegistryState,
+} from "../../../shared/mcpRegistry";
+import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
 import { createChatUserMcp } from "../mcp/chatUserMcp";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -72118,6 +72127,10 @@ export function createAgentChatService(args: {
   // never point at another project's chats/lanes/terminals.
   const listTerminalsForMentions = ptyService?.listTerminals?.bind(ptyService);
   const previewTerminalForMentions = ptyService?.previewTerminal?.bind(ptyService);
+  let mcpMentionRowsCache: {
+    at: number;
+    rows: Array<{ server: McpRegistryServer; state: McpRegistryState; needsSignIn: boolean; toolNames: string[]; lastError: string | null }>;
+  } | null = null;
   const chatMentionService = createChatMentionService({
     listChatSessions: () => listSessions(undefined, { includeArchived: false }),
     readChatTranscript: (args) => getChatTranscript(args),
@@ -72132,6 +72145,30 @@ export function createAgentChatService(args: {
     listAccountMachines: accountMachineMentions?.listAccountMachines ?? null,
     getAccountActivity: accountMachineMentions?.getAccountActivity ?? null,
     getLocalMachineKey: accountMachineMentions?.getLocalMachineKey ?? null,
+    listMcpServers: () => {
+      if (mcpMentionRowsCache && Date.now() - mcpMentionRowsCache.at < 1500) return mcpMentionRowsCache.rows;
+      const adeHome = args.machineAdeHome?.trim();
+      if (!adeHome) return [];
+      const registry = readCachedMcpRegistry(adeHome, projectRoot).cached;
+      if (!registry) {
+        mcpMentionRowsCache = { at: Date.now(), rows: [] };
+        return [];
+      }
+      const rows = registry.servers.map((server) => {
+        const token = server.url && args.readAccountSecret
+          ? parseMcpOAuthToken(args.readAccountSecret(mcpOAuthVaultKey(server.name)))
+          : null;
+        return {
+          server,
+          state: mcpRegistryState(server, registry.off),
+          needsSignIn: Boolean(token && mcpOAuthTokenState(token, server) === "expired"),
+          toolNames: [],
+          lastError: null,
+        };
+      });
+      mcpMentionRowsCache = { at: Date.now(), rows };
+      return rows;
+    },
     describeModel: (modelId) => {
       const descriptor = getModelById(modelId);
       if (!descriptor) return null;

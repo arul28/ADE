@@ -10,7 +10,7 @@
 
 import type { PrChecksStatus, PrState } from "./prs";
 
-export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine";
+export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine" | "mcp";
 
 /** One row in the @-menu. Cheap: no transcript reads happen to build these. */
 export type ChatMentionSuggestion = {
@@ -30,6 +30,8 @@ export type ChatMentionSuggestion = {
   pr?: { number: number; state: PrState; checks: PrChecksStatus } | null;
   /** Machine rows only: directory presence, and whether it is the caller's own machine. */
   machine?: { online: boolean; isThisMachine: boolean } | null;
+  /** MCP registry row data; contains names and status only, never secrets. */
+  mcp?: { state: string; transport: string; toolNames: string[]; lastError: string | null } | null;
 };
 
 export type ChatMentionSuggestArgs = {

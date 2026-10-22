@@ -43,6 +43,7 @@ import type { ConnectionsPanelTab } from "../../lib/connectionsPanel";
 
 type ConnectionsPanelProps = {
   initialTab?: ConnectionsPanelTab;
+  machineId?: string | null;
   onClose: () => void;
   onDisconnectRequested?: (target: RemoteRuntimeTarget) => boolean | Promise<boolean>;
   onRemoveRequested?: (target: RemoteRuntimeTarget) => boolean | Promise<boolean>;
@@ -219,6 +220,7 @@ const confirmRevoke: RevokeConfirm = ({ name, connected }) =>
 
 export function ConnectionsPanel({
   initialTab = "machines",
+  machineId = null,
   onClose,
   onDisconnectRequested,
   onRemoveRequested,
@@ -305,6 +307,20 @@ export function ConnectionsPanel({
     if (tab !== "machines") return;
     void loadAccountMachines();
   }, [loadAccountMachines, tab]);
+
+  useEffect(() => {
+    if (tab !== "machines" || !machineId || !accountMachines) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(machineId)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
+    row.style.outlineOffset = "4px";
+    const timer = window.setTimeout(() => {
+      row.style.outline = "";
+      row.style.outlineOffset = "";
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [accountMachines, machineId, tab]);
 
   const goToAccount = useCallback(() => {
     onClose();

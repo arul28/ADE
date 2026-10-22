@@ -15,7 +15,7 @@ import {
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
-import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -4489,6 +4489,15 @@ export function AgentChatPane({
     setProofFocus(focus ?? null);
     setChatActionsOpen(true);
   }, []);
+  useEffect(() => {
+    const onOpenArtifact = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null; artifactId?: string }>).detail;
+      if (!detail?.artifactId || detail.sessionId !== selectedSessionId) return;
+      openProofDrawer(proofDrawerFocus("Artifact", [{ id: detail.artifactId }]));
+    };
+    window.addEventListener("ade:chat:open-artifact", onOpenArtifact);
+    return () => window.removeEventListener("ade:chat:open-artifact", onOpenArtifact);
+  }, [openProofDrawer, selectedSessionId]);
   const clearProofFocus = useCallback(() => setProofFocus(null), []);
   // The thread's "N sources" chip opens the drawer with Sources narrowed to
   // that turn; the section's "Show all" clears it.

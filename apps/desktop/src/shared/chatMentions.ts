@@ -44,6 +44,7 @@ const CHAT_MENTION_TOKEN_PREFIX: Record<ChatMentionKind, string> = {
   terminal: "term",
   pr: "pr",
   machine: "mac",
+  mcp: "mcp",
 };
 
 // Derived from the prefix table above so the grammar has exactly one source of
@@ -130,6 +131,8 @@ const KIND_FILTER_WORDS: Record<string, ChatMentionKind> = {
   prs: "pr",
   machine: "machine",
   machines: "machine",
+  server: "mcp",
+  servers: "mcp",
 };
 
 /**

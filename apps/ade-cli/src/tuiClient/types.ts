@@ -521,7 +521,7 @@ export type LocalNotice = {
 };
 
 export type MentionSuggestion = {
-  kind: "lane" | "chat" | "pr" | "file" | "commit" | "model";
+  kind: "lane" | "chat" | "pr" | "mcp" | "file" | "commit" | "model";
   label: string;
   insertText: string;
   /** Model rows: the model the chip names, its thinking levels and default. */

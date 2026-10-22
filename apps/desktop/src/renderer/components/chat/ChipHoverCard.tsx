@@ -48,6 +48,7 @@ import { createPortal } from "react-dom";
 
 import type { Chip } from "../../../shared/chips";
 import type {
+  ComputerUseArtifactView,
   LaneSummary,
   OpenProjectBinding,
   PrState,
@@ -59,6 +60,7 @@ import { loadGitHubIssue, peekGitHubIssue } from "../issues/githubIssueStore";
 import { GitHubIssueStateIcon } from "../lanes/githubBrand";
 import { issueRefFromUrl } from "../../../shared/issueRefs";
 import { LinearStateIcon } from "../lanes/linearBrand";
+import { MachineChipCardBody } from "./MachineChipCard";
 import { relativeWhen } from "../../lib/format";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
@@ -66,7 +68,14 @@ import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { ContextMenuRows, type ContextMenuEntry } from "../ui/ContextMenu";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChipPreviewImage } from "./chipPreviewStore";
+import { ExtraChipCardBody, type ExtraChipCardData } from "./chipCardBodies";
+import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
+import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { modelMentionPermissionLabel } from "../../../shared/modelMentions";
+import { modelPermissionPresentation } from "../../lib/modelPermissionOptions";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import type { McpRegistryState, McpRegistryTransport } from "../../../shared/mcpRegistry";
+import { McpMentionCardBody } from "./McpMentionCardBody";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -81,6 +90,8 @@ export type ChipCardSources = {
    * joined by the new project and answered with the old one's rows.
    */
   rootPath: string | null;
+  sessionId: string | null;
+  laneId: string | null;
 };
 
 /** A chip's view of the chat machine: its lanes and sessions. */
@@ -116,8 +127,8 @@ const VIEWPORT_PAD = 10;
 
 export type ChipCardData =
   | { kind: "pr"; number: number; title: string | null; state: PrState; repo: string | null }
-  | { kind: "lane"; name: string; branch: string | null }
-  | { kind: "chat"; title: string; lastActivity: string | null }
+  | { kind: "lane"; name: string; branch: string | null; archived: boolean }
+  | { kind: "chat"; title: string; lastActivity: string | null; lane: string | null; model: string | null; state: string }
   | {
     kind: "linear";
     identifier: string;
@@ -134,15 +145,26 @@ export type ChipCardData =
     stateReason: string | null;
     assignees: string[];
   }
-  | { kind: "link"; host: string; title: string | null; imageUrl: string };
+  | { kind: "link"; host: string; title: string | null; imageUrl: string }
+  | { kind: "machine"; machineKey: string }
+  | { kind: "mcp"; name: string; state: McpRegistryState | "needs-sign-in"; transport: McpRegistryTransport; toolNames: string[]; lastError: string | null }
+  | ExtraChipCardData;
 
 type ChipCardTarget =
   | { kind: "pr"; number: number; owner: string | null; repo: string | null }
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
+  | { kind: "machine"; machineKey: string }
+  | { kind: "mcp"; name: string }
   | { kind: "linear"; identifier: string }
   | { kind: "link"; host: string }
-  | { kind: "github-issue"; owner: string; repo: string; number: number };
+  | { kind: "github-issue"; owner: string; repo: string; number: number }
+  | { kind: "terminal"; sessionId: string }
+  | { kind: "model"; modelId: string; effort: string | null; permission: string | null }
+  | { kind: "permission"; provider: string; value: string }
+  | { kind: "skill"; name: string }
+  | { kind: "branch"; branch: string; repoOwner: string; repoName: string; prNumber?: number }
+  | { kind: "artifact"; artifactId: string };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
   try {
@@ -184,6 +206,32 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
       return source.origin === "mention" && source.mentionKind === "chat"
         ? { kind: "chat", sessionId: source.id }
         : null;
+    case "machine":
+      return source.origin === "mention" && source.mentionKind === "machine"
+        ? { kind: "machine", machineKey: source.id }
+        : null;
+    case "mcp":
+      return source.origin === "mention" && source.mentionKind === "mcp" ? { kind: "mcp", name: source.id } : null;
+    case "terminal":
+      return source.origin === "mention" && source.mentionKind === "terminal"
+        ? { kind: "terminal", sessionId: source.id }
+        : null;
+    case "model":
+      return source.origin === "model"
+        ? { kind: "model", modelId: source.mention.modelId, effort: source.mention.effort, permission: source.mention.permission }
+        : null;
+    case "permission":
+      return source.origin === "permission" ? { kind: "permission", provider: source.provider, value: source.value } : null;
+    case "skill":
+      return source.origin === "skill" ? { kind: "skill", name: source.name } : null;
+    case "artifact":
+      return source.origin === "deeplink" && source.target.kind === "artifact"
+        ? { kind: "artifact", artifactId: source.target.artifactId }
+        : null;
+    case "branch":
+      return source.origin === "deeplink" && source.target.kind === "branch"
+        ? { kind: "branch", branch: source.target.branch, repoOwner: source.target.repoOwner, repoName: source.target.repoName, prNumber: source.target.prNumber }
+        : null;
     case "linear_issue":
       return chip.label.trim() ? { kind: "linear", identifier: chip.label.trim().toUpperCase() } : null;
     case "web_page": {
@@ -218,8 +266,8 @@ function linearTitleFromLanes(lanes: LaneSummary[], identifier: string): string 
  * Resolve one card's contents. `previewTitle` is the already-fetched smart-link
  * title for the same chip, so a Linear issue nobody has linked to a lane still
  * has something to show without a second round trip. `previewImageUrl` is the
- * same preview's og:image: a web page gets a card only when it has one — the
- * pill already shows the title, so a title-only card would repeat it.
+ * same preview's og:image: the page card still shows its host without an
+ * image, while the title adds context beyond the pill.
  */
 export async function loadChipCardData(
   sources: ChipCardSources,
@@ -228,13 +276,13 @@ export async function loadChipCardData(
   previewImageUrl: string | null = null,
 ): Promise<ChipCardData | null> {
   if (target.kind === "link") {
-    return previewImageUrl
-      ? { kind: "link", host: target.host, title: previewTitle, imageUrl: previewImageUrl }
-      : null;
+    return { kind: "link", host: target.host, title: previewTitle, imageUrl: previewImageUrl ?? "" };
   }
   if (target.kind === "lane") {
     const lane = sources.lanes.find((candidate) => candidate.id === target.laneId);
-    return lane ? { kind: "lane", name: lane.name, branch: lane.branchRef || null } : null;
+    return lane
+      ? { kind: "lane", name: lane.name, branch: lane.branchRef || null, archived: Boolean(lane.archivedAt) }
+      : null;
   }
   if (target.kind === "chat") {
     const session = sources.sessions.find((candidate) => candidate.id === target.sessionId);
@@ -243,6 +291,98 @@ export async function loadChipCardData(
       kind: "chat",
       title: session.title || session.goal || "Untitled chat",
       lastActivity: session.lastActivityAt || session.endedAt || session.startedAt || null,
+      lane: session.laneName || null,
+      model: session.modelId ? getModelById(session.modelId)?.displayName ?? session.model ?? session.modelId : session.model || null,
+      state: session.status === "running" ? "Running" : "Ended",
+    };
+  }
+  if (target.kind === "machine") return { kind: "machine", machineKey: target.machineKey };
+  if (target.kind === "mcp") {
+    const result = await window.ade?.agentChat?.listMentionSuggestions?.(
+      { query: `mcp ${target.name}`, ...(sources.sessionId ? { excludeSessionId: sources.sessionId } : {}) },
+      sources.pin,
+    );
+    const mention = result?.suggestions.find((suggestion) => suggestion.kind === "mcp" && suggestion.id === target.name);
+    if (!mention?.mcp) return null;
+    return {
+      kind: "mcp",
+      name: mention.title,
+      state: mention.mcp.state as McpRegistryState | "needs-sign-in",
+      transport: mention.mcp.transport as McpRegistryTransport,
+      toolNames: mention.mcp.toolNames,
+      lastError: mention.mcp.lastError,
+    };
+  }
+  if (target.kind === "terminal") {
+    const session = sources.sessions.find((candidate) => candidate.id === target.sessionId);
+    if (!session) return null;
+    return {
+      kind: "terminal",
+      title: session.title || session.goal || "Terminal",
+      lane: session.laneName,
+      tool: session.toolType || "Terminal",
+      status: session.status === "running" ? "Running" : "Ended",
+      startedAt: relativeWhen(session.startedAt),
+    };
+  }
+  if (target.kind === "model") {
+    const model = getModelById(target.modelId);
+    return model ? {
+      kind: "model",
+      name: model.displayName,
+      route: model.providerRoute,
+      provider: resolveProviderGroupForModel(model),
+      effort: target.effort,
+      permission: target.permission,
+    } : null;
+  }
+  if (target.kind === "permission") {
+    const presentation = modelPermissionPresentation(target.provider, target.value);
+    const risk = presentation.tone === "red" ? "high" : presentation.tone === "amber" ? "medium" : "low";
+    const label = modelMentionPermissionLabel(target.value, target.provider);
+    const meaning = risk === "high"
+      ? `${label}: allows broad changes with fewer approval prompts.`
+      : risk === "medium"
+        ? `${label}: allows routine edits while keeping some actions gated.`
+        : `${label}: keeps actions limited or asks before higher-impact changes.`;
+    return { kind: "permission", meaning, risk };
+  }
+  if (target.kind === "skill") {
+    if (!sources.sessionId) return { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
+    const commands = await getAgentChatSlashCommandsCached({
+      sessionId: sources.sessionId,
+      laneId: sources.laneId,
+      projectRoot: sources.rootPath,
+    }, { pin: sources.pin }).catch(() => []);
+    const command = commands.find((entry) => entry.name.replace(/^\//, "").toLowerCase() === target.name.toLowerCase());
+    return command
+      ? { kind: "skill", name: target.name, description: command.description || null, source: command.source === "local" ? "ADE" : command.origin ?? "Provider", argumentHint: command.argumentHint ?? null }
+      : { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
+  }
+  if (target.kind === "artifact") {
+    const records = await window.ade.computerUse.listArtifacts({ artifactId: target.artifactId, limit: 1 }, sources.pin).catch(() => [] as ComputerUseArtifactView[]);
+    const artifact = records.find((row) => row.id === target.artifactId);
+    if (!artifact) return null;
+    return {
+      kind: "artifact",
+      artifact,
+      artifactKind: artifact.kind.replace(/_/g, " "),
+      createdAt: relativeWhen(artifact.createdAt),
+    };
+  }
+  if (target.kind === "branch") {
+    const lane = sources.lanes.find((candidate) => candidate.branchRef.toLowerCase() === target.branch.toLowerCase());
+    const prs = await listPrsCoalesced({ pin: sources.pin, projectRoot: sources.rootPath }).catch(() => [] as Awaited<ReturnType<typeof listPrsCoalesced>>);
+    const pull = prs.find((candidate) => candidate.repoOwner.toLowerCase() === target.repoOwner.toLowerCase()
+      && candidate.repoName.toLowerCase() === target.repoName.toLowerCase()
+      && candidate.headBranch.toLowerCase() === target.branch.toLowerCase()
+      && (target.prNumber == null || candidate.githubPrNumber === target.prNumber));
+    if (!lane && !pull) return null;
+    return {
+      kind: "branch",
+      name: target.branch,
+      lane: lane?.name ?? (pull ? sources.lanes.find((candidate) => candidate.id === pull.laneId)?.name : null) ?? `${target.repoOwner}/${target.repoName}`,
+      pullRequest: pull ? `#${pull.githubPrNumber}` : null,
     };
   }
   if (target.kind === "github-issue") {
@@ -322,7 +462,7 @@ function LinkCardBody({ data }: { data: Extract<ChipCardData, { kind: "link" }> 
   const [loaded, setLoaded] = useState(false);
   return (
     <div style={{ width: LINK_IMAGE_WIDTH }}>
-      {image?.status === "failed" ? null : (
+      {data.imageUrl && image?.status !== "failed" ? (
         <div className="mb-1.5 aspect-[1.91/1] w-full overflow-hidden rounded-md bg-white/[0.05]">
           {image?.status === "ready" ? (
             <img
@@ -334,7 +474,7 @@ function LinkCardBody({ data }: { data: Extract<ChipCardData, { kind: "link" }> 
             />
           ) : null}
         </div>
-      )}
+      ) : null}
       {data.title ? <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div> : null}
       <div className="mt-0.5 truncate text-[11px] text-white/55">{data.host}</div>
     </div>
@@ -343,6 +483,11 @@ function LinkCardBody({ data }: { data: Extract<ChipCardData, { kind: "link" }> 
 
 function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "link") return <LinkCardBody data={data} />;
+  if (data.kind === "mcp") return <McpMentionCardBody {...data} />;
+  if (data.kind === "machine") return <MachineChipCardBody machineKey={data.machineKey} />;
+  if (data.kind === "terminal" || data.kind === "model" || data.kind === "permission" || data.kind === "skill" || data.kind === "artifact" || data.kind === "branch") {
+    return <ExtraChipCardBody data={data} />;
+  }
   if (data.kind === "pr") {
     return (
       <>
@@ -359,7 +504,7 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "lane") {
     return (
       <>
-        <div className="truncate text-[12px] font-medium text-fg/90">{data.name}</div>
+        <div className="truncate text-[12px] font-medium text-fg/90">{data.name}{data.archived ? " · Archived" : ""}</div>
         {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-fg/55">{data.branch}</div> : null}
       </>
     );
@@ -368,9 +513,10 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
     return (
       <>
         <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.title}</div>
-        {data.lastActivity
-          ? <div className="mt-0.5 text-[11px] text-fg/55">Last activity {relativeWhen(data.lastActivity)}</div>
-          : null}
+        <div className="mt-0.5 truncate text-[11px] text-fg/55">
+          {[data.lane, data.model, data.state].filter(Boolean).join(" · ")}
+        </div>
+        {data.lastActivity ? <div className="text-[11px] text-fg/45">Last activity {relativeWhen(data.lastActivity)}</div> : null}
       </>
     );
   }
@@ -482,12 +628,14 @@ export function useChipHoverCard(
   // Held in a ref, not in the effect's deps: a lane-status refresh replaces
   // these arrays constantly, and depending on them would reload an open card on
   // every tick. This is the ref form the chat-scope lint rule sanctions.
-  const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null });
+  const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null, sessionId: null, laneId: null });
   sourcesRef.current = {
     lanes: scopedLanes ?? EMPTY_LANES,
     sessions: scopedSessions ?? EMPTY_SESSIONS,
     pin: scope.pin,
     rootPath: scope.rootPath,
+    sessionId: scope.sessionId,
+    laneId: scope.laneId,
   };
   const menuEntriesRef = useRef(menuEntries);
   menuEntriesRef.current = menuEntries;

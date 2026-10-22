@@ -107,6 +107,8 @@ struct WorkSmartLink: Equatable {
     case adeLink
     /// An `@mac:<machineKey>` mention: one of the account's machines.
     case machine
+    /// A server in the ADE MCP registry.
+    case mcp
     /// An `[Image #k]` attachment token: the k-th image the message carries.
     case image
 
@@ -133,6 +135,7 @@ struct WorkSmartLink: Equatable {
       case .browserTab: return "🌐"
       case .adeLink: return "A"
       case .machine: return "▢"
+      case .mcp: return "⚙"
       case .image: return "🖼"
       }
     }
@@ -161,6 +164,7 @@ struct WorkSmartLink: Equatable {
       case .browserTab: return "safari"
       case .adeLink: return "link"
       case .machine: return "desktopcomputer"
+      case .mcp: return "point.3.connected.trianglepath.dotted"
       case .image: return "photo"
       }
     }
@@ -401,6 +405,7 @@ struct WorkChatMention: Equatable {
     /// One of the account's machines, by machine key. Read-only by contract:
     /// the expansion tells the agent it may only read from it.
     case machine
+    case mcp
 
     /// Token prefix per kind. `term` and `mac` are deliberately short for
     /// typing, matching `CHAT_MENTION_TOKEN_PREFIX` on the desktop.
@@ -411,6 +416,7 @@ struct WorkChatMention: Equatable {
       case .terminal: return "term"
       case .pullRequest: return "pr"
       case .machine: return "mac"
+      case .mcp: return "mcp"
       }
     }
 
@@ -421,6 +427,7 @@ struct WorkChatMention: Equatable {
       case "term": return .terminal
       case "pr": return .pullRequest
       case "mac": return .machine
+      case "mcp": return .mcp
       default: return nil
       }
     }
@@ -433,6 +440,7 @@ struct WorkChatMention: Equatable {
       case "terminal": return .terminal
       case "pr": return .pullRequest
       case "machine": return .machine
+      case "mcp": return .mcp
       default: return nil
       }
     }
@@ -446,6 +454,7 @@ struct WorkChatMention: Equatable {
       case .terminal: return .terminal
       case .pullRequest: return .pullRequest
       case .machine: return .machine
+      case .mcp: return .mcp
       }
     }
   }
@@ -466,6 +475,7 @@ struct WorkChatMention: Equatable {
     case .terminal: return "Terminal \(short)"
     case .pullRequest: return "PR \(short)"
     case .machine: return "Machine \(short)"
+    case .mcp: return "MCP \(id)"
     }
   }
 }
@@ -481,7 +491,7 @@ enum WorkChatMentionDetector {
   // and the token must sit at a word boundary so emails and `foo@chat:bar`
   // substrings never match.
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term|pr|mac):([A-Za-z0-9._-]+)",
+    pattern: "(?:^|[\\s(\\[{,])@(chat|lane|term|pr|mac|mcp):([A-Za-z0-9._-]+)",
     options: []
   )
 
@@ -1670,6 +1680,7 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
       case .terminal: return .terminals
       case .pullRequest: return .pullRequests
       case .machine: return .machines
+      case .mcp: return .mcpServers
       case nil: return .files
       }
     }
@@ -1701,11 +1712,12 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
   case terminals
   case pullRequests
   case machines
+  case mcpServers
   case files
   case commands
 
   static let atMenuOrder: [WorkComposerSuggestionSection] = [
-    .chats, .lanes, .terminals, .pullRequests, .machines, .files,
+    .chats, .lanes, .terminals, .pullRequests, .machines, .mcpServers, .files,
   ]
 
   var title: String {
@@ -1715,6 +1727,7 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
     case .terminals: return "Terminals"
     case .pullRequests: return "Pull requests"
     case .machines: return "Machines"
+    case .mcpServers: return "MCP servers"
     case .files: return "Files"
     case .commands: return "Commands"
     }
@@ -1727,6 +1740,7 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
     case .terminals: return WorkSmartLink.Kind.terminal.symbolName
     case .pullRequests: return WorkSmartLink.Kind.pullRequest.symbolName
     case .machines: return WorkSmartLink.Kind.machine.symbolName
+    case .mcpServers: return WorkSmartLink.Kind.mcp.symbolName
     case .files: return "doc.text"
     case .commands: return "command"
     }
@@ -1743,6 +1757,7 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
       ("term", .terminals), ("terminal", .terminals), ("terminals", .terminals),
       ("pr", .pullRequests), ("prs", .pullRequests),
       ("mac", .machines), ("machine", .machines), ("machines", .machines),
+      ("mcp", .mcpServers), ("server", .mcpServers), ("servers", .mcpServers),
       ("file", .files), ("files", .files),
     ]
     let lowered = query.lowercased()
@@ -2322,6 +2337,7 @@ final class WorkComposerSuggestionController: ObservableObject {
       case .terminals: mentionQuery = "terminal \(parsed.rest)"
       case .pullRequests: mentionQuery = "pr \(parsed.rest)"
       case .machines: mentionQuery = "machine \(parsed.rest)"
+      case .mcpServers: mentionQuery = "mcp \(parsed.rest)"
       case .files, .commands, nil: mentionQuery = parsed.rest
       }
       let excludeSessionId = sessionId
@@ -4557,6 +4573,7 @@ struct WorkComposerSuggestionStrip: View {
     case .terminals: kind = "Terminal"
     case .pullRequests: kind = "Pull request"
     case .machines: kind = "Machine"
+    case .mcpServers: kind = "MCP server"
     case .files: kind = suggestion.isDirectory ? "Folder" : "File"
     case .commands: kind = "Command"
     }

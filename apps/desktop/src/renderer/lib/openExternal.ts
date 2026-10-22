@@ -306,7 +306,7 @@ export function openLinkFromUi(
   const modPressed = isMac ? Boolean(modifiers?.metaKey) : Boolean(modifiers?.ctrlKey);
   if (!modPressed && !modifiers?.shiftKey) {
     const issueRef = issueRefFromUrl(normalized);
-    if (issueRef && openIssueRef({ ref: issueRef, source: "chat-link" })) return;
+    if (issueRef && openIssueRef({ ref: issueRef, source: "chat-link", pin: context?.runtimePin ?? null })) return;
   }
   const target = resolveLinkOpenTarget({
     mode: linkOpenMode,

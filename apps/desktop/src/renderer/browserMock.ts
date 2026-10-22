@@ -7941,6 +7941,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           terminal: terminals,
           pr: [],
           machine: machines,
+          mcp: [],
         };
         // Same shape as chatMentionService: a kind word narrows, an empty
         // query browses per kind, anything else is one best-match list.

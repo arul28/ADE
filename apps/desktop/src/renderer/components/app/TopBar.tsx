@@ -797,6 +797,7 @@ export function TopBar({
   );
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [connectionsTab, setConnectionsTab] = useState<ConnectionsPanelTab>("machines");
+  const [connectionsMachineId, setConnectionsMachineId] = useState<string | null>(null);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -836,16 +837,17 @@ export function TopBar({
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
-  const openConnections = useCallback((tab: ConnectionsPanelTab = "machines") => {
+  const openConnections = useCallback((tab: ConnectionsPanelTab = "machines", machineId?: string) => {
     if (webMode) {
       // The hosted client has no header Connections panel — the connections
       // chip in the top right owns that surface, and it listens for this event
       // (WEB_OPEN_CONNECTIONS_EVENT in webclient/workspace/WebConnectionsChip).
       // Returning early here is what left "Connect another machine…" inert.
-      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab } }));
+      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab, machineId } }));
       return;
     }
     setConnectionsTab(tab);
+    setConnectionsMachineId(machineId ?? null);
     setConnectionsOpen(true);
   }, [webMode]);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
@@ -1358,8 +1360,8 @@ export function TopBar({
   // specific tab.
   useEffect(() => {
     if (webMode) return;
-    return subscribeOpenConnectionsPanel((tab) => {
-      openConnections(tab);
+    return subscribeOpenConnectionsPanel((tab, machineId) => {
+      openConnections(tab, machineId);
     });
   }, [openConnections, webMode]);
 
@@ -2707,6 +2709,7 @@ export function TopBar({
       >
         <ConnectionsPanel
           initialTab={connectionsTab}
+          machineId={connectionsMachineId}
           onClose={closeConnections}
           onDisconnectRequested={handleRemoteTargetDisconnectRequested}
           onRemoveRequested={handleRemoteTargetRemoveRequested}
