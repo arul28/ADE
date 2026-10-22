@@ -101,6 +101,9 @@ struct LanesTabView: View, Equatable {
   @State private var lastHandledLanesProjectionRevision: Int?
   /// Which machines' lanes the list shows (the filter chips).
   @State var machineFilter: LaneMachineFilter = .all
+  /// Live lane actions have been waiting long enough to say so (see
+  /// `liveActionNoticePresentation`).
+  @State var laneLiveActionWaitIsLong = false
 
   var scope: LaneListScope { quickFilter.scope }
 
@@ -158,6 +161,15 @@ struct LanesTabView: View, Equatable {
       }
     }
     .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+    // Times the "Waiting for live lane actions" notice: shown only if the wait
+    // outlasts the routine re-sync a visit starts.
+    .task(id: isActive && laneLiveActionsWaiting) {
+      laneLiveActionWaitIsLong = false
+      guard isActive, laneLiveActionsWaiting else { return }
+      try? await Task.sleep(for: .seconds(4))
+      guard !Task.isCancelled else { return }
+      laneLiveActionWaitIsLong = true
+    }
     .task(id: primaryBranchReloadKey) {
       guard primaryBranchReloadKey != nil else { return }
       await refreshPrimaryBranches(force: false)

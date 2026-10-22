@@ -321,10 +321,17 @@ extension LanesTabView {
       machine: machine,
       showsMachineChip: showsMachineChip
     )
-    .adeFlatRow(insets: laneRowInsets)
     // The Duo's list column marks its selected row the way a desktop sidebar
-    // does; the phone has no selection to show.
-    .listRowBackground(isDuoSelected ? ADEColor.accent.opacity(0.12) : Color.clear)
+    // does (a tinted rounded rectangle inset from the column's edges); the
+    // phone has no selection to show.
+    .background {
+      if isDuoSelected {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(ADEColor.accent.opacity(0.12))
+          .padding(.horizontal, 6)
+      }
+    }
+    .adeFlatRow(insets: laneRowInsets)
     .swipeActions(edge: .leading, allowsFullSwipe: true) {
       if actionable {
         Button {
@@ -414,7 +421,9 @@ extension LanesTabView {
               snapshot,
               depth: depth,
               pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
-              showsMachineChip: depth == 0,
+              // Each machine's lanes are their own section, named in its
+              // header: a machine chip on every row only repeated it.
+              showsMachineChip: false,
               chips: chips
             )
           }

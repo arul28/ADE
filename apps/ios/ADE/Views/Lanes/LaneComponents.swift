@@ -265,45 +265,41 @@ struct LaneStackCard: View, Equatable {
     )
   }
 
-  /// One row of the lanes panel (`.kit-row`), text first, with a lane's own
-  /// marks: the lane glyph and name in the lane's colour, the branch line
-  /// below, and the lane's live chats as one status mark on the trailing edge
-  /// (the desktop lane sidebar row).
+  /// One row of the lanes list: the lane glyph in the lane's colour, the
+  /// name (up to two lines), one quiet line of facts under it (its PR or
+  /// branch, ahead/behind, uncommitted changes), and the lane's chats as one
+  /// status mark on the trailing edge. Chips are kept out of the row so a
+  /// narrow column still reads cleanly.
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.laneRowBody)
-    HStack(alignment: .center, spacing: 11) {
+    HStack(alignment: .top, spacing: 11) {
       laneGlyphTile
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .center, spacing: 6) {
+        .padding(.top, 1)
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
           Text(snapshot.lane.name)
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 16, weight: .semibold))
             // The glyph carries the lane colour; the name stays readable (a
             // yellow or pale name on the light page failed contrast).
             .foregroundStyle(machine?.isLive == false ? ADEColor.textSecondary : ADEColor.textPrimary)
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-          laneTypeBadge
           if isPinned {
             Image(systemName: "pin.fill")
-              .font(.system(size: 9, weight: .semibold))
+              .font(.system(size: 10, weight: .semibold))
               .foregroundStyle(ADEColor.textMuted)
+              .accessibilityHidden(true)
           }
           Spacer(minLength: 4)
-          if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
-            Image(systemName: devicePresenceSymbol(for: devices))
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
-          }
           runtimeMark
         }
-        detailLine
+        metaLine
       }
     }
     .padding(.leading, ADEKit.inset)
     .padding(.trailing, 12)
-    .padding(.vertical, 11)
+    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .overlay(alignment: .leading) {
       // An open lane (in the tray above) keeps a thin bar in its colour.
@@ -349,82 +345,53 @@ struct LaneStackCard: View, Equatable {
     }
   }
 
-  /// Muted facts about the lane: where it lives, its branch, its PR and git
-  /// state. Nothing is drawn for a clean, level lane.
-  private var detailLine: some View {
-    HStack(spacing: 6) {
-      if let machine, showsMachineChip {
-        HStack(spacing: 3) {
-          Image(systemName: machine.symbol)
-            .font(.system(size: 9, weight: .semibold))
-          Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
-            .font(.caption2.weight(.semibold))
-            .lineLimit(1)
-        }
-        .foregroundStyle(ADEColor.textSecondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(ADEKit.track, in: Capsule(style: .continuous))
-        .fixedSize()
-      }
-      HStack(spacing: 3) {
-        Image(systemName: "arrow.triangle.branch")
-          .font(.system(size: 9, weight: .regular))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.8))
-        Text(normalizedPrBranchName(snapshot.lane.branchRef))
-          .font(.system(.caption2, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
-      .frame(minWidth: 0, alignment: .leading)
-      .layoutPriority(-1)
-      if let pullRequest {
-        LanePrTagChip(tag: pullRequest)
-          .fixedSize()
-      }
-      gitState
-    }
-  }
-
-  @ViewBuilder
-  private var gitState: some View {
+  /// One line of muted facts, joined with dots: the machine (only where the
+  /// list mixes machines and no section header names it), Archived/Primary,
+  /// the PR ("Merged #1601", in its state's colour), ahead/behind, "edited"
+  /// for uncommitted changes, and the branch when there is no PR. Truncates as
+  /// one line, at the branch.
+  private var metaLine: some View {
     let status = snapshot.lane.status
-    let linkedIssue = primaryLaneLinearIssue(for: snapshot.lane)?.identifier
-    if status.dirty || status.ahead > 0 || status.behind > 0 || snapshot.lane.childCount > 0 || linkedIssue != nil {
-      HStack(spacing: 5) {
-        if status.dirty {
-          Circle()
-            .fill(ADEColor.warning.opacity(0.85))
-            .frame(width: 5, height: 5)
-        }
-        if status.ahead > 0 {
-          laneCount(symbol: "arrow.up", count: status.ahead)
-        }
-        if status.behind > 0 {
-          laneCount(symbol: "arrow.down", count: status.behind)
-        }
-        if snapshot.lane.childCount > 0 {
-          laneCount(symbol: "square.stack.3d.up", count: snapshot.lane.childCount)
-        }
-        if let linkedIssue {
-          Text(linkedIssue)
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      }
+    var parts: [Text] = []
+    if let machine, showsMachineChip {
+      parts.append(Text(machine.isLive ? machine.name : "\(machine.name), not live"))
+    }
+    if snapshot.lane.archivedAt != nil {
+      parts.append(Text("Archived"))
+    } else if snapshot.lane.laneType == "primary",
+              snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
+      parts.append(Text("Primary"))
+    }
+    if let pullRequest {
+      parts.append(
+        Text(verbatim: "\(pullRequest.state.capitalized) #\(String(pullRequest.githubPrNumber))")
+          .foregroundStyle(lanePullRequestTint(pullRequest.state))
+      )
+    }
+    if status.ahead > 0 || status.behind > 0 {
+      var counts = Text("")
+      if status.ahead > 0 { counts = counts + Text(verbatim: "↑\(String(status.ahead))") }
+      if status.ahead > 0 && status.behind > 0 { counts = counts + Text(verbatim: " ") }
+      if status.behind > 0 { counts = counts + Text(verbatim: "↓\(String(status.behind))") }
+      parts.append(counts.monospacedDigit())
+    }
+    if status.dirty {
+      parts.append(Text("edited").foregroundStyle(ADEColor.warning))
+    }
+    // The branch goes last: it is the long part, and the line truncates at
+    // its end rather than losing the counts.
+    if pullRequest == nil {
+      parts.append(Text(verbatim: normalizedPrBranchName(snapshot.lane.branchRef)))
+    }
+    var line = Text("")
+    for (index, part) in parts.enumerated() {
+      line = index == 0 ? part : line + Text("  ·  ") + part
+    }
+    return line
+      .font(.footnote)
       .foregroundStyle(ADEColor.textMuted)
-      .fixedSize()
-    }
-  }
-
-  private func laneCount(symbol: String, count: Int) -> some View {
-    HStack(spacing: 1) {
-      Image(systemName: symbol)
-        .font(.caption2.weight(.bold))
-      Text("\(count)")
-        .font(.caption2.monospacedDigit())
-    }
+      .lineLimit(1)
+      .truncationMode(.tail)
   }
 
   private var laneTint: LaneSurfaceTint {
@@ -433,19 +400,6 @@ struct LaneStackCard: View, Equatable {
 
   private var laneLabelColor: Color {
     laneTint.text ?? ADEColor.textPrimary
-  }
-
-  @ViewBuilder
-  private var laneTypeBadge: some View {
-    if snapshot.lane.archivedAt != nil {
-      ADEKitTag(text: "Archived")
-    } else if snapshot.lane.laneType == "primary",
-              snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
-      // A primary lane named "Primary" already says so.
-      ADEKitTag(text: "Primary")
-    } else {
-      EmptyView()
-    }
   }
 
   private var stackCardAccessibilityLabel: String {
@@ -627,12 +581,20 @@ struct LaneChoiceList<Item: Identifiable, Row: View>: View {
 
 // MARK: - Duo: lane dashboard and the two-page detail
 
-/// One lane's detail on the Duo's inner display, desktop's split: the lane
-/// dashboard beside the git actions. Held landscape they are two columns (one
-/// per page when book-folded); held portrait the dashboard is the top half
-/// and git the bottom (exactly the halves on a laptop fold). The column's
-/// controls are toolbar items, so held landscape they ride the edge bar.
+/// One lane's detail on the Duo's inner display (and an iPad): ONE column,
+/// since there is no room for desktop's three. A clear header (the lane's
+/// name, branch and machine, and its state), then a segmented control between
+/// the lane's Overview (the dashboard) and Git (the phone's lane detail: its
+/// changes, branch, stashes and history, with the commit and sync actions).
+/// The column's controls are toolbar items, so held landscape they ride the
+/// edge bar.
 struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
+  enum Section: String, CaseIterable, Identifiable {
+    case overview = "Overview"
+    case git = "Git"
+    var id: String { rawValue }
+  }
+
   let snapshot: LaneListSnapshot
   let machineName: String?
   /// The lane's open (else latest) pull request.
@@ -646,56 +608,99 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   let onManage: () -> Void
   let onCopyLaneLink: () -> Void
   let onCopyBranchLink: () -> Void
+  /// Set when something in the lane asks for Git (a diff opening).
+  var forcesGit = false
   @ViewBuilder let dashboard: () -> Dashboard
   @ViewBuilder let git: () -> Git
 
   @Environment(\.duoSplit) private var split
-
-  /// Outside a split (a sheet) the column is narrow: lay it out as portrait.
-  private var family: DuoFamily { split?.family ?? .tall }
+  @State private var section: Section = .overview
 
   var body: some View {
     withToolbar(
-      DuoLocalFoldReader { fold, size in
-        if family == .wide {
-          let leading: CGFloat = {
-            if case .sideBySide(let rect) = fold, rect.minX > 200 { return rect.minX }
-            // Git's action row needs a little more room than the dashboard.
-            return (size.width * 0.44).rounded()
-          }()
-          HStack(spacing: 0) {
-            dashboard().frame(width: leading)
-            DuoSeam(axis: .vertical, foldRect: {
-              if case .sideBySide(let rect) = fold { return rect }
-              return nil
-            }())
-            git().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-          }
-        } else {
-          let top: CGFloat = {
-            if case .stacked(let rect) = fold, rect.minY > 160 { return rect.minY }
-            return size.height * 0.45
-          }()
-          VStack(spacing: 0) {
-            dashboard().frame(height: top)
-            DuoSeam(axis: .horizontal, foldRect: {
-              if case .stacked(let rect) = fold { return rect }
-              return nil
-            }())
-            git().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      VStack(spacing: 0) {
+        header
+          .padding(.horizontal, 20)
+          .padding(.top, 6)
+        Picker("Section", selection: $section) {
+          ForEach(Section.allCases) { option in
+            Text(option.rawValue).tag(option)
           }
         }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        Group {
+          switch section {
+          case .overview: dashboard()
+          case .git: git()
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       }
     )
-    .navigationTitle(snapshot.lane.name)
-    .navigationSubtitle(subtitle)
+    .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .adeScreenBackground()
+    .onChange(of: forcesGit, initial: true) { _, forces in
+      if forces { section = .git }
+    }
   }
 
-  /// "ade/fix-sync-loop · Mac Studio"
-  private var subtitle: String {
-    [snapshot.lane.branchRef, machineName].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+  /// The lane's glyph and name, its branch and machine, and one line of state:
+  /// its PR, ahead/behind, uncommitted changes.
+  private var header: some View {
+    let lane = snapshot.lane
+    let tint = laneSurfaceTint(forHex: lane.color).text ?? ADEColor.accent
+    return HStack(alignment: .top, spacing: 12) {
+      WorkLaneLogoMark(color: tint, laneIcon: lane.icon, emoji: lane.emoji, size: 20)
+        .frame(width: 28, height: 28)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(lane.name)
+          .font(.title3.weight(.bold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .accessibilityAddTraits(.isHeader)
+        (Text(verbatim: lane.branchRef).font(.subheadline.monospaced())
+          + Text(verbatim: machineName.map { $0.isEmpty ? "" : "  ·  \($0)" } ?? "").font(.subheadline))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        stateLine
+      }
+      Spacer(minLength: 0)
+    }
+  }
+
+  private var stateLine: some View {
+    let status = snapshot.lane.status
+    var parts: [Text] = []
+    if let pullRequest {
+      parts.append(
+        Text(verbatim: "PR #\(String(pullRequest.githubPrNumber)) · \(pullRequest.state.capitalized)")
+          .foregroundStyle(lanePullRequestTint(pullRequest.state))
+      )
+    }
+    if status.ahead == 0 && status.behind == 0 {
+      parts.append(Text("Up to date with base"))
+    } else {
+      parts.append(Text([
+        status.ahead > 0 ? "\(status.ahead) ahead" : nil,
+        status.behind > 0 ? "\(status.behind) behind" : nil,
+      ].compactMap { $0 }.joined(separator: ", ")))
+    }
+    parts.append(status.dirty
+      ? Text("Uncommitted changes").foregroundStyle(ADEColor.warning)
+      : Text("Clean"))
+    var line = Text("")
+    for (index, part) in parts.enumerated() {
+      line = index == 0 ? part : line + Text("  ·  ") + part
+    }
+    return line
+      .font(.footnote)
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(2)
   }
 
   @ViewBuilder
@@ -786,6 +791,8 @@ struct LaneDuoDashboard: View {
     .scrollContentBackground(.hidden)
     .background(ADEColor.pageBackground)
     .listSectionSpacing(.compact)
+    // Right under the column's segmented control: no grouped-list gap above.
+    .contentMargins(.top, 4, for: .scrollContent)
     .contentMargins(.bottom, 24, for: .scrollContent)
   }
 
@@ -793,25 +800,7 @@ struct LaneDuoDashboard: View {
 
   private var identitySection: some View {
     Section {
-      HStack(spacing: 10) {
-        WorkLaneLogoMark(
-          color: laneSurfaceTint(forHex: lane.color).text ?? ADEColor.accent,
-          laneIcon: lane.icon,
-          emoji: lane.emoji,
-          size: 18
-        )
-        VStack(alignment: .leading, spacing: 2) {
-          Text(lane.name)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          Text(verbatim: lane.branchRef)
-            .font(.adeMono(12))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-      }
+      // The column's header already names the lane and its branch.
       if let machineName, !machineName.isEmpty {
         LabeledContent("Machine", value: machineName)
       }

@@ -202,6 +202,9 @@ struct DuoSplitPlaceholder: View {
   let symbol: String
   let title: String
   let message: String
+  /// Activity and Settings with the tabs; a screen whose list column's ⋯
+  /// carries them leaves them off the rail.
+  var includesUtilities = true
 
   var body: some View {
     NavigationStack {
@@ -212,7 +215,7 @@ struct DuoSplitPlaceholder: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(ADEColor.pageBackground)
-      .toolbar { DuoAppTabsToolbar() }
+      .toolbar { DuoAppTabsToolbar(includesUtilities: includesUtilities) }
     }
   }
 }
@@ -220,19 +223,17 @@ struct DuoSplitPlaceholder: View {
 // MARK: - Lanes
 
 extension LanesTabView {
-  /// The Lanes tab on the Duo's inner display, desktop's three columns: the
-  /// lane list, then the selected lane's dashboard and git side by side.
-  /// Book-folded the dashboard and git take a page each and the list folds
-  /// behind the sidebar toggle; held portrait the list is an overlay too.
+  /// The Lanes tab on the Duo's inner display (and an iPad): the lane list
+  /// beside ONE detail column for the selected lane (a header over Overview |
+  /// Git). Book-folded the list is the left page and the detail the right;
+  /// held portrait the list folds behind the detail's sidebar toggle.
   @ViewBuilder
   var duoLanesSplitBody: some View {
     DuoSplitScaffold(
-      preferredListWidth: 280,
+      preferredListWidth: 320,
       minimumDetailWidth: 420,
       adaptive: true,
-      detailTakesBothPages: true,
-      selection: duoSelectedLaneId,
-      wantsWholeDisplay: duoSelectedLaneId != nil
+      selection: duoSelectedLaneId
     ) { _ in
       duoLanesListColumn
     } detail: {
@@ -241,9 +242,14 @@ extension LanesTabView {
     .adeScreenBackground()
   }
 
-  /// The same notices, tray and rows the phone list draws, in a stack of its
-  /// own with native search; the filter and machine chips become toolbar
-  /// menus so nothing is clipped in a 300 pt column.
+  /// The project the tab belongs to, for the header's ‹ logo.
+  private var duoProjectIconDataUrl: String? {
+    syncService.projects.first { $0.id == syncService.activeProjectId }?.iconDataUrl
+  }
+
+  /// The same notices, tray and rows the phone list draws, under Work's
+  /// two-row header: ‹ project logo and "Lanes", then search (with the
+  /// filter inside it), Add lane and ⋯ (Activity, Settings).
   var duoLanesListColumn: some View {
     NavigationStack {
       List {
@@ -268,57 +274,89 @@ extension LanesTabView {
       .environment(\.defaultMinListRowHeight, 0)
       .adeScrollDiagnosticsSurface(.lanes, key: "lanes-split")
       .refreshable { await refreshFromPullGesture() }
-      .searchable(
-        text: $searchText,
-        placement: .navigationBarDrawer(displayMode: .always),
-        prompt: "Search lanes, branches, is:dirty"
-      )
-      .navigationTitle(quickFilter == .active ? "Lanes" : quickFilter.title)
+      .safeAreaInset(edge: .top, spacing: 0) { duoLanesSearchRow }
+      // The column ends at the seam: the trailing inset iOS reports here is
+      // the edge bar's, not this column's.
+      .duoLeadingColumnContent()
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        // Back to the Hub: the ‹ project logo, as on the phone (no Home tab on
-        // the rail inside a project).
-        DuoHubBackToolbarItem()
-        ToolbarItem(placement: .topBarLeading) { duoLaneFilterMenu }
-        if !remoteLanes.machines.isEmpty {
-          ToolbarItem(placement: .topBarLeading) { duoLaneMachineMenu }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          Button("Add lane", systemImage: "plus") {
-            if canRunLiveActions {
-              addLaneSheetPresented = true
-            } else {
-              handleBlockedLiveAction()
-            }
+        ToolbarItem(placement: .topBarLeading) {
+          HStack(spacing: 6) {
+            WorkHeaderProjectButton(iconDataUrl: duoProjectIconDataUrl) { syncService.showProjectHub() }
+            Text("Lanes")
+              .font(.system(size: 22, weight: .heavy, design: .rounded))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .fixedSize()
+              .accessibilityAddTraits(.isHeader)
           }
+          .padding(.horizontal, 4)
         }
+        .sharedBackgroundVisibility(.hidden)
       }
     }
   }
 
-  /// Active / Running / Needs you / Changes / Archived, with counts.
-  private var duoLaneFilterMenu: some View {
-    Menu {
-      Picker("Show", selection: $quickFilter) {
-        ForEach(LaneQuickFilter.allCases) { filter in
-          let count = laneListPresentation.quickFilterCounts[filter] ?? 0
-          Text("\(filter.title) (\(count))").tag(filter)
-        }
+  /// The column's second header row, Work's: search with the filter inside
+  /// it, then Add lane and ⋯.
+  private var duoLanesSearchRow: some View {
+    HStack(spacing: 8) {
+      LaneHeaderSearchField(searchText: $searchText) {
+        duoLaneFilterMenuContent
+      } filterActive: {
+        quickFilter != .active || machineFilter != .all
       }
-    } label: {
-      Label(
-        "Filter",
-        systemImage: quickFilter == .active
-          ? "line.3.horizontal.decrease.circle"
-          : "line.3.horizontal.decrease.circle.fill"
+      Button {
+        if canRunLiveActions {
+          addLaneSheetPresented = true
+        } else {
+          handleBlockedLiveAction()
+        }
+      } label: {
+        Image(systemName: "plus")
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(canRunLiveActions ? ADEColor.textPrimary : ADEColor.textMuted)
+          .frame(width: 32, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Add lane")
+      WorkHeaderOverflowMenu(
+        showsLinear: false,
+        showsCursorCloud: false,
+        actions: WorkRootHeaderActions(
+          onOpenActivity: { syncService.attentionDrawerPresented = true },
+          onOpenSettings: { syncService.settingsPresented = true }
+        )
       )
     }
-    .accessibilityLabel("Lane filter: \(quickFilter.title)")
+    .padding(.horizontal, 16)
+    .padding(.bottom, 6)
+    .background(ADEColor.pageBackground.opacity(0.94))
+  }
+
+  /// What the search field's filter chip offers: the lane filter with counts,
+  /// and which machines' lanes show.
+  @ViewBuilder
+  private var duoLaneFilterMenuContent: some View {
+    Picker("Show", selection: $quickFilter) {
+      ForEach(LaneQuickFilter.allCases) { filter in
+        let count = laneListPresentation.quickFilterCounts[filter] ?? 0
+        Text("\(filter.title) (\(count))").tag(filter)
+      }
+    }
+    .pickerStyle(.inline)
+    if !remoteLanes.machines.isEmpty {
+      Section("Machines") {
+        duoLaneMachineButtons
+      }
+    }
   }
 
   /// Which machines' lanes the list shows.
-  private var duoLaneMachineMenu: some View {
-    Menu {
+  @ViewBuilder
+  private var duoLaneMachineButtons: some View {
       Button {
         machineFilter = .all
       } label: {
@@ -348,10 +386,6 @@ extension LanesTabView {
           }
         }
       }
-    } label: {
-      Label("Machines", systemImage: machineFilter == .all ? "desktopcomputer" : "desktopcomputer.and.arrow.down")
-    }
-    .accessibilityLabel("Machines shown")
   }
 
   @ViewBuilder
@@ -362,14 +396,17 @@ extension LanesTabView {
       // stack, so held landscape its toolbar is the edge bar.
       NavigationStack {
         laneDestination(LaneRoute(laneId: laneId), showsBackButton: false)
-          .toolbar { DuoAppTabsToolbar() }
+          // Activity and Settings live in the list column's ⋯ inside a
+          // project, never on the rail: the rail's bottom is the five tabs.
+          .toolbar { DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar) }
       }
       .id(laneId)
     } else {
       DuoSplitPlaceholder(
         symbol: "square.stack.3d.up",
         title: "Select a lane",
-        message: "Pick a lane to see its dashboard, changes, commits and git actions."
+        message: "Pick a lane to see its overview, changes, commits and git actions.",
+        includesUtilities: !duoLayout.hasEdgeBar
       )
     }
   }
@@ -380,6 +417,69 @@ extension LanesTabView {
       || remoteLanes.machines.contains { machine in
         machine.snapshots.contains { $0.lane.id == laneId }
       }
+  }
+}
+
+/// Lanes' search field, Work's shape: the field takes the row's width and the
+/// filter is a chip inside its trailing edge (a menu), accent while a filter
+/// other than the default is on.
+struct LaneHeaderSearchField<MenuContent: View>: View {
+  @Binding var searchText: String
+  @ViewBuilder var menuContent: () -> MenuContent
+  var filterActive: () -> Bool
+
+  var body: some View {
+    let active = filterActive()
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityHidden(true)
+      TextField("Search lanes, branches", text: $searchText)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .font(.subheadline)
+        .submitLabel(.search)
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 24, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+      Menu {
+        menuContent()
+      } label: {
+        Image(systemName: "line.3.horizontal.decrease")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(active ? ADEColor.accent : ADEColor.textSecondary)
+          .padding(.horizontal, 8)
+          .frame(height: 24)
+          .background(
+            active ? ADEColor.accent.opacity(0.14) : ADEColor.recessedBackground,
+            in: Capsule(style: .continuous)
+          )
+          .frame(minWidth: 36, minHeight: 40)
+          .contentShape(Rectangle())
+      }
+      .accessibilityLabel("Lane filters")
+      .accessibilityValue(active ? "On" : "None")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)
+    .frame(minHeight: 40)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
   }
 }
 

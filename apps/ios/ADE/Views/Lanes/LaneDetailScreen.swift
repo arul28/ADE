@@ -96,7 +96,7 @@ struct LaneDetailScreen: View {
   }
 
   /// The Duo's inner display, as its own column (not inside the Work tools
-  /// pane): the dashboard beside git, controls in the toolbar.
+  /// pane): a header over Overview | Git, controls in the toolbar.
   private var usesDuoLayout: Bool { duoLayout.isWide && !embedded }
 
   var body: some View {
@@ -546,7 +546,8 @@ struct LaneDetailScreen: View {
       onOpenFiles: { Task { await openFiles() } },
       onManage: { managePresented = true },
       onCopyLaneLink: copyLaneLink,
-      onCopyBranchLink: copyBranchLink
+      onCopyBranchLink: copyBranchLink,
+      forcesGit: inlineDiffRequest != nil
     ) {
       LaneDuoDashboard(
         snapshot: currentSnapshot,
