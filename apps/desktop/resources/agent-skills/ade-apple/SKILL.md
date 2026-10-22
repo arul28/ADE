@@ -53,14 +53,27 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 | Type, then press Return | `"$A" apple type "reddit" --submit --text` |
 | Press one key | `"$A" apple key return --text` (also `tab`) |
 | Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
-| Which app is in front | `"$A" apple foreground --text` |
+| Which app is in front | `"$A" apple foreground --text` (`--wait 10` right after a launch) |
+| Open an app with launch arguments | `"$A" apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home` |
+| Take turns with other agents on this device | `"$A" apple lease --wait 300 --text`, later `"$A" apple lease release --token <t> --text` |
 | What is on screen | `"$A" apple snapshot --text` |
 | Go home / app switcher | `"$A" apple button home --text` / `"$A" apple button app-switcher --text` |
 | Close an app (no gesture) | `"$A" apple terminate --bundle-id com.apple.mobilesafari --text` |
 | Show the device to the user | `"$A" apple show --text` (tools pane) or `--floating` |
 
 - Right after `relaunch`, `foreground` can still say `null` for a moment.
-  Wait for an element of that app instead of checking at once.
+  Use `foreground --wait 10`, or wait for an element of that app.
+- Tap, drag and scroll coordinates are the screenshot's and the snapshot's
+  points, upright, whichever way the device is held (the Duo's inner display
+  included): ADE turns them onto the framebuffer for you. Prefer
+  `tap-element` anyway.
+- `launch` builds Debug. Pass `--configuration Release` when the app's
+  configurations differ in more than speed (ADE's own iOS app signs into a
+  test backend in Debug); the summary names the configuration it built.
+  Arguments after `--` reach the app, for `launch` and `relaunch`.
+- Several agents on one lane share one device. Before a run of builds,
+  rotates and shots, take a `lease` (it queues behind whoever has it) and
+  release it after. It is advisory, so it only works if every agent uses it.
 - A simulator signed in to an Apple Account can show an "Apple Account
   Verification" alert over every app. Dismiss it with
   `tap-element --label "Not Now"`, then continue.
@@ -248,7 +261,10 @@ Name elements, not pixels.
   reads back how the live panel's picture sits (`posture.displayOrientation`
   in the answer). The inner display takes all four orientations, upside down
   included; the cover's Home Screen is portrait-only. Held `portrait`, the
-  inner picture is landscape: the panel is mounted a quarter turn.
+  inner picture is landscape: the panel is mounted a quarter turn. So for a
+  tall picture on the open inner display, rotate `landscape-left` or
+  `landscape-right`; `rotate portrait` from open flat is where it starts
+  (`already-on-axis`) and stays wide.
 
 - Folding (iPhone Duo only): `fold closed|open|laptop|book|tent` or
   `fold --angle 120`, then read `posture` back. The answer is what the
@@ -256,7 +272,11 @@ Name elements, not pixels.
   live view, taps and typing follow it. On any other device it answers
   `supported: false`. Test a layout in more than one pose, and fold during a
   session, not only at launch. For a demo, `fold --sequence closed,open,tent`
-  inside a recording adds a caption per pose.
+  inside a recording adds a caption per pose. Tent reads `orientation
+  facedown, tableMode yes, activeScreenId 1`: that is Device Hub's Tent (the
+  phone stands on its outer edges, the cover faces the viewer), not a fault.
+  Screenshots are the panel's own pixels and look the same in book, laptop
+  and tent; to show the fold itself, `render --poses`.
 
 - Getting an app ready for the Duo: `duo-skill` copies Apple's
   `app-resizability` skill (from Xcode 27) into the lane's
@@ -268,10 +288,11 @@ Name elements, not pixels.
 
 - 3D renders: `render --angles front,three-quarter-left --poses closed,open`
   (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
-  of the 3D device with its live screen to the proof drawer. It needs the
-  lane's Apple pane open in ADE desktop on the device's machine (the pane
-  does the rendering); otherwise it says so. On a Duo each pose folds the
-  simulator first.
+  of the 3D device with its live screen to the proof drawer. No pane needs to
+  be open: any ADE desktop window with the project open renders it off
+  screen (a project on another machine must be the window's front tab);
+  with none, it says so. The device must be on (`apple start`). On a
+  Duo each pose folds the simulator first.
 
 Agent launches stay in the background; `apple show` brings the device up at
 any time.
@@ -333,7 +354,10 @@ You do not pin anything. Both of these file themselves in the proof drawer and
 return a `proofArtifactId`:
 
 - **every recording**, the moment it stops, whoever started it;
-- **every screenshot** you take.
+- **every screenshot** you take. It prints a `cite:` line: paste that to
+  show the shot. Do not `proof attach` the same file again; it is refused
+  as a duplicate (the refusal prints the same `cite:` line).
+  For a validation loop of throwaway shots, add `--no-proof`.
 
 ```bash
 "$ADE_CLI_PATH" apple screenshot --out shot.png --text

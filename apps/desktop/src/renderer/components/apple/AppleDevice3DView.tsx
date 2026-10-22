@@ -142,8 +142,15 @@ const CAMERA_FOV = 32;
 const POSE_NOTIFY_MS = 90;
 /** How long a lost context has to come back before the pane gives up on 3D. */
 const CONTEXT_RESTORE_MS = 2_000;
-/** The 3D screen is a few hundred CSS pixels wide; a 3× frame is wasted on it. */
-const MIRROR_MAX_WIDTH = 512;
+/**
+ * The screen texture's longer side, in pixels: as many as the view can show
+ * the screen at (its longer side in device pixels; a render's whole canvas),
+ * never fewer than the floor and never more than the cap. A fixed 512 wide
+ * was soft on a Retina pane, and halved again across the Duo's two halves;
+ * a whole 3× frame is still more upload than any pane shows.
+ */
+const MIRROR_MIN_LONG_SIDE = 512;
+const MIRROR_MAX_LONG_SIDE = 1600;
 
 /**
  * §A3's one rule for a drag in 3D: on the glass it is the DEVICE's, off the
@@ -295,6 +302,8 @@ function createViewer(
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
+  /** Where the touch in progress last was, so a cancel ends it there. */
+  let lastInputHit: ScreenHit | null = null;
   let loadGen = 0;
   let currentModelKey = "";
   let lastFrameVersion = Number.NaN;
@@ -419,7 +428,11 @@ function createViewer(
   const mirrorFrame = (): { drawn: boolean; resized: boolean } => {
     if (!source || !mirror || !mirrorContext) return { drawn: false, resized: false };
     if (source.width <= 0 || source.height <= 0) return { drawn: false, resized: false };
-    const scale = Math.min(1, MIRROR_MAX_WIDTH / source.width);
+    const shown = Math.max(viewport.width, viewport.height) * viewport.pixelRatio;
+    // Stepped, so dragging the pane's edge rebuilds the texture now and then,
+    // not on every pixel.
+    const longSide = Math.min(MIRROR_MAX_LONG_SIDE, Math.max(MIRROR_MIN_LONG_SIDE, Math.ceil(shown / 128) * 128));
+    const scale = Math.min(1, longSide / Math.max(source.width, source.height));
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
     const resized = mirror.width !== width || mirror.height !== height;
@@ -577,23 +590,28 @@ function createViewer(
     pointerNdc.set(nx * 2 - 1, 1 - ny * 2);
     raycaster.setFromCamera(pointerNdc, camera);
     const props = getProps();
-    const points = orientedPointSize(
-      props.orientation,
-      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
-    );
+    /**
+     * A hit on the panel (u across, v up) as the device point it sends. A
+     * portrait frame lies on the panel as is, whichever way the phone is
+     * turned, so the hit is a point on the framebuffer: what the flat view
+     * sends and the device takes (`source: "user"` input is frame space). Only
+     * a frame the helper already turned wide is the picture.
+     */
+    const framePoint = (u: number, vFromBottom: number, framePictured: boolean): ScreenHit => {
+      const size = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
+      if (!framePictured) return { x: u * size.width, y: (1 - vFromBottom) * size.height };
+      const points = orientedPointSize(props.orientation, size);
+      const oriented = portraitToOriented(u, vFromBottom, props.orientation);
+      return { x: oriented.x * points.width, y: oriented.y * points.height };
+    };
     if (body.duo) {
       // The foldable body is two panels, so the hit is resolved across both and
       // answered in the continuous inner-display space either way.
       const hit = body.duo.pickInner(raycaster);
       if (!hit) return null;
-      if (body.physical) {
-        // Apple's model answers in the live panel's own framebuffer, which
-        // is what the device takes, exactly as the flat view sends it.
-        const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
-        return { x: hit.u * raw.width, y: (1 - hit.vFromBottom) * raw.height };
-      }
-      const oriented = portraitToOriented(hit.u, hit.vFromBottom, props.orientation);
-      return { x: oriented.x * points.width, y: oriented.y * points.height };
+      // Apple's model answers in the live panel's own framebuffer, whatever
+      // shape the frame arrives in.
+      return framePoint(hit.u, hit.vFromBottom, !body.physical && layout.rawLandscape);
     }
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
@@ -609,8 +627,7 @@ function createViewer(
     }
     const u = Math.min(1, Math.max(0, (localHit.x + body.screenWidth / 2) / body.screenWidth));
     const vFromBottom = Math.min(1, Math.max(0, (localHit.y + body.screenHeight / 2) / body.screenHeight));
-    const oriented = portraitToOriented(u, vFromBottom, props.orientation);
-    return { x: oriented.x * points.width, y: oriented.y * points.height };
+    return framePoint(u, vFromBottom, layout.rawLandscape);
   };
 
   const sync = (props: AppleDevice3DViewProps) => {
@@ -897,6 +914,7 @@ function createViewer(
         interactive: props.interactive,
       }) === "input" && hit) {
         pointerMode = "input";
+        lastInputHit = hit;
         motion.hold(true, now);
         props.onDeviceInput({ phase: "begin", ...hit });
         invalidate();
@@ -912,7 +930,10 @@ function createViewer(
       if (pointerMode === "input") {
         if (!getProps().interactive) return;
         const hit = screenPoint(nx, ny, true);
-        if (hit) getProps().onDeviceInput({ phase: "move", ...hit });
+        if (hit) {
+          lastInputHit = hit;
+          getProps().onDeviceInput({ phase: "move", ...hit });
+        }
         return;
       }
       motion.orbit(dx, dy, now);
@@ -923,6 +944,7 @@ function createViewer(
       const mode = pointerMode;
       pointerMode = null;
       if (mode === "input") {
+        lastInputHit = null;
         const hit = screenPoint(nx, ny, true);
         if (hit && getProps().interactive) getProps().onDeviceInput({ phase: "end", ...hit });
         motion.hold(false, now);
@@ -996,14 +1018,9 @@ function createViewer(
     cancelGestures(now) {
       if (disposed) return;
       if (pointerMode === "input") {
-        const props = getProps();
-        if (props.interactive) {
-          const points = orientedPointSize(
-      props.orientation,
-      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
-    );
-          props.onDeviceInput({ phase: "end", x: points.width / 2, y: points.height / 2 });
-        }
+        // End the touch where it last was, in the space it began in.
+        if (getProps().interactive && lastInputHit) getProps().onDeviceInput({ phase: "end", ...lastInputHit });
+        lastInputHit = null;
         motion.hold(false, now);
       } else if (pointerMode === "orbit") {
         motion.dragActive(false, now);

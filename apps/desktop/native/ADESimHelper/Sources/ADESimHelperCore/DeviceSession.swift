@@ -367,12 +367,14 @@ public actor DeviceSession {
      * Input without a stream (a caller that only taps): nothing has told the
      * session which panel is on, or measured it. Ask CoreDevice, and size the
      * panel from the simulator's own screen list, rather than defaulting to
-     * the cover while the inner display is showing.
+     * the cover while the inner display is showing. Returns the displays it
+     * read, so the gesture's other questions reuse them; nil when a running
+     * stream already knew.
      */
-    private func resolvePanelForInput() async {
-        if engine != nil, activeScreenID != nil { return }
-        let active = await DevicePosture.displays(udid: udid).first(where: \.active)?.screenID
-        guard let active else { return }
+    private func resolvePanelForInput() async -> [DevicePosture.Display]? {
+        if engine != nil, activeScreenID != nil { return nil }
+        let displays = await DevicePosture.displays(udid: udid)
+        guard let active = displays.first(where: \.active)?.screenID else { return displays }
         activeScreenID = active
         if panelMetrics[active] == nil {
             let udid = self.udid
@@ -382,11 +384,62 @@ public actor DeviceSession {
             }
         }
         if engine == nil, let measured = panelMetrics[active] { metrics = measured }
+        return displays
+    }
+
+    /// The live screen's picture, in quarter turns clockwise on its
+    /// framebuffer (the pane's `appleScreenRotation`). Read when a
+    /// screen-space gesture begins and kept until its end, so a turn or a fold
+    /// mid-gesture cannot bend it.
+    private var screenTurns = 0
+
+    private func readScreenTurns(_ known: [DevicePosture.Display]?) async -> Int {
+        // A frame that already arrives wide has been turned for us.
+        if metrics.pointWidth > metrics.pointHeight { return 0 }
+        // A foldable marks its live panel; a phone with one screen marks none,
+        // and its screen is the main display.
+        let displays = if let known { known } else { await DevicePosture.displays(udid: udid) }
+        let live = displays.first(where: \.active) ?? displays.first(where: { $0.screenID == 1 })
+        switch live?.orientation {
+        case "landscape_left": return 1
+        case "landscape_right": return 3
+        case "portrait_upside_down": return 2
+        default: return 0
+        }
+    }
+
+    /// A point an agent measured on the picture iOS shows, onto the panel's
+    /// framebuffer, which is what CoreDevice's digitizer reads. The inverse
+    /// of the pane's turn (`appleViewToFrameFraction`), in points: a
+    /// sideways picture is the frame's height wide.
+    private func toFrame(_ point: DevicePoint) -> DevicePoint {
+        guard point.space == .screen else { return point }
+        let width = metrics.pointWidth
+        let height = metrics.pointHeight
+        switch screenTurns {
+        case 1: return DevicePoint(x: point.y, y: height - point.x)
+        case 2: return DevicePoint(x: width - point.x, y: height - point.y)
+        case 3: return DevicePoint(x: width - point.y, y: point.x)
+        default: return DevicePoint(x: point.x, y: point.y)
+        }
+    }
+
+    /// What a gesture needs settled before its first point: a foldable's live
+    /// panel (its size is the frame's) and, for screen-space input, how the
+    /// picture sits. One display read serves both.
+    private func beginGesture(screenSpace: Bool) async {
+        let displays = await foldableInput() != nil ? await resolvePanelForInput() : nil
+        if screenSpace { screenTurns = await readScreenTurns(displays) }
+    }
+
+    /// Onto the frame, settling the gesture at its begin.
+    private func framePoints(_ phase: TouchPhase, _ points: [DevicePoint]) async -> [DevicePoint] {
+        if phase == .begin { await beginGesture(screenSpace: points.contains(where: { $0.space == .screen })) }
+        return points.map(toFrame)
     }
 
     private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
         guard let foldable = await foldableInput() else { return false }
-        if phase == .begin { await resolvePanelForInput() }
         try await foldable.touch(
             phase: phase,
             screenID: activeScreenID ?? DuoScreen.cover,
@@ -398,6 +451,7 @@ public actor DeviceSession {
     // MARK: - Input
 
     public func touch(phase: TouchPhase, point: DevicePoint) async throws {
+        let point = await framePoints(phase, [point])[0]
         if try await foldableTouch(phase, [point]) { return }
         try await ensureHID()
         let normalized = metrics.normalize(point)
@@ -411,6 +465,8 @@ public actor DeviceSession {
     }
 
     public func multiTouch(phase: TouchPhase, first: DevicePoint, second: DevicePoint) async throws {
+        let points = await framePoints(phase, [first, second])
+        let (first, second) = (points[0], points[1])
         if try await foldableTouch(phase, [first, second]) { return }
         try await ensureHID()
         let a = metrics.normalize(first)
@@ -481,7 +537,22 @@ public actor DeviceSession {
         return unsupported
     }
 
-    public func scroll(deltaX: Double, deltaY: Double, anchor: DevicePoint?) async throws {
+    public func scroll(deltaX: Double, deltaY: Double, anchor: DevicePoint?, space: PointSpace = .frame) async throws {
+        // A screen-space scroll is turned onto the frame first, its direction
+        // included.
+        var deltaX = deltaX
+        var deltaY = deltaY
+        var anchor = anchor
+        await beginGesture(screenSpace: space == .screen)
+        if space == .screen {
+            anchor = anchor.map(toFrame)
+            switch screenTurns {
+            case 1: (deltaX, deltaY) = (deltaY, -deltaX)
+            case 2: (deltaX, deltaY) = (-deltaX, -deltaY)
+            case 3: (deltaX, deltaY) = (-deltaY, deltaX)
+            default: break
+            }
+        }
         if await foldableInput() != nil {
             // CoreDevice's digitizer has no wheel: scroll is a short drag the
             // other way, from the anchor (or the panel's centre).

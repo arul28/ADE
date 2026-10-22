@@ -937,6 +937,7 @@ import type {
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAppState,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
@@ -3290,7 +3291,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         relaunchApp: (
-          args: IosSimulatorAppLifecycleArgs,
+          args: IosSimulatorRelaunchArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
         terminateApp: (
@@ -3314,7 +3315,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
         getForegroundApp: (
-          args?: { deviceUdid?: string | null; laneId?: string | null },
+          args?: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorForegroundApp>;
         startEventLog: (

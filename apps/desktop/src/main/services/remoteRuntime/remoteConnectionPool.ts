@@ -186,6 +186,10 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // `foreground --wait` asks for up to 30s; the replay-safe 25s default ended it early.
+  ["ios_simulator.getForegroundApp", 60_000],
+  // A lease waits in line for up to nine minutes.
+  ["ios_simulator.deviceLease", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Windows Desktop actions that wait on a person at the Windows PC (UAC,
   // the password dialog, Windows' sign-in window). From another machine the
   // 30s default reported a timeout while Windows was still waiting.

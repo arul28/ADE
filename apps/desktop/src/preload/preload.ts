@@ -1074,6 +1074,7 @@ import type {
   MacDesktopWindow,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAppState,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
@@ -9932,7 +9933,7 @@ const adeBridge = {
     ): Promise<{ ok: true }> =>
       callIosSimulatorMutation(pin, "openUrl", args, IPC.iosSimulatorOpenUrl),
     relaunchApp: (
-      args: IosSimulatorAppLifecycleArgs,
+      args: IosSimulatorRelaunchArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorAppState> =>
       callIosSimulatorMutation(pin, "relaunchApp", args, IPC.iosSimulatorRelaunchApp),
@@ -9967,7 +9968,7 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.iosSimulatorGetAppState, args),
       ),
     getForegroundApp: async (
-      args: { deviceUdid?: string | null; laneId?: string | null } = {},
+      args: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorForegroundApp> =>
       callIosSimulatorActionOr(

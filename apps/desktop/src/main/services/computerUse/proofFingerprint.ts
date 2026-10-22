@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { ComputerUseArtifactOwner } from "../../../shared/types";
 import { encodeCodedErrorMessage } from "../../../shared/codedError";
+import { proofCitationMarkdown } from "../../../shared/proofCitation";
 import { PROOF_DUPLICATE_CODE, type ComputerUseProofSource } from "../../../shared/proofProvenance";
 import { listAppleRecordingFiles, readAppleRecordingSidecar } from "../ios/recording/appleRecordingsStore";
 import type { Logger } from "../logging/logger";
@@ -38,10 +39,14 @@ export class ProofDuplicateError extends Error {
   readonly existing: DuplicateProofMatch;
 
   constructor(existing: DuplicateProofMatch) {
+    // The earlier proof's own cite: a shot ADE filed when it was taken is
+    // shown by citing that row, which keeps its original time and caption.
     super(encodeCodedErrorMessage(
       PROOF_DUPLICATE_CODE,
       `Same bytes as "${existing.title}" (filed ${formatLocalWhen(existing.createdAt)}). `
-      + "This file is already proof. Record a new one, or report that recording failed.",
+      + (existing.artifactId
+        ? `This file is already proof; to show it, cite the earlier one:\ncite: ${proofCitationMarkdown(existing.artifactId, existing.title)}`
+        : "This file is already proof. Record a new one, or report that recording failed."),
     ));
     this.name = "ProofDuplicateError";
     this.existing = existing;

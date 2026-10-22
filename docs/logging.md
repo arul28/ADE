@@ -1013,12 +1013,14 @@ itself) with `feature: "work"`, `action: "apple_device"`, and a closed
 `xcodebuild -downloadPlatform` finished), `runtime_removed` (a remove or prune
 deleted at least one runtime), `duo_folded` (a fold the simulator applied),
 `duo_app_store_shots` (the App Store Duo set was taken), `device_rendered` (a
-3D render was filed as proof), or `duo_skill_added` (Apple's
-`app-resizability` skill was copied into a lane). A failed, refused or
+3D render was filed as proof), `duo_skill_added` (Apple's
+`app-resizability` skill was copied into a lane), or `device_leased` (an
+agent took a turn on a lane's device with `ade apple lease`; a renewal or a
+busy answer is not one). A failed, refused or
 no-op call emits nothing. Nothing finer crosses the boundary: no runtime or
 Xcode version, device, udid, pose, angle, lane, chat, or image. A per-outcome
 `work_apple_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most six accepted events per installation per UTC day, inside the
+to at most seven accepted events per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. A hinge drag sends one fold when it
 settles, never per frame. The dashboard spec is untouched: no card asks this

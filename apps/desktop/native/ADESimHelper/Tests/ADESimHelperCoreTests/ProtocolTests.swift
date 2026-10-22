@@ -20,6 +20,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(parsed, .touch(id: "a", udid: "U", phase: .begin, point: DevicePoint(x: 100, y: 250.5)))
         XCTAssertEqual(parsed.udid, "U")
         XCTAssertEqual(parsed.id, "a")
+
+        // Which picture the point is on: a viewer's frame point by default (an
+        // older ADE sends no `space`), an agent's screen point when it says so.
+        guard case let .touch(_, _, _, framePoint) = parsed else { return XCTFail("Expected a touch") }
+        XCTAssertEqual(framePoint.space, .frame)
+        let screenTouch = try command(#"{"type":"touch","id":"b","udid":"U","phase":"begin","x":1,"y":2,"space":"screen"}"#)
+        guard case let .touch(_, _, _, screenPoint) = screenTouch else { return XCTFail("Expected a touch") }
+        XCTAssertEqual(screenPoint.space, .screen)
+        guard case let .success(.scroll(_, _, _, _, anchor, scrollSpace)) = parse(
+            #"{"type":"scroll","id":"c","udid":"U","deltaX":0,"deltaY":1,"anchorX":5,"anchorY":6,"space":"screen"}"#
+        ) else { return XCTFail("Expected a scroll") }
+        XCTAssertEqual(scrollSpace, .screen)
+        XCTAssertEqual(anchor?.space, .screen)
+        guard case .failure(.invalid) = parse(#"{"type":"touch","id":"d","udid":"U","phase":"begin","x":1,"y":2,"space":"picture"}"#) else {
+            return XCTFail("An unknown space must be refused, not read as frame")
+        }
     }
 
     func testParsesEveryCommandType() throws {
@@ -142,7 +158,7 @@ final class ProtocolTests: XCTestCase {
         guard case .failure(.invalid) = parse(#"{"type":"scroll","id":"1","udid":"U","deltaX":0,"deltaY":1,"anchorX":5}"#) else {
             return XCTFail("Expected invalid")
         }
-        guard case let .success(.scroll(_, _, _, _, anchor)) = parse(
+        guard case let .success(.scroll(_, _, _, _, anchor, _)) = parse(
             #"{"type":"scroll","id":"1","udid":"U","deltaX":0,"deltaY":1,"anchorX":5,"anchorY":6}"#
         ) else { return XCTFail("Expected success") }
         XCTAssertEqual(anchor, DevicePoint(x: 5, y: 6))

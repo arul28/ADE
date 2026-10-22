@@ -89,6 +89,7 @@ import type {
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
@@ -171,6 +172,8 @@ import {
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
+import { createAppleDeviceLeases } from "./appleDeviceLease";
+import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
 import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
@@ -283,16 +286,31 @@ function isAppleScrollDirection(value: string): value is AppleScrollDirection {
 const APPLE_SCROLL_DEFAULT_AMOUNT = 600;
 
 /**
- * Viewport direction to the helper's content-movement delta.
- *
- * Inverted on purpose: the finger moves opposite to the content, so revealing
- * what is BELOW (`down`) moves the content UP, which is a negative deltaY.
+ * Which picture an input's points are measured on (the helper's `space`). A
+ * viewer (the pane, a remote window, the phone; all `source: "user"`) maps a
+ * click onto the raw framebuffer it draws turned; everyone else measures on
+ * what a screenshot and the accessibility tree show. The helper turns the
+ * second onto the first where the picture sits turned on its framebuffer: any
+ * device held landscape, and the iPhone Duo's inner display always.
+ */
+type HelperPointSpace = "frame" | "screen";
+
+function inputPointSpace(source: AppleInputSource | undefined): HelperPointSpace {
+  return source === "user" ? "frame" : "screen";
+}
+
+/**
+ * Viewport direction to the helper's scroll delta, which reads like a wheel's:
+ * positive `deltaY` reveals what is below (the helper swipes the finger up),
+ * positive `deltaX` what is to the right. Measured on an iPhone 17 and the
+ * iPhone Duo: the opposite signs, used until 2026-10, scrolled every agent
+ * the wrong way.
  */
 const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { deltaX: number; deltaY: number }> = {
-  down: (amount) => ({ deltaX: 0, deltaY: -amount }),
-  up: (amount) => ({ deltaX: 0, deltaY: amount }),
-  right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
-  left: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  down: (amount) => ({ deltaX: 0, deltaY: amount }),
+  up: (amount) => ({ deltaX: 0, deltaY: -amount }),
+  right: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  left: (amount) => ({ deltaX: -amount, deltaY: 0 }),
 };
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
@@ -1490,18 +1508,6 @@ function normalizeLaunchEnvironment(value: unknown): Record<string, string> {
   return normalized;
 }
 
-function normalizeLaunchArguments(value: unknown): string[] {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("iOS Simulator launch arguments must be an array.");
-  }
-  for (const item of value) {
-    if (typeof item !== "string") {
-      throw new Error("iOS Simulator launch arguments must be an array of strings.");
-    }
-  }
-  return value as string[];
-}
 
 function normalizeCoordinate(value: unknown, label: string): number {
   const coordinate = typeof value === "number" ? value : Number(value);
@@ -1852,6 +1858,8 @@ async function findAppBundle(
      */
     productName?: string | null;
     appBundlePath?: string | null;
+    /** Only a bundle that matches by id or name; never the first one found. */
+    matchOnly?: boolean;
   },
 ): Promise<string | null> {
   if (criteria.appBundlePath && fs.existsSync(criteria.appBundlePath)) return criteria.appBundlePath;
@@ -1873,7 +1881,7 @@ async function findAppBundle(
     const match = appBundles.find((candidate) => path.basename(candidate) === expectedName);
     if (match) return match;
   }
-  return appBundles[0] ?? null;
+  return criteria.matchOnly ? null : appBundles[0] ?? null;
 }
 
 function unquotePbxValue(raw: string | null | undefined): string | null {
@@ -2301,6 +2309,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
+  const deviceLeases = createAppleDeviceLeases();
 
   /**
    * The lane a call is about, and a note that its device was used.
@@ -4205,7 +4214,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
-  const buildProjectApp = async (target: ResolvedLaunchTarget, device: IosSimulatorDevice, projectRoot: string): Promise<string | null> => {
+  const buildProjectApp = async (
+    target: ResolvedLaunchTarget,
+    device: IosSimulatorDevice,
+    projectRoot: string,
+    configuration: string,
+    /** The caller asked for this configuration, rather than taking Debug. */
+    configurationNamed: boolean,
+  ): Promise<string | null> => {
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     if (!target.projectPath || !target.scheme) {
       return target.appBundlePath;
@@ -4217,6 +4233,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         projectRoot,
         projectPath: relativeProjectPath,
         scheme: target.scheme,
+        configuration,
         deviceUdid: device.udid,
         derivedDataPath,
       });
@@ -4229,7 +4246,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
             "-scheme",
             target.scheme,
             "-configuration",
-            "Debug",
+            configuration,
             "-sdk",
             "iphonesimulator",
             "-destination",
@@ -4257,7 +4274,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
       args.logger.info("ios_simulator.build.complete", { projectPath: relativeProjectPath, scheme: target.scheme, derivedDataPath });
     }
-    return findAppBundle(derivedDataPath, {
+    // A named configuration's products only: a lane that has built both
+    // Debug and Release has two apps with one bundle id, and a configuration
+    // that was never built must not quietly install the other one. With none
+    // named, Debug's products first, else anything the lane built, as before.
+    const productRoot = path.join(derivedDataPath, "Build", "Products", `${configuration}-iphonesimulator`);
+    const built = fs.existsSync(productRoot);
+    if (configurationNamed && !built) {
+      throw new Error(`${configuration} has not been built for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    const appBundle = await findAppBundle(built ? productRoot : derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
       // productName lives on the underlying launch target (ResolvedLaunchTarget
@@ -4266,7 +4292,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // differs from the produced .app, still resolves to the right bundle.
       productName: target.target.productName,
       appBundlePath: target.appBundlePath,
+      // Without a build just now, a named configuration's folder may hold
+      // only another target's app; never install that under this name.
+      matchOnly: configurationNamed && !target.shouldBuild,
     });
+    if (!appBundle && configurationNamed && !target.shouldBuild) {
+      throw new Error(`${configuration} has no build of ${target.scheme ?? "this target"} for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    return appBundle;
   };
 
   const attachToChatSession = (
@@ -4376,6 +4409,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
     if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
+    // The caller's own inputs, refused before a boot or a build costs anything.
+    const buildConfiguration = normalizeBuildConfiguration(launchArgs.configuration);
+    const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
     // A launch that names no chat session may not evict one that does: an
     // agent's anonymous CLI launch would otherwise silently take the simulator
@@ -4513,13 +4549,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, buildStepExtra);
       }
       const appBundle = target.shouldBuild || target.shouldInstall
-        ? await buildProjectApp(target, device, projectRoot)
+        ? await buildProjectApp(target, device, projectRoot, buildConfiguration, Boolean(launchArgs.configuration?.trim()))
         : target.appBundlePath;
       emitLaunchProgress(
         launchId,
         "build-app",
         target.shouldBuild ? "complete" : "skipped",
-        target.shouldBuild ? "Build complete." : "Using a previously built app.",
+        target.shouldBuild ? `${buildConfiguration} build complete.` : "Using a previously built app.",
         target.shouldBuild
           ? [relativeToRoot(projectRoot, appBundle ?? projectRoot), `root ${abbreviatePathTail(projectRoot)}`].join(" · ")
           : staleBinaryDetail,
@@ -4546,7 +4582,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
 
       const launchEnvironment = normalizeLaunchEnvironment(launchArgs.environment);
-      const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
       const startedAt = nowIso();
       const session: IosSimulatorSession = {
         id: randomUUID(),
@@ -4570,6 +4605,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // caller of `launch` ever saw those two facts before.
         buildRoot: projectRoot,
         usedInstalledBinary,
+        buildConfiguration: target.shouldBuild ? buildConfiguration : null,
       };
       // A launch that was superseded (force takeover, dispose) must not publish
       // its session over the newer one.
@@ -5751,10 +5787,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * the same unit idb's `ui tap` took — so no call site had to change its
    * coordinates when the engine did.
    */
-  const helperTap = async (deviceUdid: string, x: number, y: number): Promise<void> => {
+  const helperTap = async (deviceUdid: string, x: number, y: number, space: HelperPointSpace): Promise<void> => {
     const client = helper();
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y });
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
   };
 
   const helperType = async (deviceUdid: string, text: string): Promise<void> => {
@@ -5773,13 +5809,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const helperSwipe = async (
     deviceUdid: string,
     input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null },
+    space: HelperPointSpace,
   ): Promise<void> => {
     const durationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
     if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
     const client = helper();
     const steps = Math.max(2, Math.min(60, Math.round(Math.max(durationMs, 1) / DRAG_STEP_MS)));
     const stepDelayMs = Math.max(0, Math.round(durationMs / steps));
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY, space });
     for (let step = 1; step < steps; step += 1) {
       const progress = step / steps;
       await client.send({
@@ -5788,10 +5825,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         phase: "move",
         x: input.startX + ((input.endX - input.startX) * progress),
         y: input.startY + ((input.endY - input.startY) * progress),
+        space,
       });
       if (stepDelayMs > 0) await delay(stepDelayMs);
     }
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY, space });
   };
 
   const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
@@ -5803,7 +5841,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return enqueueControl("tap", async () => {
       // Whoever taps now, a live finger still held on this lane comes up first.
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
-      await helperTap(deviceUdid, x, y);
+      await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
       return { ok: true };
@@ -6034,7 +6072,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(scrollArgs);
     const deviceUdid = await resolveControlDeviceUdid(scrollArgs.deviceUdid, runtime);
     return enqueueControl("scroll", async () => {
-      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}) });
+      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}), space: inputPointSpace(scrollArgs.source) });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       // A scroll IS injected input under the auto-record contract: it changes
       // what is on screen, and a video that skips it shows a jump cut. The
@@ -6074,7 +6112,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // Still validated rather than ignored: a caller passing a nonsense delta
       // has a bug, and silently accepting it hides it.
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
-      await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs });
+      await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
       return { ok: true };
@@ -6104,7 +6142,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const LIVE_TOUCH_IDLE_RELEASE_MS = 4_000;
 
   const sendTouch = (udid: string, phase: "begin" | "move" | "end", x: number, y: number): Promise<unknown> =>
-    helper().send({ type: "touch", udid, phase, x, y });
+    // A viewer's finger, already on the framebuffer it draws.
+    helper().send({ type: "touch", udid, phase, x, y, space: "frame" satisfies HelperPointSpace });
 
   /** Lift a lane's held finger, if any. Best-effort: the device may be gone. */
   const liftLiveTouch = async (laneKey: string, reason: string, laneId: string | null): Promise<void> => {
@@ -6988,7 +7027,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
       return result;
     },
-    relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
+    relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
     terminateApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).terminateApp(toolArgs),
     uninstallApp: async (toolArgs: IosSimulatorUninstallAppArgs) => darwinHub(toolArgs).uninstallApp(toolArgs),
     setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub(toolArgs).setStatusBar(toolArgs),
@@ -7000,27 +7039,59 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
      * device that has not finished booting, reads as `null`, not as an error:
      * the drawer asks every couple of seconds and an empty home screen is a
      * normal answer.
+     *
+     * `waitMs` keeps asking (up to 30 s) until an app is in front: an app
+     * launched a moment ago is not yet the accessibility tree's frontmost.
      */
     getForegroundApp: async (
-      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null } = {},
+      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null; waitMs?: number | null } = {},
     ): Promise<IosSimulatorForegroundApp> => {
       assertDarwin();
       const udid = await resolveControlDeviceUdid(arg.deviceUdid, resolveRuntime(arg));
-      let payload: Record<string, unknown>;
-      try {
-        payload = await helper().send({ type: "ax-frontmost", udid });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/frontmost application|not booted/i.test(message)) return null;
-        throw error;
+      const readFrontmost = async (): Promise<IosSimulatorForegroundApp> => {
+        let payload: Record<string, unknown>;
+        try {
+          payload = await helper().send({ type: "ax-frontmost", udid });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/frontmost application|not booted/i.test(message)) return null;
+          throw error;
+        }
+        const app = payload.app;
+        if (!app || typeof app !== "object") return null;
+        const bundleId = (app as { bundleId?: unknown }).bundleId;
+        if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
+        const pid = (app as { pid?: unknown }).pid;
+        return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
+      };
+      const waitMs = Math.min(Math.max(Number(arg.waitMs) || 0, 0), 30_000);
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const app = await readFrontmost();
+        if (app || Date.now() >= deadline) return app;
+        await delay(Math.min(500, Math.max(0, deadline - Date.now())));
       }
-      const app = payload.app;
-      if (!app || typeof app !== "object") return null;
-      const bundleId = (app as { bundleId?: unknown }).bundleId;
-      if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
-      const pid = (app as { pid?: unknown }).pid;
-      return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
     },
+
+    /*
+     * Turns on the lane's device for the agents that share it (advisory: see
+     * `appleDeviceLease.ts`). Keyed by lane, as the device is.
+     */
+    deviceLease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; holder?: string | null; ttlMs?: number | null; waitMs?: number | null } = {}) => {
+      const runtime = resolveRuntime(leaseArgs);
+      const holder = leaseArgs.holder?.trim() || leaseArgs.chatSessionId?.trim() || "agent";
+      const result = await deviceLeases.acquire({ key: runtime.key, holder, ttlMs: leaseArgs.ttlMs, waitMs: leaseArgs.waitMs });
+      // A new turn, not a renewal or a busy answer: agents taking turns.
+      if (result.acquired && !result.renewed) args.captureAnalytics?.("device_leased");
+      return result;
+    },
+    deviceLeaseRelease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; token?: string | null } = {}) => {
+      const token = leaseArgs.token?.trim();
+      if (!token) throw new Error("A lease release needs the token `apple lease` printed.");
+      return deviceLeases.release({ key: resolveRuntime(leaseArgs).key, token });
+    },
+    deviceLeaseStatus: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null } = {}) =>
+      deviceLeases.status(resolveRuntime(leaseArgs).key),
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
     startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub(logArgs).startEventLog(logArgs),
@@ -7088,6 +7159,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();
       for (const held of liveTouches.values()) clearTimeout(held.release);

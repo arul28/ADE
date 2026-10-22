@@ -380,6 +380,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorRenderPreview:
       return IOS_SIMULATOR_PREVIEW_TIMEOUT_MS;
     case IPC.iosSimulatorListLaunchTargets:
+    // `waitMs` may hold it up to 30 s; the outer clock must outlast that.
+    case IPC.iosSimulatorGetForegroundApp:
     case IPC.iosSimulatorGetScreenSnapshot:
     case IPC.iosSimulatorInspectPoint:
     case IPC.iosSimulatorSelectPoint:
