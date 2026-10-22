@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.117] - 2026-10-22
+
+### Desktop and web
+
+- ADE MCP typed read tools, project on every result, scoped help and project skills (#1868).
+- Browser agents upload, drop, download and paste; tabs record who opened them (#1866).
+- Chip menus, machine popup, `@mcp` mentions, chips open on the right machine (#1867).
+- iPhone Duo turns, gets its own dock, presets show the pose (#1865).
+- "What's new" shows the iPhone Duo, phone simulator and Windows desktop (#1864).
+
+### iOS
+
+- Chip menus and `@mcp` mentions in chat (#1867), in a new TestFlight build.
+
 ## [1.2.116] - 2026-10-21
 
 ### Desktop and web
@@ -2659,7 +2673,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.116...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.117...HEAD
+[1.2.117]: https://github.com/arul28/ADE/compare/v1.2.116...v1.2.117
 [1.2.116]: https://github.com/arul28/ADE/compare/v1.2.115...v1.2.116
 [1.2.115]: https://github.com/arul28/ADE/compare/v1.2.114...v1.2.115
 [1.2.114]: https://github.com/arul28/ADE/compare/v1.2.113...v1.2.114
