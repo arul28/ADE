@@ -1010,7 +1010,7 @@ itself) with `feature: "work"`, `action: "apple_device"`, and a closed
 `xcodebuild -downloadPlatform` finished), `runtime_removed` (a remove or prune
 deleted at least one runtime), `duo_folded` (a fold the simulator applied),
 `duo_app_store_shots` (the App Store Duo set was taken), `device_rendered` (a
-3D render was filed as proof), or `duo_skill_added` (Apple's
+3D render was filed as proof), `duo_skill_added` (Apple's
 `app-resizability` skill was copied into a lane), or `device_leased` (an
 agent took a turn on a lane's device with `ade apple lease`; a renewal or a
 busy answer is not one). A failed, refused or

@@ -302,6 +302,8 @@ function createViewer(
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
+  /** Where the touch in progress last was, so a cancel ends it there. */
+  let lastInputHit: ScreenHit | null = null;
   let loadGen = 0;
   let currentModelKey = "";
   let lastFrameVersion = Number.NaN;
@@ -427,7 +429,9 @@ function createViewer(
     if (!source || !mirror || !mirrorContext) return { drawn: false, resized: false };
     if (source.width <= 0 || source.height <= 0) return { drawn: false, resized: false };
     const shown = Math.max(viewport.width, viewport.height) * viewport.pixelRatio;
-    const longSide = Math.min(MIRROR_MAX_LONG_SIDE, Math.max(MIRROR_MIN_LONG_SIDE, Math.round(shown)));
+    // Stepped, so dragging the pane's edge rebuilds the texture now and then,
+    // not on every pixel.
+    const longSide = Math.min(MIRROR_MAX_LONG_SIDE, Math.max(MIRROR_MIN_LONG_SIDE, Math.ceil(shown / 128) * 128));
     const scale = Math.min(1, longSide / Math.max(source.width, source.height));
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
@@ -910,6 +914,7 @@ function createViewer(
         interactive: props.interactive,
       }) === "input" && hit) {
         pointerMode = "input";
+        lastInputHit = hit;
         motion.hold(true, now);
         props.onDeviceInput({ phase: "begin", ...hit });
         invalidate();
@@ -925,7 +930,10 @@ function createViewer(
       if (pointerMode === "input") {
         if (!getProps().interactive) return;
         const hit = screenPoint(nx, ny, true);
-        if (hit) getProps().onDeviceInput({ phase: "move", ...hit });
+        if (hit) {
+          lastInputHit = hit;
+          getProps().onDeviceInput({ phase: "move", ...hit });
+        }
         return;
       }
       motion.orbit(dx, dy, now);
@@ -936,6 +944,7 @@ function createViewer(
       const mode = pointerMode;
       pointerMode = null;
       if (mode === "input") {
+        lastInputHit = null;
         const hit = screenPoint(nx, ny, true);
         if (hit && getProps().interactive) getProps().onDeviceInput({ phase: "end", ...hit });
         motion.hold(false, now);
@@ -1009,14 +1018,9 @@ function createViewer(
     cancelGestures(now) {
       if (disposed) return;
       if (pointerMode === "input") {
-        const props = getProps();
-        if (props.interactive) {
-          const points = orientedPointSize(
-      props.orientation,
-      appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
-    );
-          props.onDeviceInput({ phase: "end", x: points.width / 2, y: points.height / 2 });
-        }
+        // End the touch where it last was, in the space it began in.
+        if (getProps().interactive && lastInputHit) getProps().onDeviceInput({ phase: "end", ...lastInputHit });
+        lastInputHit = null;
         motion.hold(false, now);
       } else if (pointerMode === "orbit") {
         motion.dragActive(false, now);
