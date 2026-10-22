@@ -87,7 +87,7 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
@@ -3322,9 +3322,6 @@ export async function createAdeRuntime(args: {
 
     let lastDailyAnalyticsDay: string | null = null;
     let dailyAnalyticsInFlight: Promise<void> | null = null;
-    // Captured once for the balance callback: the chat service is created
-    // above, and the callback must not see a later reassignment.
-    const chatLoadService = agentChatService;
     let usageTrackingService: ReturnType<typeof attachSharedUsageTrackingScope>;
     // Provider quota belongs to the machine, so this daemon polls it once and
     // every project scope attaches to that one poller. Per-project inputs (the
@@ -3341,12 +3338,10 @@ export async function createAdeRuntime(args: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
           modelRouter,
-          // The brain owns the chats, so balance reads their lifecycle here.
-          // A host without a chat service (the machine-level tracker) leaves
-          // this out and balances on measured burn alone.
-          ...(chatLoadService
-            ? { listProviderAccountChatLoad: () => chatLoadService.listProviderAccountChatLoad() }
-            : {}),
+          // Provider quota is machine-wide, so balance unions every live chat
+          // service on this machine, not only this project's. A host with no
+          // chat service (headless CLI) leaves the registry empty.
+          listProviderAccountChatLoad: listMachineProviderAccountChatLoad,
         },
       }),
       {

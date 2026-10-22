@@ -188,7 +188,7 @@ import { installEditableContextMenu } from "./editorContextMenu";
 import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
-import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { createAgentChatService, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
@@ -5517,7 +5517,7 @@ app.whenReady().then(async () => {
         // Smart balance sees the chats this machine owns: running chats burn
         // now, open-but-idle chats reserve room. The chat service owns the
         // lifecycle; balance owns the weights.
-        listProviderAccountChatLoad: () => agentChatService.listProviderAccountChatLoad(),
+        listProviderAccountChatLoad: listMachineProviderAccountChatLoad,
       },
     });
     const storageInsightsService = createStorageInsightsService({

@@ -974,7 +974,7 @@ export type UsageAccount = {
 
 export type UsageAccountLogin = "ok" | "expired" | "signed_out";
 
-/** Why smart balance kept a new chat on the default account. */
+/** Why a pick was not a quota-based decision (one login, no readings, every login gone, every account blocked). */
 export type AccountBalanceSkipReason =
   | "one_account"
   | "no_usage_data"

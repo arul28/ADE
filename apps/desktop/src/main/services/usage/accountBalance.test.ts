@@ -340,6 +340,27 @@ describe("pickInstanceForNewChat", () => {
     expect(result.instanceId).toBe("work");
   });
 
+  it("keeps the running-chat prior when a pending assignment exists", () => {
+    // Five chats are already running on Default (2.5 pts/h) and a sixth was
+    // just placed there (0.5 pts/h pending). The pending entry must not replace
+    // the larger running load and make the account look quiet.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work")],
+      accounts: accounts("claude", "work"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 11, weekly: 28 }, { fiveHour: HOURS(1.1), weekly: HOURS(46) }),
+        windowSet("work", { fiveHour: 0, weekly: 62 }, { fiveHour: HOURS(4.27), weekly: HOURS(42) }),
+      ),
+      loadByInstanceId: load({
+        claude: { runningWeight: 5, pendingWeeklyRate: 0.5 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("work");
+  });
+
   it("lets the sooner reset win when two deficits are within the tie band", () => {
     const result = pickInstanceForNewChat({
       provider: "claude",
@@ -499,8 +520,20 @@ describe("pickAlternateInstanceForLimitedChat", () => {
     })).toEqual({
       instanceId: "work",
       label: "Work",
-      reason: "most five-hour room left",
+      reason: "most five-hour room projected",
     });
+  });
+
+  it("prefers the sooner weekly reset when survival and room tie", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 20, weekly: 10 }),
+        windowSet("work", { fiveHour: 50, weekly: 50 }, { weekly: HOURS(48) }),
+        windowSet("personal", { fiveHour: 50, weekly: 50 }, { weekly: HOURS(12) }),
+      ),
+    })?.instanceId).toBe("personal");
   });
 
   it("does not move onto an account that is about to run dry", () => {

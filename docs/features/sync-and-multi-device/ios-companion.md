@@ -3605,8 +3605,8 @@ instances. Each `ProviderAccountRow` carries the account's quota meters
 (`providerAccountWindows` / `ProviderAccountQuotaMeter`), ordered by the shared
 `adeUsageWindowRank`, and
 marks the account smart balance would give the next chat (**Next**, from
-`MobileUsageQuotaSnapshot.balanceNext`; for Claude this previews the same
-weekly-first, five-hour reserve rotation as desktop). Swipe or context menu
+`MobileUsageQuotaSnapshot.balanceNext`; the same room-to-spend pick desktop
+makes). Swipe or context menu
 makes an account the default, removes one, or opens `ProviderAccountDetailPage` (make default,
 sign in again, rename, remove); a running-chats note makes clear that switching
 the default only changes new chats. **Add account** opens

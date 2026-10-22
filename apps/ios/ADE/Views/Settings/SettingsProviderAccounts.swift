@@ -356,9 +356,9 @@ struct ProviderAccountsScreen: View {
     if enabled {
       if signedIn.count < 2 { return "Add a second signed-in account to spread chats across them." }
       if let next = store.accounts.first(where: isBalanceNext) {
-        return "New chats go to the account whose weekly limit resets soonest. Next: \(next.label)."
+        return "New chats go to the account that needs the most weekly room spent before its reset. Next: \(next.label)."
       }
-      return "New chats go to the account whose weekly limit resets soonest."
+      return "New chats go to the account that needs the most weekly room spent before its reset."
     }
     let fallback = store.accounts.first(where: \.isDefault)?.label ?? "the default"
     return "New chats use \(fallback). Running chats always keep their account."

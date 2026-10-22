@@ -7,7 +7,7 @@ import type {
   UsageAccount,
   UsageWindow,
 } from "../../../shared/types/usage";
-import { usageAccountId } from "./usageAccountId";
+import { usageAccountIdForInstance } from "./usageAccountId";
 
 export type AccountBalancePick = {
   instanceId: string;
@@ -23,7 +23,7 @@ export type AccountBalanceIdleChat = {
   /** Milliseconds since this chat last did anything. */
   idleMs: number;
   /** A scheduled wake before the weekly reset makes the resumption certain. */
-  wakeAtMs?: number | null;
+  wakeAtMs?: number;
   /** A failed last turn is likely to be retried. */
   failed?: boolean;
   /** Relative burn of the chat's model; omitted means a normal chat. */
@@ -45,6 +45,9 @@ export type AccountBalanceLoad = {
   fiveHourRate?: number;
   /** Model-weighted chats mid-turn, used only when no rate is measured. */
   runningWeight?: number;
+  /** Chats just assigned, before a poll sees their burn. */
+  pendingWeeklyRate?: number;
+  pendingFiveHourRate?: number;
   /** Open, not running, not settled or snoozed. */
   idle?: readonly AccountBalanceIdleChat[];
 };
@@ -87,7 +90,7 @@ export type PickInstanceForNewChatArgs = {
 };
 
 /**
- * A window with this much room or less cannot take a new chat. The five-hour
+ * A window with less than this much room cannot take a new chat. The five-hour
  * floor is the absolute "can I even start" line; the projection below is what
  * actually decides whether the account can carry the chats already on it.
  */
@@ -140,6 +143,8 @@ const MAX_IDLE_RESUME_PROBABILITY = 0.9;
  * measured rate from flipping the pick on every poll.
  */
 const DEFICIT_TIE = 0.15;
+/** Floating-point noise when two reset times or survival values are equal. */
+const TIE_EPSILON = 1e-9;
 
 function windowsForAccount(
   windowsByAccountId: PickInstanceForNewChatArgs["windowsByAccountId"],
@@ -191,7 +196,11 @@ function readingFor(
   const account = (args.accounts ?? []).find(
     (candidate) => candidate.provider === args.provider && candidate.instanceId === instanceId,
   );
-  const accountId = account?.id ?? usageAccountId({ provider: args.provider, instanceId });
+  const accountId = usageAccountIdForInstance({
+    provider: args.provider,
+    instanceId,
+    accounts: args.accounts,
+  });
   return { account, windows: windowsForAccount(args.windowsByAccountId, accountId) };
 }
 
@@ -200,21 +209,13 @@ type AccountRoom =
   | {
     kind: "room";
     weeklyRoom: number;
-    fiveHourRoom: number;
     hoursToWeeklyReset: number;
-    hoursToFiveHourReset: number;
-    /** Points/hour that spends this account's weekly room exactly at its reset. */
-    need: number;
-    /** Points/hour already committed to this account. */
-    load: number;
-    /** `need - load`: positive means this account needs more work. */
+    /** Positive means this account needs more work than its committed burn. */
     deficit: number;
     /** Five-hour room left after the projection window. */
     survivalFiveHour: number;
     /** True when the account clears every floor and the first-turn budget. */
     survives: boolean;
-    /** True when a hard floor or the projection rules this account out. */
-    blocked: boolean;
   };
 
 /**
@@ -237,16 +238,14 @@ function reservedWeeklyPoints(
       points += IDLE_RESUME_POINTS * weight;
       continue;
     }
-    if (chat.failed) {
-      points += IDLE_RESUME_POINTS * 0.8 * weight;
-      continue;
-    }
     const idleMs = Number.isFinite(chat.idleMs) ? Math.max(0, chat.idleMs) : 0;
     const probability = Math.min(
       MAX_IDLE_RESUME_PROBABILITY,
       0.5 ** (idleMs / IDLE_RESUME_HALF_LIFE_MS),
     );
-    points += probability * IDLE_RESUME_POINTS * weight;
+    // A failed turn is likely to be retried, but only while the chat is still
+    // fresh; a failure from days ago gets the same decay as any idle chat.
+    points += probability * IDLE_RESUME_POINTS * (chat.failed ? 0.8 : 1) * weight;
   }
   return points;
 }
@@ -288,12 +287,20 @@ function accountRoom(
     : DEFAULT_FIVE_HOUR_DURATION_MS / 3_600_000;
   const divisor = Math.max(MIN_HOURS_TO_RESET, hoursToWeeklyReset);
 
-  const weeklyRate = load.weeklyRate ?? (load.runningWeight ?? 0) * PRIOR_WEEKLY_BURN_PER_RUNNING_CHAT;
-  const fiveHourRate = load.fiveHourRate ?? (load.runningWeight ?? 0) * PRIOR_FIVE_HOUR_BURN_PER_RUNNING_CHAT;
+  // A pending assignment covers the gap before the next poll. Taking the
+  // larger of it and the measured movement avoids counting the same chat twice
+  // once the poll sees it, while a burst is never hidden by an older rate.
+  const weeklyRate = Math.max(
+    load.weeklyRate ?? (load.runningWeight ?? 0) * PRIOR_WEEKLY_BURN_PER_RUNNING_CHAT,
+    load.pendingWeeklyRate ?? 0,
+  );
+  const fiveHourRate = Math.max(
+    load.fiveHourRate ?? (load.runningWeight ?? 0) * PRIOR_FIVE_HOUR_BURN_PER_RUNNING_CHAT,
+    load.pendingFiveHourRate ?? 0,
+  );
   const need = (weeklyRoom ?? 100) / divisor;
   const reservedRate = reservedWeeklyPoints(load, nowMs, hoursToWeeklyReset) / divisor;
-  const committed = Math.max(0, weeklyRate) + reservedRate;
-  const deficit = need - committed;
+  const deficit = need - Math.max(0, weeklyRate) - reservedRate;
 
   const survivalFiveHour = (fiveHourRoom ?? 100)
     - Math.max(0, fiveHourRate) * Math.min(hoursToFiveHourReset, FIVE_HOUR_PROJECTION_HOURS);
@@ -305,15 +312,10 @@ function accountRoom(
   return {
     kind: "room",
     weeklyRoom: weeklyRoom ?? 100,
-    fiveHourRoom: fiveHourRoom ?? 100,
     hoursToWeeklyReset,
-    hoursToFiveHourReset,
-    need,
-    load: committed,
     deficit,
     survivalFiveHour,
     survives: !blocked,
-    blocked,
   };
 }
 
@@ -325,10 +327,10 @@ type RankedInstance = { instance: ProviderInstance; room: Extract<AccountRoom, {
  * window, then the default account, then a stable id order.
  */
 function compareTie(a: RankedInstance, b: RankedInstance, defaultId: string): number {
-  if (Math.abs(a.room.hoursToWeeklyReset - b.room.hoursToWeeklyReset) > 1e-9) {
+  if (Math.abs(a.room.hoursToWeeklyReset - b.room.hoursToWeeklyReset) > TIE_EPSILON) {
     return a.room.hoursToWeeklyReset - b.room.hoursToWeeklyReset;
   }
-  if (Math.abs(a.room.survivalFiveHour - b.room.survivalFiveHour) > 1e-9) {
+  if (Math.abs(a.room.survivalFiveHour - b.room.survivalFiveHour) > TIE_EPSILON) {
     return b.room.survivalFiveHour - a.room.survivalFiveHour;
   }
   if (a.instance.id === defaultId) return -1;
@@ -346,19 +348,25 @@ function bestByDeficit(candidates: readonly RankedInstance[], defaultId: string)
   });
 }
 
+/** Orders two accounts by five-hour survival, then weekly room, then deadline. */
+function compareBySurvival(a: RankedInstance, b: RankedInstance, defaultId: string): number {
+  const survivalGap = a.room.survivalFiveHour - b.room.survivalFiveHour;
+  if (Math.abs(survivalGap) > TIE_EPSILON) return survivalGap;
+  const roomGap = a.room.weeklyRoom - b.room.weeklyRoom;
+  if (Math.abs(roomGap) > TIE_EPSILON) return roomGap;
+  // compareTie is negative-first; this comparator is positive-first.
+  return -compareTie(a, b, defaultId);
+}
+
 /**
  * When every account is blocked, any room beats a stopped chat. Prefer the
  * account that survives the five-hour projection longest, then the one with
  * more weekly room, then the normal deadline order.
  */
 function bestBySurvival(candidates: readonly RankedInstance[], defaultId: string): RankedInstance {
-  return candidates.reduce((current, candidate) => {
-    const survivalGap = candidate.room.survivalFiveHour - current.room.survivalFiveHour;
-    if (Math.abs(survivalGap) > 1e-9) return survivalGap > 0 ? candidate : current;
-    const roomGap = candidate.room.weeklyRoom - current.room.weeklyRoom;
-    if (Math.abs(roomGap) > 1e-9) return roomGap > 0 ? candidate : current;
-    return compareTie(candidate, current, defaultId) < 0 ? candidate : current;
-  });
+  return candidates.reduce((current, candidate) => (
+    compareBySurvival(candidate, current, defaultId) > 0 ? candidate : current
+  ));
 }
 
 /**
@@ -394,7 +402,6 @@ export function pickInstanceForNewChat({
 
   const signedOutInstanceIds: string[] = [];
   const rankedInstances: RankedInstance[] = [];
-  let unknownCount = 0;
   for (const instance of signedIn) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
     // Old windows stay on screen after a login breaks. They are not room.
@@ -408,10 +415,7 @@ export function pickInstanceForNewChat({
       loadFor(loadByInstanceId, instance.id),
       firstTurnFiveHourBurn,
     );
-    if (room.kind === "unknown") {
-      unknownCount += 1;
-      continue;
-    }
+    if (room.kind === "unknown") continue;
     rankedInstances.push({ instance, room });
   }
 
@@ -436,10 +440,7 @@ export function pickInstanceForNewChat({
   if (signedOutInstanceIds.length === signedIn.length) {
     return { instanceId: defaultId, reason: "every login is signed out", skip: "all_signed_out", ...signedOut };
   }
-  if (unknownCount > 0) {
-    return { instanceId: defaultId, reason: "no usage data", skip: "no_usage_data", ...signedOut };
-  }
-  return { instanceId: defaultId, reason: "every account is near its limit", skip: "all_full", ...signedOut };
+  return { instanceId: defaultId, reason: "no usage data", skip: "no_usage_data", ...signedOut };
 }
 
 /**
@@ -485,8 +486,7 @@ export function pickAlternateInstanceForLimitedChat({
   windowsByAccountId,
   nowMs,
   loadByInstanceId,
-  firstTurnFiveHourBurn = DEFAULT_FIRST_TURN_FIVE_HOUR_BURN,
-}: PickInstanceForNewChatArgs & { currentInstanceId: string }): UsageLimitAlternatePick | null {
+}: Omit<PickInstanceForNewChatArgs, "firstTurnFiveHourBurn"> & { currentInstanceId: string }): UsageLimitAlternatePick | null {
   const blockedId = currentInstanceId.trim() || defaultInstanceId(provider, instances);
   const candidates = instances.filter((instance) => (
     instance.provider === provider && instance.signedIn && !instance.sameLoginAs && instance.id !== blockedId
@@ -499,27 +499,15 @@ export function pickAlternateInstanceForLimitedChat({
       windows,
       nowMs,
       loadFor(loadByInstanceId, instance.id),
-      firstTurnFiveHourBurn,
+      DEFAULT_FIRST_TURN_FIVE_HOUR_BURN,
     );
     if (room.kind !== "room") continue;
     const ranked = { instance, room };
-    if (!chosen) {
+    if (!chosen || compareBySurvival(ranked, chosen, defaultInstanceId(provider, instances)) > 0) {
       chosen = ranked;
-      continue;
     }
-    const survivalGap = ranked.room.survivalFiveHour - chosen.room.survivalFiveHour;
-    if (Math.abs(survivalGap) > 1e-9) {
-      if (survivalGap > 0) chosen = ranked;
-      continue;
-    }
-    const roomGap = ranked.room.weeklyRoom - chosen.room.weeklyRoom;
-    if (Math.abs(roomGap) > 1e-9) {
-      if (roomGap > 0) chosen = ranked;
-      continue;
-    }
-    if (compareTie(ranked, chosen, defaultInstanceId(provider, instances)) < 0) chosen = ranked;
   }
   if (!chosen) return null;
   const label = chosen.instance.label.trim() || chosen.instance.id;
-  return { instanceId: chosen.instance.id, label, reason: "most five-hour room left" };
+  return { instanceId: chosen.instance.id, label, reason: "most five-hour room projected" };
 }

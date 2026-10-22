@@ -60,10 +60,11 @@ Fable and Opus 2.4). The same scale sizes the first-turn gate. Measured
 movement always wins once a poll sees it. Open-but-idle chats add a
 reservation: a chat idle for hours is unlikely to resume before the reset, one
 idle for minutes probably will, and settled, snoozed and archived chats reserve
-nothing. A new chat is recorded as pending until the next poll sees its burn,
-so ten chats created together spread across accounts instead of all choosing
-the same one. The Settings **Next chat** mark previews that pick without
-placing a chat.
+nothing. A new chat is recorded as pending and decays over the next hour; the
+larger of that decaying commitment and the measured rate wins, so a burst is
+never hidden. Ten chats created together spread across accounts instead of all
+choosing the same one. The Settings **Next chat** mark previews that pick
+without placing a chat.
 
 The five-hour window is a gate, not a ranking. An account with less than 10% of
 its five-hour window, or less than 5% of its weekly room, left is out.

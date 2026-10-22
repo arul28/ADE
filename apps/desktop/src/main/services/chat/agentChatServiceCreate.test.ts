@@ -4047,6 +4047,69 @@ describe("createAgentChatService", () => {
       expect(envOfLaunch(1)?.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL).toBeUndefined();
     });
 
+  describe("listProviderAccountChatLoad", () => {
+    it("reads a persisted chat's account, treats it as idle, and skips settled or snoozed chats", async () => {
+      const { service } = createService();
+      try {
+      const now = new Date().toISOString();
+      const row = {
+        id: "chat-a",
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        status: "running",
+        startedAt: now,
+        endedAt: null,
+        archivedAt: null,
+        settledAt: null as string | null,
+        settleOverride: null,
+        snoozedUntil: null as string | null,
+        lastActivityAt: now,
+        lastTurnFailedAt: null,
+        transcriptPath: "",
+        title: "Account load",
+        tracked: true,
+        pinned: false,
+        manuallyNamed: false,
+        goal: null,
+        summary: null,
+        lastOutputPreview: null,
+        headShaStart: null,
+        headShaEnd: null,
+        exitCode: null,
+        ptyId: null,
+        resumeCommand: null,
+      };
+      mockState.sessions.set("chat-a", row);
+      writePersistedChatState("chat-a", {
+        version: 2,
+        sessionId: "chat-a",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "claude-sonnet-5-5",
+        instanceId: "work",
+      });
+
+      // A persisted `status: "running"` is not a live turn: the chat is idle
+      // and reserves room, and the account comes from the chat state file.
+      const load = service.listProviderAccountChatLoad();
+      expect(load.get("claude:work")).toMatchObject({
+        runningWeight: 0,
+        idle: [expect.objectContaining({ modelWeight: 1 })],
+      });
+
+      row.settledAt = now;
+      expect(service.listProviderAccountChatLoad().get("claude:work")).toBeUndefined();
+
+      row.settledAt = null;
+      row.snoozedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+      expect(service.listProviderAccountChatLoad().get("claude:work")).toBeUndefined();
+      } finally {
+        await service.disposeAll();
+      }
+    });
+  });
+
     it("moves a chat onto the new provider's default account when it switches provider", async () => {
       const accounts = getMachineProviderInstanceStore();
       const work = accounts.create({ provider: "claude", label: "Work" }).instance;

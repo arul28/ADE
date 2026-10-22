@@ -211,7 +211,7 @@ import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelCatalogArgs, ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
-import { usageAccountId } from "./usageAccountId";
+import { usageAccountId, usageAccountIdForInstance } from "./usageAccountId";
 import {
   EMPTY_GITHUB_STATS,
   makeEmptyGithubStats,
@@ -251,7 +251,7 @@ const FIVE_HOUR_BURN_HALF_LIFE_MS = 20 * 60_000;
 const PENDING_ASSIGNMENT_HALF_LIFE_MS = 20 * 60_000;
 const PENDING_ASSIGNMENT_TTL_MS = 60 * 60_000;
 /** The chat service's load is read at most this often; a new chat is pending. */
-const CHAT_LOAD_CACHE_MS = 5_000;
+const CHAT_LOAD_CACHE_MS = 15_000;
 /** Provider readings round to whole points; below this a delta is noise. */
 const MIN_BURN_SAMPLE_MS = 60_000;
 const MAX_BURN_POINTS_PER_HOUR = 200;
@@ -4818,8 +4818,8 @@ export function createUsageTrackingService({
   type BurnReading = {
     percentUsed: number;
     resetsAt: string;
-    sampleAtMs: number;
     rate?: number;
+    /** Last time the percentage actually moved; the rate's own anchor. */
     rateAtMs: number;
   };
   const burnReadings = new Map<string, BurnReading>();
@@ -4842,6 +4842,14 @@ export function createUsageTrackingService({
     return Math.abs(left - right) <= 5 * 60_000;
   }
 
+  function burnKey(
+    provider: string,
+    accountId: string,
+    windowType: "weekly" | "five_hour",
+  ): string {
+    return `${provider}|${accountId}|${windowType}`;
+  }
+
   /**
    * Learn a burn rate from the snapshot the poller just produced. Only a
    * changed percentage teaches anything: a stale or failed poll repeats the
@@ -4853,36 +4861,30 @@ export function createUsageTrackingService({
     for (const window of snapshot.windows) {
       if (!window.accountId) continue;
       if (window.windowType !== "weekly" && window.windowType !== "five_hour") continue;
-      const key = `${window.provider}|${window.accountId}|${window.windowType}`;
+      const key = burnKey(window.provider, window.accountId, window.windowType);
       const previous = burnReadings.get(key);
       if (!previous || !sameBurnWindow(previous, window) || window.percentUsed < previous.percentUsed) {
         burnReadings.set(key, {
           percentUsed: window.percentUsed,
           resetsAt: window.resetsAt,
-          sampleAtMs: atMs,
           rateAtMs: atMs,
         });
         continue;
       }
-      const elapsedHours = (atMs - previous.sampleAtMs) / 3_600_000;
       const delta = window.percentUsed - previous.percentUsed;
-      if (delta > 0 && elapsedHours * 3_600_000 >= MIN_BURN_SAMPLE_MS) {
-        const sample = Math.min(MAX_BURN_POINTS_PER_HOUR, delta / elapsedHours);
-        const rate = previous.rate == null ? sample : previous.rate * 0.4 + sample * 0.6;
-        burnReadings.set(key, {
-          percentUsed: window.percentUsed,
-          resetsAt: window.resetsAt,
-          sampleAtMs: atMs,
-          rate: Math.min(MAX_BURN_POINTS_PER_HOUR, Math.max(0, rate)),
-          rateAtMs: atMs,
-        });
-        continue;
-      }
+      if (delta <= 0) continue;
+      // Divide by the time since the percentage last moved, not the last poll:
+      // whole-point readings often sit still for several polls, and dividing by
+      // one poll interval would overstate the rate many times over.
+      const elapsedMs = atMs - previous.rateAtMs;
+      if (elapsedMs < MIN_BURN_SAMPLE_MS) continue;
+      const sample = Math.min(MAX_BURN_POINTS_PER_HOUR, delta / (elapsedMs / 3_600_000));
+      const rate = previous.rate == null ? sample : previous.rate * 0.4 + sample * 0.6;
       burnReadings.set(key, {
-        ...previous,
         percentUsed: window.percentUsed,
         resetsAt: window.resetsAt,
-        sampleAtMs: atMs,
+        rate: Math.min(MAX_BURN_POINTS_PER_HOUR, Math.max(0, rate)),
+        rateAtMs: atMs,
       });
     }
   }
@@ -4894,7 +4896,7 @@ export function createUsageTrackingService({
     windowType: "weekly" | "five_hour",
     nowMs: number,
   ): number | undefined {
-    const reading = burnReadings.get(`${provider}|${accountId}|${windowType}`);
+    const reading = burnReadings.get(burnKey(provider, accountId, windowType));
     if (!reading?.rate) return undefined;
     if (Date.parse(reading.resetsAt) <= nowMs) return undefined;
     const halfLife = windowType === "five_hour" ? FIVE_HOUR_BURN_HALF_LIFE_MS : WEEKLY_BURN_HALF_LIFE_MS;
@@ -4943,9 +4945,10 @@ export function createUsageTrackingService({
   }
 
   /**
-   * The load map the picker scores against: measured burn wins, a pending
-   * assignment covers the gap before the next poll, and chat state supplies the
-   * reservations for chats that are open but not burning.
+   * The load map the picker scores against: a pending assignment covers the
+   * gap before the next poll, and chat state supplies the reservations for
+   * chats that are open but not burning. The picker takes the larger of the
+   * measured rate and the pending commitment.
    */
   function balanceLoad(
     provider: ProviderInstanceProvider,
@@ -4957,23 +4960,20 @@ export function createUsageTrackingService({
     const out = new Map<string, AccountBalanceLoad>();
     for (const instance of instances) {
       if (instance.provider !== provider) continue;
-      const account = (snapshot.accounts ?? []).find(
-        (candidate) => candidate.provider === provider && candidate.instanceId === instance.id,
-      );
-      const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
+      const accountId = usageAccountIdForInstance({
+        provider,
+        instanceId: instance.id,
+        accounts: snapshot.accounts,
+      });
       const measuredWeekly = measuredBurn(provider, accountId, "weekly", nowMs);
       const measuredFiveHour = measuredBurn(provider, accountId, "five_hour", nowMs);
       const pending = pendingBurn(instance.id, nowMs);
-      const weeklyRate = measuredWeekly == null && pending.weekly <= 0
-        ? undefined
-        : Math.max(measuredWeekly ?? 0, pending.weekly);
-      const fiveHourRate = measuredFiveHour == null && pending.fiveHour <= 0
-        ? undefined
-        : Math.max(measuredFiveHour ?? 0, pending.fiveHour);
-      const chat = chatLoad.get(instance.id);
+      const chat = chatLoad.get(`${provider}:${instance.id}`);
       out.set(instance.id, {
-        ...(weeklyRate != null ? { weeklyRate } : {}),
-        ...(fiveHourRate != null ? { fiveHourRate } : {}),
+        ...(measuredWeekly != null ? { weeklyRate: measuredWeekly } : {}),
+        ...(measuredFiveHour != null ? { fiveHourRate: measuredFiveHour } : {}),
+        ...(pending.weekly > 0 ? { pendingWeeklyRate: pending.weekly } : {}),
+        ...(pending.fiveHour > 0 ? { pendingFiveHourRate: pending.fiveHour } : {}),
         ...(chat ? { runningWeight: chat.runningWeight, idle: chat.idle } : {}),
       });
     }
@@ -5034,7 +5034,8 @@ export function createUsageTrackingService({
   /**
    * Smart balance's pick for a provider on one snapshot, or `null` when the
    * provider has balance off. Chat creation and the Settings preview both use
-   * it, so the account marked "Next chat" is the one a new chat gets.
+   * it; the preview assumes a normal chat, so a Fable/Opus chat can choose a
+   * different account when the five-hour gate is the deciding constraint.
    */
   function balancedPick(
     provider: ProviderInstanceProvider,
@@ -6220,16 +6221,13 @@ export function createUsageTrackingService({
     return true;
   }
 
-  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): boolean {
+  /** Set the provider's balance issue. The caller publishes once, after this. */
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
     const previous = balancePickIssues.get(provider);
-    if (!issue && !previous) return false;
-    if (issue && previous?.kind === issue.kind) return false;
+    if (!issue && !previous) return;
+    if (issue && previous?.kind === issue.kind) return;
     if (issue) balancePickIssues.set(provider, issue);
     else balancePickIssues.delete(provider);
-    // Balance-only updates do not re-run quota polling, the ledger, or the
-    // auto-start scheduler. They also carry the next deterministic chat slot.
-    publishBalanceIndicators();
-    return true;
   }
 
   /**
@@ -6251,6 +6249,7 @@ export function createUsageTrackingService({
       if (result.skip === "one_account") {
         // Nothing to balance; an issue from an earlier pick no longer applies.
         setBalancePickIssue(provider, null);
+        publishBalanceIndicators();
         return null;
       }
       // This chat is now committed to the account. The next chat in this batch
@@ -6258,10 +6257,9 @@ export function createUsageTrackingService({
       // in one minute all read the same idle snapshot and choose one account.
       // Record before publishing so the preview it emits already includes it.
       recordBalanceAssignment(result.instanceId, accountBalanceModelWeight(modelId));
-      let issueChanged = false;
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
-        issueChanged = setBalancePickIssue(provider, {
+        setBalancePickIssue(provider, {
           provider,
           kind: "no_usage_data",
           title: `${providerTitle(provider)} balance has no usage data`,
@@ -6270,9 +6268,9 @@ export function createUsageTrackingService({
         });
       } else {
         if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
-        issueChanged = setBalancePickIssue(provider, null);
+        setBalancePickIssue(provider, null);
       }
-      if (!issueChanged) publishBalanceIndicators();
+      publishBalanceIndicators();
       return result;
     } catch (error) {
       const message = getErrorMessage(error);
@@ -6287,6 +6285,7 @@ export function createUsageTrackingService({
         detail: `Smart balance could not choose an account for the last new chat: ${message}`,
         at: nowIso(),
       });
+      publishBalanceIndicators();
       return null;
     }
   }
