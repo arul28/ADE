@@ -26,6 +26,12 @@ import type { McpAppProviderLink } from "./mcpAppHost";
 
 const MCP_APP_PROVIDER_TIMEOUT_MS = 60_000;
 
+type McpServerObservation = {
+  name: string;
+  toolNames?: string[];
+  error?: string;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -37,6 +43,8 @@ export function claudeMcpAppLink(args: {
   protocolCapabilities: readonly string[] | null | undefined;
   /** The chat's runtime. Read again on every call: a query comes and goes between turns. */
   runtime: { query: ClaudeQuery | null; queryStartPromise: Promise<ClaudeQuery> | null };
+  /** A bounded caller cache of provider-reported tools and failures. */
+  onServerStatus?: (status: McpServerObservation) => void;
 }): McpAppProviderLink | null {
   const { runtime } = args;
   // Reading a `ui://` resource is a capability the CLI has to advertise.
@@ -55,6 +63,13 @@ export function claudeMcpAppLink(args: {
     listTools: async () => {
       const query = await liveQuery();
       const servers = await withTimeout(query.mcpServerStatus(), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not list its MCP tools in time.");
+      for (const server of servers) {
+        args.onServerStatus?.({
+          name: server.name,
+          ...(server.status === "connected" ? { toolNames: (server.tools ?? []).map((tool) => tool.name) } : {}),
+          ...(server.error ? { error: server.error } : server.status === "failed" ? { error: "MCP server failed" } : {}),
+        });
+      }
       return servers.flatMap((server): McpAppToolDescriptor[] => server.status !== "connected"
         ? []
         : (server.tools ?? []).map((tool) => ({
@@ -94,6 +109,8 @@ export function codexMcpAppLink(args: {
   request: <T = unknown>(method: string, params?: unknown, options?: { timeoutMs?: number | null }) => Promise<T>;
   /** The definition this chat was given for a server, when it was given one. Read at list time. */
   serverConfig: (server: string) => unknown;
+  /** A bounded caller cache of provider-reported tools and failures. */
+  onServerStatus?: (status: McpServerObservation) => void;
 }): McpAppProviderLink | null {
   const { threadId, request } = args;
   if (!threadId || args.process.exitCode !== null || args.process.killed) return null;
@@ -115,10 +132,13 @@ export function codexMcpAppLink(args: {
           const server = asRecord(entry);
           const serverName = stringOrNull(server?.name);
           if (!serverName) continue;
-          for (const raw of Object.values(asRecord(server?.tools) ?? {})) {
+          const serverTools = asRecord(server?.tools);
+          const toolNames: string[] = [];
+          for (const raw of Object.values(serverTools ?? {})) {
             const tool = asRecord(raw);
             const name = stringOrNull(tool?.name);
             if (!tool || !name) continue;
+            toolNames.push(name);
             const annotations = asRecord(tool.annotations);
             const title = stringOrNull(tool.title) ?? stringOrNull(annotations?.title);
             const description = stringOrNull(tool.description);
@@ -136,6 +156,14 @@ export function codexMcpAppLink(args: {
               ui: readMcpToolUiMeta(tool._meta),
             });
           }
+          const status = stringOrNull(server?.status ?? server?.state);
+          const errorRecord = asRecord(server?.error);
+          const error = stringOrNull(errorRecord?.message ?? server?.error ?? server?.errorMessage ?? server?.message);
+          args.onServerStatus?.({
+            name: serverName,
+            ...(serverTools ? { toolNames } : {}),
+            ...(error ? { error } : status && /(?:fail|error|closed|refused|timeout|unavailable)/i.test(status) ? { error: status } : {}),
+          });
         }
         cursor = stringOrNull(listed?.nextCursor);
         if (!cursor) break;

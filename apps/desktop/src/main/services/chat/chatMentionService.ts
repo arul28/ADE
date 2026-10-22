@@ -121,7 +121,15 @@ export type ChatMentionServiceDeps = {
    */
   describeModel?: ((modelId: string) => ModelMentionModelInfo | null) | null;
   /** MCP servers as configured on this brain. Never returns secret values. */
-  listMcpServers?: (() => Array<{ server: McpRegistryServer; state: McpRegistryState; needsSignIn?: boolean; toolNames?: string[]; lastError?: string | null }>) | null;
+  listMcpServers?: (() => Array<{
+    server: McpRegistryServer;
+    state: McpRegistryState;
+    needsSignIn?: boolean;
+    toolNames?: string[];
+    toolCount?: number | null;
+    lastError?: string | null;
+    lastErrorAt?: number | null;
+  }>) | null;
 };
 
 /** Cap on model blocks per message, like `CHAT_MENTION_MAX_PER_MESSAGE`. */
@@ -435,12 +443,19 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   };
 
   const buildMcpCandidates = async (): Promise<ChatMentionSuggestion[]> =>
-    (deps.listMcpServers?.() ?? []).map(({ server, state, needsSignIn, toolNames = [], lastError = null }) => ({
+    (deps.listMcpServers?.() ?? []).map(({ server, state, needsSignIn, toolNames = [], toolCount, lastError = null, lastErrorAt = null }) => ({
       kind: "mcp" as const,
       id: server.name,
       title: server.name,
       subtitle: `${needsSignIn && state === "on" ? "needs sign-in" : state} · ${server.transport}`,
-      mcp: { state: needsSignIn && state === "on" ? "needs-sign-in" : state, transport: server.transport, toolNames: toolNames.slice(0, 32), lastError },
+      mcp: {
+        state: needsSignIn && state === "on" ? "needs-sign-in" : state,
+        transport: server.transport,
+        toolNames: toolNames.slice(0, 32),
+        ...(toolCount != null ? { toolCount } : {}),
+        lastError,
+        ...(lastErrorAt != null ? { lastErrorAt } : {}),
+      },
     }));
 
   const candidateBuildersByKind: Record<
@@ -763,6 +778,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     const record = deps.listMcpServers?.().find(({ server }) => server.name === name);
     if (!record) return null;
     const tools = record.toolNames?.slice(0, 32) ?? [];
+    const toolCount = record.toolCount ?? (tools.length ? tools.length : null);
     return {
       kind: "mcp",
       id: record.server.name,
@@ -770,11 +786,11 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       attributes: [
         ["state", record.needsSignIn && record.state === "on" ? "needs sign-in" : record.state],
         ["transport", record.server.transport],
-        ["toolCount", tools.length ? String(tools.length) : "not reported"],
+        ["toolCount", toolCount != null ? String(toolCount) : "not reported"],
         ["lastError", record.lastError ?? "not reported"],
       ],
       hint: "Pointer to an MCP server configured in ADE on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
-      previewLabel: tools.length ? "Available tool names:" : "Available tool names (not reported):",
+      previewLabel: toolCount != null ? "Available tool names:" : "Available tool names (not reported):",
       preview: tools.length ? tools.join("\n") : null,
     };
   };

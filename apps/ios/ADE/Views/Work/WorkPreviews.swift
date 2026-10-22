@@ -1710,6 +1710,14 @@ private struct WorkModelPickerPreviewHost: View {
 
 @MainActor
 private enum WorkComposerPillsPreviewData {
+  static let machineKey = "0123456789abcdef0123456789abcdef"
+  static let machine: AccountMachine = {
+    let json = """
+      {"machineKey":"\(machineKey)","name":"Mac Studio","channel":"stable","online":true}
+      """
+    return try! JSONDecoder().decode(AccountMachine.self, from: Data(json.utf8))
+  }()
+
   static let image: UIImage = {
     let size = CGSize(width: 240, height: 160)
     return UIGraphicsImageRenderer(size: size).image { context in
@@ -1730,6 +1738,7 @@ private enum WorkComposerPillsPreviewData {
   static let pastedText = (1...212).map { "line \($0): GET /api/lanes 200 in \($0 % 40)ms" }.joined(separator: "\n")
 
   static func seedDraft() {
+    AccountService.shared.seedPreviewMachines([machine])
     let key = WorkComposerDraftStore.chatKey(sessionId: WorkPreviewData.terminalSession.id)
     guard let imageAttachment = workChatInputAttachment(from: image, filename: "screenshot.jpg") else { return }
     var pasted = WorkComposerBigPaste.attachment(for: pastedText, at: Date(timeIntervalSince1970: 1_760_000_000))
@@ -1739,9 +1748,9 @@ private enum WorkComposerPillsPreviewData {
     // image-paste path (pill at the caret).
     UIPasteboard.general.image = image
     WorkComposerMentionTitleCache.remember(token: "@pr:pr-1318", title: "#1318 Configure a new lane")
-    WorkComposerMentionTitleCache.remember(token: "@mac:studio", title: "Mac Studio")
+    WorkComposerMentionTitleCache.remember(token: "@mac:\(machineKey)", title: "Mac Studio")
     WorkComposerDraftStore.save(
-      "Fix [Image #1] like @pr:pr-1318 on @mac:studio, see [File #1: \(pasted.filename)] and https://linear.app/ade/issue/ADE-42 ",
+      "Fix [Image #1] like @pr:pr-1318 on @mac:\(machineKey), see [File #1: \(pasted.filename)] and https://linear.app/ade/issue/ADE-42 ",
       for: key
     )
   }
@@ -1754,7 +1763,7 @@ private enum WorkComposerPillsPreviewData {
       WorkPreviewData.envelope(
         sequence: 1,
         event: .userMessage(
-          text: "Make the header match [Image #1] and check @lane:3f2a9c1e-0000-4000-8000-000000000001 against [File #1: notes.txt]",
+          text: "Make the header match [Image #1] and check @lane:3f2a9c1e-0000-4000-8000-000000000001 with @mac:\(machineKey) and @mcp:github against [File #1: notes.txt]",
           attachments: sentImage + [AgentChatFileRef(path: "/tmp/notes.txt", type: "file")],
           turnId: "turn-1",
           steerId: nil,

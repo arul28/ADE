@@ -7,20 +7,23 @@
 // lane or session id is only unique per machine, so resolving one against the
 // project tab's lists could open a different entity that shares the id.
 
-import { Copy, PencilSimple, Plugs } from "@phosphor-icons/react";
+import { ChatCircleDots, Copy, PencilSimple, Plugs } from "@phosphor-icons/react";
 
 import type { Chip } from "../../../shared/chips";
 import type { DeeplinkPrTarget } from "../../../shared/deeplinks";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { focusWorkSession } from "../../lib/workSessionRequests";
+import { chatDraftMachineId, openStartChatDraft } from "../../lib/workDraft";
 import { laneOwnedByBranch } from "../app/InboundDeeplinkModal";
 import { showToast } from "../app/toast/toastStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { requestWorkTool } from "../terminals/workToolRequests";
+import { rootAppStoreApi, selectActiveProjectStateKey } from "../../state/appStore";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
 import type { ChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
@@ -201,19 +204,50 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
       context.openMenu();
       return;
     case "mcp":
-      openMcpSettings();
+      openMcpSettings(source.id);
       return;
     default:
       return;
   }
 }
 
-function openMcpSettings(): void {
-  navigateToAppTarget({ kind: "route", route: settingsRouteFor("mcp.servers") });
+function openMcpSettings(serverName: string): void {
+  // The servers list scrolls to and highlights `mcpServer` once it renders.
+  const url = new URL(settingsRouteFor("mcp.servers"), "http://ade.local");
+  url.searchParams.set("mcpServer", serverName);
+  navigateToAppTarget({ kind: "route", route: `${url.pathname}${url.search}${url.hash}` });
 }
 
 /** Rows a kind adds after its primary row; see `buildChipMenuEntries`. */
 export function chipMenuExtras(chip: Chip, context: ChipActionContext): ContextMenuEntry[] {
+  const laneId = context.scope.laneId;
+  if (chip.source.origin === "model" && laneId && context.scope.online) {
+    const { mention } = chip.source;
+    return [{
+      kind: "item",
+      key: "new-chat-with-model",
+      label: "New chat with this model",
+      icon: ChatCircleDots,
+      tone: "blue",
+      onSelect: () => {
+        const state = rootAppStoreApi.getState();
+        const projectStateKey = selectActiveProjectStateKey(state);
+        if (!projectStateKey) return;
+        openStartChatDraft(
+          state.setWorkViewState,
+          projectStateKey,
+          laneId,
+          chatDraftMachineId(chatMachineId(context.scope), machineIdForBinding(state.projectBinding)),
+          {
+            modelId: mention.modelId,
+            reasoningEffort: mention.effort,
+            permission: mention.permission,
+          },
+        );
+        navigateToAppTarget({ kind: "work" });
+      },
+    }];
+  }
   if (mentionOf(chip, "machine")) {
     const facts = context.machineFacts;
     const machineKey = facts?.machineKey ?? mentionOf(chip, "machine")!;

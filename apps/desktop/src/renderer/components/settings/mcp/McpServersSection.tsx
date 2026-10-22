@@ -1,4 +1,5 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
 import {
@@ -70,6 +71,8 @@ function targetLine(server: Pick<McpRegistryServer, "transport" | "command" | "a
 
 export function McpServersSection() {
   const registry = useMcpRegistry();
+  const [searchParams] = useSearchParams();
+  const focusServer = searchParams.get("mcpServer")?.trim() ?? "";
   const projectName = useAppStore((state) => state.project?.displayName?.trim() || null);
   const [dialog, setDialog] = useState<{ editing: McpRegistryServer | null } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -77,6 +80,20 @@ export function McpServersSection() {
   // of the page stays usable while it runs.
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const ready = registry.phase === "ready";
+
+  useEffect(() => {
+    if (!focusServer || !ready) return;
+    const row = document.querySelector<HTMLElement>(`[data-mcp-server="${CSS.escape(focusServer)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
+    row.style.outlineOffset = "4px";
+    const timer = window.setTimeout(() => {
+      row.style.outline = "";
+      row.style.outlineOffset = "";
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [focusServer, ready, registry.servers]);
 
   /** Runs one change on one row, and says so when it did not take. */
   const run = useCallback(async (key: string, failed: string, change: () => Promise<string | null>): Promise<boolean> => {

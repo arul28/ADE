@@ -31,7 +31,14 @@ export type ChatMentionSuggestion = {
   /** Machine rows only: directory presence, and whether it is the caller's own machine. */
   machine?: { online: boolean; isThisMachine: boolean } | null;
   /** MCP registry row data; contains names and status only, never secrets. */
-  mcp?: { state: string; transport: string; toolNames: string[]; lastError: string | null } | null;
+  mcp?: {
+    state: string;
+    transport: string;
+    toolNames: string[];
+    toolCount?: number | null;
+    lastError: string | null;
+    lastErrorAt?: number | null;
+  } | null;
 };
 
 export type ChatMentionSuggestArgs = {

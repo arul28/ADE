@@ -3,6 +3,7 @@ import type { ComputerUseArtifactView } from "../../../shared/types";
 import { isImageArtifact, useArtifactPreview } from "./useArtifactPreview";
 
 export type ExtraChipCardData =
+  | { kind: "commit"; subject: string; author: string; age: string; lane: string }
   | { kind: "terminal"; title: string; lane: string; tool: string; status: string; startedAt: string }
   | { kind: "model"; name: string; route: string; effort: string | null; permission: string | null; provider: string }
   | { kind: "permission"; meaning: string; risk: "low" | "medium" | "high" }
@@ -12,6 +13,13 @@ export type ExtraChipCardData =
 
 export function ExtraChipCardBody({ data }: { data: ExtraChipCardData }) {
   if (data.kind === "artifact") return <ArtifactCardBody data={data} />;
+  if (data.kind === "commit") {
+    return <div className="max-w-[260px] text-[11px] text-fg/65">
+      <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.subject}</div>
+      <div className="truncate">{data.author} · {data.age}</div>
+      <div className="truncate">{data.lane}</div>
+    </div>;
+  }
   if (data.kind === "terminal") {
     return <div className="max-w-[240px] text-[11px] text-fg/65">
       <div className="truncate text-[12px] font-medium text-fg/90">{data.title}</div>

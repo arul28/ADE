@@ -147,11 +147,21 @@ export type ChipCardData =
   }
   | { kind: "link"; host: string; title: string | null; imageUrl: string }
   | { kind: "machine"; machineKey: string }
-  | { kind: "mcp"; name: string; state: McpRegistryState | "needs-sign-in"; transport: McpRegistryTransport; toolNames: string[]; lastError: string | null }
+  | {
+    kind: "mcp";
+    name: string;
+    state: McpRegistryState | "needs-sign-in";
+    transport: McpRegistryTransport;
+    toolNames: string[];
+    toolCount?: number | null;
+    lastError: string | null;
+    lastErrorAt?: number | null;
+  }
   | ExtraChipCardData;
 
 type ChipCardTarget =
   | { kind: "pr"; number: number; owner: string | null; repo: string | null }
+  | { kind: "commit"; sha: string; laneId: string | null }
   | { kind: "lane"; laneId: string }
   | { kind: "chat"; sessionId: string }
   | { kind: "machine"; machineKey: string }
@@ -178,6 +188,17 @@ function githubPullTarget(url: string): ChipCardTarget | null {
   }
 }
 
+function githubCommitTarget(url: string): ChipCardTarget | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.toLowerCase().replace(/^www\./i, "") !== "github.com") return null;
+    const match = parsed.pathname.match(/^\/[^/]+\/[^/]+\/commit\/([0-9a-f]{7,40})(?:\/|$)/i);
+    return match ? { kind: "commit", sha: match[1]!, laneId: null } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What entity this chip points at, or null when no card kind covers it. */
 export function chipCardTarget(chip: Chip): ChipCardTarget | null {
   const source = chip.source;
@@ -192,6 +213,11 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         };
       }
       return source.origin === "url" ? githubPullTarget(source.url) : null;
+    case "commit":
+      if (source.origin === "deeplink" && source.target.kind === "commit") {
+        return { kind: "commit", sha: source.target.sha, laneId: source.target.laneId ?? null };
+      }
+      return source.origin === "url" ? githubCommitTarget(source.url) : null;
     case "lane":
       if (source.origin === "deeplink" && source.target.kind === "lane") {
         return { kind: "lane", laneId: source.target.laneId };
@@ -278,6 +304,20 @@ export async function loadChipCardData(
   if (target.kind === "link") {
     return { kind: "link", host: target.host, title: previewTitle, imageUrl: previewImageUrl ?? "" };
   }
+  if (target.kind === "commit") {
+    const laneId = target.laneId ?? sources.laneId;
+    const lane = laneId ? sources.lanes.find((candidate) => candidate.id === laneId) : null;
+    if (!laneId || !lane) return null;
+    const commit = await window.ade.git.getCommit({ laneId, commitSha: target.sha }, sources.pin).catch(() => null);
+    if (!commit) return null;
+    return {
+      kind: "commit",
+      subject: commit.subject,
+      author: commit.authorName || "Unknown author",
+      age: relativeWhen(commit.authoredAt),
+      lane: lane.name,
+    };
+  }
   if (target.kind === "lane") {
     const lane = sources.lanes.find((candidate) => candidate.id === target.laneId);
     return lane
@@ -310,7 +350,9 @@ export async function loadChipCardData(
       state: mention.mcp.state as McpRegistryState | "needs-sign-in",
       transport: mention.mcp.transport as McpRegistryTransport,
       toolNames: mention.mcp.toolNames,
+      toolCount: mention.mcp.toolCount ?? null,
       lastError: mention.mcp.lastError,
+      lastErrorAt: mention.mcp.lastErrorAt ?? null,
     };
   }
   if (target.kind === "terminal") {
@@ -485,7 +527,7 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "link") return <LinkCardBody data={data} />;
   if (data.kind === "mcp") return <McpMentionCardBody {...data} />;
   if (data.kind === "machine") return <MachineChipCardBody machineKey={data.machineKey} />;
-  if (data.kind === "terminal" || data.kind === "model" || data.kind === "permission" || data.kind === "skill" || data.kind === "artifact" || data.kind === "branch") {
+  if (data.kind === "terminal" || data.kind === "model" || data.kind === "permission" || data.kind === "skill" || data.kind === "artifact" || data.kind === "branch" || data.kind === "commit") {
     return <ExtraChipCardBody data={data} />;
   }
   if (data.kind === "pr") {
@@ -647,6 +689,9 @@ export function useChipHoverCard(
   // `chip` is stable per message (memoized parse), so a PR chip parses its
   // GitHub URL once rather than on every re-render of the transcript.
   const target = useMemo(() => chipCardTarget(chip), [chip]);
+  const commitLaneName = target?.kind === "commit"
+    ? scopedLanes?.find((lane) => lane.id === (target.laneId ?? scope.laneId))?.name ?? null
+    : null;
   const supported = target !== null || hasMenu;
 
   const [open, setOpen] = useState(false);
@@ -744,7 +789,7 @@ export function useChipHoverCard(
     return () => {
       cancelled = true;
     };
-  }, [open, target, previewTitle, previewImageUrl, pinKey]);
+  }, [open, target, previewTitle, previewImageUrl, pinKey, scope.laneId, commitLaneName]);
 
   // Escape dismisses, and any scroll does too: the card is absolutely placed
   // against a trigger that a scrolling transcript moves out from under it. A

@@ -1,4 +1,5 @@
 import type { McpRegistryState, McpRegistryTransport } from "../../../shared/mcpRegistry";
+import { relativeWhen } from "../../lib/format";
 
 type McpMentionState = McpRegistryState | "needs-sign-in";
 
@@ -15,13 +16,17 @@ export function McpMentionCardBody({
   state,
   transport,
   toolNames,
+  toolCount,
   lastError,
+  lastErrorAt,
 }: {
   name: string;
   state: McpMentionState;
   transport: McpRegistryTransport;
   toolNames: string[];
+  toolCount?: number | null;
   lastError: string | null;
+  lastErrorAt?: number | null;
 }) {
   return (
     <div className="max-w-[260px]">
@@ -29,10 +34,14 @@ export function McpMentionCardBody({
       <div className="mt-1 flex gap-2 text-[11px] text-fg/60">
         <span>{STATE_LABEL[state]}</span>
         <span className="uppercase">{transport}</span>
-        {toolNames.length ? <span>{toolNames.length} tools</span> : null}
+        {toolCount != null ? <span>{toolCount} tools</span> : null}
       </div>
       {toolNames.length ? <div className="mt-1 line-clamp-3 text-[11px] text-fg/65">{toolNames.slice(0, 8).join(", ")}</div> : null}
-      {lastError ? <div className="mt-1 line-clamp-2 text-[11px] text-rose-300">{lastError}</div> : null}
+      {lastError ? (
+        <div className="mt-1 line-clamp-2 text-[11px] text-rose-300">
+          {lastErrorAt != null ? `Last error ${relativeWhen(new Date(lastErrorAt).toISOString())}: ` : "Last error: "}{lastError}
+        </div>
+      ) : null}
     </div>
   );
 }
