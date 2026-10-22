@@ -1101,6 +1101,7 @@ struct WorkRootListScreen: View, Equatable {
     NavigationStack {
       ScrollViewReader { proxy in
         workList(proxy: proxy, duoColumn: true)
+          .duoLeadingColumnContent()
       }
     }
   }

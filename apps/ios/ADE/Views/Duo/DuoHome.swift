@@ -280,10 +280,9 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
       NavigationStack {
         projects()
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-          // Book-folded, the hinge is reported as an inset along this page's
-          // trailing edge; the page already ends at the fold, so the list
-          // runs to the page's edge (its own margins keep it off the hinge).
-          .ignoresSafeArea(.container, edges: duo.fold.frame == nil ? [] : .trailing)
+          // The left page ends at the seam; the trailing inset iOS reports
+          // here is the edge bar's (and, folded, the hinge's), not this page's.
+          .duoLeadingColumnContent()
           .background(ADEColor.pageBackground.ignoresSafeArea())
           .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { projectsPageWidth = $0 }
           .navigationBarTitleDisplayMode(.inline)

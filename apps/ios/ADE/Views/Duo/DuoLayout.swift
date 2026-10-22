@@ -261,3 +261,18 @@ struct DuoSeam: View {
     .allowsHitTesting(false)
   }
 }
+
+// MARK: - Leading columns
+
+extension View {
+  /// For the content of a NavigationStack that is NOT the right-most column.
+  /// Held landscape on the Duo, iOS gives every stack's content a trailing
+  /// safe-area inset the width of the vertical edge bar, even a left column
+  /// that never touches it, so a list stopped well short of its divider.
+  /// (Turning the vertical bar off on that stack instead switches the whole
+  /// window to a bottom bar.) Only call this inside a column that ends at a
+  /// divider, never on the right-most column.
+  func duoLeadingColumnContent() -> some View {
+    ignoresSafeArea(.container, edges: .trailing)
+  }
+}

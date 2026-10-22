@@ -1079,7 +1079,7 @@ struct HubProjectCard: View, Equatable {
 /// opens the project, its corner button lists the project's lanes and chats.
 enum HubProjectGridMetrics {
   /// The narrowest a tile gets before the grid drops a column.
-  static let minTileWidth: CGFloat = 140
+  static let minTileWidth: CGFloat = 128
   static let spacing: CGFloat = 12
   static let tileHeight: CGFloat = 138
 
