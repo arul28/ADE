@@ -36,6 +36,11 @@ describe("checkRemoteAdeCommand", () => {
     ["read", "rebuilding the search index", ["search", "--rebuild"]],
     ["read", "an action named after an Object prototype member", ["actions", "run", "constructor.x"]],
     ["read", "another machine", ["lanes", "list", "--all-machines"]],
+    ["read", "`--help` swallowed as a flag's value", ["chat", "send", "x", "--project-root", "--help"]],
+    ["read", "arming a chat wait", ["chat", "wait", "x", "--async"]],
+    ["read", "cancelling a chat wait", ["chat", "wait", "--cancel", "w1"]],
+    ["write", "a stdin-reading command without stdin", ["files", "write", "--workspace", "l", "a.txt", "--stdin"]],
+    ["write", "a body read from stdin without stdin", ["prs", "create", "--body-file", "-"]],
   ] as const)("%s access refuses %s", (scope, _label, args) => {
     const verdict = checkRemoteAdeCommand([...args], scope);
     expect(verdict.ok).toBe(false);
@@ -49,6 +54,9 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["actions", "run", "lane", "list"], ["actions", "run", "lane", "list"]],
     ["read", ["search", "login bug", "--text"], ["search", "login bug", "--text"]],
     ["read", ["github", "app-auth", "status"], ["github", "app-auth", "status"]],
+    ["read", ["lanes", "create", "--help"], ["lanes", "create", "--help"]],
+    ["read", ["chat", "wait", "x", "--for", "idle"], ["chat", "wait", "x", "--for", "idle"]],
+    ["read", ["skills", "list"], ["skills", "list"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {

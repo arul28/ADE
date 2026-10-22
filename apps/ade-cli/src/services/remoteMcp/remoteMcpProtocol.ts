@@ -413,7 +413,9 @@ export function createRemoteMcpProtocol(deps: {
           const text = await commandCatalog(connection.scope);
           return reply({ contents: [{ uri: COMMANDS_RESOURCE_URI, mimeType: "application/json", text }] });
         } catch (error) {
-          return fail(-32603, error instanceof Error ? error.message : String(error));
+          const message = error instanceof Error ? error.message : String(error);
+          deps.warn?.("remote_mcp.catalog_failed", { scope: connection.scope, error: message });
+          return fail(-32603, message);
         }
       }
       case "prompts/list": {

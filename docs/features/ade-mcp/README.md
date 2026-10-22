@@ -101,7 +101,8 @@ the next request.
    - Then the person picks **Read & write** (default) or **Read only** and
      presses **Allow**; the app gets a code and exchanges it for its token.
 2. **Token** (Grok and OpenAI APIs, scripts): Settings → ADE MCP → New token,
-   or `ade mcp token create`. Shown once. Sent as `Authorization: Bearer …`.
+   or `ade mcp token create --read-only|--full-access` (the access is required;
+   there is no default). Shown once. Sent as `Authorization: Bearer …`.
 
 Why the relay cannot mint access: it never holds the PKCE verifier for ADE's
 sign-in, never issues tokens, and a code it sees in flight is useless without

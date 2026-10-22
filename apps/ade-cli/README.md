@@ -524,7 +524,7 @@ ade account token create --text           # print a self-contained durable ADE_A
 ade logout
 ade mcp status --text                     # ADE MCP: on/off, the server URL AI apps add, connections
 ade mcp on | off                          # let AI apps (claude.ai, ChatGPT, Cursor) use this computer, or stop
-ade mcp token create --label Grok [--read-only] --text   # a bearer token for header-based apps (shown once)
+ade mcp token create --label Grok --read-only --text     # a bearer token for header-based apps (shown once); --read-only or --full-access is required
 ade mcp scope <connection-id> read|write  # change one app's or token's access
 ade mcp remove <connection-id>            # disconnect an app or revoke a token
 ade mcp activity --text                   # what connected apps ran here
@@ -935,8 +935,9 @@ ade link pr owner/repo 42 --ade
 ade link lane <lane-uuid> --web                     # hosted web-client URL form (app.ade-app.dev/open), mutually exclusive with --ade
 ade link linear-issue ADE-123 --branch arul/ade-123-fix
 ade linear install
-ade skill list --text
+ade skill list --text                               # project, personal and ADE skills, each labelled with its source
 ade skill show ade-browser --text
+ade help --json                                     # the command catalog as JSON (only this scope's commands under ADE MCP)
 ```
 
 `github app-auth status` answers "re-authorize, or wait?" from `credentialState`

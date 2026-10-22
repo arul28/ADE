@@ -1,5 +1,10 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { isRemoteMcpInvocation, listAgentSkills, readAgentSkill } from "../services/skills/agentSkillCatalogService";
 import { CliSkillUsageError, runSkillCommand, runSkillList, runSkillShow } from "./skill";
 
 describe("ade skill (bundled agent skills)", () => {
@@ -21,10 +26,38 @@ describe("ade skill (bundled agent skills)", () => {
     }
   });
 
-  it("list --text emits one name — description line per skill", () => {
+  it("list --text emits one name [source] — description line per skill", () => {
     const result = runSkillList(["--text"]);
     expect(result.exitCode).toBe(0);
-    expect(result.output).toMatch(/ade-browser —/);
+    expect(result.output).toMatch(/ade-browser \[(?:bundled|project)\] —/);
+  });
+
+  it("an ADE MCP call never lists or shows a personal skill, even through a project folder linking to it", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-skill-privacy-"));
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    const writeSkill = (dir: string, name: string) => {
+      fs.mkdirSync(path.join(dir, name), { recursive: true });
+      fs.writeFileSync(path.join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} skill\n---\nBody of ${name}.\n`);
+    };
+    try {
+      writeSkill(path.join(home, ".claude", "skills"), "secret-notes");
+      writeSkill(path.join(project, ".claude", "skills"), "project-guide");
+      fs.mkdirSync(path.join(project, ".agents"), { recursive: true });
+      fs.symlinkSync(path.join(home, ".claude", "skills"), path.join(project, ".agents", "skills"), "junction");
+      const env = { ...process.env, HOME: home, USERPROFILE: home };
+      const local = listAgentSkills({ cwd: project, includeUser: true, env });
+      const remoteEnv = { ...env, ADE_REMOTE_MCP_CONNECTION_ID: "conn-1" };
+      const remote = listAgentSkills({ cwd: project, includeUser: !isRemoteMcpInvocation(remoteEnv), env: remoteEnv });
+
+      // On the computer itself the person sees every skill, theirs included.
+      expect(local.map((entry) => entry.name)).toContain("secret-notes");
+      expect(remote.find((entry) => entry.name === "project-guide")?.source).toBe("project");
+      expect(remote.map((entry) => entry.name)).not.toContain("secret-notes");
+      expect(readAgentSkill("secret-notes", { cwd: project, includeUser: false, env: remoteEnv })).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("show <name> --json returns full content including frontmatter name", () => {
