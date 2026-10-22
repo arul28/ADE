@@ -458,11 +458,28 @@ the shot. Each image and the video go to `attachRenderProof` on the device's
 own machine, which files them to the chat's and lane's proof drawer there, so a
 window pinned to another machine files where the chat lives.
 
-`ade apple render` asks for the same thing from the CLI. The service emits
-`apple.render.request`; the first open pane for the lane to `renderAck` it
-takes the job (a pane whose video stalled reconnects first), renders, and
-answers `renderComplete` with the count filed. No pane acking within 5 s is a
-clear "open the Apple pane" error: rendering needs the desktop renderer.
+`ade apple render` asks for the same thing from the CLI, and needs no pane:
+only an ADE desktop window with the project open, on the device's machine or
+bound to it. The service emits `apple.render.request` (with the asking chat)
+to every such window, and the first `renderAck` takes the job:
+
+- A live Apple pane for the lane acks at once (a pane whose video stalled
+  reconnects first) and renders in its own 3D view, as before.
+- Otherwise every project surface's `AppleRenderHost` waits 1.5 s, so a pane
+  anywhere wins, then acks with that surface's own binding as the pin (an ack
+  only succeeds on the machine that asked). The winner loads
+  `AppleRenderHostJob` on demand, reads the lane's device, streams it into a
+  3D view mounted far off screen (fixed outside the viewport, no pointer
+  events, not focusable; never `display: none`, which stops WebGL), renders
+  through the pane's own `renderAppleDeviceToProof`, and unmounts, which hands
+  the stream lease back. Idle, the host is one event callback: no stream, no
+  WebGL, no timer.
+
+Either way the job answers `renderComplete` with the count filed or the
+reason it failed (the lane has no device, the device is off, the picture never
+came up, the window closed mid-render). The host never boots a device. No ack
+within 7.5 s means no desktop window has the project open, and the error says
+so: rendering needs a desktop renderer.
 
 ## Agent discovery
 
@@ -518,6 +535,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/main/services/ios/appleDeviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
 | `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
 | `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
@@ -527,6 +545,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
 | `apps/desktop/src/renderer/components/apple/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the device picker. |
 | `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
+| `apps/desktop/src/renderer/components/apple/AppleRenderHost.tsx`, `AppleRenderHostJob.tsx`, `useAppleRenderRequests.ts` | `ade apple render`: the pane's render and broker handshake, the shared render body, and the per-project host that renders off screen when no pane takes the request. |
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
 | `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
@@ -589,7 +608,13 @@ ade --socket apple stop [--force] --text
 ade --socket apple device-detach [--force] --text
 ade --socket apple show [--floating] --text
 ade --socket apple scroll --x <x> --y <y> --dy <delta> --text
-ade --socket apple foreground --text
+ade --socket apple foreground [--wait <seconds>] --text
+ade --socket apple screenshot [--out <path>] [--no-proof] --text
+ade --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text
+ade --socket apple relaunch --bundle-id <id> [-- <app args>] --text
+ade --socket apple lease [--wait <s>] [--ttl <s>] [--holder <name>] --text
+ade --socket apple lease release --token <t> --text
+ade --socket apple lease status --text
 
 ade --socket apple frame [--out <path>] --text
 ade --socket apple button home --text
@@ -598,6 +623,28 @@ ade --socket apple rotate landscape-left --text
 ade --socket apple type "reddit" --submit --text
 ade --socket apple key return --text
 ```
+
+`screenshot` files the shot as proof and prints its `cite:` line; a later
+`proof attach` of the same bytes is refused as `PROOF_DUPLICATE` and that
+refusal names the earlier proof's `cite:` line. `--no-proof` takes a scratch
+shot that files nothing, for a validation loop.
+
+`launch` builds `Debug` unless `--configuration` names another (an app whose
+Debug and Release reach different backends needs the one under test), and
+says which it built. Everything after `--` goes to the app as launch
+arguments, for `launch` and `relaunch` alike (`--launch-arg=<v>` adds one at a
+time; the `=` lets a value start with a dash).
+
+`foreground --wait` keeps asking for up to that many seconds (default 10,
+max 30) until an app is in front: right after a launch the accessibility tree
+still names none.
+
+`lease` is a turn on the lane's device for agents that share it (a
+coordinator and its subagents). It queues: `--wait` stands in line, `release`
+hands the device to the next holder, and a lease nobody renews lapses after
+`--ttl`. It is advisory: no command checks it, so the pane and an agent that
+never asked are not blocked. `status` and a busy answer name the holder but
+never its token.
 
 `type --submit` presses Return after the text, so a search or form submits.
 With `--submit` and no text, it presses Return alone. `key` presses one named
@@ -721,7 +768,8 @@ forwarded.
 | `permission` (`privacy`) | `setPermission` | positional `<grant\|revoke\|reset> <service>`, `--bundle-id`, `--device` |
 | `push` | `sendPushNotification` | `--bundle-id`, `--title`, `--body`, `--payload`, `--device` |
 | `open-url` | `openUrl` | positional url or `--url`, `--device` |
-| `relaunch` | `relaunchApp` | `--bundle-id`, `--device` |
+| `relaunch` | `relaunchApp` | `--bundle-id`, `--launch-arg=<v>`, `-- <app args>`, `--device` |
+| `lease` | `deviceLease`, `deviceLeaseRelease` (`release`), `deviceLeaseStatus` (`status`) | `--wait`, `--ttl`, `--holder`, `--token`, `--lane` |
 | `terminate` (`kill-app`) | `terminateApp` | `--bundle-id`, `--device` |
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
@@ -735,6 +783,16 @@ forwarded.
 | `wait-for-element` (`wait-for`) | `waitForElement` | the same element query, plus `--timeout-ms`, `--gone` |
 | `assert-visible` (`assert`) | `assertVisible` | the same element query |
 | `proof-bundle` | `captureProofBundle` | `--out`, `--caption`, `--no-elements`, `--log-rows`, `--device`, `--lane`, `--project` |
+
+Input coordinates are what the agent sees: a screenshot's and the
+accessibility tree's points, upright. When the picture sits turned on the
+framebuffer (any device held landscape, and the iPhone Duo's inner display
+always, since it is mounted a quarter turn), the helper turns an agent's
+`tap`, `drag`, `swipe` and `scroll` onto the framebuffer before it sends them
+(`space: "screen"` on the helper's touch and scroll commands, read from the
+live display's orientation at each gesture's start). A viewer (the pane, a
+remote window, the phone) maps clicks onto the framebuffer it draws turned,
+so its input (`source: "user"`) goes as is.
 
 `--text` is the one flag that reads two ways. A bare `--text` selects ADE's
 human-readable output. `--text <value>` is the element query's substring

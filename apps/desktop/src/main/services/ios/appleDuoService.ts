@@ -84,6 +84,12 @@ const FOLD_FIRST_READ_MS = 600;
 const NOT_FOLDABLE_RECHECK_MS = 10_000;
 /** iOS animates into the new panel's layout after it switches. */
 const LAYOUT_SETTLE_MS = 1_200;
+/**
+ * How long `ade apple render` waits for a window to take the request. A live
+ * pane acks at once; a window's render host waits 1.5 s for panes first, and a
+ * window on another machine hears the request over its event pump.
+ */
+const APPLE_RENDER_ACK_TIMEOUT_MS = 7_500;
 
 /**
  * The live panel's picture turn, from the helper's display list. The guest
@@ -444,9 +450,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
   };
 
   /**
-   * `ade apple render`: renders need a mounted 3D view, so the request goes
-   * to the Apple pane open for the lane (on any desktop pinned to this
-   * machine), which acks within 5 s and reports when it has filed the proof.
+   * `ade apple render`: renders need a 3D view, so the request goes to every
+   * desktop window with the project open (here, or pinned to this machine).
+   * A live Apple pane for the lane acks at once; failing that, a window's
+   * off-screen render host acks after giving panes first claim. Whoever acks
+   * first renders, and reports when it has filed the proof.
    */
   const pendingRenders = new Map<string, {
     /** True for the first pane to take it; every later one stands down. */
@@ -467,9 +475,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         if (acked) return;
         pendingRenders.delete(requestId);
         reject(new Error(
-          "No Apple Development pane is open for this lane. Open it in ADE (3D view available), then render again.",
+          // Nothing here can draw: renders come from a desktop window's 3D
+          // view, and the service never opens a window or a pane unasked.
+          "No ADE desktop window has this project open. Renders are drawn by a desktop window's 3D view: open the project in ADE on a desktop, then render again.",
         ));
-      }, 5_000);
+      }, APPLE_RENDER_ACK_TIMEOUT_MS);
       const doneTimer = setTimeout(() => {
         pendingRenders.delete(requestId);
         reject(new Error("The render did not finish within 4 minutes."));
@@ -490,7 +500,15 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         },
       });
     });
-    deps.emit({ type: "apple.render.request", laneId: runtime.key ?? null, requestId, request });
+    deps.emit({
+      type: "apple.render.request",
+      laneId: runtime.key ?? null,
+      // The asking chat, so a render host with no chat of its own files the
+      // proof to it.
+      chatSessionId: typeof renderArgs.chatSessionId === "string" ? renderArgs.chatSessionId : null,
+      requestId,
+      request,
+    });
     return result;
   };
   const renderAck = async (ackArgs: { requestId?: string }): Promise<{ ok: boolean }> => {

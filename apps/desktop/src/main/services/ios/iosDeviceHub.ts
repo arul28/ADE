@@ -5,6 +5,7 @@ import type {
   IosScreenSnapshot,
   IosSimulatorAppState,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorCloseDeviceResult,
@@ -619,7 +620,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * asking to relaunch wants to see the same binary from its first screen,
      * and paying for a rebuild to get there is the wrong price.
      */
-    async relaunchApp(args: IosSimulatorAppLifecycleArgs): Promise<IosSimulatorAppState> {
+    async relaunchApp(args: IosSimulatorRelaunchArgs): Promise<IosSimulatorAppState> {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       // Validated before the terminate, because the catch below is deliberately
       // blind: an app that is not running must not fail a relaunch, and without
@@ -630,10 +631,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         // Terminating an app that is not running is not a failure; the launch
         // below is what the caller actually asked for.
       });
-      await tools.launchApp(udid, args.bundleId);
+      const launchArguments = args.arguments ?? [];
+      if (!Array.isArray(launchArguments) || launchArguments.some((value) => typeof value !== "string")) {
+        throw new Error("Relaunch arguments must be an array of strings.");
+      }
+      await tools.launchApp(udid, args.bundleId, launchArguments);
       recordAction(
         `Relaunched ${args.bundleId}.`,
-        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}`,
+        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}${launchArguments.length ? ` -- ${launchArguments.join(" ")}` : ""}`,
       );
       return tools.getAppState(udid, args.bundleId);
     },

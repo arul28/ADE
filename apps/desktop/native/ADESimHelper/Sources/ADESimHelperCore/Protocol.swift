@@ -42,11 +42,26 @@ public enum KeyPhase: String, Equatable, Sendable {
 public struct DevicePoint: Equatable, Sendable {
     public var x: Double
     public var y: Double
+    public var space: PointSpace
 
-    public init(x: Double, y: Double) {
+    public init(x: Double, y: Double, space: PointSpace = .frame) {
         self.x = x
         self.y = y
+        self.space = space
     }
+}
+
+/// Which picture a point is measured on.
+///
+/// The two differ when the picture is turned on the framebuffer, as the iPhone
+/// Duo's inner panel always is (it is mounted a quarter turn).
+public enum PointSpace: String, Equatable, Sendable {
+    /// The captured framebuffer. ADE's viewers draw it turned upright and map
+    /// a click back onto it, so their points are already here.
+    case frame
+    /// The picture as iOS shows it: a screenshot's and the accessibility
+    /// tree's, which is what an agent measures a point on.
+    case screen
 }
 
 /// A recording that finished writing.
@@ -92,7 +107,8 @@ public enum SimHelperCommand: Equatable, Sendable {
     case button(id: String, udid: String, name: String)
     case key(id: String, udid: String, phase: KeyPhase, usage: Int)
     case type(id: String, udid: String, text: String)
-    case scroll(id: String, udid: String, deltaX: Double, deltaY: Double, anchor: DevicePoint?)
+    /// `space` is the anchor's and the delta's.
+    case scroll(id: String, udid: String, deltaX: Double, deltaY: Double, anchor: DevicePoint?, space: PointSpace)
     case orientation(id: String, udid: String, value: Int)
     /// A foldable's pose: one of `DevicePosture.poses`, or a raw hinge angle in degrees (0–180).
     case posture(id: String, udid: String, pose: String?, angle: Double?)
@@ -131,7 +147,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .button(id, _, _): return id
         case let .key(id, _, _, _): return id
         case let .type(id, _, _): return id
-        case let .scroll(id, _, _, _, _): return id
+        case let .scroll(id, _, _, _, _, _): return id
         case let .orientation(id, _, _): return id
         case let .posture(id, _, _, _): return id
         case let .postureGet(id, _): return id
@@ -158,7 +174,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .button(_, udid, _): return udid
         case let .key(_, udid, _, _): return udid
         case let .type(_, udid, _): return udid
-        case let .scroll(_, udid, _, _, _): return udid
+        case let .scroll(_, udid, _, _, _, _): return udid
         case let .orientation(_, udid, _): return udid
         case let .posture(_, udid, _, _): return udid
         case let .postureGet(_, udid): return udid
@@ -226,8 +242,15 @@ public enum SimHelperCommandParser {
             }
             return value
         }
+        func pointSpace() throws -> PointSpace {
+            guard let raw = dictionary["space"] else { return .frame }
+            guard let name = raw as? String, let space = PointSpace(rawValue: name) else {
+                throw Invalid.message("`space` must be frame or screen.")
+            }
+            return space
+        }
         func requirePoint(_ xKey: String, _ yKey: String) throws -> DevicePoint {
-            DevicePoint(x: try requireNumber(xKey), y: try requireNumber(yKey))
+            DevicePoint(x: try requireNumber(xKey), y: try requireNumber(yKey), space: try pointSpace())
         }
 
         do {
@@ -317,13 +340,15 @@ public enum SimHelperCommandParser {
                 if (anchorX == nil) != (anchorY == nil) {
                     throw Invalid.message("`anchorX` and `anchorY` must be given together.")
                 }
-                let anchor = anchorX.flatMap { x in anchorY.map { DevicePoint(x: x, y: $0) } }
+                let space = try pointSpace()
+                let anchor = anchorX.flatMap { x in anchorY.map { DevicePoint(x: x, y: $0, space: space) } }
                 return .success(.scroll(
                     id: id,
                     udid: udid,
                     deltaX: try requireNumber("deltaX"),
                     deltaY: try requireNumber("deltaY"),
-                    anchor: anchor
+                    anchor: anchor,
+                    space: space
                 ))
 
             case "orientation":

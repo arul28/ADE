@@ -142,8 +142,15 @@ const CAMERA_FOV = 32;
 const POSE_NOTIFY_MS = 90;
 /** How long a lost context has to come back before the pane gives up on 3D. */
 const CONTEXT_RESTORE_MS = 2_000;
-/** The 3D screen is a few hundred CSS pixels wide; a 3× frame is wasted on it. */
-const MIRROR_MAX_WIDTH = 512;
+/**
+ * The screen texture's longer side, in pixels: as many as the view can show
+ * the screen at (its longer side in device pixels; a render's whole canvas),
+ * never fewer than the floor and never more than the cap. A fixed 512 wide
+ * was soft on a Retina pane, and halved again across the Duo's two halves;
+ * a whole 3× frame is still more upload than any pane shows.
+ */
+const MIRROR_MIN_LONG_SIDE = 512;
+const MIRROR_MAX_LONG_SIDE = 1600;
 
 /**
  * §A3's one rule for a drag in 3D: on the glass it is the DEVICE's, off the
@@ -419,7 +426,9 @@ function createViewer(
   const mirrorFrame = (): { drawn: boolean; resized: boolean } => {
     if (!source || !mirror || !mirrorContext) return { drawn: false, resized: false };
     if (source.width <= 0 || source.height <= 0) return { drawn: false, resized: false };
-    const scale = Math.min(1, MIRROR_MAX_WIDTH / source.width);
+    const shown = Math.max(viewport.width, viewport.height) * viewport.pixelRatio;
+    const longSide = Math.min(MIRROR_MAX_LONG_SIDE, Math.max(MIRROR_MIN_LONG_SIDE, Math.round(shown)));
+    const scale = Math.min(1, longSide / Math.max(source.width, source.height));
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
     const resized = mirror.width !== width || mirror.height !== height;

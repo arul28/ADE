@@ -226,8 +226,8 @@ public actor SimHelperRuntime {
                     "unsupported": unsupported.map(String.init),
                 ]))
 
-            case let .scroll(_, udid, deltaX, deltaY, anchor):
-                try await session(for: udid).scroll(deltaX: deltaX, deltaY: deltaY, anchor: anchor)
+            case let .scroll(_, udid, deltaX, deltaY, anchor, space):
+                try await session(for: udid).scroll(deltaX: deltaX, deltaY: deltaY, anchor: anchor, space: space)
                 emit(.ok(id: id, payload: [:]))
 
             case let .orientation(_, udid, value):

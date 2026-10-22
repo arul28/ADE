@@ -170,6 +170,10 @@ export const APPLE_AGENT_ACTIONS = [
   /* Remove this project's leftover ADE devices and power off idle ones. It
      only ever deletes a device ADE made; the user's own are listed, not touched. */
   "deviceCleanup",
+  /* Take turns on the lane's device with the other agents sharing it. */
+  "deviceLease",
+  "deviceLeaseRelease",
+  "deviceLeaseStatus",
 
   /* Simulator runtimes: what is installed, and fetch the one this Xcode
      expects. Removing one is the person's call (APPLE_USER_ONLY_ACTIONS). */
@@ -409,6 +413,13 @@ export type IosSimulatorLaunchArgs = {
   environment?: Record<string, string> | null;
   arguments?: string[] | null;
   /**
+   * The Xcode build configuration to build, `Debug` when unset. A project
+   * whose configurations differ in more than optimisation (an app that signs
+   * into a test backend in Debug and the real one in Release) needs the one
+   * the caller is testing.
+   */
+  configuration?: string | null;
+  /**
    * Ask the desktop shell to open the iOS simulator drawer for this launch.
    * Defaults to false: agent launches must not steal the user's screen. The
    * drawer passes true for its own launches.
@@ -448,6 +459,8 @@ export type IosSimulatorSession = {
   buildRoot?: string | null;
   /** True when nothing was rebuilt, so the running app can predate the caller's code changes. */
   usedInstalledBinary?: boolean | null;
+  /** The Xcode configuration that was built; null when nothing was. */
+  buildConfiguration?: string | null;
 };
 
 export type IosSimulatorLaunchResult = IosSimulatorSession & {
@@ -946,7 +959,7 @@ export type IosSimulatorEventPayload =
   | AppleDevicePostureEvent
   | AppleRenderRequestEvent;
 
-/** What `ade apple render` asks the lane's open Apple pane to render. */
+/** What `ade apple render` asks a desktop window to render of the lane's device. */
 export const APPLE_RENDER_ANGLE_IDS = ["front", "three-quarter-left", "three-quarter-right", "current"] as const;
 export type AppleRenderAngleId = (typeof APPLE_RENDER_ANGLE_IDS)[number];
 export const APPLE_RENDER_LIGHTINGS = ["transparent", "studio", "dusk"] as const;
@@ -970,10 +983,16 @@ export type AppleRenderRequestArgs = {
 
 export type AppleRenderRequestResult = { filed: number; error: string | null };
 
-/** The service asks the lane's mounted Apple pane to render; it acks, then reports. */
+/**
+ * The service asks every window with the project open to render: a live Apple
+ * pane for the lane, else a window's off-screen render host. The first to ack
+ * renders, then reports.
+ */
 export type AppleRenderRequestEvent = {
   type: "apple.render.request";
   laneId: string | null;
+  /** The chat that asked, where the proof is filed. Absent from older runtimes. */
+  chatSessionId?: string | null;
   requestId: string;
   request: AppleRenderRequestSpec;
 };
@@ -1376,6 +1395,11 @@ export type IosSimulatorOpenUrlArgs = IosSimulatorDeviceArgs & {
 
 export type IosSimulatorAppLifecycleArgs = IosSimulatorDeviceArgs & {
   bundleId: string;
+};
+
+/** A relaunch can hand the app new launch arguments, as `launch` does. */
+export type IosSimulatorRelaunchArgs = IosSimulatorAppLifecycleArgs & {
+  arguments?: string[] | null;
 };
 
 /**

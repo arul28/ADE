@@ -384,6 +384,54 @@ public actor DeviceSession {
         if engine == nil, let measured = panelMetrics[active] { metrics = measured }
     }
 
+    /// The live screen's picture, in quarter turns clockwise on its
+    /// framebuffer (the pane's `appleScreenRotation`). Read when a
+    /// screen-space gesture begins and kept until its end, so a turn or a fold
+    /// mid-gesture cannot bend it.
+    private var screenTurns = 0
+
+    private func readScreenTurns() async -> Int {
+        // A frame that already arrives wide has been turned for us.
+        if metrics.pointWidth > metrics.pointHeight { return 0 }
+        // A foldable marks its live panel; a phone with one screen marks none,
+        // and its screen is the main display.
+        let displays = await DevicePosture.displays(udid: udid)
+        let live = displays.first(where: \.active) ?? displays.first(where: { $0.screenID == 1 })
+        switch live?.orientation {
+        case "landscape_left": return 1
+        case "landscape_right": return 3
+        case "portrait_upside_down": return 2
+        default: return 0
+        }
+    }
+
+    /// A point an agent measured on the picture iOS shows, onto the panel's
+    /// framebuffer, which is what CoreDevice's digitizer reads. The inverse
+    /// of the pane's turn (`appleViewToFrameFraction`), in points: a
+    /// sideways picture is the frame's height wide.
+    private func toFrame(_ point: DevicePoint) -> DevicePoint {
+        guard point.space == .screen else { return point }
+        let width = metrics.pointWidth
+        let height = metrics.pointHeight
+        switch screenTurns {
+        case 1: return DevicePoint(x: point.y, y: height - point.x)
+        case 2: return DevicePoint(x: width - point.x, y: height - point.y)
+        case 3: return DevicePoint(x: width - point.y, y: point.x)
+        default: return DevicePoint(x: point.x, y: point.y)
+        }
+    }
+
+    /// Onto the frame, at a gesture's begin learning how the picture sits.
+    /// A foldable's live panel is settled first: its size is the frame's.
+    private func framePoints(_ phase: TouchPhase, _ points: [DevicePoint]) async -> [DevicePoint] {
+        guard points.contains(where: { $0.space == .screen }) else { return points }
+        if phase == .begin {
+            if await foldableInput() != nil { await resolvePanelForInput() }
+            screenTurns = await readScreenTurns()
+        }
+        return points.map(toFrame)
+    }
+
     private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
         guard let foldable = await foldableInput() else { return false }
         if phase == .begin { await resolvePanelForInput() }
@@ -398,6 +446,7 @@ public actor DeviceSession {
     // MARK: - Input
 
     public func touch(phase: TouchPhase, point: DevicePoint) async throws {
+        let point = await framePoints(phase, [point])[0]
         if try await foldableTouch(phase, [point]) { return }
         try await ensureHID()
         let normalized = metrics.normalize(point)
@@ -411,6 +460,8 @@ public actor DeviceSession {
     }
 
     public func multiTouch(phase: TouchPhase, first: DevicePoint, second: DevicePoint) async throws {
+        let points = await framePoints(phase, [first, second])
+        let (first, second) = (points[0], points[1])
         if try await foldableTouch(phase, [first, second]) { return }
         try await ensureHID()
         let a = metrics.normalize(first)
@@ -481,7 +532,23 @@ public actor DeviceSession {
         return unsupported
     }
 
-    public func scroll(deltaX: Double, deltaY: Double, anchor: DevicePoint?) async throws {
+    public func scroll(deltaX: Double, deltaY: Double, anchor: DevicePoint?, space: PointSpace = .frame) async throws {
+        // A screen-space scroll is turned onto the frame first, its direction
+        // included.
+        var deltaX = deltaX
+        var deltaY = deltaY
+        var anchor = anchor
+        if space == .screen {
+            if await foldableInput() != nil { await resolvePanelForInput() }
+            screenTurns = await readScreenTurns()
+            anchor = anchor.map(toFrame)
+            switch screenTurns {
+            case 1: (deltaX, deltaY) = (deltaY, -deltaX)
+            case 2: (deltaX, deltaY) = (-deltaX, -deltaY)
+            case 3: (deltaX, deltaY) = (-deltaY, deltaX)
+            default: break
+            }
+        }
         if await foldableInput() != nil {
             // CoreDevice's digitizer has no wheel: scroll is a short drag the
             // other way, from the anchor (or the panel's centre).

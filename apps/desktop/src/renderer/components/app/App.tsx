@@ -15,6 +15,7 @@ import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
+import { AppleRenderHost } from "../apple/AppleRenderHost";
 import { ACCOUNT_SETTINGS_ROUTE, isMachineScopedSettingsRoute, resolveSettingsTab } from "../settings/settingsManifest";
 import {
   InboundDeeplinkModal,
@@ -676,6 +677,9 @@ const ProjectSurface = React.memo(function ProjectSurface({
           <ProjectRouteContent active={active} route={route} />
         </ProjectSurfaceRouterScope>
       </div>
+      {/* `ade apple render` for this project's lanes when no Apple pane is
+          open: idle until a request comes, then an off-screen 3D view. */}
+      <AppleRenderHost binding={projectBinding} />
     </AppStoreProvider>
   );
 });

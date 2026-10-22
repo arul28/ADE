@@ -110,7 +110,7 @@ export type IosDeviceTools = {
   setPermission: (args: IosDeviceToolsPermissionArgs) => Promise<void>;
   sendPush: (args: IosDeviceToolsPushArgs) => Promise<void>;
   openUrl: (deviceUdid: string, url: string) => Promise<void>;
-  launchApp: (deviceUdid: string, bundleId: string) => Promise<void>;
+  launchApp: (deviceUdid: string, bundleId: string, launchArguments?: readonly string[]) => Promise<void>;
   terminateApp: (deviceUdid: string, bundleId: string) => Promise<void>;
   uninstallApp: (deviceUdid: string, bundleId: string) => Promise<void>;
   setStatusBar: (args: IosDeviceToolsStatusBarArgs) => Promise<void>;
@@ -498,9 +498,9 @@ export function createIosDeviceTools(deps: IosDeviceToolsDeps): IosDeviceTools {
   }
 
   /** Starts an app that is already installed. Does not build anything. */
-  async function launchApp(deviceUdid: string, bundleId: string): Promise<void> {
+  async function launchApp(deviceUdid: string, bundleId: string, launchArguments: readonly string[] = []): Promise<void> {
     const udid = assertDeviceUdid(deviceUdid);
-    await simctl(["launch", udid, assertBundleId(bundleId)], LAUNCH_TIMEOUT_MS);
+    await simctl(["launch", udid, assertBundleId(bundleId), ...launchArguments], LAUNCH_TIMEOUT_MS);
   }
 
   async function terminateApp(deviceUdid: string, bundleId: string): Promise<void> {

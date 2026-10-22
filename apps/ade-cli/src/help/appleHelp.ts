@@ -50,6 +50,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade --socket apple launch --target <id> --text
     $ ade --socket apple launch --bundle-id com.example.app --no-build --text
+    $ ade --socket apple launch --configuration Release --text
+    $ ade --socket apple launch --bundle-id com.ade.ios --no-build --text -- -adePreviewScreen duo-home
+
+  Everything after "--" is passed to the app as launch arguments (put --text
+  before it). The summary names the configuration it built.
 
   Flags:
     --device, --udid <id>       Simulator device.
@@ -62,6 +67,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --lane, --lane-id <id>      Lane to build in and bind the session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
+    --configuration <name>      Xcode build configuration; default Debug.
+    --launch-arg=<value>        One launch argument; repeatable. Same as after "--".
     --force, -f                 Take over another chat's session; the new target
                                 is validated before the owner is evicted.
     --mode snapshot|live        Inspector launch mode; default live.
@@ -150,11 +157,16 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Captures a one-shot PNG from the simulator via simctl. Alias: capture.
   Prints the written file path; read that file instead of the data URL.
+  The shot is filed as proof and the command prints its cite: line; paste
+  that line to show it (attaching the same file again is refused as a
+  duplicate). --no-proof takes a scratch shot that files nothing.
 
     $ ade --socket apple screenshot --out shot.png --text
+    $ ade --socket apple screenshot --no-proof --text
 
   Flags:
-    --out <path>           Where to write the PNG; relative to the build root.
+    --out <path>           Where to write the PNG; must be under the build root (relative paths resolve there).
+    --no-proof             Do not file the shot in the proof drawer.
     --device, --udid <id>  Simulator device; defaults to the active session or booted device.
     --project-root <path>  Build root; defaults to the lane worktree.
 `,
@@ -618,9 +630,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   this to see the app from its first screen again.
 
     $ ade --socket apple relaunch --bundle-id com.example.app --text
+    $ ade --socket apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home
+
+  Everything after "--" is passed to the app as launch arguments.
 
   Flags:
     --bundle-id <id>       Required app to restart.
+    --launch-arg=<value>   One launch argument; repeatable.
     --device, --udid <id>  Simulator device.
 `,
   uninstall: `${ADE_BANNER}
@@ -1141,6 +1157,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   is read from the live panel (posture.displayOrientation in the result). The
   inner display takes all four orientations, upside down included; held
   portrait, its picture is landscape. The cover's Home Screen is portrait-only.
+  So for a TALL picture on the open inner display, rotate landscape-left or
+  landscape-right; "rotate portrait" from open flat is the phone held upright,
+  which is already how it starts (verification already-on-axis), and the app
+  stays wide.
 
   Flags:
     --orientation <o>      Orientation; also accepted as the next positional.
@@ -1176,9 +1196,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Apple device: render
 
   Renders the device in 3D with its live screen and files the images (and an
-  optional turntable video) to the proof drawer. The Apple Development pane
-  must be open for the lane in ADE on a desktop: it does the rendering. For an
-  iPhone Duo, each pose folds the real simulator first.
+  optional turntable video) to the proof drawer. No pane needs to be open:
+  any ADE desktop window with the project open does the rendering, off screen
+  (the lane's Apple pane does it when one is live). The device must be on;
+  a render never boots it. For an iPhone Duo, each pose folds the real
+  simulator first.
 
     $ ade apple render --text
     $ ade apple render --angles front,three-quarter-right --lighting studio --text
@@ -1193,12 +1215,40 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --no-shadow            No contact shadow.
     --lane, --lane-id <id> Lane whose device to render.
 `,
+  lease: `${ADE_BANNER}
+  Apple device: lease
+
+  Takes a turn on the lane's device when several agents share it, so their
+  builds, rotates and screenshots do not land on each other. Run it before a
+  run of device work, and release it after; the next agent waiting gets the
+  device. It is advisory: commands work without one, and the pane is never
+  blocked. The same holder asking again renews its lease. A lease nobody
+  renews lapses after --ttl (default 10 minutes).
+
+    $ ade apple lease --wait 300 --text          Wait up to 5 min; prints the token
+    $ ade apple lease release --token <t> --text
+    $ ade apple lease status --text
+
+  acquired no means another holder has it (named, with when it lapses).
+
+  Flags:
+    --wait <seconds>       How long to wait in line; default 0 (answer at once). Max 540.
+    --ttl <seconds>        How long the lease lasts unless renewed; default 600.
+    --holder <name>        Who is asking; defaults to this chat.
+    --token <t>            For release: the token the lease printed.
+    --lane, --lane-id <id> Lane whose device.
+`,
   posture: `${ADE_BANNER}
   Apple device: posture (iPhone Duo)
 
   Reads a foldable simulator's hinge angle, physical orientation, Table Mode,
   active panel (activeScreenId 1 is the cover, 3 the inner display) and how
   that panel's picture sits (displayOrientation).
+
+  Tent reads angle 80, orientation facedown, tableMode yes, activeScreenId 1:
+  that is Device Hub's own Tent preset. The phone stands as a tent on its two
+  outer edges, so CoreDevice calls it face down on a table, and the cover is
+  the screen facing the viewer.
 
     $ ade apple posture --text
 

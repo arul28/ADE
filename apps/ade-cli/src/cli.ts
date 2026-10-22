@@ -2828,7 +2828,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   ADE hashes every proof file. An attach whose bytes match earlier proof in
   this project (a renamed copy included) fails with PROOF_DUPLICATE and names
-  the earlier proof. Record a new one, or report that recording failed.
+  the earlier proof with its cite: line. To show a shot ADE already filed
+  (every "apple screenshot" is), paste that cite: line. Otherwise record a
+  new one, or report that recording failed.
   An attached video whose own creation time is before the chat's request is
   kept, marked older in the proof drawer, and the command prints a warning.
 `,
@@ -2866,6 +2868,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket apple launch --follow         Same, announcing the wait before the summary
     $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket apple launch --bundle-id com.example Launch installed app
+    $ ade --socket apple launch --configuration Release Build Release instead of Debug
+    $ ade --socket apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
     $ ade --socket apple shutdown                End this chat's simulator session (the device stays on)
     $ ade --socket apple shutdown --force        Force-release a session owned by another chat
     $ ade --socket apple launch --force          Take the simulator over in one step
@@ -2874,7 +2878,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade apple screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade apple screenshot --out shot.png --text Capture a screenshot (filed as proof; prints cite:)
+    $ ade apple screenshot --no-proof --text     A scratch shot that files nothing
     $ ade apple proof --caption "<what>" --text  Screenshot into the proof drawer
     $ ade apple snapshot --text                  Capture selectable UI context
     $ ade apple inspector --text                 Show current inspector data
@@ -2930,7 +2935,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple posture --text                   A foldable's hinge angle and active panel
     $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
     $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
-    $ ade apple render --poses closed,open --text  3D renders (needs the Apple pane open), as proof
+    $ ade apple render --poses closed,open --text  3D renders (needs ADE open on the project), as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -2947,6 +2952,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple status-bar --clear               Drop the status bar override
     $ ade apple app-state --bundle-id <id>       Report running state and pid
     $ ade apple foreground --text                Which app the device has in front
+    $ ade apple foreground --wait 10 --text      Same, waiting up to 10 s for an app after a launch
+    $ ade apple lease --wait 300 --text          Take a turn on the lane's device (queues behind others)
+    $ ade apple lease release --token <t>        Hand the device to the next agent in line
 
   Event log:
     $ ade apple log-start --bundle-id <id>       Start the device event log
@@ -13813,7 +13821,7 @@ function iosSimulatorErrorHint(
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
   }
   if (message.includes(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE)) {
-    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
+    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a relative path (it resolves under that root, e.g. .ade/tmp/shot.png).";
   }
   if (message.includes(APPLE_DEVICE_ALREADY_RECORDING_CODE)) {
     return "Another lane is recording this device — stop it there with: ade apple record-stop --lane <lane named above>";
@@ -13963,6 +13971,18 @@ function buildIosSimulatorPlan(
   const sub = firstPositional(args) ?? "status";
   if (sub === "help")
     return { kind: "help", text: buildIosSimulatorHelp(args) };
+  // `apple launch|relaunch … -- <app args>`: everything after the fence is the
+  // app's, split off before any flag reader can take a token from it.
+  // `--launch-arg=<value>` adds one at a time (the `=` lets a value start with
+  // a dash, as `-adePreviewScreen` does).
+  const readAppLaunchArguments = (): string[] => {
+    const fence = args.indexOf("--");
+    const passthrough = fence >= 0 ? args.splice(fence).slice(1) : [];
+    return [...readRepeatedValues(args, ["--launch-arg"]), ...passthrough];
+  };
+  const appLaunchArguments = ["launch", "open", "relaunch", "restart-app"].includes(sub)
+    ? readAppLaunchArguments()
+    : [];
   // `claim` reads its own (required) lane/chat-session args in its branch; for
   // every other subcommand the claim args are consumed once here so the lane
   // is available to the shared root defaults below without double-reading the
@@ -14074,6 +14094,8 @@ function buildIosSimulatorPlan(
       scheme: readValue(args, ["--scheme"]),
       chatSessionId: claimArgs.chatSessionId,
       build: !readFlag(args, ["--no-build"]),
+      configuration: readValue(args, ["--configuration", "--config"]),
+      ...(appLaunchArguments.length ? { arguments: appLaunchArguments } : {}),
       mode: readValue(args, ["--mode"]) ?? "live",
       keepSimulatorInBackground: !foreground,
       ...(openDrawer ? { openDrawer: true } : {}),
@@ -14099,10 +14121,14 @@ function buildIosSimulatorPlan(
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Filed as proof by default; `--no-proof` is a scratch shot for an agent's
+    // own eyes, so a validation loop does not flood the proof drawer.
+    const noProof = readFlag(args, ["--no-proof"]);
     return iosAction("iOS simulator screenshot", "screenshot", {
       deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       ...readIosSimulatorOutPath(args),
+      ...(noProof ? { proof: false } : {}),
     });
   }
   if (sub === "proof" || sub === "promote") {
@@ -14663,6 +14689,7 @@ function buildIosSimulatorPlan(
     return iosAction("iOS simulator relaunch app", "relaunchApp", {
       deviceUdid: device,
       bundleId,
+      ...(appLaunchArguments.length ? { arguments: appLaunchArguments } : {}),
     });
   }
   if (sub === "terminate" || sub === "kill-app") {
@@ -14722,8 +14749,19 @@ function buildIosSimulatorPlan(
     // `getAppState` answers about a bundle id the caller already knows.
     // This one answers "what is on screen", from the helper's accessibility
     // bridge — the question an agent that has just arrived actually has.
+    // `--wait [seconds]`: keep asking until an app is in front (default 10 s),
+    // for the moment after a launch when the tree still names nothing.
+    const waitIndex = args.indexOf("--wait");
+    let waitMs = 0;
+    if (waitIndex >= 0) {
+      const next = args[waitIndex + 1];
+      const seconds = next != null && /^\d+(\.\d+)?$/.test(next) ? Number(next) : 10;
+      args.splice(waitIndex, next != null && /^\d+(\.\d+)?$/.test(next) ? 2 : 1);
+      waitMs = Math.round(seconds * 1000);
+    }
     return iosAction("Apple device foreground app", "getForegroundApp", {
       deviceUdid: readIosSimulatorDevice(args),
+      ...(waitMs > 0 ? { waitMs } : {}),
     });
   }
   if (sub === "app-state") {
@@ -15120,8 +15158,9 @@ function buildIosSimulatorPlan(
   }
   if (sub === "render") {
     // `ade apple render --angles front,three-quarter-left --poses closed,open
-    // --lighting studio --video --sheet --no-shadow`: the Apple pane open for
-    // the lane renders it and files the proof.
+    // --lighting studio --video --sheet --no-shadow`: the lane's live Apple
+    // pane, else any desktop window with the project open, renders it and
+    // files the proof.
     const listOf = <T extends string>(flag: string[], valid: readonly T[], fallback: T[]): T[] => {
       const raw = readValue(args, flag);
       if (raw == null) return fallback;
@@ -15160,6 +15199,31 @@ function buildIosSimulatorPlan(
   if (sub === "duo-skill" || sub === "resizability-skill") {
     // Apple's app-resizability agent skill, from this Mac's Xcode into the lane.
     return iosAction("Apple Duo agent skill", "addDuoSkill", laneId ? { laneId } : {});
+  }
+  if (sub === "lease") {
+    // `ade apple lease [--wait <s>] [--ttl <s>] [--holder <name>]`, then
+    // `ade apple lease release --token <t>`; `ade apple lease status`.
+    // Every flag first: a flag's value must not be read as the verb.
+    const waitSeconds = readNumberOption(args, ["--wait"]);
+    const ttlSeconds = readNumberOption(args, ["--ttl"]);
+    const holder = readValue(args, ["--holder", "--name"]);
+    const tokenFlag = readValue(args, ["--token"]);
+    const verb = firstPositional(args) ?? "acquire";
+    const scope = { ...(laneId ? { laneId } : {}), ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}) };
+    if (verb === "status") return iosAction("Apple device lease status", "deviceLeaseStatus", scope);
+    if (verb === "release") {
+      const token = requireValue(tokenFlag ?? firstPositional(args), "--token");
+      return iosAction("Apple device lease release", "deviceLeaseRelease", { ...scope, token });
+    }
+    if (verb !== "acquire" && verb !== "take") {
+      throw new CliUsageError(`ios-sim lease: unknown action '${verb}'. Use acquire (the default), release or status.`);
+    }
+    return iosAction("Apple device lease", "deviceLease", {
+      ...scope,
+      ...(holder ? { holder } : {}),
+      ...(waitSeconds != null ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
+      ...(ttlSeconds != null ? { ttlMs: Math.round(ttlSeconds * 1000) } : {}),
+    });
   }
   if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
     return iosAction("Apple device posture", "getPosture", {
@@ -31099,6 +31163,7 @@ function formatIosSimLaunch(value: unknown): string {
       ],
     ]),
     `build root: ${buildRootLabel}`,
+    ...(asString(session.buildConfiguration) ? [`configuration: ${asString(session.buildConfiguration)}`] : []),
   ];
   if (session.usedInstalledBinary === true) {
     lines.push(
@@ -31189,6 +31254,11 @@ function formatIosSimSnapshot(value: unknown): string {
     // Printed raw rather than as a table cell: agents Read this path back,
     // and the key/value renderer truncates long values.
     asString(screenshot.filePath) ? `file: ${asString(screenshot.filePath)}` : "",
+    // A shot filed as proof is cited from here: attaching the same file again
+    // is refused as a duplicate.
+    ...(asString(screenshot.proofArtifactId)
+      ? [`cite: ${proofCitationMarkdown(asString(screenshot.proofArtifactId)!, "Simulator screenshot")}`]
+      : []),
     elements.length ? "" : "",
     elements.length
       ? renderTable(

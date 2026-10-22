@@ -142,7 +142,7 @@ final class ProtocolTests: XCTestCase {
         guard case .failure(.invalid) = parse(#"{"type":"scroll","id":"1","udid":"U","deltaX":0,"deltaY":1,"anchorX":5}"#) else {
             return XCTFail("Expected invalid")
         }
-        guard case let .success(.scroll(_, _, _, _, anchor)) = parse(
+        guard case let .success(.scroll(_, _, _, _, anchor, _)) = parse(
             #"{"type":"scroll","id":"1","udid":"U","deltaX":0,"deltaY":1,"anchorX":5,"anchorY":6}"#
         ) else { return XCTFail("Expected success") }
         XCTAssertEqual(anchor, DevicePoint(x: 5, y: 6))
