@@ -21,6 +21,9 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   case chatInfo
   case proof
   case pr
+  /// Opening a pull request for the chat's lane (desktop opens it where the
+  /// PR shows).
+  case createPr
 
   var id: String { rawValue }
 
@@ -33,6 +36,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .chatInfo: return "Chat Info"
     case .proof: return "Proof"
     case .pr: return "Pull Request"
+    case .createPr: return "New Pull Request"
     }
   }
 
@@ -46,6 +50,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .chatInfo: return "flowchart"
     case .proof: return "photo.on.rectangle.angled"
     case .pr: return "arrow.triangle.pull"
+    case .createPr: return "plus"
     }
   }
 
@@ -53,7 +58,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   var isTool: Bool {
     switch self {
     case .simulator, .macDesktop, .appControl, .browser: return true
-    case .chatInfo, .proof, .pr: return false
+    case .chatInfo, .proof, .pr, .createPr: return false
     }
   }
 
@@ -567,8 +572,8 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
     // The reader is always present and the thread always sits in the same slot
     // within a family, so opening a tool beside the chat does not re-create
     // the transcript (which would drop the reader's place).
-    DuoLocalFoldReader { fold, size in
-      layout(fold: fold, size: size)
+    GeometryReader { proxy in
+      layout(fold: DuoFoldReading.fold(in: proxy), size: proxy.size)
     }
     .animation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion), value: isOpen)
   }
@@ -603,6 +608,8 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     } else {
+      // `size` is already the room left of the edge bar (the bar is this
+      // area's trailing safe area).
       let split = DuoWorkMetrics.wideSplit(width: size.width, fold: fold)
       HStack(spacing: 0) {
         chat()

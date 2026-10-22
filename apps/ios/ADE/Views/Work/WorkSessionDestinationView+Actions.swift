@@ -1801,6 +1801,11 @@ extension WorkSessionDestinationView {
   }
 
   func presentCreateLanePr() {
+    // Wide: in the pane, where the PR will show once it exists (desktop).
+    if let duoPane {
+      duoPane.open(.createPr)
+      return
+    }
     if prDetailsPresented {
       createPrAfterDetailsDismiss = true
       prDetailsPresented = false
@@ -1855,6 +1860,8 @@ extension WorkSessionDestinationView {
         sessionId: sessionId
       )
       createPrPresented = false
+      // In the pane: the new PR replaces the form.
+      if duoPane?.tab == .createPr { duoPane?.open(.pr) }
       try? await syncService.refreshPullRequestSnapshots()
       await syncService.refreshLaneGithubPrItems(force: true)
       await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: true)

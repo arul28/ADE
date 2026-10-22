@@ -838,6 +838,8 @@ struct WorkSessionDestinationView: View {
       duoLaneToolSheet(.browser)
     case .pr:
       chatPullRequestView(embedded: true)
+    case .createPr:
+      chatCreatePrWizard(embedded: true)
     case .proof:
       duoProofContent
     case .chatInfo:
@@ -1177,6 +1179,8 @@ struct WorkSessionDestinationView: View {
     switch tab {
     case .pr:
       showPrDetails(origin: origin)
+    case .createPr:
+      presentCreateLanePr()
     case .chatInfo:
       showChatInfo(origin: origin)
     case .proof:
@@ -1432,8 +1436,16 @@ struct WorkSessionDestinationView: View {
 
   @ViewBuilder
   private var chatCreatePrWizardSheet: some View {
+    chatCreatePrWizard(embedded: false)
+    .presentationDetents([.large])
+    .presentationDragIndicator(.visible)
+    .presentationContentInteraction(.scrolls)
+  }
+
+  /// The create-PR form: a sheet on the phone, the pane on a wide display.
+  private func chatCreatePrWizard(embedded: Bool) -> some View {
     let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
-    CreatePrWizardView(
+    var wizard = CreatePrWizardView(
       lanes: lanes,
       createCapabilities: prCreateCapabilities,
       initialLaneId: laneId.isEmpty ? nil : laneId,
@@ -1441,10 +1453,10 @@ struct WorkSessionDestinationView: View {
       onCreateSingle: handleChatCreateSinglePr,
       onCreateIntegration: { _ in false }
     )
-    .environmentObject(syncService)
-    .presentationDetents([.large])
-    .presentationDragIndicator(.visible)
-    .presentationContentInteraction(.scrolls)
+    wizard.embedded = embedded
+    return wizard
+      .environmentObject(syncService)
+      .task { await loadPrCreateCapabilitiesIfNeeded() }
   }
 
   var sessionDestinationZoomTransitionId: String? {

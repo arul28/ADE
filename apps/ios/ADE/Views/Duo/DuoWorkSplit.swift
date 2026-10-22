@@ -25,11 +25,18 @@ enum DuoWorkMetrics {
     reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
   }
 
-  /// Chat | pane side by side. `trailing` is the pane's width. Always an even split of the room left of the edge bar (the user's
-  /// call): on a book fold the right page is narrower by the bar, so pages
-  /// would leave the pane short.
+  /// Chat | pane side by side, `width` being the room left of the edge bar.
+  /// `trailing` is the pane's width. Flat: half and half. Book-folded:
+  /// exactly at the hinge, the chat on the left page and the pane on the
+  /// right one (`fold` is the band the seam covers, so the hinge is the
+  /// divider).
   static func wideSplit(width: CGFloat, fold: DuoFold) -> (trailing: CGFloat, fold: CGRect?) {
-    (floor(width / 2), nil)
+    if case .sideBySide(let rect) = fold,
+       rect.minX > 240,
+       width - rect.maxX > 240 {
+      return (width - rect.maxX, rect)
+    }
+    return (floor(width / 2), nil)
   }
 
   /// Pane over chat: exactly the top half on a laptop or tent fold, a little
@@ -223,6 +230,8 @@ extension WorkRootListScreen {
       set: { mode in
         withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
           duoViewModeRaw = mode.rawValue
+          // Back from the full-screen board: the list is the left column.
+          if mode == .list { duoShowsSessionList = true }
           if mode == .board {
             duoComposeRoute = nil
             if duoSelectedRoute != nil { duoClearSelection() }
@@ -375,7 +384,7 @@ struct DuoWorkBoard<Card: View>: View {
   }
 
   /// A card narrower than this cannot hold a two-line title and its meta line.
-  private static var minColumnWidth: CGFloat { 250 }
+  private static var minColumnWidth: CGFloat { 180 }
 
   @ViewBuilder
   private func tallGrid(fold: DuoFold, size: CGSize) -> some View {
@@ -615,7 +624,10 @@ struct DuoChatRail: ViewModifier {
       }
     }
     // The bar's one ⋯: the chat's actions, or with a pane open the pane's
-    // own (the PR's actions). Whatever the bar cannot fit joins it.
+    // own (the PR's actions) — none for a pane without any (Chat Info, a
+    // tool). Decided by what the pane is, not by its actions arriving: the
+    // bar did not take back a ⋯ dropped while the PR's actions loaded.
+    if !paneOnBar || pane.tab == .pr {
     ToolbarOverflowMenu {
       if paneOnBar {
         if let paneOverflow {
@@ -625,10 +637,7 @@ struct DuoChatRail: ViewModifier {
         WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
           .equatable()
       }
-      // Only while the sessions column (whose ⋯ has them) is away.
-      if showsSidebarButton {
-        DuoAppUtilityMenuItems()
-      }
+    }
     }
     // On the edge bar, Activity and Settings are in a ⋯ (the sessions
     // column's, or the bar's), never on the rail; elsewhere the tabs menu.
@@ -738,6 +747,14 @@ struct DuoChatPrHeaderLabel: View {
 
   private var tint: Color { lanePullRequestTint(badge.state) }
 
+  /// "#1871" out of the badge's "MERGED #1871": the state is its own word.
+  private var number: String {
+    if let range = badge.label.range(of: #"#\d+"#, options: .regularExpression) {
+      return String(badge.label[range])
+    }
+    return badge.label
+  }
+
   private var checksGlyph: (symbol: String, color: Color)? {
     switch badge.checksStatus {
     case "passing": return ("checkmark.circle.fill", ADEColor.success)
@@ -752,7 +769,7 @@ struct DuoChatPrHeaderLabel: View {
       HStack(spacing: 5) {
         Image(systemName: "arrow.triangle.pull")
           .font(.system(size: 11, weight: .semibold))
-        Text(badge.label)
+        Text(number)
           .font(.caption.weight(.semibold).monospacedDigit())
         Text(lanePrStateLabel(badge.state))
           .font(.caption.weight(.medium))
@@ -771,7 +788,7 @@ struct DuoChatPrHeaderLabel: View {
     }
     .buttonStyle(.plain)
     .fixedSize()
-    .accessibilityLabel("\(badge.label), \(lanePrStateLabel(badge.state)). Opens the pull request.")
+    .accessibilityLabel("Pull request \(number), \(lanePrStateLabel(badge.state)). Opens it beside the chat.")
   }
 }
 

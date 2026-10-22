@@ -1027,7 +1027,11 @@ struct WorkRootListScreen: View, Equatable {
   /// width, so its tasks keep running and its scroll position stays.
   private func duoWideColumns(fold: DuoFold, size: CGSize) -> some View {
     let column = DuoWorkMetrics.sessionsColumn(total: size.width, fold: fold)
-    let listShown = duoShowsSessionList
+    // The board is the whole screen, as on desktop: no list beside it.
+    let listShown: Bool = {
+      if case .board = duoDetail { return false }
+      return duoShowsSessionList
+    }()
     return HStack(spacing: 0) {
       // The list is always laid out at the column's full width; collapsing
       // only narrows the window onto it. A list whose own width animated from
@@ -1121,7 +1125,6 @@ struct WorkRootListScreen: View, Equatable {
     NavigationStack {
       DuoWorkEmptyDetail(canCreate: inputs.isLive, onNewChat: pushNewChatRoute)
         .toolbar {
-          ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
           // Activity and Settings are in the sessions ⋯, not on the rail.
           DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
         }
@@ -1176,11 +1179,43 @@ struct WorkRootListScreen: View, Equatable {
       )
       .navigationTitle("Board")
       .navigationBarTitleDisplayMode(.inline)
+      .toolbar(removing: .title)
       .toolbar {
+        // ‹ project logo, "Work", and the List | Board switch back.
+        DuoHubBackToolbarItem()
+        duoBoardHeaderItem
         ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
         DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
       }
-      .modifier(duoShowSessionsItem)
+    }
+  }
+
+  @ToolbarContentBuilder
+  private var duoBoardHeaderItem: some ToolbarContent {
+    if #available(iOS 27.1, *) {
+      ToolbarItem(placement: .topBarLeading) { duoBoardHeader }
+        .sharedBackgroundVisibility(.hidden)
+        .axisBehavior(.horizontalOnly)
+    } else {
+      ToolbarItem(placement: .topBarLeading) { duoBoardHeader }
+        .sharedBackgroundVisibility(.hidden)
+    }
+  }
+
+  private var duoBoardHeader: some View {
+    HStack(spacing: 14) {
+      Text("Work")
+        .font(.system(size: 22, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .fixedSize()
+        .accessibilityAddTraits(.isHeader)
+      Picker("View", selection: duoViewModeBinding) {
+        ForEach(DuoWorkViewMode.allCases) { mode in
+          Text(mode.title).tag(mode)
+        }
+      }
+      .pickerStyle(.segmented)
+      .frame(width: 150)
     }
   }
 
@@ -1382,6 +1417,36 @@ struct WorkRootListScreen: View, Equatable {
         DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
       }
     }
+  }
+
+  /// The sessions column's first header row: ‹ project logo (back to the
+  /// Hub) and "Work", with the sidebar button on the column's trailing
+  /// margin.
+  private var duoSessionsTitleRow: some View {
+    HStack(spacing: 6) {
+      WorkHeaderProjectButton(iconDataUrl: inputs.projectIconDataUrl, action: workHeaderActions.onBackToHub)
+      Text("Work")
+        .font(.system(size: 22, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .accessibilityAddTraits(.isHeader)
+      Spacer(minLength: 8)
+      Button {
+        ADEHaptics.light()
+        toggleDuoSessionsColumn()
+      } label: {
+        Image(systemName: "sidebar.left")
+          .font(.system(size: 17, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 32, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(duoWorkFamily == .tall ? "Hide chats" : "Collapse sidebar")
+      .accessibilityIdentifier("Duo.Work.SessionsCollapse")
+    }
+    .padding(.horizontal, 16)
+    .frame(minHeight: 52)
   }
 
   /// The sessions column's second header row, the phone's: search with the
@@ -1911,14 +1976,24 @@ struct WorkRootListScreen: View, Equatable {
       // The phone's Work header, in two rows: ‹ project logo and "Work" with
       // the sidebar button at the right end; then search (filter inside it),
       // New chat and ⋯, the phone's own row.
+      // Both rows are the column's own (not bar items), so the sidebar button
+      // sits on the column's trailing margin, right above the ⋯. The bar
+      // stays for selecting and for the held-upright page (tabs menu).
+      let ownsHeader = !isSelecting && !duoListIsPage
       rows
         .navigationTitle(isSelecting ? "\(selectedSessionIds.count) selected" : "Work")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: isSelecting ? nil : .title)
+        .toolbar(ownsHeader ? .hidden : .automatic, for: .navigationBar)
         .toolbar { duoSessionsToolbar }
         .safeAreaInset(edge: .top, spacing: 0) {
           if !isSelecting {
-            duoSessionsSearchRow
+            VStack(spacing: 0) {
+              if ownsHeader {
+                duoSessionsTitleRow
+              }
+              duoSessionsSearchRow
+            }
           }
         }
     } else if workListHasEdgeRail {
