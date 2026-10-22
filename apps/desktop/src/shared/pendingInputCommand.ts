@@ -222,6 +222,13 @@ export function resolvePendingInputResponse(
     ...(flags.answersJson ?? {}),
   };
   const responseText = flags.text?.trim() ?? "";
+  // A bare --text becomes the first question's answer, so it must be a
+  // question that takes free text.
+  const firstQuestion = questions[0];
+  if (decision === "accept" && responseText && !Object.keys(answers).length && firstQuestion?.allowsFreeform === false) {
+    const options = optionsForQuestion(request, firstQuestion, 0);
+    throw new Error(`Question 1 takes an option, not free text. Pick one with --option. Options: ${describeOptions(options) || "(none)"}`);
+  }
   return {
     itemId,
     decision,

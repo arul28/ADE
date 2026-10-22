@@ -17833,6 +17833,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       footerX += width;
     }
+    // The pending-settings label sits between reasoning and permission, so the
+    // cells after it move right by its width.
+    if (footerPendingSettingsLabel) footerX += 2 + footerPendingSettingsLabel.length;
     const permissionLabel = permissionSummary(modelState);
     if (permissionLabel) {
       footerX += 2;
@@ -18463,6 +18466,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     liveAgentCount,
     mentionSuggestions,
     modelState,
+    footerPendingSettingsLabel,
     modelCatalog,
     modelWizardInput,
     modelWizardView,

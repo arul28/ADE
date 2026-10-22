@@ -254,7 +254,7 @@ describe("reconcileStaleRuns", () => {
       }) as AgentChatEventEnvelope),
     ];
     expect(collectRestartCancelledWork(afterSweep).map((work) => work.label)).toEqual(["npm run serve", "look"]);
-    // A row the sweep reports as left running (its delegate is alive) stays out.
+    // An excluded row (prefixed `subagent:` id, as recovery builds it) drops out.
     expect(collectRestartCancelledWork(afterSweep, { excludeIds: new Set(["subagent:sub-1"]) })
       .map((work) => work.label)).toEqual(["npm run serve"]);
   });

@@ -1332,7 +1332,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// floating above the composer.
   case compactFirst = "compact-first"
   /// The real chat with an effort change held until background work ends: the
-  /// "Effort pending" chip in the composer's control strip.
+  /// "Effort pending" chip floating above the composer.
   case pendingSettings = "pending-settings"
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
