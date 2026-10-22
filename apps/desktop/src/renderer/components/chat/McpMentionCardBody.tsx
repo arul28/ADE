@@ -1,9 +1,9 @@
 import type { McpRegistryState, McpRegistryTransport } from "../../../shared/mcpRegistry";
 import { relativeWhen } from "../../lib/format";
 
-type McpMentionState = McpRegistryState | "needs-sign-in";
+type McpMentionState = McpRegistryState | "needs-sign-in" | (string & {});
 
-const STATE_LABEL: Record<McpMentionState, string> = {
+const STATE_LABEL: Record<string, string> = {
   on: "On",
   "off-account": "Off in account settings",
   "off-machine": "Off on this machine",
@@ -22,7 +22,7 @@ export function McpMentionCardBody({
 }: {
   name: string;
   state: McpMentionState;
-  transport: McpRegistryTransport;
+  transport: McpRegistryTransport | (string & {});
   toolNames: string[];
   toolCount?: number | null;
   lastError: string | null;
@@ -32,7 +32,7 @@ export function McpMentionCardBody({
     <div className="max-w-[260px]">
       <div className="truncate text-[12px] font-medium text-fg/90">{name}</div>
       <div className="mt-1 flex gap-2 text-[11px] text-fg/60">
-        <span>{STATE_LABEL[state]}</span>
+        <span>{STATE_LABEL[state] ?? state}</span>
         <span className="uppercase">{transport}</span>
         {toolCount != null ? <span>{toolCount} tools</span> : null}
       </div>

@@ -12677,6 +12677,15 @@ export function createAgentChatService(args: {
     mcpMentionRowsCache = null;
   };
 
+  /**
+   * A server's status error, safe to cache and show in another chat's `@mcp`
+   * card. Redacts against every server this chat launched with — the registry
+   * and ADE's own servers too, not only the chat's list — since any of them can
+   * echo its header or env values back.
+   */
+  const redactMcpStatusError = (managed: ManagedChatSession, error: string): string =>
+    redactSecrets(redactCallerMcpText(error, withRegistryMcpServers(managed, managed.session.mcpServers ?? null)));
+
   /* MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`, `mcpAppProviderLinks.ts`). */
   const mcpApps = createMcpAppHost({
     store: createMcpAppStore({
@@ -12693,7 +12702,7 @@ export function createAgentChatService(args: {
           runtime,
           onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
             ...(status.toolNames ? { toolNames: status.toolNames } : {}),
-            ...(status.error ? { error: redactSecrets(redactCallerMcpText(status.error, managed.session.mcpServers)) } : {}),
+            ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
           }),
         });
       }
@@ -12707,7 +12716,7 @@ export function createAgentChatService(args: {
           serverConfig: (server) => callerMcpServersForLaunch(managed)?.[server],
           onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
             ...(status.toolNames ? { toolNames: status.toolNames } : {}),
-            ...(status.error ? { error: redactSecrets(redactCallerMcpText(status.error, managed.session.mcpServers)) } : {}),
+            ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
           }),
         });
       }

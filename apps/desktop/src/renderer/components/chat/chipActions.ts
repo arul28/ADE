@@ -85,7 +85,11 @@ async function openPullRequest(
   // A missing bridge throws synchronously; either way the chip falls back.
   const prs = await Promise.resolve()
     .then(() => listPrsCoalesced({ pin: scope.pin, projectRoot: scope.rootPath }))
-    .catch(() => []);
+    .catch((error: unknown) => {
+      // The chip still opens (GitHub, or its own route); note why it skipped ADE.
+      console.warn("[chips] PR lookup failed; opening the link directly", error);
+      return [];
+    });
   const sameRepo = (owner: string, repo: string) =>
     (!target.owner || owner.toLowerCase() === target.owner.toLowerCase())
     && (!target.repo || repo.toLowerCase() === target.repo.toLowerCase());

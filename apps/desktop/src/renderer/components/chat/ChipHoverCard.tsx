@@ -74,7 +74,7 @@ import { getModelById, resolveProviderGroupForModel } from "../../../shared/mode
 import { modelMentionPermissionLabel } from "../../../shared/modelMentions";
 import { modelPermissionPresentation } from "../../lib/modelPermissionOptions";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
-import type { McpRegistryState, McpRegistryTransport } from "../../../shared/mcpRegistry";
+import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
@@ -150,8 +150,8 @@ export type ChipCardData =
   | {
     kind: "mcp";
     name: string;
-    state: McpRegistryState | "needs-sign-in";
-    transport: McpRegistryTransport;
+    state: NonNullable<ChatMentionSuggestion["mcp"]>["state"];
+    transport: NonNullable<ChatMentionSuggestion["mcp"]>["transport"];
     toolNames: string[];
     toolCount?: number | null;
     lastError: string | null;
@@ -347,8 +347,8 @@ export async function loadChipCardData(
     return {
       kind: "mcp",
       name: mention.title,
-      state: mention.mcp.state as McpRegistryState | "needs-sign-in",
-      transport: mention.mcp.transport as McpRegistryTransport,
+      state: mention.mcp.state,
+      transport: mention.mcp.transport,
       toolNames: mention.mcp.toolNames,
       toolCount: mention.mcp.toolCount ?? null,
       lastError: mention.mcp.lastError,
@@ -587,7 +587,8 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   );
 }
 
-function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacement {
+/** Where a chip card sits against its chip; shared with the composer machine card. */
+export function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacement {
   // Screen rects and the window are converted into the frame the card is written in.
   const frame = fixedFrameOf(card.parentElement);
   const triggerBox = fixedRect(frame, trigger.getBoundingClientRect());

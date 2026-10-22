@@ -2,9 +2,8 @@ import { ComputerTower, Copy, Plugs } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { computeTooltipPosition } from "../ui/tooltipPosition";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
-import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { cardPlacement } from "./ChipHoverCard";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { ContextMenuRows, type ContextMenuEntry } from "../ui/ContextMenu";
@@ -71,25 +70,22 @@ export function ComposerMachineChipPopover({ machineKey, anchor, onClose }: {
     const card = cardRef.current;
     if (!card) return;
     const place = () => {
-      const frame = fixedFrameOf(card.parentElement);
-      const trigger = fixedRect(frame, anchor.getBoundingClientRect());
-      const box = fixedRect(frame, card.getBoundingClientRect());
-      const viewport = fixedViewport(frame);
-      const position = computeTooltipPosition({
-        preferredSide: "top",
-        trigger,
-        tooltip: { width: box.width, height: box.height },
-        viewport: { width: viewport.width, height: viewport.height },
-        gap: 6,
-        pad: 10,
-      });
-      setCoords((prev) => (prev && prev.x === position.x && prev.y === position.y ? prev : { x: position.x, y: position.y }));
+      const next = cardPlacement(anchor, card);
+      setCoords((prev) => (prev && prev.x === next.x && prev.y === next.y ? prev : { x: next.x, y: next.y }));
     };
     place();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(place);
-    observer.observe(card);
-    return () => observer.disconnect();
+    // Typing before the chip moves it without resizing the card, so the
+    // editor's edits and the window both re-place it too.
+    window.addEventListener("input", place, true);
+    window.addEventListener("resize", place);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    observer?.observe(card);
+    if (anchor.parentElement) observer?.observe(anchor.parentElement);
+    return () => {
+      window.removeEventListener("input", place, true);
+      window.removeEventListener("resize", place);
+      observer?.disconnect();
+    };
   }, [anchor]);
   const entries: ContextMenuEntry[] = [
     {

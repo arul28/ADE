@@ -9,6 +9,7 @@
 // read more.
 
 import type { PrChecksStatus, PrState } from "./prs";
+import type { McpRegistryState, McpRegistryTransport } from "../mcpRegistry";
 
 export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine" | "mcp";
 
@@ -32,8 +33,9 @@ export type ChatMentionSuggestion = {
   machine?: { online: boolean; isThisMachine: boolean } | null;
   /** MCP registry row data; contains names and status only, never secrets. */
   mcp?: {
-    state: string;
-    transport: string;
+    /** A newer brain may send a state this build does not know; render it as-is. */
+    state: McpRegistryState | "needs-sign-in" | (string & {});
+    transport: McpRegistryTransport | (string & {});
     toolNames: string[];
     toolCount?: number | null;
     lastError: string | null;

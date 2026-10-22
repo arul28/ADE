@@ -159,11 +159,30 @@ export function WebConnectionsChip() {
    * not need a handle on the chip, and the chip stays the only thing that knows
    * how to render machines.
    */
+  const [focusMachineKey, setFocusMachineKey] = useState<string | null>(null);
   useEffect(() => {
-    const onOpenRequest = () => setOpen(true);
+    const onOpenRequest = (event: Event) => {
+      // A machine chip's "Open in Connections" names the machine to show.
+      const machineId = (event as CustomEvent<{ machineId?: string } | undefined>).detail?.machineId;
+      setFocusMachineKey(machineId?.trim() || null);
+      setOpen(true);
+    };
     window.addEventListener(WEB_OPEN_CONNECTIONS_EVENT, onOpenRequest);
     return () => window.removeEventListener(WEB_OPEN_CONNECTIONS_EVENT, onOpenRequest);
   }, []);
+
+  useEffect(() => {
+    if (!open || !focusMachineKey) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(focusMachineKey)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest" });
+    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
+    const timer = window.setTimeout(() => {
+      row.style.outline = "";
+      setFocusMachineKey(null);
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [focusMachineKey, machines, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -383,6 +402,7 @@ function WebMachineRow({
   return (
     <div
       data-ade-web-machine-row={machine.key}
+      data-account-machine-key={machine.accountMachine?.machineKey ?? undefined}
       className="ade-web-machine-row px-1.5 py-1.5"
       style={{ borderRadius: 10 }}
     >
