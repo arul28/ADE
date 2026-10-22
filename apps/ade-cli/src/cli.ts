@@ -17088,6 +17088,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   }
   if (isBrowserSubcommand(sub, "downloads")) {
     const mode = (firstBrowserPositional(args) ?? "list").toLowerCase();
+    if (mode !== "list" && mode !== "wait" && mode !== "next") {
+      throw new CliUsageError("browser downloads takes no word (a list) or `wait`.");
+    }
     const limit = readNumberOption(args, ["--limit", "--entries"]);
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
     if (mode === "wait" || mode === "next") {
@@ -17126,6 +17129,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   }
   if (isBrowserSubcommand(sub, "clipboard")) {
     const mode = (firstBrowserPositional(args) ?? "read").toLowerCase();
+    if (mode !== "read" && mode !== "write" && mode !== "set") {
+      throw new CliUsageError("browser clipboard takes no word (read today), `read`, or `write`.");
+    }
     const targetArgs = readBrowserOwnedTabTargetArgs(args);
     // `--value` / `--html`, not `--text`: `--text` is this CLI's human-readable
     // output switch, and reading it as content would eat the flag.
@@ -23545,6 +23551,11 @@ function buildInitializeParams(
       callerId:
         envChatSessionId ?? envAttemptId ?? syntheticCallerId(clientName),
       role: options.role,
+      // The remote MCP runner launches this CLI for an outside AI app; the
+      // browser gate has to know that even when the call has no chat.
+      ...(asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID)
+        ? { remoteMcpConnectionId: asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID) }
+        : {}),
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envRunId ? { runId: envRunId } : {}),
       ...(envStepId ? { stepId: envStepId } : {}),

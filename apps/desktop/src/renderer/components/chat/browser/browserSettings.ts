@@ -1,14 +1,13 @@
 /**
  * Machine-wide browser settings in the renderer: one shared read, kept current
- * by main's push event. Same shape as `browserAgentAccess.ts` — one `get` when
- * the first subscriber mounts, then events, never a poll.
+ * by main's push event. The plumbing lives in `createBridgeSnapshotStore`, the
+ * same one `browserAgentAccess.ts` uses.
  */
-import { useSyncExternalStore } from "react";
 import {
-  BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
   type BuiltInBrowserSettings,
   type BuiltInBrowserSettingsPatch,
 } from "../../../../shared/types/builtInBrowser";
+import { createBridgeSnapshotStore } from "./createBridgeSnapshotStore";
 
 type BrowserSettingsApi = {
   get: () => Promise<BuiltInBrowserSettings>;
@@ -34,50 +33,21 @@ function isSettings(value: unknown): value is BuiltInBrowserSettings {
   );
 }
 
-let current: BuiltInBrowserSettings | null = null;
-const listeners = new Set<() => void>();
-let started = false;
+const store = createBridgeSnapshotStore<BuiltInBrowserSettings>({
+  bridge: api,
+  isValid: isSettings,
+});
 
-function publish(next: unknown): void {
-  if (!isSettings(next)) return;
-  current = next;
-  for (const listener of [...listeners]) listener();
-}
-
-function start(): void {
-  if (started) return;
-  started = true;
-  const bridge = api();
-  if (!bridge) return;
-  try {
-    bridge.onChange((settings) => publish(settings));
-  } catch {
-    // No event: the one read below still seeds the UI.
-  }
-  void bridge.get().then(publish, () => {});
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  start();
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-const getSnapshot = (): BuiltInBrowserSettings | null => current;
-
-/** `null` means this renderer cannot reach the setting (hosted web). */
-export function useBrowserSettings(): BuiltInBrowserSettings | null {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-}
-
-export const BROWSER_SETTINGS_FALLBACK = BUILT_IN_BROWSER_SETTINGS_DEFAULTS;
+/** `null` means nothing has arrived yet; check `useBrowserSettingsStatus`. */
+export const useBrowserSettings = store.useSnapshot;
+export const useBrowserSettingsStatus = store.useStatus;
 
 export const browserSettingsActions = {
   async set(patch: BuiltInBrowserSettingsPatch): Promise<void> {
     const bridge = api();
     if (!bridge) return;
-    publish(await bridge.set(patch));
+    store.publish(await bridge.set(patch));
   },
+  /** Try the first read again after it failed. */
+  reload: store.reload,
 };

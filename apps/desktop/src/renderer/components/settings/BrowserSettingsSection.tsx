@@ -1,39 +1,37 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
   BUILT_IN_BROWSER_TAB_LIMIT_MAX,
   BUILT_IN_BROWSER_TAB_LIMIT_MIN,
 } from "../../../shared/types/builtInBrowser";
-import {
-  BROWSER_SETTINGS_FALLBACK,
-  browserSettingsActions,
-  useBrowserSettings,
-} from "../chat/browser/browserSettings";
+import { browserSettingsActions, useBrowserSettings, useBrowserSettingsStatus } from "../chat/browser/browserSettings";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsToggle } from "./primitives";
+import { useSettingsAction } from "./useSettingsAction";
 import "./machineSettings.css";
-
-function useSettingsAction() {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const act = async (run: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await run();
-    } catch {
-      setError("ADE couldn't save that.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, error, act };
-}
 
 /** Tab limit and download folder. */
 export function BrowserSettingsSection() {
   const snapshot = useBrowserSettings();
-  const settings = snapshot ?? BROWSER_SETTINGS_FALLBACK;
-  const { busy, error, act } = useSettingsAction();
+  const loadStatus = useBrowserSettingsStatus();
+  const settings = snapshot ?? BUILT_IN_BROWSER_SETTINGS_DEFAULTS;
+  const { busy, error, run } = useSettingsAction();
+  // One row's save at a time; a string key keeps the shared hook's shape.
+  const act = (work: () => Promise<void>) => run("browser-settings", work);
+  // The limit is committed on blur/Enter: saving every keystroke turned "25"
+  // into 2 (the field disables while saving), and an empty field into 1.
+  const [draftLimit, setDraftLimit] = useState<number | null>(null);
+  useEffect(() => setDraftLimit(null), [settings.tabLimit]);
+  const commitLimit = () => {
+    // SettingsNumber reports 0 for an emptied field. Revert rather than clamp
+    // that to 1: leaving the field empty must not silently change the limit.
+    if (draftLimit == null || draftLimit < BUILT_IN_BROWSER_TAB_LIMIT_MIN) {
+      setDraftLimit(null);
+      return;
+    }
+    const next = Math.max(BUILT_IN_BROWSER_TAB_LIMIT_MIN, Math.min(BUILT_IN_BROWSER_TAB_LIMIT_MAX, Math.trunc(draftLimit)));
+    setDraftLimit(null);
+    if (next !== settings.tabLimit) void act(() => browserSettingsActions.set({ tabLimit: next }));
+  };
 
   const chooseFolder = async () => {
     const chosen = await window.ade.project.chooseDirectory({
@@ -51,20 +49,35 @@ export function BrowserSettingsSection() {
       title="Browser behaviour"
       hint="Machine-wide, like the browser profile itself."
     >
+      {loadStatus === "failed" ? (
+        <p className="ade-modern-error" role="alert">
+          Couldn't load browser settings.{" "}
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => browserSettingsActions.reload()}>
+            Retry
+          </button>
+        </p>
+      ) : null}
       <ModernRows>
         <ModernRow
           anchor="browser-tab-limit"
           title="Tabs per browser"
           hint={`How many tabs this browser keeps, ${BUILT_IN_BROWSER_TAB_LIMIT_MIN}–${BUILT_IN_BROWSER_TAB_LIMIT_MAX}. Agents see this as "tabs N of M" and close their own tabs when they are done.`}
           control={(
-            <SettingsNumber
-              ariaLabel="Tabs per browser"
-              value={settings.tabLimit}
-              min={BUILT_IN_BROWSER_TAB_LIMIT_MIN}
-              max={BUILT_IN_BROWSER_TAB_LIMIT_MAX}
-              disabled={busy || !snapshot}
-              onChange={(value) => void act(() => browserSettingsActions.set({ tabLimit: value }))}
-            />
+            <span
+              onBlur={commitLimit}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") (event.target as HTMLElement).blur();
+              }}
+            >
+              <SettingsNumber
+                ariaLabel="Tabs per browser"
+                value={draftLimit ?? settings.tabLimit}
+                min={BUILT_IN_BROWSER_TAB_LIMIT_MIN}
+                max={BUILT_IN_BROWSER_TAB_LIMIT_MAX}
+                disabled={busy != null || !snapshot}
+                onChange={setDraftLimit}
+              />
+            </span>
           )}
         />
         <ModernRow
@@ -72,12 +85,12 @@ export function BrowserSettingsSection() {
           title="Download folder"
           hint={settings.downloadDir ?? "Your Downloads folder."}
           control={(
-            <span style={{ display: "inline-flex", gap: 8, flexShrink: 0 }}>
+            <span className="ade-modern-inline-actions">
               <button
                 type="button"
                 className="ade-modern-btn"
                 data-size="sm"
-                disabled={busy || !snapshot}
+                disabled={busy != null || !snapshot}
                 onClick={() => void act(chooseFolder)}
               >
                 Choose…
@@ -88,7 +101,7 @@ export function BrowserSettingsSection() {
                   className="ade-modern-btn"
                   data-size="sm"
                   data-variant="ghost"
-                  disabled={busy || !snapshot}
+                  disabled={busy != null || !snapshot}
                   onClick={() => void act(() => browserSettingsActions.set({ downloadDir: null }))}
                 >
                   Use Downloads
@@ -98,7 +111,7 @@ export function BrowserSettingsSection() {
           )}
         />
       </ModernRows>
-      {error ? <p className="ade-modern-muted" role="alert">{error}</p> : null}
+      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
     </ModernSection>
   );
 }
@@ -112,8 +125,10 @@ export function BrowserSettingsSection() {
  */
 export function BrowserAutoGrantSection() {
   const snapshot = useBrowserSettings();
-  const settings = snapshot ?? BROWSER_SETTINGS_FALLBACK;
-  const { busy, error, act } = useSettingsAction();
+  const settings = snapshot ?? BUILT_IN_BROWSER_SETTINGS_DEFAULTS;
+  const { busy, error, run } = useSettingsAction();
+  // One row's save at a time; a string key keeps the shared hook's shape.
+  const act = (work: () => Promise<void>) => run("browser-settings", work);
   const rows = [
     {
       key: "camera" as const,
@@ -153,7 +168,7 @@ export function BrowserAutoGrantSection() {
               <SettingsToggle
                 label={`Auto-approve ${row.title.toLowerCase()} for agents`}
                 checked={settings.autoGrant[row.key]}
-                disabled={busy || !snapshot}
+                disabled={busy != null || !snapshot}
                 onChange={(next) => void act(() => browserSettingsActions.set({
                   autoGrant: { [row.key]: next },
                 }))}
@@ -162,7 +177,7 @@ export function BrowserAutoGrantSection() {
           />
         ))}
       </ModernRows>
-      {error ? <p className="ade-modern-muted" role="alert">{error}</p> : null}
+      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
       {settings.autoGrant.camera || settings.autoGrant.microphone
         ? <p className="ade-modern-muted">Camera and microphone also need the operating system's permission for ADE.</p>
         : null}

@@ -54,10 +54,11 @@ export function createBuiltInBrowserPermissionController(args: {
   resolveParentWindow: () => BrowserWindow | null;
   getLogger?: () => Logger | null;
   /**
-   * Standing grants from Settings. Read synchronously on every check, so it
-   * must be an in-memory read.
+   * Standing grants from Settings, or null when they do not apply to this
+   * `WebContents` (a tab no agent opened or holds, or agents are switched off).
+   * Read synchronously on every check, so it must be an in-memory read.
    */
-  getAutoGrant?: () => BuiltInBrowserAutoGrant | null;
+  getAutoGrant?: (webContents: WebContents | null) => BuiltInBrowserAutoGrant | null;
   prompt?: (input: {
     parent: BrowserWindow | null;
     permission: string;
@@ -115,7 +116,7 @@ export function createBuiltInBrowserPermissionController(args: {
     // A standing grant is evaluated after the explicit per-site answers, so a
     // remembered Block still wins. It is never persisted as a decision: the
     // setting is the one place to turn it off.
-    const auto = args.getAutoGrant?.() ?? null;
+    const auto = args.getAutoGrant?.(webContents) ?? null;
     if (auto && autoGrants(auto, request.permission)) return true;
 
     const existingPrompt = pendingPrompts.get(key);
@@ -177,10 +178,13 @@ export function createBuiltInBrowserPermissionController(args: {
         const key = permissionDecisionKey(request);
         const sessionDecision = sessionDecisions.get(key);
         const stored = decisions.get(key);
-        const auto = args.getAutoGrant?.() ?? null;
-        const allowed = sessionDecision?.decision === "allow"
-          || stored?.decision === "allow"
-          || Boolean(auto && autoGrants(auto, request.permission));
+        // An explicit answer for this site wins even when it is a Block: a
+        // standing grant must not undo what the person said about this origin.
+        const explicit = sessionDecision ?? stored ?? null;
+        const auto = args.getAutoGrant?.(webContents) ?? null;
+        const allowed = explicit
+          ? explicit.decision === "allow"
+          : Boolean(auto && autoGrants(auto, request.permission));
         logger()?.debug(allowed ? "built_in_browser.permission_check_allowed" : "built_in_browser.permission_check_denied", {
           permission: request.permission,
           origin: request.origin,

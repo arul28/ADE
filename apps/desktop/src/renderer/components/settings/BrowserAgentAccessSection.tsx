@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { ChatCircle, Check, GitBranch, UsersThree, type Icon } from "@phosphor-icons/react";
 import type { BuiltInBrowserAgentAccessMode } from "../../../shared/types/builtInBrowser";
 import {
@@ -11,6 +10,7 @@ import {
   useBrowserAgentAccess,
 } from "../chat/browser/browserAgentAccess";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { useSettingsAction } from "./useSettingsAction";
 import "./machineSettings.css";
 
 /**
@@ -23,21 +23,9 @@ import "./machineSettings.css";
  */
 export function BrowserAgentAccessSection() {
   const snapshot = useBrowserAgentAccess();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const act = async (run: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await run();
-    } catch {
-      setError("ADE couldn't save that.");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { busy, error, run } = useSettingsAction();
+  // One row's save at a time; a string key keeps the shared hook's shape.
+  const act = (work: () => Promise<void>) => run("browser-settings", work);
 
   const enabled = snapshot?.enabled ?? true;
   const mode = snapshot?.mode ?? "all";
@@ -82,7 +70,7 @@ export function BrowserAgentAccessSection() {
             <SettingsToggle
               label="Allow agents to use the browser"
               checked={enabled}
-              disabled={busy || !snapshot}
+              disabled={busy != null || !snapshot}
               onChange={(next) => void act(() => browserAgentAccessActions.setEnabled(next))}
             />
           )}
@@ -101,7 +89,7 @@ export function BrowserAgentAccessSection() {
                 type="button"
                 role="radio"
                 aria-checked={selected}
-                disabled={busy || !snapshot}
+                disabled={busy != null || !snapshot}
                 onClick={() => void act(() => browserAgentAccessActions.setMode(value))}
                 className="ade-ap-choice"
                 data-active={selected}
@@ -129,7 +117,7 @@ export function BrowserAgentAccessSection() {
             </span>
             <button
               type="button"
-              disabled={busy}
+              disabled={busy != null}
               onClick={() => void act(() => browserAgentAccessActions.revoke({ kind: "all" }))}
               className="ade-modern-btn"
               data-size="sm"
@@ -150,7 +138,7 @@ export function BrowserAgentAccessSection() {
               </span>
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy != null}
                 aria-label={`Remove ${grant.kind.toLowerCase()} ${grant.name}`}
                 onClick={() => void act(grant.revoke)}
                 className="ade-modern-btn"

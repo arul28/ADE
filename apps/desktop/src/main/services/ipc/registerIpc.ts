@@ -998,8 +998,8 @@ import {
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 import {
-  BUILT_IN_BROWSER_TAB_LIMIT,
-  type BuiltInBrowserSettingsPatch,
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
+  parseBuiltInBrowserSettingsPatch,
 } from "../../../shared/types/builtInBrowser";
 import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
 import { runRemoteAgentBrowserCall } from "../builtInBrowser/builtInBrowserRemoteCalls";
@@ -2806,7 +2806,7 @@ export function registerIpc({
         activeTabId: null,
         tabs: [],
         tabCount: 0,
-        tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
+        tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
         url: null,
         title: null,
         isLoading: false,
@@ -10789,32 +10789,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsSet, { windowMs: 10_000, max: 20 });
-    if (!isRecord(arg)) throw new Error(`${IPC.builtInBrowserSettingsSet}: expected an object.`);
-    const patch: BuiltInBrowserSettingsPatch = {};
-    if ("tabLimit" in arg) {
-      if (typeof arg.tabLimit !== "number" || !Number.isFinite(arg.tabLimit)) {
-        throw new Error(`${IPC.builtInBrowserSettingsSet}: tabLimit must be a number.`);
-      }
-      patch.tabLimit = arg.tabLimit;
-    }
-    if ("downloadDir" in arg) {
-      if (arg.downloadDir !== null && typeof arg.downloadDir !== "string") {
-        throw new Error(`${IPC.builtInBrowserSettingsSet}: downloadDir must be a string or null.`);
-      }
-      patch.downloadDir = arg.downloadDir as string | null;
-    }
-    if ("autoGrant" in arg && isRecord(arg.autoGrant)) {
-      const grant: NonNullable<BuiltInBrowserSettingsPatch["autoGrant"]> = {};
-      for (const key of ["camera", "microphone", "geolocation"] as const) {
-        if (!(key in arg.autoGrant)) continue;
-        if (typeof arg.autoGrant[key] !== "boolean") {
-          throw new Error(`${IPC.builtInBrowserSettingsSet}: autoGrant.${key} must be a boolean.`);
-        }
-        grant[key] = arg.autoGrant[key] as boolean;
-      }
-      patch.autoGrant = grant;
-    }
-    return ensureBuiltInBrowser().updateBrowserSettings(patch);
+    return ensureBuiltInBrowser().updateBrowserSettings(parseBuiltInBrowserSettingsPatch(arg));
   });
 
   ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {

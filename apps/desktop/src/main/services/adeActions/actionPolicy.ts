@@ -335,6 +335,10 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   jira: ["connect"],
   // A token gives an outside AI app this computer.
   remote_mcp: ["createToken"],
+  // The clipboard routinely holds passwords and one-time codes from a password
+  // manager. Reading it is fine for the person's own agent; a read-only MCP
+  // connection must not be able to pull it into a transcript.
+  built_in_browser: ["readClipboard"],
 };
 
 /**

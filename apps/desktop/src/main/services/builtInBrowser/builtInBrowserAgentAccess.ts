@@ -33,6 +33,8 @@ type AgentIdentity = {
   laneId?: string | null;
   chatSessionId?: string | null;
   projectRoot?: string | null;
+  /** An outside AI app, identified by the runtime even without a chat. */
+  agentCaller?: boolean | null;
 };
 
 /** Names a person recognises for the agent asking: its chat title and lane name. */
@@ -241,6 +243,10 @@ export function createBuiltInBrowserAgentAccessController(args: {
   const subjectFor = (identity: AgentIdentity): "chat" | "lane" =>
     normalizedString(identity.chatSessionId) ? "chat" : "lane";
 
+  /** The set the switch and the grants are about: an agent, however identified. */
+  const isAgentCaller = (identity: AgentIdentity): boolean =>
+    identity.agentCaller === true || Boolean(promptKeyFor(identity));
+
   const closePrompt = (entry: PromptEntry, granted: boolean, decision: string): void => {
     if (prompts.get(entry.key) !== entry) return;
     prompts.delete(entry.key);
@@ -334,10 +340,16 @@ export function createBuiltInBrowserAgentAccessController(args: {
   ): Promise<{ origin: string | null; required: boolean; granted: boolean }> => {
     const origin = browserOrigin(url);
     const key = promptKeyFor(identity);
+    // No lane and no chat is the person at their own browser: the switch and
+    // the grants are about agents, so a human is never gated by them.
+    // No key and no agent stamp is the person at their own browser.
+    if (!key && identity.agentCaller !== true) return { origin, required: false, granted: true };
     // The switch is the person's answer already: never raise a prompt behind
     // it, and never let it read as "not required".
     if (!enabled) return { origin, required: true, granted: false };
-    if (!key || mode === "all") return { origin, required: false, granted: true };
+    // An outside AI app has no chat to ask about; the setting decides.
+    if (!key) return { origin, required: true, granted: mode === "all" };
+    if (mode === "all") return { origin, required: false, granted: true };
     if (covers(identity)) return { origin, required: true, granted: true };
     const blockedAt = recentBlocksForWaiters.get(key);
     if (blockedAt != null) {
@@ -370,8 +382,11 @@ export function createBuiltInBrowserAgentAccessController(args: {
   };
 
   const assertUrlAccessSync = (_url: string | null | undefined, identity: AgentIdentity): void => {
+    // A human has no lane/chat identity and is not an outside AI app; the
+    // switch never applies to them.
+    if (!isAgentCaller(identity)) return;
     if (!enabled) throw new BuiltInBrowserAgentsDisabledError();
-    if (!promptKeyFor(identity) || covers(identity)) return;
+    if (covers(identity)) return;
     const subject = subjectFor(identity);
     throw new Error(
       `The user has not allowed this ${subject} to use the ADE browser yet. `
@@ -410,8 +425,8 @@ export function createBuiltInBrowserAgentAccessController(args: {
         reason: string,
         options: { waitBudgetMs?: number | null } = {},
       ): Promise<void> {
-        if (!enabled) throw new BuiltInBrowserAgentsDisabledError();
         const scoped = withDefaults(identity);
+        if (isAgentCaller(scoped) && !enabled) throw new BuiltInBrowserAgentsDisabledError();
         const result = await authorizeUrl(url, scoped, reason, options);
         if (result.granted) return;
         throw new BuiltInBrowserApprovalBlockedError(subjectFor(scoped));

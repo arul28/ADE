@@ -7,7 +7,7 @@
  * `null` means this renderer cannot reach the setting (the hosted web client,
  * or a desktop build without it); every surface hides itself then.
  */
-import { useSyncExternalStore } from "react";
+import { createBridgeSnapshotStore } from "./createBridgeSnapshotStore";
 import type {
   BuiltInBrowserAgentAccessAnswer,
   BuiltInBrowserAgentAccessMode,
@@ -55,50 +55,31 @@ function isSnapshot(value: unknown): value is BuiltInBrowserAgentAccessSnapshot 
   );
 }
 
-let current: BuiltInBrowserAgentAccessSnapshot | null = null;
-const listeners = new Set<() => void>();
-let started = false;
-
-function publish(next: unknown): void {
-  if (!isSnapshot(next)) return;
+const store = createBridgeSnapshotStore<BuiltInBrowserAgentAccessSnapshot>({
+  // `agentAccess.get` is typed nullable for the hosted-web stub; a null result
+  // is rejected by `isSnapshot`, so the cast only satisfies the factory.
+  bridge: () => {
+    const bridge = api();
+    if (!bridge) return null;
+    return {
+      get: () => bridge.get() as Promise<BuiltInBrowserAgentAccessSnapshot>,
+      onChange: bridge.onChange,
+    };
+  },
+  isValid: isSnapshot,
   // A desktop older than the master switch sends no `enabled`; it meant "on".
-  current = { ...next, enabled: next.enabled !== false };
-  for (const listener of [...listeners]) listener();
-}
+  normalize: (value) => ({ ...value, enabled: value.enabled !== false }),
+});
 
-function start(): void {
-  if (started) return;
-  started = true;
-  const bridge = api();
-  if (!bridge) return;
-  try {
-    bridge.onChange((snapshot) => publish(snapshot));
-  } catch {
-    // No event: the one read below still seeds the UI.
-  }
-  void bridge.get().then(publish, () => {});
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  start();
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-const getSnapshot = (): BuiltInBrowserAgentAccessSnapshot | null => current;
-
-export function useBrowserAgentAccess(): BuiltInBrowserAgentAccessSnapshot | null {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-}
+/** `null` means this renderer cannot reach the setting (the hosted web client). */
+export const useBrowserAgentAccess = store.useSnapshot;
 
 async function run(
   call: (bridge: AgentAccessApi) => Promise<BuiltInBrowserAgentAccessSnapshot | null>,
 ): Promise<void> {
   const bridge = api();
   if (!bridge) return;
-  publish(await call(bridge));
+  store.publish(await call(bridge));
 }
 
 export const browserAgentAccessActions = {

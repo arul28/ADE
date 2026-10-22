@@ -1,6 +1,6 @@
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
-import { constants as fsConstants, existsSync, mkdirSync } from "node:fs";
-import { WebContentsView, app, clipboard, nativeImage, screen, session } from "electron";
+import { existsSync, mkdirSync } from "node:fs";
+import { WebContentsView, app, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -57,6 +57,7 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
+  BuiltInBrowserAutoGrant,
   BuiltInBrowserSettings,
   BuiltInBrowserSettingsPatch,
   BuiltInBrowserStatus,
@@ -129,9 +130,7 @@ import {
 import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
 import {
   BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
-  BUILT_IN_BROWSER_TAB_LIMIT,
-  BUILT_IN_BROWSER_TAB_LIMIT_MAX,
-  BUILT_IN_BROWSER_TAB_LIMIT_MIN,
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
   isRedactedBuiltInBrowserQueryParam,
 } from "../../../shared/types/builtInBrowser";
 import {
@@ -223,6 +222,9 @@ import {
   type BuiltInBrowserAgentAccessStore,
   type BuiltInBrowserAgentDescription,
 } from "./builtInBrowserAgentAccess";
+import { readClipboardContents, writeClipboardContents } from "./builtInBrowserClipboard";
+import { createDownloadTracker } from "./builtInBrowserDownloads";
+import { assertWritableDirectory } from "./builtInBrowserSettings";
 import {
   createBuiltInBrowserSettingsController,
   type BuiltInBrowserSettingsStore,
@@ -265,7 +267,6 @@ const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
-const MAX_BROWSER_TABS = BUILT_IN_BROWSER_TAB_LIMIT;
 const DEFAULT_OBSERVATION_KEEP_COUNT = 3;
 const MAX_OBSERVATION_KEEP_COUNT = 20;
 const DEFAULT_OBSERVATION_MAX_ELEMENTS = 80;
@@ -292,6 +293,10 @@ const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
 const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
 /** How many finished downloads an agent can still ask about. */
 const MAX_TRACKED_DOWNLOADS = 100;
+/** Actions that can make a page start a download. */
+const DOWNLOAD_TRIGGER_ACTIONS = new Set([
+  "click", "dispatchKey", "fill", "typeText", "paste", "dropFiles", "uploadFile", "selectOption", "drag",
+]);
 const DEFAULT_DOWNLOAD_WAIT_MS = 60_000;
 const MAX_DOWNLOAD_WAIT_MS = 120_000;
 /**
@@ -300,20 +305,6 @@ const MAX_DOWNLOAD_WAIT_MS = 120_000;
  * rather than a missed event.
  */
 const RECENT_DOWNLOAD_GRACE_MS = 15_000;
-/**
- * How much clipboard text an agent may read in one call.
- *
- * The clipboard is the person's, and whatever is read lands in the transcript.
- * A cap keeps a copied document from flooding a turn while still covering the
- * ordinary case — a URL, a paragraph, a snippet of code.
- */
-const MAX_CLIPBOARD_READ_CHARS = 64_000;
-
-type BrowserCollection = {
-  key: string;
-  projectRoot: string | null;
-};
-
 type BrowserInspectPoint = {
   x: number;
   y: number;
@@ -438,6 +429,8 @@ export type BrowserTabState = {
   openedByChatSessionId: string | null;
   openedByLaneId: string | null;
   createdAt: string;
+  /** When the agent last acted on this tab; scopes "the download I just made". */
+  lastActionAtMs: number | null;
   agentNavigationGuard: {
     laneId: string | null;
     chatSessionId: string | null;
@@ -647,6 +640,11 @@ function normalizedProjectRoot(value: string | null | undefined): string | null 
  * the repo's platform-aware answer (see `windows-quirks.md` §1); it does not
  * resolve, so the value is resolved first.
  */
+type BrowserCollection = {
+  key: string;
+  projectRoot: string | null;
+};
+
 function projectRootKey(value: string | null | undefined): string | null {
   const normalized = normalizedProjectRoot(value);
   return normalized ? pathKey(path.resolve(normalized)) : null;
@@ -871,12 +869,36 @@ export function createBuiltInBrowserService(args: {
     getLogger: args.getLogger,
     onChange: args.onBrowserSettingsChange ?? undefined,
   });
+  /**
+   * A standing grant applies only to a tab an agent opened or holds, and only
+   * while agents are enabled: the Settings copy says "a site an agent opens",
+   * so the person browsing in the pane must not silently get the camera.
+   */
+  const autoGrantForWebContents = (webContents: WebContents | null): BuiltInBrowserAutoGrant | null => {
+    if (!webContents || !agentAccessController.getSnapshot().enabled) return null;
+    const applies = (tab: {
+      openedBy: "human" | "chat";
+      ownerLaneId: string | null;
+      ownerChatSessionId: string | null;
+      ownerLeaseExpiresAt: string | null;
+    }): boolean => tab.openedBy === "chat"
+      || (Boolean(tab.ownerLaneId || tab.ownerChatSessionId) && !isLeaseExpired(tab.ownerLeaseExpiresAt));
+    for (const entry of windowServices.values()) {
+      const tab = entry.service.describeTabForWebContents(webContents);
+      if (tab) return applies(tab) ? browserSettings.get().autoGrant : null;
+    }
+    for (const service of fallbackServices.values()) {
+      const tab = service.describeTabForWebContents(webContents);
+      if (tab) return applies(tab) ? browserSettings.get().autoGrant : null;
+    }
+    return null;
+  };
   const permissionController = createBuiltInBrowserPermissionController({
     filePath: permissionFilePath,
     isManagedWebContents: (webContents) => Boolean(webContents && MANAGED_BROWSER_WEB_CONTENTS.has(webContents)),
     resolveParentWindow,
     getLogger: args.getLogger,
-    getAutoGrant: () => browserSettings.get().autoGrant,
+    getAutoGrant: autoGrantForWebContents,
   });
   const agentAccessController = createBuiltInBrowserAgentAccessController({
     store: args.agentAccessStore ?? null,
@@ -1690,24 +1712,8 @@ export function createBuiltInBrowserService(args: {
     getBrowserSettings(): BuiltInBrowserSettings {
       return browserSettings.get();
     },
-    async updateBrowserSettings(patch: BuiltInBrowserSettingsPatch): Promise<BuiltInBrowserSettings> {
-      let next = patch;
-      if (patch.downloadDir !== undefined && patch.downloadDir !== null) {
-        const dir = String(patch.downloadDir).trim();
-        if (!dir || !path.isAbsolute(dir)) {
-          throw new Error("The download folder must be an absolute path.");
-        }
-        await fs.mkdir(dir, { recursive: true });
-        const stat = await fs.stat(dir);
-        if (!stat.isDirectory()) throw new Error(`The download folder is not a directory: ${dir}`);
-        try {
-          await fs.access(dir, fsConstants.W_OK);
-        } catch {
-          throw new Error(`The download folder is not writable: ${dir}`);
-        }
-        next = { ...patch, downloadDir: dir };
-      }
-      return browserSettings.update(next);
+    updateBrowserSettings(patch: BuiltInBrowserSettingsPatch): Promise<BuiltInBrowserSettings> {
+      return browserSettings.update(patch);
     },
     answerAgentAccessPrompt(
       promptId: string,
@@ -1921,70 +1927,17 @@ export function createBuiltInBrowserService(args: {
         return { focused: false };
       }
     },
-    /**
-     * The machine's clipboard, for an agent that needs what the person copied.
-     *
-     * Machine-wide and per-desktop: the clipboard belongs to the computer that
-     * hosts the browser, not to a project. Both flavors are capped because
-     * whatever is read lands in the agent's transcript. Gated like every other
-     * agent read, so the master switch and the grants still apply.
-     */
-    async readClipboard(
+    readClipboard(
       input: BuiltInBrowserClipboardReadArgs = {},
+      sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserClipboardReadResult> {
-      agentAccessController.assertUrlAccessSync(null, input);
-      const text = clipboard.readText();
-      const html = clipboard.readHTML();
-      // `readImage` returns an EMPTY NativeImage when the clipboard holds no
-      // image, never null, so the check is `isEmpty()` rather than a truth test.
-      const image = clipboard.readImage();
-      let imageInfo: BuiltInBrowserClipboardImage | null = null;
-      if (!image.isEmpty()) {
-        const png = image.toPNG();
-        const { width, height } = image.getSize();
-        // A scratch file, not bytes in the answer: the agent can read or attach
-        // it, and a 30 MB PNG never enters a transcript.
-        const dir = path.join(app.getPath("temp"), "ade-clipboard");
-        await fs.mkdir(dir, { recursive: true });
-        const filePath = path.join(dir, `clipboard-${Date.now()}-${randomUUID().slice(0, 8)}.png`);
-        await fs.writeFile(filePath, png);
-        imageInfo = { path: filePath, width, height, bytes: png.byteLength, mimeType: "image/png" };
-      }
-      return {
-        text: text.slice(0, MAX_CLIPBOARD_READ_CHARS),
-        html: html ? html.slice(0, MAX_CLIPBOARD_READ_CHARS) : null,
-        image: imageInfo,
-        truncated: text.length > MAX_CLIPBOARD_READ_CHARS || html.length > MAX_CLIPBOARD_READ_CHARS,
-      };
+      return serviceForInput(input, sourceWindow).readClipboard(input);
     },
-    async writeClipboard(
+    writeClipboard(
       input: BuiltInBrowserClipboardWriteArgs = {},
+      sourceWindow?: BrowserWindow | null,
     ): Promise<BuiltInBrowserClipboardWriteResult> {
-      agentAccessController.assertUrlAccessSync(null, input);
-      const text = stringOrNull(input.text);
-      const html = stringOrNull(input.html);
-      const imagePath = stringOrNull(input.imagePath);
-      let image: Electron.NativeImage | null = null;
-      if (imagePath) {
-        if (!path.isAbsolute(imagePath)) {
-          throw new Error("browser clipboard write --image needs an absolute path.");
-        }
-        const stat = await fs.stat(imagePath).catch(() => null);
-        if (!stat?.isFile()) throw new Error(`Browser clipboard image is not a readable file: ${imagePath}`);
-        image = nativeImage.createFromPath(imagePath);
-        if (image.isEmpty()) throw new Error(`Browser clipboard image could not be decoded: ${imagePath}`);
-      }
-      if (!text && !html && !image) {
-        throw new Error("browser clipboard write needs --value, --html or --image.");
-      }
-      // One write: `clipboard.write` carries every flavor at once, so an image
-      // and its alt text do not overwrite each other.
-      clipboard.write({
-        ...(text ? { text } : {}),
-        ...(html ? { html } : {}),
-        ...(image ? { image } : {}),
-      });
-      return { written: true };
+      return serviceForInput(input, sourceWindow).writeClipboard(input);
     },
     setDevTools(
       input: BuiltInBrowserSetDevToolsArgs,
@@ -2335,14 +2288,11 @@ function createBuiltInBrowserWindowService(args: {
   };
   let tabs: BrowserTabState[] = [];
   /**
-   * The live tab limit: the machine setting, clamped, falling back to the
-   * historical default. Read per check, so changing it in Settings applies to
-   * the next `open` without a restart.
+   * The live tab limit, read per check so a Settings change applies to the next
+   * `open`. The settings controller clamps and normalizes; this is only the
+   * unset fallback.
    */
-  const tabLimit = (): number => Math.min(
-    BUILT_IN_BROWSER_TAB_LIMIT_MAX,
-    Math.max(BUILT_IN_BROWSER_TAB_LIMIT_MIN, Math.trunc(args.getTabLimit?.() ?? MAX_BROWSER_TABS)),
-  );
+  const tabLimit = (): number => args.getTabLimit?.() ?? BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT;
   let browserSessions: BrowserSessionState[] = [];
   let activeTabId: string | null = null;
   let bounds: BuiltInBrowserFrame = { x: 0, y: 0, width: 0, height: 0 };
@@ -2362,21 +2312,9 @@ function createBuiltInBrowserWindowService(args: {
   let debuggerDetachListener: DebuggerDetachListener | null = null;
   let inspectListenerWebContents: WebContents | null = null;
   let browserDownloadListener: BrowserDownloadListener | null = null;
-  /**
-   * Downloads this collection has seen, newest first.
-   *
-   * `will-download` has always saved files and logged them; what it could not
-   * do was tell an agent, so a download was a file appearing in ~/Downloads
-   * with no receipt. This buffer is what `listDownloads` reads and what
-   * `waitForDownload` waits on. Bounded because it outlives any one action.
-   */
-  const browserDownloads: BuiltInBrowserDownload[] = [];
-  type DownloadWaiter = {
-    tabId: string | null;
-    resolve: (download: BuiltInBrowserDownload | null) => void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const downloadWaiters = new Set<DownloadWaiter>();
+  const downloads = createDownloadTracker({ maxTracked: MAX_TRACKED_DOWNLOADS });
+  /** A receipt a `downloads wait` already returned, so a second wait does not repeat it. */
+  const deliveredDownloadIds = new Set<string>();
   let unsubscribeNetworkObserver: (() => void) | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let lastSelectedTabId: string | null = null;
@@ -2749,11 +2687,6 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   /**
-   * Lane group is sticky and is not a lease. A later human navigation clears
-   * the owner and must leave the group where it was, so tabs opened in a lane
-   * stay outlined with that lane after the agent lets go.
-   */
-  /**
    * Record who opened a tab, once, at creation.
    *
    * A call carrying a chat or lane id is agent work (the daemon stamps both);
@@ -2771,6 +2704,19 @@ function createBuiltInBrowserWindowService(args: {
     tab.openedByLaneId = laneId;
   };
 
+  /** A popup is the opener's work, not a new human tab. */
+  const copyOpenedBy = (from: BrowserTabState | null, to: BrowserTabState): void => {
+    if (!from) return;
+    to.openedBy = from.openedBy;
+    to.openedByChatSessionId = from.openedByChatSessionId;
+    to.openedByLaneId = from.openedByLaneId;
+  };
+
+  /**
+   * Lane group is sticky and is not a lease. A later human navigation clears
+   * the owner and must leave the group where it was, so tabs opened in a lane
+   * stay outlined with that lane after the agent lets go.
+   */
   const assignTabGroupLane = (
     tab: BrowserTabState,
     input: { groupLaneId?: string | null; laneId?: string | null },
@@ -3258,13 +3204,20 @@ function createBuiltInBrowserWindowService(args: {
         if (method !== "Page.javascriptDialogOpening") return;
         const type = typeof params.type === "string" ? params.type : "alert";
         const accept = type === "alert" || type === "beforeunload";
-        logger()?.info("built_in_browser.dialog_answered", {
-          tabId: tab.id,
-          type,
-          accept,
-          message: typeof params.message === "string" ? params.message.slice(0, 500) : null,
-        });
-        void sendDebuggerCommand(wc, "Page.handleJavaScriptDialog", { accept }).catch(() => {});
+        const message = typeof params.message === "string" ? params.message.slice(0, 500) : null;
+        void sendDebuggerCommand(wc, "Page.handleJavaScriptDialog", { accept })
+          .then(() => {
+            logger()?.info("built_in_browser.dialog_answered", { tabId: tab.id, type, accept, message });
+          })
+          .catch((error) => {
+            // The action can still be waiting on the sheet; do not claim the
+            // dialog was answered when the protocol refused.
+            logger()?.warn("built_in_browser.dialog_answer_failed", {
+              tabId: tab.id,
+              type,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
       });
       try {
         return await fn();
@@ -3285,6 +3238,10 @@ function createBuiltInBrowserWindowService(args: {
     const effectEntry: ActionEffectEntry = { action, tracker: createAgentActionEffectTracker(), navigationApproval: null };
     actionEffectTrackers.set(tab, effectEntry);
     try {
+      // Only an action that can start a download moves this mark. `wait` and
+      // `observe` between the click and `downloads wait` used to move it past
+      // the finished file, so the wait timed out on a download it had made.
+      if (DOWNLOAD_TRIGGER_ACTIONS.has(action)) tab.lastActionAtMs = Date.now();
       await prepareAgentActionTab(tab, input);
       // A tab nobody is looking at has no compositor surface, and Chromium
       // drops synthesized input to it: a click found its element, was sent,
@@ -3320,7 +3277,7 @@ function createBuiltInBrowserWindowService(args: {
    */
   const captureActionBaseline = async (
     tab: BrowserTabState,
-    input: BuiltInBrowserAgentActionArgs,
+    input: Pick<BuiltInBrowserAgentActionArgs, "observe" | "maxElements">,
   ): Promise<void> => {
     const tracker = actionEffectTrackers.get(tab)?.tracker;
     if (!tracker || tracker.before || input.observe === false) return;
@@ -3785,6 +3742,7 @@ function createBuiltInBrowserWindowService(args: {
       openedByChatSessionId: null,
       openedByLaneId: null,
       createdAt: new Date().toISOString(),
+      lastActionAtMs: null,
       agentNavigationGuard: null,
       handoff: null,
       zoomFactor: BUILT_IN_BROWSER_DEFAULT_ZOOM_FACTOR,
@@ -3840,12 +3798,7 @@ function createBuiltInBrowserWindowService(args: {
     configureBrowserSession();
     const tab = createTabStateForView(nextView, opener?.isolation ?? null);
     copyTabOwner(opener, tab);
-    // A popup is the opener's work, not a new human tab.
-    if (opener) {
-      tab.openedBy = opener.openedBy;
-      tab.openedByChatSessionId = opener.openedByChatSessionId;
-      tab.openedByLaneId = opener.openedByLaneId;
-    }
+    copyOpenedBy(opener, tab);
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
     if (shouldActivate) {
@@ -4444,9 +4397,16 @@ function createBuiltInBrowserWindowService(args: {
         // A configured folder that vanished (unmounted drive, deleted) falls
         // back to the OS Downloads folder rather than failing the download.
         let downloadDir = args.resolveDownloadDirectory?.() ?? null;
+        // A hand-edited state file could name a relative path; resolving that
+        // against the app's cwd would write somewhere nobody chose.
+        if (downloadDir && !path.isAbsolute(downloadDir)) downloadDir = null;
         if (downloadDir) {
           try {
             mkdirSync(downloadDir, { recursive: true });
+            // `mkdirSync` succeeds on an existing directory even when it is not
+            // writable, so probe it; otherwise every download lands there and
+            // comes back interrupted instead of falling back.
+            assertWritableDirectory(downloadDir);
           } catch (error) {
             logger()?.warn("built_in_browser.download_dir_unavailable", {
               error: error instanceof Error ? error.message : String(error),
@@ -4465,15 +4425,17 @@ function createBuiltInBrowserWindowService(args: {
       const download: BuiltInBrowserDownload = {
         id: randomUUID(),
         tabId: tab.id,
+        ownerChatSessionId: tab.ownerChatSessionId,
+        ownerLaneId: tab.ownerLaneId,
         fileName,
         savePath,
-        url: downloadUrl,
+        // Redacted like the diagnostics: a signed URL can carry a token.
+        url: downloadUrlForDiagnostics(downloadUrl),
         state: "started",
         startedAt,
         endedAt: null,
       };
-      browserDownloads.unshift(download);
-      if (browserDownloads.length > MAX_TRACKED_DOWNLOADS) browserDownloads.length = MAX_TRACKED_DOWNLOADS;
+      downloads.record(download);
       logger()?.info("built_in_browser.download_started", {
         urlOrigin: downloadUrlOrigin(downloadUrl),
         fileName,
@@ -4483,9 +4445,7 @@ function createBuiltInBrowserWindowService(args: {
       item.once("done", (_doneEvent, state) => {
         if (savePath) RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.delete(downloadPathReservationKey(savePath));
         const endedAt = new Date().toISOString();
-        download.state = state;
-        download.endedAt = endedAt;
-        if (state === "completed") settleDownloadWaiters(download);
+        downloads.settle(download, state, endedAt);
         const error = state === "completed" ? null : `Download ${state}`;
         if (tab) {
           pushNetworkDiagnostic(tab, {
@@ -4514,29 +4474,36 @@ function createBuiltInBrowserWindowService(args: {
     browserSessionConfigured = true;
   };
 
-  /** Wake every wait whose tab matches. Called once, from the `done` handler. */
-  const settleDownloadWaiters = (download: BuiltInBrowserDownload): void => {
-    for (const waiter of [...downloadWaiters]) {
-      if (waiter.tabId && waiter.tabId !== download.tabId) continue;
-      downloadWaiters.delete(waiter);
-      clearTimeout(waiter.timer);
-      waiter.resolve(download);
-    }
-  };
+  async function readClipboard(
+    input: BuiltInBrowserClipboardReadArgs = {},
+  ): Promise<BuiltInBrowserClipboardReadResult> {
+    args.agentAccessController.assertUrlAccessSync(null, input);
+    return readClipboardContents({ observationRootPath });
+  }
+
+  async function writeClipboard(
+    input: BuiltInBrowserClipboardWriteArgs = {},
+  ): Promise<BuiltInBrowserClipboardWriteResult> {
+    args.agentAccessController.assertUrlAccessSync(null, input);
+    return writeClipboardContents({
+      projectRoot: args.collection.projectRoot,
+      observationRootPath,
+      input,
+    });
+  }
 
   /**
    * Gate a downloads read.
    *
-   * The tab is optional — a download belongs to one, but the caller may not
-   * know which, and the buffer is the collection's. A named tab goes through
-   * the same read gate as every other capability; with no tab, the switch and
-   * the grants still apply.
+   * A downloads read is not an action on a tab: with no `--tab` it must not
+   * claim the active one (that would be a write from a `read` action), and it
+   * must not be refused because somebody else's tab is in front. A named tab
+   * goes through the read gate, which is also what a download belongs to.
    */
   const gateDownloadsRead = (
     input: BuiltInBrowserListDownloadsArgs | BuiltInBrowserWaitForDownloadArgs,
   ): void => {
-    const tabId = stringOrNull(input.tabId) ?? activeTabId;
-    const tab = tabId ? tabById(tabId) : null;
+    const tab = tabById(stringOrNull(input.tabId));
     if (tab) {
       prepareAgentReadTab(tab, input);
       return;
@@ -4544,15 +4511,40 @@ function createBuiltInBrowserWindowService(args: {
     args.agentAccessController.assertUrlAccessSync(null, input);
   };
 
+  /**
+   * Downloads a caller may see: the whole collection for a human, and for an
+   * agent only tabs it can see or that nobody owns. Another chat's file names
+   * and save paths are not its business.
+   */
+  const downloadMatchesInput = (
+    input: BuiltInBrowserListDownloadsArgs | BuiltInBrowserWaitForDownloadArgs,
+  ): ((download: BuiltInBrowserDownload) => boolean) => {
+    const tabId = stringOrNull(input.tabId);
+    const identity = {
+      laneId: stringOrNull(input.laneId),
+      chatSessionId: stringOrNull(input.chatSessionId),
+    };
+    const agent = Boolean(identity.laneId || identity.chatSessionId);
+    return (download) => {
+      if (tabId && download.tabId !== tabId) return false;
+      if (!agent) return true;
+      const tab = tabById(download.tabId);
+      if (!tab) {
+        // The tab closed, so its owner is not available; the record kept it.
+        return Boolean(identity.chatSessionId)
+          ? download.ownerChatSessionId === identity.chatSessionId
+          : download.ownerLaneId === identity.laneId;
+      }
+      return tabVisibleToInput(tab, identity) || isUnownedTab(tab);
+    };
+  };
+
   const listDownloads = (input: BuiltInBrowserListDownloadsArgs): BuiltInBrowserDownloadsResult => {
     gateDownloadsRead(input);
-    const tabId = stringOrNull(input.tabId);
-    const limit = Math.min(100, Math.max(1, Math.trunc(optionalFiniteNumber(input.limit) ?? 20)));
-    const downloads = browserDownloads
-      .filter((download) => !tabId || download.tabId === tabId)
-      .slice(0, limit)
-      .map((download) => ({ ...download }));
-    return { downloads };
+    const limit = Math.min(MAX_TRACKED_DOWNLOADS, Math.max(1, Math.trunc(optionalFiniteNumber(input.limit) ?? 20)));
+    return {
+      downloads: downloads.list(downloadMatchesInput(input), limit).map((download) => ({ ...download })),
+    };
   };
 
   /**
@@ -4560,7 +4552,8 @@ function createBuiltInBrowserWindowService(args: {
    *
    * A click and this call are separate commands, and a small file can finish
    * between them, so a completion inside {@link RECENT_DOWNLOAD_GRACE_MS} is
-   * the answer rather than a missed event.
+   * the answer rather than a missed event — but only when the caller named the
+   * tab, and only for a file that started after its last action.
    */
   const waitForDownload = async (
     input: BuiltInBrowserWaitForDownloadArgs,
@@ -4571,29 +4564,27 @@ function createBuiltInBrowserWindowService(args: {
       MAX_DOWNLOAD_WAIT_MS,
       Math.max(1_000, Math.trunc(optionalFiniteNumber(input.timeoutMs) ?? DEFAULT_DOWNLOAD_WAIT_MS)),
     );
-    const recent = browserDownloads.find((download) => {
-      if (download.state !== "completed") return false;
-      if (tabId && download.tabId !== tabId) return false;
-      return download.endedAt != null && Date.now() - Date.parse(download.endedAt) <= RECENT_DOWNLOAD_GRACE_MS;
-    });
+    const baseMatches = downloadMatchesInput(input);
+    const matches = (download: BuiltInBrowserDownload): boolean =>
+      !deliveredDownloadIds.has(download.id) && baseMatches(download);
+    const actionFloor = (tabId ? tabById(tabId) : null)?.lastActionAtMs ?? 0;
+    const recent = tabId
+      ? downloads.recent(matches, actionFloor, RECENT_DOWNLOAD_GRACE_MS, Date.now())
+      : null;
     if (recent) {
+      deliveredDownloadIds.add(recent.id);
+      if (deliveredDownloadIds.size > MAX_TRACKED_DOWNLOADS) {
+        const oldest = deliveredDownloadIds.values().next().value;
+        if (oldest) deliveredDownloadIds.delete(oldest);
+      }
       return {
         download: { ...recent },
         timedOut: false,
         downloads: listDownloads({ ...input, limit: 20 }).downloads,
       };
     }
-    const download = await new Promise<BuiltInBrowserDownload | null>((resolve) => {
-      const waiter: DownloadWaiter = {
-        tabId,
-        resolve,
-        timer: setTimeout(() => {
-          downloadWaiters.delete(waiter);
-          resolve(null);
-        }, timeoutMs),
-      };
-      downloadWaiters.add(waiter);
-    });
+    const download = await downloads.wait({ matches, timeoutMs });
+    if (download) deliveredDownloadIds.add(download.id);
     return {
       download: download ? { ...download } : null,
       timedOut: download == null,
@@ -6237,6 +6228,8 @@ function createBuiltInBrowserWindowService(args: {
     panelRectSettler.dispose();
     tabCapabilities.dispose();
     removeBrowserDownloadListener();
+    downloads.dispose();
+    deliveredDownloadIds.clear();
     unsubscribeNetworkObserver?.();
     unsubscribeNetworkObserver = null;
     removeTabViewsFromWindow();
@@ -6707,7 +6700,7 @@ function createBuiltInBrowserWindowService(args: {
 
   const resolveClickTarget = async (
     tab: BrowserTabState,
-    input: BuiltInBrowserClickArgs,
+    input: Pick<BuiltInBrowserClickArgs, "selector" | "text" | "testId" | "elementIndex" | "handle" | "x" | "y" | "maxElements">,
   ): Promise<{ x: number; y: number; element: BuiltInBrowserElementSnapshot | null }> => {
     const x = optionalFiniteNumber(input.x);
     const y = optionalFiniteNumber(input.y);
@@ -7127,6 +7120,17 @@ function createBuiltInBrowserWindowService(args: {
     listTabIds: (): string[] => tabs.map((tab) => tab.id),
     /** This collection's tab id for a `WebContents`, or null. */
     tabIdForWebContents: (wc: WebContents): string | null => tabForWebContents(wc)?.id ?? null,
+    describeTabForWebContents: (wc: WebContents) => {
+      const tab = tabForWebContents(wc);
+      return tab
+        ? {
+            openedBy: tab.openedBy,
+            ownerLaneId: tab.ownerLaneId,
+            ownerChatSessionId: tab.ownerChatSessionId,
+            ownerLeaseExpiresAt: tab.ownerLeaseExpiresAt,
+          }
+        : null;
+    },
     requestOriginAccess,
     claim,
     startHandoff,
@@ -7178,6 +7182,8 @@ function createBuiltInBrowserWindowService(args: {
     getNetworkLog: tabCapabilities.getNetworkLog,
     listDownloads,
     waitForDownload,
+    readClipboard,
+    writeClipboard,
     exportHar: tabCapabilities.exportHar,
     hover: tabCapabilities.hover,
     drag: tabCapabilities.drag,

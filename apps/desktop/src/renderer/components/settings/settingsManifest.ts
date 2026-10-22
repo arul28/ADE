@@ -479,8 +479,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.browser-settings",
-    label: "Browser behaviour",
-    keywords: ["browser", "tabs", "tab limit", "downloads", "download folder", "save", "directory"],
+    label: "Tabs and downloads",
+    // No "browser" here on purpose: the access entry already owns that word in
+    // search, and a second match reordered the command palette's thread results.
+    keywords: ["tabs", "tab limit", "downloads", "download folder", "save", "directory"],
     tab: "behaviour",
     anchor: "browser-settings",
     scope: "machine",
@@ -489,8 +491,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.browser-auto-grant",
-    label: "Agents and browser permissions",
-    keywords: ["browser", "camera", "microphone", "microphone", "location", "geolocation", "permission", "auto", "approve"],
+    label: "Agents and site permissions",
+    keywords: ["camera", "microphone", "location", "geolocation", "permission", "auto", "approve"],
     tab: "behaviour",
     anchor: "browser-auto-grant",
     scope: "machine",

@@ -45,7 +45,7 @@ import {
 } from "./browserMockRecovery";
 import {
   BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
-  normalizeBuiltInBrowserSettings,
+  applyBuiltInBrowserSettingsPatch,
   type BuiltInBrowserAgentAccessSnapshot,
   type BuiltInBrowserSettings,
   type BuiltInBrowserSettingsPatch,
@@ -198,11 +198,7 @@ function createMockBrowserSettings() {
   return {
     get: async () => settings,
     set: async (patch: BuiltInBrowserSettingsPatch) => {
-      settings = normalizeBuiltInBrowserSettings({
-        ...settings,
-        ...patch,
-        autoGrant: { ...settings.autoGrant, ...(patch.autoGrant ?? {}) },
-      });
+      settings = applyBuiltInBrowserSettingsPatch(settings, patch);
       return emit();
     },
     onChange: (cb: (next: BuiltInBrowserSettings) => void) => {

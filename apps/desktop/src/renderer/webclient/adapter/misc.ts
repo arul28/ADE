@@ -31,7 +31,7 @@ import {
   type SyncRoleSnapshot,
 } from "../../../shared/types";
 import {
-  BUILT_IN_BROWSER_TAB_LIMIT,
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
   type BuiltInBrowserStatus,
 } from "../../../shared/types/builtInBrowser";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
@@ -1270,7 +1270,7 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
     activeTabId: null,
     tabs: [],
     tabCount: 0,
-    tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
+    tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
     url: null,
     title: null,
     isLoading: false,

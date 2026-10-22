@@ -271,6 +271,12 @@ type SessionIdentity = {
   ownerId: string | null;
   /** The caller's chat is a personal (project-less) chat — its `ADE_CHAT_SCOPE`. */
   personalChat: boolean;
+  /**
+   * Set when this connection was launched by ADE's remote MCP runner, which is
+   * an outside AI app, not the person at a terminal. The browser gate treats it
+   * as an agent even when it carries no chat or lane.
+   */
+  remoteMcpConnectionId: string | null;
 };
 
 type SessionState = {
@@ -3785,7 +3791,16 @@ function scopeBuiltInBrowserAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const { chatSessionId: _callerSupplied, ...rest } = browserArgs;
   // Only the user-browser scoping below may route a call to the user's browser.
-  const scoped = { ...rest, projectRoot: undefined, force: false, [USER_BROWSER_ROUTE_PARAM]: undefined };
+  const scoped = {
+    ...rest,
+    projectRoot: undefined,
+    force: false,
+    [USER_BROWSER_ROUTE_PARAM]: undefined,
+    // An outside AI app has no chat or lane to carry, so the browser's
+    // master switch would read it as the person. The stamp is what tells the
+    // gate "this is still an agent" when agents are turned off.
+    ...(session.identity.remoteMcpConnectionId ? { agentCaller: true } : {}),
+  };
   if (!callerChatSessionId) {
     return { ...scoped, chatSessionId: undefined, laneId: asOptionalTrimmedString(rest.laneId) ?? undefined, tabCollection: undefined };
   }
@@ -5251,6 +5266,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
     personalChat: identity.chatScope === "personal",
+    remoteMcpConnectionId: asOptionalTrimmedString(identity.remoteMcpConnectionId),
   };
 }
 
@@ -8501,6 +8517,7 @@ export function createAdeRpcRequestHandler(args: {
       attemptId: null,
       ownerId: null,
       personalChat: false,
+      remoteMcpConnectionId: null,
     },
     askUserEvents: [],
     askUserRateLimit: {

@@ -89,6 +89,7 @@ import {
   BUILT_IN_BROWSER_MAX_RECORDING_MS,
   buildBuiltInBrowserHar,
   builtInBrowserUploadRoots,
+  resolveReadableBrowserFiles,
   clampBuiltInBrowserEmulationViewScale,
   clampBuiltInBrowserZoomFactor,
   filterBuiltInBrowserNetworkLog,
@@ -96,7 +97,6 @@ import {
   normalizeBuiltInBrowserRecordingFps,
   normalizeNetworkLogLimit,
   redactBuiltInBrowserUrl,
-  resolveBuiltInBrowserUploadPaths,
 } from "./builtInBrowserCapabilities";
 import {
   BUILT_IN_BROWSER_EMULATION_PRESETS,
@@ -154,7 +154,6 @@ const readTextSource = (selector: string | null): string => `(() => {
 })()`;
 const MAX_DRAG_STEPS = 50;
 const DEFAULT_DRAG_STEPS = 8;
-const MAX_UPLOAD_FILE_COUNT = 20;
 /**
  * How long a click gets to open a file chooser.
  *
@@ -164,6 +163,7 @@ const MAX_UPLOAD_FILE_COUNT = 20;
  * so rather than hold the tab's debugger for a page that does nothing.
  */
 const FILE_CHOOSER_TIMEOUT_MS = 8_000;
+
 const RECORDING_CACHE_DIR = "recordings";
 const BROWSER_RECORDER_PARTITION = "ade-browser-recorder";
 const DISPLAY_MEDIA_ARM_TTL_MS = 10_000;
@@ -394,7 +394,7 @@ export type BuiltInBrowserTabCapabilityDeps = {
   ) => Promise<void>;
   resolveClickTarget: (
     tab: BrowserTabState,
-    input: BuiltInBrowserClickArgs,
+    input: Pick<BuiltInBrowserClickArgs, "selector" | "text" | "testId" | "elementIndex" | "handle" | "x" | "y" | "maxElements">,
   ) => Promise<{ x: number; y: number; element: BuiltInBrowserElementSnapshot | null }>;
   focusElementTarget: (
     tab: BrowserTabState,
@@ -1132,14 +1132,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         observationRoot: observationRootPath,
         tmpDir: os.tmpdir(),
       });
-      const paths = resolveBuiltInBrowserUploadPaths(input.paths as readonly unknown[], roots);
-      if (paths.length > MAX_UPLOAD_FILE_COUNT) {
-        throw new Error(`Browser upload accepts at most ${MAX_UPLOAD_FILE_COUNT} files.`);
-      }
-      for (const filePath of paths) {
-        const stat = await fs.stat(filePath).catch(() => null);
-        if (!stat?.isFile()) throw new Error(`Browser upload path is not a readable file: ${filePath}`);
-      }
+      const paths = await resolveReadableBrowserFiles(input.paths as readonly unknown[], "upload", roots);
       const triggerSelector = stringOrNull(input.triggerSelector);
       if (triggerSelector) {
         await attachFilesThroughOpenedChooser(tab, triggerSelector, paths);
@@ -1210,7 +1203,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       // Not a loaded page: a button whose handler is attached at the end of
       // the body exists before it works.
       await waitForDocumentInteractive(wc);
-      const { x, y } = await resolveClickTarget(tab, { selector: triggerSelector } as BuiltInBrowserClickArgs);
+      const { x, y } = await resolveClickTarget(tab, { selector: triggerSelector });
       await sendDebuggerCommand(wc, "Page.enable");
       await sendDebuggerCommand(wc, "Page.setInterceptFileChooserDialog", { enabled: true });
       let settle: (chooser: { backendNodeId: number | null }) => void = () => {};
@@ -1275,17 +1268,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         observationRoot: observationRootPath,
         tmpDir: os.tmpdir(),
       });
-      const paths = resolveBuiltInBrowserUploadPaths(input.paths as readonly unknown[], roots);
-      if (paths.length > MAX_UPLOAD_FILE_COUNT) {
-        throw new Error(`Browser drop accepts at most ${MAX_UPLOAD_FILE_COUNT} files.`);
-      }
-      for (const filePath of paths) {
-        const stat = await fs.stat(filePath).catch(() => null);
-        if (!stat?.isFile()) throw new Error(`Browser drop path is not a readable file: ${filePath}`);
-      }
+      const paths = await resolveReadableBrowserFiles(input.paths as readonly unknown[], "drop", roots);
       const wc = tab.webContents;
       await withTemporaryDebugger(wc, async () => {
-        const { x, y } = await resolveClickTarget(tab, input as unknown as BuiltInBrowserClickArgs);
+        const { x, y } = await resolveClickTarget(tab, input);
         // `dragOperationsMask` 1 is Copy, the operation a Finder drag uses.
         const data = { items: [], files: paths, dragOperationsMask: 1 };
         for (const type of ["dragEnter", "dragOver", "drop"] as const) {

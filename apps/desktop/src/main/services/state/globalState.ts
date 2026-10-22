@@ -14,6 +14,7 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentChatGrant,
   BuiltInBrowserAgentLaneGrant,
+  BuiltInBrowserSettingsPersisted,
 } from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
@@ -143,15 +144,7 @@ export type GlobalState = {
     chatGrants?: BuiltInBrowserAgentChatGrant[];
   };
   /** Machine-wide browser settings: tab limit, download folder, auto-grants. */
-  builtInBrowserSettings?: {
-    tabLimit?: number;
-    downloadDir?: string | null;
-    autoGrant?: {
-      camera?: boolean;
-      microphone?: boolean;
-      geolocation?: boolean;
-    };
-  };
+  builtInBrowserSettings?: BuiltInBrowserSettingsPersisted;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

@@ -131,18 +131,17 @@ export type BuiltInBrowserTab = {
   /** When the current owner first took the tab. Survives lease renewals. */
   ownerClaimedAt: string | null;
   /** Last time the owner touched the tab (read or action). */
-  ownerLastActiveAt?: string | null;
+  ownerLastActiveAt: string | null;
   ownerLeaseExpiresAt: string | null;
   /**
    * Who created the tab. `human` is the person (or a restored tab);
    * `chat` is an agent call, which also names the chat and lane.
-   * Absent on a main process that predates it, which reads as unknown.
    */
-  openedBy?: "human" | "chat" | null;
-  openedByChatSessionId?: string | null;
-  openedByLaneId?: string | null;
+  openedBy: "human" | "chat";
+  openedByChatSessionId: string | null;
+  openedByLaneId: string | null;
   /** When the tab was created. */
-  createdAt?: string | null;
+  createdAt: string;
   zoomFactor: number;
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
@@ -355,7 +354,8 @@ export type BuiltInBrowserClipboardReadArgs = BuiltInBrowserTabTargetArgs;
  * attach, plus the facts it needs to decide what to do with it.
  */
 export type BuiltInBrowserClipboardImage = {
-  path: string;
+  /** Named `filePath` so the remote bridge packs it with the result. */
+  filePath: string;
   width: number;
   height: number;
   bytes: number;
@@ -399,6 +399,9 @@ export type BuiltInBrowserPasteArgs = BuiltInBrowserAgentActionArgs & BuiltInBro
 export type BuiltInBrowserDownload = {
   id: string;
   tabId: string;
+  /** Who held the tab when the download started, so a closed tab keeps its scope. */
+  ownerChatSessionId?: string | null;
+  ownerLaneId?: string | null;
   fileName: string;
   /** Absolute path the file was saved to. */
   savePath: string;
@@ -443,12 +446,12 @@ export type BuiltInBrowserSession = {
 };
 
 /**
- * The per-collection tab limit.
+ * Default for `BuiltInBrowserSettings.tabLimit`.
  *
- * One number for the live service, the persisted state and every client that
- * renders "N of M"; the three used to be separate literals that could drift.
+ * The live limit is the setting; this is only what an unset machine gets, and
+ * what the fallback statuses report before the setting has been read.
  */
-export const BUILT_IN_BROWSER_TAB_LIMIT = 10;
+export const BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT = 10;
 export const BUILT_IN_BROWSER_TAB_LIMIT_MIN = 1;
 export const BUILT_IN_BROWSER_TAB_LIMIT_MAX = 50;
 
@@ -468,14 +471,21 @@ export type BuiltInBrowserSettings = {
   autoGrant: BuiltInBrowserAutoGrant;
 };
 
-export type BuiltInBrowserSettingsPatch = {
-  tabLimit?: number | null;
+/** What is on disk: every field optional, older files predate some of them. */
+export type BuiltInBrowserSettingsPersisted = {
+  tabLimit?: number;
   downloadDir?: string | null;
-  autoGrant?: Partial<BuiltInBrowserAutoGrant> | null;
+  autoGrant?: Partial<BuiltInBrowserAutoGrant>;
+};
+
+export type BuiltInBrowserSettingsPatch = {
+  tabLimit?: number;
+  downloadDir?: string | null;
+  autoGrant?: Partial<BuiltInBrowserAutoGrant>;
 };
 
 export const BUILT_IN_BROWSER_SETTINGS_DEFAULTS: BuiltInBrowserSettings = {
-  tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
+  tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
   downloadDir: null,
   autoGrant: { camera: false, microphone: false, geolocation: false },
 };
@@ -500,6 +510,58 @@ export function normalizeBuiltInBrowserSettings(value: unknown): BuiltInBrowserS
       geolocation: grantRecord.geolocation === true,
     },
   };
+}
+
+/** One merge rule for the controller, the renderer mock and any other writer. */
+export function applyBuiltInBrowserSettingsPatch(
+  current: BuiltInBrowserSettings,
+  patch: BuiltInBrowserSettingsPatch,
+): BuiltInBrowserSettings {
+  return normalizeBuiltInBrowserSettings({
+    tabLimit: patch.tabLimit ?? current.tabLimit,
+    downloadDir: patch.downloadDir === undefined ? current.downloadDir : patch.downloadDir,
+    autoGrant: { ...current.autoGrant, ...(patch.autoGrant ?? {}) },
+  });
+}
+
+/**
+ * Validate a patch from the renderer. Throws on a malformed field rather than
+ * dropping it: a silently ignored `autoGrant` looked like a saved switch.
+ */
+export function parseBuiltInBrowserSettingsPatch(value: unknown): BuiltInBrowserSettingsPatch {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Browser settings must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const patch: BuiltInBrowserSettingsPatch = {};
+  if ("tabLimit" in record) {
+    if (typeof record.tabLimit !== "number" || !Number.isFinite(record.tabLimit)) {
+      throw new Error("Browser settings: tabLimit must be a number.");
+    }
+    patch.tabLimit = record.tabLimit;
+  }
+  if ("downloadDir" in record) {
+    if (record.downloadDir !== null && typeof record.downloadDir !== "string") {
+      throw new Error("Browser settings: downloadDir must be a string or null.");
+    }
+    patch.downloadDir = record.downloadDir as string | null;
+  }
+  if ("autoGrant" in record) {
+    if (!record.autoGrant || typeof record.autoGrant !== "object" || Array.isArray(record.autoGrant)) {
+      throw new Error("Browser settings: autoGrant must be an object.");
+    }
+    const grantRecord = record.autoGrant as Record<string, unknown>;
+    const grant: Partial<BuiltInBrowserAutoGrant> = {};
+    for (const key of ["camera", "microphone", "geolocation"] as const) {
+      if (!(key in grantRecord)) continue;
+      if (typeof grantRecord[key] !== "boolean") {
+        throw new Error(`Browser settings: autoGrant.${key} must be a boolean.`);
+      }
+      grant[key] = grantRecord[key] as boolean;
+    }
+    patch.autoGrant = grant;
+  }
+  return patch;
 }
 
 export type BuiltInBrowserStatus = {
@@ -610,6 +672,12 @@ export type BuiltInBrowserTabTargetArgs = BuiltInBrowserProjectScopeArgs & {
   chatSessionId?: string | null;
   force?: boolean;
   leaseTtlMs?: number | null;
+  /**
+   * Set by the runtime for an outside AI app (ADE's remote MCP runner), which
+   * carries no chat or lane. The agent-access gate uses it so the master switch
+   * still applies; a person's pane or terminal never sets it.
+   */
+  agentCaller?: boolean;
 };
 
 export type BuiltInBrowserStartSessionArgs = BuiltInBrowserClaimArgs;
