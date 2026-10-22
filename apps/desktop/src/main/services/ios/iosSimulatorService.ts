@@ -6339,7 +6339,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     invalidateStatus(runtime);
     // An extra device has no pane or `start` of its own: it comes up booted,
     // so the next `--device` command finds it ready.
-    if (device.extra) await bootExtraDevice(device);
+    if (device.extra) {
+      args.captureAnalytics?.("extra_device_created");
+      await bootExtraDevice(device);
+    }
     return device;
   };
 

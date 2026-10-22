@@ -291,7 +291,7 @@ export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
 /**
  * The Apple panel's product facts (`ade_feature_used`, `action: "apple_device"`):
  * whether the runtime manager and the iPhone Duo surface are used at all.
- * Closed: a seventh spelling is dropped by the analytics policy, not widened.
+ * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
  */
 export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
   "runtime_installed",
@@ -301,6 +301,7 @@ export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
   "device_rendered",
   "duo_skill_added",
   "device_leased",
+  "extra_device_created",
 ] as const;
 export type AppleDeviceAnalyticsOutcome = (typeof APPLE_DEVICE_ANALYTICS_OUTCOMES)[number];
 
