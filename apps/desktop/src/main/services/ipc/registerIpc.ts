@@ -997,6 +997,10 @@ import {
   isBuiltInBrowserNoTabError,
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT,
+  type BuiltInBrowserSettingsPatch,
+} from "../../../shared/types/builtInBrowser";
 import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
 import { runRemoteAgentBrowserCall } from "../builtInBrowser/builtInBrowserRemoteCalls";
 import {
@@ -2801,6 +2805,8 @@ export function registerIpc({
         bounds: { x: 0, y: 0, width: 0, height: 0 },
         activeTabId: null,
         tabs: [],
+        tabCount: 0,
+        tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
         url: null,
         title: null,
         isLoading: false,
@@ -2811,6 +2817,7 @@ export function registerIpc({
         ownerLaneId: null,
         ownerChatSessionId: null,
         ownerClaimedAt: null,
+        ownerLastActiveAt: null,
         ownerLeaseExpiresAt: null,
       };
     }
@@ -10764,6 +10771,50 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessGet, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().getAgentAccess();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessSetEnabled, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetEnabled, { windowMs: 10_000, max: 20 });
+    const enabled = isRecord(arg) ? arg.enabled : arg;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${IPC.builtInBrowserAgentAccessSetEnabled}: enabled must be a boolean.`);
+    }
+    return ensureBuiltInBrowser().setAgentAccessEnabled(enabled);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsGet, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsGet, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().getBrowserSettings();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsSet, { windowMs: 10_000, max: 20 });
+    if (!isRecord(arg)) throw new Error(`${IPC.builtInBrowserSettingsSet}: expected an object.`);
+    const patch: BuiltInBrowserSettingsPatch = {};
+    if ("tabLimit" in arg) {
+      if (typeof arg.tabLimit !== "number" || !Number.isFinite(arg.tabLimit)) {
+        throw new Error(`${IPC.builtInBrowserSettingsSet}: tabLimit must be a number.`);
+      }
+      patch.tabLimit = arg.tabLimit;
+    }
+    if ("downloadDir" in arg) {
+      if (arg.downloadDir !== null && typeof arg.downloadDir !== "string") {
+        throw new Error(`${IPC.builtInBrowserSettingsSet}: downloadDir must be a string or null.`);
+      }
+      patch.downloadDir = arg.downloadDir as string | null;
+    }
+    if ("autoGrant" in arg && isRecord(arg.autoGrant)) {
+      const grant: NonNullable<BuiltInBrowserSettingsPatch["autoGrant"]> = {};
+      for (const key of ["camera", "microphone", "geolocation"] as const) {
+        if (!(key in arg.autoGrant)) continue;
+        if (typeof arg.autoGrant[key] !== "boolean") {
+          throw new Error(`${IPC.builtInBrowserSettingsSet}: autoGrant.${key} must be a boolean.`);
+        }
+        grant[key] = arg.autoGrant[key] as boolean;
+      }
+      patch.autoGrant = grant;
+    }
+    return ensureBuiltInBrowser().updateBrowserSettings(patch);
   });
 
   ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {

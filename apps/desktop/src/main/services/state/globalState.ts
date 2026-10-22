@@ -137,9 +137,20 @@ export type GlobalState = {
    * Absent: every agent may use it (the default).
    */
   builtInBrowserAgentAccess?: {
+    enabled?: boolean;
     mode?: BuiltInBrowserAgentAccessMode;
     laneGrants?: BuiltInBrowserAgentLaneGrant[];
     chatGrants?: BuiltInBrowserAgentChatGrant[];
+  };
+  /** Machine-wide browser settings: tab limit, download folder, auto-grants. */
+  builtInBrowserSettings?: {
+    tabLimit?: number;
+    downloadDir?: string | null;
+    autoGrant?: {
+      camera?: boolean;
+      microphone?: boolean;
+      geolocation?: boolean;
+    };
   };
 };
 

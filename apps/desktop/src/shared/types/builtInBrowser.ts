@@ -128,8 +128,21 @@ export type BuiltInBrowserTab = {
   groupLaneId?: string | null;
   ownerLaneId: string | null;
   ownerChatSessionId: string | null;
+  /** When the current owner first took the tab. Survives lease renewals. */
   ownerClaimedAt: string | null;
+  /** Last time the owner touched the tab (read or action). */
+  ownerLastActiveAt?: string | null;
   ownerLeaseExpiresAt: string | null;
+  /**
+   * Who created the tab. `human` is the person (or a restored tab);
+   * `chat` is an agent call, which also names the chat and lane.
+   * Absent on a main process that predates it, which reads as unknown.
+   */
+  openedBy?: "human" | "chat" | null;
+  openedByChatSessionId?: string | null;
+  openedByLaneId?: string | null;
+  /** When the tab was created. */
+  createdAt?: string | null;
   zoomFactor: number;
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
@@ -310,6 +323,12 @@ export type BuiltInBrowserAgentAccessPrompt = {
 export type BuiltInBrowserAgentAccessAnswer = "all" | "lane" | "chat" | "block";
 
 export type BuiltInBrowserAgentAccessSnapshot = {
+  /**
+   * The master switch: may agents drive the ADE browser at all. On by default.
+   * Off means every agent call is refused outright, whatever `mode` says; the
+   * person's own use of the Browser pane is unaffected.
+   */
+  enabled: boolean;
   mode: BuiltInBrowserAgentAccessMode;
   laneGrants: BuiltInBrowserAgentLaneGrant[];
   chatGrants: BuiltInBrowserAgentChatGrant[];
@@ -317,10 +336,99 @@ export type BuiltInBrowserAgentAccessSnapshot = {
   prompts: BuiltInBrowserAgentAccessPrompt[];
 };
 
+/** The user turned agents off entirely in Settings. Retrying cannot help. */
+export const BUILT_IN_BROWSER_AGENTS_DISABLED_CODE = "built_in_browser_agents_disabled";
+
 export type BuiltInBrowserAgentAccessRevokeArgs =
   | { kind: "lane"; projectRoot: string | null; laneId: string }
   | { kind: "chat"; chatSessionId: string }
   | { kind: "all" };
+
+/* ── Clipboard ────────────────────────────────────────────────────────────── */
+
+export type BuiltInBrowserClipboardReadArgs = BuiltInBrowserTabTargetArgs;
+
+/**
+ * An image that was on the clipboard, written to a scratch file.
+ *
+ * The bytes never travel in the answer: an agent gets a path it can read or
+ * attach, plus the facts it needs to decide what to do with it.
+ */
+export type BuiltInBrowserClipboardImage = {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  mimeType: "image/png";
+};
+
+export type BuiltInBrowserClipboardReadResult = {
+  /** The clipboard's plain text, capped at 64k characters. */
+  text: string;
+  /** The HTML flavor, when the source app put one there. Capped the same way. */
+  html: string | null;
+  /** The image flavor, when the clipboard held one. */
+  image: BuiltInBrowserClipboardImage | null;
+  /** True when a text flavor was longer than the cap and had to be cut. */
+  truncated: boolean;
+};
+
+export type BuiltInBrowserClipboardWriteArgs = BuiltInBrowserTabTargetArgs & {
+  text?: string | null;
+  html?: string | null;
+  /** An image file to put on the clipboard. Absolute path to a readable file. */
+  imagePath?: string | null;
+};
+
+export type BuiltInBrowserClipboardWriteResult = {
+  written: boolean;
+};
+
+/**
+ * Paste what is on the machine's clipboard into the focused element.
+ *
+ * `type` uses `Input.insertText`, which bypasses the page's own paste handler;
+ * this sends the real edit command, so a rich-text editor (or a page that reads
+ * `clipboardData`) sees a paste the way a person's ⌘V would.
+ */
+export type BuiltInBrowserPasteArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs;
+
+/* ── Downloads ────────────────────────────────────────────────────────────── */
+
+/** One file a page downloaded through the ADE browser. */
+export type BuiltInBrowserDownload = {
+  id: string;
+  tabId: string;
+  fileName: string;
+  /** Absolute path the file was saved to. */
+  savePath: string;
+  url: string | null;
+  state: "started" | "completed" | "cancelled" | "interrupted";
+  startedAt: string;
+  endedAt: string | null;
+};
+
+export type BuiltInBrowserListDownloadsArgs = BuiltInBrowserTabTargetArgs & {
+  /** Newest first. Defaults to 20, capped at 100. */
+  limit?: number | null;
+};
+
+export type BuiltInBrowserDownloadsResult = {
+  downloads: BuiltInBrowserDownload[];
+};
+
+export type BuiltInBrowserWaitForDownloadArgs = BuiltInBrowserTabTargetArgs & {
+  /** How long to wait for a completion. Defaults to 60s, capped at 120s. */
+  timeoutMs?: number | null;
+};
+
+export type BuiltInBrowserWaitForDownloadResult = {
+  /** The completed download, or null when the wait timed out. */
+  download: BuiltInBrowserDownload | null;
+  timedOut: boolean;
+  /** Newest first, so a caller that timed out can say what did happen. */
+  downloads: BuiltInBrowserDownload[];
+};
 
 export type BuiltInBrowserSession = {
   id: string;
@@ -334,6 +442,66 @@ export type BuiltInBrowserSession = {
   lastTraceEntryId: string | null;
 };
 
+/**
+ * The per-collection tab limit.
+ *
+ * One number for the live service, the persisted state and every client that
+ * renders "N of M"; the three used to be separate literals that could drift.
+ */
+export const BUILT_IN_BROWSER_TAB_LIMIT = 10;
+export const BUILT_IN_BROWSER_TAB_LIMIT_MIN = 1;
+export const BUILT_IN_BROWSER_TAB_LIMIT_MAX = 50;
+
+/** Machine-wide browser settings: one browser profile, one set of answers. */
+export type BuiltInBrowserAutoGrant = {
+  camera: boolean;
+  microphone: boolean;
+  geolocation: boolean;
+};
+
+export type BuiltInBrowserSettings = {
+  /** Tabs per collection, clamped to the min/max above. */
+  tabLimit: number;
+  /** Where downloads go; null means the OS Downloads folder. */
+  downloadDir: string | null;
+  /** Standing permission grants for agent use. All off by default. */
+  autoGrant: BuiltInBrowserAutoGrant;
+};
+
+export type BuiltInBrowserSettingsPatch = {
+  tabLimit?: number | null;
+  downloadDir?: string | null;
+  autoGrant?: Partial<BuiltInBrowserAutoGrant> | null;
+};
+
+export const BUILT_IN_BROWSER_SETTINGS_DEFAULTS: BuiltInBrowserSettings = {
+  tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
+  downloadDir: null,
+  autoGrant: { camera: false, microphone: false, geolocation: false },
+};
+
+export function normalizeBuiltInBrowserSettings(value: unknown): BuiltInBrowserSettings {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const rawLimit = typeof record.tabLimit === "number" && Number.isFinite(record.tabLimit)
+    ? Math.trunc(record.tabLimit)
+    : BUILT_IN_BROWSER_SETTINGS_DEFAULTS.tabLimit;
+  const rawDir = typeof record.downloadDir === "string" && record.downloadDir.trim()
+    ? record.downloadDir.trim()
+    : null;
+  const grantRecord = record.autoGrant && typeof record.autoGrant === "object"
+    ? record.autoGrant as Record<string, unknown>
+    : {};
+  return {
+    tabLimit: Math.min(BUILT_IN_BROWSER_TAB_LIMIT_MAX, Math.max(BUILT_IN_BROWSER_TAB_LIMIT_MIN, rawLimit)),
+    downloadDir: rawDir,
+    autoGrant: {
+      camera: grantRecord.camera === true,
+      microphone: grantRecord.microphone === true,
+      geolocation: grantRecord.geolocation === true,
+    },
+  };
+}
+
 export type BuiltInBrowserStatus = {
   attached: boolean;
   partition: string;
@@ -345,6 +513,16 @@ export type BuiltInBrowserStatus = {
   bounds: BuiltInBrowserFrame;
   activeTabId: string | null;
   tabs: BuiltInBrowserTab[];
+  /**
+   * Live tabs in this collection, including ones another chat owns.
+   *
+   * `tabs` is scoped to the caller; this is the collection's real occupancy, so
+   * an agent can tell it is one tab from the limit without asking for tabs it
+   * may not see.
+   */
+  tabCount: number;
+  /** The per-collection tab limit. */
+  tabLimit: number;
   url: string | null;
   title: string | null;
   isLoading: boolean;
@@ -355,6 +533,7 @@ export type BuiltInBrowserStatus = {
   ownerLaneId: string | null;
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;
+  ownerLastActiveAt: string | null;
   ownerLeaseExpiresAt: string | null;
   /**
    * Chats driving this collection's browser right now.
@@ -1217,6 +1396,27 @@ export type BuiltInBrowserSelectOptionArgs = BuiltInBrowserAgentActionArgs & Bui
 };
 
 export type BuiltInBrowserUploadFileArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
+  paths: string[];
+  /**
+   * Click this element and satisfy the file chooser it opens, instead of
+   * setting files on an `<input type=file>` that is already in the DOM.
+   *
+   * Some pages never keep an input around: the button creates one, clicks it,
+   * and the browser shows its native sheet. `DOM.setFileInputFiles` has no node
+   * to target in that case, so the chooser itself is intercepted and handed the
+   * files. The element named by the usual target args stays the file input;
+   * this names the thing that opens it.
+   */
+  triggerSelector?: string | null;
+};
+
+/**
+ * Drop files on an element, the way a person drags them from Finder.
+ *
+ * For pages with a dropzone and no file input at all: `upload --selector` has
+ * no input to set, and `upload --trigger` has no chooser to intercept.
+ */
+export type BuiltInBrowserDropFilesArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
   paths: string[];
 };
 

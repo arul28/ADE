@@ -996,6 +996,8 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
+  BuiltInBrowserSettings,
+  BuiltInBrowserSettingsPatch,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -3595,8 +3597,14 @@ declare global {
          * "Agents can use the ADE browser": the setting, the saved lane and
          * chat grants, and the open prompts. Machine-local and human-only.
          */
+        browserSettings: {
+          get: () => Promise<BuiltInBrowserSettings>;
+          set: (patch: BuiltInBrowserSettingsPatch) => Promise<BuiltInBrowserSettings>;
+          onChange: (cb: (settings: BuiltInBrowserSettings) => void) => () => void;
+        };
         agentAccess: {
           get: () => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          setEnabled: (enabled: boolean) => Promise<BuiltInBrowserAgentAccessSnapshot>;
           setMode: (mode: BuiltInBrowserAgentAccessMode) => Promise<BuiltInBrowserAgentAccessSnapshot>;
           answer: (
             promptId: string,

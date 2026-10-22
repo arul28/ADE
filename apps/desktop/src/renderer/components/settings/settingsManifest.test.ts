@@ -90,6 +90,8 @@ describe("settings manifest", () => {
     "general.capture-gesture": "behaviour",
     "general.link-open-mode": "behaviour",
     "general.browser-agent-access": "behaviour",
+    "general.browser-settings": "behaviour",
+    "general.browser-auto-grant": "behaviour",
     "general.project-location": "location",
     "storage.project-health": "location",
     "storage.diagnostics": "service",

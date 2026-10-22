@@ -31,6 +31,7 @@ export const BROWSER_AGENT_ACCESS_MODES: readonly BuiltInBrowserAgentAccessMode[
 
 type AgentAccessApi = {
   get: () => Promise<BuiltInBrowserAgentAccessSnapshot | null>;
+  setEnabled: (enabled: boolean) => Promise<BuiltInBrowserAgentAccessSnapshot | null>;
   setMode: (mode: BuiltInBrowserAgentAccessMode) => Promise<BuiltInBrowserAgentAccessSnapshot | null>;
   answer: (promptId: string, answer: BuiltInBrowserAgentAccessAnswer) => Promise<BuiltInBrowserAgentAccessSnapshot | null>;
   revoke: (args: BuiltInBrowserAgentAccessRevokeArgs) => Promise<BuiltInBrowserAgentAccessSnapshot | null>;
@@ -60,7 +61,8 @@ let started = false;
 
 function publish(next: unknown): void {
   if (!isSnapshot(next)) return;
-  current = next;
+  // A desktop older than the master switch sends no `enabled`; it meant "on".
+  current = { ...next, enabled: next.enabled !== false };
   for (const listener of [...listeners]) listener();
 }
 
@@ -100,6 +102,7 @@ async function run(
 }
 
 export const browserAgentAccessActions = {
+  setEnabled: (enabled: boolean) => run((bridge) => bridge.setEnabled(enabled)),
   setMode: (mode: BuiltInBrowserAgentAccessMode) => run((bridge) => bridge.setMode(mode)),
   answer: (promptId: string, answer: BuiltInBrowserAgentAccessAnswer) =>
     run((bridge) => bridge.answer(promptId, answer)),

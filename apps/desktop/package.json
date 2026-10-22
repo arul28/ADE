@@ -467,6 +467,7 @@
       "extendInfo": {
         "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
         "NSMicrophoneUsageDescription": "ADE uses your microphone for on-device voice-to-text dictation, and — when you start a voice conversation in a chat — to send your speech to OpenAI.",
+        "NSCameraUsageDescription": "ADE's built-in browser shows a site's camera prompt; if you allow camera auto-approval in Settings, a site an agent opens can use the camera.",
         "NSScreenCaptureUsageDescription": "ADE captures the window in front when you press both Command keys, so you can ask the CTO about what you are looking at.",
         "NSLocalNetworkUsageDescription": "ADE finds and connects to your other Macs and devices running ADE on your local network.",
         "NSBonjourServices": [

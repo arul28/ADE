@@ -39,9 +39,15 @@ Claim an unowned tab with its id and lane. `--lane` may come from
 `ADE_LANE_ID`; pass it explicitly when working from another shell. A personal
 (project-less) chat has no lane and claims with the tab id alone. Keep one
 tab per task and do not claim a tab another chat owns. A tab whose chat went
-idle for 10 minutes lists as `idle (lease lapsed)`; reuse it or close it. When
-`open` fails on the tab limit, the error lists the tabs you may close: close
-one of those yourself instead of asking the user.
+idle for 10 minutes lists as `idle (lease lapsed)`; reuse it or close it.
+
+Treat a tab as a workspace, not a log. `ade browser tabs` prints `tabs N of M`:
+reuse your own tab for follow-up work instead of opening a second one, and when
+the task is done close it with `ade browser close --tab <id>` so the next agent
+does not inherit your tabs. At `N of M` the browser is full; the error lists
+the tabs you may close, so close one rather than asking the user. A tab leased
+by another chat cannot be taken — there is no `--force` for agents; ask the
+user to close it or hand it to this chat.
 
 ```bash
 ade --socket browser tabs --text
@@ -97,16 +103,44 @@ Use viewport `--x`/`--y` only when no stable element target exists. Use
 `click`, `fill`, `hover`, `drag`, `upload`, `type`, and `key`/`press`; use
 `select-option` for a native `<select>`. `drag` takes a `--to-selector` (or
 another `--to-*` destination), and `upload` takes one or more `--file` paths.
-Use `fill --value ""` when an empty value is intentional. Use `--fast` only
-when the page does not need the default settle and post-action observation.
+`upload` reaches two kinds of page: `--selector` sets files on a file input that
+is already in the DOM, and `--trigger` clicks the button that opens the picker
+and hands the files to the chooser it opens. Use `--trigger` whenever the
+input is built on demand (X's media button is the shape), because there is no
+input for `--selector` to point at. A page whose only control is a dropzone
+gets `drop --selector <zone> --file <path>`: it runs the page's own
+dragenter/dragover/drop with the file in the `DataTransfer`. Use
+`fill --value ""` when an empty value is intentional. Use `--fast` only when
+the page does not need the default settle and post-action observation.
 
 ```bash
 ade --socket browser click --browser-session <session-id> --handle obs-...:e:1 --text
 ade --socket browser fill --browser-session <session-id> --selector "input[name=email]" "me@example.com" --text
 ade --socket browser drag --browser-session <session-id> --handle obs-...:e:1 --to-selector ".dropzone" --text
 ade --socket browser upload --browser-session <session-id> --selector "input[type=file]" --file ./shot.png --text
+ade --socket browser upload --browser-session <session-id> --trigger "button[aria-label='Add photos or video']" --file ./clip.mp4 --text
+ade --socket browser drop --browser-session <session-id> --selector "#dropzone" --file ./report.pdf --text
+ade --socket browser downloads wait --browser-session <session-id> --timeout-ms 30000 --text
+ade --socket browser clipboard --text
+ade --socket browser paste --selector "#editor" --text
 ade --socket browser key --browser-session <session-id> Enter --text
 ```
+
+`clipboard` reads the machine's clipboard (`--text` output; HTML flavor when
+present) and `clipboard write --value "<text>"` sets it. `paste` focuses the
+target and sends the real paste command, so a rich-text editor or a page
+listening for `paste` sees it the way a person's ⌘V would — `type` only inserts
+text and skips those handlers.
+
+Dialogs are answered while an agent action runs, so a page that calls
+`alert`, `confirm` or `beforeunload` cannot hang the tab: `alert` and
+`beforeunload` are accepted, `confirm` and `prompt` are dismissed. Every answer
+is logged with the dialog's text. Nothing more is needed from the agent.
+
+Downloads go to the user's Downloads folder, as they always have. `downloads`
+lists them with the saved path and `downloads wait` waits for the next
+completion (a file that finished in the last few seconds counts), so the agent
+can name the file it just triggered instead of guessing.
 
 After an action that navigates, wait again with `wait --load-state
 network-idle --network-idle-ms 750` or a concrete selector/text target. Use

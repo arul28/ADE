@@ -136,6 +136,15 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "stopFindInPage",
   "setNetworkLogging",
   "getNetworkLog",
+  // A download lands on the machine that runs the browser, so those tabs'
+  // receipts have to be read there too.
+  "listDownloads",
+  "waitForDownload",
+  // The clipboard belongs to the desktop that hosts the browser, which is the
+  // user's computer, not the machine the agent runs on.
+  "readClipboard",
+  "writeClipboard",
+  "paste",
   "hover",
   "drag",
   "selectOption",

@@ -665,9 +665,13 @@ export const IPC = {
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
   builtInBrowserAgentAccessGet: "ade.builtInBrowser.agentAccess.get",
   builtInBrowserAgentAccessSetMode: "ade.builtInBrowser.agentAccess.setMode",
+  builtInBrowserAgentAccessSetEnabled: "ade.builtInBrowser.agentAccess.setEnabled",
   builtInBrowserAgentAccessAnswer: "ade.builtInBrowser.agentAccess.answer",
   builtInBrowserAgentAccessRevoke: "ade.builtInBrowser.agentAccess.revoke",
   builtInBrowserAgentAccessEvent: "ade.builtInBrowser.agentAccess.event",
+  builtInBrowserSettingsGet: "ade.builtInBrowser.settings.get",
+  builtInBrowserSettingsSet: "ade.builtInBrowser.settings.set",
+  builtInBrowserSettingsEvent: "ade.builtInBrowser.settings.event",
   /**
    * Login import. Trusted-renderer-only, like the profile diagnostics and
    * permission administration above it: importing a browser's cookies hands

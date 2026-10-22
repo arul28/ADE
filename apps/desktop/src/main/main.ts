@@ -2018,6 +2018,16 @@ app.whenReady().then(async () => {
       },
     },
     onAgentAccessChange: (snapshot) => broadcast(IPC.builtInBrowserAgentAccessEvent, snapshot),
+    // Tab limit, download folder and standing permission grants. Same file,
+    // same read-modify-write as the agent-access block above.
+    browserSettingsStore: {
+      read: () => readGlobalState(globalStatePath).builtInBrowserSettings ?? null,
+      write: (next) => {
+        const current = readGlobalState(globalStatePath);
+        writeGlobalState(globalStatePath, { ...current, builtInBrowserSettings: next });
+      },
+    },
+    onBrowserSettingsChange: (settings) => broadcast(IPC.builtInBrowserSettingsEvent, settings),
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can

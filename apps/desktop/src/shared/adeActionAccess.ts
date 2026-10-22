@@ -572,6 +572,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   built_in_browser: {
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
+      "listDownloads", "waitForDownload", "readClipboard",
     ],
     write: [
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
@@ -580,7 +581,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
-      "selectOption", "uploadFile", "startRecording", "stopRecording", "noteDemoStep",
+      "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",
       "acknowledgeRemoteRequest", "replyRemoteCall", "attachUserBrowser", "detachUserBrowser",
     ],
   },

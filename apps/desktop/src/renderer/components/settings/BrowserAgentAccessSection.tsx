@@ -10,7 +10,7 @@ import {
   shortAgentId,
   useBrowserAgentAccess,
 } from "../chat/browser/browserAgentAccess";
-import { ModernSection } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import "./machineSettings.css";
 
 /**
@@ -39,6 +39,7 @@ export function BrowserAgentAccessSection() {
     }
   };
 
+  const enabled = snapshot?.enabled ?? true;
   const mode = snapshot?.mode ?? "all";
   const grants = snapshot
     ? [
@@ -70,34 +71,54 @@ export function BrowserAgentAccessSection() {
       title={BROWSER_AGENT_ACCESS_TITLE}
       hint="The ADE browser keeps one signed-in profile for this computer. An agent that uses it can act as you on any site you are logged in to."
     >
-      <div role="radiogroup" aria-label={BROWSER_AGENT_ACCESS_TITLE} className="ade-ap-grid3">
-        {BROWSER_AGENT_ACCESS_MODES.map((value: BuiltInBrowserAgentAccessMode) => {
-          const selected = mode === value;
-          const copy = BROWSER_AGENT_ACCESS_MODE_COPY[value];
-          const ModeIcon = MODE_ICON[value];
-          return (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={selected}
+      <ModernRows>
+        <ModernRow
+          anchor="browser-agent-access-switch"
+          title="Allow agents to use the browser"
+          hint={enabled
+            ? "On. The choice below decides which agents, when. Turning this off blocks every agent; you can still use the browser yourself."
+            : "Agents are blocked. The browser works normally for you."}
+          control={(
+            <SettingsToggle
+              label="Allow agents to use the browser"
+              checked={enabled}
               disabled={busy || !snapshot}
-              onClick={() => void act(() => browserAgentAccessActions.setMode(value))}
-              className="ade-ap-choice"
-              data-active={selected}
-            >
-              <span className="ade-modern-choice-body">
-                <span className="ade-modern-choice-title">
-                  <ModeIcon size={14} />
-                  <span style={{ minWidth: 0 }}>{copy.label}</span>
-                  {selected ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+              onChange={(next) => void act(() => browserAgentAccessActions.setEnabled(next))}
+            />
+          )}
+        />
+      </ModernRows>
+
+      {enabled ? (
+        <div role="radiogroup" aria-label={BROWSER_AGENT_ACCESS_TITLE} className="ade-ap-grid3">
+          {BROWSER_AGENT_ACCESS_MODES.map((value: BuiltInBrowserAgentAccessMode) => {
+            const selected = mode === value;
+            const copy = BROWSER_AGENT_ACCESS_MODE_COPY[value];
+            const ModeIcon = MODE_ICON[value];
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={busy || !snapshot}
+                onClick={() => void act(() => browserAgentAccessActions.setMode(value))}
+                className="ade-ap-choice"
+                data-active={selected}
+              >
+                <span className="ade-modern-choice-body">
+                  <span className="ade-modern-choice-title">
+                    <ModeIcon size={14} />
+                    <span style={{ minWidth: 0 }}>{copy.label}</span>
+                    {selected ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                  </span>
+                  <span className="ade-modern-choice-hint">{copy.hint}</span>
                 </span>
-                <span className="ade-modern-choice-hint">{copy.hint}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       {grants.length > 0 ? (
         <div className="ade-modern-rows">

@@ -477,6 +477,26 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "ADE browser",
   },
+  {
+    id: "general.browser-settings",
+    label: "Browser behaviour",
+    keywords: ["browser", "tabs", "tab limit", "downloads", "download folder", "save", "directory"],
+    tab: "behaviour",
+    anchor: "browser-settings",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
+  {
+    id: "general.browser-auto-grant",
+    label: "Agents and browser permissions",
+    keywords: ["browser", "camera", "microphone", "microphone", "location", "geolocation", "permission", "auto", "approve"],
+    tab: "behaviour",
+    anchor: "browser-auto-grant",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
 
   // ── Project → Location ───────────────────────────────────────────────────
   {

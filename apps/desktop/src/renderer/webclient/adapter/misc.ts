@@ -30,7 +30,10 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
-import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT,
+  type BuiltInBrowserStatus,
+} from "../../../shared/types/builtInBrowser";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
@@ -1266,6 +1269,8 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
     bounds: { x: 0, y: 0, width: 0, height: 0 },
     activeTabId: null,
     tabs: [],
+    tabCount: 0,
+    tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
     url: null,
     title: null,
     isLoading: false,
@@ -1276,6 +1281,7 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
     ownerLaneId: null,
     ownerChatSessionId: null,
     ownerClaimedAt: null,
+    ownerLastActiveAt: null,
     ownerLeaseExpiresAt: null,
   };
 }

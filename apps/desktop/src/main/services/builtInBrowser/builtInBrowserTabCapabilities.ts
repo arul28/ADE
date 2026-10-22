@@ -64,6 +64,8 @@ import type {
   BuiltInBrowserStopRecordingArgs,
   BuiltInBrowserStopRecordingResult,
   BuiltInBrowserTabTargetArgs,
+  BuiltInBrowserDropFilesArgs,
+  BuiltInBrowserPasteArgs,
   BuiltInBrowserUploadFileArgs,
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
@@ -153,6 +155,15 @@ const readTextSource = (selector: string | null): string => `(() => {
 const MAX_DRAG_STEPS = 50;
 const DEFAULT_DRAG_STEPS = 8;
 const MAX_UPLOAD_FILE_COUNT = 20;
+/**
+ * How long a click gets to open a file chooser.
+ *
+ * A page that builds its input on demand opens the chooser synchronously in
+ * the click handler, so this is a stall guard rather than a loading state: a
+ * chooser that has not arrived by now is not coming, and the action should say
+ * so rather than hold the tab's debugger for a page that does nothing.
+ */
+const FILE_CHOOSER_TIMEOUT_MS = 8_000;
 const RECORDING_CACHE_DIR = "recordings";
 const BROWSER_RECORDER_PARTITION = "ade-browser-recorder";
 const DISPLAY_MEDIA_ARM_TTL_MS = 10_000;
@@ -364,6 +375,18 @@ export type BuiltInBrowserTabCapabilityDeps = {
     params?: Record<string, unknown>,
   ) => Promise<T>;
   withTemporaryDebugger: <T>(wc: WebContents, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Listen for this tab's CDP events until the returned dispose is called.
+   *
+   * Events arrive only while the debugger is attached, so a caller holds the
+   * listener inside `withTemporaryDebugger`. Scoped rather than stored on the
+   * tab: one action needs one event, and a listener left behind would keep
+   * receiving after the action returned.
+   */
+  onDebuggerMessage: (
+    wc: WebContents,
+    listener: (method: string, params: Record<string, unknown>) => void,
+  ) => () => void;
   /** A synthesized mouse event at a CSS viewport point, mapped to the page's drawn scale. */
   dispatchPageMouseEvent: (
     tab: BrowserTabState,
@@ -406,6 +429,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     observationDirectory,
     observationRelativeBasePath,
     observationRootPath,
+    onDebuggerMessage,
     prepareTabCapability,
     releaseDebuggerHold,
     resolveClickTarget,
@@ -1116,17 +1140,188 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         const stat = await fs.stat(filePath).catch(() => null);
         if (!stat?.isFile()) throw new Error(`Browser upload path is not a readable file: ${filePath}`);
       }
-      await focusElementTarget(tab, input, { select: false });
+      const triggerSelector = stringOrNull(input.triggerSelector);
+      if (triggerSelector) {
+        await attachFilesThroughOpenedChooser(tab, triggerSelector, paths);
+      } else {
+        await focusElementTarget(tab, input, { select: false });
+        const wc = tab.webContents;
+        await withTemporaryDebugger(wc, async () => {
+          await sendDebuggerCommand(wc, "DOM.enable");
+          await sendDebuggerCommand(wc, "Runtime.enable");
+          const objectId = await focusedElementObjectId(wc);
+          try {
+            await sendDebuggerCommand(wc, "DOM.setFileInputFiles", { files: paths, objectId });
+          } finally {
+            await sendDebuggerCommand(wc, "Runtime.releaseObject", { objectId }).catch(() => {});
+          }
+        });
+      }
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  /**
+   * Wait until the document has finished parsing.
+   *
+   * A trigger whose handler is attached at the end of the body exists in the
+   * DOM before it can do anything, so a click spent during parsing lands on a
+   * button that does not work yet. Read through the protocol rather than the
+   * DOM collector: this needs one string, not a snapshot of the page. A page
+   * that never leaves "loading" (a hung request) is not worth blocking an
+   * action on, so this gives up and lets the click report what happened.
+   */
+  const waitForDocumentInteractive = async (wc: WebContents): Promise<void> => {
+    const deadline = Date.now() + 3_000;
+    for (;;) {
+      const state = await sendDebuggerCommand<{ result?: { value?: unknown } }>(wc, "Runtime.evaluate", {
+        expression: "document.readyState",
+        returnByValue: true,
+        silent: true,
+      }).then((response) => response.result?.value).catch(() => null);
+      if (state === "interactive" || state === "complete") return;
+      if (Date.now() >= deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+
+  /**
+   * Hand files to a chooser the page opens from a click.
+   *
+   * X's composer is the shape that made this necessary: the media button never
+   * keeps a file input in the DOM. It builds one, clicks it, and the browser
+   * puts up its native sheet — so `DOM.setFileInputFiles`, which needs a node,
+   * has nothing to target. `Page.setInterceptFileChooserDialog` makes Chromium
+   * deliver that chooser to the protocol instead of the screen; the event
+   * names the node it would have used, and the files go there. A chooser with
+   * no node (File System Access API) is accepted by the protocol itself.
+   *
+   * Interception is turned off again in `finally`, so a click that opens
+   * nothing leaves the tab exactly as a person would have it.
+   */
+  const attachFilesThroughOpenedChooser = async (
+    tab: BrowserTabState,
+    triggerSelector: string,
+    paths: readonly string[],
+  ): Promise<void> => {
+    const wc = tab.webContents;
+    await withTemporaryDebugger(wc, async () => {
+      // Not a loaded page: a button whose handler is attached at the end of
+      // the body exists before it works.
+      await waitForDocumentInteractive(wc);
+      const { x, y } = await resolveClickTarget(tab, { selector: triggerSelector } as BuiltInBrowserClickArgs);
+      await sendDebuggerCommand(wc, "Page.enable");
+      await sendDebuggerCommand(wc, "Page.setInterceptFileChooserDialog", { enabled: true });
+      let settle: (chooser: { backendNodeId: number | null }) => void = () => {};
+      const opened = new Promise<{ backendNodeId: number | null }>((resolve) => {
+        settle = resolve;
+      });
+      const dispose = onDebuggerMessage(wc, (method, params) => {
+        if (method !== "Page.fileChooserOpened") return;
+        settle({
+          backendNodeId: typeof params.backendNodeId === "number" ? params.backendNodeId : null,
+        });
+      });
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        await dispatchPageMouseEvent(tab, { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+        await dispatchPageMouseEvent(tab, { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+        const timedOut = new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), FILE_CHOOSER_TIMEOUT_MS);
+        });
+        const chooser = await Promise.race([opened, timedOut]);
+        if (!chooser) {
+          throw new Error(
+            `No file chooser opened after clicking ${triggerSelector}. If the page keeps a file input, pass it with --selector instead of --trigger.`,
+          );
+        }
+        if (chooser.backendNodeId != null) {
+          await sendDebuggerCommand(wc, "DOM.setFileInputFiles", {
+            files: paths,
+            backendNodeId: chooser.backendNodeId,
+          });
+        } else {
+          try {
+            await sendDebuggerCommand(wc, "Page.handleFileChooser", { action: "accept", files: paths });
+          } catch {
+            throw new Error(
+              "This page opens a file picker with no input element, and this Chromium cannot accept that picker. Try the tab in the desktop runtime.",
+            );
+          }
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+        dispose();
+        await sendDebuggerCommand(wc, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+      }
+    });
+  };
+
+  /**
+   * Drop files on an element, the way a person drags them from Finder.
+   *
+   * Some pages never have a file input and never open a chooser: the dropzone
+   * *is* the control. Chromium's `Input.dispatchDragEvent` carries `files`, so
+   * the page's own `dragenter`/`dragover`/`drop` handlers run with a real
+   * `DataTransfer` holding them — no input, no picker, no `DragEvent` built in
+   * page script.
+   */
+  async function dropFiles(input: BuiltInBrowserDropFilesArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before dropping files.");
+    return runTracedAgentAction(tab, "dropFiles", input, async () => {
+      const roots = builtInBrowserUploadRoots({
+        projectRoot: deps.getCollectionProjectRoot(),
+        observationRoot: observationRootPath,
+        tmpDir: os.tmpdir(),
+      });
+      const paths = resolveBuiltInBrowserUploadPaths(input.paths as readonly unknown[], roots);
+      if (paths.length > MAX_UPLOAD_FILE_COUNT) {
+        throw new Error(`Browser drop accepts at most ${MAX_UPLOAD_FILE_COUNT} files.`);
+      }
+      for (const filePath of paths) {
+        const stat = await fs.stat(filePath).catch(() => null);
+        if (!stat?.isFile()) throw new Error(`Browser drop path is not a readable file: ${filePath}`);
+      }
       const wc = tab.webContents;
       await withTemporaryDebugger(wc, async () => {
-        await sendDebuggerCommand(wc, "DOM.enable");
-        await sendDebuggerCommand(wc, "Runtime.enable");
-        const objectId = await focusedElementObjectId(wc);
-        try {
-          await sendDebuggerCommand(wc, "DOM.setFileInputFiles", { files: paths, objectId });
-        } finally {
-          await sendDebuggerCommand(wc, "Runtime.releaseObject", { objectId }).catch(() => {});
+        const { x, y } = await resolveClickTarget(tab, input as unknown as BuiltInBrowserClickArgs);
+        // `dragOperationsMask` 1 is Copy, the operation a Finder drag uses.
+        const data = { items: [], files: paths, dragOperationsMask: 1 };
+        for (const type of ["dragEnter", "dragOver", "drop"] as const) {
+          await sendDebuggerCommand(wc, "Input.dispatchDragEvent", { type, x, y, data });
         }
+      });
+      emitStatus();
+      return actionResult(tab, input);
+    });
+  }
+
+  /**
+   * Paste the machine's clipboard into the focused element.
+   *
+   * `type` uses `Input.insertText`, which bypasses the page's own paste
+   * handling; this sends Chromium's real `paste` edit command instead, so a
+   * rich-text editor — or a page that reads `clipboardData` on paste — sees
+   * what a person's ⌘V would deliver. The clipboard is the desktop's, which is
+   * the machine hosting this browser.
+   */
+  async function paste(input: BuiltInBrowserPasteArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open a tab before pasting.");
+    return runTracedAgentAction(tab, "paste", input, async () => {
+      if (hasElementTarget(input)) await focusElementTarget(tab, input, { select: false });
+      const wc = tab.webContents;
+      const isMac = process.platform === "darwin";
+      const key = {
+        key: "v",
+        code: "KeyV",
+        windowsVirtualKeyCode: 86,
+        nativeVirtualKeyCode: isMac ? 9 : 86,
+        modifiers: isMac ? 4 : 2,
+      };
+      await withTemporaryDebugger(wc, async () => {
+        await sendDebuggerCommand(wc, "Input.dispatchKeyEvent", { type: "rawKeyDown", ...key, commands: ["paste"] });
+        await sendDebuggerCommand(wc, "Input.dispatchKeyEvent", { type: "keyUp", ...key });
       });
       emitStatus();
       return actionResult(tab, input);
@@ -1663,6 +1858,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     drag,
     selectOption,
     uploadFile,
+    dropFiles,
+    paste,
     startPreviewStream,
     stopPreviewStream,
     startRecording,

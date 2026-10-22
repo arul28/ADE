@@ -1,6 +1,7 @@
-import type {
-  BuiltInBrowserStatus,
-  BuiltInBrowserTab,
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT,
+  type BuiltInBrowserStatus,
+  type BuiltInBrowserTab,
 } from "../../../../shared/types/builtInBrowser";
 
 /**
@@ -28,6 +29,7 @@ export function makeBuiltInBrowserTab(
     ownerLaneId: null,
     ownerChatSessionId: null,
     ownerClaimedAt: null,
+    ownerLastActiveAt: null,
     ownerLeaseExpiresAt: null,
     zoomFactor: 1,
     devToolsOpen: false,
@@ -53,6 +55,8 @@ export function makeBuiltInBrowserStatus(
     bounds: { x: 10, y: 20, width: 640, height: 360 },
     activeTabId: "tab-1",
     tabs: [makeBuiltInBrowserTab()],
+    tabCount: 1,
+    tabLimit: BUILT_IN_BROWSER_TAB_LIMIT,
     url: "https://example.test/",
     title: "Example",
     isLoading: false,
@@ -63,6 +67,7 @@ export function makeBuiltInBrowserStatus(
     ownerLaneId: null,
     ownerChatSessionId: null,
     ownerClaimedAt: null,
+    ownerLastActiveAt: null,
     ownerLeaseExpiresAt: null,
     ...overrides,
   };

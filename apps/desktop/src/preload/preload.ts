@@ -1138,6 +1138,8 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
+  BuiltInBrowserSettings,
+  BuiltInBrowserSettingsPatch,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -10281,11 +10283,26 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // Machine-wide browser settings (tab limit, download folder, standing
+    // permission grants). Human-only, like agentAccess: no `pin` overload.
+    browserSettings: {
+      get: async (): Promise<BuiltInBrowserSettings> =>
+        ipcRenderer.invoke(IPC.builtInBrowserSettingsGet),
+      set: async (patch: BuiltInBrowserSettingsPatch): Promise<BuiltInBrowserSettings> =>
+        ipcRenderer.invoke(IPC.builtInBrowserSettingsSet, patch),
+      onChange: (cb: (settings: BuiltInBrowserSettings) => void): (() => void) => {
+        const listener = (_event: unknown, settings: BuiltInBrowserSettings) => cb(settings);
+        ipcRenderer.on(IPC.builtInBrowserSettingsEvent, listener);
+        return () => ipcRenderer.removeListener(IPC.builtInBrowserSettingsEvent, listener);
+      },
+    },
     // "Agents can use the ADE browser". Machine-local and human-only: no `pin`
     // overload, because the answer belongs to the person at this machine.
     agentAccess: {
       get: async (): Promise<BuiltInBrowserAgentAccessSnapshot> =>
         ipcRenderer.invoke(IPC.builtInBrowserAgentAccessGet),
+      setEnabled: async (enabled: boolean): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessSetEnabled, { enabled }),
       setMode: async (mode: BuiltInBrowserAgentAccessMode): Promise<BuiltInBrowserAgentAccessSnapshot> =>
         ipcRenderer.invoke(IPC.builtInBrowserAgentAccessSetMode, { mode }),
       answer: async (
