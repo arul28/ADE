@@ -4,6 +4,15 @@ import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
 const IDLE: CtoAttentionState = { status: "idle", awaitingInput: false, since: null };
+// Each probe is a full identity-session scan on the host, so the safety read
+// backs off while the state stays the same: 15s, 30s, 60s, then 120s. Events
+// and focus still bring it back to the base cadence.
+const SAFETY_READ_BASE_MS = 15_000;
+const SAFETY_READ_MAX_MS = 120_000;
+
+function attentionKey(state: CtoAttentionState): string {
+  return `${state.status}|${state.awaitingInput}|${state.since ?? ""}`;
+}
 
 /**
  * Keeps the CTO tab's "needs you" dot fresh.
@@ -31,6 +40,8 @@ export function useCtoAttention(): void {
     let queued = false;
     let timer: number | null = null;
     let dueAt = 0;
+    let lastKey: string | null = null;
+    let unchangedReads = 0;
 
     // Clear immediately on project switch so the previous project's CTO state
     // cannot linger on the tab while the first probe is in flight.
@@ -47,6 +58,9 @@ export function useCtoAttention(): void {
         const next = await window.ade?.cto?.getAttention?.();
         if (cancelled || !next) return;
         if (next.status === "unknown") return;
+        const key = attentionKey(next);
+        unchangedReads = key === lastKey ? unchangedReads + 1 : 0;
+        lastKey = key;
         setCtoAttention(next);
       } catch {
         // Best effort: a failed probe leaves the last known state rather than
@@ -56,6 +70,8 @@ export function useCtoAttention(): void {
         if (!cancelled && queued) {
           queued = false;
           schedule(250);
+        } else if (!cancelled) {
+          scheduleSafetyRead();
         }
       }
     };
@@ -78,6 +94,14 @@ export function useCtoAttention(): void {
       }, delayMs);
     };
 
+    // The safety read is the one timer that keeps itself going, so it is
+    // scheduled after each probe at the current backoff. It pauses while the
+    // page is hidden; becoming visible reads again at once.
+    const scheduleSafetyRead = () => {
+      if (cancelled || document.visibilityState === "hidden") return;
+      schedule(Math.min(SAFETY_READ_MAX_MS, SAFETY_READ_BASE_MS * 2 ** unchangedReads));
+    };
+
     schedule(0);
 
     // A CTO question arrives as a chat event on its own session, so we cannot
@@ -88,14 +112,20 @@ export function useCtoAttention(): void {
     // that can change `awaitingInput`.
     const unsubscribeChat = window.ade?.agentChat?.onEvent?.((event) => {
       if (!shouldRefreshSessionListForChatEvent(event)) return;
+      unchangedReads = 0;
       schedule();
     });
-    const interval = window.setInterval(() => {
+    const onFocus = () => {
+      unchangedReads = 0;
+      schedule(0);
+    };
+    const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
-      schedule();
-    }, 15_000);
-    const onFocus = () => schedule(0);
+      unchangedReads = 0;
+      schedule(0);
+    };
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
@@ -105,8 +135,8 @@ export function useCtoAttention(): void {
         // ignore
       }
       if (timer != null) window.clearTimeout(timer);
-      window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [trackedProjectRoot, setCtoAttention]);
 }

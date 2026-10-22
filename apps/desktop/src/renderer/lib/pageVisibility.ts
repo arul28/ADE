@@ -1,5 +1,5 @@
 /**
- * Page visibility for the web adapter's pollers. Each poll re-reads the host
+ * Page visibility for pollers. On the web client each poll re-reads the host
  * over the relay, so a hidden tab pauses it and becoming visible resumes it
  * with an immediate read. Without a `document` (Node tests) the page counts as
  * visible, so pollers run as they always did.

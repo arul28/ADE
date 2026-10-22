@@ -13,6 +13,7 @@ import {
   type ConnectedMachine,
   type MachineUpdateAttempt,
 } from "./remoteMachineModel";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * "Update & restart" for other machines, as one store.
@@ -63,7 +64,7 @@ function withIds(current: ReadonlySet<string>, ids: readonly string[], present: 
  */
 export function canUpdateOtherMachines(): boolean {
   const remoteRuntime = window.ade.remoteRuntime as { updateAndRestart?: unknown } | undefined;
-  return typeof remoteRuntime?.updateAndRestart === "function";
+  return isAdeAvailable(remoteRuntime?.updateAndRestart);
 }
 
 /**

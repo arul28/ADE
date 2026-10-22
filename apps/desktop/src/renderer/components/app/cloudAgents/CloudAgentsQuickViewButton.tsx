@@ -12,6 +12,7 @@ import { AI_STATUS_CACHE_INVALIDATED_EVENT, type AiStatusCacheInvalidatedEventDe
 import { cn } from "../../ui/cn";
 import { CloudAgentsPanel } from "./CloudAgentsPanel";
 import { CLOUD_PROVIDER_BRANDS, type CloudProviderBrand } from "./cloudAgentsModel";
+import { createBackoffPoller } from "../../../lib/backoffPoller";
 
 // Keep the entry point on the same visibility cadence as Linear. The cloud
 // integrations are connection-gated and should appear/disappear together
@@ -23,6 +24,8 @@ const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // does not ask the brain every 3 s while the provider is disconnected.
 const VISIBILITY_RETRY_INTERVAL_MS = 60_000;
 const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
+// While the provider stays disconnected the retry backs off toward this cap.
+const DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS = 300_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 const HEADER_STATUS_MENU_ROW_CLASS =
@@ -209,16 +212,38 @@ export function CloudAgentsQuickViewButton({
   // credential removed in this same window hides the button within a minute
   // instead of surviving until the next focus event or remount.
   useEffect(() => {
-    if (!shouldAutoCheckVisibility || !activeProjectRoot) return undefined;
+    if (!shouldAutoCheckVisibility || !activeProjectRoot || !visible) return undefined;
     let cancelled = false;
     const interval = window.setInterval(() => {
       void loadVisibility().then((next) => {
         if (!cancelled) setVisible(next);
       });
-    }, visible ? VISIBILITY_CONNECTED_CACHE_TTL_MS : visibilityRetryIntervalMs);
+    }, VISIBILITY_CONNECTED_CACHE_TTL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+    };
+  }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visible]);
+
+  // Disconnected retry: backs off while the provider stays unconnected, pauses
+  // while the page is hidden, and reads at once when it becomes visible.
+  useEffect(() => {
+    if (!shouldAutoCheckVisibility || !activeProjectRoot || visible) return undefined;
+    // A read still in flight when the project changes answers for the old one.
+    let stopped = false;
+    const poller = createBackoffPoller({
+      baseMs: visibilityRetryIntervalMs,
+      maxMs: DISCONNECTED_VISIBILITY_MAX_INTERVAL_MS,
+      isActive: () => true,
+      read: () => loadVisibility().then((next) => {
+        if (!stopped) setVisible(next);
+        return false;
+      }),
+    });
+    poller.start();
+    return () => {
+      stopped = true;
+      poller.stop();
     };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 

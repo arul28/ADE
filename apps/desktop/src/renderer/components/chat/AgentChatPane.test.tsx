@@ -10775,8 +10775,9 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
     // The unavailable read also clears the loaded flag, so the pane keeps
     // retrying instead of latching a permanently stale view. The recovery loop
-    // is a ~10s stall detector now (the live subscription is the transport), so
-    // the third read is a full interval out.
+    // backs off while the chat is quiet; a window focus drops it back to its
+    // ~10s base, so the third read is one base interval out.
+    act(() => { window.dispatchEvent(new Event("focus")); });
     await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
     expect(screen.getByText("Ship the release")).toBeTruthy();
   }, 25_000);
@@ -10814,7 +10815,8 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByText("Rebase onto main")).toBeTruthy();
     await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
-    // One full ~10s stall-detector interval — see the sibling test above.
+    // One ~10s base interval after a focus — see the sibling test above.
+    act(() => { window.dispatchEvent(new Event("focus")); });
     await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
     expect(screen.getByText("Rebase onto main")).toBeTruthy();
   }, 25_000);

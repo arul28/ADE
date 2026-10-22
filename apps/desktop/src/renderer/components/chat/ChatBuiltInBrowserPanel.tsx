@@ -147,6 +147,7 @@ import {
 } from "./browser/browserCapture";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 import { useAgentChatApi } from "./agentChatApi";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -2355,7 +2356,7 @@ export function ChatBuiltInBrowserPanel({
     const api = getBrowserApi();
     if (api?.getDevServers && !discoveryEmpty) return undefined;
     const probePort = window.ade?.localhost?.probePort;
-    if (!probePort) return undefined;
+    if (!isAdeAvailable(probePort)) return undefined;
     // On a remote lane the probe runs on that machine: its ports are the ones
     // this pane's `localhost` means.
     const pin = runtimePinRef.current;

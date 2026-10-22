@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { extractError } from "../lib/format";
 import { useAsyncAction } from "./useAsyncAction";
+import { isAdeAvailable } from "../lib/adeAvailability";
 
 /** What a finished repair should tell the user, or null when there is nothing to say. */
 export type BrainRepairNotice = {
@@ -43,7 +44,9 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
   const [notice, setNotice] = useState<BrainRepairNotice>(null);
 
   const action = useCallback(async (): Promise<BrainRepairNotice> => {
-    const repairSession = window.ade?.account?.repairSession;
+    const repairSession = isAdeAvailable(window.ade?.account?.repairSession)
+      ? window.ade.account.repairSession
+      : undefined;
     if (repairSession) {
       const result = await repairSession();
       if (result.outcome === "sign_in_required") {
@@ -69,7 +72,9 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
       }
       return null;
     }
-    const restart = window.ade?.app?.restartBackgroundService;
+    const restart = isAdeAvailable(window.ade?.app?.restartBackgroundService)
+      ? window.ade.app.restartBackgroundService
+      : undefined;
     if (!restart) throw new Error("Repairing the ADE background service is not available here.");
     await restart();
     return null;
@@ -100,8 +105,8 @@ export function useBrainRepair(onSettled?: () => void): BrainRepair {
   return {
     run: runRepair,
     pending,
-    available: typeof window.ade?.account?.repairSession === "function"
-      || typeof window.ade?.app?.restartBackgroundService === "function",
+    available: isAdeAvailable(window.ade?.account?.repairSession)
+      || isAdeAvailable(window.ade?.app?.restartBackgroundService),
     error,
     notice,
   };

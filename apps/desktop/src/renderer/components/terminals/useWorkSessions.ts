@@ -716,8 +716,13 @@ type UseWorkSessionsOptions = {
   active?: boolean;
 };
 
-const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 5_000;
-const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 15_000;
+// Safety nets only. The list stays live from `sessions.onChanged` (desktop: the
+// session service and PTY runtime signals; web: the cr-sqlite invalidation
+// stream), agent-chat events and PTY exits. A `limit: 500` list is a heavy read
+// — over a relay it is the dominant idle cost of the Work tab — so the timer
+// only has to rescue a missed push, not drive the UI.
+const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 30_000;
+const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 60_000;
 
 /**
  * Whether an installation uses the Work Focus view and its Focus grid. Emitted

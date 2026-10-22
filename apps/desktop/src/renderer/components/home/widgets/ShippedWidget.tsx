@@ -14,6 +14,7 @@ import { FitList } from "../HomeFitList";
 import { drawShippedShareCard, type ShippedShareData } from "./shippedShareCard";
 import { startOfLocalWeek, useLocalDayStart } from "./widgetHooks";
 import "../homeWidgets.css";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * What you shipped since Monday: PRs merged across projects (the open
@@ -115,7 +116,7 @@ export default function ShippedWidget({ item }: HomeWidgetProps) {
       <span className="kit-num ade-shipped-num">{merge.repo}{merge.number != null ? ` #${merge.number}` : ""}</span>
     </button>
   );
-  const shareBridge = window.ade?.home?.share;
+  const shareBridge = isAdeAvailable(window.ade?.home?.share) ? window.ade.home.share : undefined;
   const fileName = `ade-shipped-${localDayKey(weekStart)}.png`;
 
   return (

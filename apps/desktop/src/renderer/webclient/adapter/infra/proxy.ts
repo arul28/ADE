@@ -1,5 +1,15 @@
+import { ADE_UNAVAILABLE, AdeUnavailableError } from "../../../lib/adeAvailability";
+
 type AnyRecord = Record<PropertyKey, unknown>;
 
+/**
+ * Wraps the web surface so a member it does not implement is never a silent
+ * success. A missing method rejects with `AdeUnavailableError` (an `on*`
+ * subscription returns a no-op unsubscribe), and the stand-in carries
+ * `ADE_UNAVAILABLE` so `isAdeAvailable` reports it absent. It used to resolve
+ * `null`, which callers read as real data and crashed on, and which made every
+ * desktop-only feature check pass on web.
+ */
 export function withFallbackProxy<T extends AnyRecord>(surface: T): T {
   const logged = new Set<string>();
   const objectCache = new WeakMap<object, unknown>();
@@ -22,19 +32,20 @@ export function withFallbackProxy<T extends AnyRecord>(surface: T): T {
   }
 
   function missing(path: string, method: string): (...args: unknown[]) => unknown {
+    const key = `${path}.${method}`;
     const callable = (..._args: unknown[]) => {
-      const key = `${path}.${method}`;
       if (!logged.has(key)) {
         logged.add(key);
-        console.debug("[ade-web] unimplemented:", path, method);
+        console.debug("[ade-web] unimplemented:", key);
       }
       if (method.startsWith("on")) return () => {};
-      return Promise.resolve(null);
+      return Promise.reject(new AdeUnavailableError(key));
     };
     return new Proxy(callable, {
       get(_target, prop) {
+        if (prop === ADE_UNAVAILABLE) return true;
         if (typeof prop === "symbol") return undefined;
-        return missing(`${path}.${method}`, prop);
+        return missing(key, prop);
       },
     });
   }

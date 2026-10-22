@@ -9,8 +9,13 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 const POLL_INTERVAL_MS = 15_000;
+// The snapshot is incremental: an unchanged revision costs a relay round trip
+// and returns nothing new, so the backstop poll backs off to this cap while
+// nothing moves. Live changes and visibility returns reset it.
+const SNAPSHOT_POLL_MAX_INTERVAL_MS = 120_000;
 const PRESENCE_INTERVAL_MS = 30_000;
 const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
 // This backstop must clear a 15s relay request, one 401 retry, and the 30s
@@ -314,16 +319,29 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
       activityStore.getState().resetStream();
     }
     void refreshActivitySnapshot();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshActivitySnapshot();
-    }, POLL_INTERVAL_MS);
+    // Hidden pages pause the poll and returning to view reads at once (the
+    // poller's own visibility handling), so a hidden window makes no snapshot
+    // calls. A failed read keeps the cadence so a host outage retries promptly.
+    const snapshotPoller = createBackoffPoller({
+      baseMs: POLL_INTERVAL_MS,
+      maxMs: SNAPSHOT_POLL_MAX_INTERVAL_MS,
+      isActive: () => true,
+      read: async () => {
+        const revisionBefore = activityStore.getState().revision;
+        await refreshActivitySnapshot();
+        const { syncStatus, syncError, revision } = activityStore.getState();
+        if (syncStatus === "error") throw new Error(syncError ?? "Activity refresh failed");
+        return revision !== revisionBefore;
+      },
+    });
+    snapshotPoller.start();
     const onVisibilityChange = () => {
       foregroundRef.current = document.visibilityState === "visible" && document.hasFocus();
       if (foregroundRef.current) void refreshActivitySnapshot();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.clearInterval(interval);
+      snapshotPoller.stop();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [accountLoading, accountUserId]);

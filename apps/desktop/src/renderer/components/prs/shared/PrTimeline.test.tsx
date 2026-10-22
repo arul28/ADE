@@ -91,6 +91,9 @@ beforeEach(() => {
   // scrollTo is called by the virtualizer when `scrollToIndex` runs.
   // jsdom doesn't implement it on HTMLElement so stub it.
   Element.prototype.scrollTo = function () {};
+
+  // The desktop preload's comment-edit bridge; editing is offered only where it exists.
+  (window as unknown as { ade: unknown }).ade = { prs: { updateComment: vi.fn() } };
 });
 
 afterEach(() => {

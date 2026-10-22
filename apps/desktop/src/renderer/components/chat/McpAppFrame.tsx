@@ -37,6 +37,7 @@ import {
 import { knownSceneHeight, rememberSceneHeight } from "./sceneDocumentCache";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * Host for an MCP App: the page an MCP server ships with one of its tools.
@@ -74,8 +75,8 @@ const DEFAULT_HEIGHT = 220;
 export function canHostMcpApps(): boolean {
   return typeof window !== "undefined"
     && !isWebClientMode()
-    && typeof window.ade?.scene?.prepareApp === "function"
-    && typeof window.ade?.agentChat?.getMcpApp === "function";
+    && isAdeAvailable(window.ade?.scene?.prepareApp)
+    && isAdeAvailable(window.ade?.agentChat?.getMcpApp);
 }
 
 /*
@@ -170,7 +171,7 @@ function useMcpAppGrants(
   const refresh = useCallback(() => {
     const current = appRef.current;
     const list = window.ade?.agentChat?.listMcpAppGrants;
-    if (!current || typeof list !== "function") return;
+    if (!current || !isAdeAvailable(list)) return;
     void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
       .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
       .catch(() => { /* the row keeps what it last knew */ });

@@ -25,6 +25,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { shellBodyCls } from "./shared/designTokens";
 import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const CTO_ACCENT = "#22D3EE";
 /** `CTO_ACCENT` as an "r, g, b" triplet, for the rgba() tints below. */
@@ -151,10 +152,10 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * an offer, not an alarm, so it does not need to be true to the second.
    */
   const loadThreadHealth = useCallback(async () => {
-    if (!window.ade?.cto?.getThreadHealth || !homeReady) return;
+    if (!isAdeAvailable(window.ade?.cto?.getThreadHealth) || !homeReady) return;
     const key = sessionCacheKey;
     try {
-      const health = await window.ade.cto.getThreadHealth(ctoPin);
+      const health = await window.ade.cto!.getThreadHealth(ctoPin);
       if (isCurrentCto(key)) setThreadHealth(health);
     } catch {
       // Non-fatal: no banner is better than an error about a banner.
@@ -379,7 +380,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    */
   const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
     const startFresh = window.ade?.cto?.startFreshSession;
-    if (!startFresh) throw new Error("The CTO isn't available in this window.");
+    if (!isAdeAvailable(startFresh)) throw new Error("The CTO isn't available in this window.");
     if (!homeReady) throw new Error("The CTO's machine isn't reachable right now.");
     setRotating(true);
     try {

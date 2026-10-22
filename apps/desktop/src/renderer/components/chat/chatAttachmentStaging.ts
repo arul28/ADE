@@ -9,6 +9,7 @@ import {
   type HeicConversionErrorCode,
 } from "../../../shared/types/chat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 export type AttachmentStagingPlan =
   /** Send only the path; the bytes never enter the renderer. */
@@ -154,7 +155,7 @@ export async function stageAttachmentBytesFromFile(args: {
   let previewDataUrl: string | null = null;
   if (args.requiresHeicConversion) {
     const convertImageToJpeg = window.ade?.app?.convertImageToJpeg;
-    if (typeof convertImageToJpeg !== "function") {
+    if (!isAdeAvailable(convertImageToJpeg)) {
       throw new AttachmentConversionError("unavailable");
     }
     const converted = await convertImageToJpeg({
@@ -162,6 +163,7 @@ export async function stageAttachmentBytesFromFile(args: {
       filename,
       mimeType: args.file.type || null,
     });
+    if (!converted) throw new AttachmentConversionError("unavailable");
     if (converted.ok !== true) {
       throw new AttachmentConversionError(
         converted.errorCode === "unavailable" ? "unavailable" : "failed",

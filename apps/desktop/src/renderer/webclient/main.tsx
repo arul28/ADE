@@ -8,6 +8,7 @@ import { AdeSyncClient, bindProjectHostRecoveryClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
 import { installScrollingIndicator } from "../lib/scrollingIndicator";
 import { installAnimationPhaseAlignment } from "../lib/animationPhaseAlignment";
+import { isAdeUnavailableError } from "../lib/adeAvailability";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
 // (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
@@ -62,6 +63,13 @@ bindProjectHostRecoveryClient(client);
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
 installAnimationPhaseAlignment();
+
+// A fire-and-forget call to a desktop-only `window.ade` member rejects with
+// AdeUnavailableError. Nobody is waiting on it, so it is not an error worth a
+// console line or a crash report.
+window.addEventListener("unhandledrejection", (event) => {
+  if (isAdeUnavailableError(event.reason)) event.preventDefault();
+});
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,

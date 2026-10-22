@@ -1,4 +1,11 @@
-import type { ComputerUseArtifactListArgs, ComputerUseArtifactView } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
+import { snapshotFromArtifacts } from "../../../shared/computerUseSnapshot";
+import type {
+  ComputerUseArtifactListArgs,
+  ComputerUseArtifactView,
+  ComputerUseOwnerSnapshot,
+  ComputerUseOwnerSnapshotArgs,
+} from "../../../shared/types";
 import { requestDataUrl } from "./infra/fileBlob";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra, AdeNamespace } from "./types";
@@ -23,22 +30,42 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
     throw new Error("The proof list needs the ADE machine that owns this chat, and it did not answer.");
   };
 
+  const listArtifacts = (args: ComputerUseArtifactListArgs, pin?: RuntimePinArg): Promise<ComputerUseArtifactView[]> => {
+    assertWebRuntimePinRoutable("computerUse.listArtifacts", pin, scope);
+    return commands.call<ComputerUseArtifactView[]>("computerUse.listArtifacts", {
+      artifactId: args.artifactId,
+      ownerKind: args.ownerKind,
+      ownerId: args.ownerId,
+      kind: args.kind,
+      metadataKind: args.metadataKind,
+      excludeMetadataKind: args.excludeMetadataKind,
+      limit: args.limit,
+    }, { fallback: unavailable, idempotent: true, authoritative: true });
+  };
+
   return {
     getStatus: async () => ({ supported: false, available: false, state: "unsupported" }),
     listDevices: async () => [],
     onEvent: () => () => {},
-    listArtifacts: async (args: ComputerUseArtifactListArgs = {}, pin?: RuntimePinArg): Promise<ComputerUseArtifactView[]> => {
-      assertWebRuntimePinRoutable("computerUse.listArtifacts", pin, scope);
-      return commands.call<ComputerUseArtifactView[]>("computerUse.listArtifacts", {
-        artifactId: args.artifactId,
-        ownerKind: args.ownerKind,
-        ownerId: args.ownerId,
-        kind: args.kind,
-        metadataKind: args.metadataKind,
-        excludeMetadataKind: args.excludeMetadataKind,
-        limit: args.limit,
-      }, { fallback: unavailable, idempotent: true, authoritative: true });
-    },
+    listArtifacts: async (args: ComputerUseArtifactListArgs = {}, pin?: RuntimePinArg): Promise<ComputerUseArtifactView[]> =>
+      listArtifacts(args, pin),
+    // The host has no remote owner-snapshot command, so the chat's proof
+    // drawer is built here from the same listing and builder the desktop uses.
+    // The web client captures nothing itself, so it reports no capture backend.
+    getOwnerSnapshot: async (args: ComputerUseOwnerSnapshotArgs, pin?: RuntimePinArg): Promise<ComputerUseOwnerSnapshot> =>
+      snapshotFromArtifacts({
+        owner: args.owner,
+        backendStatus: {
+          backends: [],
+          localFallback: { available: false, detail: "The web client does not capture proof.", supportedKinds: [] },
+        },
+        artifacts: await listArtifacts({
+          ownerKind: args.owner.kind,
+          ownerId: args.owner.id,
+          limit: args.limit ?? 50,
+          ...PROOF_LISTING_ARTIFACT_FILTER,
+        }, pin),
+      }),
     readArtifactPreview: async (args: { uri: string }, pin?: RuntimePinArg): Promise<string | null> => {
       assertWebRuntimePinRoutable("computerUse.readArtifactPreview", pin, scope);
       return requestDataUrl(client, state, "readArtifact", { uri: args.uri });

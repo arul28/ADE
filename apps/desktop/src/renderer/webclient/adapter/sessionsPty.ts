@@ -55,6 +55,9 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
    */
   const sessionMirror = new Map<string, TerminalSessionSummary[]>();
   const sessionRefreshInFlight = new Map<string, Promise<TerminalSessionSummary[]>>();
+  // Bumped on invalidation: a listing that started before it does not
+  // overwrite the mirror with rows from before the change.
+  let sessionListGeneration = 0;
 
   function subscribeSession(sessionId: string, ptyId?: string | null): void {
     if (!sessionId || terminalSubscriptions.has(sessionId)) return;
@@ -123,6 +126,11 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   infra.addDispose(
     events.on("sessionsInvalidated", () => {
+      // Drop any retained or in-flight listing so the refresh this triggers
+      // reads the host, not a request that started before the change.
+      commands.invalidateCache(["work.listSessions"]);
+      sessionRefreshInFlight.clear();
+      sessionListGeneration += 1;
       events.emit("sessionsChanged", {
         sessionId: "__ade_web_invalidation__",
         reason: "meta-updated",
@@ -144,24 +152,35 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     key: string,
     args: Record<string, unknown>,
     authoritative: boolean,
+    retried = false,
   ): Promise<TerminalSessionSummary[]> {
     // A plain read can settle to an empty fallback, so an authoritative read must not join it.
     const flightKey = authoritative ? `${key}\u0000authoritative` : key;
     const existing = sessionRefreshInFlight.get(flightKey);
     if (existing) return await existing;
+    const generation = sessionListGeneration;
     const request = (async () => {
       const sessions = await commands.call<TerminalSessionSummary[]>("work.listSessions", args, {
         fallback: [],
         idempotent: true,
         authoritative,
       });
-      terminalRegistry.registerSummaries(sessions);
-      rememberSessionRows(key, sessions);
+      if (generation === sessionListGeneration) {
+        terminalRegistry.registerSummaries(sessions);
+        rememberSessionRows(key, sessions);
+      }
       return sessions;
     })();
+    // Rows from before an invalidation are stale: read once more rather than
+    // hand them to the caller (once only, so a burst cannot loop).
+    const settle = async (): Promise<TerminalSessionSummary[]> => {
+      const sessions = await request;
+      if (generation !== sessionListGeneration && !retried) return fetchSessions(key, args, authoritative, true);
+      return sessions;
+    };
     sessionRefreshInFlight.set(flightKey, request);
     try {
-      return await request;
+      return await settle();
     } finally {
       if (sessionRefreshInFlight.get(flightKey) === request) sessionRefreshInFlight.delete(flightKey);
     }

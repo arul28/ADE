@@ -108,11 +108,18 @@ export function useHomePageWiring(args: {
   }, [dayStart, needsYouCount, projectRoot, pullRequests, recentStats, running.length, usageGroups.groups]);
 
   const hasProject = project != null;
+  const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  // Home over an open project is a New Tab: a route change alone leaves Home
+  // on screen, so the PR links close the New Tab first, as a project row does.
+  const openPrsPage = useCallback(() => {
+    cancelNewTab();
+    navigate("/prs");
+  }, [cancelNewTab, navigate]);
   const openHeadlineTarget = useCallback((target: NonNullable<HomeHeadline["target"]>) => {
-    if (target === "prs" && hasProject) navigate("/prs");
+    if (target === "prs" && hasProject) openPrsPage();
     else if (target === "activity") navigate("/activity");
     else openUsageDetails();
-  }, [hasProject, navigate]);
+  }, [hasProject, navigate, openPrsPage]);
 
   // Pinned projects (the recents pin) for the feed's "pinned only" view: every
   // checkout of a pinned group, so an event from any of its machines matches.
@@ -136,12 +143,12 @@ export function useHomePageWiring(args: {
     projectName,
     projectRoot,
     webMode,
-    openPrs: hasProject ? () => navigate("/prs") : undefined,
+    openPrs: hasProject ? openPrsPage : undefined,
     openActivity: () => navigate("/activity"),
     pinnedProjects,
     machineRows,
     machineOnlineSince,
-  }), [hasProject, machineOnlineSince, machineRows, navigate, pinnedProjects, projectName, projectRoot, pullRequests, recentStats, webMode]);
+  }), [hasProject, machineOnlineSince, machineRows, navigate, openPrsPage, pinnedProjects, projectName, projectRoot, pullRequests, recentStats, webMode]);
 
   const renderWidget = useCallback(({ item, stacked, editing, preview }: WidgetRenderContext): ReactNode => {
     switch (item.type) {
@@ -159,13 +166,13 @@ export function useHomePageWiring(args: {
             projectName={projectName}
             projectRoot={projectRoot}
             prs={pullRequests}
-            onOpenPrs={hasProject ? () => navigate("/prs") : undefined}
+            onOpenPrs={hasProject ? openPrsPage : undefined}
           />
         );
       default:
         return <LazyHomeWidget item={item} />;
     }
-  }, [hasProject, machineRows, navigate, projectName, projectRoot, pullRequests, recentStats, renderProjects, usageGroups, webMode]);
+  }, [hasProject, machineRows, navigate, openPrsPage, projectName, projectRoot, pullRequests, recentStats, renderProjects, usageGroups, webMode]);
 
   return { homeData, headline, openHeadlineTarget, renderWidget };
 }

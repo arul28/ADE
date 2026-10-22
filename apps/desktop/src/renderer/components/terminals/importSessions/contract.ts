@@ -21,6 +21,7 @@ import type {
   ExternalSessionListArgs,
   ExternalSessionSummary,
 } from "../../../../shared/types/externalSessions";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 export type {
   ExternalSessionProvider,
@@ -85,7 +86,7 @@ export type ExternalSessionSource = {
 export function getExternalSessionsApi(): ExternalSessionsApi | null {
   const api = (window as unknown as { ade?: { externalSessions?: ExternalSessionsApi } })
     .ade?.externalSessions;
-  return api ?? null;
+  return isAdeAvailable(api) ? api ?? null : null;
 }
 
 /** Normalizes the `list` response, tolerating both an array and `{ sessions }`. */

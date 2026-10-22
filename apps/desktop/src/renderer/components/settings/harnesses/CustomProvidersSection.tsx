@@ -36,6 +36,7 @@ import { buildTerminalLauncher } from "./harnessLauncher";
 import { starterSuggestions, type StarterSuggestion } from "./harnessReach";
 import { routeTestKey, useHarnessReach, type HarnessReach, type HarnessRouteTestState } from "./useHarnessReach";
 import { useHarnessPresets } from "./useHarnessPresets";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
  * Settings › Providers › Custom.
@@ -103,7 +104,7 @@ export function CustomProvidersSection({
   // machine's keys, so they are read when a file is picked, not on mount.
   const loadCredentialSummaries = useCallback(async (): Promise<ApiCredentialSummary[]> => {
     const apiCredentials = window.ade?.apiCredentials;
-    if (typeof apiCredentials?.list !== "function") return [];
+    if (!isAdeAvailable(apiCredentials?.list)) return [];
     try {
       const rows = await apiCredentials.list({}, credentialPin);
       return Array.isArray(rows) ? rows : [];

@@ -40,8 +40,9 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 ## Source file map
 
 - `apps/desktop/src/renderer/components/app/AppearanceRoot.tsx` — shared appearance lifetime for workspace and sign-in.
-- `apps/desktop/src/renderer/webclient/adapter/infra/backoffPoller.ts` — visibility-aware unchanged-read cadence and teardown.
-- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` — shared tab visibility observer.
+- `apps/desktop/src/renderer/lib/backoffPoller.ts` — visibility-aware unchanged-read cadence and teardown, shared by the adapter and renderer pollers (Linear, cloud agents, Activity, Work tools pane).
+- `apps/desktop/src/renderer/lib/pageVisibility.ts` — shared tab visibility observer.
+- `apps/desktop/src/renderer/webclient/adapter/infra/proxy.ts` and `apps/desktop/src/renderer/lib/adeAvailability.ts` — the stand-in for every `window.ade` member the adapter lacks (see Gotchas) and the `isAdeAvailable` check renderer code uses instead of a truthiness or `typeof` test.
 - `apps/desktop/src/renderer/scene/scenePreferences.ts` — platform defaults and explicit scene choices.
 
 Build and static host:
@@ -271,11 +272,14 @@ Browser `window.ade` adapter:
   the host cannot keep recording exportable web mutations for that peer.
 - `apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts` -
   remote-command dispatch through `SyncRemoteCommandDescriptor` scope/policy,
-  with fallback for unsupported hosts. Read commands that pass `cacheTtlMs`
-  (and are not marked `idempotent: false`) go through a per-caller coalescing
-  read cache: concurrent identical calls join a single in-flight relay request,
-  and the resolved value is reused for the TTL window (3 s). `invalidateCache`
-  clears the whole cache or a set of action prefixes so a mutation or a
+  with fallback for unsupported hosts. Every idempotent read joins an identical
+  in-flight relay request (authoritative reads keep their own key). Only the
+  host's answer is shared: a failure reaches every caller and each applies its
+  own fallback. Reads that pass `cacheTtlMs` also keep the resolved value for
+  that window. A write (`idempotent: false`) clears its namespace's in-flight
+  and retained reads and last-good fallbacks when it settles, and a read that
+  was in flight across a write does not store its answer as a fallback.
+  `invalidateCache` clears the whole cache or a set of action prefixes so a
   sync-driven refresh drops stale reads.
 - `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
   and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
@@ -311,7 +315,7 @@ Browser `window.ade` adapter:
   runs on the desktop. From here you can only watch it." Status is polled while
   a listener exists: every 3 s, backing off to 15 s while the session is
   unchanged, paused while hidden, read at once when visible.
-- `apps/desktop/src/renderer/webclient/adapter/infra/pageVisibility.ts` - the
+- `apps/desktop/src/renderer/lib/pageVisibility.ts` - the
   `document.visibilityState` helper the relay pollers use. Without a `document`
   (Node tests) the page counts as visible.
 - `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` - the
@@ -482,6 +486,14 @@ Browser `window.ade` adapter:
   `window.ade.usage.getAdeStats` through the viewer-allowed
   `usage.getAdeStats` command so the reused empty-Work activity module shows
   the runtime's cached cross-client aggregate instead of an empty native stub.
+  `usage.getGithubContributions` reads the brain's `gh` contribution calendar
+  for the Home Contributions widget. The host has no usage push channel, so
+  `usage.onUpdate` is synthesized: while a stats read reports
+  `freshness.state: "refreshing"` it notifies listeners on a capped backoff
+  (5 s, 15 s, 45 s, 120 s), and a tab returning after ten minutes notifies
+  once. `computerUse.getOwnerSnapshot` builds a chat's proof drawer from
+  `computerUse.listArtifacts` with the shared `snapshotFromArtifacts`
+  (`shared/computerUseSnapshot.ts`), reporting no capture backend.
   Where the host registers no descriptor for a settings write, `misc.ts` fails
   loudly rather than echoing a snapshot back: a fallback there would render
   "Saved" over a write that never happened. Provider sign-in status is the one
@@ -514,9 +526,10 @@ Browser `window.ade` adapter:
   viewer-allowed, so completing the namespace mechanically would hand any
   connected browser write access to the Linear credential store; only reads and
   the session ensure are wired, and identity/token writes stay with the
-  fallback proxy. CTO onboarding is desktop-first and has no host descriptors,
-  so the web adapter synthesizes a completed onboarding state in browser-local
-  storage — left to the fallback proxy those reads resolve to null and
+  fallback proxy, which rejects them as unavailable. CTO onboarding is
+  desktop-first and has no host descriptors, so the web adapter synthesizes a
+  completed onboarding state in browser-local storage — left to the fallback
+  proxy those reads would reject and
   `CtoPage` parks forever, because its ensure-session effect bails while
   onboarding state is null. `misc.ts` applies the display zoom preference
   through `applyHostedWebZoom`: CSS zoom still lives on `<body>` (the root
@@ -922,6 +935,17 @@ Tests:
 
 ## Gotchas
 
+- **A `window.ade` member the web adapter lacks is a stand-in, not `undefined`.**
+  `withFallbackProxy` (`adapter/infra/proxy.ts`) answers it with a callable so
+  a direct call never throws synchronously inside an effect. Calling it rejects
+  with `AdeUnavailableError` ("… is not available in the ADE web app"), and an
+  `on*` member returns a no-op unsubscribe. It is still truthy and a function,
+  so a feature check must use `isAdeAvailable(window.ade?.ns?.method)`
+  (`lib/adeAvailability.ts`), never truthiness or `typeof`. An unhandled
+  `AdeUnavailableError` from a fire-and-forget call is swallowed
+  (`webclient/main.tsx`) and never reported to Sentry. It used to resolve
+  `null`, which callers read as real data: the Work tab crashed on
+  `snapshot.owner`, and every desktop-only control looked available.
 - **The hosted page cannot dial raw LAN or Tailscale-IP `ws://` endpoints.**
   Browsers block mixed content from `https://app.ade-app.dev`. New connections
   use the account-authorized cloud relay. A saved pre-release environment may
@@ -1395,7 +1419,7 @@ as chosen. `showImage` remains true in the web default so choosing Image shows
 its picture. Reset to Shuffle is an explicit choice. Desktop retains Shuffle.
 The command palette uses `Z_LAYERS.commandPalette` above the shared overlays.
 
-`adapter/infra/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
+`lib/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
 fleet cadence: three unchanged reads at the base interval, then doubling to
 15 seconds; a changed snapshot or explicit action resets the cadence. Hidden
 tabs make no reads and visibility resumes with an immediate read. App Control's

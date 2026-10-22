@@ -29,6 +29,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import {
   captureSceneShell,
   measureCapturableSceneRect,
+  SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS,
   SCENE_CAPTURE_RETRY_MAX_MS,
   SCENE_CAPTURE_RETRY_MS,
 } from "./sceneCapture";
@@ -57,6 +58,7 @@ import { claimThreeFrameSlot, loadSceneThreeSource, sceneThreeSourceNow } from "
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { useSceneStillLatch } from "./useSceneStillLatch";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * Host for an agent-authored scene.
@@ -206,6 +208,8 @@ export function SceneFrame({
   const stillTakenRef = useRef(false);
   /** Consecutive captures thrown away for moving; sets the retry backoff. */
   const captureMissesRef = useRef(0);
+  /** Consecutive captures that came back empty; see `SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS`. */
+  const emptyCapturesRef = useRef(0);
 
   const { rehydrated, undecided, storedStillSrc } = useSceneStillLatch({
     sessionId,
@@ -354,6 +358,7 @@ export function SceneFrame({
   useEffect(() => {
     stillTakenRef.current = false;
     captureMissesRef.current = 0;
+    emptyCapturesRef.current = 0;
     if (src === null) setStage(null);
   }, [src]);
 
@@ -643,7 +648,8 @@ export function SceneFrame({
     if (expandedVariant || !settled || stillTakenRef.current || !src || visiblePicture) return;
     const capture = window.ade?.scene?.snapshot;
     const shell = shellRef.current;
-    if (typeof capture !== "function" || !shell) return;
+    // The hosted web client cannot grab a window, so it takes no still at all.
+    if (!isAdeAvailable(capture) || !shell) return;
     if (!measureCapturableSceneRect(shell)) {
       const retry = () => {
         const shellNow = shellRef.current;
@@ -667,6 +673,7 @@ export function SceneFrame({
     stillTakenRef.current = true;
     let cancelled = false;
     let retryTimer: number | null = null;
+    let stopResumeListeners = () => {};
     void captureSceneShell(shell, capture)
       .then(async (result) => {
         if (cancelled) return;
@@ -674,6 +681,26 @@ export function SceneFrame({
           // Not a picture of this scene. Release the latch and look again on a
           // backoff: a re-pin or re-measure is usually over in a frame or two.
           stillTakenRef.current = false;
+          emptyCapturesRef.current = result.kind === "empty" ? emptyCapturesRef.current + 1 : 0;
+          // A run of empty grabs (a hidden or minimized window) stops the timer
+          // instead of grabbing every few seconds for the life of the scene; the
+          // window coming back to the front tries again.
+          if (emptyCapturesRef.current >= SCENE_CAPTURE_MAX_EMPTY_ATTEMPTS) {
+            const resume = () => {
+              if (document.visibilityState === "hidden") return;
+              stopResumeListeners();
+              emptyCapturesRef.current = 0;
+              captureMissesRef.current = 0;
+              setStillAttempt((value) => value + 1);
+            };
+            window.addEventListener("focus", resume);
+            document.addEventListener("visibilitychange", resume);
+            stopResumeListeners = () => {
+              window.removeEventListener("focus", resume);
+              document.removeEventListener("visibilitychange", resume);
+            };
+            return;
+          }
           const misses = captureMissesRef.current++;
           retryTimer = window.setTimeout(
             () => setStillAttempt((value) => value + 1),
@@ -682,6 +709,7 @@ export function SceneFrame({
           return;
         }
         captureMissesRef.current = 0;
+        emptyCapturesRef.current = 0;
         const { dataUrl } = result;
         const capturedTheme = sceneThemeSignature(themeRef.current);
         setStill(dataUrl);
@@ -701,6 +729,7 @@ export function SceneFrame({
     return () => {
       cancelled = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
+      stopResumeListeners();
     };
   }, [expandedVariant, settled, src, stillAttempt, scopeKey, title, sessionId, visiblePicture]);
 
@@ -719,7 +748,7 @@ export function SceneFrame({
     try {
       const capture = window.ade?.scene?.snapshot;
       const shell = shellRef.current;
-      if (typeof capture === "function" && shell) {
+      if (isAdeAvailable(capture) && shell) {
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
         const result = await captureSceneShell(shell, capture);
         if (result.kind === "captured") dataUrl = result.dataUrl;

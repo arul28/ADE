@@ -30,6 +30,7 @@ import {
 import { ReportIssueButton } from "./ReportIssueButton";
 import { ResetAdeButton } from "./ResetAdeDialog";
 import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -292,7 +293,7 @@ export function ProjectRecoveryScreen() {
   // rendering from the stored code, so the surface always has calm copy.
   useEffect(() => {
     let cancelled = false;
-    if (!rootPath || !window.ade?.recovery?.diagnose) {
+    if (!rootPath || !isAdeAvailable(window.ade?.recovery?.diagnose)) {
       setDiagnosis(null);
       setPhase("idle");
       return;
@@ -405,7 +406,7 @@ export function ProjectRecoveryScreen() {
   const watchedState = diagnosis?.state && WATCHED_STATES.has(diagnosis.state) ? diagnosis.state : null;
   useEffect(() => {
     if (phase !== "idle" || !watchedState || !rootPath) return;
-    if (!window.ade?.recovery?.diagnose) return;
+    if (!isAdeAvailable(window.ade?.recovery?.diagnose)) return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       window.ade.recovery
@@ -500,7 +501,7 @@ export function ProjectRecoveryScreen() {
 
   const restoreData = useCallback(() => {
     const restore = window.ade?.recovery?.restoreProjectData;
-    if (!rootPath || !restore) return;
+    if (!rootPath || !isAdeAvailable(restore)) return;
     void runDataAction("Putting the folder back", async () => {
       const result = await restore(rootPath);
       return result.restored ? { ok: true } : { ok: false, reason: result.reason };
@@ -511,7 +512,7 @@ export function ProjectRecoveryScreen() {
   // reopens with whatever ADE data is there now.
   const reopenWithCurrentData = useCallback(() => {
     const start = window.ade?.recovery?.startFresh;
-    if (!rootPath || !start) return;
+    if (!rootPath || !isAdeAvailable(start)) return;
     void runDataAction("Opening the project with new ADE data", async () => {
       await start(rootPath);
       // Starting fresh closes the project, which can take this screen down
@@ -571,16 +572,16 @@ export function ProjectRecoveryScreen() {
   const dataReplaced = state === "data_replaced";
   const dataState = dataMissing || dataReplaced;
   const restoreAvailable = dataMissing && diagnosis?.restoreAvailable === true
-    && typeof window.ade?.recovery?.restoreProjectData === "function";
+    && isAdeAvailable(window.ade?.recovery?.restoreProjectData);
   // The project folder itself is gone: nothing to restore into or start in.
   const projectFolderMissing = dataMissing && diagnosis?.projectFolderMissing === true;
   // Only once the diagnosis says the project folder is there to start in.
   const startFreshAvailable = Boolean(diagnosis) && !projectFolderMissing
-    && typeof window.ade?.recovery?.startFresh === "function";
+    && isAdeAvailable(window.ade?.recovery?.startFresh);
   const restartAvailable = canRestartAde();
   // Report issue renders nothing on a preload without the diagnostics bridge;
   // its hint must not be left standing alone.
-  const reportAvailable = typeof window.ade?.diagnostics?.openIssue === "function";
+  const reportAvailable = isAdeAvailable(window.ade?.diagnostics?.openIssue);
 
   const technicalText = [
     diagnosis?.technicalDetail,

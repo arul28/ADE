@@ -24,6 +24,7 @@ import {
 import { cn } from "../ui/cn";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
 import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
+import { createBackoffPoller } from "../../lib/backoffPoller";
 
 /**
  * The browser and App Control panes, as seen from a surface that cannot run
@@ -61,6 +62,13 @@ export const WORK_TOOL_READ_ONLY_POLL_MS = 4_000;
  */
 export const WORK_TOOL_READ_ONLY_LIVE_POLL_MS = 15_000;
 
+/**
+ * Ceiling the poll backs off to while the lane state stops changing. A pane
+ * left open on an idle lane costs two reads a minute instead of fifteen;
+ * any change, focus or tab-visible event drops it back to the base cadence.
+ */
+export const WORK_TOOL_READ_ONLY_MAX_POLL_MS = 30_000;
+
 export type WorkToolReadOnlyViewProps = {
   tool: "browser" | "app-control" | DesktopWorkTool;
   laneId: string | null;
@@ -85,30 +93,46 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   const requestedLaneId = useRef(laneId);
   requestedLaneId.current = laneId;
 
-  const refresh = useCallback(async (): Promise<void> => {
+  // Serialized last answer, so the poll can tell "nothing changed" (back off,
+  // skip the render) from "the lane did something" (poll fast again).
+  const lastStateSignature = useRef<string | null>(null);
+
+  /** Resolves to whether the lane state differs from the previous read. */
+  const refresh = useCallback(async (): Promise<boolean> => {
     if (!laneId) {
       setState(null);
       setLoaded(true);
-      return;
+      return false;
     }
     const read = window.ade?.workTools?.getLaneState;
     if (!read) {
       setLoaded(true);
-      return;
+      return false;
     }
     try {
       const next = await read(laneId);
-      if (requestedLaneId.current !== laneId) return;
+      if (requestedLaneId.current !== laneId) return false;
+      // Every read is stamped with a fresh `capturedAt`, so it is left out of
+      // the comparison; the state is still applied, since the takeover hold
+      // reads that stamp.
+      const signature = next ? JSON.stringify({ ...next, capturedAt: undefined }) : "null";
+      const changed = signature !== lastStateSignature.current;
+      lastStateSignature.current = signature;
       setState(next);
+      return changed;
     } catch {
-      if (requestedLaneId.current !== laneId) return;
+      if (requestedLaneId.current !== laneId) return false;
+      const changed = lastStateSignature.current !== "null";
+      lastStateSignature.current = "null";
       setState(null);
+      return changed;
     } finally {
       if (requestedLaneId.current === laneId) setLoaded(true);
     }
   }, [laneId]);
 
   useEffect(() => {
+    lastStateSignature.current = null;
     setLoaded(false);
     setState(null);
     setPreview(null);
@@ -117,9 +141,21 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   }, [refresh]);
 
   useEffect(() => {
-    const intervalMs = livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS;
-    const timer = window.setInterval(() => void refresh(), intervalMs);
-    return () => window.clearInterval(timer);
+    // Unchanged reads back the poll off to the ceiling; a change, a focus or
+    // the tab becoming visible drops it back. A hidden tab does not poll.
+    const poller = createBackoffPoller({
+      baseMs: livePlaying ? WORK_TOOL_READ_ONLY_LIVE_POLL_MS : WORK_TOOL_READ_ONLY_POLL_MS,
+      maxMs: WORK_TOOL_READ_ONLY_MAX_POLL_MS,
+      isActive: () => true,
+      read: refresh,
+    });
+    const onFocus = () => poller.kick();
+    window.addEventListener("focus", onFocus);
+    poller.start();
+    return () => {
+      poller.stop();
+      window.removeEventListener("focus", onFocus);
+    };
   }, [refresh, livePlaying]);
 
   const observation = readOnlyObservation(tool, state);

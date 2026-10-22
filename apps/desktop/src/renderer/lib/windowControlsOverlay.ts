@@ -21,6 +21,7 @@
 
 import { rendererPlatformAttribute } from "./platform";
 import { DEFAULT_ZOOM, zoomFactorForDisplay } from "./zoom";
+import { isAdeAvailable } from "./adeAvailability";
 
 /**
  * Deliberately not `--shell-header-padding-end`: the inset token is the
@@ -151,7 +152,7 @@ export function createTitleBarOverlaySync(): TitleBarOverlaySync {
     if (rendererPlatformAttribute() !== "win32") return;
     if (typeof window === "undefined") return;
     const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
-    if (typeof setOverlay !== "function") return;
+    if (!isAdeAvailable(setOverlay)) return;
     void Promise.resolve(
       setOverlay({
         theme: overlayTheme,

@@ -47,12 +47,20 @@ type RelayResult = {
  */
 function openWebTargetInNewTab(target: DeeplinkTarget): boolean {
   if (typeof window === "undefined") return false;
+  // The new tab must not reach back into this one, but "noopener" in the
+  // features string makes `window.open` always return null, so a blocked popup
+  // could not be told apart from an opened one and every click also navigated
+  // in place. Open blank, cut the opener, then load the target.
+  let opened: Window | null = null;
   try {
-    // `noopener` keeps the new tab from reaching back into this one; without it
-    // the opened document inherits a scriptable handle to the workspace.
-    const opened = window.open(targetToWebUrl(target), "_blank", "noopener,noreferrer");
-    return Boolean(opened);
+    opened = window.open("about:blank", "_blank");
+    if (!opened) return false;
+    opened.opener = null;
+    opened.location.href = targetToWebUrl(target);
+    return true;
   } catch {
+    // The caller navigates in place instead; do not leave a blank tab behind.
+    opened?.close();
     return false;
   }
 }

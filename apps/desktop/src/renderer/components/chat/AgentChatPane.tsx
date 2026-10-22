@@ -1097,13 +1097,24 @@ const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION = MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES;
 const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 128 * 1024 * 1024;
 /**
- * How often the active-turn loop re-reads a transcript when NOTHING is arriving.
- * The live `agentChat.onEvent` subscription (kept alive across tab switches by
+ * The base wait before the active-turn loop re-reads a transcript when NOTHING
+ * is arriving; quiet reads back off from it (caps below). The live
+ * `agentChat.onEvent` subscription (kept alive across tab switches by
  * `chatSessionRetention`) is the transport; this loop only exists to notice a
- * silently wedged stream, so it ticks slowly and skips entirely whenever an
- * event landed inside the last interval.
+ * silently wedged stream, so it skips entirely whenever an event landed since
+ * the last tick.
  */
 const ACTIVE_TURN_RECOVERY_INTERVAL_MS = 10_000;
+// A quiet chat (no event, no focus) backs off toward these caps. Each read is
+// up to 256 KB of transcript, so a turn that is silent for minutes must not
+// keep paying the 10 s rate. Silence is also what a dead stream looks like, so
+// the chat on screen keeps a short cap; background tiles can wait longer.
+const ACTIVE_TURN_RECOVERY_MAX_INTERVAL_MS = 30_000;
+const BACKGROUND_TURN_RECOVERY_MAX_INTERVAL_MS = 120_000;
+// The subagent drill-in re-reads a running subagent's transcript on this
+// cadence. An unchanged read doubles the wait up to the cap.
+const SUBAGENT_TRANSCRIPT_POLL_MS = 3_000;
+const SUBAGENT_TRANSCRIPT_POLL_MAX_MS = 30_000;
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // Stable fallbacks: surfaces that seed only part of the app store must not make
 // the lane picker's machine derivation re-run on every render.
@@ -4837,6 +4848,9 @@ export function AgentChatPane({
    * arriving there is nothing for a full transcript re-read to recover.
    */
   const lastEventReceivedAtMsRef = useRef(0);
+  // Set by the active recovery loop: an arriving event drops its backed-off
+  // wait back to the base interval, so a stall after it is still caught soon.
+  const recoveryLoopWakeRef = useRef<(() => void) | null>(null);
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
@@ -5838,6 +5852,28 @@ export function AgentChatPane({
     let cancelled = false;
     let tickInFlight = false;
     const isRunning = subagentViewSnapshot?.status === "running";
+    // The transcript is append-only, so its last message plus its length says
+    // whether a re-read brought anything new. Unchanged reads back the poll off.
+    let lastSignature: string | null = null;
+    let unchangedReads = 0;
+    let timerId: number | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled || !isRunning) return;
+      const delayMs = Math.min(
+        SUBAGENT_TRANSCRIPT_POLL_MS * 2 ** unchangedReads,
+        SUBAGENT_TRANSCRIPT_POLL_MAX_MS,
+      );
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        // A hidden window keeps its cadence but skips the read.
+        if (document.hidden) {
+          scheduleNext();
+          return;
+        }
+        void tick();
+      }, delayMs);
+    };
 
     const tick = async () => {
       if (tickInFlight) return;
@@ -5855,6 +5891,9 @@ export function AgentChatPane({
           setSubagentTranscript(null);
           setSubagentMetadata(null);
         } else {
+          const signature = `${result.length}:${result[result.length - 1]?.uuid ?? ""}`;
+          unchangedReads = signature === lastSignature ? unchangedReads + 1 : 0;
+          lastSignature = signature;
           setSubagentTranscriptUnsupported(false);
           setSubagentTranscript(result);
           setSubagentMetadata(result.find((entry) => entry.subagentMetadata)?.subagentMetadata ?? null);
@@ -5869,15 +5908,27 @@ export function AgentChatPane({
       } finally {
         tickInFlight = false;
         if (!cancelled) setSubagentTranscriptLoading(false);
+        scheduleNext();
       }
     };
 
     void tick();
-    const intervalId = isRunning ? window.setInterval(() => { void tick(); }, 3000) : null;
+
+    // Reads skipped while hidden are made up at once on return, not after the
+    // backed-off wait.
+    const onVisibilityChange = () => {
+      if (document.hidden || !isRunning || tickInFlight || cancelled) return;
+      if (timerId !== null) window.clearTimeout(timerId);
+      timerId = null;
+      unchangedReads = 0;
+      void tick();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
-      if (intervalId !== null) window.clearInterval(intervalId);
+      if (timerId !== null) window.clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
 
@@ -8123,6 +8174,9 @@ export function AgentChatPane({
         const snapshot = await window.ade.computerUse.getOwnerSnapshot({
           owner: { kind: "chat_session", id: sessionId },
         }, chatRuntimePinRef.current);
+        // An older desktop host can answer null; treat it as a failed read
+        // so the pane never stores (and renders) an empty snapshot.
+        if (!snapshot) throw new Error("No computer-use snapshot for this chat.");
         lastComputerUseSnapshotRef.current = {
           sessionId,
           pinKey,
@@ -9439,14 +9493,59 @@ export function AgentChatPane({
     const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
     // Jittered so a grid of tiles doesn't re-read every transcript on the same
     // frame; the base is the stall-detector interval, not a polling rate.
-    const intervalMs = ACTIVE_TURN_RECOVERY_INTERVAL_MS + (isTileActive ? 0 : offset % 1_500);
-    const tick = () => recover({ skipWhenLive: true });
-    const initialTimer = window.setTimeout(tick, initialDelayMs);
-    const intervalTimer = window.setInterval(tick, intervalMs);
+    const baseIntervalMs = ACTIVE_TURN_RECOVERY_INTERVAL_MS + (isTileActive ? 0 : offset % 1_500);
+    // A quiet chat is a stalled or long-running turn, and re-reading its
+    // transcript every 10 s buys nothing while nothing changes. Each quiet tick
+    // doubles the wait up to the cap; any event, a window focus, or a return to
+    // the foreground resets it. Hidden windows skip the read entirely.
+    let delayMs = baseIntervalMs;
+    // An appended event re-runs this effect, so the loop restarts right after
+    // it. Seeded one interval back, that event still counts as live delivery
+    // and the first tick skips the re-read.
+    let lastTickAtMs = Date.now() - baseIntervalMs;
+    let timer: number | null = null;
+    const schedule = (ms: number) => {
+      timer = window.setTimeout(tick, ms);
+    };
+    const tick = () => {
+      timer = null;
+      if (disposed) return;
+      if (document.hidden) {
+        schedule(delayMs);
+        return;
+      }
+      const eventsSinceLastTick = lastEventReceivedAtMsRef.current >= lastTickAtMs;
+      lastTickAtMs = Date.now();
+      if (eventsSinceLastTick) {
+        // The live subscription is delivering, so the re-read is skipped.
+        delayMs = baseIntervalMs;
+      } else {
+        void loadHistory(readableSessionId, { force: true });
+        delayMs = Math.min(
+          delayMs * 2,
+          isTileActive ? ACTIVE_TURN_RECOVERY_MAX_INTERVAL_MS : BACKGROUND_TURN_RECOVERY_MAX_INTERVAL_MS,
+        );
+      }
+      schedule(delayMs);
+    };
+    // Only a backed-off wait needs moving; at the base interval the pending
+    // tick already lands in time, so per-event calls cost nothing.
+    const wake = () => {
+      if (disposed || document.hidden || delayMs === baseIntervalMs) return;
+      delayMs = baseIntervalMs;
+      if (timer !== null) window.clearTimeout(timer);
+      schedule(baseIntervalMs);
+    };
+    recoveryLoopWakeRef.current = wake;
+    schedule(initialDelayMs);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       disposed = true;
-      window.clearTimeout(initialTimer);
-      window.clearInterval(intervalTimer);
+      if (timer !== null) window.clearTimeout(timer);
+      if (recoveryLoopWakeRef.current === wake) recoveryLoopWakeRef.current = null;
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [
     isTileActive,
@@ -9763,6 +9862,7 @@ export function AgentChatPane({
       // Liveness stamp for the active-turn stall detector — recorded before any
       // filtering so an event for a sibling chat still proves the stream is up.
       lastEventReceivedAtMsRef.current = Date.now();
+      recoveryLoopWakeRef.current?.();
       const optimistic = optimisticOutgoingMessageRef.current;
       if (
         optimistic?.sessionId === envelope.sessionId

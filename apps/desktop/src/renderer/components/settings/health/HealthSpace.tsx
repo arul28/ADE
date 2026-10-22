@@ -47,6 +47,7 @@ import {
 } from "../storage/storageView";
 import { FreeSpaceMeter, StackedBreakdown } from "./healthCharts";
 import type { HealthData } from "./useHealthData";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
@@ -57,12 +58,12 @@ const EMPTY_TARGETS: StorageCleanupTarget[] = [];
 
 function getRunMaintenanceNow(): ((pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>) | undefined {
   const fn = window.ade?.storage?.runMaintenanceNow;
-  return typeof fn === "function" ? fn : undefined;
+  return isAdeAvailable(fn) ? fn : undefined;
 }
 
 function getCompressNow(): ((pin?: OpenProjectBinding | null) => Promise<{ filesCompressed: number; savedBytes: number }>) | undefined {
   const fn = window.ade?.storage?.compressNow;
-  return typeof fn === "function" ? fn : undefined;
+  return isAdeAvailable(fn) ? fn : undefined;
 }
 
 export function HealthSpace({ data }: { data: HealthData }) {

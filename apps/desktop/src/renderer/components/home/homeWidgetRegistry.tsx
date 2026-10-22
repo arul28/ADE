@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, type ComponentType, type LazyExoticComponent } from "react";
 import type { HomeLayoutItem, HomeWidgetType } from "./homeLayout";
 import { HOME_WIDGET_CATALOG } from "./homeWidgetCatalog";
+import { hasDesktopHome } from "../../lib/adeAvailability";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
 
 /**
@@ -44,7 +45,7 @@ export const LazyHomeWidget = memo(function LazyHomeWidget({ item }: HomeWidgetP
   const Widget = LAZY_WIDGETS[item.type];
   const meta = HOME_WIDGET_CATALOG[item.type];
   if (!Widget) return <WidgetShell type={item.type} message={meta.comingSoon ?? "Not available."} />;
-  if (meta.desktopOnly && !window.ade?.home) {
+  if (meta.desktopOnly && !hasDesktopHome()) {
     return <WidgetShell type={item.type} message="Available in the ADE desktop app." />;
   }
   return (

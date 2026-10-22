@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { TerminalSessionSummary } from "../../shared/types";
 import { activityBadgeCount } from "../components/activity/activityPriority";
 import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
+import { isWebClientMode } from "../lib/webClientMode";
 import {
   invalidateSessionListCache,
   listSessionsCached,
@@ -83,6 +84,10 @@ export function useAppWideSessionAttention(): void {
     let refreshQueued = false;
     let cancelled = false;
     let localNeedsAttention = 0;
+    // The web client has no dock badge, so a hidden tab has nothing to keep
+    // current and each read would be a relay round trip to the host for no one.
+    // Desktop keeps reading while hidden for the badge (see below).
+    const pauseWhenHidden = isWebClientMode();
 
     /**
      * The single dock-badge write. Account scope counts the whole account's
@@ -105,17 +110,21 @@ export function useAppWideSessionAttention(): void {
 
     const refreshTerminalAttention = async () => {
       if (cancelled) return;
+      if (pauseWhenHidden && document.visibilityState === "hidden") return;
       if (refreshInFlight) {
         refreshQueued = true;
         return;
       }
-      // No visibility gate: the dock badge must keep tracking the loud tier
-      // while the window is hidden/minimized — that is its whole purpose. The
-      // refresh stays event-driven + debounced, so hidden cost is bounded.
+      // No visibility gate on desktop: the dock badge must keep tracking the
+      // loud tier while the window is hidden/minimized — that is its whole
+      // purpose. The refresh stays event-driven + debounced, so hidden cost is
+      // bounded. Reads are not forced: every event that can change the list
+      // (sessions.onChanged, chat events) invalidates the cache first, so the
+      // cached read only skips reads that are already fresh.
       refreshInFlight = true;
       try {
         const sessions: TerminalSessionSummary[] = (
-          await listSessionsCached({ limit: 150 }, { force: true })
+          await listSessionsCached({ limit: 150 })
         );
         if (cancelled) return;
         const attention = summarizeTerminalAttention(sessions);
@@ -157,7 +166,10 @@ export function useAppWideSessionAttention(): void {
       if (isCurrentProjectEvent(event)) scheduleRefresh();
     });
     const unsubscribeExit = window.ade.pty.onExit((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
+      if (!isCurrentProjectEvent(event)) return;
+      // An exit changes the session's status, so rows cached before it are stale.
+      invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
+      scheduleRefresh();
     });
     const unsubscribeChat = window.ade.agentChat.onEvent((event) => {
       if (!shouldRefreshSessionListForChatEvent(event)) return;
@@ -168,10 +180,12 @@ export function useAppWideSessionAttention(): void {
       invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
       scheduleRefresh(0);
     });
+    // Safety net for state that changes without an event. Events drive the
+    // refreshes, so this is a slow backstop, not the primary cadence.
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();
-    }, 15_000);
+    }, 60_000);
     const onFocus = () => scheduleRefresh(0);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") scheduleRefresh(0);

@@ -2469,6 +2469,7 @@ export type SyncRemoteCommandAction =
   | "account.getMachineInventory"
   | ProviderAccountRemoteCommandAction
   | "usage.getAdeStats"
+  | "usage.getGithubContributions"
   | "usage.getQuotaSnapshot"
   | "usage.getUsageRollup"
   | "usage.refreshQuota"

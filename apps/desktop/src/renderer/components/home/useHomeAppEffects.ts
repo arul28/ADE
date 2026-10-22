@@ -5,6 +5,7 @@ import {
   useHomeLayoutStore,
   type HomeLayoutItem,
 } from "./homeLayout";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The home page's app-wide rules, mounted once by `App` (they hold whether
@@ -53,7 +54,7 @@ function hasClipboard(items: readonly HomeLayoutItem[]): boolean {
 /** Turns the main-process clipboard watch off, if it is on. One small IPC. */
 export function stopClipboardWatch(): void {
   const bridge = window.ade?.home?.clipboard;
-  if (!bridge) return;
+  if (!isAdeAvailable(bridge)) return;
   void bridge.getState()
     .then((state) => (state.enabled ? bridge.configure({ enabled: false }) : null))
     .catch(() => {});

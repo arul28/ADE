@@ -36,6 +36,7 @@ import { providerActionMessage } from "../providerErrorMessage";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useApiCredentialsPin } from "./useApiCredentials";
 import "./customProviderOptions.css";
+import { isAdeAvailable } from "../../../../lib/adeAvailability";
 
 const ENCODING_CHOICES: Array<{ value: AiCustomProviderEncoding | ""; label: string }> = [
   { value: "", label: "Off" },
@@ -189,7 +190,11 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     if (!ok) return;
     try {
       await saveCustomProviders(withoutCustomProvider(entries, entry.id), pin);
-      await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" }, credentialPin);
+      // The hosted web client cannot reach the key store; the provider block is
+      // what it removes, so a failed key removal must not strand that half-done.
+      if (isAdeAvailable(window.ade.apiCredentials.remove)) {
+        await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" }, credentialPin);
+      }
       invalidateAiDiscoveryCache();
       setError(null);
       await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });

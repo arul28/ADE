@@ -72,6 +72,7 @@ import { useAnyFloatingPlayerShown } from "../shared/floatingPlayerSlots";
 import { showToast } from "../app/toast/toastStore";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { cssZoomOf } from "../../lib/webZoom";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The floating live-preview card.
@@ -974,7 +975,7 @@ export function WorkLiveCornerCard({
   const recordingTabOwned = chatSessionId != null && recordingTab?.ownerChatSessionId === chatSessionId;
   const stopBrowserRecording = useCallback(async () => {
     const stop = window.ade?.builtInBrowser?.stopRecording;
-    if (!recordingTabId || !stop) return;
+    if (!recordingTabId || !isAdeAvailable(stop)) return;
     await stop({
       ...(browserViewRoot ? { projectRoot: browserViewRoot } : {}),
       tabId: recordingTabId,

@@ -5,6 +5,7 @@ import {
   type ClaudePluginUiSnapshot,
 } from "../../../shared/claudePluginUi";
 import { showToast } from "../app/toast/toastStore";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * What Claude mods draw per chat, as last reported by the chat's host.
@@ -36,7 +37,9 @@ function setClaudeModUi(sessionId: string, snapshot: ClaudePluginUiSnapshot): vo
 
 /** The API, when this client has it (an older preload or a mock may not). */
 export function claudeModUiApi() {
-  return typeof window === "undefined" ? undefined : window.ade?.agentChat?.claudePluginUi;
+  if (typeof window === "undefined") return undefined;
+  const api = window.ade?.agentChat?.claudePluginUi;
+  return isAdeAvailable(api) ? api : undefined;
 }
 
 function refreshClaudeModUi(sessionId: string, pin: OpenProjectBinding | null | undefined): void {

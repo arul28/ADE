@@ -13,6 +13,7 @@ import { showToast } from "./toast/toastStore";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { ResetAdeDialog } from "./ResetAdeDialog";
 import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
 /** How often the banner re-reads the service while macOS blocks it. */
@@ -184,10 +185,12 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
   // Fix it is the real service reinstall and restart — the same verified
   // sequence the recovery screen's repair runs — not the sign-in repair the
   // account surfaces use. It resolves only once the new service answers.
-  const fixAvailable = typeof window.ade?.app?.restartBackgroundService === "function";
+  const fixAvailable = isAdeAvailable(window.ade?.app?.restartBackgroundService);
   const fixInFlightRef = useRef(false);
   const runFix = useCallback(() => {
-    const restart = window.ade?.app?.restartBackgroundService;
+    const restart = isAdeAvailable(window.ade?.app?.restartBackgroundService)
+      ? window.ade.app.restartBackgroundService
+      : undefined;
     if (!restart || fixInFlightRef.current) return;
     fixInFlightRef.current = true;
     setFixing(true);

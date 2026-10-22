@@ -24,6 +24,7 @@ import { usePanZoom } from "./usePanZoom";
 import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
+import { isAdeAvailable } from "../../../../lib/adeAvailability";
 
 /** SVG is held whole (as an image and as Source text). */
 const MAX_SVG_BYTES = 25 * 1024 * 1024;
@@ -92,16 +93,16 @@ async function loadConverted(
   });
   if (ctx.isCancelled()) return null;
   const convert = window.ade.app.convertImageToJpeg;
-  if (!convert)
+  if (!isAdeAvailable(convert))
     throw new Error("Image conversion is unavailable on this system.");
   const result = await convert({
     data: bytesToBase64(bytes),
     filename: ctx.path.split(/[\\/]/).pop() ?? ctx.title,
     mimeType: ctx.mimeType,
   });
-  if (!result.ok) {
+  if (!result?.ok) {
     throw new Error(
-      result.errorCode === "unavailable"
+      result?.errorCode === "unavailable" || !result
         ? `This system can't decode ${format} images in ADE.`
         : "ADE could not convert this image for preview.",
     );

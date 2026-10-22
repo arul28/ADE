@@ -840,16 +840,18 @@ describe("WorkToolReadOnlyView live Mac Desktop stream", () => {
         macDesktop: api,
       };
 
-      const intervals: Array<{ callback: TimerHandler; delay?: number }> = [];
-      const setIntervalSpy = vi.spyOn(window, "setInterval");
-      setIntervalSpy.mockImplementation(((callback: TimerHandler, delay?: number) => {
-        intervals.push({ callback, delay });
-        return 0;
-      }) as unknown as typeof window.setInterval);
-      // testing-library's waitFor polls on its own 50ms interval; only the
-      // component's two poll cadences are this test's business.
-      const pollIntervals = () => intervals.filter((entry) =>
-        entry.delay === WORK_TOOL_READ_ONLY_POLL_MS || entry.delay === WORK_TOOL_READ_ONLY_LIVE_POLL_MS);
+      // The poll schedules each read with setTimeout. Recorded, not replaced:
+      // testing-library's own timers run through the same function, and only
+      // the component's two poll cadences are this test's business.
+      const delays: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: TimerHandler, delay?: number, ...rest: unknown[]) => {
+        if (typeof delay === "number") delays.push(delay);
+        return realSetTimeout(callback as () => void, delay, ...rest);
+      }) as unknown as typeof globalThis.setTimeout);
+      const pollIntervals = () => delays
+        .filter((delay) => delay === WORK_TOOL_READ_ONLY_POLL_MS || delay === WORK_TOOL_READ_ONLY_LIVE_POLL_MS)
+        .map((delay) => ({ delay }));
 
       const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
 
@@ -877,10 +879,10 @@ describe("WorkToolReadOnlyView live Mac Desktop stream", () => {
           },
         }),
       }));
-      const poll = pollIntervals().at(-1)?.callback;
-      expect(typeof poll).toBe("function");
-      (poll as () => void)();
-      await waitFor(() => expect(getLaneState.mock.calls.length).toBeGreaterThan(1));
+      // A window focus reads at once instead of waiting out the cadence.
+      const readsBefore = getLaneState.mock.calls.length;
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await waitFor(() => expect(getLaneState.mock.calls.length).toBeGreaterThan(readsBefore));
       expect(readObservationPreview).toHaveBeenCalledTimes(1);
 
       unmount();

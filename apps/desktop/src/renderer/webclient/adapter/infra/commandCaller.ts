@@ -57,14 +57,13 @@ export class UnsupportedRemoteCommandError extends Error {
   }
 }
 
-type CommandResult<T> = {
-  value: T;
-  cacheable: boolean;
-};
-
 export class CommandCaller {
   private readonly readCache = createCoalescingReadCache(READ_CACHE_TTL_MS);
   private readonly lastSuccessfulReads = new Map<string, unknown>();
+  // Bumped by every invalidation (a write invalidates its namespace), so a read
+  // already in flight then does not store its older answer as the reconnect
+  // fallback.
+  private invalidationEpoch = 0;
   private descriptorSource: readonly SyncRemoteCommandDescriptor[] | null = null;
   private descriptorIndex = new Map<string, SyncRemoteCommandDescriptor>();
 
@@ -74,6 +73,7 @@ export class CommandCaller {
   ) {}
 
   invalidateCache(actionPrefixes?: string[]): void {
+    this.invalidationEpoch += 1;
     if (!actionPrefixes?.length) {
       this.readCache.clear();
       this.lastSuccessfulReads.clear();
@@ -140,57 +140,64 @@ export class CommandCaller {
     const readKey = options.idempotent !== false
       ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
       : null;
-    const fetchCommand = async (): Promise<CommandResult<T>> => {
-      try {
-        const value = (await this.client.sendCommand(action, args, {
-          projectId,
-          timeoutMs: options.timeoutMs,
-        })) as T;
-        if (readKey) this.rememberSuccessfulRead(readKey, value);
-        return {
-          value,
-          cacheable: true,
-        };
-      } catch (error) {
-        // noteProjectHostUnavailable ignores anything that is not a
-        // host_unavailable failure, and anything from a client that is not the
-        // active machine's, so it needs no guard of its own here.
-        noteProjectHostUnavailable(error, this.client);
-        // A mutation that reached the transport can have an unknown outcome.
-        // Never fabricate success from its UI fallback: callers such as the
-        // chat composer rely on rejection to preserve the user's draft.
-        if (options.idempotent === false) throw error;
-        // An authoritative read rejects too: neither the last read nor the fallback is the host's answer.
-        if (options.authoritative) throw error;
-        if (isTransportFailure(error)) {
-          if (readKey && this.lastSuccessfulReads.has(readKey)) {
-            return {
-              value: this.lastSuccessfulReads.get(readKey) as T,
-              cacheable: false,
-            };
-          }
-          // Without prior data, an empty fallback would turn a transient
-          // reconnect into a false empty state. Let the mounted surface retain
-          // its current data and render the connection status instead.
-          throw error;
-        }
-        if (isRecoverable(error)) {
-          return {
-            value: await resolveFallback(options.fallback),
-            cacheable: false,
-          };
-        }
-        throw error;
-      }
+    const send = async (): Promise<T> => {
+      const epoch = this.invalidationEpoch;
+      const value = (await this.client.sendCommand(action, args, {
+        projectId,
+        timeoutMs: options.timeoutMs,
+      })) as T;
+      if (readKey && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
+      return value;
     };
 
-    const result = readKey && options.cacheTtlMs !== undefined
-      ? await this.readCache.coalesce(readKey, fetchCommand, {
-          cacheResult: (next) => next.cacheable,
-          ttlMs: options.cacheTtlMs,
-        })
-      : await fetchCommand();
-    return result.value;
+    let value: T;
+    try {
+      if (!readKey) {
+        value = await send();
+      } else {
+        // Every idempotent read joins an identical in-flight request: several
+        // surfaces polling the same read otherwise each cost a host round-trip.
+        // Only the host's answer is shared. A failure reaches every caller and
+        // each applies its own fallback below. With no `cacheTtlMs` the entry
+        // is dropped the moment it settles, so nothing can go stale.
+        // An authoritative read asks the host now, so it never takes a plain
+        // read's retained answer.
+        // A caller's timeout is part of the request: a short-timeout read never
+        // waits on a longer one.
+        const flightKey = `${readKey}\u0000${options.authoritative ? "authoritative" : ""}\u0000${options.timeoutMs ?? ""}`;
+        value = await this.readCache.coalesce(flightKey, send, { ttlMs: options.cacheTtlMs ?? 0 });
+      }
+    } catch (error) {
+      // noteProjectHostUnavailable ignores anything that is not a
+      // host_unavailable failure, and anything from a client that is not the
+      // active machine's, so it needs no guard of its own here.
+      noteProjectHostUnavailable(error, this.client);
+      // A mutation that reached the transport can have an unknown outcome.
+      // Never fabricate success from its UI fallback: callers such as the
+      // chat composer rely on rejection to preserve the user's draft.
+      if (!readKey) throw error;
+      // An authoritative read rejects too: neither the last read nor the fallback is the host's answer.
+      if (options.authoritative) throw error;
+      if (isTransportFailure(error)) {
+        if (this.lastSuccessfulReads.has(readKey)) {
+          return this.lastSuccessfulReads.get(readKey) as T;
+        }
+        // Without prior data, an empty fallback would turn a transient
+        // reconnect into a false empty state. Let the mounted surface retain
+        // its current data and render the connection status instead.
+        throw error;
+      }
+      if (isRecoverable(error)) return await resolveFallback(options.fallback);
+      throw error;
+    } finally {
+      if (!readKey) {
+        // A write: a read of its namespace that started before it settled, and
+        // the last good answer kept for reconnects, both predate it. Later
+        // callers read the host anew.
+        this.invalidateCache([`${action.split(".")[0]}.`]);
+      }
+    }
+    return value;
   }
 
   private rememberSuccessfulRead(key: string, value: unknown): void {
