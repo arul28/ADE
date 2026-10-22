@@ -50,6 +50,9 @@ struct AppleDeviceViewer: View {
   /// Where the bars end, so a controlling picture can sit between them.
   @State private var topBarBottom: CGFloat = 0
   @State private var bottomBarHeight: CGFloat = 0
+  /// The frozen inspect view, over everything, until its Close resumes the
+  /// stream.
+  @State private var inspect: LiveInspectMarkupModel?
 
   /// Long enough that a thumb resting on the bar does not take control.
   private static let holdToControl: Double = 0.6
@@ -105,7 +108,13 @@ struct AppleDeviceViewer: View {
       .animation(.easeOut(duration: 0.2), value: showsChrome)
       .animation(.easeOut(duration: 0.2), value: model.mode)
       .animation(.easeOut(duration: 0.18), value: hint)
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+          .transition(.opacity)
+          .zIndex(2)
+      }
     }
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
     .preferredColorScheme(.dark)
     .statusBarHidden(model.mode == .controlling || !showsChrome)
     // A swipe up from the bottom of the simulator must reach the simulator,
@@ -150,6 +159,9 @@ struct AppleDeviceViewer: View {
       // `.inactive` counts as away: the app switcher card is a screenshot, and
       // holding a capture open on someone's Mac to feed it is not worth the
       // battery on either machine. It also ends control: nobody is looking.
+      // While inspecting the stream is already stopped: returning must not
+      // quietly restart it behind the frozen picture.
+      guard inspect == nil else { return }
       model.setVisible(phase == .active)
     }
     .onChange(of: model.mode) { _, mode in
@@ -412,7 +424,60 @@ struct AppleDeviceViewer: View {
           .foregroundStyle(.white.opacity(0.7))
           .multilineTextAlignment(.center)
       }
+      if canInspect {
+        inspectButton
+      }
     }
+  }
+
+  /// Inspect freezes the picture and hands it to the markup model. Kept apart
+  /// from the View|Control switch: inspecting is not a way to drive the device,
+  /// and the 0.6 s hold that takes control is untouched.
+  private var canInspect: Bool {
+    inspect == nil
+      && model.health.phase == .streaming
+      && syncService.supportsAppleDeviceControl(laneId: laneId)
+  }
+
+  private var inspectButton: some View {
+    Button {
+      beginInspect()
+    } label: {
+      Label("Inspect", systemImage: "viewfinder")
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .frame(height: 38)
+        .background(Color.white.opacity(0.14), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+    .accessibilityIdentifier("AppleViewer.Inspect")
+  }
+
+  /// Freezes the live picture, then stops the stream: one still and the element
+  /// list come from `getScreenSnapshot`, and no frame moves under the finger
+  /// while it is being inspected.
+  private func beginInspect() {
+    guard canInspect else { return }
+    ADEHaptics.light()
+    let next = LiveInspectMarkupModel(
+      surface: .simulator,
+      laneId: laneId,
+      chatSessionId: chatSessionId
+    )
+    next.begin(plan: .simulator, using: syncService)
+    inspect = next
+    model.endControl()
+    model.stop()
+  }
+
+  /// Leaves inspect and reconnects the stream with a fresh ticket.
+  private func exitInspect() {
+    guard inspect != nil else { return }
+    inspect = nil
+    Task { await model.start() }
   }
 
   private func controlHalf(enabled: Bool) -> some View {

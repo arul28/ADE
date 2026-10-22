@@ -2935,6 +2935,10 @@ export type SyncRemoteCommandAction =
   | "macDesktop.start"
   | "macDesktop.stop"
   | "macDesktop.stopPrivate"
+  // One accessibility observation of the lane's screen plus a phone-sized
+  // element list, for a viewer's frozen "Inspect" mode. Read-only; the PNG is
+  // read separately with `workTools.readObservationPreview`.
+  | "macDesktop.observe"
   // A trusted viewer's Stop for the lane's Windows screen on either seat
   // (private or the user's main desktop). Never a Mac lane's display.
   | "macDesktop.stopSeat"
@@ -2954,6 +2958,9 @@ export type SyncRemoteCommandAction =
   | "appControl.status"
   | "appControl.streamSubscribe"
   | "appControl.streamUnsubscribe"
+  // One host-side hit-test for a viewer's frozen inspect view. Read-only and
+  // viewer-allowed like the rest of the App Control mirror.
+  | "appControl.inspectPoint"
   // Apple device environment. `apple.status` and `apple.streamTicket` are
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.

@@ -12,6 +12,11 @@ struct AppControlStreamFrame {
   var width: Int
   var height: Int
   var image: UIImage
+  /// What turns a point on this frame into a CSS viewport point for the host's
+  /// hit-test. Present from a host that sends the frame's own geometry.
+  var scaleX: Double?
+  var viewportWidth: Double?
+  var viewportHeight: Double?
 
   /// Ceiling on one frame's bytes. The host caps the screencast at 1600×1000
   /// JPEG, which lands far under this; the cap bounds a malformed payload.
@@ -29,7 +34,10 @@ struct AppControlStreamFrame {
       sessionId: envelope.sessionId,
       width: envelope.width > 0 ? envelope.width : Int(image.size.width * image.scale),
       height: envelope.height > 0 ? envelope.height : Int(image.size.height * image.scale),
-      image: image.preparingForDisplay() ?? image
+      image: image.preparingForDisplay() ?? image,
+      scaleX: envelope.scaleX,
+      viewportWidth: envelope.viewportWidth,
+      viewportHeight: envelope.viewportHeight
     )
   }
 }
@@ -59,6 +67,11 @@ final class AppControlLiveSession: ObservableObject {
   @Published private(set) var image: UIImage?
   @Published private(set) var pictureWidth: Int?
   @Published private(set) var pictureHeight: Int?
+  /// The last frame's own geometry, kept with the picture so a frozen inspect
+  /// view can turn a tap back into a CSS viewport point. Nil from older hosts.
+  @Published private(set) var frameScaleX: Double?
+  @Published private(set) var frameViewportWidth: Double?
+  @Published private(set) var frameViewportHeight: Double?
 
   private var lastSeq = -1
   private var isStarting = false
@@ -147,6 +160,9 @@ final class AppControlLiveSession: ObservableObject {
       pictureWidth = frame.width
       pictureHeight = frame.height
     }
+    if let scaleX = frame.scaleX, scaleX > 0 { frameScaleX = scaleX }
+    if let width = frame.viewportWidth, width > 0 { frameViewportWidth = width }
+    if let height = frame.viewportHeight, height > 0 { frameViewportHeight = height }
     phase = .live
   }
 
@@ -532,6 +548,9 @@ struct AppControlViewer: View {
   @State private var loaded: Bool
   @State private var session: AppControlLiveSession?
   @State private var orientation = MacDesktopViewerOrientation()
+  /// The frozen inspect view, over everything, until its Close resumes the
+  /// live subscription.
+  @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   init(laneId: String, initialState: WorkToolsAppControlState?) {
@@ -554,7 +573,13 @@ struct AppControlViewer: View {
           footer
         }
       }
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+          .transition(.opacity)
+          .zIndex(2)
+      }
     }
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
     .preferredColorScheme(.dark)
     .task(id: laneId) {
       await refresh()
@@ -584,6 +609,9 @@ struct AppControlViewer: View {
         dismiss()
       }
       Spacer(minLength: 0)
+      if syncService.supportsViewerRemoteAction("appControl.inspectPoint"), let session {
+        AppControlInspectButton(session: session) { beginInspect() }
+      }
       if rotates {
         controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
       }
@@ -701,6 +729,7 @@ struct AppControlViewer: View {
 
   private func updateLifecycle() {
     let shouldRun = isLiveCapable
+      && inspect == nil
       && scenePhase == .active
       && syncService.connectionState == .connected
     if shouldRun {
@@ -722,5 +751,54 @@ struct AppControlViewer: View {
     guard let current = session else { return }
     current.stop(using: syncService)
     session = nil
+  }
+
+  // MARK: - Inspect
+
+  /// Freezes the last frame, then stops the subscription. The app itself keeps
+  /// running on the Mac — only the stream stops, which is what makes a hit-test
+  /// a still picture rather than one that moves under the finger.
+  private func beginInspect() {
+    guard inspect == nil, let session, let image = session.image else { return }
+    ADEHaptics.light()
+    let model = LiveInspectMarkupModel(surface: .appControl, laneId: laneId, chatSessionId: nil)
+    model.begin(
+      plan: .appControl(
+        image: image,
+        scaleX: session.frameScaleX.map { CGFloat($0) },
+        viewportWidth: session.frameViewportWidth.map { CGFloat($0) },
+        viewportHeight: session.frameViewportHeight.map { CGFloat($0) }
+      ),
+      using: syncService
+    )
+    inspect = model
+    stopSession()
+  }
+
+  private func exitInspect() {
+    guard inspect != nil else { return }
+    inspect = nil
+    updateLifecycle()
+  }
+}
+
+/// Shows the viewer's Inspect control only once there is a frame to freeze.
+/// Its own view so the frame's arrival re-renders the button, not the viewer.
+private struct AppControlInspectButton: View {
+  @ObservedObject var session: AppControlLiveSession
+  let action: () -> Void
+
+  var body: some View {
+    if session.image != nil {
+      Button {
+        ADEHaptics.light()
+        action()
+      } label: {
+        macDesktopViewerControlLabel(systemName: "viewfinder")
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Inspect")
+      .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+    }
   }
 }

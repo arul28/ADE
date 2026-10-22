@@ -40,6 +40,9 @@ struct MacDesktopViewer: View {
   @State private var confirmingStop = false
   @State private var stopError: String?
   @State private var orientation = MacDesktopViewerOrientation()
+  /// The frozen inspect view, over everything, until its Close resumes the live
+  /// subscription.
+  @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   init(laneId: String, initialState: WorkToolsMacDesktopState?) {
@@ -67,7 +70,13 @@ struct MacDesktopViewer: View {
           footer
         }
       }
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+          .transition(.opacity)
+          .zIndex(2)
+      }
     }
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
     .preferredColorScheme(.dark)
     .task(id: laneId) {
       await refresh()
@@ -132,6 +141,9 @@ struct MacDesktopViewer: View {
       }
       if let session {
         MacDesktopViewerReconnectButton(session: session) { reconnect() }
+      }
+      if syncService.supportsViewerRemoteAction("macDesktop.observe"), desktop?.display != nil {
+        controlButton(systemName: "viewfinder", label: "Inspect") { beginInspect() }
       }
       if rotates && !controlling {
         controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
@@ -332,6 +344,7 @@ struct MacDesktopViewer: View {
   /// lane has a display.
   private func updateLifecycle() {
     let shouldRun = isLiveCapable
+      && inspect == nil
       && scenePhase == .active
       && syncService.connectionState == .connected
     if shouldRun {
@@ -358,6 +371,26 @@ struct MacDesktopViewer: View {
     current.stop(using: syncService)
     session = nil
     controlling = false
+  }
+
+  // MARK: - Inspect
+
+  /// Freezes the desktop for inspect: stops the live subscription, then asks
+  /// the host for one accessibility observation and its screenshot. The
+  /// desktop itself keeps running.
+  private func beginInspect() {
+    guard inspect == nil, desktop?.display != nil else { return }
+    ADEHaptics.light()
+    let model = LiveInspectMarkupModel(surface: .macDesktop, laneId: laneId, chatSessionId: nil)
+    model.begin(plan: .macDesktop, using: syncService)
+    inspect = model
+    stopSession()
+  }
+
+  private func exitInspect() {
+    guard inspect != nil else { return }
+    inspect = nil
+    updateLifecycle()
   }
 
   /// Re-subscribes on the same session rather than tearing it down: a stop
