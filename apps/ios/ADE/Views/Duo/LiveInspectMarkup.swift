@@ -1435,9 +1435,10 @@ extension SyncService {
 
 // MARK: - Stage
 
-/// The frozen inspector: the picture, its elements, the markup tools, and the
-/// send. Wide splits around the fold (picture on one page, card and tools on
-/// the other); compact keeps the picture full and puts the panel at the bottom.
+/// The frozen inspector: the picture on a quiet stage with a floating markup
+/// toolbar, and an inspector list beside it (wide) or under it (compact).
+/// Wide splits around the fold: the picture on one page, the inspector on the
+/// other.
 struct LiveInspectStage: View {
   @ObservedObject var model: LiveInspectMarkupModel
   var onClose: () -> Void
@@ -1445,8 +1446,7 @@ struct LiveInspectStage: View {
   @Environment(\.duoLayout) private var duo
 
   var body: some View {
-    VStack(spacing: 0) {
-      topBar
+    NavigationStack {
       DuoLocalFoldReader { fold, size in
         if duo.isWide {
           wideLayout(fold: fold, size: size)
@@ -1454,76 +1454,59 @@ struct LiveInspectStage: View {
           compactLayout(size: size)
         }
       }
+      .ignoresSafeArea(.container, edges: .bottom)
+      .navigationTitle("Inspect")
+      .navigationSubtitle(Text(subtitle))
+      .toolbarTitleDisplayMode(.inline)
+      .toolbar { toolbarContent }
+      // One quiet surface for the whole stage: the picture floats on the same
+      // grouped background the inspector's sections sit on, so the fold (or
+      // the column edge) reads as space, not as a slab.
+      .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
     }
-    .background(Color.black.ignoresSafeArea())
-    .preferredColorScheme(.dark)
+    .tint(ADEColor.accent)
     .accessibilityIdentifier("LiveInspect.Stage")
   }
 
   // MARK: Chrome
 
-  private var topBar: some View {
-    HStack(spacing: 12) {
-      Button {
+  @ToolbarContentBuilder
+  private var toolbarContent: some ToolbarContent {
+    ToolbarItem(placement: .cancellationAction) {
+      Button(role: .close) {
         ADEHaptics.light()
         onClose()
-      } label: {
-        Image(systemName: "xmark")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(.white)
-          .frame(width: 38, height: 38)
-          .background(Color.white.opacity(0.12), in: Circle())
       }
-      .buttonStyle(.plain)
+      .tint(.primary)
       .accessibilityLabel("Stop inspecting")
       .accessibilityIdentifier("LiveInspect.Close")
-
-      VStack(alignment: .leading, spacing: 1) {
-        Label("Inspect · \(model.surface.title)", systemImage: model.surface.symbolName)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.white)
-          .lineLimit(1)
-        Text(topBarSubtitle)
-          .font(.caption2)
-          .foregroundStyle(.white.opacity(0.62))
-          .lineLimit(1)
-      }
-      Spacer(minLength: 0)
-      if model.phase == .ready {
-        Label("Frozen", systemImage: "pause.fill")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(.white)
-          .padding(.horizontal, 9)
-          .padding(.vertical, 4)
-          .background(Color.white.opacity(0.14), in: Capsule())
-      }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 8)
-    .background(Color.black.opacity(0.82))
-    .overlay(alignment: .bottom) {
-      Rectangle()
-        .fill(Color.white.opacity(0.08))
-        .frame(height: 0.5)
+    ToolbarItem(placement: .primaryAction) {
+      Button {
+        ADEHaptics.success()
+        if model.sendToComposer() { onClose() }
+      } label: {
+        Label("Send to Chat", systemImage: "paperplane.fill")
+          .labelStyle(.titleAndIcon)
+      }
+      .buttonStyle(.borderedProminent)
+      .tint(ADEColor.accent)
+      .disabled(!model.canSend)
+      .accessibilityHint("Attaches the annotated picture and its element packet to the chat")
+      .accessibilityIdentifier("LiveInspect.Send")
     }
   }
 
-  private var topBarSubtitle: String {
+  private var subtitle: String {
     switch model.phase {
     case .loading:
-      return "Freezing the picture…"
+      return "Freezing \(model.surface.title)…"
     case .failed:
-      return "Couldn't freeze the picture"
+      return "\(model.surface.title) · couldn't freeze"
     case .ready:
-      guard let screen = model.screen else { return "The stream is paused." }
-      switch model.surface {
-      case .simulator:
-        return "\(screen.label) pt · \(screen.scale.formatted(.number.precision(.fractionLength(0...1))))× · \(model.elements.count) elements"
-      case .appControl:
-        return "\(screen.label) px · the app keeps running"
-      case .macDesktop:
-        return "\(screen.label) pt · the desktop keeps running"
-      }
+      guard let screen = model.screen else { return "\(model.surface.title) · Frozen" }
+      let unit = model.surface == .appControl ? "px" : "pt"
+      return "\(model.surface.title) · \(screen.label) \(unit) · Frozen"
     }
   }
 
@@ -1532,152 +1515,92 @@ struct LiveInspectStage: View {
   @ViewBuilder
   private func compactLayout(size: CGSize) -> some View {
     VStack(spacing: 0) {
-      LiveInspectPicture(model: model)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
-      panel
-        .frame(height: min(max(220, size.height * 0.42), 420))
-        .background(.ultraThinMaterial)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22, style: .continuous))
-        .overlay(alignment: .top) {
-          Capsule()
-            .fill(Color.white.opacity(0.22))
-            .frame(width: 36, height: 4)
-            .padding(.top, 8)
-            .accessibilityHidden(true)
-        }
+      canvas
+        .frame(height: max(260, size.height * 0.56))
+      Divider()
+      inspector
     }
   }
 
   @ViewBuilder
   private func wideLayout(fold: DuoFold, size: CGSize) -> some View {
     switch fold {
-    case .none:
-      flatWideLayout(size: size)
-    case .stacked(let rect) where rect.minY > 200 && size.height - rect.minY > 240:
+    case .stacked(let rect) where rect.minY > 200 && size.height - rect.maxY > 220:
+      // Laptop / tent: the picture stands on the far half, the inspector and
+      // its buttons sit on the near half. The fold itself carries nothing.
       VStack(spacing: 0) {
-        canvasPage
-          .frame(height: max(200, rect.minY - DuoWorkMetrics.hingeGutter / 2))
-        DuoHingeGutter(axis: .horizontal)
-        panelPage
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        canvas
+          .frame(height: rect.minY)
+        Color.clear
+          .frame(height: rect.height)
+        inspector
       }
-    case .sideBySide(let rect) where rect.minX > 240 && size.width - rect.minX > 260:
+    case .sideBySide(let rect) where rect.minX > 260 && size.width - rect.maxX > 280:
+      // Book: one page each, the boundary on the hinge.
       HStack(spacing: 0) {
-        canvasPage
-        DuoHingeGutter(axis: .vertical)
-        panelPage
-          .frame(width: max(280, size.width - rect.minX - DuoWorkMetrics.hingeGutter))
+        canvas
+          .frame(width: rect.minX)
+        Color.clear
+          .frame(width: rect.width)
+        inspector
       }
     default:
       HStack(spacing: 0) {
-        canvasPage
-        DuoHingeGutter(axis: .vertical)
-        panelPage
-          .frame(width: min(max(320, size.width * 0.36), 460))
+        canvas
+        Divider()
+        inspector
+          .frame(width: min(max(340, size.width * 0.36), 420))
       }
     }
   }
 
-  /// Flat open (or an iPad): the system's own split arrangement, which is the
-  /// native two-column feel. A folded display keeps the boundary exactly on
-  /// the hinge instead — see `wideLayout`.
-  @ViewBuilder
-  private func flatWideLayout(size: CGSize) -> some View {
-    if #available(iOS 27.1, *) {
-      ArrangementView {
-        canvasPage
-          .frame(minWidth: 320, idealWidth: size.width * 0.64, maxWidth: .infinity)
-      } secondary: {
-        panelPage
-          .frame(minWidth: 320, idealWidth: size.width * 0.36, maxWidth: 520)
-      }
-      .arrangementViewStyle(.split)
-    } else {
-      HStack(spacing: 0) {
-        canvasPage
-        DuoHingeGutter(axis: .vertical)
-        panelPage
-          .frame(width: min(max(320, size.width * 0.36), 460))
-      }
-    }
-  }
+  // MARK: Canvas
 
-  private var canvasPage: some View {
+  private var canvas: some View {
     LiveInspectPicture(model: model)
+      .padding(.horizontal, 24)
+      .padding(.top, 16)
+      .padding(.bottom, 76)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(Color.black)
+      .overlay(alignment: .bottom) {
+        markupToolbar
+          .padding(.bottom, 16)
+      }
       .accessibilityIdentifier("LiveInspect.Canvas")
   }
 
-  private var panelPage: some View {
-    panel
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(Color.black.opacity(0.55))
-  }
-
-  // MARK: Panel
-
-  private var panel: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 12) {
-        panelHeader
-        tools
-        if let errorText = model.errorText {
-          LiveInspectBanner(text: errorText, symbol: "exclamationmark.triangle", tint: ADEColor.warning)
+  private var markupToolbar: some View {
+    GlassEffectContainer {
+      HStack(spacing: 2) {
+        ForEach(LiveInspectTool.allCases) { tool in
+          toolButton(tool)
         }
-        if let note = model.note {
-          Text(note)
-            .font(.caption)
-            .foregroundStyle(.white.opacity(0.62))
-            .fixedSize(horizontal: false, vertical: true)
+        Divider()
+          .frame(height: 20)
+          .padding(.horizontal, 4)
+        Button {
+          model.undo()
+        } label: {
+          Image(systemName: "arrow.uturn.backward")
+            .frame(width: 40, height: 36)
         }
-        if let selected = model.selected {
-          elementCard(selected)
-        } else {
-          emptySelection
+        .disabled(!model.canUndo)
+        .accessibilityLabel("Undo")
+        Button(role: .destructive) {
+          model.clearMarkup()
+        } label: {
+          Image(systemName: "trash")
+            .frame(width: 40, height: 36)
         }
-        sendButton
+        .disabled(!model.canUndo)
+        .accessibilityLabel("Clear markup")
       }
-      .padding(14)
+      .font(.body)
+      .buttonStyle(.plain)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 4)
+      .glassEffect(.regular, in: .capsule)
     }
-    .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-  }
-
-  private var panelHeader: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(model.surface.title)
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.white)
-      if let screen = model.screen {
-        Text(screen.label)
-          .font(.caption.monospacedDigit())
-          .foregroundStyle(.white.opacity(0.55))
-      }
-      Spacer(minLength: 0)
-      if !model.elements.isEmpty {
-        Text("\(model.elements.count) elements")
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.45))
-      }
-    }
-  }
-
-  private var tools: some View {
-    HStack(spacing: 6) {
-      ForEach(LiveInspectTool.allCases) { tool in
-        toolButton(tool)
-      }
-      Spacer(minLength: 8)
-      iconButton(symbol: "arrow.uturn.backward", label: "Undo", enabled: model.canUndo) {
-        model.undo()
-      }
-      iconButton(symbol: "trash", label: "Clear markup", enabled: model.canUndo) {
-        model.clearMarkup()
-      }
-    }
-    .padding(5)
-    .background(Color.white.opacity(0.08), in: Capsule(style: .continuous))
   }
 
   private func toolButton(_ tool: LiveInspectTool) -> some View {
@@ -1686,158 +1609,162 @@ struct LiveInspectStage: View {
       ADEHaptics.light()
       model.tool = tool
     } label: {
-      Label(tool.title, systemImage: tool.symbolName)
-        .labelStyle(.iconOnly)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
-        .frame(width: 40, height: 34)
-        .background(selected ? Color.white.opacity(0.9) : Color.clear, in: Capsule(style: .continuous))
+      Image(systemName: tool.symbolName)
+        .symbolVariant(selected ? .fill : .none)
+        .foregroundStyle(selected ? Color.white : Color.primary)
+        .frame(width: 40, height: 36)
+        .background {
+          if selected {
+            Capsule(style: .continuous).fill(ADEColor.accent)
+          }
+        }
     }
-    .buttonStyle(.plain)
     .accessibilityLabel(tool.title)
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityIdentifier("LiveInspect.Tool.\(tool.rawValue)")
   }
 
-  private func iconButton(
-    symbol: String,
-    label: String,
-    enabled: Bool,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button {
-      guard enabled else { return }
-      action()
-    } label: {
-      Image(systemName: symbol)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(enabled ? Color.white.opacity(0.85) : Color.white.opacity(0.25))
-        .frame(width: 40, height: 34)
-    }
-    .buttonStyle(.plain)
-    .disabled(!enabled)
-    .accessibilityLabel(label)
-  }
+  // MARK: Inspector
 
-  private var emptySelection: some View {
-    HStack(spacing: 10) {
-      Image(systemName: model.busy ? "hourglass" : "hand.tap")
-        .font(.system(size: 16, weight: .medium))
-        .foregroundStyle(.white.opacity(0.55))
-        .frame(width: 34, height: 34)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-      VStack(alignment: .leading, spacing: 2) {
-        Text(model.busy ? "Looking up the element…" : "Tap an element on the picture")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.white)
-        Text(model.phase == .loading ? "The picture is arriving." : "Its label, role and source land here.")
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.55))
-      }
-      Spacer(minLength: 0)
-      if case .failed = model.phase {
-        Button("Retry") { model.reload() }
-          .font(.caption.weight(.semibold))
-          .buttonStyle(.plain)
-          .foregroundStyle(ADEColor.accent)
-      }
-    }
-    .padding(10)
-    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-  }
-
-  private func elementCard(_ element: LiveInspectElement) -> some View {
-    let staged = model.isStaged(element)
-    return VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Image(systemName: model.surface.symbolName)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(element.displayTitle)
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.white)
-          .lineLimit(2)
-        Spacer(minLength: 0)
-        Button {
-          model.stageSelection()
-        } label: {
-          Label(
-            staged ? "Added" : "Add to message",
-            systemImage: staged ? "checkmark.circle.fill" : "plus.circle"
-          )
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(staged ? ADEColor.accent : .white.opacity(0.8))
-          .padding(.horizontal, 9)
-          .padding(.vertical, 5)
-          .background(Color.white.opacity(0.09), in: Capsule())
+  private var inspector: some View {
+    List {
+      if let errorText = model.errorText {
+        Section {
+          Label(errorText, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(ADEColor.warning)
+            .font(.subheadline)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("LiveInspect.AddToMessage")
       }
-      if !element.displaySubtitle.isEmpty {
-        Text(element.displaySubtitle)
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.62))
+      if let selected = model.selected {
+        elementSections(selected)
+      } else {
+        Section {
+          emptySelection
+        }
       }
+      if !model.staged.isEmpty || !model.strokes.isEmpty {
+        Section("In This Message") {
+          ForEach(model.staged) { element in
+            Label(element.displayTitle, systemImage: "scope")
+              .lineLimit(1)
+          }
+          if !model.strokes.isEmpty {
+            Label(
+              model.strokes.count == 1 ? "1 mark on the picture" : "\(model.strokes.count) marks on the picture",
+              systemImage: "pencil.tip.crop.circle"
+            )
+          }
+        }
+      }
+      if let note = model.note {
+        Section {
+          EmptyView()
+        } footer: {
+          Text(note)
+        }
+      }
+    }
+    .listStyle(.insetGrouped)
+    .scrollContentBackground(.hidden)
+  }
+
+  @ViewBuilder
+  private func elementSections(_ element: LiveInspectElement) -> some View {
+    let staged = model.isStaged(element)
+    Section {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(element.displayTitle)
+          .font(.headline)
+          .lineLimit(2)
+        if !element.displaySubtitle.isEmpty {
+          Text(element.displaySubtitle)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+      }
+      .padding(.vertical, 2)
       let ancestors = LiveInspectGeometry.ancestors(of: element, in: model.elements)
       if !ancestors.isEmpty {
-        Text(ancestors.prefix(3).map(\.displayTitle).joined(separator: " › "))
-          .font(.caption2)
-          .foregroundStyle(.white.opacity(0.42))
-          .lineLimit(1)
-      }
-      HStack(spacing: 6) {
-        chip(element.frameLabel, symbol: "rectangle.dashed")
-        if let source = element.sourceLabel {
-          chip(source, symbol: "link")
+        LabeledContent("Path") {
+          Text(ancestors.prefix(3).map(\.displayTitle).reversed().joined(separator: " › "))
+            .lineLimit(1)
+            .truncationMode(.head)
         }
       }
       if let enabled = element.enabled, enabled == false {
-        Label("Disabled", systemImage: "nosign")
-          .font(.caption2)
-          .foregroundStyle(.white.opacity(0.5))
+        LabeledContent("State", value: "Disabled")
+      }
+      Button {
+        model.stageSelection()
+      } label: {
+        Label(
+          staged ? "Added to Message" : "Add to Message",
+          systemImage: staged ? "checkmark.circle.fill" : "plus.circle"
+        )
+      }
+      .accessibilityIdentifier("LiveInspect.AddToMessage")
+    } header: {
+      Text("Element")
+    }
+
+    Section("Frame") {
+      let frame = element.pointFrame ?? element.frame
+      frameRow("X", frame.x)
+      frameRow("Y", frame.y)
+      frameRow("Width", frame.width)
+      frameRow("Height", frame.height)
+    }
+
+    if let source = element.sourceLabel {
+      Section {
+        Label {
+          Text(source)
+            .font(.subheadline.monospaced())
+            .lineLimit(1)
+            .truncationMode(.middle)
+        } icon: {
+          Image(systemName: "doc.text")
+        }
+      } header: {
+        Text("Source")
+      } footer: {
+        if let confidence = element.sourceConfidence, confidence != "exact" {
+          Text("Best match (\(confidence)).")
+        }
       }
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .fill(Color.white.opacity(0.07))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
-    )
-    .accessibilityIdentifier("LiveInspect.ElementCard")
   }
 
-  private func chip(_ text: String, symbol: String) -> some View {
-    Label(text, systemImage: symbol)
-      .font(.system(size: 10, weight: .medium))
-      .foregroundStyle(.white.opacity(0.68))
-      .lineLimit(1)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(Color.white.opacity(0.08), in: Capsule())
-  }
-
-  private var sendButton: some View {
-    Button {
-      ADEHaptics.success()
-      if model.sendToComposer() { onClose() }
-    } label: {
-      Label("Send to chat", systemImage: "paperplane.fill")
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.black)
-        .frame(maxWidth: .infinity)
-        .frame(height: 46)
-        .background(ADEColor.accent, in: Capsule(style: .continuous))
+  private func frameRow(_ title: String, _ value: Double) -> some View {
+    LabeledContent(title) {
+      Text(value.formatted(.number.precision(.fractionLength(0...1))))
+        .monospacedDigit()
     }
-    .buttonStyle(.plain)
-    .disabled(!model.canSend)
-    .opacity(model.canSend ? 1 : 0.45)
-    .accessibilityHint("Attaches the annotated picture and its element packet to the chat")
-    .accessibilityIdentifier("LiveInspect.Send")
+  }
+
+  @ViewBuilder
+  private var emptySelection: some View {
+    if case .failed = model.phase {
+      ContentUnavailableView {
+        Label("Couldn't Freeze the Picture", systemImage: "exclamationmark.triangle")
+      } actions: {
+        Button("Try Again") { model.reload() }
+      }
+    } else if model.phase == .loading || model.busy {
+      HStack(spacing: 10) {
+        ProgressView()
+        Text(model.phase == .loading ? "Freezing the picture…" : "Looking up the element…")
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .center)
+      .padding(.vertical, 18)
+    } else {
+      ContentUnavailableView(
+        "Select an Element",
+        systemImage: "cursorarrow.rays",
+        description: Text("Tap the picture to inspect it, or draw on it with the markup tools.")
+      )
+    }
   }
 }
 
@@ -1857,6 +1784,8 @@ struct LiveInspectPicture: View {
             .resizable()
             .interpolation(.high)
             .frame(width: rect.width, height: rect.height)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius(for: rect), style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
             .position(x: rect.midX, y: rect.midY)
           if let selected = model.selected {
             selectionBox(selected, in: rect)
@@ -1869,15 +1798,11 @@ struct LiveInspectPicture: View {
               .foregroundStyle(ADEColor.warning)
             Text("The picture couldn't be frozen.")
               .font(.footnote)
-              .foregroundStyle(.white.opacity(0.8))
-            Button("Retry") { model.reload() }
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.accent)
-              .buttonStyle(.plain)
+              .foregroundStyle(.secondary)
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-          ProgressView().tint(.white)
+          ProgressView()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
@@ -1889,6 +1814,12 @@ struct LiveInspectPicture: View {
       .accessibilityHint("Tap to inspect an element, or draw with a markup tool.")
       .accessibilityIdentifier("LiveInspect.Picture")
     }
+  }
+
+  /// A phone's screen gets a phone's corners; a window or a desktop keeps a
+  /// small radius.
+  private func cornerRadius(for rect: CGRect) -> CGFloat {
+    model.surface == .simulator ? rect.width * 0.1 : 8
   }
 
   private func selectionBox(_ element: LiveInspectElement, in rect: CGRect) -> some View {
@@ -1979,29 +1910,6 @@ struct LiveInspectMarkupLayer: View {
     .offset(x: imageRect.minX, y: imageRect.minY)
     .allowsHitTesting(false)
     .accessibilityHidden(true)
-  }
-}
-
-/// One inline warning line, the viewer's own styling rather than a new banner
-/// surface (this is inside a full-screen viewer, not a page).
-private struct LiveInspectBanner: View {
-  let text: String
-  let symbol: String
-  let tint: Color
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Image(systemName: symbol)
-        .font(.caption2)
-        .foregroundStyle(tint)
-      Text(text)
-        .font(.caption)
-        .foregroundStyle(.white.opacity(0.75))
-        .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: 0)
-    }
-    .padding(9)
-    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 }
 
