@@ -335,9 +335,9 @@ struct WorkSidebarSectionHeader: View {
   /// Wide display only: the lane's branch under its name, as desktop's header
   /// shows it.
   var branch: String? = nil
-  /// Wide display only: the lane tools live on this lane, from the open chat's
-  /// own chip poll (the one lane the phone already polls).
-  var toolMarks: [DuoToolTab] = []
+  /// The Duo's sessions column: the lane's name, its branch under it and one
+  /// count. Git state, focus and the PR are the Lanes tab's to show there.
+  var minimal = false
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -407,7 +407,7 @@ struct WorkSidebarSectionHeader: View {
 
           // Beside the name, not in the trailing cluster: there it sat next to
           // the amber "uncommitted changes" dot and read as the same fact.
-          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow {
+          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow, !minimal {
             WorkLaneFocusDot(status: laneFocus)
           }
 
@@ -431,23 +431,11 @@ struct WorkSidebarSectionHeader: View {
       // lane name: this is context, not a call to action. Dropped entirely on a
       // folded quiet row, where the section is one thin line and every glyph
       // competes with the count.
-      if !isQuietRow, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
+      if !isQuietRow, !minimal, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
         laneGitStateChips(laneStatus)
       }
 
-      if !toolMarks.isEmpty, !isQuietRow {
-        HStack(spacing: 5) {
-          ForEach(toolMarks) { tab in
-            Image(systemName: tab.symbolName)
-              .font(.caption2.weight(.semibold))
-          }
-        }
-        .foregroundStyle(ADEColor.textSecondary)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Live tools: \(toolMarks.map(\.title).joined(separator: ", "))")
-      }
-
-      if let pullRequest {
+      if let pullRequest, !minimal {
         Button {
           onOpenPullRequest(pullRequest)
         } label: {
@@ -754,6 +742,10 @@ struct WorkSessionListRow: View {
   var waitingOnSubagent: Bool = false
   /// A card on the Duo's board (see `WorkSessionRow.boardCard`).
   var boardCard = false
+  /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
+  var duoRow = false
+  /// The machine a row from another machine lives on, for the Duo's meta line.
+  var machineName: String? = nil
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -979,7 +971,9 @@ struct WorkSessionListRow: View {
           nestedSubagent: nestedSubagent,
           showsLaneIdentity: showsLaneIdentity,
           waitingOnSubagent: waitingOnSubagent,
-          boardCard: boardCard
+          boardCard: boardCard,
+          duoRow: duoRow,
+          machineName: machineName
         )
         .equatable()
       }
@@ -1984,6 +1978,8 @@ struct WorkHeaderOverflowMenu: View {
   /// In a system toolbar: a plain symbol label (with the unread count as the
   /// item's badge), which the toolbar styles and lays out itself.
   var toolbarLabel = false
+  /// The Duo's sessions column: List or Board, as the menu's first section.
+  var viewMode: Binding<DuoWorkViewMode>? = nil
 
   private var unread: Int { drawer.unreadCount }
 
@@ -1997,6 +1993,16 @@ struct WorkHeaderOverflowMenu: View {
 
   private var menu: some View {
     Menu {
+      if let viewMode {
+        Section("View") {
+          Picker("View", selection: viewMode) {
+            ForEach(DuoWorkViewMode.allCases) { mode in
+              Label(mode.title, systemImage: mode.symbolName).tag(mode)
+            }
+          }
+          .pickerStyle(.inline)
+        }
+      }
       Button {
         ADEHaptics.light()
         actions.onOpenActivity()

@@ -725,6 +725,8 @@ struct WorkChatSessionView: View {
   /// chip's tool as a pane tab instead of a full-screen cover, and the chip's
   /// own poll is the pane's only state source. Nil on every pushed chat.
   var duoPane: DuoWorkPaneModel? = nil
+  /// A book-folded Duo chat keeps its composer to the trailing page.
+  @Environment(\.duoComposerLeadingInset) private var duoComposerLeadingInset
   /// The tools pane is open beside this chat. Its tools are then in the pane's
   /// toolbar, so the composer drops its lane tool chips (never the chat's own).
   var duoPaneOpen = false
@@ -1102,17 +1104,17 @@ struct WorkChatSessionView: View {
   }
 
   var showsComposerChatInfoBadge: Bool {
-    inputLockMessage == nil && composerBadgeChatInfoCount > 0 && onOpenChatInfo != nil
+    duoPane == nil && inputLockMessage == nil && composerBadgeChatInfoCount > 0 && onOpenChatInfo != nil
   }
 
   var showsComposerPrBadge: Bool {
-    inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
+    duoPane == nil && inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
   }
 
   /// Lane tool chips: the lane's running simulator, browser tabs and App
   /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
   var showsComposerLaneToolChips: Bool {
-    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty && !duoPaneOpen
+    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty && duoPane == nil
   }
 
   /// The thread-comments chip: only while the chat has at least one comment
@@ -1131,6 +1133,10 @@ struct WorkChatSessionView: View {
 
   /// Whether the floating badge row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
+  ///
+  /// In the Duo's Work column the chat actions are the rail and the lane tools
+  /// are the tools pane, so only the composer's own hint stays above it: the
+  /// thread-comments chip, which says what the next send carries.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
       || showsComposerThreadCommentsChip
@@ -2022,10 +2028,9 @@ struct WorkChatSessionView: View {
         // keyboard (like the composer) is just more bottom inset. A keyboard
         // show/hide is then an inset change, which re-pins a following reader
         // and leaves everyone else's offset untouched.
-        // In the Duo's wide column the header is a native navigation bar, so
-        // the thread starts under it rather than running beneath it: a short
-        // half (laptop) must not tuck its first message under the bar.
-        .ignoresSafeArea(edges: duoPane == nil ? [.top, .bottom] : [.bottom])
+        // In the Duo's wide column the header is the rail's glass title
+        // capsule, and the thread scrolls under it the same way.
+        .ignoresSafeArea(edges: [.top, .bottom])
         // The proxy reports the layout frame; the bands the transcript was
         // allowed to grow into (header + status bar above, home indicator or
         // keyboard below) come back as its safe-area insets.
@@ -2114,6 +2119,7 @@ struct WorkChatSessionView: View {
       }
     }
     .padding(.bottom, workChatComposerBottomGap)
+    .padding(.leading, duoComposerLeadingInset)
     .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
     .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
   }

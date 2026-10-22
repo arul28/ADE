@@ -259,8 +259,35 @@ struct WorkChatHeaderMenu: View, Equatable {
     }
   }
 
-  @ViewBuilder
   private var sessionItems: some View {
+    WorkChatSessionMenuItems(
+      model: model,
+      deleteLast: false,
+      onRename: onRename,
+      onDelete: onDelete,
+      onCopySessionId: onCopySessionId,
+      onCopySessionDeepLink: onCopySessionDeepLink,
+      onTogglePinned: onTogglePinned,
+      onRestartAgent: onRestartAgent
+    )
+  }
+}
+
+/// The chat's own items (rename, restart, copy, pin, mute, delete), shared by
+/// the phone header's ⋯ menu and the Duo rail's overflow menu so the two can
+/// never offer different actions.
+struct WorkChatSessionMenuItems: View {
+  let model: WorkChatHeaderMenuModel
+  /// The rail lists Delete last, after a divider, as a toolbar overflow does.
+  var deleteLast: Bool
+  var onRename: () -> Void
+  var onDelete: () -> Void
+  var onCopySessionId: () -> Void
+  var onCopySessionDeepLink: () -> Void
+  var onTogglePinned: () -> Void
+  var onRestartAgent: (() -> Void)?
+
+  var body: some View {
     if model.showsRename {
       Button(action: onRename) {
         Label("Rename", systemImage: "pencil")
@@ -274,8 +301,8 @@ struct WorkChatHeaderMenu: View, Equatable {
       .accessibilityHint("Starts a fresh agent process on the next message, with new skills, plugins, and MCP servers. The conversation is kept.")
     }
 
-    Button(role: .destructive, action: onDelete) {
-      Label("Delete chat", systemImage: "trash")
+    if !deleteLast {
+      deleteButton
     }
 
     Button(action: onCopySessionId) {
@@ -304,6 +331,17 @@ struct WorkChatHeaderMenu: View, Equatable {
         Label(model.sessionMuted ? "Unmute notifications" : "Mute notifications",
               systemImage: model.sessionMuted ? "bell" : "bell.slash")
       }
+    }
+
+    if deleteLast {
+      Divider()
+      deleteButton
+    }
+  }
+
+  private var deleteButton: some View {
+    Button(role: .destructive, action: onDelete) {
+      Label("Delete chat", systemImage: "trash")
     }
   }
 }

@@ -465,6 +465,9 @@ struct WorkRootListScreen: View, Equatable {
   // display, where the chat is pushed exactly as it always was.
   /// The chat the wide detail column is showing. Nil means the empty column.
   @State var duoSelectedRoute: WorkSessionRoute?
+  /// The new-chat page the wide detail column is showing, beside the list.
+  /// Wins over the selected chat while it is up; Cancel returns to it.
+  @State var duoComposeRoute: WorkNewChatRoute?
   /// The chat's tool column: what is open, and whether the sessions column is
   /// showing beside it. Opening a tool collapses the column fully (like the
   /// desktop sidebar); the chat header's sidebar toggle brings it back.
@@ -766,10 +769,17 @@ struct WorkRootListScreen: View, Equatable {
       // Long-press menu actions fire mid-dismissal; pushing a route into that
       // animation is what the existing yield below is already guarding against.
       await Task.yield()
-      // The compose page covers the split; close the tools pane first so the
-      // list (which carries the push destinations) is mounted when it lands.
-      if duoLayout.isWide, duoPane.isOpen { duoPane.close() }
-      path.append(WorkNewChatRoute(preferredLaneId: preferredLaneId))
+      if duoLayout.isWide {
+        // The page opens in the detail column with the list beside it, as on
+        // desktop. The tools pane belongs to the chat it was open for.
+        if duoPane.isOpen { duoPane.close() }
+        withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
+          duoComposeRoute = WorkNewChatRoute(preferredLaneId: preferredLaneId)
+          if duoWorkFamily == .wide { duoShowsSessionList = true }
+        }
+      } else {
+        path.append(WorkNewChatRoute(preferredLaneId: preferredLaneId))
+      }
       navigationMutationPending = false
     }
   }
@@ -901,10 +911,13 @@ struct WorkRootListScreen: View, Equatable {
     }
   }
 
-  /// The Duo's inner display: every column is its own navigation stack, side by
-  /// side (see DuoWorkSplit.swift for why). Held landscape it is desktop's
-  /// sessions | chat, the chat's tools as a column beside it, or the board;
-  /// held portrait the chat is full width and the list is an overlay.
+  /// The Duo's inner display: two sibling navigation stacks, never one stack
+  /// around both, because iOS lays the TRAILING stack's toolbar along the
+  /// curved edge as the vertical rail (see DuoWorkSplit.swift).
+  /// - Held landscape: the sessions column | the detail column (a chat with
+  ///   its tools pane, the new-chat page, the board, or the empty state).
+  /// - Held portrait: the detail column full width, the sessions column an
+  ///   overlay its sidebar button brings in.
   ///
   /// The sessions list is always mounted, collapsed or not: its list carries
   /// the screen's data tasks and alerts, exactly as the phone's list does under
@@ -916,9 +929,9 @@ struct WorkRootListScreen: View, Equatable {
       ZStack {
         duoColumns(family: family, fold: fold, size: proxy.size)
         if !path.isEmpty {
-          // New chat, and anything else pushed, covers the columns as it does
-          // on the phone. Its root is clear, so a back swipe reveals the
-          // columns, which never left.
+          // Anything still pushed (a fixture's delayed open) covers the
+          // columns as it does on the phone. Its root is clear, so a back
+          // swipe reveals the columns, which never left.
           NavigationStack(path: $path) {
             Color.clear
               .containerBackground(.clear, for: .navigation)
@@ -944,9 +957,9 @@ struct WorkRootListScreen: View, Equatable {
       .onChange(of: family, initial: true) { _, next in
         handleDuoFamilyChange(next)
       }
-      // Opening a tool cedes the column, exactly like the desktop sidebar;
-      // closing it hands the column back (held landscape only: held portrait
-      // the list is an overlay that is already away).
+      // Opening the tools pane cedes the sessions column, exactly like the
+      // desktop sidebar; closing it hands the column back (held landscape
+      // only: held portrait the list is an overlay that is already away).
       .onChange(of: duoPane.isOpen) { _, open in
         guard duoWorkFamily == .wide else { return }
         withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
@@ -962,15 +975,25 @@ struct WorkRootListScreen: View, Equatable {
     .task(id: duoPreviewSelectionKey) { applyDuoPreviewSelectionIfNeeded() }
   }
 
-  /// The open chat's lane, whose header carries the chat's live tool marks.
-  private var duoOpenLaneId: String? {
-    guard let sessionId = duoSelectedRoute?.sessionId else { return nil }
-    return mergedSessions.first(where: { $0.id == sessionId })?.laneId
+  /// Under the sessions column's large title: how many chats it holds.
+  private var duoSessionsSubtitle: String {
+    let count = sessionPresentation.topLevelDisplaySessionIds.count
+    return count == 1 ? "1 chat" : "\(count) chats"
   }
 
-  /// The board takes the whole area while it is chosen and no chat is open.
-  private var duoBoardActive: Bool {
-    duoViewMode == .board && duoSelectedRoute == nil
+  /// What the detail column shows, in priority order.
+  private enum DuoDetail {
+    case compose(WorkNewChatRoute)
+    case chat(WorkSessionRoute)
+    case board
+    case empty
+  }
+
+  private var duoDetail: DuoDetail {
+    if let route = duoComposeRoute { return .compose(route) }
+    if let route = duoSelectedRoute { return .chat(route) }
+    if duoViewMode == .board { return .board }
+    return .empty
   }
 
   @ViewBuilder
@@ -982,15 +1005,14 @@ struct WorkRootListScreen: View, Equatable {
     }
   }
 
-  /// Sessions | chat (or the board). The list keeps its slot when it collapses,
-  /// at zero width, so its tasks keep running and its scroll position stays.
+  /// Sessions | detail. The list keeps its slot when it collapses, at zero
+  /// width, so its tasks keep running and its scroll position stays.
   private func duoWideColumns(fold: DuoFold, size: CGSize) -> some View {
     let column = DuoWorkMetrics.sessionsColumn(total: size.width, fold: fold)
-    let listShown = duoShowsSessionList && !duoBoardActive
+    let listShown = duoShowsSessionList
     return HStack(spacing: 0) {
       duoSessionsColumn
         .frame(width: listShown ? column.width : 0)
-        // Clips sideways only: the column's bottom bar lives in the safe area.
         .mask { Rectangle().ignoresSafeArea() }
         .opacity(listShown ? 1 : 0)
         .allowsHitTesting(listShown)
@@ -1004,12 +1026,14 @@ struct WorkRootListScreen: View, Equatable {
     .animation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion), value: listShown)
   }
 
-  /// Held portrait: the chat (or the board) full width, and the list as an
-  /// overlay column the sidebar button brings in. With nothing open the list
-  /// is the page.
+  /// Held portrait: the detail full width, and the list as an overlay column
+  /// the sidebar button brings in. With nothing open the list is the page.
   private func duoTallColumns(size: CGSize) -> some View {
-    let listIsPage = duoSelectedRoute == nil && !duoBoardActive
-    let overlayShown = duoShowsSessionList && !listIsPage && !duoBoardActive
+    let listIsPage: Bool = {
+      if case .empty = duoDetail { return true }
+      return false
+    }()
+    let overlayShown = duoShowsSessionList && !listIsPage
     let overlayWidth = min(DuoWorkMetrics.listWidth, size.width * 0.6)
     return ZStack(alignment: .leading) {
       duoDetailColumn
@@ -1026,10 +1050,15 @@ struct WorkRootListScreen: View, Equatable {
       }
       duoSessionsColumn
         .frame(width: listIsPage ? size.width : overlayWidth)
-        .background(ADEColor.pageBackground)
-        .clipShape(RoundedRectangle(cornerRadius: listIsPage ? 0 : 22, style: .continuous))
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        // A mask that reaches into the safe area: the column's navigation bar
+        // lives there, and a plain clip would cut it off.
+        .mask {
+          RoundedRectangle(cornerRadius: listIsPage ? 0 : 28, style: .continuous)
+            .ignoresSafeArea()
+        }
         .shadow(color: .black.opacity(overlayShown ? 0.18 : 0), radius: 24, x: 6)
-        .padding(listIsPage ? 0 : 6)
+        .padding(listIsPage ? 0 : 8)
         .offset(x: listIsPage || overlayShown ? 0 : -(overlayWidth + 40))
         .allowsHitTesting(listIsPage || overlayShown)
         .accessibilityHidden(!(listIsPage || overlayShown))
@@ -1040,7 +1069,7 @@ struct WorkRootListScreen: View, Equatable {
 
   /// The sessions column, as the real list: filters, grouping, row menus and
   /// every list-level task stay exactly as they are in the compact layout. Only
-  /// the chrome is native: a toolbar instead of the phone's one-row header.
+  /// the chrome is native (see `duoSessionsToolbar`).
   private var duoSessionsColumn: some View {
     NavigationStack {
       ScrollViewReader { proxy in
@@ -1051,19 +1080,55 @@ struct WorkRootListScreen: View, Equatable {
 
   @ViewBuilder
   private var duoDetailColumn: some View {
-    if duoBoardActive {
-      duoBoardColumn
-    } else if let route = duoSelectedRoute {
+    switch duoDetail {
+    case .compose(let route):
+      duoComposeColumn(route)
+    case .chat(let route):
       sessionDestinationView(route, inColumn: true)
-    } else {
-      NavigationStack {
-        DuoWorkEmptyDetail()
-      }
+    case .board:
+      duoBoardColumn
+    case .empty:
+      duoEmptyColumn
     }
   }
 
-  /// The board as the trailing column: the same toolbar as the list, so the
-  /// view switch, filters and compose stay in reach.
+  /// Nothing picked: a quiet note in the middle of the column and a way to
+  /// start. The rail keeps New Chat and the app tabs.
+  private var duoEmptyColumn: some View {
+    NavigationStack {
+      DuoWorkEmptyDetail(canCreate: inputs.isLive, onNewChat: pushNewChatRoute)
+        .toolbar {
+          ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
+          DuoAppTabsToolbar()
+        }
+        .modifier(duoShowSessionsItem)
+    }
+  }
+
+  /// The phone's new-chat page, in the detail column beside the list, as
+  /// desktop opens a new chat. Cancel puts it away; starting the chat turns it
+  /// into that chat, in place.
+  private func duoComposeColumn(_ route: WorkNewChatRoute) -> some View {
+    NavigationStack {
+      newChatDestination(route)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel", systemImage: "xmark") {
+              ADEHaptics.light()
+              withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
+                duoComposeRoute = nil
+              }
+            }
+            .accessibilityIdentifier("Duo.Work.NewChat.Cancel")
+          }
+          DuoAppTabsToolbar()
+        }
+        .modifier(duoShowSessionsItem)
+    }
+    .id(route.preferredLaneId ?? "-")
+  }
+
+  /// The board in the detail column, beside the list.
   private var duoBoardColumn: some View {
     let topLevel = displaySessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }
     let board = duoWorkBoardColumns(
@@ -1084,21 +1149,43 @@ struct WorkRootListScreen: View, Equatable {
           sessionListRow(session, compact: false, showsLaneIdentity: true, transitionNamespace: nil, boardCard: true)
         }
       )
-      .navigationTitle("Work")
+      .navigationTitle("Board")
       .navigationBarTitleDisplayMode(.inline)
-      .searchable(
-        text: searchTextBinding,
-        placement: .navigationBarDrawer(displayMode: .always),
-        prompt: "Search chats, lanes, output"
-      )
-      .toolbar { duoBoardToolbar }
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
+        DuoAppTabsToolbar()
+      }
+      .modifier(duoShowSessionsItem)
     }
   }
 
-  /// The chat header's sidebar button. Held landscape, hiding the list gives
-  /// the thread its width back, and showing it must not squeeze the thread
-  /// below something readable: when the pane is the reason it would, the pane
-  /// gives way. Held portrait it slides the overlay in and out.
+  /// The detail column's way back to the list while the list is away.
+  private var duoShowSessionsItem: DuoShowSessionsItem {
+    DuoShowSessionsItem(shown: !duoShowsSessionList) { toggleDuoSessionsColumn() }
+  }
+
+  /// Held portrait with nothing open, the list is the whole page: it carries
+  /// the app tabs itself, and has no column to collapse.
+  private var duoListIsPage: Bool {
+    guard duoWorkFamily == .tall else { return false }
+    if case .empty = duoDetail { return true }
+    return false
+  }
+
+  /// New Chat as the rail's one filled circle.
+  private var duoNewChatRailButton: some View {
+    Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
+      .disabled(!inputs.isLive)
+      .accessibilityIdentifier("Duo.Work.Rail.NewChat")
+  }
+
+  /// The sidebar button (the sessions column's own, or the chat's when the
+  /// column is away). Held landscape, hiding the list gives the thread its
+  /// width back, and showing it must not squeeze the thread below something
+  /// readable: when the pane is the reason it would, the pane gives way. Held
+  /// portrait it slides the overlay in and out.
   private func toggleDuoSessionsColumn() {
     withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
       if duoShowsSessionList {
@@ -1144,11 +1231,18 @@ struct WorkRootListScreen: View, Equatable {
   /// back on the list.
   private func handleDuoWidthChange(_ wide: Bool) {
     guard wide else {
-      // Folding back to the phone layout carries the open chat into the stack,
-      // so the reader does not land back on the list.
-      if path.isEmpty, let route = duoSelectedRoute {
-        path.append(route)
+      // Folding back to the phone layout carries the open chat (or the
+      // new-chat page) into the stack, so the reader does not land back on
+      // the list.
+      if path.isEmpty {
+        if let route = duoSelectedRoute {
+          path.append(route)
+        }
+        if let compose = duoComposeRoute {
+          path.append(compose)
+        }
       }
+      duoComposeRoute = nil
       return
     }
     // A tool was open before the fold: keep the column collapsed so the split
@@ -1162,8 +1256,8 @@ struct WorkRootListScreen: View, Equatable {
         duoSelectedRoute = WorkSessionRoute(sessionId: transition)
       }
     }
-    // A chat pushed on the phone is a chat in the column here. The stack still
-    // exists for New Chat; a chat route left in it would draw twice.
+    // A chat pushed on the phone is a chat in the column here; a pushed
+    // new-chat page is the column's new-chat page.
     if !path.isEmpty { path = NavigationPath() }
   }
 
@@ -1179,21 +1273,26 @@ struct WorkRootListScreen: View, Equatable {
 
   private func applyDuoPreviewSelectionIfNeeded() {
     #if DEBUG
-    guard duoLayout.isWide, duoSelectedRoute == nil, !DuoWorkPreviewState.board else { return }
-    if let requested = DuoWorkPreviewState.sessionId,
+    guard duoLayout.isWide, WorkRootPreviewFixture.active != nil else { return }
+    if DuoWorkPreviewState.compose, duoComposeRoute == nil {
+      DuoWorkPreviewState.compose = false
+      duoComposeRoute = WorkNewChatRoute(preferredLaneId: nil)
+    }
+    if duoSelectedRoute == nil, let requested = DuoWorkPreviewState.sessionId,
        let session = mergedSessions.first(where: { $0.id == requested }) {
       duoSelectSession(session)
-      return
     }
-    guard WorkRootPreviewFixture.active != nil,
-          let first = mergedSessions.first(where: { isChatSession($0) }) else { return }
-    duoSelectSession(first)
+    if DuoWorkPreviewState.collapsed, duoShowsSessionList {
+      duoShowsSessionList = false
+    }
     #endif
   }
 
-  /// The sessions column's toolbar: desktop's SessionListPane header as
-  /// native controls: filters, compose and the overflow trailing, the
-  /// List | Board switch in the column's bottom bar.
+  /// The sessions column's toolbar, Voice Memos' list column: the sidebar
+  /// button as a glass circle at the top-left; Filter and ⋯ (with the List |
+  /// Board switch) as one glass capsule and New Chat as its own on the right;
+  /// the large "Work" title under them, and the search field under that.
+  /// Nothing at the bottom: the column's bottom bar would cross the screen.
   @ToolbarContentBuilder
   private var duoSessionsToolbar: some ToolbarContent {
     if isSelecting {
@@ -1201,64 +1300,45 @@ struct WorkRootListScreen: View, Equatable {
         Button("Cancel", action: exitSelectionMode)
       }
     } else {
-      // No back-to-projects control here: on the inner display the shell's
-      // sidebar holds Home.
-      duoSessionsActions
-      ToolbarItem(placement: .bottomBar) {
-        Picker("View", selection: duoViewModeBinding) {
-          ForEach(DuoWorkViewMode.allCases) { mode in
-            Text(mode.title).tag(mode)
+      if !duoListIsPage {
+        ToolbarItem(placement: .topBarLeading) {
+          Button(duoWorkFamily == .tall ? "Hide chats" : "Collapse sidebar", systemImage: "sidebar.left") {
+            ADEHaptics.light()
+            toggleDuoSessionsColumn()
           }
+          .accessibilityIdentifier("Duo.Work.SessionsCollapse")
         }
-        .pickerStyle(.segmented)
-        .frame(width: 200)
-        .accessibilityIdentifier("Duo.Work.ViewMode")
       }
-    }
-  }
-
-  /// The board's toolbar. The board is the trailing column, so these are the
-  /// vertical edge bar: the view switch as two symbols, then the same filters,
-  /// compose and overflow as the list.
-  @ToolbarContentBuilder
-  private var duoBoardToolbar: some ToolbarContent {
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      ForEach(DuoWorkViewMode.allCases) { mode in
-        Toggle(mode.title, systemImage: mode.symbolName, isOn: Binding(
-          get: { duoViewMode == mode },
-          set: { on in if on { duoViewModeBinding.wrappedValue = mode } }
-        ))
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        WorkFilterMenu(
+          organization: sessionOrganizationBinding,
+          foldBusyLanes: foldBusyLanesBinding,
+          selectedStatus: selectedStatusBinding,
+          selectedLaneId: selectedLaneBinding,
+          machineFilter: machineFilterBinding,
+          machineOptions: inputs.machineFilterOptions,
+          lanes: workOrderedLanes,
+          activeFilterCount: workActiveFilterCount,
+          onClear: clearWorkFilters
+        )
+        WorkHeaderOverflowMenu(
+          showsLinear: inputs.showsLinear,
+          showsCursorCloud: inputs.showsCursorCloud,
+          showsGitHubIssues: inputs.showsGitHubIssues,
+          actions: workHeaderActions,
+          toolbarLabel: true,
+          viewMode: duoViewModeBinding
+        )
       }
-    }
-    duoSessionsActions
-  }
-
-  @ToolbarContentBuilder
-  private var duoSessionsActions: some ToolbarContent {
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      WorkFilterMenu(
-        organization: sessionOrganizationBinding,
-        foldBusyLanes: foldBusyLanesBinding,
-        selectedStatus: selectedStatusBinding,
-        selectedLaneId: selectedLaneBinding,
-        machineFilter: machineFilterBinding,
-        machineOptions: inputs.machineFilterOptions,
-        lanes: workOrderedLanes,
-        activeFilterCount: workActiveFilterCount,
-        onClear: clearWorkFilters
-      )
-      Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
-        .disabled(!inputs.isLive)
-        .accessibilityIdentifier("Duo.Work.NewChat")
-    }
-    ToolbarItem(placement: .topBarTrailing) {
-      WorkHeaderOverflowMenu(
-        showsLinear: inputs.showsLinear,
-        showsCursorCloud: inputs.showsCursorCloud,
-        showsGitHubIssues: inputs.showsGitHubIssues,
-        actions: workHeaderActions,
-        toolbarLabel: true
-      )
+      ToolbarSpacer(.fixed, placement: .topBarTrailing)
+      ToolbarItem(placement: .topBarTrailing) {
+        Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
+          .disabled(!inputs.isLive)
+          .accessibilityIdentifier("Duo.Work.NewChat")
+      }
+      if duoListIsPage {
+        DuoAppTabsToolbar()
+      }
     }
   }
 
@@ -1371,8 +1451,14 @@ struct WorkRootListScreen: View, Equatable {
   private func showNewChatRoute(_ route: WorkSessionRoute) async {
     await Task.yield()
     if duoLayout.isWide {
-      // Pop the compose page; the chat opens in the column beside the list.
+      // The compose page becomes the chat, in place, beside the list.
       path = NavigationPath()
+      duoComposeRoute = nil
+      if let previous = duoSelectedRoute?.sessionId, previous != route.sessionId {
+        WorkSeenStore.stamp([previous])
+      }
+      if duoViewMode == .board { duoViewModeRaw = DuoWorkViewMode.list.rawValue }
+      selectedSessionTransitionId = route.sessionId
       duoSelectedRoute = route
     } else {
       var fresh = NavigationPath()
@@ -1384,6 +1470,18 @@ struct WorkRootListScreen: View, Equatable {
 
   private func workList(proxy: ScrollViewProxy, duoColumn: Bool = false) -> some View {
     let rows = List {
+        if duoColumn && !isSelecting {
+          // Voice Memos' list column: the large title and its count under the
+          // glass controls, then the search field, scrolling with the list.
+          DuoSessionsHeader(
+            title: "Work",
+            subtitle: duoSessionsSubtitle,
+            searchText: searchTextBinding
+          )
+          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 6, trailing: 16))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+        }
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -1701,11 +1799,9 @@ struct WorkRootListScreen: View, Equatable {
       rows
         .navigationTitle(isSelecting ? "\(selectedSessionIds.count) selected" : "Work")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(
-          text: searchTextBinding,
-          placement: .navigationBarDrawer(displayMode: .always),
-          prompt: "Search chats, lanes, output"
-        )
+        // The title is drawn large in the list itself (`DuoSessionsHeader`);
+        // the bar keeps only the glass controls. Selecting shows the count.
+        .toolbar(removing: isSelecting ? nil : .title)
         .toolbar { duoSessionsToolbar }
     } else {
       rows
@@ -1942,9 +2038,7 @@ struct WorkRootListScreen: View, Equatable {
         laneMenu: workLaneMenuActions,
         startsQuietZone: group.id == quietZoneStartGroupId,
         branch: duoLayout.isWide ? group.laneId.flatMap { laneById[$0]?.branchRef } : nil,
-        toolMarks: duoLayout.isWide && group.laneId != nil && group.laneId == duoOpenLaneId
-          ? duoPane.toolTabs
-          : []
+        minimal: duoLayout.isWide
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -2097,6 +2191,10 @@ struct WorkRootListScreen: View, Equatable {
       showsLaneIdentity: showsLaneIdentity,
       waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
       boardCard: boardCard,
+      // The Duo's sessions column draws the wide row; nested drawer rows keep
+      // their compact form.
+      duoRow: duoLayout.isWide && !boardCard && !compact && !nestedSubagent,
+      machineName: duoLayout.isWide ? workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions) : nil,
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

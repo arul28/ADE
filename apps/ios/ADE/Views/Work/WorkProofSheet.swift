@@ -194,40 +194,87 @@ struct WorkProofSheet: View {
   var body: some View {
     let groups = self.groups
     let ordered = self.ordered(groups)
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          if let focus {
-            focusChip(focus)
+    if embedded {
+      // In the Duo's tools pane: no stack of its own (it would take over the
+      // chat's title and rail), so search is an inline field over the list.
+      proofList(groups)
+        .safeAreaInset(edge: .top, spacing: 0) {
+          WorkInlineSearchField(text: $query, prompt: "Search proof")
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+        .refreshable {
+          await onRefresh()
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .fullScreenCover(item: $viewerRequest) { request in
+          WorkProofViewer(
+            artifacts: ordered,
+            artifactContent: artifactContent,
+            initialArtifactId: request.id,
+            onLoadArtifact: onLoadArtifact
+          )
+        }
+    } else {
+      NavigationStack {
+        proofList(groups)
+          .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search proof")
+          .refreshable {
+            await onRefresh()
           }
-          Picker("Show", selection: $tab) {
-            ForEach(WorkProofSheetTab.allCases) { option in
-              Text(option.rawValue).tag(option)
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle("Proof")
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { dismiss() }
             }
           }
-          .pickerStyle(.segmented)
+          .fullScreenCover(item: $viewerRequest) { request in
+            WorkProofViewer(
+              artifacts: ordered,
+              artifactContent: artifactContent,
+              initialArtifactId: request.id,
+              onLoadArtifact: onLoadArtifact
+            )
+          }
+      }
+    }
+  }
 
-          if groups.isEmpty {
-            if filtered && !artifacts.isEmpty {
-              Text("No proof matches.")
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 40)
-            } else {
-              emptyRow
-            }
+  private func proofList(_ groups: [WorkProofDrawerGroup]) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        if let focus {
+          focusChip(focus)
+        }
+        Picker("Show", selection: $tab) {
+          ForEach(WorkProofSheetTab.allCases) { option in
+            Text(option.rawValue).tag(option)
+          }
+        }
+        .pickerStyle(.segmented)
+
+        if groups.isEmpty {
+          if filtered && !artifacts.isEmpty {
+            Text("No proof matches.")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(maxWidth: .infinity)
+              .padding(.top, 40)
           } else {
-            ForEach(groups) { group in
-              VStack(alignment: .leading, spacing: 8) {
-                groupHeader(group)
-                VStack(alignment: .leading, spacing: 12) {
-                  ForEach(workProofGridRows(group.inAnswer + group.other)) { row in
-                    HStack(alignment: .top, spacing: 10) {
-                      ForEach(row.items) { item in gridItem(item) }
-                      if row.items.count == 1, case .single = row.items[0] {
-                        Color.clear.frame(maxWidth: .infinity)
-                      }
+            emptyRow
+          }
+        } else {
+          ForEach(groups) { group in
+            VStack(alignment: .leading, spacing: 8) {
+              groupHeader(group)
+              VStack(alignment: .leading, spacing: 12) {
+                ForEach(workProofGridRows(group.inAnswer + group.other)) { row in
+                  HStack(alignment: .top, spacing: 10) {
+                    ForEach(row.items) { item in gridItem(item) }
+                    if row.items.count == 1, case .single = row.items[0] {
+                      Color.clear.frame(maxWidth: .infinity)
                     }
                   }
                 }
@@ -235,31 +282,9 @@ struct WorkProofSheet: View {
             }
           }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 24)
       }
-      .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search proof")
-      .refreshable {
-        await onRefresh()
-      }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle("Proof")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        if !embedded {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
-          }
-        }
-      }
-      .fullScreenCover(item: $viewerRequest) { request in
-        WorkProofViewer(
-          artifacts: ordered,
-          artifactContent: artifactContent,
-          initialArtifactId: request.id,
-          onLoadArtifact: onLoadArtifact
-        )
-      }
+      .padding(.horizontal, 16)
+      .padding(.bottom, 24)
     }
   }
 
@@ -756,5 +781,38 @@ struct WorkProofZoomableImage: UIViewRepresentable {
       )
       scrollView.zoom(to: rect, animated: true)
     }
+  }
+}
+
+/// A search field drawn inline, for a list that lives inside another screen's
+/// navigation stack (the Duo's tools pane), where `.searchable` would put the
+/// field in that screen's bar. Same look as the system field.
+struct WorkInlineSearchField: View {
+  @Binding var text: String
+  let prompt: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .foregroundStyle(.secondary)
+      TextField(prompt, text: $text)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.search)
+      if !text.isEmpty {
+        Button {
+          text = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+    }
+    .font(.body)
+    .padding(.horizontal, 12)
+    .frame(height: 38)
+    .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
   }
 }

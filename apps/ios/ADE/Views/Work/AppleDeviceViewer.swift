@@ -91,8 +91,8 @@ struct AppleDeviceViewer: View {
 
   /// The pane form (the Work tools pane on the Duo): the device picture, as
   /// large as the column allows, on the pane's own background with a device's
-  /// corners and a soft shadow; every control is a toolbar item — the vertical
-  /// edge bar held landscape, the top bar held portrait. Nothing is drawn over
+  /// corners and a soft shadow; every control sits in the pane's own header
+  /// row (never the toolbar, which is the chat's rail). Nothing is drawn over
   /// the picture but the transient hint and status, and the speed readout
   /// when asked for.
   private var paneContent: some View {
@@ -123,34 +123,19 @@ struct AppleDeviceViewer: View {
       }
       .animation(.easeOut(duration: 0.18), value: hint)
       .animation(.easeOut(duration: 0.18), value: showsSpeed)
+    }
+    .duoPaneHeader(status: paneSubtitle) { paneActions }
+    // In the Duo's tools pane the frozen inspector takes the whole screen: it
+    // has its own bar and a picture | inspector split across the fold, and
+    // drawn inside the pane its stack would take over the chat's title and
+    // rail.
+    .fullScreenCover(isPresented: Binding(
+      get: { embedded && inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
       if let inspect {
         LiveInspectStage(model: inspect, onClose: exitInspect)
-          .transition(.opacity)
-          .zIndex(2)
       }
-    }
-    .navigationSubtitle(paneSubtitle)
-    .duoKeptToolbar { paneToolbar }
-    .duoEdgeBarTrailingItem {
-      DuoWatchControlSwitch(
-        controlling: model.mode == .controlling,
-        controlBlocker: model.controlBlocker,
-        holdDuration: Self.holdToControl,
-        holdProgress: $holdProgress,
-        onBeginControl: {
-          model.beginControl()
-          if model.mode == .controlling {
-            flashHint("You're driving the simulator. The eye hands it back.", haptic: nil)
-          }
-        },
-        onEndControl: { model.endControl() },
-        onBlocked: {
-          if let blocker = model.controlBlocker { flashHint(blocker, haptic: .warning) }
-        },
-        onEarlyRelease: {
-          if model.mode == .watching { flashHint("Hold to take control.", haptic: nil) }
-        }
-      )
     }
   }
 
@@ -161,47 +146,67 @@ struct AppleDeviceViewer: View {
     return parts.joined(separator: " · ")
   }
 
-  @ToolbarContentBuilder
-  private var paneToolbar: some ToolbarContent {
-    ToolbarSpacer(.fixed, placement: .topBarTrailing)
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      if canInspect {
-        Button("Inspect", systemImage: "viewfinder") { beginInspect() }
-          .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
-          .accessibilityIdentifier("AppleViewer.Inspect")
-      }
-      if model.health.offersReconnect {
-        Button("Reconnect", systemImage: "arrow.clockwise") {
-          Task { await model.reconnect() }
-        }
-      }
-      Button(
-        rotation.isSideways ? "Show upright" : "Turn the picture",
-        systemImage: rotation.isSideways ? "rotate.left" : "rotate.right"
-      ) {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-          rotation = rotation.isSideways ? .upright : .clockwise
-        }
-      }
-      Toggle("Speed", systemImage: "speedometer", isOn: $showsSpeed)
+  /// The tool's controls in the pane header: Inspect, Rotate, Speed, the
+  /// controlling-only Type / Home / hardware buttons, then Watch | Control.
+  @ViewBuilder
+  private var paneActions: some View {
+    if canInspect {
+      DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder") { beginInspect() }
+        .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+        .accessibilityIdentifier("AppleViewer.Inspect")
     }
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      if model.mode == .controlling {
-        Toggle("Type", systemImage: "keyboard", isOn: Binding(
-          get: { showsKeyboard },
-          set: { on in
-            showsKeyboard = on
-            keyboardFocused = on
-          }
-        ))
-        Button("Home", systemImage: "house") { model.press("home") }
-        Menu {
-          hardwareButtonsMenuContent
-        } label: {
-          Label("Hardware buttons", systemImage: "iphone.gen3")
-        }
+    if model.health.offersReconnect {
+      DuoPaneActionButton(title: "Reconnect", systemImage: "arrow.clockwise") {
+        Task { await model.reconnect() }
       }
     }
+    DuoPaneActionButton(
+      title: rotation.isSideways ? "Show upright" : "Turn the picture",
+      systemImage: rotation.isSideways ? "rotate.left" : "rotate.right"
+    ) {
+      withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+        rotation = rotation.isSideways ? .upright : .clockwise
+      }
+    }
+    DuoPaneActionButton(title: "Speed", systemImage: "speedometer", isOn: showsSpeed) {
+      showsSpeed.toggle()
+    }
+    if model.mode == .controlling {
+      DuoPaneActionButton(title: "Type", systemImage: "keyboard", isOn: showsKeyboard) {
+        showsKeyboard.toggle()
+        keyboardFocused = showsKeyboard
+      }
+      DuoPaneActionButton(title: "Home", systemImage: "house") { model.press("home") }
+      Menu {
+        hardwareButtonsMenuContent
+      } label: {
+        Image(systemName: "iphone.gen3")
+          .font(.system(size: 16, weight: .medium))
+          .frame(width: 22, height: 22)
+      }
+      .buttonStyle(.glass)
+      .buttonBorderShape(.circle)
+      .accessibilityLabel("Hardware buttons")
+    }
+    DuoWatchControlSwitch(
+      controlling: model.mode == .controlling,
+      controlBlocker: model.controlBlocker,
+      holdDuration: Self.holdToControl,
+      holdProgress: $holdProgress,
+      onBeginControl: {
+        model.beginControl()
+        if model.mode == .controlling {
+          flashHint("You're driving the simulator. The eye hands it back.", haptic: nil)
+        }
+      },
+      onEndControl: { model.endControl() },
+      onBlocked: {
+        if let blocker = model.controlBlocker { flashHint(blocker, haptic: .warning) }
+      },
+      onEarlyRelease: {
+        if model.mode == .watching { flashHint("Hold to take control.", haptic: nil) }
+      }
+    )
   }
 
   /// The full-screen form: the picture fills the screen and the bars float

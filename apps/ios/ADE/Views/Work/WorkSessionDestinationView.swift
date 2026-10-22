@@ -791,44 +791,6 @@ struct WorkSessionDestinationView: View {
     session?.laneId ?? initialSession?.laneId ?? ""
   }
 
-  /// The tabs the destination itself owns. The lane tools are published by the
-  /// chat from its chip poll; these are the chat's own surfaces, and each one
-  /// exists only when the corresponding menu item exists.
-  private var duoToolSurfaceTabs: [DuoToolTab] {
-    var tabs: [DuoToolTab] = []
-    if showsLaneActions && !personalChat && duoHasPullRequest { tabs.append(.pr) }
-    if duoToolLane != nil { tabs.append(.git) }
-    if duoToolLane != nil { tabs.append(.files) }
-    if !personalChat && syncService.activeProjectId != nil { tabs.append(.issues) }
-    if !personalChat { tabs.append(.proof) }
-    let chatLike = (session ?? initialSession).map(isChatSession) ?? false
-    if chatLike {
-      tabs.append(.agents)
-      tabs.append(.chatInfo)
-    }
-    // A CLI session has no separate terminal to offer: the chat column IS the
-    // terminal, so a Terminal tab would only ever duplicate it.
-    return tabs
-  }
-
-  /// The lane Git and Files tabs read from. Only a lane this project can
-  /// resolve: a cross-project quick look or a lane on another machine has no
-  /// snapshot path here, and inventing one would be a new fetch.
-  private var duoToolLane: LaneSummary? {
-    guard crossProjectContext == nil, !personalChat else { return nil }
-    let laneId = (session?.laneId ?? initialSession?.laneId ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !laneId.isEmpty, !isWorkRemoteLaneId(laneId) else { return nil }
-    return lanes.first(where: { $0.id == laneId })
-  }
-
-  /// This project's lanes as first-frame snapshots. `LaneDetailScreen` reads the
-  /// real detail itself; the snapshots only let its header and manage sheet
-  /// resolve siblings on the first frame.
-  private var duoToolLaneSnapshots: [LaneListSnapshot] {
-    lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
-  }
-
   /// The PR badge chip's own condition: a PR the chat can show, not merely a
   /// lane that could have one.
   private var duoHasPullRequest: Bool {
@@ -877,16 +839,8 @@ struct WorkSessionDestinationView: View {
       chatPrDetailsContent(embedded: true)
     case .proof:
       duoProofContent
-    case .agents:
-      chatInfoDetailsContent(sections: .agents)
     case .chatInfo:
-      chatInfoDetailsContent(sections: .info)
-    case .git:
-      duoLaneGitContent
-    case .files:
-      duoLaneFilesContent
-    case .issues:
-      duoLaneIssuesContent
+      chatInfoDetailsContent
     }
   }
 
@@ -1038,7 +992,9 @@ struct WorkSessionDestinationView: View {
         Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
       },
       onUnlink: { Task { await unlinkCurrentChatPr() } },
-      embedded: embedded
+      embedded: embedded,
+      prWatch: embedded ? duoPanePrWatch : nil,
+      onSetPrWatch: embedded ? { mode in Task { await setPrChatWatch(mode: mode) } } : nil
     )
   }
 
@@ -1058,6 +1014,27 @@ struct WorkSessionDestinationView: View {
     return chatDisplayPr
   }
 
+  /// The PR page's Watch / Ship control, with the fixture's own watch in
+  /// DEBUG screenshot runs (no host to read the watch from).
+  private var duoPanePrWatch: WorkChatPrWatchModel? {
+    #if DEBUG
+    if let preview = DuoWorkPreviewState.pr, chatPrWatchModel == nil {
+      return WorkChatPrWatchModel(
+        prNumber: preview.tag.githubPrNumber,
+        mode: "watch",
+        holding: false,
+        lastToldAt: nil,
+        lastToldSummary: nil,
+        armedByAgent: false,
+        busy: false,
+        error: nil,
+        unknown: false
+      )
+    }
+    #endif
+    return chatPrWatchModel
+  }
+
   private var duoPanePrSummary: PrSummary? {
     #if DEBUG
     if DuoWorkPreviewState.pr != nil { return nil }
@@ -1065,78 +1042,10 @@ struct WorkSessionDestinationView: View {
     return chatDisplayPrSummary
   }
 
-  /// The lane's git actions, exactly the surface the Lanes tab's detail shows:
-  /// stage, commit, push, stash, history. `LaneDetailScreen` fetches the lane
-  /// detail itself, so this adds no data path — only the first-frame snapshot.
-  @ViewBuilder
-  private var duoLaneGitContent: some View {
-    if let lane = duoToolLane {
-      let snapshots = duoToolLaneSnapshots
-      let initial = snapshots.first(where: { $0.lane.id == lane.id })
-        ?? LaneListSnapshot(lane: lane, runtime: syncRemoteLaneEmptyRuntime)
-      // The pane is its own stack, so a file the git pane opens lands inside
-      // the column instead of covering the split.
-      LaneDetailScreen(
-        laneId: lane.id,
-        initialSnapshot: initial,
-        allLaneSnapshots: snapshots,
-        transitionNamespace: nil,
-        initialSection: .git,
-        showsBackButton: false,
-        embedded: true,
-        onRefreshRoot: {}
-      )
-    } else {
-      duoLaneToolUnavailable(
-        "Git",
-        message: "This chat's lane is on another machine or in another project, so its git actions open from the Lanes tab."
-      )
-    }
-  }
-
-  /// The lane's files, browsed by the Files tab's own screen scoped to this
-  /// chat's lane workspace.
-  @ViewBuilder
-  private var duoLaneFilesContent: some View {
-    if let lane = duoToolLane {
-      FilesRootScreen(
-        isTabActive: true,
-        preferredLaneId: lane.id,
-        embeddedInPane: true
-      )
-    } else {
-      duoLaneToolUnavailable(
-        "Files",
-        message: "This chat's lane is on another machine or in another project, so its files open from the Files tab."
-      )
-    }
-  }
-
-  /// Linear, with "Attach issue" aimed at this chat when the host offers it.
-  @ViewBuilder
-  private var duoLaneIssuesContent: some View {
-    if syncService.activeProjectId != nil {
-      LinearPaneSheet(
-        syncService: syncService,
-        attachSessionId: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
-          ? sessionId
-          : nil,
-        embedded: true
-      )
-    } else {
-      duoLaneToolUnavailable("Issues", message: "Open a project to browse its Linear issues.")
-    }
-  }
-
-  private func duoLaneToolUnavailable(_ title: String, message: String) -> some View {
-    ADEEmptyStateView(symbol: "exclamationmark.circle", title: title, message: message)
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-  }
-
   /// Opening a menu item that lives in the pane must not also present its sheet.
   private func showChatInfo() {
     if duoUsesPane {
-      duoPane?.open(.agents)
+      duoPane?.open(.chatInfo)
       refreshChatInfoSnapshots()
       Task { await refreshRemoteSubagentSnapshots() }
     } else {
@@ -1175,52 +1084,64 @@ struct WorkSessionDestinationView: View {
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 
-  /// The wide chat column's toolbar: the sessions toggle, Tools (the pane),
-  /// Chat actions (Agents, Proof, Info in the pane) and the chat's menu. With
-  /// the chat as the trailing column these are the vertical edge bar; with a
-  /// tool beside it they are an ordinary bar at the chat's top.
-  @ToolbarContentBuilder
-  private var duoChatToolbar: some ToolbarContent {
-    if let onDuoToggleSidebar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button(duoShowsSidebar ? "Hide chats" : "Show chats", systemImage: "sidebar.left") {
+  /// The wide chat's rail: the same title, actions and badges the phone's
+  /// header and ⋯ menu show, re-presented as toolbar items (DuoWorkSplit.swift).
+  private func duoChatRail(_ pane: DuoWorkPaneModel) -> DuoChatRail {
+    let current = session ?? initialSession
+    let menu = current.map(headerMenuModel) ?? WorkChatHeaderMenuModel(
+      chatInfoCount: 0,
+      artifactCount: 0,
+      showsLaneActions: false,
+      prTag: nil,
+      prGitHubUrlAvailable: false,
+      prLinkCopied: false,
+      laneAvailable: false,
+      createPrBlockedReason: nil,
+      sessionPinned: false,
+      sessionIdCopied: false,
+      sessionDeepLinkCopied: false,
+      showsProof: false,
+      showsPinAction: false,
+      showsSessionLink: false
+    )
+    let isChat = current.map(isChatSession) ?? false
+    return DuoChatRail(
+      pane: pane,
+      model: DuoChatRailModel(
+        title: sessionDestinationNavigationTitle,
+        subtitle: duoChatSubtitle,
+        provider: composerChatSummary?.provider ?? current?.toolType,
+        menu: menu,
+        isChat: isChat,
+        hasPullRequest: isChat && menu.showsLaneActions && duoHasPullRequest
+      ),
+      showsSidebarButton: !duoShowsSidebar && onDuoToggleSidebar != nil,
+      actions: DuoChatRailActions(
+        onToggleSidebar: onDuoToggleSidebar,
+        onChatInfo: { showChatInfo() },
+        onProof: { showProof() },
+        onPullRequest: { showPrDetails() },
+        onAttachIssue: {
+          guard let current else { return }
           ADEHaptics.light()
-          onDuoToggleSidebar()
-        }
-        .accessibilityIdentifier("Duo.Work.SidebarToggle")
-      }
-    }
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      Toggle("Tools", systemImage: "square.split.2x1", isOn: Binding(
-        get: { duoPaneOpen },
-        set: { _ in
-          ADEHaptics.light()
-          duoPane?.toggle()
-        }
-      ))
-      .accessibilityIdentifier("Duo.Work.ToolsToggle")
-      if let session, isChatSession(session) {
-        Toggle("Chat actions", systemImage: "list.bullet.rectangle", isOn: Binding(
-          get: { duoPaneOpen && (duoPane?.tab?.isChatAction ?? false) },
-          set: { on in
-            ADEHaptics.light()
-            if on { showChatInfo() } else { duoPane?.close() }
-          }
-        ))
-        .accessibilityIdentifier("Duo.Work.ChatActions")
-      }
-    }
-    if let session, isChatSession(session) {
-      ToolbarItem(placement: .topBarTrailing) {
-        sessionHeaderMenu(session, toolbarLabel: true)
-      }
-    }
+          syncService.linearPaneAttachSessionId = current.id
+          syncService.linearPanePresented = true
+        },
+        onOpenLane: { openSessionLane() },
+        onRename: { presentSessionRename() },
+        onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } },
+        onCopySessionId: { copyCurrentSessionId() },
+        onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+        onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+        onDelete: { Task { await deleteCurrentChatSession() } }
+      )
+    )
   }
 
   /// DEBUG screenshots only: opens the fixture's tool tab once the chat is up.
   private var duoPanePreviewKey: String {
     #if DEBUG
-    "\(sessionId)|\(duoPaneOpen)|\(duoPane?.availableTabs.count ?? 0)"
+    "\(sessionId)|\(duoPaneOpen)|\(duoPane?.toolTabs.count ?? 0)"
     #else
     ""
     #endif
@@ -1232,7 +1153,7 @@ struct WorkSessionDestinationView: View {
           let tab = DuoWorkPreviewState.tab,
           DuoWorkPreviewState.openedSessions.insert(sessionId).inserted
     else { return }
-    if tab.isChatAction { refreshChatInfoSnapshots() }
+    if tab == .chatInfo { refreshChatInfoSnapshots() }
     duoPane?.open(tab)
     #endif
   }
@@ -1403,27 +1324,27 @@ struct WorkSessionDestinationView: View {
 
   var body: some View {
     Group {
-      if duoPane == nil {
-        // Every pushed chat, the CTO composer and the hub quick look keep
-        // today's hierarchy exactly. The split exists only where a tools column
-        // can: a wide Work display.
-        chatColumnBody
+      if let duoPane {
+        // The wide Work detail column: ONE stack around the thread and the
+        // tools pane, so its toolbar is the rail along the Duo's curved edge
+        // and nothing inside it declares toolbar items of its own
+        // (DuoWorkSplit.swift).
+        NavigationStack {
+          DuoWorkChatPaneSplit(
+            isOpen: duoPaneOpen,
+            chat: { chatColumnBody },
+            tools: { duoToolsPane }
+          )
+          // The fold between thread and pane is empty space; it shows the
+          // page, not the stack's default white.
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .modifier(duoChatRail(duoPane))
+        }
       } else {
-        // Each column is its own stack, so the trailing one's toolbar becomes
-        // the vertical bar along the Duo's curved edge (DuoWorkSplit.swift).
-        DuoWorkChatPaneSplit(
-          isOpen: duoPaneOpen,
-          chat: {
-            NavigationStack {
-              chatColumnBody
-            }
-          },
-          tools: { duoToolsPane }
-        )
+        // Every pushed chat, the CTO composer and the hub quick look keep
+        // today's hierarchy exactly.
+        chatColumnBody
       }
-    }
-    .onChange(of: duoToolSurfaceTabs, initial: true) { _, tabs in
-      duoPane?.setSurfaceTabs(tabs)
     }
     .task(id: duoPanePreviewKey) { openDuoPreviewTabIfNeeded() }
     // The shell folds its sidebar away while the tools column is up, and only
@@ -1444,14 +1365,8 @@ struct WorkSessionDestinationView: View {
   /// sits, never what it is.
   private var chatColumnBody: some View {
     sessionDestinationRoot
-      .modifier(DuoChatColumnChrome(
-        enabled: duoUsesPane,
-        title: sessionDestinationNavigationTitle,
-        subtitle: duoChatSubtitle,
-        toolbar: { duoChatToolbar }
-      ))
       .workSessionNavigationChrome(
-        // The wide column's chrome is the native toolbar above.
+        // The wide column's chrome is the rail around the split (`body`).
         mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
         title: sessionDestinationNavigationTitle,
         subtitle: sessionDestinationNavigationSubtitle,
@@ -3219,28 +3134,6 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.personalChat == rhs.personalChat
       && lhs.personalChatMachineKey == rhs.personalChatMachineKey
       && lhs.liveRedirectOnlySends == rhs.liveRedirectOnlySends
-  }
-}
-
-/// The wide chat column's native chrome: the chat's title and subtitle inline
-/// in the bar, and the column's toolbar. Off (every pushed chat), it changes
-/// nothing.
-private struct DuoChatColumnChrome<ColumnToolbar: ToolbarContent>: ViewModifier {
-  let enabled: Bool
-  let title: String
-  let subtitle: String?
-  @ToolbarContentBuilder let toolbar: () -> ColumnToolbar
-
-  func body(content: Content) -> some View {
-    if enabled {
-      content
-        .navigationTitle(title)
-        .navigationSubtitle(subtitle ?? "")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbar() }
-    } else {
-      content
-    }
   }
 }
 

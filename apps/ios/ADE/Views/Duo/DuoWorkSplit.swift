@@ -1,29 +1,30 @@
 import SwiftUI
 
-// The Work tab on the Duo's inner display (DESIGN.md §3): desktop's
-// sessions | chat | tools and its kanban board.
+// The Work tab on the Duo's inner display: desktop's sessions | chat, the
+// chat's tools pane beside the thread, the new-chat page and the board.
 //
-// Every column is its own navigation stack, side by side, never one stack
-// around all of them: the trailing column's toolbar is what iOS lays along the
-// curved edge as the vertical bar, and a stack nested inside another would
-// hand its toolbar to the outer one.
+// Two sibling navigation stacks, never one stack around both: iOS lays the
+// TRAILING stack's toolbar along the curved edge as the vertical rail, and a
+// stack nested inside another hands its title and items to the outer one. So
+// inside the detail column's stack nothing declares toolbar items except the
+// rail itself (the tools pane draws its own header row instead).
 
 /// Fixed metrics for the wide Work layout. Kept in one place so the sessions
 /// column, the chat and the tools pane agree on how much room each takes.
 enum DuoWorkMetrics {
-  /// The sessions column on a flat display.
-  static let listWidth: CGFloat = 320
+  /// The held-portrait overlay's width, and the ceiling for the flat column.
+  static let listWidth: CGFloat = 340
   /// A thread narrower than this cannot hold a transcript and a composer.
   static let minChatWidth: CGFloat = 340
 
-  /// Column collapse and pane slides (DESIGN.md §1).
+  /// Column collapse and pane slides.
   static func paneMotion(reduceMotion: Bool) -> Animation? {
     reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
   }
 
-  /// Chat | tool side by side: one page each on a book fold, half and half
-  /// flat. `trailing` is the tool column's width; `fold` is the band the seam
-  /// covers when the hinge is the divider.
+  /// Chat | pane side by side: one page each on a book fold, half and half
+  /// flat. `trailing` is the pane's width; `fold` is the band the seam covers
+  /// when the hinge is the divider.
   static func wideSplit(width: CGFloat, fold: DuoFold) -> (trailing: CGFloat, fold: CGRect?) {
     if case .sideBySide(let rect) = fold,
        rect.minX > 240,
@@ -33,7 +34,7 @@ enum DuoWorkMetrics {
     return (floor(width / 2), nil)
   }
 
-  /// Tool over chat: exactly the top half on a laptop or tent fold, a little
+  /// Pane over chat: exactly the top half on a laptop or tent fold, a little
   /// under half flat, so the composer's half keeps the larger share.
   static func tallSplit(height: CGFloat, fold: DuoFold) -> (top: CGFloat, fold: CGRect?) {
     if case .stacked(let rect) = fold,
@@ -44,20 +45,35 @@ enum DuoWorkMetrics {
     return (floor(height * 0.46), nil)
   }
 
-  /// The sessions column: the leading page on a book fold, so nothing (the
-  /// composer included) sits on the fold; 320 otherwise.
+  /// The sessions column. Book: the left page exactly, so the two pages are
+  /// the list and the chat, split on the fold. Flat: about a third, so the
+  /// chat dominates (Voice Memos' list column).
   static func sessionsColumn(total: CGFloat, fold: DuoFold) -> (width: CGFloat, fold: CGRect?) {
     if case .sideBySide(let rect) = fold,
        rect.minX > 260,
        total - rect.maxX > minChatWidth {
       return (rect.minX, rect)
     }
-    return (min(listWidth, max(260, total * 0.36)), nil)
+    return (min(listWidth, max(300, floor(total / 3))), nil)
   }
 }
 
 private struct DuoWorkFamilyKey: EnvironmentKey {
   static let defaultValue: DuoFamily = .compact
+}
+
+private struct DuoComposerLeadingInsetKey: EnvironmentKey {
+  static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+  /// How far the chat's composer starts from the column's leading edge. Zero
+  /// everywhere but a book-folded chat that spans both pages, where the
+  /// composer keeps to the trailing page so no control sits on the fold.
+  var duoComposerLeadingInset: CGFloat {
+    get { self[DuoComposerLeadingInsetKey.self] }
+    set { self[DuoComposerLeadingInsetKey.self] = newValue }
+  }
 }
 
 extension EnvironmentValues {
@@ -70,7 +86,7 @@ extension EnvironmentValues {
   }
 }
 
-/// List or Board, desktop's view switch for the sessions area.
+/// List or Board, desktop's view switch, in the sessions column's ⋯ menu.
 enum DuoWorkViewMode: String, CaseIterable, Identifiable {
   case list
   case board
@@ -92,39 +108,104 @@ enum DuoWorkViewMode: String, CaseIterable, Identifiable {
   }
 }
 
-/// What the chat column says before a chat is picked.
+/// What the detail column says before a chat is picked: the system's own
+/// unavailable view, centered in the column, and one way to start.
 struct DuoWorkEmptyDetail: View {
+  let canCreate: Bool
+  let onNewChat: () -> Void
+
   var body: some View {
-    ADEEmptyStateView(
-      symbol: "bubble.left.and.bubble.right",
-      title: "Choose a chat",
-      message: "Pick a chat from the list. Its thread opens here, and its tools open beside it."
-    )
+    ContentUnavailableView {
+      Label("No Chat Selected", systemImage: "bubble.left.and.bubble.right")
+    } description: {
+      Text("Pick a chat from the list, or start a new one.")
+    } actions: {
+      Button("New Chat", action: onNewChat)
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+        .disabled(!canCreate)
+    }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .adeScreenBackground()
-    .toolbar(.hidden, for: .navigationBar)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .accessibilityIdentifier("Duo.Work.EmptyDetail")
+  }
+}
+
+/// The top of the sessions column, under its glass controls: the large title
+/// with its count, then the search field (Voice Memos' and Messages' list
+/// columns on the Duo).
+struct DuoSessionsHeader: View {
+  let title: String
+  let subtitle: String
+  @Binding var searchText: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: 0) {
+        Text(title)
+          .font(.largeTitle.weight(.bold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .accessibilityAddTraits(.isHeader)
+        Text(subtitle)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .padding(.horizontal, 4)
+      WorkInlineSearchField(text: $searchText, prompt: "Search chats, lanes, output")
+        .accessibilityIdentifier("Duo.Work.Search")
+    }
+    .padding(.top, 2)
+  }
+}
+
+/// "Show chats" at the leading top of a detail column while the sessions
+/// column is away, kept horizontal next to the title rather than in the rail.
+struct DuoShowSessionsItem: ViewModifier {
+  let shown: Bool
+  let action: () -> Void
+
+  func body(content: Content) -> some View {
+    if !shown {
+      content
+    } else if #available(iOS 27.1, *) {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { button }
+          .axisBehavior(.horizontalOnly)
+      }
+    } else {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { button }
+      }
+    }
+  }
+
+  private var button: some View {
+    Button("Show chats", systemImage: "sidebar.left") {
+      ADEHaptics.light()
+      action()
+    }
+    .accessibilityIdentifier("Duo.Work.SidebarToggle")
   }
 }
 
 extension WorkRootListScreen {
   /// Selecting in the column replaces the thread in place instead of pushing:
-  /// the list stays where the user left it, and the split's sidebar toggle
-  /// hides the list rather than popping a stack.
+  /// the list stays where the user left it.
   func duoSelectSession(_ session: TerminalSessionSummary) {
     guard !workIsPendingChatCreationSession(session) else { return }
     if let previous = duoSelectedRoute?.sessionId, previous != session.id {
       WorkSeenStore.stamp([previous])
     }
     if duoPane.isOpen { duoPane.close() }
-    // A card tapped on the board opens the chat beside the list, desktop's
-    // board-to-list hand-off.
+    duoComposeRoute = nil
+    // A card tapped on the board opens the chat in the board's place, and the
+    // list is what shows beside it.
     if duoViewMode == .board { duoViewModeRaw = DuoWorkViewMode.list.rawValue }
     // Held portrait, the list is an overlay over the chat; picking a row is
     // what puts it away.
     if duoWorkFamily == .tall { duoShowsSessionList = false }
     // Keeps the route the phone layout will push if the display folds, and the
-    // matched-geometry transition's source id.
+    // row's selected highlight.
     selectedSessionTransitionId = session.id
     clearWokeMarkerOnVisit(session)
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
@@ -147,7 +228,7 @@ extension WorkRootListScreen {
     scheduleSessionPresentationRebuild()
   }
 
-  /// The chat was deleted (or the column was emptied): back to the list.
+  /// The chat was deleted (or the column was emptied): back to the empty state.
   func duoClearSelection() {
     if let sessionId = duoSelectedRoute?.sessionId {
       WorkSeenStore.stamp([sessionId])
@@ -163,8 +244,8 @@ extension WorkRootListScreen {
     DuoWorkViewMode(rawValue: duoViewModeRaw) ?? .list
   }
 
-  /// Picking Board puts the chat away so the board has the area, as desktop
-  /// does; picking List brings the list back.
+  /// Picking Board puts the open chat away so the board has the detail
+  /// column, as desktop does; the list stays beside it either way.
   var duoViewModeBinding: Binding<DuoWorkViewMode> {
     Binding(
       get: { duoViewMode },
@@ -172,9 +253,8 @@ extension WorkRootListScreen {
         withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
           duoViewModeRaw = mode.rawValue
           if mode == .board {
+            duoComposeRoute = nil
             if duoSelectedRoute != nil { duoClearSelection() }
-          } else {
-            duoShowsSessionList = true
           }
         }
       }
@@ -293,15 +373,38 @@ struct DuoWorkBoard<Card: View>: View {
         pair(columns[2], columns[3])
           .frame(maxWidth: .infinity)
       }
-    } else {
+    } else if (size.width - 32 - 36) / CGFloat(max(1, columns.count)) >= Self.minColumnWidth {
       HStack(alignment: .top, spacing: 12) {
         ForEach(columns) { column in
           boardColumn(column)
         }
       }
       .padding(.horizontal, 16)
+    } else {
+      // Beside the sessions list the four columns do not fit at a readable
+      // width: they keep it and the board scrolls sideways, a column at a time.
+      // Two columns and a generous third peeking, so it reads as more to
+      // scroll to rather than as a clipped card.
+      let peekWidth = max(Self.minColumnWidth, floor((size.width - 16) / 2.3))
+      ScrollView(.horizontal) {
+        HStack(alignment: .top, spacing: 12) {
+          ForEach(columns) { column in
+            boardColumn(column)
+              .frame(width: peekWidth)
+          }
+        }
+        .scrollTargetLayout()
+        .padding(.horizontal, 16)
+      }
+      .scrollTargetBehavior(.viewAligned)
+      .scrollIndicators(.hidden)
+      // Columns scrolled past the edge stop at the column, never under the rail.
+      .clipped()
     }
   }
+
+  /// A card narrower than this cannot hold a two-line title and its meta line.
+  private static var minColumnWidth: CGFloat { 250 }
 
   @ViewBuilder
   private func tallGrid(fold: DuoFold, size: CGSize) -> some View {
@@ -397,6 +500,312 @@ struct DuoWorkBoard<Card: View>: View {
   }
 }
 
+// MARK: - The chat's rail
+
+/// What the wide chat's rail needs to know about the chat: its title and the
+/// chat actions with their badges, read from the same `WorkChatHeaderMenuModel`
+/// the phone's ⋯ menu draws, so the two can never offer different actions.
+struct DuoChatRailModel {
+  var title: String
+  var subtitle: String?
+  var provider: String?
+  var menu: WorkChatHeaderMenuModel
+  /// A chat (not a CLI session): Chat Info and the chat's own menu exist.
+  var isChat: Bool
+  /// The chat has a pull request the pane can show.
+  var hasPullRequest: Bool
+}
+
+/// The chat actions the rail fires; each is the menu's own action.
+struct DuoChatRailActions {
+  var onToggleSidebar: (() -> Void)?
+  var onChatInfo: () -> Void
+  var onProof: () -> Void
+  var onPullRequest: () -> Void
+  var onAttachIssue: () -> Void
+  var onOpenLane: () -> Void
+  var onRename: () -> Void
+  var onRestartAgent: (() -> Void)?
+  var onCopySessionId: () -> Void
+  var onCopySessionDeepLink: () -> Void
+  var onTogglePinned: () -> Void
+  var onDelete: () -> Void
+}
+
+/// The wide chat's toolbar. The chat is the trailing column, so held
+/// landscape this is the vertical edge bar: the chat title as a glass capsule
+/// at the column's top-left, the chat actions as a group at the top of the
+/// rail (Tools as the one filled circle), and the app tabs at the bottom.
+/// Held portrait the same declarations are the top bar, the app tabs folded
+/// into one menu so nothing sits under the composer.
+struct DuoChatRail: ViewModifier {
+  @ObservedObject var pane: DuoWorkPaneModel
+  let model: DuoChatRailModel
+  /// The sessions column is away, so the chat offers the way back.
+  let showsSidebarButton: Bool
+  let actions: DuoChatRailActions
+  @Environment(\.duoWorkFamily) private var family
+  /// The column's width, so the title capsule never asks for more than the
+  /// chat's share of it (an item too wide for the bar is dropped whole).
+  @State private var columnWidth: CGFloat = 0
+
+  /// The title capsule's widest: the thread's own width (half the column
+  /// while the pane is beside it held landscape), less the bar's margins.
+  private var titleMaxWidth: CGFloat {
+    let sidebar: CGFloat = showsSidebarButton ? 52 : 0
+    if family == .tall {
+      // Held portrait the bar shares its row with the status bar's corner,
+      // Tools, the ⋯ menu and the tabs menu.
+      return min(420, max(160, columnWidth - 400 - sidebar))
+    }
+    let chat = pane.isOpen ? columnWidth / 2 : columnWidth
+    return min(420, max(180, chat - 60 - sidebar))
+  }
+
+  func body(content: Content) -> some View {
+    let titled = content
+      .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+        if abs(columnWidth - width) > 1 { columnWidth = width }
+      }
+      .navigationTitle(model.title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar(removing: .title)
+    if #available(iOS 27.1, *) {
+      titled.toolbar { rail27 }
+    } else {
+      titled.toolbar { rail26 }
+    }
+  }
+
+  @available(iOS 27.1, *)
+  @ToolbarContentBuilder
+  private var rail27: some ToolbarContent {
+    if showsSidebarButton {
+      ToolbarItem(placement: .topBarLeading) { sidebarButton }
+        .axisBehavior(.horizontalOnly)
+    }
+    ToolbarItem(placement: .topBarLeading) { DuoChatTitleCapsule(model: model, maxWidth: titleMaxWidth) }
+      .axisBehavior(.horizontalOnly)
+    // Held portrait the app-tabs menu also sits leading: a gap keeps it its
+    // own capsule instead of joining the chat's title.
+    if family == .tall {
+      ToolbarSpacer(.fixed, placement: .topBarLeading)
+    }
+    ToolbarItem(placement: .topBarTrailing) { toolsButton }
+      .visibilityPriority(.high)
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    // Held portrait the bar shares its row with the status bar's corner: Tools,
+    // the ⋯ menu (which lists the chat's pages) and the tabs menu only.
+    if family != .tall {
+      if model.isChat {
+        ToolbarItem(placement: .topBarTrailing) { chatInfoButton }
+      }
+      // The rail is short: Proof and Pull Request are the chat actions that
+      // move into the overflow first, so the app tabs below always fit.
+      if model.menu.showsProof {
+        ToolbarItem(placement: .topBarTrailing) { proofButton }
+          .visibilityPriority(.low)
+      }
+      if model.hasPullRequest {
+        ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
+          .visibilityPriority(.low)
+      }
+    }
+    ToolbarOverflowMenu { overflowItems }
+    // Held landscape the bottom of the rail; held portrait one top-bar menu
+    // (nothing may sit under the composer). The shell picks the form.
+    DuoAppTabsToolbar()
+  }
+
+  /// iOS 26: the same rail without the 27.1 axis and overflow APIs.
+  @ToolbarContentBuilder
+  private var rail26: some ToolbarContent {
+    if showsSidebarButton {
+      ToolbarItem(placement: .topBarLeading) { sidebarButton }
+    }
+    ToolbarItem(placement: .topBarLeading) { DuoChatTitleCapsule(model: model, maxWidth: titleMaxWidth) }
+    if family == .tall {
+      ToolbarSpacer(.fixed, placement: .topBarLeading)
+    }
+    ToolbarItem(placement: .topBarTrailing) { toolsButton }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItemGroup(placement: .topBarTrailing) {
+      if model.isChat { chatInfoButton }
+      if model.menu.showsProof { proofButton }
+      if model.hasPullRequest { pullRequestButton }
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      Menu {
+        overflowItems
+      } label: {
+        Label("More", systemImage: "ellipsis")
+      }
+    }
+    DuoAppTabsToolbar()
+  }
+
+  private var sidebarButton: some View {
+    Button("Show chats", systemImage: "sidebar.left") {
+      ADEHaptics.light()
+      actions.onToggleSidebar?()
+    }
+    .accessibilityIdentifier("Duo.Work.SidebarToggle")
+  }
+
+  /// The pane's lane tools. The rail's one filled circle: it is the action
+  /// this layout exists for.
+  private var toolsButton: some View {
+    Button {
+      ADEHaptics.light()
+      pane.toggleTools()
+    } label: {
+      Label(pane.showsTool ? "Hide tools" : "Tools", systemImage: "square.split.2x1")
+        .symbolVariant(pane.showsTool ? .fill : .none)
+    }
+    .buttonStyle(.glassProminent)
+    .tint(ADEColor.accent)
+    .disabled(pane.toolTabs.isEmpty && !pane.showsTool)
+    .accessibilityHint(pane.toolTabs.isEmpty ? "This chat's lane has no simulator, desktop, app or browser running." : "")
+    .accessibilityIdentifier("Duo.Work.ToolsToggle")
+  }
+
+  private var chatInfoButton: some View {
+    Button {
+      ADEHaptics.light()
+      if pane.isOpen, pane.tab == .chatInfo { pane.close() } else { actions.onChatInfo() }
+    } label: {
+      Label("Chat Info", systemImage: "info.circle")
+        .symbolVariant(pane.isOpen && pane.tab == .chatInfo ? .fill : .none)
+    }
+    .badge(model.menu.chatInfoCount)
+    .accessibilityIdentifier("Duo.Work.ChatInfo")
+  }
+
+  private var proofButton: some View {
+    Button {
+      ADEHaptics.light()
+      if pane.isOpen, pane.tab == .proof { pane.close() } else { actions.onProof() }
+    } label: {
+      Label("Proof", systemImage: "photo.on.rectangle.angled")
+        .symbolVariant(pane.isOpen && pane.tab == .proof ? .fill : .none)
+    }
+    .badge(model.menu.artifactCount)
+    .accessibilityIdentifier("Duo.Work.Proof")
+  }
+
+  private var pullRequestButton: some View {
+    Button {
+      ADEHaptics.light()
+      if pane.isOpen, pane.tab == .pr { pane.close() } else { actions.onPullRequest() }
+    } label: {
+      Label("Pull Request", systemImage: "arrow.triangle.pull")
+    }
+    .accessibilityIdentifier("Duo.Work.PullRequest")
+  }
+
+  /// The rail's ⋯: Attach Issue and Open Lane, then the chat's own items
+  /// (the phone's ⋯ menu, minus what the rail already shows as buttons).
+  @ViewBuilder
+  private var overflowItems: some View {
+    if family == .tall {
+      Section {
+        if model.isChat {
+          Button {
+            ADEHaptics.light()
+            actions.onChatInfo()
+          } label: {
+            Label(
+              model.menu.chatInfoCount > 0 ? "Chat Info (\(model.menu.chatInfoCount))" : "Chat Info",
+              systemImage: "info.circle"
+            )
+          }
+        }
+        if model.menu.showsProof {
+          Button {
+            ADEHaptics.light()
+            actions.onProof()
+          } label: {
+            Label(
+              model.menu.artifactCount > 0 ? "Proof (\(model.menu.artifactCount))" : "Proof",
+              systemImage: "photo.on.rectangle.angled"
+            )
+          }
+        }
+        if model.hasPullRequest {
+          Button("Pull Request", systemImage: "arrow.triangle.pull") {
+            ADEHaptics.light()
+            actions.onPullRequest()
+          }
+        }
+      }
+    }
+    if model.menu.canAttachIssue || (model.menu.showsLaneActions && model.menu.laneAvailable) {
+      Section {
+        if model.menu.canAttachIssue {
+          Button("Attach Issue", systemImage: "link.badge.plus", action: actions.onAttachIssue)
+        }
+        if model.menu.showsLaneActions, model.menu.laneAvailable {
+          Button("Open Lane", systemImage: "arrow.triangle.branch", action: actions.onOpenLane)
+        }
+      }
+    }
+    if model.isChat {
+      chatItems
+    }
+  }
+
+  private var chatItems: some View {
+    WorkChatSessionMenuItems(
+      model: model.menu,
+      deleteLast: true,
+      onRename: actions.onRename,
+      onDelete: actions.onDelete,
+      onCopySessionId: actions.onCopySessionId,
+      onCopySessionDeepLink: actions.onCopySessionDeepLink,
+      onTogglePinned: actions.onTogglePinned,
+      onRestartAgent: actions.onRestartAgent
+    )
+  }
+}
+
+/// The chat's name in the rail: provider mark, title, and "lane · model ·
+/// machine" under it, as one glass capsule at the top-left of the column.
+struct DuoChatTitleCapsule: View {
+  let model: DuoChatRailModel
+  var maxWidth: CGFloat = 360
+
+  var body: some View {
+    HStack(spacing: 10) {
+      WorkProviderBareLogo(
+        provider: model.provider,
+        fallbackSymbol: "bubble.left.and.text.bubble.right",
+        tint: providerTint(model.provider),
+        size: 22
+      )
+      VStack(alignment: .leading, spacing: 0) {
+        Text(model.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let subtitle = model.subtitle, !subtitle.isEmpty {
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+      }
+    }
+    .padding(.leading, 6)
+    .padding(.trailing, 10)
+    // A toolbar item is laid out at its ideal size: without this the system
+    // squeezes the title to nothing and keeps only the mark.
+    .frame(maxWidth: maxWidth, alignment: .leading)
+    .fixedSize()
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+}
+
 #if DEBUG
 /// What a `duo-*` fixture asks the wide Work layout to show. Only the fixture
 /// host writes it; nothing in the product reads these outside `#if DEBUG`.
@@ -405,14 +814,15 @@ enum DuoWorkPreviewState {
   static var sessionId: String?
   static var tab: DuoToolTab?
   static var pr: DuoWorkPrPreview?
-  /// The fixture chat's lane tools, so its chips (and the pane's live tabs)
-  /// show without a machine.
+  /// The fixture chat's lane tools, so the pane's tools show without a machine.
   static var laneTools: WorkLaneToolsPreview?
   /// Chats whose preview tab has already been opened, so closing the pane
   /// during a screenshot session does not immediately re-open it.
   static var openedSessions: Set<String> = []
-  /// The board fixture: no chat is opened for it.
-  static var board = false
+  /// Opens the new-chat page in the detail column.
+  static var compose = false
+  /// Starts with the sessions column collapsed.
+  static var collapsed = false
 }
 
 struct DuoWorkPrPreview {
@@ -423,41 +833,45 @@ struct DuoWorkPrPreview {
 /// Fixture screens for this area, routed by `DuoPreviewRouter`:
 ///
 ///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-work
-///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-work-board
-///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-work-tools
-///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-work-pr
-///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-work-agents
+///
+/// `duo-work` (sessions | chat), `duo-work-empty`, `duo-work-new` (new chat in
+/// the column), `duo-work-board`, `duo-work-tools` (Simulator in the pane),
+/// `duo-work-info` (Chat Info page in the pane), `duo-work-pr` (Pull Request
+/// page), `duo-work-collapsed` (sessions collapsed, chat full width).
 enum DuoWorkPreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
+    let preset: DuoWorkPreviewPreset
     switch name {
-    case "duo-work":
-      return AnyView(DuoWorkPreviewHost(preset: .chat))
-    case "duo-work-board":
-      return AnyView(DuoWorkPreviewHost(preset: .board))
-    case "duo-work-tools":
-      return AnyView(DuoWorkPreviewHost(preset: .tools))
-    case "duo-work-pr":
-      return AnyView(DuoWorkPreviewHost(preset: .pr))
-    case "duo-work-agents":
-      return AnyView(DuoWorkPreviewHost(preset: .agents))
-    default:
-      return nil
+    case "duo-work": preset = .chat
+    case "duo-work-empty": preset = .empty
+    case "duo-work-new": preset = .compose
+    case "duo-work-board": preset = .board
+    case "duo-work-tools": preset = .tools
+    case "duo-work-info": preset = .info
+    case "duo-work-pr": preset = .pr
+    case "duo-work-collapsed": preset = .collapsed
+    default: return nil
     }
+    return AnyView(DuoWorkPreviewHost(preset: preset))
   }
 }
 
 private enum DuoWorkPreviewPreset {
   case chat
+  case empty
+  case compose
   case board
   case tools
+  case info
   case pr
-  case agents
+  case collapsed
 }
 
-/// Mounts the real Work root over the Work list fixtures, so the screenshot is
-/// the real wide layout: the real sessions column, the real chat destination
-/// (with a seeded transcript) and the real tools pane.
+/// Mounts the real Work root over the Work list fixtures (about three dozen
+/// chats across nine lanes), so the screenshot is the real wide layout: the
+/// real sessions column, the real chat destination (with a seeded transcript),
+/// the real tools pane and the real rail.
 private struct DuoWorkPreviewHost: View {
   @EnvironmentObject private var syncService: SyncService
   let preset: DuoWorkPreviewPreset
@@ -477,30 +891,38 @@ private struct DuoWorkPreviewHost: View {
   private func seed() {
     guard !seeded else { return }
     syncService.setActiveProjectForTesting(projectId: WorkListPreviewData.projectId, rootPath: nil)
-    WorkRootPreviewFixture.active = WorkListPreviewData.fixture()
+    WorkRootPreviewFixture.active = WorkListPreviewData.duoFixture()
     WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
-    DuoWorkPreviewState.sessionId = WorkListPreviewData.parentChatId
-    DuoWorkPreviewState.board = false
+    // The second row of the first lane, so its selected highlight is on screen.
+    DuoWorkPreviewState.sessionId = "wl-primary-running"
+    DuoWorkPreviewState.tab = nil
+    DuoWorkPreviewState.compose = false
+    DuoWorkPreviewState.collapsed = false
     DuoWorkPreviewState.laneTools = WorkLaneToolsPreview(
       state: WorkProofPreviewData.toolChipsState,
       appleStatus: WorkProofPreviewData.toolChipsAppleStatus
     )
+    DuoWorkPreviewState.pr = DuoWorkPreviewFixtures.chatPr
     UserDefaults.standard.set(DuoWorkViewMode.list.rawValue, forKey: "ade.work.duo.viewMode")
     switch preset {
     case .chat:
-      DuoWorkPreviewState.tab = nil
-    case .board:
-      DuoWorkPreviewState.tab = nil
+      break
+    case .empty:
       DuoWorkPreviewState.sessionId = nil
-      DuoWorkPreviewState.board = true
+    case .compose:
+      DuoWorkPreviewState.sessionId = nil
+      DuoWorkPreviewState.compose = true
+    case .board:
+      DuoWorkPreviewState.sessionId = nil
       UserDefaults.standard.set(DuoWorkViewMode.board.rawValue, forKey: "ade.work.duo.viewMode")
     case .tools:
       DuoWorkPreviewState.tab = .simulator
+    case .info:
+      DuoWorkPreviewState.tab = .chatInfo
     case .pr:
       DuoWorkPreviewState.tab = .pr
-      DuoWorkPreviewState.pr = DuoWorkPreviewFixtures.chatPr
-    case .agents:
-      DuoWorkPreviewState.tab = .agents
+    case .collapsed:
+      DuoWorkPreviewState.collapsed = true
     }
     seeded = true
   }

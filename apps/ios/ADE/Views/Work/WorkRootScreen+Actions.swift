@@ -837,6 +837,7 @@ extension WorkRootListScreen {
       : nil
     let route = WorkSessionRoute(sessionId: request.sessionId, remoteChat: remoteChat)
     if duoLayout.isWide {
+      duoComposeRoute = nil
       duoSelectedRoute = route
     } else {
       fresh.append(route)

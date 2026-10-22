@@ -2239,6 +2239,72 @@ enum WorkListPreviewData {
   static let seenSessionIds = ["wl-sim-2"]
 
   static func fixture() -> WorkRootPreviewFixture {
+    fixture(rows: rows, lanes: [primary, hub, perf, sim, docs])
+  }
+
+  // The Duo fixtures' extra volume: the same five lanes plus four more, about
+  // three dozen chats, with the long titles real chats get.
+  static let release = lane(id: "wl-lane-release", name: "release 1.4 hardening", branch: "ade/release-1-4-hardening", color: "#f87171", dirty: true, ahead: 5)
+  static let relay = lane(id: "wl-lane-relay", name: "pairing relay v2", branch: "ade/pairing-relay-v2", color: "#22d3ee")
+  static let linear = lane(id: "wl-lane-linear", name: "linear sync", branch: "ade/linear-sync", color: "#818cf8")
+  static let windows = lane(id: "wl-lane-windows", name: "windows desktop", branch: "ade/windows-desktop", color: "#facc15")
+
+  private static let duoExtraRows: [Row] = [
+    Row(id: "wl-rel-1", lane: release, title: "Investigate the crash when a lane is archived while its chat is still streaming output", state: "needs-you", minutesAgo: 4,
+        preview: "Two fixes are possible; which one do you want me to ship in 1.4.2?"),
+    Row(id: "wl-rel-2", lane: release, title: "Write release notes for 1.4.2 and the TestFlight changelog", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 2,
+        preview: "Drafting the Work tab section from the merged PR titles."),
+    Row(id: "wl-rel-3", lane: release, title: "Bisect the sync regression between 1.4.0 and 1.4.1", state: "done", minutesAgo: 75,
+        preview: "First bad commit: 3df23fc (coalesce roster deltas)."),
+    Row(id: "wl-rel-4", lane: release, title: "pnpm -r test", state: "cli-done", minutesAgo: 120,
+        preview: "Test Files  1288 passed (1288) · Duration 6m 02s"),
+    Row(id: "wl-relay-1", lane: relay, title: "Move the pairing relay to Durable Objects with hibernation and per-machine rooms", state: "running", minutesAgo: 1,
+        preview: "Porting the websocket fan-out; 14 of 22 handlers moved."),
+    Row(id: "wl-relay-2", lane: relay, title: "Load test the relay with 500 concurrent phones", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 6,
+        preview: "p99 frame latency 41 ms at 350 phones; ramping to 500."),
+    Row(id: "wl-relay-3", lane: relay, title: "Audit relay auth token refresh order", state: "needs-you", minutesAgo: 9,
+        preview: "The refresh races the reconnect on a cold start. Should I serialize them?"),
+    Row(id: "wl-relay-4", lane: relay, title: "Document the relay wire format", state: "done", minutesAgo: 300,
+        preview: "docs/relay/wire-format.md is up to date."),
+    Row(id: "wl-linear-1", lane: linear, title: "Map Linear workflow states onto ADE lane phases for every team", state: "running", minutesAgo: 3,
+        preview: "Engineering and Design teams mapped; Support has a custom Triage state."),
+    Row(id: "wl-linear-2", lane: linear, title: "Attach issues to chats from the composer", provider: "cursor", model: "composer-2", state: "done", minutesAgo: 50,
+        preview: "Attach issue now lives in the chat menu and the rail."),
+    Row(id: "wl-linear-3", lane: linear, title: "Backfill issue links for chats created before the sync existed", state: "snoozed", minutesAgo: 90,
+        preview: "Waiting on the migration window."),
+    Row(id: "wl-win-1", lane: windows, title: "Port the desktop app's tray menu and global shortcuts to Windows 11", state: "running", minutesAgo: 2,
+        preview: "Tray icon renders; the global shortcut conflicts with PowerToys."),
+    Row(id: "wl-win-2", lane: windows, title: "Fix ConPTY resize flicker in the Work terminal", provider: "codex", model: "gpt-6", state: "needs-you", minutesAgo: 12,
+        preview: "Can you run the repro on the Surface and tell me if the flicker is gone?"),
+    Row(id: "wl-win-3", lane: windows, title: "MSVC build of the native SQLite driver", state: "done", minutesAgo: 240,
+        preview: "Builds clean with /permissive-; tests pass."),
+    Row(id: "wl-win-4", lane: windows, title: "npm run build:win", state: "cli-running", minutesAgo: 5,
+        preview: "electron-builder: packaging ADE-1.4.2-x64.exe"),
+    Row(id: "wl-hub-2", lane: hub, title: "Make the sessions column fill its width and give titles two lines", state: "done", minutesAgo: 22,
+        preview: "Rows now run edge to edge with 16 pt margins."),
+    Row(id: "wl-hub-3", lane: hub, title: "Move chat actions into the rail and drop the floating pills on the inner display", provider: "codex", model: "gpt-6", state: "running", minutesAgo: 1,
+        preview: "Chat Info, Proof and Pull Request now open in the tools pane."),
+    Row(id: "wl-perf-2", lane: perf, title: "Profile the Work tab's tab-switch path and cut body evaluations in half", state: "running", minutesAgo: 7,
+        preview: "WorkRootScreen body count down from 38 to 17 per switch."),
+    Row(id: "wl-perf-3", lane: perf, title: "Measure cold launch on the iPhone Duo", provider: "codex", model: "gpt-6", state: "done", minutesAgo: 130,
+        preview: "Cold launch 1.18 s; warm 0.41 s."),
+    Row(id: "wl-sim-3", lane: sim, title: "Inspect mode: let the user draw a box and send the markup to the agent", state: "needs-you", minutesAgo: 15,
+        preview: "Should the box snap to the element under it, or stay freehand?"),
+    Row(id: "wl-docs-3", lane: docs, title: "Screenshot every Duo posture for the docs site", state: "done", minutesAgo: 400,
+        preview: "Open, book, laptop and closed captured for all six tabs."),
+    Row(id: "wl-primary-2", lane: primary, title: "Triage the overnight crash reports from TestFlight", provider: "cursor", model: "composer-2", state: "done", minutesAgo: 600,
+        preview: "Three crashes, all in the same keyboard dismissal path."),
+  ]
+
+  /// The `duo-work*` fixtures' data: every row above plus the extra volume.
+  static func duoFixture() -> WorkRootPreviewFixture {
+    fixture(
+      rows: rows + duoExtraRows,
+      lanes: [primary, hub, release, relay, perf, sim, linear, windows, docs]
+    )
+  }
+
+  private static func fixture(rows: [Row], lanes: [LaneSummary]) -> WorkRootPreviewFixture {
     var sessions: [TerminalSessionSummary] = []
     var summaries: [String: AgentChatSessionSummary] = [:]
     for row in rows {
@@ -2292,12 +2358,14 @@ enum WorkListPreviewData {
     }
     return WorkRootPreviewFixture(
       sessions: sessions,
-      lanes: [primary, hub, perf, sim, docs],
+      lanes: lanes,
       pullRequests: [
         pullRequest(id: "wl-pr-hub", lane: hub, number: 1304, title: "Work tab header in one row", state: "open", checks: "success"),
         pullRequest(id: "wl-pr-perf", lane: perf, number: 1298, title: "Coalesce roster publishes", state: "merged", checks: "success"),
         pullRequest(id: "wl-pr-sim", lane: sim, number: 1240, title: "iOS sim editor polish", state: "open", checks: "pending"),
-      ],
+        pullRequest(id: "wl-pr-release", lane: release, number: 1311, title: "1.4.2 hardening", state: "open", checks: "failure"),
+        pullRequest(id: "wl-pr-relay", lane: relay, number: 1302, title: "Pairing relay v2", state: "draft", checks: "pending"),
+      ].filter { pr in lanes.contains { $0.id == pr.laneId } },
       chatSummaries: summaries
     )
   }

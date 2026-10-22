@@ -590,13 +590,25 @@ struct AppControlViewer: View {
           footer
         }
       }
-      if let inspect {
+      if let inspect, !embedded {
         LiveInspectStage(model: inspect, onClose: exitInspect)
           .transition(.opacity)
           .zIndex(2)
       }
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    // In the Duo's tools pane the frozen inspector takes the whole screen: it
+    // has its own bar and a picture | inspector split across the fold, and
+    // drawn inside the pane its stack would take over the chat's title and
+    // rail.
+    .fullScreenCover(isPresented: Binding(
+      get: { embedded && inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+      }
+    }
     .preferredColorScheme(embedded ? nil : .dark)
     .modifier(AppControlPaneChrome(
       enabled: embedded,
@@ -833,8 +845,8 @@ private struct AppControlInspectButton: View {
   }
 }
 
-/// The App Control viewer's controls as the Work tools pane's toolbar items,
-/// and its Live/Off tag as the pane's subtitle. Off (the full-screen viewer),
+/// The App Control viewer's controls in the Work tools pane's header, and its
+/// Live/Off tag as the header's status line. Off (the full-screen viewer),
 /// it changes nothing.
 private struct AppControlPaneChrome: ViewModifier {
   let enabled: Bool
@@ -845,13 +857,9 @@ private struct AppControlPaneChrome: ViewModifier {
   func body(content: Content) -> some View {
     if enabled {
       content
-        .navigationSubtitle(subtitle)
-        .duoKeptToolbar {
-          ToolbarSpacer(.fixed, placement: .topBarTrailing)
-          ToolbarItem(placement: .topBarTrailing) {
-            if let session {
-              AppControlInspectToolbarButton(session: session, action: onInspect)
-            }
+        .duoPaneHeader(status: subtitle) {
+          if let session {
+            AppControlInspectToolbarButton(session: session, action: onInspect)
           }
         }
     } else {
@@ -860,18 +868,15 @@ private struct AppControlPaneChrome: ViewModifier {
   }
 }
 
-/// Inspect, as a toolbar item, once there is a frame to freeze. Its own view so
+/// Inspect, as a pane header action, once there is a frame to freeze. Its own view so
 /// the frame's arrival re-renders the item, not the viewer.
 private struct AppControlInspectToolbarButton: View {
   @ObservedObject var session: AppControlLiveSession
   let action: () -> Void
 
   var body: some View {
-    Button("Inspect", systemImage: "viewfinder") {
-      ADEHaptics.light()
-      action()
-    }
-    .disabled(session.image == nil)
+    DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder", action: action)
+      .disabled(session.image == nil)
     .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
   }
 }

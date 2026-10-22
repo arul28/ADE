@@ -79,27 +79,7 @@ struct WorkToolsSheet: View {
   #endif
 
   var body: some View {
-    NavigationStack {
-      Group {
-        if !loaded {
-          loadingState
-        } else if state == nil {
-          noDesktopState
-        } else {
-          content
-        }
-      }
-      .adeScreenBackground()
-      .navigationTitle(tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        if !embedded {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
-          }
-        }
-      }
-    }
+    chrome
     .task(id: laneId) { await refresh() }
     .task(id: laneId) {
       // The poll lives beside the initial load rather than inside it so a slow
@@ -120,6 +100,39 @@ struct WorkToolsSheet: View {
     .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
+  }
+
+  /// The sheet's own stack and Done; embedded (the Duo's tools pane) it has
+  /// neither, since a nested stack would take over the chat's title and rail.
+  @ViewBuilder
+  private var chrome: some View {
+    if embedded {
+      stateContent
+    } else {
+      NavigationStack {
+        stateContent
+          .navigationTitle(tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { dismiss() }
+            }
+          }
+      }
+    }
+  }
+
+  private var stateContent: some View {
+    Group {
+      if !loaded {
+        loadingState
+      } else if state == nil {
+        noDesktopState
+      } else {
+        content
+      }
+    }
+    .adeScreenBackground()
   }
 
   private var content: some View {

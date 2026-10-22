@@ -87,13 +87,25 @@ struct MacDesktopViewer: View {
           footer
         }
       }
-      if let inspect {
+      if let inspect, !embedded {
         LiveInspectStage(model: inspect, onClose: exitInspect)
           .transition(.opacity)
           .zIndex(2)
       }
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    // In the Duo's tools pane the frozen inspector takes the whole screen: it
+    // has its own bar and a picture | inspector split across the fold, and
+    // drawn inside the pane its stack would take over the chat's title and
+    // rail.
+    .fullScreenCover(isPresented: Binding(
+      get: { embedded && inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+      }
+    }
     .preferredColorScheme(embedded ? nil : .dark)
     .modifier(MacDesktopPaneChrome(
       enabled: embedded,
@@ -810,8 +822,8 @@ enum MacDesktopViewerRotation {
   }
 }
 
-/// The Mac Desktop viewer's controls as the Work tools pane's toolbar items,
-/// and its ribbon as the pane's subtitle. Off (the full-screen viewer), it
+/// The Mac Desktop viewer's controls in the Work tools pane's header, and its
+/// ribbon as the header's status line. Off (the full-screen viewer), it
 /// changes nothing.
 private struct MacDesktopPaneChrome: ViewModifier {
   let enabled: Bool
@@ -825,24 +837,19 @@ private struct MacDesktopPaneChrome: ViewModifier {
   func body(content: Content) -> some View {
     if enabled {
       content
-        .navigationSubtitle(subtitle)
-        .duoKeptToolbar {
-          ToolbarSpacer(.fixed, placement: .topBarTrailing)
-          ToolbarItemGroup(placement: .topBarTrailing) {
-            if canInspect {
-              Button("Inspect", systemImage: "viewfinder") {
-                ADEHaptics.light()
-                onInspect()
-              }
+        .duoPaneHeader(status: subtitle) {
+          if canInspect {
+            DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder") { onInspect() }
               .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+          }
+          if let stopSeat {
+            DuoPaneActionButton(
+              title: windowsDesktopStopCopy(seat: stopSeat).action,
+              systemImage: "stop.fill"
+            ) {
+              confirmingStop = true
             }
-            if let stopSeat {
-              Button(windowsDesktopStopCopy(seat: stopSeat).action, systemImage: "stop.fill") {
-                ADEHaptics.light()
-                confirmingStop = true
-              }
-              .disabled(stopping)
-            }
+            .disabled(stopping)
           }
         }
     } else {
