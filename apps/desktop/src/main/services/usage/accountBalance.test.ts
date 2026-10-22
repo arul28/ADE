@@ -4,10 +4,11 @@ import type { UsageAccount, UsageAccountLogin, UsageWindow } from "../../../shar
 import {
   pickAlternateInstanceForLimitedChat,
   pickInstanceForNewChat,
-  type AccountBalanceRotationState,
+  type AccountBalanceLoad,
 } from "./accountBalance";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 const WEEK_START = Date.parse("2026-09-14T00:00:00.000Z");
 
 function instance(id: string, options: Partial<ProviderInstance> = {}): ProviderInstance {
@@ -45,7 +46,7 @@ function windowSetForProvider(
   const key = `${provider}:${instanceId}`;
   const windows: UsageWindow[] = [];
   if (values.fiveHour !== undefined) {
-    const resetsAtMs = resets.fiveHour ?? WEEK_START + 60 * 60 * 1000;
+    const resetsAtMs = resets.fiveHour ?? WEEK_START + HOUR_MS;
     windows.push({
       provider,
       windowType: "five_hour",
@@ -100,212 +101,262 @@ function withLogins(
   });
 }
 
+function load(entries: Record<string, AccountBalanceLoad>): Map<string, AccountBalanceLoad> {
+  return new Map(Object.entries(entries));
+}
+
+const HOURS = (hours: number): number => WEEK_START + hours * HOUR_MS;
+
 describe("pickInstanceForNewChat", () => {
-  it("keeps the default account when the weekly resets and five-hour room tie", () => {
-    // Both weekly windows reset at the same moment and both have the same
-    // five-hour room, so the ranking cannot separate them. The tie goes to the
-    // default account (`claude`), listed second, not to whichever came first.
+  it("feeds the account that needs the most weekly room spent before its reset", () => {
+    // The screenshot state: Default has 72% left and resets in 46h, 1028 has
+    // 38% left and resets in 42h. Reset order alone picks 1028; the required
+    // rate (72/46 = 1.57 vs 38/42 = 0.90) picks Default, the account that
+    // would otherwise let the most room expire.
     const result = pickInstanceForNewChat({
       provider: "claude",
-      instances: [instance("work"), instance("claude")],
-      accounts: accounts("claude", "work"),
+      instances: [instance("claude"), instance("90"), instance("1028")],
+      accounts: accounts("claude", "90", "1028"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 20, weekly: 60 }),
-        windowSet("work", { fiveHour: 20, weekly: 20 }),
+        windowSet("claude", { fiveHour: 11, weekly: 28 }, { fiveHour: HOURS(1.1), weekly: HOURS(46) }),
+        windowSet("90", { fiveHour: 1, weekly: 64 }, { fiveHour: HOURS(4.6), weekly: HOURS(94) }),
+        windowSet("1028", { fiveHour: 0, weekly: 62 }, { fiveHour: HOURS(4.27), weekly: HOURS(42) }),
       ),
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "claude", reason: "soonest weekly reset" });
+    expect(result).toEqual({
+      instanceId: "claude",
+      reason: "most room to spend before reset",
+    });
   });
 
-  it("prefers the account whose weekly room expires sooner", () => {
-    // Equal room; `work`'s window resets tomorrow and `claude`'s in six days,
-    // so `work` is spent first even though `claude` is the default account.
+  it("keeps the sooner weekly reset when the room is equal", () => {
     const result = pickInstanceForNewChat({
       provider: "claude",
-      instances: [instance("claude"), instance("work")],
-      accounts: accounts("claude", "work"),
+      instances: [instance("claude"), instance("work"), instance("third")],
+      accounts: accounts("claude", "work", "third"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
-        windowSet("work", { fiveHour: 10, weekly: 50 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
+        windowSet("claude", { fiveHour: 20, weekly: 50 }, { weekly: HOURS(40) }),
+        windowSet("work", { fiveHour: 20, weekly: 50 }, { weekly: HOURS(20) }),
+        windowSet("third", { fiveHour: 20, weekly: 50 }, { weekly: HOURS(60) }),
       ),
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
+    expect(result).toMatchObject({ instanceId: "work", reason: "most room to spend before reset" });
   });
 
-  it("sends every third Claude chat to the account with more five-hour room", () => {
+  it("subtracts the chats already running on an account", () => {
+    // Default and 1028 each carry three running chats; 90 carries none. The
+    // sixth chat belongs on 90, not on the account with the soonest reset.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("90"), instance("1028")],
+      accounts: accounts("claude", "90", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 11, weekly: 28 }, { fiveHour: HOURS(1.1), weekly: HOURS(46) }),
+        windowSet("90", { fiveHour: 1, weekly: 64 }, { fiveHour: HOURS(4.6), weekly: HOURS(94) }),
+        windowSet("1028", { fiveHour: 0, weekly: 62 }, { fiveHour: HOURS(4.27), weekly: HOURS(42) }),
+      ),
+      loadByInstanceId: load({
+        claude: { runningWeight: 3 },
+        "1028": { runningWeight: 3 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("90");
+  });
+
+  it("uses expiring weekly room that cannot run out before its reset", () => {
+    // 1028 has 6% left but only two hours to spend it. A normal chat cannot
+    // burn six points that fast, and the reset refills the account mid-chat.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 20, weekly: 60 }, { weekly: HOURS(60) }),
+        windowSet("work", { fiveHour: 20, weekly: 45 }, { weekly: HOURS(30) }),
+        windowSet("1028", { fiveHour: 20, weekly: 94 }, { weekly: HOURS(2) }),
+      ),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("1028");
+  });
+
+  it("refuses a five-hour window that cannot carry the chats already on it", () => {
+    // Default has the most weekly room and the soonest reset, but 20% of its
+    // five-hour window with three chats on it projects to 6.5 points of room:
+    // a new chat would stop almost immediately.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 80, weekly: 30 }, { fiveHour: HOURS(3), weekly: HOURS(30) }),
+        windowSet("work", { fiveHour: 10, weekly: 65 }, { fiveHour: HOURS(4), weekly: HOURS(90) }),
+        windowSet("1028", { fiveHour: 40, weekly: 60 }, { fiveHour: HOURS(3), weekly: HOURS(40) }),
+      ),
+      loadByInstanceId: load({
+        claude: { runningWeight: 3 },
+        work: { runningWeight: 1 },
+        "1028": { runningWeight: 1 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("1028");
+  });
+
+  it("does not give a near-reset five-hour window a free pass", () => {
+    // 8% of the five-hour window with two chats running, 18 minutes before the
+    // reset, still has to cover a first turn. It does not.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 92, weekly: 20 }, { fiveHour: HOURS(0.3), weekly: HOURS(42) }),
+        windowSet("work", { fiveHour: 20, weekly: 70 }, { fiveHour: HOURS(3), weekly: HOURS(42) }),
+        windowSet("1028", { fiveHour: 15, weekly: 80 }, { fiveHour: HOURS(4), weekly: HOURS(60) }),
+      ),
+      loadByInstanceId: load({ claude: { runningWeight: 2 } }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("work");
+  });
+
+  it("reserves weekly room for recently idle chats, but not forever", () => {
+    // Eight chats just went idle on Default; eight chats idle for two days are
+    // almost certainly not coming back. The first case pushes the chat away,
+    // the second leaves Default as the pick.
     const args = {
       provider: "claude" as const,
-      instances: [instance("claude"), instance("work"), instance("other")],
-      accounts: accounts("claude", "work", "other"),
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 44, weekly: 76 }, {
-          fiveHour: WEEK_START + 47 * 60_000,
-          weekly: WEEK_START + (2 * 24 + 13) * 60 * 60_000,
-        }),
-        // No weekly reading is treated as a later reset, but the fresh 100%
-        // five-hour reading can still provide the limited capacity slot.
-        windowSet("work", { fiveHour: 0 }, { fiveHour: WEEK_START + (2 * 60 + 7) * 60_000 }),
-        // A third account is eligible but has less five-hour room than work.
-        windowSet("other", { fiveHour: 35, weekly: 20 }, {
-          weekly: WEEK_START + 4 * 24 * 60 * 60_000,
-        }),
+        windowSet("claude", { fiveHour: 20, weekly: 34 }, { weekly: HOURS(50) }),
+        windowSet("work", { fiveHour: 20, weekly: 40 }, { weekly: HOURS(50) }),
+        windowSet("1028", { fiveHour: 20, weekly: 48 }, { weekly: HOURS(50) }),
       ),
       nowMs: WEEK_START,
     };
+    const idle = (idleMs: number) => ({ idle: Array.from({ length: 8 }, () => ({ idleMs })) });
 
-    const first = pickInstanceForNewChat(args);
-    expect(first).toMatchObject({
-      instanceId: "claude",
-      reason: "soonest weekly reset",
-      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "work", nextSlot: 1 },
-    });
+    expect(pickInstanceForNewChat({
+      ...args,
+      loadByInstanceId: load({ claude: idle(0) }),
+    }).instanceId).toBe("work");
 
-    const second = pickInstanceForNewChat({ ...args, rotationState: first.rotationState });
-    expect(second).toMatchObject({ instanceId: "claude", rotationState: { nextSlot: 2 } });
-
-    const third = pickInstanceForNewChat({ ...args, rotationState: second.rotationState });
-    expect(third).toMatchObject({
-      instanceId: "work",
-      reason: "higher five-hour headroom",
-      rotationState: { nextSlot: 0 },
-    });
+    expect(pickInstanceForNewChat({
+      ...args,
+      loadByInstanceId: load({ claude: idle(48 * HOUR_MS) }),
+    }).instanceId).toBe("claude");
   });
 
-  it("uses a locale-independent id order when reserve accounts tie", () => {
-    const args = {
-      provider: "claude" as const,
-      instances: [instance("claude"), instance("ä"), instance("z")],
-      accounts: accounts("claude", "ä", "z"),
-      windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 50, weekly: 20 }, {
-          weekly: WEEK_START + 24 * 60 * 60_000,
-        }),
-        windowSet("ä", { fiveHour: 20, weekly: 40 }, {
-          weekly: WEEK_START + 6 * 24 * 60 * 60_000,
-        }),
-        windowSet("z", { fiveHour: 20, weekly: 40 }, {
-          weekly: WEEK_START + 6 * 24 * 60 * 60_000,
-        }),
-      ),
-      nowMs: WEEK_START,
-    };
-
-    const first = pickInstanceForNewChat(args);
-    const second = pickInstanceForNewChat({ ...args, rotationState: first.rotationState });
-    const third = pickInstanceForNewChat({ ...args, rotationState: second.rotationState });
-
-    expect(first.instanceId).toBe("claude");
-    expect(second.instanceId).toBe("claude");
-    expect(third).toMatchObject({
-      instanceId: "z",
-      reason: "higher five-hour headroom",
-      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "z", nextSlot: 0 },
-    });
-  });
-
-  it("starts at a 30-point gap, keeps the rotation through 15 points, and stops at the floor", () => {
-    const pick = (
-      primaryFiveHour: number,
-      reserveFiveHour: number,
-      rotationState?: AccountBalanceRotationState,
-      primaryId = "claude",
-      reserveId = "work",
-    ) => (
-      pickInstanceForNewChat({
-        provider: "claude",
-        instances: [instance(primaryId), instance(reserveId)],
-        accounts: accounts(primaryId, reserveId),
-        windowsByAccountId: windows(
-          windowSet(primaryId, { fiveHour: primaryFiveHour, weekly: 20 }, {
-            fiveHour: WEEK_START + 2 * 60 * 60_000,
-            weekly: WEEK_START + 24 * 60 * 60_000,
-          }),
-          windowSet(reserveId, { fiveHour: reserveFiveHour, weekly: 20 }, {
-            weekly: WEEK_START + 6 * 24 * 60 * 60_000,
-          }),
-        ),
-        nowMs: WEEK_START,
-        rotationState,
-      })
-    );
-
-    const started = pick(50, 20);
-    expect(started.rotationState).toEqual({ primaryInstanceId: "claude", reserveInstanceId: "work", nextSlot: 1 });
-    const active = pick(40, 20, started.rotationState);
-    expect(active.rotationState).toEqual({
-      primaryInstanceId: "claude",
-      reserveInstanceId: "work",
-      nextSlot: 2,
-    });
-
-    const changedPair = pick(50, 20, active.rotationState, "claude", "other");
-    expect(changedPair).toMatchObject({
-      instanceId: "claude",
-      rotationState: { primaryInstanceId: "claude", reserveInstanceId: "other", nextSlot: 1 },
-    });
-
-    const stopped = pick(35, 20, started.rotationState);
-    expect(stopped.instanceId).toBe("claude");
-    expect(stopped.rotationState).toBeUndefined();
-    expect(pick(40, 20).rotationState).toBeUndefined();
-  });
-
-  it("keeps near-limit reserve accounts out and leaves Codex on weekly-first routing", () => {
-    const nearLimitReserve = pickInstanceForNewChat({
+  it("waits on the roomiest account when its reset is days away", () => {
+    const result = pickInstanceForNewChat({
       provider: "claude",
-      instances: [instance("claude"), instance("work")],
-      accounts: accounts("claude", "work"),
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 44, weekly: 76 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
-        windowSet("work", { fiveHour: 0, weekly: 95 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
+        windowSet("claude", { fiveHour: 10, weekly: 20 }, { weekly: HOURS(120) }),
+        windowSet("work", { fiveHour: 30, weekly: 70 }, { weekly: HOURS(30) }),
+        windowSet("1028", { fiveHour: 20, weekly: 55 }, { weekly: HOURS(50) }),
       ),
+      loadByInstanceId: load({ work: { runningWeight: 1 } }),
       nowMs: WEEK_START,
     });
-    expect(nearLimitReserve).toMatchObject({ instanceId: "claude", reason: "soonest weekly reset" });
-    expect(nearLimitReserve.rotationState).toBeUndefined();
 
-    const codex = pickInstanceForNewChat({
-      provider: "codex",
-      instances: [
-        { ...instance("codex", { provider: "codex" }), isDefault: true },
-        instance("work", { provider: "codex" }),
-      ],
-      accounts: accountsForProvider("codex", "codex", "work"),
-      windowsByAccountId: windows(
-        windowSetForProvider("codex", "codex", { fiveHour: 44, weekly: 76 }, { weekly: WEEK_START + 24 * 60 * 60_000 }),
-        windowSetForProvider("codex", "work", { fiveHour: 0 }, { fiveHour: WEEK_START + 2 * 60 * 60_000 }),
-      ),
-      nowMs: WEEK_START,
-    });
-    expect(codex).toEqual({ instanceId: "codex", reason: "soonest weekly reset" });
+    expect(result.instanceId).toBe("1028");
   });
 
-  it("ranks a nearly-spent five-hour window last when it is not about to reset", () => {
-    // `claude` has the sooner weekly reset, so it would win on that alone. But
-    // only 20% of its five-hour window is left and that window is two hours
-    // away from resetting, so a chat there stops within the hour. `work` wins.
+  it("still starts the chat when every account is at or beyond its pace", () => {
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 70, weekly: 88 }, { fiveHour: HOURS(3), weekly: HOURS(20) }),
+        windowSet("work", { fiveHour: 40, weekly: 92 }, { fiveHour: HOURS(2), weekly: HOURS(40) }),
+        windowSet("1028", { fiveHour: 60, weekly: 95 }, { fiveHour: HOURS(4), weekly: HOURS(10) }),
+      ),
+      loadByInstanceId: load({
+        claude: { runningWeight: 2 },
+        work: { runningWeight: 2 },
+        "1028": { runningWeight: 1 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    // 1028 is exactly on pace and has 5% weekly left: still the least-ahead.
+    expect(result).toMatchObject({ instanceId: "1028" });
+    expect(result.skip).toBeUndefined();
+  });
+
+  it("prefers a measured burn rate over the chat-count prior", () => {
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("1028")],
+      accounts: accounts("claude", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 20, weekly: 28 }, { weekly: HOURS(46) }),
+        windowSet("1028", { fiveHour: 20, weekly: 62 }, { weekly: HOURS(42) }),
+      ),
+      loadByInstanceId: load({
+        claude: { weeklyRate: 2 },
+        "1028": { weeklyRate: 0 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("1028");
+  });
+
+  it("weights a running Fable chat far above a running Haiku chat", () => {
+    // Default runs two Fable chats (weight 2.4 each) and 90 runs two Haiku
+    // chats (0.3 each). Without the model weight the two accounts tie on load
+    // and Default wins on its sooner reset; with it, 90 is the quiet account.
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work"), instance("1028")],
+      accounts: accounts("claude", "work", "1028"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 20, weekly: 40 }, { weekly: HOURS(40) }),
+        windowSet("work", { fiveHour: 20, weekly: 55 }, { weekly: HOURS(40) }),
+        windowSet("1028", { fiveHour: 15, weekly: 70 }, { weekly: HOURS(60) }),
+      ),
+      loadByInstanceId: load({
+        claude: { runningWeight: 2 * 2.4 },
+        work: { runningWeight: 2 * 0.3 },
+      }),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("work");
+  });
+
+  it("lets the sooner reset win when two deficits are within the tie band", () => {
     const result = pickInstanceForNewChat({
       provider: "claude",
       instances: [instance("claude"), instance("work")],
       accounts: accounts("claude", "work"),
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 80, weekly: 90 }, {
-          weekly: WEEK_START + 24 * 60 * 60_000,
-          fiveHour: WEEK_START + 2 * 60 * 60_000,
-        }),
-        windowSet("work", { fiveHour: 20, weekly: 40 }, { weekly: WEEK_START + 6 * 24 * 60 * 60_000 }),
+        // Default needs 1.750/h; work needs 1.744/h but resets an hour sooner.
+        windowSet("claude", { fiveHour: 20, weekly: 30 }, { weekly: HOURS(40) }),
+        windowSet("work", { fiveHour: 20, weekly: 32 }, { weekly: HOURS(39) }),
       ),
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
+    expect(result.instanceId).toBe("work");
   });
 
-  it("treats an idle account with no five-hour window as having full five-hour room", () => {
+  it("treats a missing five-hour window as an idle account with full room", () => {
     const result = pickInstanceForNewChat({
       provider: "claude",
       instances: [instance("claude"), instance("work")],
@@ -317,7 +368,50 @@ describe("pickInstanceForNewChat", () => {
       nowMs: WEEK_START,
     });
 
-    expect(result).toEqual({ instanceId: "work", reason: "soonest weekly reset" });
+    expect(result.instanceId).toBe("work");
+  });
+
+  it("applies the same ranking to Codex", () => {
+    const result = pickInstanceForNewChat({
+      provider: "codex",
+      instances: [
+        { ...instance("codex", { provider: "codex" }), isDefault: true },
+        instance("work", { provider: "codex" }),
+      ],
+      accounts: accountsForProvider("codex", "codex", "work"),
+      windowsByAccountId: windows(
+        windowSetForProvider("codex", "codex", { fiveHour: 11, weekly: 28 }, {
+          fiveHour: HOURS(1.1),
+          weekly: HOURS(46),
+        }),
+        windowSetForProvider("codex", "work", { fiveHour: 0, weekly: 62 }, {
+          fiveHour: HOURS(4.27),
+          weekly: HOURS(42),
+        }),
+      ),
+      nowMs: WEEK_START,
+    });
+
+    expect(result.instanceId).toBe("codex");
+  });
+
+  it("falls back to the best survivor when every account is blocked", () => {
+    const result = pickInstanceForNewChat({
+      provider: "claude",
+      instances: [instance("claude"), instance("work")],
+      accounts: accounts("claude", "work"),
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 90, weekly: 96 }, { weekly: HOURS(40) }),
+        windowSet("work", { fiveHour: 95, weekly: 97 }, { weekly: HOURS(40) }),
+      ),
+      nowMs: WEEK_START,
+    });
+
+    expect(result).toMatchObject({
+      instanceId: "claude",
+      skip: "all_full",
+      reason: "least likely to run dry",
+    });
   });
 
   it("skips a signed-out login and keeps balancing on the account that still works", () => {
@@ -334,7 +428,7 @@ describe("pickInstanceForNewChat", () => {
 
     expect(result).toEqual({
       instanceId: "claude",
-      reason: "soonest weekly reset",
+      reason: "most room to spend before reset",
       signedOutInstanceIds: ["work"],
     });
   });
@@ -353,8 +447,8 @@ describe("pickInstanceForNewChat", () => {
       [instance("claude"), instance("work")],
       accounts("claude", "work"),
       windows(
-        windowSet("claude", { fiveHour: 95, weekly: 10 }),
-        windowSet("work", { fiveHour: 95, weekly: 10 }),
+        windowSet("claude", { fiveHour: 95, weekly: 96 }),
+        windowSet("work", { fiveHour: 95, weekly: 97 }),
       ),
       "all_full",
     ],
@@ -377,7 +471,6 @@ describe("pickInstanceForNewChat", () => {
       nowMs: WEEK_START,
     });
 
-    expect(result.instanceId).toBe("claude");
     expect(result.skip).toBe(skip);
   });
 });
@@ -385,24 +478,42 @@ describe("pickInstanceForNewChat", () => {
 describe("pickAlternateInstanceForLimitedChat", () => {
   const base = {
     provider: "claude" as const,
-    instances: [instance("claude"), instance("work", { label: "Work" })],
-    accounts: accounts("claude", "work"),
+    instances: [
+      instance("claude"),
+      instance("work", { label: "Work" }),
+      instance("personal", { label: "Personal" }),
+    ],
+    accounts: accounts("claude", "work", "personal"),
     nowMs: WEEK_START,
   };
 
-  it("picks the other signed-in account that still has room", () => {
+  it("picks the other account with the most projected five-hour room", () => {
     expect(pickAlternateInstanceForLimitedChat({
       ...base,
       currentInstanceId: "claude",
       windowsByAccountId: windows(
         windowSet("claude", { fiveHour: 10, weekly: 10 }),
         windowSet("work", { fiveHour: 40, weekly: 20 }),
+        windowSet("personal", { fiveHour: 60, weekly: 20 }),
       ),
     })).toEqual({
       instanceId: "work",
       label: "Work",
-      reason: "soonest weekly reset",
+      reason: "most five-hour room left",
     });
+  });
+
+  it("does not move onto an account that is about to run dry", () => {
+    expect(pickAlternateInstanceForLimitedChat({
+      ...base,
+      currentInstanceId: "claude",
+      windowsByAccountId: windows(
+        windowSet("claude", { fiveHour: 20, weekly: 10 }),
+        windowSet("work", { fiveHour: 30, weekly: 50 }, { fiveHour: HOURS(3) }),
+        windowSet("personal", { fiveHour: 70, weekly: 20 }),
+      ),
+      loadByInstanceId: load({ work: { fiveHourRate: 30 } }),
+    })?.instanceId).toBe("personal");
   });
 
   it("ignores the blocked account even when its snapshot still looks freer", () => {
@@ -410,8 +521,9 @@ describe("pickAlternateInstanceForLimitedChat", () => {
       ...base,
       currentInstanceId: "work",
       windowsByAccountId: windows(
-        windowSet("claude", { fiveHour: 90, weekly: 90 }),
-        windowSet("work", { fiveHour: 5, weekly: 5 }),
+        windowSet("claude", { fiveHour: 10, weekly: 10 }),
+        windowSet("work", { fiveHour: 95, weekly: 95 }),
+        windowSet("personal", { fiveHour: 60, weekly: 20 }),
       ),
     })?.instanceId).toBe("claude");
   });
@@ -442,6 +554,8 @@ describe("pickAlternateInstanceForLimitedChat", () => {
     expect(pickAlternateInstanceForLimitedChat({
       ...base,
       currentInstanceId: "claude",
+      instances: [instance("claude"), instance("work", { label: "Work" })],
+      accounts: accounts("claude", "work"),
       windowsByAccountId: windows(
         windowSet("claude", { fiveHour: 20, weekly: 10 }),
         windowSet("work", workWindows),
@@ -452,12 +566,6 @@ describe("pickAlternateInstanceForLimitedChat", () => {
   it("prefers an idle account with no five-hour window over a busier complete one", () => {
     expect(pickAlternateInstanceForLimitedChat({
       ...base,
-      instances: [
-        instance("claude"),
-        instance("work", { label: "Work" }),
-        instance("personal", { label: "Personal" }),
-      ],
-      accounts: accounts("claude", "work", "personal"),
       currentInstanceId: "claude",
       windowsByAccountId: windows(
         windowSet("claude", { fiveHour: 20, weekly: 10 }),

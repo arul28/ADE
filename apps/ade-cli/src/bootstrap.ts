@@ -3322,6 +3322,9 @@ export async function createAdeRuntime(args: {
 
     let lastDailyAnalyticsDay: string | null = null;
     let dailyAnalyticsInFlight: Promise<void> | null = null;
+    // Captured once for the balance callback: the chat service is created
+    // above, and the callback must not see a later reassignment.
+    const chatLoadService = agentChatService;
     let usageTrackingService: ReturnType<typeof attachSharedUsageTrackingScope>;
     // Provider quota belongs to the machine, so this daemon polls it once and
     // every project scope attaches to that one poller. Per-project inputs (the
@@ -3338,6 +3341,12 @@ export async function createAdeRuntime(args: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
           modelRouter,
+          // The brain owns the chats, so balance reads their lifecycle here.
+          // A host without a chat service (the machine-level tracker) leaves
+          // this out and balances on measured burn alone.
+          ...(chatLoadService
+            ? { listProviderAccountChatLoad: () => chatLoadService.listProviderAccountChatLoad() }
+            : {}),
         },
       }),
       {

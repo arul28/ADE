@@ -816,7 +816,14 @@ import { readProjectSecretRequestCard } from "../../../shared/projectSecretReque
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
+import {
+  accountBalanceModelWeight,
+  firstTurnFiveHourBurnForModel,
+  pickAlternateInstanceForLimitedChat,
+  type AccountBalanceLoad,
+  type AccountBalanceResult,
+  type ProviderAccountChatLoad,
+} from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
 import {
   findInstanceHoldingNewestClaudeThread,
@@ -10797,9 +10804,11 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 /** What chat creation and the usage-limit switch read from the usage tracker. */
 export type ChatAccountUsage = {
   getUsageSnapshot: () => Pick<UsageSnapshot, "windows" | "accounts">;
-  resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
-  /** Preview the upcoming account without consuming a Claude rotation slot. */
+  resolveBalancedInstance: (provider: "claude" | "codex", modelId?: string | null) => AccountBalanceResult | null;
+  /** Preview the upcoming account without placing a chat on it. */
   peekBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
+  /** Measured burn and open-chat reservations, for the usage-limit rescue. */
+  getAccountBalanceLoad: (provider: "claude" | "codex") => ReadonlyMap<string, AccountBalanceLoad>;
 };
 
 /** Claude could not resume the thread id it was given. */
@@ -21476,6 +21485,10 @@ export function createAgentChatService(args: {
         accounts: (snapshot.accounts ?? []).filter((account) => account.provider === provider),
         windowsByAccountId,
         nowMs: Date.now(),
+        loadByInstanceId: usage.getAccountBalanceLoad(provider),
+        firstTurnFiveHourBurn: firstTurnFiveHourBurnForModel(
+          managed.session.modelId ?? managed.session.model,
+        ),
       });
       if (!pick) return null;
       return {
@@ -47272,7 +47285,10 @@ export function createAgentChatService(args: {
     if (!requestedInstanceId?.trim() && (effectiveProvider === "claude" || effectiveProvider === "codex")) {
       const accountUsage = getAccountUsage();
       if (accountUsage) {
-        balancedInstance = accountUsage.resolveBalancedInstance(effectiveProvider === "claude" ? "claude" : "codex");
+        balancedInstance = accountUsage.resolveBalancedInstance(
+          effectiveProvider === "claude" ? "claude" : "codex",
+          normalizedModel,
+        );
       } else {
         logger.error("chat.account_balance_unavailable", { provider: effectiveProvider });
       }
@@ -63707,6 +63723,54 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Chat state per provider account, for smart balance. Running chats are the
+   * one load signal available before the quota poll moves; open-but-idle chats
+   * become reservations, and settled, snoozed, archived or ended chats claim
+   * nothing. This is raw state: the balance service owns the weights.
+   */
+  function listProviderAccountChatLoad(): Map<string, ProviderAccountChatLoad> {
+    const nowMs = Date.now();
+    const byInstanceId = new Map<string, {
+      runningWeight: number;
+      idle: Array<{ idleMs: number; wakeAtMs?: number; failed?: boolean; modelWeight?: number }>;
+    }>();
+    for (const row of sessionService.list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES })) {
+      const instanceId = row.instanceId?.trim();
+      if (!instanceId) continue;
+      if (row.archivedAt) continue;
+      // A live turn outranks a settle or snooze marker: a settled chat woken by
+      // scheduled work, or a snoozed chat still streaming, is burning now.
+      const running = row.runtimeState === "running";
+      if (!running) {
+        if (row.status === "disposed" || row.status === "detached") continue;
+        // Mirror canonicalSessionState: an explicit "active" pin overrides a
+        // settledAt column, and a settle only counts at rest.
+        const pinnedActive = row.settleOverride === "active";
+        if (!pinnedActive && (row.settleOverride === "settled" || Boolean(row.settledAt))) continue;
+        const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
+        if (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs) continue;
+      }
+      const modelWeight = accountBalanceModelWeight(row.modelId ?? row.model);
+      const current = byInstanceId.get(instanceId) ?? { runningWeight: 0, idle: [] };
+      if (running) {
+        current.runningWeight += modelWeight;
+        byInstanceId.set(instanceId, current);
+        continue;
+      }
+      const idleSinceMs = Date.parse(row.chatIdleSinceAt ?? row.lastActivityAt ?? row.startedAt);
+      const wakeAtMs = row.nextWakeAt ? Date.parse(row.nextWakeAt) : Number.NaN;
+      current.idle.push({
+        idleMs: Number.isFinite(idleSinceMs) ? Math.max(0, nowMs - idleSinceMs) : 0,
+        modelWeight,
+        ...(Number.isFinite(wakeAtMs) ? { wakeAtMs } : {}),
+        ...(row.lastTurnFailedAt ? { failed: true } : {}),
+      });
+      byInstanceId.set(instanceId, current);
+    }
+    return byInstanceId;
+  }
+
   const listSessions = async (
     laneId?: string,
     options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
@@ -72443,6 +72507,7 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listProviderAccountChatLoad,
     listSubagentLinks,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,

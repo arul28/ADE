@@ -5514,6 +5514,10 @@ app.whenReady().then(async () => {
           productAnalyticsService.capture(input);
         },
         captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+        // Smart balance sees the chats this machine owns: running chats burn
+        // now, open-but-idle chats reserve room. The chat service owns the
+        // lifecycle; balance owns the weights.
+        listProviderAccountChatLoad: () => agentChatService.listProviderAccountChatLoad(),
       },
     });
     const storageInsightsService = createStorageInsightsService({
