@@ -261,6 +261,8 @@ struct WorkSessionDestinationView: View {
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
   @Environment(\.dismiss) var dismiss
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.duoLayout) private var duoLayout
+  @Environment(\.duoWorkFamily) private var duoWorkFamily
 
   let sessionId: String
   let initialOpeningPrompt: String?
@@ -1267,7 +1269,8 @@ struct WorkSessionDestinationView: View {
         provider: composerChatSummary?.provider ?? current?.toolType,
         menu: menu,
         session: current,
-        isChat: isChat
+        isChat: isChat,
+        prBadge: duoPrLabelInHeader ? chatPrBadgeModel : nil
       ),
       showsSidebarButton: !duoShowsSidebar && onDuoToggleSidebar != nil,
       actions: DuoChatRailActions(
@@ -1284,6 +1287,25 @@ struct WorkSessionDestinationView: View {
         onDelete: { Task { await deleteCurrentChatSession() } }
       )
     )
+  }
+
+  /// The chat's PR as a badge (the pill above the composer, or the header
+  /// label), or nil when the chat shows none.
+  private var chatPrBadgeModel: WorkChatPrBadgeModel? {
+    guard WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).rendersPrBadge else { return nil }
+    return workChatPrBadgeModel(
+      tag: duoPanePrTag,
+      pr: duoPanePr,
+      summary: duoPanePrSummary,
+      linkedCount: laneChatPrs.count
+    )
+  }
+
+  /// The PR shows as a label in the chat's header while the chat has the room
+  /// for it: held landscape on the Duo, alone on the right (no pane beside
+  /// it). Squeezed (pane open, upright, iPad, phone) it is the pill instead.
+  private var duoPrLabelInHeader: Bool {
+    duoPane != nil && duoLayout.hasEdgeBar && !duoPaneOpen && duoWorkFamily != .tall
   }
 
   /// DEBUG screenshots only: opens the fixture's tool tab once the chat is up.
@@ -2024,14 +2046,9 @@ struct WorkSessionDestinationView: View {
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
     let prPolicy = WorkChatLanePrPolicy(showsLaneActions: showsLaneActions)
-    let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
-      ? workChatPrBadgeModel(
-          tag: duoPanePrTag,
-          pr: duoPanePr,
-          summary: duoPanePrSummary,
-          linkedCount: laneChatPrs.count
-        )
-      : nil
+    // In the header (held landscape, chat alone on the right) or as the pill
+    // above the composer: never both.
+    let chatPrBadge: WorkChatPrBadgeModel? = duoPrLabelInHeader ? nil : chatPrBadgeModel
     let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { showPrDetails(origin: .bottomLeading) } : nil
     // PR watch lives inside the PR view, not as a pill of its own.
     let prWatchModel: WorkChatPrWatchModel? = nil

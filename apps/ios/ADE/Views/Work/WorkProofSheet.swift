@@ -574,45 +574,18 @@ struct WorkProofViewer: View {
             }
         }
       }
-      // Dots, whenever there is somewhere to swipe to. Opened from a row, the
-      // viewer used to look like a single-artifact screen — nothing said the
-      // other five captures were one swipe away. `.interactive` keeps them out
-      // of the way of the capture until the page actually moves.
+      // Dots, whenever there is somewhere to swipe to. `.interactive` keeps
+      // them out of the way of the capture until the page actually moves.
       .tabViewStyle(.page(indexDisplayMode: artifacts.count > 1 ? .automatic : .never))
       .indexViewStyle(.page(backgroundDisplayMode: .interactive))
-      // The bar floats over the capture rather than shortening the screen it is
-      // centred in: a tall screenshot was laid out below the bar and then
-      // centred in what was left, which pushed its top edge under the title.
-      .ignoresSafeArea(edges: .top)
-      .background(Color.black.ignoresSafeArea())
-      .navigationTitle(currentTitle)
-      .navigationBarTitleDisplayMode(.inline)
-      .adeNavigationGlass()
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-        // Dots say "there are more"; the count says WHICH — past about eight
-        // captures the dots stop being countable and this is the only thing
-        // that still tells you where you are in the run.
-        if artifacts.count > 1 {
-          ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-              Text(currentTitle)
-                .font(.headline)
-                .foregroundStyle(Color.white)
-                .lineLimit(1)
-                .truncationMode(.tail)
-              Text("\(position) of \(artifacts.count)")
-                .font(.caption2)
-                .foregroundStyle(Color.white.opacity(0.6))
-            }
-            .accessibilityElement(children: .combine)
-          }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          shareControl
-        }
+      // The caption says which capture this is, and where it sits in the run
+      // (past about eight the dots stop being countable).
+      .workMediaViewerChrome(
+        caption: currentTitle,
+        detail: artifacts.count > 1 ? "\(position) of \(artifacts.count)" : nil,
+        onDone: { dismiss() }
+      ) {
+        shareControl
       }
     }
   }
@@ -647,11 +620,9 @@ private struct WorkProofPage: View {
 
       switch content {
       case .image(let image):
-        // All edges: the capture is centred on the whole screen and the
-        // translucent bar sits over it, which is how every photo viewer on
-        // this platform behaves.
+        // Fitted inside the safe area: Done, Share, the caption and (held
+        // landscape on the Duo) the edge bar never sit over the capture.
         WorkProofZoomableImage(image: image)
-          .ignoresSafeArea()
           .accessibilityLabel(WorkProofRowModel(artifact: artifact).accessibilityLabel)
       case .video(let url), .remoteURL(let url):
         WorkProofVideoPage(url: url, isVideo: workArtifactIsVideo(artifact))

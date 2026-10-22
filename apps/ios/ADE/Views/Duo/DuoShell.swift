@@ -254,6 +254,21 @@ private struct DuoAppTabsMenuItem: ToolbarContent {
 /// Home and the five tabs at the bottom of the edge bar. They are how the user
 /// leaves the screen, so a screen's own actions give way to the overflow menu
 /// before any of them does.
+/// Back to the Hub as the top-leading item of an in-project screen: the
+/// ‹ project logo, kept in the top row (never moved into the edge bar).
+struct DuoHubBackToolbarItem: ToolbarContent {
+  var body: some ToolbarContent {
+    if #available(iOS 27.1, *) {
+      ToolbarItem(placement: .topBarLeading) { ADEHubBackButton() }
+        .sharedBackgroundVisibility(.hidden)
+        .axisBehavior(.horizontalOnly)
+    } else {
+      ToolbarItem(placement: .topBarLeading) { ADEHubBackButton() }
+        .sharedBackgroundVisibility(.hidden)
+    }
+  }
+}
+
 private struct DuoAppDestinationsToolbarGroup: ToolbarContent {
   @ObservedObject var navigation: DuoAppNavigation
 
@@ -267,7 +282,9 @@ private struct DuoAppDestinationsToolbarGroup: ToolbarContent {
 
   private var group: some ToolbarContent {
     ToolbarItemGroup(placement: .bottomBar) {
-      ForEach(navigation.destinations) { item in
+      // The five tabs only: inside a project the way back to the Hub is the
+      // ‹ project logo at the top of each screen, as on the phone.
+      ForEach(navigation.destinations.filter { $0.role != .home }) { item in
         DuoAppTabButton(item: item, isSelected: navigation.selectedId == item.id) {
           navigation.select(item.id)
         }

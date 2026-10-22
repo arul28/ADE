@@ -756,6 +756,9 @@ struct WorkChatSessionView: View {
   var onAttachIssue: (() -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
+  /// Compact first for the next send: nil follows the offer's own default.
+  /// Lives here, not in the composer, so its pill can ride the one pill row.
+  @State private var compactFirstChoice: Bool? = nil
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
   /// records it counted. Dismissing the drawer clears it, so every other way
   /// in opens on everything.
@@ -1153,7 +1156,14 @@ struct WorkChatSessionView: View {
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
-      || showsComposerThreadCommentsChip
+      || showsComposerThreadCommentsChip || showsComposerCompactFirstPill
+  }
+
+  /// Compact first, once the prompt cache has expired (desktop's chip).
+  var showsComposerCompactFirstPill: Bool {
+    guard inputLockMessage == nil, onSendWithCompaction != nil,
+          let offer = composerCompactFirstOffer else { return false }
+    return offer.isEligible(at: Date())
   }
 
   /// The floating pills (desktop's floating previews), one row directly above
@@ -1167,7 +1177,10 @@ struct WorkChatSessionView: View {
   var composerBadgeChipRow: some View {
     DuoPaneSelectionReader(pane: duoPane) { selected in
       let chips = HStack(spacing: 8) {
-        // First: it is the one chip that changes what the next send carries.
+        // First: the chips that change what the next send carries.
+        if showsComposerCompactFirstPill, let offer = composerCompactFirstOffer {
+          WorkCompactFirstPill(offer: offer, choice: $compactFirstChoice, inRow: true)
+        }
         if showsComposerThreadCommentsChip {
           WorkThreadCommentsChip(comments: threadComments) {
             ADEHaptics.light()
@@ -1849,6 +1862,7 @@ struct WorkChatSessionView: View {
         chatSummary: chatSummaryContext,
         contextMeter: composerContextMeter,
         compactFirstOffer: composerCompactFirstOffer,
+        compactFirstChoice: $compactFirstChoice,
         onCompactContext: { [onSend, $errorMessage] in
           Task { @MainActor in
             // Most send failures set their own message; the rest (a send
@@ -2731,6 +2745,7 @@ private struct WorkChatComposerCard: View {
   /// The context meter rides the composer, as on desktop.
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
+  @Binding var compactFirstChoice: Bool?
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2779,6 +2794,7 @@ private struct WorkChatComposerCard: View {
       chatSummary: chatSummary,
       contextMeter: contextMeter,
       compactFirstOffer: compactFirstOffer,
+      compactFirstChoice: $compactFirstChoice,
       onCompactContext: onCompactContext,
       sessionId: sessionId,
       isPersonalChat: isPersonalChat,
@@ -2819,6 +2835,7 @@ private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
+  @Binding var compactFirstChoice: Bool?
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2867,7 +2884,6 @@ private struct WorkChatComposerDraftInput: View {
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
-  @State private var compactFirstChoice: Bool? = nil
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   /// Set by a tap on an image or file pill; the tray opens that preview.
@@ -3190,11 +3206,8 @@ private struct WorkChatComposerDraftInput: View {
     // Spacing 0: the pill carries its own gap, so a pill that is not yet
     // eligible (its timeline draws nothing) leaves no band above the card.
     VStack(alignment: .leading, spacing: 0) {
-      // Compact first floats above the prompt box, as on desktop, instead of
-      // taking width from the send row.
-      if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
-        WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
-      }
+      // Compact first is a pill in the chat's one pill row above this box
+      // (`composerBadgeChipRow`).
 
       ADEGlassComposerCard(
         collapsed: showsFoldedCapsule,

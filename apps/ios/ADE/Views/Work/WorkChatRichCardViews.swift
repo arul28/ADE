@@ -3112,7 +3112,7 @@ struct WorkChatInfoActivePopup: View {
       selection: isSelected,
       onOpen: onOpen
     ) {
-      Image(systemName: model.running > 0 ? "info.circle.fill" : "photo.on.rectangle.angled")
+      Image(systemName: model.running > 0 ? "flowchart.fill" : "photo.on.rectangle.angled")
         .font(.system(size: 13, weight: .semibold))
       Text(model.label)
         .font(.caption.weight(.semibold).monospacedDigit())

@@ -25,16 +25,11 @@ enum DuoWorkMetrics {
     reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
   }
 
-  /// Chat | pane side by side: one page each on a book fold, half and half
-  /// flat. `trailing` is the pane's width; `fold` is the band the seam covers
-  /// when the hinge is the divider.
+  /// Chat | pane side by side. `trailing` is the pane's width. Always an even split of the room left of the edge bar (the user's
+  /// call): on a book fold the right page is narrower by the bar, so pages
+  /// would leave the pane short.
   static func wideSplit(width: CGFloat, fold: DuoFold) -> (trailing: CGFloat, fold: CGRect?) {
-    if case .sideBySide(let rect) = fold,
-       rect.minX > 240,
-       width - rect.maxX > 240 {
-      return (width - rect.maxX, rect)
-    }
-    return (floor(width / 2), nil)
+    (floor(width / 2), nil)
   }
 
   /// Pane over chat: exactly the top half on a laptop or tent fold, a little
@@ -131,33 +126,6 @@ struct DuoWorkEmptyDetail: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .accessibilityIdentifier("Duo.Work.EmptyDetail")
-  }
-}
-
-/// The top of the sessions column, under its glass controls: the large title
-/// with its count, then the search field (Voice Memos' and Messages' list
-/// columns on the Duo).
-struct DuoSessionsHeader: View {
-  let title: String
-  let subtitle: String
-  @Binding var searchText: String
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      VStack(alignment: .leading, spacing: 0) {
-        Text(title)
-          .font(.largeTitle.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .accessibilityAddTraits(.isHeader)
-        Text(subtitle)
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      .padding(.horizontal, 4)
-      WorkInlineSearchField(text: $searchText, prompt: "Search chats, lanes, output")
-        .accessibilityIdentifier("Duo.Work.Search")
-    }
-    .padding(.top, 2)
   }
 }
 
@@ -515,8 +483,10 @@ struct DuoChatRailModel {
   var menu: WorkChatHeaderMenuModel
   /// The session the chat actions act on.
   var session: TerminalSessionSummary?
-  /// A chat (not a CLI session): Chat info and the chat's actions exist.
+  /// A chat (not a CLI session): Chat Info and the chat's actions exist.
   var isChat: Bool
+  /// The chat's PR, for the header label when the chat has the room.
+  var prBadge: WorkChatPrBadgeModel? = nil
 }
 
 /// What the wide chat's buttons fire.
@@ -553,24 +523,28 @@ struct DuoChatRail: ViewModifier {
   let actions: DuoChatRailActions
   @Environment(\.duoLayout) private var duo
   @Environment(\.duoWorkFamily) private var family
-  /// The column's width, so the title capsule never asks for more than the
-  /// chat's share of it (an item too wide for the bar is dropped whole).
+  /// The column's width, so the title capsule can span the chat's own top.
   @State private var columnWidth: CGFloat = 0
 
   /// A pane (tool, Chat Info, PR) is open on the chat's right. The bar's top
-  /// belongs to whatever is on the right: the chat's three buttons fold into
-  /// one ⋯ on its title capsule, and on the edge bar the pane's controls take
-  /// their place.
+  /// belongs to whatever is on the right: while it is, the chat's buttons
+  /// step aside (they come back when the pane closes) and, on the edge bar,
+  /// the pane's controls and Close take their place.
   private var paneBesideChat: Bool { pane.isOpen && family != .tall }
 
-  /// The title capsule's widest: the thread's own width (half the column
-  /// while the pane is beside it), less the bar's margins. Without the edge
-  /// bar the top bar also holds the three buttons and the tabs menu.
-  private var titleMaxWidth: CGFloat {
-    let sidebar: CGFloat = showsSidebarButton ? 52 : 0
+  /// Held landscape with the chat alone on the right: the title capsule spans
+  /// the chat's top, and carries the chat's PR label at its trailing end.
+  private var spansColumn: Bool { duo.hasEdgeBar && !paneBesideChat && family != .tall }
+
+  /// The title capsule's width: the chat's own top, leading to trailing
+  /// margin (the pane, when open, takes the right half), less the sidebar
+  /// button. Without the edge bar it also leaves the top bar its buttons.
+  private var titleWidth: CGFloat {
+    let sidebar: CGFloat = showsSidebarButton ? 56 : 0
     let chat = paneBesideChat ? columnWidth / 2 : columnWidth
-    let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 40 : 250
-    return min(420, max(150, chat - trailing - sidebar))
+    let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 36 : 250
+    let width = max(150, chat - trailing - sidebar)
+    return spansColumn ? width : min(420, width)
   }
 
   func body(content: Content) -> some View {
@@ -582,13 +556,13 @@ struct DuoChatRail: ViewModifier {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(removing: .title)
     if #available(iOS 27.1, *) {
+      // ONE toolbar for the chat and its pane, declared where the pane's
+      // controls can be read: two toolbars that swapped items as the pane
+      // opened and closed could leave the bar without the chat's buttons.
       titled
-        .toolbar { rail27 }
-        // The pane's controls, read from what the open tool hands its header,
-        // declared as this stack's items so they land on the edge bar.
-        .backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { actions in
+        .backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
           Color.clear.backgroundPreferenceValue(DuoPaneOverflowKey.self) { overflow in
-            Color.clear.toolbar { paneBarItems(actions, overflow: overflow) }
+            Color.clear.toolbar { rail27(paneActions: paneActions, paneOverflow: overflow) }
           }
         }
     } else {
@@ -598,42 +572,8 @@ struct DuoChatRail: ViewModifier {
 
   @available(iOS 27.1, *)
   @ToolbarContentBuilder
-  private func paneBarItems(_ actions: DuoPaneHeaderActions?, overflow: DuoPaneHeaderActions?) -> some ToolbarContent {
-    if paneBesideChat && duo.paneControlsInBar {
-      // The tool's own controls give way to the bar's ⋯ before an app tab
-      // does: the tabs are how the user leaves, and all of them stay.
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        if let actions {
-          actions.content
-            .environment(\.duoPaneControlsInBar, true)
-        }
-      }
-      ToolbarSpacer(.fixed, placement: .topBarTrailing)
-      ToolbarItem(placement: .topBarTrailing) {
-        Button("Close \(pane.tab?.title ?? "pane")", systemImage: "xmark") {
-          ADEHaptics.light()
-          pane.close()
-        }
-        .accessibilityIdentifier("Duo.Work.ToolsPane.Close")
-      }
-      .visibilityPriority(.high)
-      // The bar's one ⋯: the surface's own actions, and whatever the bar
-      // cannot fit joins them.
-      ToolbarOverflowMenu {
-        if let overflow {
-          overflow.content
-        }
-        // Only while the sessions column (whose ⋯ has them) is away.
-        if showsSidebarButton {
-          DuoAppUtilityMenuItems()
-        }
-      }
-    }
-  }
-
-  @available(iOS 27.1, *)
-  @ToolbarContentBuilder
-  private var rail27: some ToolbarContent {
+  private func rail27(paneActions: DuoPaneHeaderActions?, paneOverflow: DuoPaneHeaderActions?) -> some ToolbarContent {
+    let paneOnBar = paneBesideChat && duo.paneControlsInBar
     if showsSidebarButton {
       ToolbarItem(placement: .topBarLeading) { sidebarButton }
         .axisBehavior(.horizontalOnly)
@@ -645,6 +585,8 @@ struct DuoChatRail: ViewModifier {
     if !duo.hasEdgeBar {
       ToolbarSpacer(.fixed, placement: .topBarLeading)
     }
+    // The chat's buttons step aside while a pane holds the right side, and
+    // are back the moment it closes.
     if !paneBesideChat {
       if model.isChat {
         ToolbarItem(placement: .topBarTrailing) { chatInfoButton }
@@ -652,66 +594,54 @@ struct DuoChatRail: ViewModifier {
       }
       ToolbarItem(placement: .topBarTrailing) { toolsMenu }
         .visibilityPriority(.high)
-      // The chat's actions ARE the bar's overflow menu: whatever the bar
-      // cannot fit (Activity and Settings on a short rail) joins them at the
-      // bottom of the same ⋯, instead of the system adding a second ⋯.
-      ToolbarOverflowMenu {
-        if model.isChat {
-          WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
-            .equatable()
-        }
-        // Only while the sessions column (whose ⋯ has them) is away.
-        if showsSidebarButton {
-          DuoAppUtilityMenuItems()
+    }
+    // The pane's controls (a tool's own; the PR's watch), then Close.
+    if paneOnBar {
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        if let paneActions {
+          paneActions.content
+            .environment(\.duoPaneControlsInBar, true)
         }
       }
+      ToolbarItem(placement: .topBarTrailing) {
+        Button("Close \(pane.tab?.title ?? "pane")", systemImage: "xmark") {
+          ADEHaptics.light()
+          pane.close()
+        }
+        .accessibilityIdentifier("Duo.Work.ToolsPane.Close")
+      }
+      .visibilityPriority(.high)
     }
-    // On the edge bar, Activity and Settings live in the bar's one ⋯ (below
-    // the screen's own items) rather than appearing or vanishing at its bottom
-    // as room allows; elsewhere the tabs menu holds them.
+    // The bar's one ⋯: the chat's actions, or with a pane open the pane's
+    // own (the PR's actions). Whatever the bar cannot fit joins it.
+    ToolbarOverflowMenu {
+      if paneOnBar {
+        if let paneOverflow {
+          paneOverflow.content
+        }
+      } else if !paneBesideChat, model.isChat {
+        WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
+          .equatable()
+      }
+      // Only while the sessions column (whose ⋯ has them) is away.
+      if showsSidebarButton {
+        DuoAppUtilityMenuItems()
+      }
+    }
+    // On the edge bar, Activity and Settings are in a ⋯ (the sessions
+    // column's, or the bar's), never on the rail; elsewhere the tabs menu.
     DuoAppTabsToolbar(includesUtilities: !duo.hasEdgeBar)
   }
 
-  /// The chat's title, and, while a pane holds the right side, the chat's
-  /// whole phone menu (Chat Info · Tools ▸ · its actions) as a ⋯ on it.
+  /// The chat's title. Held landscape with the chat alone on the right it
+  /// spans the column and ends in the chat's PR label.
   private var titleCapsule: some View {
-    DuoChatTitleCapsule(model: model, maxWidth: titleMaxWidth - (paneBesideChat ? 36 : 0)) {
-      if paneBesideChat && model.isChat {
-        Menu {
-          Section {
-            Button {
-              ADEHaptics.light()
-              if chatInfoShown { pane.close() } else { actions.onChatInfo() }
-            } label: {
-              Label(chatInfoShown ? "Hide Chat Info" : "Chat Info", systemImage: "info.circle")
-            }
-            Menu {
-              WorkChatToolsMenuItems(
-                tools: model.menu.tools,
-                hasPullRequest: model.menu.hasPullRequest,
-                canCreatePullRequest: model.menu.canCreatePullRequest,
-                selected: pane.isOpen ? pane.tab : nil,
-                onOpen: { tab in
-                  if pane.isOpen, pane.tab == tab { pane.close() } else { actions.onOpenTool(tab) }
-                },
-                onCreatePullRequest: actions.onCreatePullRequest
-              )
-            } label: {
-              Label("Tools", systemImage: "wrench.and.screwdriver")
-            }
-          }
-          WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
-            .equatable()
-        } label: {
-          Image(systemName: "ellipsis")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .frame(width: 32, height: 32)
-            .background(ADEColor.textPrimary.opacity(0.06), in: Circle())
-            .contentShape(Circle())
+    DuoChatTitleCapsule(model: model, width: titleWidth, fills: spansColumn) {
+      if spansColumn, let badge = model.prBadge {
+        DuoChatPrHeaderLabel(badge: badge) {
+          ADEHaptics.light()
+          actions.onOpenTool(.pr)
         }
-        .accessibilityLabel("Chat actions")
-        .accessibilityIdentifier("Duo.Work.ChatMenu")
       }
     }
   }
@@ -750,7 +680,7 @@ struct DuoChatRail: ViewModifier {
       ADEHaptics.light()
       if chatInfoShown { pane.close() } else { actions.onChatInfo() }
     } label: {
-      Label(chatInfoShown ? "Hide Chat Info" : "Chat Info", systemImage: "info.circle")
+      Label(chatInfoShown ? "Hide Chat Info" : "Chat Info", systemImage: DuoToolTab.chatInfo.symbolName)
         .symbolVariant(chatInfoShown ? .fill : .none)
     }
     .badge(model.menu.chatInfoCount)
@@ -758,10 +688,9 @@ struct DuoChatRail: ViewModifier {
   }
 
   /// Tools: the running tools and the PR, one of which opens beside the
-  /// thread. The glyph fills while the pane shows a tool or the PR.
+  /// thread.
   private var toolsMenu: some View {
-    let shown = pane.isOpen && (pane.tab?.isTool == true || pane.tab == .pr)
-    return Menu {
+    Menu {
       WorkChatToolsMenuItems(
         tools: model.menu.tools,
         hasPullRequest: model.menu.hasPullRequest,
@@ -772,17 +701,8 @@ struct DuoChatRail: ViewModifier {
         },
         onCreatePullRequest: actions.onCreatePullRequest
       )
-      if shown {
-        Section {
-          Button("Close \(pane.tab?.title ?? "tool")", systemImage: "xmark") {
-            ADEHaptics.light()
-            pane.close()
-          }
-        }
-      }
     } label: {
       Label("Tools", systemImage: "wrench.and.screwdriver")
-        .symbolVariant(shown ? .fill : .none)
     }
     .accessibilityIdentifier("Duo.Work.Tools")
   }
@@ -797,6 +717,51 @@ struct DuoChatRail: ViewModifier {
       Label("Chat actions", systemImage: "ellipsis")
     }
     .accessibilityIdentifier("Duo.Work.ChatActions")
+  }
+}
+
+/// The chat's PR in its header (desktop's header PR tag): "#1871 Open" in
+/// the state's colour, with the checks glyph. Opens the PR beside the chat.
+struct DuoChatPrHeaderLabel: View {
+  let badge: WorkChatPrBadgeModel
+  let action: () -> Void
+
+  private var tint: Color { lanePullRequestTint(badge.state) }
+
+  private var checksGlyph: (symbol: String, color: Color)? {
+    switch badge.checksStatus {
+    case "passing": return ("checkmark.circle.fill", ADEColor.success)
+    case "failing": return ("xmark.circle.fill", ADEColor.danger)
+    case "pending": return ("clock.fill", ADEColor.warning)
+    default: return nil
+    }
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: "arrow.triangle.pull")
+          .font(.system(size: 11, weight: .semibold))
+        Text(badge.label)
+          .font(.caption.weight(.semibold).monospacedDigit())
+        Text(lanePrStateLabel(badge.state))
+          .font(.caption.weight(.medium))
+        if let checksGlyph {
+          Image(systemName: checksGlyph.symbol)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(checksGlyph.color)
+        }
+      }
+      .lineLimit(1)
+      .foregroundStyle(tint)
+      .padding(.horizontal, 9)
+      .frame(height: 26)
+      .background(tint.opacity(0.13), in: Capsule(style: .continuous))
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .fixedSize()
+    .accessibilityLabel("\(badge.label), \(lanePrStateLabel(badge.state)). Opens the pull request.")
   }
 }
 
@@ -853,15 +818,23 @@ private struct WorkChatRailActionsItems: View, Equatable {
 /// machine" under it, as one glass capsule at the top-left of the column.
 struct DuoChatTitleCapsule<Trailing: View>: View {
   let model: DuoChatRailModel
-  var maxWidth: CGFloat = 360
+  /// The capsule's width: its widest when compact, its exact width when it
+  /// `fills` the column's top.
+  var width: CGFloat = 360
+  var fills = false
   @ViewBuilder var trailing: () -> Trailing
 
   var body: some View {
-    HStack(spacing: 2) {
+    HStack(spacing: 8) {
       titleBlock
+        .frame(maxWidth: fills ? .infinity : width, alignment: .leading)
       trailing()
     }
-    .fixedSize()
+    .padding(.trailing, fills ? 6 : 0)
+    // A toolbar item is laid out at its ideal size: without a definite width
+    // the system squeezes the title to nothing and keeps only the mark.
+    .frame(width: fills ? width : nil, alignment: .leading)
+    .fixedSize(horizontal: !fills, vertical: false)
   }
 
   private var titleBlock: some View {
@@ -887,10 +860,6 @@ struct DuoChatTitleCapsule<Trailing: View>: View {
     }
     .padding(.leading, 6)
     .padding(.trailing, 10)
-    // A toolbar item is laid out at its ideal size: without this the system
-    // squeezes the title to nothing and keeps only the mark.
-    .frame(maxWidth: maxWidth, alignment: .leading)
-    .fixedSize()
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(.isHeader)
   }

@@ -276,6 +276,9 @@ extension LanesTabView {
       .navigationTitle(quickFilter == .active ? "Lanes" : quickFilter.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
+        // Back to the Hub: the ‹ project logo, as on the phone (no Home tab on
+        // the rail inside a project).
+        DuoHubBackToolbarItem()
         ToolbarItem(placement: .topBarLeading) { duoLaneFilterMenu }
         if !remoteLanes.machines.isEmpty {
           ToolbarItem(placement: .topBarLeading) { duoLaneMachineMenu }

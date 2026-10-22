@@ -996,6 +996,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
       .navigationTitle("Files")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
+        // Back to the Hub: the ‹ project logo, as on the phone (no Home tab on
+        // the rail inside a project).
+        DuoHubBackToolbarItem()
         ToolbarItem(placement: .primaryAction) {
           Button(action: onFind) {
             Label("Search", systemImage: "magnifyingglass")
@@ -1184,6 +1187,9 @@ struct DuoCtoWide<Chat: View>: View {
       let overviewShown = overviewChoice ?? defaultOverviewShown(landscape: landscape, fold: fold)
       layout(fold: fold, size: size, landscape: landscape, overviewShown: overviewShown)
         .toolbar {
+          // Back to the Hub: the ‹ project logo, as on the phone (no Home tab on
+          // the rail inside a project).
+          DuoHubBackToolbarItem()
           ToolbarItem(placement: .primaryAction) {
             Button {
               withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)) {

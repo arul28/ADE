@@ -998,11 +998,6 @@ struct WorkRootListScreen: View, Equatable {
     .task(id: duoPreviewSelectionKey) { applyDuoPreviewSelectionIfNeeded() }
   }
 
-  /// Under the sessions column's large title: how many chats it holds.
-  private var duoSessionsSubtitle: String {
-    let count = sessionPresentation.topLevelDisplaySessionIds.count
-    return count == 1 ? "1 chat" : "\(count) chats"
-  }
 
   /// What the detail column shows, in priority order.
   private enum DuoDetail {
@@ -1360,8 +1355,22 @@ struct WorkRootListScreen: View, Equatable {
         Button("Cancel", action: exitSelectionMode)
       }
     } else {
+      // ‹ project logo (back to the Hub), then "Work".
+      ToolbarItem(placement: .topBarLeading) {
+        HStack(spacing: 6) {
+          WorkHeaderProjectButton(iconDataUrl: inputs.projectIconDataUrl, action: workHeaderActions.onBackToHub)
+          Text("Work")
+            .font(.system(size: 22, weight: .heavy, design: .rounded))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityAddTraits(.isHeader)
+        }
+        .padding(.horizontal, 4)
+      }
+      .sharedBackgroundVisibility(.hidden)
       if !duoListIsPage {
-        ToolbarItem(placement: .topBarLeading) {
+        ToolbarItem(placement: .topBarTrailing) {
           Button(duoWorkFamily == .tall ? "Hide chats" : "Collapse sidebar", systemImage: "sidebar.left") {
             ADEHaptics.light()
             toggleDuoSessionsColumn()
@@ -1369,37 +1378,43 @@ struct WorkRootListScreen: View, Equatable {
           .accessibilityIdentifier("Duo.Work.SessionsCollapse")
         }
       }
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        WorkFilterMenu(
-          organization: sessionOrganizationBinding,
-          foldBusyLanes: foldBusyLanesBinding,
-          selectedStatus: selectedStatusBinding,
-          selectedLaneId: selectedLaneBinding,
-          machineFilter: machineFilterBinding,
-          machineOptions: inputs.machineFilterOptions,
-          lanes: workOrderedLanes,
-          activeFilterCount: workActiveFilterCount,
-          onClear: clearWorkFilters
-        )
-        WorkHeaderOverflowMenu(
-          showsLinear: inputs.showsLinear,
-          showsCursorCloud: inputs.showsCursorCloud,
-          showsGitHubIssues: inputs.showsGitHubIssues,
-          actions: workHeaderActions,
-          toolbarLabel: true,
-          viewMode: duoViewModeBinding
-        )
-      }
-      ToolbarSpacer(.fixed, placement: .topBarTrailing)
-      ToolbarItem(placement: .topBarTrailing) {
-        Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
-          .disabled(!inputs.isLive)
-          .accessibilityIdentifier("Duo.Work.NewChat")
-      }
       if duoListIsPage {
         DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
       }
     }
+  }
+
+  /// The sessions column's second header row, the phone's: search with the
+  /// filter chip inside it, New chat, and ⋯ (with the List | Board switch).
+  private var duoSessionsSearchRow: some View {
+    HStack(spacing: 8) {
+      WorkHeaderSearchField(
+        searchText: searchTextBinding,
+        filterOpen: $filterPanelOpen,
+        activeFilterCount: workActiveFilterCount
+      )
+      Button(action: pushNewChatRoute) {
+        Image(systemName: "square.and.pencil")
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+          .frame(width: 32, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!inputs.isLive)
+      .accessibilityLabel("New chat")
+      .accessibilityIdentifier("Duo.Work.NewChat")
+      WorkHeaderOverflowMenu(
+        showsLinear: inputs.showsLinear,
+        showsCursorCloud: inputs.showsCursorCloud,
+        showsGitHubIssues: inputs.showsGitHubIssues,
+        actions: workHeaderActions,
+        viewMode: duoViewModeBinding
+      )
+    }
+    .padding(.horizontal, 16)
+    .padding(.bottom, 6)
+    .background(ADEColor.pageBackground.opacity(0.94))
   }
 
   /// The chat awaits one constructor in both layouts; only the chrome and the
@@ -1540,18 +1555,6 @@ struct WorkRootListScreen: View, Equatable {
 
   private func workList(proxy: ScrollViewProxy, duoColumn: Bool = false) -> some View {
     let rows = List {
-        if duoColumn && !isSelecting {
-          // Voice Memos' list column: the large title and its count under the
-          // glass controls, then the search field, scrolling with the list.
-          DuoSessionsHeader(
-            title: "Work",
-            subtitle: duoSessionsSubtitle,
-            searchText: searchTextBinding
-          )
-          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 6, trailing: 16))
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
-        }
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -1905,13 +1908,19 @@ struct WorkRootListScreen: View, Equatable {
   @ViewBuilder
   private func workListChrome<Rows: View>(_ rows: Rows, duoColumn: Bool) -> some View {
     if duoColumn {
+      // The phone's Work header, in two rows: ‹ project logo and "Work" with
+      // the sidebar button at the right end; then search (filter inside it),
+      // New chat and ⋯, the phone's own row.
       rows
         .navigationTitle(isSelecting ? "\(selectedSessionIds.count) selected" : "Work")
         .navigationBarTitleDisplayMode(.inline)
-        // The title is drawn large in the list itself (`DuoSessionsHeader`);
-        // the bar keeps only the glass controls. Selecting shows the count.
         .toolbar(removing: isSelecting ? nil : .title)
         .toolbar { duoSessionsToolbar }
+        .safeAreaInset(edge: .top, spacing: 0) {
+          if !isSelecting {
+            duoSessionsSearchRow
+          }
+        }
     } else if workListHasEdgeRail {
       // The Duo's closed outer display: its curved edge carries a vertical
       // bar beside the clock. New chat and the header ⋯'s items become that

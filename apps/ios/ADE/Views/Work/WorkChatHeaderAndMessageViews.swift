@@ -272,7 +272,7 @@ struct WorkChatHeaderMenu: View, Equatable {
     Menu {
       Section {
         Button(action: onShowChatInfo) {
-          Label("Chat Info", systemImage: "info.circle")
+          Label("Chat Info", systemImage: DuoToolTab.chatInfo.symbolName)
           if model.chatInfoCount > 0 {
             Text("\(model.chatInfoCount) agent\(model.chatInfoCount == 1 ? "" : "s") and jobs")
           }

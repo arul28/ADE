@@ -42,7 +42,8 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .macDesktop: return "desktopcomputer"
     case .appControl: return "macwindow"
     case .browser: return "globe"
-    case .chatInfo: return "info.circle"
+    // Desktop's chat actions drawer toggle (Phosphor TreeStructure).
+    case .chatInfo: return "flowchart"
     case .proof: return "photo.on.rectangle.angled"
     case .pr: return "arrow.triangle.pull"
     }

@@ -555,18 +555,105 @@ struct WorkFullscreenImageView: View {
 
   var body: some View {
     NavigationStack {
+      // Fitted inside the safe area: the bar's controls (and, held landscape
+      // on the Duo, the edge bar) never sit over the picture.
       WorkProofZoomableImage(image: image.image)
-        .ignoresSafeArea(edges: .bottom)
         .accessibilityLabel(image.title)
-        .background(Color.black.ignoresSafeArea())
-        .navigationTitle(image.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
-          }
+        .workMediaViewerChrome(
+          caption: image.title,
+          detail: nil,
+          onDone: { dismiss() }
+        ) {
+          ShareLink(
+            item: Image(uiImage: image.image),
+            preview: SharePreview(image.title, image: Image(uiImage: image.image))
+          )
         }
     }
+  }
+}
+
+extension View {
+  /// The full-screen media viewer's chrome, shared by the transcript image
+  /// viewer and the Proof viewer: black on every edge, Done at the top-left
+  /// (kept in the top row, never moved into an edge bar), Share as a plain
+  /// bar item (the Duo's edge bar held landscape), and the caption readable at
+  /// the bottom on its own glass, clear of the picture's controls.
+  func workMediaViewerChrome<Share: View>(
+    caption: String,
+    detail: String?,
+    onDone: @escaping () -> Void,
+    @ViewBuilder share: () -> Share
+  ) -> some View {
+    modifier(WorkMediaViewerChrome(caption: caption, detail: detail, onDone: onDone, share: share()))
+  }
+}
+
+private struct WorkMediaViewerChrome<Share: View>: ViewModifier {
+  let caption: String
+  let detail: String?
+  let onDone: () -> Void
+  let share: Share
+
+  func body(content: Content) -> some View {
+    content
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .safeAreaInset(edge: .bottom, spacing: 0) { captionBar }
+      .background(Color.black.ignoresSafeArea())
+      .toolbarBackground(.hidden, for: .navigationBar)
+      .navigationTitle(caption)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar(removing: .title)
+      .toolbarColorScheme(.dark, for: .navigationBar)
+      .preferredColorScheme(.dark)
+      .modifier(WorkMediaViewerBar(onDone: onDone, share: share))
+  }
+
+  private var captionBar: some View {
+    VStack(spacing: 1) {
+      Text(caption)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(Color.white)
+        .lineLimit(2)
+        .multilineTextAlignment(.center)
+      if let detail {
+        Text(detail)
+          .font(.caption)
+          .foregroundStyle(Color.white.opacity(0.7))
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+    .glassEffect(.regular, in: Capsule(style: .continuous))
+    .padding(.horizontal, 24)
+    .padding(.top, 8)
+    .padding(.bottom, 10)
+    .accessibilityElement(children: .combine)
+  }
+}
+
+private struct WorkMediaViewerBar<Share: View>: ViewModifier {
+  let onDone: () -> Void
+  let share: Share
+
+  func body(content: Content) -> some View {
+    if #available(iOS 27.1, *) {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { doneButton }
+          .axisBehavior(.horizontalOnly)
+        ToolbarItem(placement: .topBarTrailing) { share }
+      }
+    } else {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { doneButton }
+        ToolbarItem(placement: .topBarTrailing) { share }
+      }
+    }
+  }
+
+  private var doneButton: some View {
+    Button("Done", action: onDone)
+      .fontWeight(.semibold)
   }
 }
 

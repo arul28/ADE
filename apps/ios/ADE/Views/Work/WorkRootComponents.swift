@@ -1905,7 +1905,7 @@ struct WorkRootHeader: View {
 /// Back-to-hub control: a small chevron and the project's icon, or the ADE mark
 /// when the project has none. Same action as `ADEHubBackButton`, without the
 /// capsule so it sits flat in the one-row header.
-private struct WorkHeaderProjectButton: View {
+struct WorkHeaderProjectButton: View {
   let iconDataUrl: String?
   let action: () -> Void
 
@@ -1937,7 +1937,7 @@ private struct WorkHeaderProjectButton: View {
 /// Search that takes the header's remaining width, with the filter control as a
 /// chip inside its trailing edge. The chip turns accent while the panel is open
 /// or a lane/status filter is applied, and shows how many are applied.
-private struct WorkHeaderSearchField: View {
+struct WorkHeaderSearchField: View {
   @Binding var searchText: String
   @Binding var filterOpen: Bool
   let activeFilterCount: Int
