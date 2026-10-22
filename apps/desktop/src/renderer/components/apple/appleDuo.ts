@@ -85,8 +85,9 @@ export function appleDuoPoseForAngle(angle: number, lowerFlat = false): AppleDuo
  *
  * Tent is its own Table Mode. Otherwise the angle picks the nearest of
  * Closed, the 90° fold and Open (a custom angle reads as its closest label),
- * and how the phone is held tells the two 90° poses apart: sideways is a laptop, upright a book. Without a report of
- * the hold, the 90° fold reads as Laptop.
+ * and how the phone is held tells the two 90° poses apart: sideways is a
+ * laptop, upright a book. Without a report of the hold, the 90° fold reads as
+ * Laptop.
  */
 export function appleDuoStanceFor(input: {
   angle: number;
