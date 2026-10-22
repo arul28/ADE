@@ -98,10 +98,6 @@ struct HubQuickConnectSection: View {
     !targets.isEmpty
   }
 
-  private var showsEmptyNote: Bool {
-    !hasTargets && (account.isSignedIn || !syncService.savedReconnectHosts.isEmpty)
-  }
-
   var body: some View {
     Group {
       if hasTargets {
@@ -182,16 +178,6 @@ struct HubQuickConnectSection: View {
             .frame(maxWidth: .infinity)
           }
         }
-      } else if showsEmptyNote {
-        HStack(spacing: 8) {
-          ADEKitDot(tone: .neutral, size: 7)
-          Text("No saved machines yet")
-            .font(.system(.caption, design: .rounded).weight(.medium))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .background(ADEKit.track, in: Capsule())
       }
     }
     .frame(maxWidth: 420)

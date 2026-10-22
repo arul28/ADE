@@ -1034,44 +1034,52 @@ struct HubNoMachineState: View {
 
   var body: some View {
     GeometryReader { geometry in
+      // Center on the whole screen, not the safe area: the Duo's status and
+      // camera column sits on one side only, and centering inside the safe
+      // area pushed everything off to the other side. Symmetric margins as
+      // wide as the larger inset keep content clear of both edges.
+      let sideInset = max(geometry.safeAreaInsets.leading, geometry.safeAreaInsets.trailing)
       ScrollView {
         VStack(spacing: 0) {
+          Spacer(minLength: 24)
+
           Image("BrandMark")
             .resizable()
             .renderingMode(.original)
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .frame(maxWidth: 220)
-            .frame(height: 108)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 88)
+            .frame(maxWidth: 200)
+            .frame(height: 96)
             .accessibilityLabel("ADE")
 
-          HStack(spacing: 7) {
-            ADEKitDot(tone: syncService.connectionState == .error ? .crit : .neutral, size: 7)
-            Text(statusText)
-              .font(.system(size: 13, weight: .medium))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          .padding(.horizontal, 12)
-          .frame(height: 30)
-          .background(ADEKit.track, in: Capsule())
-          .padding(.top, 24)
+          Text(headline)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .multilineTextAlignment(.center)
+            .padding(.top, 28)
+
+          Text(message)
+            .font(.subheadline)
+            .foregroundStyle(ADEColor.textSecondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 360)
+            .padding(.top, 6)
 
           if syncService.tailscaleOffHintVisible {
             ADETailscaleOffHintCard()
               .padding(.top, 22)
           }
 
-          // Between the no-machine badge and the Connect button: one-tap cards for
-          // machines that are online right now — on your account or previously
-          // paired — so a phone can jump back in without opening Settings (M4).
+          // One-tap cards for machines that are online right now — on your
+          // account or previously paired — so a phone can jump back in
+          // without opening Settings.
           HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
-            .padding(.top, 22)
+            .padding(.top, 24)
 
-          Spacer(minLength: 40)
+          Spacer(minLength: 32)
 
-          VStack(spacing: 12) {
+          VStack(spacing: 4) {
             if hasSavedMachine {
               Button {
                 Task { await syncService.reconnectIfPossible(userInitiated: true) }
@@ -1080,33 +1088,66 @@ struct HubNoMachineState: View {
               }
               .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
 
-              Button {
+              Button("Connection Settings") {
                 syncService.settingsPresented = true
-              } label: {
-                Text("Connection settings")
-                  .font(.system(size: 14, weight: .medium))
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .frame(minHeight: 44)
-                  .contentShape(Rectangle())
               }
-              .buttonStyle(.plain)
+              .font(.subheadline.weight(.medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(minHeight: 44)
             } else {
               Button {
                 syncService.settingsPresented = true
               } label: {
-                Label("Connect Machine", systemImage: "link")
+                Label("Connect a Computer", systemImage: "link")
               }
               .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
             }
           }
-          .padding(.bottom, 56)
+          .frame(maxWidth: 360)
+          .padding(.bottom, 40)
         }
-        .frame(maxWidth: 520)
-        .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .top)
-        .padding(.horizontal, 22)
+        .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+        .padding(.horizontal, 22 + sideInset)
       }
       .scrollIndicators(.hidden)
+      .ignoresSafeArea(.container, edges: .horizontal)
     }
+    .toolbar {
+      if let identity = account.identity {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button {
+            syncService.settingsPresented = true
+          } label: {
+            AccountAvatar(identity: identity)
+              .frame(width: 32, height: 32)
+              .scaleEffect(32.0 / 44.0)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Account: \(identity.displayName)")
+        }
+        .sharedBackgroundVisibility(.hidden)
+      }
+    }
+  }
+
+  private var headline: String {
+    switch syncService.connectionState {
+    case .error:
+      return statusText
+    default:
+      return hasSavedMachine ? statusText : "Connect a computer"
+    }
+  }
+
+  private var message: String {
+    if syncService.connectionState == .error {
+      return "Check that ADE is running on it and that both are online."
+    }
+    if hasSavedMachine {
+      return "Reconnect to pick up your projects, lanes and chats where you left them."
+    }
+    return "ADE runs your agents on your computer. Pair this phone to follow and steer them from anywhere."
   }
 
   /// A machine is "saved" when a pairing credential still exists for it —

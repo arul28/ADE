@@ -395,19 +395,21 @@ struct DiscoverHostsSheet: View {
             }
           }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Nearby computers")
+      .navigationTitle("Nearby Computers")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
+          Button(role: .cancel) { dismiss() }
         }
       }
     }
+    .presentationDetents([.medium, .large])
   }
 }
 
