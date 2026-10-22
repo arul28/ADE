@@ -1,26 +1,18 @@
 import SwiftUI
 
-// Wide Home: the all-projects Hub on the Duo's inner display.
+// The Hub (Home) on the Duo's inner display, and the pieces it shares with
+// the phone's Hub.
 //
-// The phone's Hub is one vertical roster of project cards with the composer
-// floating at the bottom. The inner display gets two pages instead, laid out
-// around the fold or the middle line:
-//
-//   Projects (left / top half)      Overview (right / bottom half)
+//   Projects (left page / top half)   Needs you · Machines · composer
 //   ---------------------------------------------------------------
-//   top bar, roster filter,         Needs you, Machines, and the Hub
-//   the same project cards          composer anchored at the bottom
+//   the same project cards            two widgets that fill the page,
+//                                     the composer at the very bottom
 //
-// The pages are the same components the phone draws — `HubProjectCard`,
-// `HubTopBar`, `HubInlineComposer` — so a project, a chat row or a machine means
-// the same thing in either posture. Nothing here fetches: the overview is read
-// from the presentations the Hub already built and from the fleet the
-// connection pill already shows.
-//
-// `DuoLocalFoldReader` gives the fold in this view's own coordinates, so the
-// pages sit on either side of a book fold (or above/below a laptop fold) rather
-// than under it. Controls stay on a page; only the project list may scroll
-// across a fold, and it does not have to.
+// The pages are the components the phone draws — `HubProjectCard`,
+// `HubInlineComposer`, `HubToolbar` — so a project, a chat row or a machine
+// means the same thing in either posture. Nothing here fetches: the widgets
+// read the presentations the Hub already built and the fleet the connection
+// menu already shows.
 
 // MARK: - Needs you
 
@@ -189,117 +181,338 @@ private func duoMachineFleetStateTone(_ state: MachineFleet.MachineState) -> ADE
 
 // MARK: - The wide Home
 
-/// Two pages laid out around the fold: the Hub's project roster, and everything
-/// about the machines that is not a project. Held landscape the pages sit side
-/// by side (a book fold is the boundary); held portrait the roster is the top
-/// page and the overview with its composer the bottom one (a laptop fold is the
-/// boundary).
-struct DuoHomeWide<Projects: View, Composer: View>: View {
+/// The all-projects Hub on the inner display.
+///
+/// Held landscape it is two pages, each its own navigation stack: the
+/// projects on the left (the brand and the connection are its only title),
+/// and on the right Needs you and Machines as two widgets that share the page
+/// height above the composer. The right page's toolbar is the edge bar: the
+/// account, Activity and Chats, the filter and Add, then the app tabs and
+/// Settings at the bottom. Book-folded each part is one page; flat, the
+/// projects get the larger share.
+///
+/// Held portrait (open tall, laptop, tent) it is one stack: the projects on
+/// the top half, the two widgets side by side and the composer on the bottom
+/// half, and the controls in the top bar.
+///
+/// Nothing scrolls the right page (or the bottom half): each widget scrolls
+/// inside itself, and the composer is always the bottom-most thing, full width.
+struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination: View>: View {
+  let machines: [DuoHomeMachine]
+  let needsYou: [DuoNeedsYouItem]
+  let actions: HubToolbarActions
+  @Binding var filter: HubRosterFilter
+  let filterCounts: [HubRosterFilter: Int]
+  let account: AccountIdentity?
+  /// Whether there is anything to file under Needs you and Machines yet: the
+  /// machine is attached, or the Hub still holds its last roster. Otherwise
+  /// the page says it is connecting rather than "nothing needs you".
+  var showsOverview = true
+  let onOpenNeedsYou: (DuoNeedsYouItem) -> Void
+  /// Pushes the Chats list on the projects page.
+  @Binding var chatsPresented: Bool
+
+  @ViewBuilder var title: () -> Title
+  @ViewBuilder var projects: () -> Projects
+  @ViewBuilder var composer: () -> Composer
+  @ViewBuilder var chatsDestination: () -> ChatsDestination
+
+  @Environment(\.duoLayout) private var duo
+
+  var body: some View {
+    DuoLocalFoldReader { _, size in
+      if duo.family(for: size) == .tall {
+        tallLayout
+      } else {
+        wideLayout
+      }
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+  }
+
+  // MARK: Held landscape
+
+  private var wideLayout: some View {
+    DuoTwoPages(flatShare: 0.54) {
+      NavigationStack {
+        projects()
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .topBarLeading) { title() }
+            ToolbarItem(placement: .topBarTrailing) {
+              HubFilterMenu(filter: $filter, counts: filterCounts)
+            }
+          }
+          .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
+      }
+    } second: {
+      NavigationStack {
+        VStack(spacing: 0) {
+          if showsOverview {
+            DuoHomeWidgets(
+              axis: .vertical,
+              machines: machines,
+              needsYou: needsYou,
+              onOpenNeedsYou: onOpenNeedsYou,
+              onOpenActivity: actions.onOpenActivity,
+              onOpenMachines: actions.onOpenSettings
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+          } else {
+            HubConnectingCard()
+              .frame(maxHeight: .infinity)
+          }
+          composer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .toolbar {
+          HubToolbar(
+            form: .rail,
+            actions: actions,
+            account: account,
+            includesAppTabs: true
+          )
+        }
+      }
+    }
+  }
+
+  // MARK: Held portrait
+
+  private var tallLayout: some View {
+    NavigationStack {
+      DuoLocalFoldReader { localFold, localSize in
+        let top: CGFloat = {
+          if case .stacked(let rect) = localFold { return max(0, min(rect.minY, localSize.height)) }
+          return floor(localSize.height * 0.5)
+        }()
+        VStack(spacing: 0) {
+          VStack(spacing: 0) {
+            // Held portrait the bar has no room for the filter: it is the
+            // phone's chip row, at the head of the list it filters.
+            HubRosterFilterBar(counts: filterCounts, selection: $filter)
+              .padding(.horizontal, 16)
+              .padding(.top, 4)
+              .padding(.bottom, 8)
+            projects()
+          }
+          .frame(height: top)
+          .frame(maxWidth: .infinity)
+          if case .stacked(let rect) = localFold {
+            DuoSeam(axis: .horizontal, foldRect: rect)
+          } else {
+            DuoSeam(axis: .horizontal)
+          }
+          VStack(spacing: 0) {
+            if showsOverview {
+              DuoHomeWidgets(
+                axis: .horizontal,
+                machines: machines,
+                needsYou: needsYou,
+                onOpenNeedsYou: onOpenNeedsYou,
+                onOpenActivity: actions.onOpenActivity,
+                onOpenMachines: actions.onOpenSettings
+              )
+              .padding(.horizontal, 16)
+              .padding(.top, 14)
+              .padding(.bottom, 4)
+            } else {
+              HubConnectingCard()
+                .frame(maxHeight: .infinity)
+            }
+            composer()
+          }
+          .frame(maxHeight: .infinity)
+        }
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        // The app tabs menu heads the bar, as on every screen held portrait.
+        DuoAppTabsToolbar(includesUtilities: true)
+        ToolbarItem(placement: .topBarLeading) { title() }
+        HubToolbar(
+          form: .bar,
+          actions: actions,
+          account: account,
+          includesAppTabs: true
+        )
+      }
+      .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
+    }
+  }
+}
+
+// MARK: - Widgets
+
+/// Needs you and Machines as two widgets that fill the room they are given
+/// and never scroll it: each scrolls inside itself. Stacked (held landscape)
+/// Machines sizes to its rows up to two fifths of the height and Needs you
+/// takes the rest; side by side (held portrait) Needs you takes a little over
+/// half the width, so a machine's summary line still fits.
+struct DuoHomeWidgets: View {
+  let axis: Axis
   let machines: [DuoHomeMachine]
   let needsYou: [DuoNeedsYouItem]
   let onOpenNeedsYou: (DuoNeedsYouItem) -> Void
   let onOpenActivity: () -> Void
   let onOpenMachines: () -> Void
 
-  private let projects: Projects
-  private let composer: Composer
-
-  @Environment(\.duoLayout) private var duo
-
-  init(
-    machines: [DuoHomeMachine],
-    needsYou: [DuoNeedsYouItem],
-    onOpenNeedsYou: @escaping (DuoNeedsYouItem) -> Void,
-    onOpenActivity: @escaping () -> Void,
-    onOpenMachines: @escaping () -> Void,
-    @ViewBuilder projects: () -> Projects,
-    @ViewBuilder composer: () -> Composer
-  ) {
-    self.machines = machines
-    self.needsYou = needsYou
-    self.onOpenNeedsYou = onOpenNeedsYou
-    self.onOpenActivity = onOpenActivity
-    self.onOpenMachines = onOpenMachines
-    self.projects = projects()
-    self.composer = composer()
-  }
+  /// The machine rows' natural height, so the card is no taller than its list.
+  @State private var machinesContentHeight: CGFloat = 0
+  private let spacing: CGFloat = 12
 
   var body: some View {
-    DuoTwoPages(fold: .automatic) {
-      projectsPage
-    } second: {
-      overviewPage
-    }
-  }
-
-  // MARK: Pages
-
-  private var projectsPage: some View {
-    projects
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-  }
-
-  /// The lists end above the composer: it is the page's footer, not a layer
-  /// over the rows.
-  private var overviewPage: some View {
-    VStack(spacing: 0) {
-      List {
-        needsYouSection
-        machinesSection
+    GeometryReader { proxy in
+      if axis == .vertical {
+        let available = max(0, proxy.size.height - spacing)
+        // Header + rows + bottom inset, between a usable floor and 2/5.
+        let wanted = DuoHomeWidget<EmptyView>.headerHeight + machinesContentHeight + 8
+        let machinesHeight = min(max(wanted, min(150, available * 0.5)), available * 0.42)
+        VStack(spacing: spacing) {
+          needsYouWidget
+            .frame(height: max(0, available - machinesHeight))
+          machinesWidget
+            .frame(height: machinesHeight)
+        }
+      } else {
+        let available = max(0, proxy.size.width - spacing)
+        HStack(spacing: spacing) {
+          needsYouWidget
+            .frame(width: floor(available * 0.56))
+          machinesWidget
+            .frame(maxWidth: .infinity)
+        }
       }
-      .listStyle(.insetGrouped)
-      .scrollContentBackground(.hidden)
-      .scrollDismissesKeyboard(.interactively)
-      .contentMargins(.top, 4, for: .scrollContent)
-      composer
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 
-  // MARK: Needs you
-
-  private var needsYouSection: some View {
-    Section {
+  private var needsYouWidget: some View {
+    DuoHomeWidget(
+      title: "Needs you",
+      count: needsYou.isEmpty ? nil : needsYou.count,
+      actionTitle: "Activity",
+      action: onOpenActivity
+    ) {
       if needsYou.isEmpty {
-        DuoOverviewQuietRow(
+        DuoHomeWidgetEmptyState(
           symbol: "checkmark.circle",
           title: "Nothing needs you",
-          detail: "Your agents are working on their own."
+          message: "Your agents are working on their own."
         )
       } else {
-        ForEach(needsYou.prefix(5)) { item in
-          DuoOverviewChatRow(item: item) { onOpenNeedsYou(item) }
+        ScrollView {
+          LazyVStack(spacing: 0) {
+            ForEach(Array(needsYou.enumerated()), id: \.element.id) { index, item in
+              DuoOverviewChatRow(item: item) { onOpenNeedsYou(item) }
+              if index < needsYou.count - 1 {
+                Divider().padding(.leading, 54)
+              }
+            }
+          }
+          .padding(.bottom, 6)
         }
-        if needsYou.count > 5 {
-          Button("\(needsYou.count - 5) more in Activity", action: onOpenActivity)
-            .font(.subheadline)
-        }
+        .scrollIndicators(.automatic)
       }
-    } header: {
-      DuoOverviewSectionHeader(
-        title: "Needs you",
-        count: needsYou.isEmpty ? nil : needsYou.count,
-        actionTitle: needsYou.isEmpty ? nil : "Activity",
-        action: onOpenActivity
-      )
     }
   }
 
-  // MARK: Machines
-
-  private var machinesSection: some View {
-    Section {
-      ForEach(machines) { machine in
-        DuoOverviewMachineRow(machine: machine, action: onOpenMachines)
+  private var machinesWidget: some View {
+    DuoHomeWidget(
+      title: "Machines",
+      count: machines.count > 1 ? machines.count : nil,
+      actionTitle: "Manage",
+      action: onOpenMachines
+    ) {
+      ScrollView {
+        VStack(spacing: 0) {
+          ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
+            DuoOverviewMachineRow(machine: machine, action: onOpenMachines)
+            if index < machines.count - 1 {
+              Divider().padding(.leading, 54)
+            }
+          }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { machinesContentHeight = $0 }
       }
-    } header: {
-      DuoOverviewSectionHeader(
-        title: "Machines",
-        count: nil,
-        actionTitle: "Manage",
-        action: onOpenMachines
-      )
+      .scrollBounceBehavior(.basedOnSize)
+      .scrollIndicators(.automatic)
     }
+  }
+}
+
+/// One Home widget: a rounded card on the page with its title, count and one
+/// text action in the header, and its own scrolling body.
+struct DuoHomeWidget<Content: View>: View {
+  static var headerHeight: CGFloat { 50 }
+
+  let title: String
+  var count: Int?
+  var actionTitle: String?
+  var action: () -> Void = {}
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Text(title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+        if let count {
+          Text("\(count)")
+            .font(.headline)
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Spacer(minLength: 8)
+        if let actionTitle {
+          Button(actionTitle, action: action)
+            .font(.subheadline.weight(.medium))
+            .buttonStyle(.borderless)
+        }
+      }
+      .padding(.horizontal, 18)
+      .frame(height: Self.headerHeight)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+
+      content()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(ADEColor.cardBackground)
+    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+  }
+}
+
+/// A widget with nothing to list: one calm line, centered in the card.
+struct DuoHomeWidgetEmptyState: View {
+  let symbol: String
+  let title: String
+  let message: String
+
+  var body: some View {
+    VStack(spacing: 6) {
+      Image(systemName: symbol)
+        .font(.title2)
+        .foregroundStyle(ADEColor.success)
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+    }
+    .padding(.horizontal, 20)
+    .padding(.bottom, 20)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .accessibilityElement(children: .combine)
   }
 }
 
@@ -361,7 +574,7 @@ struct DuoTwoPages<First: View, Second: View>: View {
   }
 }
 
-// MARK: - Overview rows
+// MARK: - Overview list pieces (the CTO overview uses these too)
 
 /// A section header in the overview's inset-grouped lists: the title, its
 /// count, and one trailing text action, the way Apple's own lists do it.
@@ -412,8 +625,10 @@ struct DuoOverviewQuietRow: View {
   }
 }
 
-/// One chat in an overview list: the board mark, title, project and lane, the
-/// state word and how long ago. Taps open the chat.
+// MARK: - Widget rows
+
+/// One chat in Needs you: the board mark, title, project and lane, the state
+/// word and how long ago. Taps open the chat.
 struct DuoOverviewChatRow: View {
   let item: DuoNeedsYouItem
   let action: () -> Void
@@ -427,14 +642,18 @@ struct DuoOverviewChatRow: View {
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 10) {
-        HubStateGlyph(state: item.boardState, size: 12)
-          .frame(width: 22)
+      HStack(spacing: 12) {
+        HubStateGlyph(state: item.boardState, size: 13)
+          .frame(width: 24)
 
         VStack(alignment: .leading, spacing: 2) {
+          // Two lines: the widget scrolls inside itself, so a long chat name
+          // can take the room it needs.
           Text(item.row.title)
+            .font(.body)
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
           HStack(spacing: 5) {
             if let lane = item.lane {
               Circle()
@@ -447,8 +666,7 @@ struct DuoOverviewChatRow: View {
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
         }
-
-        Spacer(minLength: 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
 
         VStack(alignment: .trailing, spacing: 2) {
           if let label = item.stateLabel {
@@ -465,543 +683,428 @@ struct DuoOverviewChatRow: View {
         .lineLimit(1)
         .fixedSize()
       }
+      .padding(.horizontal, 18)
+      .padding(.vertical, 10)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(DuoWidgetRowButtonStyle())
     .accessibilityLabel("\(item.row.title), \(item.stateLabel ?? "Needs you"), \(context)")
     .accessibilityHint("Opens the chat.")
   }
 }
 
-/// One machine in an overview list.
+/// One machine in Machines. The machine this phone is attached to carries the
+/// checkmark, the way a list marks the current choice.
 struct DuoOverviewMachineRow: View {
   let machine: DuoHomeMachine
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 10) {
+      HStack(spacing: 12) {
         Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
           .font(.body)
           .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 22)
+          .frame(width: 24)
 
         VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 6) {
-            Text(machine.name)
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            if machine.isFocused {
-              Text("This machine")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(ADEColor.textSecondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-                .background(ADEKit.track, in: Capsule())
-            }
-          }
-          HStack(spacing: 5) {
+          Text(machine.name)
+            .font(.body)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          HStack(alignment: .top, spacing: 5) {
+            // On the first line's centre when the summary wraps.
             ADEKitDot(tone: machine.tone, size: 6)
+              .padding(.top, 6)
             Text(machine.summary)
-              .lineLimit(1)
+              .lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
           }
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
 
-        Spacer(minLength: 6)
+        if machine.isFocused {
+          Image(systemName: "checkmark")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .accessibilityHidden(true)
+        }
       }
+      .padding(.horizontal, 18)
+      .padding(.vertical, 10)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(machine.name), \(machine.summary)")
+    .buttonStyle(DuoWidgetRowButtonStyle())
+    .accessibilityLabel(
+      machine.isFocused
+        ? "\(machine.name), this phone's machine, \(machine.summary)"
+        : "\(machine.name), \(machine.summary)"
+    )
     .accessibilityHint("Opens connection settings.")
   }
 }
 
-// MARK: - Toolbar
-
-/// The wide Home's controls, in the system toolbar so the Duo's edge bar holds
-/// them held landscape and the top bar holds them held portrait: the machine
-/// connection as a plain status label (its menu lists every machine), the
-/// roster filter, then Activity, Add project, Settings and Chats.
-struct DuoHomeToolbar: ToolbarContent {
-  let onAdd: () -> Void
-  let chatsAvailable: Bool
-  let chatsAttentionCount: Int
-  let onOpenChats: () -> Void
-  @Binding var filter: HubRosterFilter
-  let filterCounts: [HubRosterFilter: Int]
-  let machines: [DuoHomeMachine]
-  let onOpenSettings: () -> Void
-  let onOpenActivity: () -> Void
-
-  var body: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      DuoHomeConnectionMenu(machines: machines, onOpenSettings: onOpenSettings)
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .primaryAction) {
-      DuoActivityToolbarButton(action: onOpenActivity)
-    }
-
-    ToolbarItem(placement: .primaryAction) {
-      Menu {
-        Picker("Show", selection: $filter) {
-          ForEach(HubRosterFilter.allCases) { option in
-            Text("\(option.title)  \(filterCounts[option] ?? 0)")
-              .tag(option)
-          }
-        }
-        .pickerStyle(.inline)
-      } label: {
-        Label(
-          filter == .all ? "Filter" : filter.title,
-          systemImage: filter == .all
-            ? "line.3.horizontal.decrease"
-            : "line.3.horizontal.decrease.circle.fill"
-        )
-      }
-      .accessibilityLabel("Show \(filter.title)")
-    }
-
-    ToolbarItem(placement: .primaryAction) {
-      Button(action: onAdd) {
-        Label("Add project", systemImage: "plus")
-      }
-    }
-
-    ToolbarItem(placement: .primaryAction) {
-      Button(action: onOpenChats) {
-        Label("Chats", systemImage: "bubble.left.and.bubble.right")
-      }
-      .badge(chatsAvailable ? chatsAttentionCount : 0)
-      .disabled(!chatsAvailable)
-      .accessibilityLabel(chatsAttentionCount > 0 ? "Chats, \(chatsAttentionCount) awaiting input" : "Chats")
-    }
-
-    ToolbarItem(placement: .primaryAction) {
-      Button(action: onOpenSettings) {
-        Label("Settings", systemImage: "gearshape")
-      }
-    }
-  }
-}
-
-/// Activity as a toolbar item, badged with what needs the user. Its own view so
-/// the badge follows the drawer without redrawing the screen that hosts it.
-struct DuoActivityToolbarButton: View {
-  @EnvironmentObject private var drawer: ActivityDrawerModel
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Label("Activity", systemImage: "bell")
-    }
-    .badge(drawer.unreadCount)
-    .accessibilityLabel(drawer.unreadCount > 0 ? "Activity, \(drawer.unreadCount) needing you" : "Activity")
-  }
-}
-
-/// The brand and the connection, as text rather than a pill button. The menu
-/// is the one the phone's machines chip opens.
-struct DuoHomeConnectionMenu: View {
-  let machines: [DuoHomeMachine]
-  let onOpenSettings: () -> Void
-
-  private var focused: DuoHomeMachine? { machines.first(where: \.isFocused) ?? machines.first }
-
-  var body: some View {
-    Menu {
-      Section("Machines") {
-        ForEach(machines) { machine in
-          Button(action: onOpenSettings) {
-            Text(machine.name)
-            Text(machine.summary)
-            Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
-          }
-        }
-      }
-      Button(action: onOpenSettings) {
-        Label("Connection settings", systemImage: "gearshape")
-      }
-    } label: {
-      HStack(spacing: 8) {
-        Image("BrandMark")
-          .resizable()
-          .renderingMode(.original)
-          .interpolation(.high)
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 40, height: 22)
-          .accessibilityHidden(true)
-        if let focused {
-          HStack(spacing: 5) {
-            ADEKitDot(tone: focused.tone, size: 7)
-            Text(focused.statusWord)
-              .font(.subheadline.weight(.medium))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-        }
-      }
-    }
-    .accessibilityLabel("ADE, \(focused?.statusWord ?? "Offline")")
-    .accessibilityHint("Lists your machines.")
+/// A widget row's pressed state: the row's own band, briefly tinted.
+private struct DuoWidgetRowButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .background(Color.primary.opacity(configuration.isPressed ? 0.06 : 0))
   }
 }
 
 #if DEBUG
 /// Fixture screens for this area, routed by `DuoPreviewRouter`.
+///
+///     duo-home        the Hub at real volume (16 projects, 19 need you, 5 machines)
+///     duo-home-quiet  the same Hub with nothing needing you
 enum DuoHomePreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
     switch name {
-    case "duo-home": return AnyView(DuoHomeFixtureScreen())
+    case "duo-home", "duo-home-outer": return AnyView(DuoHomeFixtureScreen())
+    case "duo-home-quiet": return AnyView(DuoHomeFixtureScreen(quiet: true))
+    case "duo-nomachine": return AnyView(DuoConnectFixtures.noMachine)
+    case "duo-signin": return AnyView(DuoConnectFixtures.gate)
+    case "duo-signin-sheet": return AnyView(DuoConnectFixtures.gate(sheet: .signIn))
+    case "duo-nearby": return AnyView(DuoConnectFixtures.gate(sheet: .nearby))
+    case "duo-nearby-empty": return AnyView(DuoConnectFixtures.gate(sheet: .nearbyEmpty))
+    case "duo-pin": return AnyView(DuoConnectFixtures.gate(sheet: .pin))
+    case "duo-ssh": return AnyView(DuoConnectFixtures.gate(sheet: .ssh))
+    case "duo-connect": return AnyView(DuoConnectFixtures.gate(sheet: .connect))
+    case "duo-settings-machines": return AnyView(SettingsMachinesPreviewHost())
     default: return nil
     }
   }
 }
 
-/// The wide Home with in-process fixture data: three projects with lanes and
-/// chats, two machines and three rows that need the user. Launched with
-/// `-adePreviewScreen duo-home`; no pairing, socket or network is touched.
-private struct DuoHomeFixtureScreen: View {
-  @EnvironmentObject private var syncService: SyncService
-  @State private var composerExpanded = false
-  @State private var collapsedLaneKeys: Set<String> = []
-  @State private var rosterFilter: HubRosterFilter = .all
-
-  private var filterCounts: [HubRosterFilter: Int] {
-    Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { filter in
-      (filter, hubRosterFilterCount(DuoHomeFixture.presentations, filter: filter))
-    })
+/// The sign-in and connect screens over in-process data: the access gate,
+/// the no-machine Hub, and each sheet the connect flow opens, presented the
+/// way the app presents it.
+@MainActor
+private enum DuoConnectFixtures {
+  enum Sheet: String, Identifiable {
+    case signIn, nearby, nearbyEmpty, pin, ssh, connect
+    var id: String { rawValue }
   }
 
-  private var filteredPresentations: [HubProjectPresentation] {
-    DuoHomeFixture.presentations.compactMap {
-      hubProjectPresentation($0, matching: rosterFilter)
-    }
-  }
-
-  var body: some View {
+  static var noMachine: some View {
     NavigationStack {
-      DuoHomeWide(
-        machines: DuoHomeFixture.machines,
-        needsYou: DuoHomeFixture.needsYou,
-        onOpenNeedsYou: { _ in },
-        onOpenActivity: { syncService.attentionDrawerPresented = true },
-        onOpenMachines: { syncService.settingsPresented = true },
-        projects: {
-          ScrollView {
-            LazyVStack(spacing: 8) {
-              ForEach(filteredPresentations) { presentation in
-                HubProjectCard(
-                  presentation: presentation,
-                  isCollapsed: false,
-                  collapsedLaneKeysSnapshot: [],
-                  collapsedLaneKeys: $collapsedLaneKeys,
-                  onToggleCollapse: {},
-                  onOpenProject: {},
-                  onOpenChat: { _, _ in },
-                  onViewLaneInWork: { _ in },
-                  onViewLaneInLanes: { _ in },
-                  onArchiveChat: { _ in },
-                  onDeleteChat: { _ in },
-                  onForget: {}
-                )
-                .equatable()
-              }
-            }
-            .frame(maxWidth: 640)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 16)
-          }
-          .scrollIndicators(.hidden)
-        },
-        composer: {
-          HubInlineComposer(expanded: $composerExpanded, onCreated: { _ in })
-        }
-      )
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        DuoHomeToolbar(
-          onAdd: {},
-          chatsAvailable: true,
-          chatsAttentionCount: 1,
-          onOpenChats: {},
-          filter: $rosterFilter,
-          filterCounts: filterCounts,
-          machines: DuoHomeFixture.machines,
-          onOpenSettings: { syncService.settingsPresented = true },
-          onOpenActivity: { syncService.attentionDrawerPresented = true }
-        )
+      ZStack {
+        ADEColor.pageBackground.ignoresSafeArea()
+        HubNoMachineState()
       }
     }
-    // The toolbar's Activity item reads the drawer; the app injects this
-    // instance at the root, and the fixture has to stand in for that root.
-    .environmentObject(syncService.attentionDrawer)
+    .tint(ADEColor.accent)
+  }
+
+  static var gate: some View { gate(sheet: nil) }
+
+  static func gate(sheet: Sheet?) -> some View {
+    DuoConnectGateFixture(sheet: sheet)
+      .tint(ADEColor.accent)
+  }
+
+  static let hosts: [DiscoveredSyncHost] = [
+    DiscoveredSyncHost(
+      id: "fixture-host-studio", serviceName: "studio", hostName: "Arul’s Mac Studio", hostIdentity: "studio",
+      port: 8787, addresses: ["192.168.1.20"], tailscaleAddress: nil, runtimeName: "ADE brain 1.2.116",
+      lastResolvedAt: "2026-10-22T07:00:00Z"
+    ),
+    DiscoveredSyncHost(
+      id: "fixture-host-mbp", serviceName: "mbp", hostName: "Arul’s MacBook Pro", hostIdentity: "mbp",
+      port: 8787, addresses: ["192.168.1.31"], tailscaleAddress: nil, runtimeKind: "desktop", runtimeVersion: "1.2.116",
+      lastResolvedAt: "2026-10-22T07:00:00Z"
+    ),
+    DiscoveredSyncHost(
+      id: "fixture-host-win", serviceName: "windows", hostName: "windows", hostIdentity: "windows",
+      port: 8787, addresses: ["192.168.1.44"], tailscaleAddress: nil, runtimeKind: "daemon",
+      lastResolvedAt: "2026-10-22T07:00:00Z"
+    ),
+  ]
+}
+
+private struct DuoConnectGateFixture: View {
+  let sheet: DuoConnectFixtures.Sheet?
+  @EnvironmentObject private var syncService: SyncService
+  @State private var presented: DuoConnectFixtures.Sheet?
+
+  var body: some View {
+    MobileAccessGateView(
+      accountConfigured: true,
+      accountLoading: false,
+      accountSignedIn: false,
+      hasPairedHost: true,
+      onContinue: {}
+    )
+    .onAppear { presented = sheet }
+    .sheet(item: $presented) { sheet in
+      switch sheet {
+      case .signIn:
+        AccountSignInView()
+      case .nearby, .nearbyEmpty:
+        DiscoverHostsList(
+          savedHosts: sheet == .nearby ? [DuoConnectFixtures.hosts[0]] : [],
+          liveHosts: sheet == .nearby ? Array(DuoConnectFixtures.hosts.dropFirst()) : [],
+          onReconnect: { _ in },
+          onPick: { _ in },
+          onCancel: { presented = nil }
+        )
+      case .pin:
+        SettingsPinSheet(preset: .discover(DuoConnectFixtures.hosts[1]), syncService: syncService)
+          .presentationDetents([.large])
+      case .ssh:
+        SSHPairingView(syncService: syncService)
+          .presentationDetents([.large])
+      case .connect:
+        ConnectionSettingsView(syncService: syncService, pairingOnly: true)
+      }
+    }
   }
 }
 
-/// In-process fixture data for the wide Home. Everything is synthesised here so
-/// the screen renders on a bare simulator.
+/// The Hub's real layouts (`DuoHomeWide` on the inner display, `HubPhoneLayout`
+/// on the outer display and every other iPhone) over in-process fixture data.
+/// No pairing, socket or network is touched.
+private struct DuoHomeFixtureScreen: View {
+  var quiet = false
+  @EnvironmentObject private var syncService: SyncService
+  @Environment(\.duoLayout) private var duo
+  @State private var composerExpanded = false
+  @State private var collapsedLaneKeys: Set<String> = []
+  @State private var rosterFilter: HubRosterFilter = .all
+  @State private var chatsPresented = false
+
+  private var presentations: [HubProjectPresentation] {
+    quiet ? DuoHomeFixture.quietPresentations : DuoHomeFixture.presentations
+  }
+
+  private var filterCounts: [HubRosterFilter: Int] {
+    Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { filter in
+      (filter, hubRosterFilterCount(presentations, filter: filter))
+    })
+  }
+
+  private var actions: HubToolbarActions {
+    HubToolbarActions(
+      chatsAvailable: true,
+      chatsAttentionCount: 2,
+      onAdd: {},
+      onOpenChats: { chatsPresented = true },
+      onOpenActivity: { syncService.attentionDrawerPresented = true },
+      onOpenSettings: { syncService.settingsPresented = true }
+    )
+  }
+
+  var body: some View {
+    Group {
+      if duo.isWide {
+        DuoHomeWide(
+          machines: DuoHomeFixture.machines,
+          needsYou: duoNeedsYouItems(from: presentations),
+          actions: actions,
+          filter: $rosterFilter,
+          filterCounts: filterCounts,
+          account: DuoHomeFixture.account,
+          onOpenNeedsYou: { _ in },
+          chatsPresented: $chatsPresented,
+          title: { title },
+          projects: { roster },
+          composer: { HubInlineComposer(expanded: $composerExpanded, onCreated: { _ in }) },
+          chatsDestination: { Text("Chats") }
+        )
+      } else {
+        NavigationStack {
+          HubPhoneLayout(
+            composerExpanded: $composerExpanded,
+            actions: actions,
+            title: { title },
+            filterBar: {
+              HubRosterFilterBar(counts: filterCounts, selection: $rosterFilter)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            },
+            roster: { roster },
+            composer: { HubInlineComposer(expanded: $composerExpanded, onCreated: { _ in }) }
+          )
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+        }
+      }
+    }
+    // The toolbar's Activity item reads the drawer, and every control the
+    // app's tint; the app sets both at the root, which the fixture stands in for.
+    .environmentObject(syncService.attentionDrawer)
+    .tint(ADEColor.accent)
+  }
+
+  private var title: some View {
+    HubConnectionMenu(
+      status: HubConnectionStatus(tone: .ok, label: "Arul’s Mac Studio", spokenState: "connected"),
+      machines: DuoHomeFixture.machines,
+      onOpenSettings: {}
+    )
+  }
+
+  private var roster: some View {
+    ScrollView {
+      LazyVStack(spacing: 8) {
+        ForEach(presentations.compactMap { hubProjectPresentation($0, matching: rosterFilter) }) { presentation in
+          HubProjectCard(
+            presentation: presentation,
+            isCollapsed: rosterFilter == .all && !presentation.isActive,
+            collapsedLaneKeysSnapshot: [],
+            collapsedLaneKeys: $collapsedLaneKeys,
+            onToggleCollapse: {},
+            onOpenProject: {},
+            onOpenChat: { _, _ in },
+            onViewLaneInWork: { _ in },
+            onViewLaneInLanes: { _ in },
+            onArchiveChat: { _ in },
+            onDeleteChat: { _ in },
+            onForget: {}
+          )
+          .equatable()
+        }
+      }
+      .frame(maxWidth: 640)
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 16)
+    }
+    .scrollIndicators(.hidden)
+  }
+}
+
+/// In-process fixture data at the volume a real account has: 16 projects with
+/// their lanes and chats (19 of them need the user), five machines.
 @MainActor
 private enum DuoHomeFixture {
-  static func stamp(minutesAgo: Int) -> String {
-    ISO8601DateFormatter().string(
-      from: Date().addingTimeInterval(-Double(minutesAgo) * 60)
-    )
-  }
-
-  // MARK: Projects
-
-  static let adeProject = MobileProjectSummary(
-    id: "fixture-project-ade",
-    displayName: "ADE",
-    rootPath: "/Users/arul/ADE",
-    repoOwner: "arul",
-    repoName: "ADE",
-    laneCount: 3,
-    isAvailable: true,
-    isCached: true,
-    isOpen: true
+  static let account = AccountIdentity(
+    userId: "fixture-user",
+    displayName: "Arul Sharma",
+    email: "arul@example.com",
+    imageURL: nil,
+    providerLabel: "GitHub",
+    providerId: "github"
   )
-
-  static let siteProject = MobileProjectSummary(
-    id: "fixture-project-site",
-    displayName: "Website",
-    rootPath: "/Users/arul/website",
-    repoOwner: "arul",
-    repoName: "website",
-    laneCount: 1,
-    isAvailable: true,
-    isCached: true,
-    isOpen: false
-  )
-
-  static let mobileProject = MobileProjectSummary(
-    id: "fixture-project-mobile",
-    displayName: "Versic Mobile",
-    rootPath: "/Users/arul/versic",
-    repoOwner: "arul",
-    repoName: "versic",
-    laneCount: 2,
-    isAvailable: true,
-    isCached: false,
-    isOpen: false
-  )
-
-  // MARK: Lanes
-
-  private static let adePrimary = RemoteRosterLane(
-    id: "fixture-lane-ade-primary",
-    name: "main",
-    color: "#a78bfa",
-    icon: nil,
-    laneType: "primary",
-    branchRef: "main"
-  )
-  private static let adeDuo = RemoteRosterLane(
-    id: "fixture-lane-ade-duo",
-    name: "iPhone Duo",
-    color: "#60a5fa",
-    icon: nil,
-    laneType: "worktree",
-    branchRef: "ade/iphone-duo"
-  )
-  private static let adeRelease = RemoteRosterLane(
-    id: "fixture-lane-ade-release",
-    name: "Release",
-    color: "#34d399",
-    icon: nil,
-    laneType: "worktree",
-    branchRef: "ade/release"
-  )
-  private static let sitePrimary = RemoteRosterLane(
-    id: "fixture-lane-site-primary",
-    name: "main",
-    color: "#fbbf24",
-    icon: nil,
-    laneType: "primary",
-    branchRef: "main"
-  )
-  private static let mobilePrimary = RemoteRosterLane(
-    id: "fixture-lane-mobile-primary",
-    name: "main",
-    color: "#f472b6",
-    icon: nil,
-    laneType: "primary",
-    branchRef: "main"
-  )
-  private static let mobileSync = RemoteRosterLane(
-    id: "fixture-lane-mobile-sync",
-    name: "Sync",
-    color: "#2dd4bf",
-    icon: nil,
-    laneType: "worktree",
-    branchRef: "ade/sync"
-  )
-
-  // MARK: Chats
-
-  private static func chat(
-    id: String,
-    lane: RemoteRosterLane,
-    title: String,
-    status: RemoteRosterChatStatus,
-    awaitingInput: Bool = false,
-    handRaised: Bool = false,
-    minutesAgo: Int,
-    preview: String?,
-    provider: String = "claude"
-  ) -> RemoteRosterChat {
-    RemoteRosterChat(
-      id: id,
-      laneId: lane.id,
-      chatSessionId: nil,
-      title: title,
-      provider: provider,
-      model: "claude-sonnet-5",
-      toolType: "claude-chat",
-      status: status,
-      awaitingInput: awaitingInput,
-      pinned: false,
-      archived: false,
-      lastActivityAt: stamp(minutesAgo: minutesAgo),
-      preview: preview,
-      attentionRequestedAt: handRaised ? stamp(minutesAgo: minutesAgo) : nil
-    )
-  }
-
-  private static let adeChats: [RemoteRosterChat] = [
-    chat(
-      id: "fixture-chat-duo-shell",
-      lane: adeDuo,
-      title: "Duo shell and wide Home",
-      status: .awaiting,
-      awaitingInput: true,
-      minutesAgo: 3,
-      preview: "Which sidebar placement should the folded posture use?"
-    ),
-    chat(
-      id: "fixture-chat-release",
-      lane: adeRelease,
-      title: "Release notes for 1.2.116",
-      status: .running,
-      minutesAgo: 9,
-      preview: "Drafting the changelog from the merged pull requests."
-    ),
-    chat(
-      id: "fixture-chat-rebase",
-      lane: adePrimary,
-      title: "Fix the lanes rebase guard",
-      status: .failed,
-      minutesAgo: 24,
-      preview: "The rebase aborted: lane worktree has uncommitted changes."
-    ),
-  ]
-
-  private static let siteChats: [RemoteRosterChat] = [
-    chat(
-      id: "fixture-chat-site",
-      lane: sitePrimary,
-      title: "Pricing page copy",
-      status: .running,
-      handRaised: true,
-      minutesAgo: 12,
-      preview: "Tightening the annual-plan paragraph.",
-      provider: "codex"
-    )
-  ]
-
-  private static let mobileChats: [RemoteRosterChat] = [
-    chat(
-      id: "fixture-chat-mobile",
-      lane: mobileSync,
-      title: "Sync retry backoff",
-      status: .running,
-      minutesAgo: 6,
-      preview: "Reading SyncService+Retry.swift before the change.",
-      provider: "cursor"
-    ),
-    chat(
-      id: "fixture-chat-mobile-idle",
-      lane: mobilePrimary,
-      title: "Two-machine pairing check",
-      status: .idle,
-      minutesAgo: 68,
-      preview: "Pairing held for a full day.",
-      provider: "codex"
-    ),
-  ]
-
-  // MARK: Rosters
-
-  private static func roster(
-    project: MobileProjectSummary,
-    lanes: [RemoteRosterLane],
-    chats: [RemoteRosterChat]
-  ) -> RemoteRosterProject {
-    RemoteRosterProject(
-      projectId: project.id,
-      rootPath: project.rootPath,
-      displayName: project.displayName,
-      iconDataUrl: nil,
-      lastOpenedAt: project.lastOpenedAt,
-      booted: true,
-      runningCount: chats.filter(\.countsTowardRunning).count,
-      attentionCount: chats.filter(\.needsAttention).count,
-      lanes: lanes,
-      chats: chats
-    )
-  }
-
-  static let presentations: [HubProjectPresentation] = [
-    buildHubProjectPresentation(
-      project: adeProject,
-      roster: roster(project: adeProject, lanes: [adePrimary, adeDuo, adeRelease], chats: adeChats),
-      isActive: true,
-      isSwitching: false
-    ),
-    buildHubProjectPresentation(
-      project: siteProject,
-      roster: roster(project: siteProject, lanes: [sitePrimary], chats: siteChats),
-      isActive: false,
-      isSwitching: false
-    ),
-    buildHubProjectPresentation(
-      project: mobileProject,
-      roster: roster(project: mobileProject, lanes: [mobilePrimary, mobileSync], chats: mobileChats),
-      isActive: false,
-      isSwitching: false
-    ),
-  ]
-
-  static var needsYou: [DuoNeedsYouItem] {
-    duoNeedsYouItems(from: presentations)
-  }
 
   static let machines: [DuoHomeMachine] = [
-    DuoHomeMachine(
-      id: "fixture-machine-primary",
-      name: "Arul's MacBook Pro",
-      statusWord: "Connected",
-      tone: .ok,
-      isFocused: true,
-      projectCount: 3,
-      workingCount: 2
-    ),
-    DuoHomeMachine(
-      id: "fixture-machine-studio",
-      name: "Mac Studio",
-      statusWord: "Live",
-      tone: .ok,
-      projectCount: 2,
-      workingCount: 1
-    ),
+    DuoHomeMachine(id: "fixture-machine-studio", name: "Arul’s Mac Studio", statusWord: "Connected", tone: .ok,
+                   isFocused: true, projectCount: 11, workingCount: 7),
+    DuoHomeMachine(id: "fixture-machine-mbp", name: "Arul’s MacBook Pro", statusWord: "Live", tone: .ok,
+                   projectCount: 4, workingCount: 2),
+    DuoHomeMachine(id: "fixture-machine-win", name: "windows", statusWord: "Live", tone: .ok,
+                   projectCount: 1, workingCount: 0),
+    DuoHomeMachine(id: "fixture-machine-mini", name: "Build Mac mini", statusWord: "Paused", tone: .neutral),
+    DuoHomeMachine(id: "fixture-machine-linux", name: "linux-gpu-box", statusWord: "Offline", tone: .crit),
   ]
+
+  static func stamp(minutesAgo: Int) -> String {
+    ISO8601DateFormatter().string(from: Date().addingTimeInterval(-Double(minutesAgo) * 60))
+  }
+
+  private static let projectNames = [
+    "ADE", "Website", "Versic Mobile", "Billing Service", "Docs", "Infra", "Design System",
+    "Analytics Pipeline", "CLI", "Desktop Shell", "Marketing Site", "iOS Widgets", "Payments SDK",
+    "Search Indexer", "Onboarding Flow", "Data Warehouse",
+  ]
+  private static let laneNames = ["main", "iPhone Duo", "Release", "Sync retry", "Perf pass", "Auth refresh"]
+  private static let laneColors = ["#a78bfa", "#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#2dd4bf"]
+  private static let titles = [
+    "Fix the lanes rebase guard when the worktree has uncommitted changes",
+    "Duo shell and wide Home",
+    "Pricing page copy for the annual plan",
+    "Release notes for 1.2.116",
+    "Sync retry backoff after a dropped socket",
+    "Two-machine pairing check",
+    "Move the Activity drawer into the edge bar",
+    "Investigate the brain wedge on large SQLite pages",
+    "Stripe webhook signature failures in staging",
+    "Translate onboarding to Japanese",
+    "Speed up cold launch on older iPhones",
+    "Search index rebuild is stuck at 62%",
+  ]
+  private static let providers = ["claude", "codex", "claude", "claude", "codex", "claude"]
+
+  /// Deterministic project rosters; `needsYouBudget` is how many chats are
+  /// filed under Needs you across the whole Hub.
+  private static func build(needsYouBudget: Int) -> [HubProjectPresentation] {
+    var remaining = needsYouBudget
+    var minutes = 2
+    return projectNames.enumerated().map { index, name in
+      let project = MobileProjectSummary(
+        id: "fixture-project-\(index)",
+        displayName: name,
+        rootPath: "/Users/arul/\(name.lowercased().replacingOccurrences(of: " ", with: "-"))",
+        repoOwner: "arul",
+        repoName: name.lowercased(),
+        laneCount: 1 + index % 4,
+        isAvailable: true,
+        isCached: true,
+        isOpen: index == 0
+      )
+      let lanes = (0..<(1 + index % 4)).map { laneIndex in
+        RemoteRosterLane(
+          id: "fixture-lane-\(index)-\(laneIndex)",
+          name: laneNames[laneIndex % laneNames.count],
+          color: laneColors[(index + laneIndex) % laneColors.count],
+          icon: nil,
+          laneType: laneIndex == 0 ? "primary" : "worktree",
+          branchRef: laneIndex == 0 ? "main" : "ade/\(laneNames[laneIndex].lowercased().replacingOccurrences(of: " ", with: "-"))"
+        )
+      }
+      let chatCount = index < 6 ? 5 - index % 3 : 1 + index % 3
+      let chats = (0..<chatCount).map { chatIndex -> RemoteRosterChat in
+        minutes += 3 + (index * 7 + chatIndex * 5) % 17
+        var status: RemoteRosterChatStatus = chatIndex % 3 == 2 ? .idle : .running
+        var awaiting = false
+        var handRaised = false
+        if remaining > 0, (index + chatIndex) % 2 == 0 {
+          remaining -= 1
+          switch remaining % 5 {
+          case 0: status = .failed
+          case 1: handRaised = true
+          default:
+            status = .awaiting
+            awaiting = true
+          }
+        }
+        return RemoteRosterChat(
+          id: "fixture-chat-\(index)-\(chatIndex)",
+          laneId: lanes[chatIndex % lanes.count].id,
+          chatSessionId: nil,
+          title: titles[(index * 3 + chatIndex) % titles.count],
+          provider: providers[(index + chatIndex) % providers.count],
+          model: "claude-sonnet-5",
+          toolType: "claude-chat",
+          status: status,
+          awaitingInput: awaiting,
+          pinned: false,
+          archived: false,
+          lastActivityAt: stamp(minutesAgo: minutes),
+          preview: "Reading the code before the change.",
+          attentionRequestedAt: handRaised ? stamp(minutesAgo: minutes) : nil
+        )
+      }
+      let roster = RemoteRosterProject(
+        projectId: project.id,
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+        iconDataUrl: nil,
+        lastOpenedAt: project.lastOpenedAt,
+        booted: true,
+        runningCount: chats.filter(\.countsTowardRunning).count,
+        attentionCount: chats.filter(\.needsAttention).count,
+        lanes: lanes,
+        chats: chats
+      )
+      return buildHubProjectPresentation(project: project, roster: roster, isActive: index == 0, isSwitching: false)
+    }
+  }
+
+  static let presentations = build(needsYouBudget: 19)
+  static let quietPresentations = build(needsYouBudget: 0)
 }
 #endif

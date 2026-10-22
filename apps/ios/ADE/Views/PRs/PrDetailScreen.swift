@@ -1963,12 +1963,14 @@ struct PrDuoDetailActions {
 }
 
 /// One PR on the Duo's inner display, as desktop lays it out and Apple draws
-/// it: the thread fills the column, with the push rail on its trailing edge;
-/// every control is a toolbar item, so held landscape they are the vertical
-/// edge bar (Merge pinned on top, the Overview / Files / Checks tabs, then the
-/// dock — Comment, Reviewers, Labels, Assignees — below the bar's spacer, and
-/// the overflow last). Each dock bubble opens desktop's card as a popover.
-/// Held portrait the same items are ordinary top and bottom bars.
+/// it: Overview / Files / Checks is a segmented control at the head of the
+/// column, the thread fills it with the push rail on its trailing edge, and
+/// the dock is toolbar items — held landscape the top of the vertical edge
+/// bar (Merge pinned first, then Comment, Reviewers, Labels, Assignees, the
+/// overflow last; the app tabs hold the bottom), held portrait the top bar.
+/// Nothing is a bottom bar. Each dock item opens desktop's card as a popover
+/// from the top of the column, so a card opens even when its item has given
+/// way to the overflow menu.
 ///
 /// Files and Checks use the width: list beside the diff or the check, one per
 /// page when book-folded, top and bottom halves held portrait.
@@ -2017,6 +2019,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
 
   var body: some View {
     withToolbar(content)
+      .safeAreaInset(edge: .top, spacing: 0) { tabPicker }
+      .popover(
+        item: $dock,
+        attachmentAnchor: .point(.topTrailing),
+        arrowEdge: family == .wide ? .trailing : .top
+      ) { item in
+        card(item)
+      }
       .navigationTitle(model.title)
       .navigationSubtitle(model.subtitle)
       .navigationBarTitleDisplayMode(.inline)
@@ -2032,6 +2042,32 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         try? await Task.sleep(for: .milliseconds(700))
         dock = initialDock
       }
+  }
+
+  /// Overview / Files / Checks, under the title. Checks carries its failing
+  /// count in the segment's own text.
+  private var tabPicker: some View {
+    Picker("Section", selection: Binding(
+      get: { tab == .activity ? .overview : tab },
+      set: { next in
+        guard next != tab else { return }
+        ADEHaptics.light()
+        dock = nil
+        tab = next
+      }
+    )) {
+      Text(PrDetailTab.overview.title).tag(PrDetailTab.overview)
+      Text(PrDetailTab.files.title).tag(PrDetailTab.files)
+      Text(model.failingChecks > 0 ? "Checks · \(model.failingChecks)" : PrDetailTab.checks.title)
+        .tag(PrDetailTab.checks)
+    }
+    .pickerStyle(.segmented)
+    .frame(maxWidth: 420)
+    .padding(.horizontal, 16)
+    .padding(.top, 6)
+    .padding(.bottom, 8)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.pageBackground)
   }
 
   @ViewBuilder
@@ -2259,22 +2295,21 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
   }
 
-  /// iOS 27: the prominent Merge bubble pinned, the tabs and the open tab's
-  /// own action kept in view, the dock below the edge bar's spacer, and the
-  /// rest in the system overflow.
+  /// iOS 27: Merge pinned first, the open tab's own action, then the dock —
+  /// Comment and Reviewers held in view, Labels and Assignees the first to
+  /// give way — and the rest in the system overflow. All top items: held
+  /// landscape the app tabs own the bottom of the edge bar, and held portrait
+  /// nothing sits under the content.
   @available(iOS 27.0, *)
   @ToolbarContentBuilder
   private var edgeBarItems: some ToolbarContent {
     DuoSplitListToggle(split: split)
     ToolbarItem(placement: .topBarPinnedTrailing) { mergeBubble }
       .visibilityPriority(.high)
-    ForEach([PrDetailTab.overview, .files, .checks]) { item in
-      ToolbarItem(placement: .topBarTrailing) { tabToggle(item) }
-        .visibilityPriority(item == tab ? .high : .low)
-    }
     tabActionItem
     ForEach(PrDuoDock.allCases.filter { $0 != .merge }) { item in
-      ToolbarItem(placement: .bottomBar) { dockButton(item) }
+      ToolbarItem(placement: .topBarTrailing) { dockButton(item) }
+        .visibilityPriority(item == .comment || item == .reviewers ? .automatic : .low)
     }
     ToolbarOverflowMenu {
       Button("Open on GitHub", systemImage: "arrow.up.right.square", action: actions.openGitHub)
@@ -2283,17 +2318,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
   }
 
-  /// Before iOS 27 (an iPad on iOS 26): the same items in ordinary bars.
+  /// Before iOS 27 (an iPad on iOS 26): the same items in the top bar.
   @ToolbarContentBuilder
   private var plainBarItems: some ToolbarContent {
     DuoSplitListToggle(split: split)
     ToolbarItem(placement: .topBarTrailing) { mergeBubble }
-    ForEach([PrDetailTab.overview, .files, .checks]) { item in
-      ToolbarItem(placement: .topBarTrailing) { tabToggle(item) }
-    }
     tabActionItem
     ForEach(PrDuoDock.allCases.filter { $0 != .merge }) { item in
-      ToolbarItem(placement: .bottomBar) { dockButton(item) }
+      ToolbarItem(placement: .topBarTrailing) { dockButton(item) }
     }
     ToolbarItem(placement: .topBarTrailing) {
       Menu {
@@ -2322,29 +2354,6 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
   }
 
-  private func tabToggle(_ item: PrDetailTab) -> some View {
-    Toggle(isOn: Binding(
-      get: { tab == item },
-      set: { on in
-        guard on, tab != item else { return }
-        ADEHaptics.light()
-        dock = nil
-        tab = item
-      }
-    )) {
-      Label(item.title, systemImage: tabSymbol(item))
-    }
-    .badge(item == .checks ? model.failingChecks : 0)
-  }
-
-  private func tabSymbol(_ item: PrDetailTab) -> String {
-    switch item {
-    case .files: return "doc.on.doc"
-    case .checks: return "checkmark.seal"
-    default: return "text.alignleft"
-    }
-  }
-
   private var mergeBubble: some View {
     Button {
       toggle(.merge)
@@ -2352,18 +2361,12 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       PrDuoMergeBubbleLabel(ring: prDuoMergeRingColor(model.step, mergeStatus: model.mergeStatus))
     }
     .accessibilityLabel("Merge: \(model.mergeStatus == .known ? model.step.headline : "checking")")
-    .popover(isPresented: dockBinding(.merge), arrowEdge: arrowEdge) { card(.merge) }
   }
 
   private func dockButton(_ item: PrDuoDock) -> some View {
     Button(item.title, systemImage: item.symbol) { toggle(item) }
       .badge(item == .reviewers ? reviewers.count : 0)
-      .popover(isPresented: dockBinding(item), arrowEdge: arrowEdge) { card(item) }
   }
-
-  /// Held landscape the items are on the trailing edge; the card opens
-  /// toward the content.
-  private var arrowEdge: Edge? { family == .wide ? .trailing : nil }
 
   private var reviewers: [PrDuoReviewer] {
     prDuoReviewers(detail: model.detail, reviews: model.reviews)
@@ -2372,15 +2375,6 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   private func toggle(_ item: PrDuoDock) {
     ADEHaptics.light()
     dock = dock == item ? nil : item
-  }
-
-  private func dockBinding(_ item: PrDuoDock) -> Binding<Bool> {
-    Binding(
-      get: { dock == item },
-      set: { open in
-        if open { dock = item } else if dock == item { dock = nil }
-      }
-    )
   }
 
   /// A confirmation can only present once the card has gone.

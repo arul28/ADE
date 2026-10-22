@@ -47,6 +47,15 @@ struct DuoPreviewHost: View {
   var body: some View {
     DuoPreviewRouter.view(named: name)
       .environmentObject(activityDrawer)
+      // The edge bar's app tabs, as the real root configures them.
+      .duoAppNavigationRoot()
+      .onAppear {
+        // A fixture that wires its own selection (duo-shell) keeps it.
+        guard DuoAppNavigation.shared.items.isEmpty else { return }
+        DuoAppNavigation.shared.configureForFixture(
+          selectedId: DuoAppNavigation.fixtureSelection(for: name)
+        )
+      }
   }
 }
 #endif

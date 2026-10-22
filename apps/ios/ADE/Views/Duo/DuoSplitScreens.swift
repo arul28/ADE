@@ -196,20 +196,24 @@ struct DuoSplitMetrics: Equatable {
 }
 
 /// What a detail column says before anything is selected. Calm on purpose: it
-/// is a resting place, not an error.
+/// is a resting place, not an error. Its own stack, so the trailing column
+/// still carries the edge bar and its app tabs.
 struct DuoSplitPlaceholder: View {
   let symbol: String
   let title: String
   let message: String
 
   var body: some View {
-    ContentUnavailableView {
-      Label(title, systemImage: symbol)
-    } description: {
-      Text(message)
+    NavigationStack {
+      ContentUnavailableView {
+        Label(title, systemImage: symbol)
+      } description: {
+        Text(message)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(ADEColor.pageBackground)
+      .toolbar { DuoAppTabsToolbar() }
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ADEColor.pageBackground)
   }
 }
 
@@ -355,6 +359,7 @@ extension LanesTabView {
       // stack, so held landscape its toolbar is the edge bar.
       NavigationStack {
         laneDestination(LaneRoute(laneId: laneId), showsBackButton: false)
+          .toolbar { DuoAppTabsToolbar() }
       }
       .id(laneId)
     } else {
@@ -481,6 +486,7 @@ private struct DuoLanesFixtureScreen: View {
       if let snapshot = selectedSnapshot {
         NavigationStack {
           DuoLaneDetailFixture(snapshot: snapshot, diffOpen: $diffOpen)
+            .toolbar { DuoAppTabsToolbar() }
         }
         .id(snapshot.lane.id)
       } else {
@@ -696,6 +702,7 @@ private struct DuoPrsFixtureScreen: View {
             Button("Copy link", systemImage: "link") {}
           }
         )
+        .toolbar { DuoAppTabsToolbar() }
       }
       .id(selection)
     }

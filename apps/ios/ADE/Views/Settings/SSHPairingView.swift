@@ -34,18 +34,16 @@ struct SSHPairingView: View {
       .tint(ADEColor.accent)
       .navigationTitle("Set up with SSH")
       .navigationBarTitleDisplayMode(.inline)
+      // A form sheet's own actions: Cancel and Connect in its bar, nothing
+      // pinned under the form.
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel", action: dismiss.callAsFunction)
+          Button(role: .cancel, action: dismiss.callAsFunction)
         }
-      }
-      .safeAreaInset(edge: .bottom) {
-        Button("Connect", action: beginPairing)
-          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-          .disabled(connectDisabled)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 10)
-          .background(ADEColor.pageBackground)
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Connect", action: beginPairing)
+            .disabled(connectDisabled)
+        }
       }
       .fileImporter(
         isPresented: $importsKey,

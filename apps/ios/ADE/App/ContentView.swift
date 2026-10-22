@@ -142,6 +142,14 @@ struct ContentView: View {
         }
       }
       .modifier(WorkSessionNavigationModifier(syncService: syncService, selectedTab: $selectedTab))
+      // The inner display's edge bar carries the tabs (Views/Duo/DuoShell.swift):
+      // this keeps its items, badges and selection in step with the root.
+      .modifier(DuoAppNavigationSync(
+        syncService: syncService,
+        drawer: syncService.attentionDrawer,
+        selectedTab: $selectedTab
+      ))
+      .duoAppNavigationRoot()
   }
 
   private var rootWithChrome: some View {
@@ -300,9 +308,9 @@ struct ContentView: View {
   }
 
   private var rootTabs: some View {
-    // The same five tabs on every display. `DuoAdaptableTabShell` only changes
-    // how they are presented: the bottom bar as always on a phone, Apple's
-    // sidebar on the Duo's inner display (see Views/Duo/DuoShell.swift).
+    // The same five tabs on every display: the bottom bar as always on a phone;
+    // on the Duo's inner display each tab hides the bar and the edge bar carries
+    // the tabs instead (see Views/Duo/DuoShell.swift).
     DuoAdaptableTabShell(selection: $selectedTab) {
       workTab
       lanesTab
@@ -333,17 +341,19 @@ struct ContentView: View {
   private var workTab: some TabContent<RootTab> {
     Tab(value: RootTab.work) {
       WorkTabView(isActive: selectedTab == .work)
+        .duoHidesTabBar(duo.isWide)
     } label: {
       Label("Work", systemImage: "terminal")
     }
-    // The sidebar counts what needs the user, like desktop's Work row; the
-    // phone's bar keeps its running count.
-    .badge(duo.isWide ? syncService.awaitingInputSessionsCount : syncService.runningChatSessionCount)
+    // The phone's bar keeps its running count; the inner display's edge bar
+    // counts what needs the user (`DuoAppNavigationSync`).
+    .badge(syncService.runningChatSessionCount)
   }
 
   private var lanesTab: some TabContent<RootTab> {
     Tab(value: RootTab.lanes) {
       LanesTabShell(isActive: selectedTab == .lanes)
+        .duoHidesTabBar(duo.isWide)
     } label: {
       Label("Lanes", systemImage: "square.stack.3d.up")
     }
@@ -352,6 +362,7 @@ struct ContentView: View {
   private var prsTab: some TabContent<RootTab> {
     Tab(value: RootTab.prs) {
       PRsTabShell(isActive: selectedTab == .prs)
+        .duoHidesTabBar(duo.isWide)
     } label: {
       Label("PRs", systemImage: "arrow.triangle.pull")
     }
@@ -360,6 +371,7 @@ struct ContentView: View {
   private var filesTab: some TabContent<RootTab> {
     Tab(value: RootTab.files) {
       FilesTabView(isActive: selectedTab == .files)
+        .duoHidesTabBar(duo.isWide)
     } label: {
       Label("Files", systemImage: "doc.text")
     }
@@ -368,6 +380,7 @@ struct ContentView: View {
   private var ctoTab: some TabContent<RootTab> {
     Tab(value: RootTab.cto) {
       CtoRootScreen(isTabActive: selectedTab == .cto)
+        .duoHidesTabBar(duo.isWide)
     } label: {
       // Not an SF Symbol: `CtoMark` is the SAME drawing the desktop rail
       // uses, bundled as a template asset. `Label(_:image:)` keeps this row's
@@ -504,6 +517,75 @@ private struct AppUpdateBanner: View {
     .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("ADE \(version) is available")
+  }
+}
+
+/// Feeds the inner display's edge bar: Home, the five tabs with the counts
+/// that matter there (what needs you on Work, a waiting CTO), and the two
+/// windows the phone opens from its top bar. Selecting routes the way the
+/// phone's own controls do. Only the outer display shows the tab bar, so this
+/// is inert there (`DuoAppTabsToolbar` draws nothing in compact).
+private struct DuoAppNavigationSync: ViewModifier {
+  @ObservedObject var syncService: SyncService
+  @ObservedObject var drawer: ActivityDrawerModel
+  @Binding var selectedTab: RootTab
+
+  private var items: [DuoAppTabItem] {
+    let hasProject = syncService.activeProjectId != nil
+    var items = [DuoAppTabItem(id: "home", title: "Home", systemImage: "house", role: .home)]
+    for tab in RootTab.allCases {
+      var item = DuoAppTabItem(
+        id: tab.rawValue,
+        title: tab.title,
+        systemImage: tab == .cto ? nil : tab.symbol,
+        assetImage: tab == .cto ? "CtoMark" : nil,
+        isEnabled: hasProject
+      )
+      switch tab {
+      case .work:
+        item.badge = syncService.awaitingInputSessionsCount
+        item.badgeNoun = "need you"
+      case .cto:
+        item.badge = syncService.ctoAttention.isAwaitingInput ? 1 : 0
+        item.badgeNoun = "waiting"
+      default:
+        break
+      }
+      items.append(item)
+    }
+    items.append(DuoAppTabItem(
+      id: "activity", title: "Activity", systemImage: "bell",
+      badge: drawer.unreadCount, role: .utility, badgeNoun: "need you"
+    ))
+    items.append(DuoAppTabItem(id: "settings", title: "Settings", systemImage: "gearshape", role: .utility))
+    return items
+  }
+
+  private var selectedId: String {
+    syncService.shouldShowProjectHub ? "home" : selectedTab.rawValue
+  }
+
+  func body(content: Content) -> some View {
+    content
+      .onChange(of: items, initial: true) { _, _ in configure() }
+      .onChange(of: selectedId) { _, _ in configure() }
+  }
+
+  private func configure() {
+    DuoAppNavigation.shared.configure(items: items, selectedId: selectedId) { [syncService, $selectedTab] id in
+      switch id {
+      case "home":
+        syncService.showProjectHub()
+      case "activity":
+        syncService.attentionDrawerPresented = true
+      case "settings":
+        syncService.settingsPresented = true
+      default:
+        guard let tab = RootTab(rawValue: id) else { return }
+        syncService.closeProjectHub()
+        if $selectedTab.wrappedValue != tab { $selectedTab.wrappedValue = tab }
+      }
+    }
   }
 }
 

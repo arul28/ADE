@@ -895,7 +895,8 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
           if side != nil || !treeShown {
             groups.first
           } else {
-            treeColumn()
+            // The top page: its bar carries the app tabs.
+            treeColumn(carriesAppTabs: true)
           }
         }
         .frame(height: top)
@@ -941,7 +942,7 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
 
   /// The tree. Over the editor (held portrait, flat) it slides away once a
   /// file is picked, the way a sidebar overlay does.
-  private func treeColumn(overlay: Bool = false) -> some View {
+  private func treeColumn(overlay: Bool = false, carriesAppTabs: Bool = false) -> some View {
     NavigationStack {
       tree { path, line in
         open(path, line: line)
@@ -957,6 +958,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
             Label("Search", systemImage: "magnifyingglass")
           }
         }
+        if carriesAppTabs {
+          DuoAppTabsToolbar()
+        }
       }
     }
   }
@@ -964,11 +968,31 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
   /// What a page shows when the tree is hidden and only one group is open:
   /// a quiet invitation, never an empty slab.
   private var treePlaceholderPage: some View {
-    ContentUnavailableView(
-      "Open a file beside this one",
-      systemImage: "rectangle.split.2x1",
-      description: Text("Choose Open to the Side from a file, or show the tree.")
-    )
+    // Its own stack: when it is the right page, it carries the edge bar.
+    NavigationStack {
+      ContentUnavailableView(
+        "Open a file beside this one",
+        systemImage: "rectangle.split.2x1",
+        description: Text("Choose Open to the Side from a file, or show the tree.")
+      )
+      .toolbar { DuoAppTabsToolbar() }
+    }
+  }
+
+  /// Whether this group's stack carries the app tabs: the trailing column held
+  /// landscape (the edge bar), the top group held portrait (its top bar).
+  private func groupCarriesAppTabs(isSide: Bool, treeShown: Bool, landscape: Bool, fold: DuoFold) -> Bool {
+    guard landscape else {
+      // Laptop-folded with the tree on the top page, the tree carries them.
+      if fold.isStacked, side == nil, treeShown { return false }
+      return !isSide
+    }
+    if isSide { return true }
+    guard side == nil else { return false }
+    // Book-folded with the tree hidden, this group is the left page and the
+    // placeholder page beside it is the trailing column.
+    if case .sideBySide = fold, !treeShown { return false }
+    return true
   }
 
   private func editorGroups(landscape: Bool, fold: DuoFold) -> (first: AnyView, second: AnyView) {
@@ -986,6 +1010,7 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
     fold: DuoFold
   ) -> AnyView {
     let toggleTree = { self.toggleTree(defaultShown: defaultTreeShown(landscape: landscape, fold: fold)) }
+    let carriesAppTabs = groupCarriesAppTabs(isSide: isSide, treeShown: treeShown, landscape: landscape, fold: fold)
     guard let ref else {
       return AnyView(
         NavigationStack {
@@ -1006,6 +1031,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
                 Label("Search", systemImage: "magnifyingglass")
               }
             }
+            if carriesAppTabs {
+              DuoAppTabsToolbar()
+            }
           }
         }
       )
@@ -1025,6 +1053,11 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
     return AnyView(
       NavigationStack {
         editor(ref, chrome)
+          .toolbar {
+            if carriesAppTabs {
+              DuoAppTabsToolbar()
+            }
+          }
       }
       .id("\(isSide ? "side" : "main")|\(ref.workspaceId)|\(ref.path)")
       // The tree opens files into the group touched last.
@@ -1121,6 +1154,7 @@ struct DuoCtoWide<Chat: View>: View {
               Label("CTO Settings", systemImage: "gearshape")
             }
           }
+          DuoAppTabsToolbar()
         }
     }
     .navigationTitle(title)

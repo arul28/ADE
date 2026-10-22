@@ -641,6 +641,7 @@ struct PRsTabView: View, Equatable {
     if let prId = duoSelectedPrId {
       NavigationStack {
         duoPrDetail(prId)
+          .toolbar { DuoAppTabsToolbar() }
       }
       .id(prId)
     } else {

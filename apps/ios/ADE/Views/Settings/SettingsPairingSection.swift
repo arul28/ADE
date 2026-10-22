@@ -345,71 +345,100 @@ struct DiscoverHostsSheet: View {
   let onPick: (DiscoveredSyncHost) -> Void
 
   var body: some View {
+    let displayedHosts = syncDiscoveredHostsForDisplay(
+      savedHosts: syncService.savedReconnectHosts,
+      liveHosts: syncService.discoveredHosts
+    )
+    DiscoverHostsList(
+      savedHosts: displayedHosts.savedHosts,
+      liveHosts: displayedHosts.liveHosts,
+      onReconnect: { savedHost in
+        dismiss()
+        Task {
+          await syncService.reconnect(toSavedHost: savedHost)
+        }
+      },
+      onPick: onPick,
+      onCancel: { dismiss() }
+    )
+  }
+}
+
+/// The Nearby Computers sheet's page: saved computers to reconnect, then the
+/// ones answering on this network, as a native inset-grouped list.
+struct DiscoverHostsList: View {
+  let savedHosts: [DiscoveredSyncHost]
+  let liveHosts: [DiscoveredSyncHost]
+  let onReconnect: (DiscoveredSyncHost) -> Void
+  let onPick: (DiscoveredSyncHost) -> Void
+  let onCancel: () -> Void
+
+  var body: some View {
     NavigationStack {
-      ScrollView {
-        let displayedHosts = syncDiscoveredHostsForDisplay(
-          savedHosts: syncService.savedReconnectHosts,
-          liveHosts: syncService.discoveredHosts
-        )
-        let savedHosts = displayedHosts.savedHosts
-        let liveHosts = displayedHosts.liveHosts
-        VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
-          if savedHosts.isEmpty && liveHosts.isEmpty {
-            ADESettingsSection(hint: "Looking for computers running ADE nearby…") {
-              ADESettingsRows {
-                ADESkeletonView(height: 20, cornerRadius: 6).padding(ADEKit.inset)
-                ADESkeletonView(height: 20, cornerRadius: 6).padding(ADEKit.inset)
-              }
-            }
-          } else {
-            if !savedHosts.isEmpty {
-              ADESettingsSection("Saved") {
-                ADESettingsRows {
-                  ForEach(savedHosts) { savedHost in
-                    Button {
-                      dismiss()
-                      Task {
-                        await syncService.reconnect(toSavedHost: savedHost)
-                      }
-                    } label: {
-                      DiscoveredHostRow(host: savedHost, detailPrefix: "Saved", accessoryText: "Reconnect")
-                    }
-                    .buttonStyle(ADEKitRowButtonStyle())
-                  }
-                }
-              }
-            }
-            if !liveHosts.isEmpty {
-              ADESettingsSection("Nearby", hint: "Pick a computer, then enter its ADE PIN.") {
-                ADESettingsRows {
-                  ForEach(liveHosts) { host in
-                    Button {
-                      onPick(host)
-                    } label: {
-                      DiscoveredHostRow(host: host)
-                    }
-                    .buttonStyle(ADEKitRowButtonStyle())
-                  }
-                }
+      List {
+        if !savedHosts.isEmpty {
+          Section("Saved") {
+            ForEach(savedHosts) { savedHost in
+              Button {
+                onReconnect(savedHost)
+              } label: {
+                DiscoveredHostRow(host: savedHost, detailPrefix: "Saved", accessoryText: "Reconnect")
               }
             }
           }
+          .listRowBackground(ADEColor.cardBackground)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        Section {
+          ForEach(liveHosts) { host in
+            Button {
+              onPick(host)
+            } label: {
+              DiscoveredHostRow(host: host)
+            }
+          }
+          if liveHosts.isEmpty {
+            HStack(spacing: 12) {
+              ProgressView()
+                .frame(width: 28)
+              Text("Looking for computers running ADE…")
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .accessibilityElement(children: .combine)
+          }
+        } header: {
+          Text("On this network")
+        } footer: {
+          Text("Pick a computer, then enter the PIN shown in ADE on it.")
+        }
+        .listRowBackground(ADEColor.cardBackground)
       }
-      .adeScreenBackground()
-      .adeNavigationGlass()
+      .listStyle(.insetGrouped)
+      .scrollContentBackground(.hidden)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("Nearby Computers")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button(role: .cancel) { dismiss() }
+          Button(role: .cancel, action: onCancel)
         }
       }
     }
-    .presentationDetents([.medium, .large])
+    // Opens at the height of what it lists, so a sheet with two computers is
+    // not a half-empty card; pull up for the full height.
+    .presentationDetents([.height(fittedHeight), .large])
+  }
+
+  /// The bar, each section's header and rows, the footer and the home
+  /// indicator's inset, capped below the large detent.
+  private var fittedHeight: CGFloat {
+    let rowHeight: CGFloat = 62
+    let sectionHeader: CGFloat = 46
+    var height: CGFloat = 64 + 44 + 16
+    if !savedHosts.isEmpty {
+      height += sectionHeader + CGFloat(savedHosts.count) * rowHeight
+    }
+    height += sectionHeader + CGFloat(max(liveHosts.count, 1)) * rowHeight
+    return min(height, 560)
   }
 }
 
@@ -420,32 +449,34 @@ private struct DiscoveredHostRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 16))
+      Image(systemName: machineSymbol(machineKey: nil, name: host.hostName))
+        .font(.title3)
         .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 24)
+        .frame(width: 28)
       VStack(alignment: .leading, spacing: 2) {
         Text(host.hostName)
-          .font(.system(size: 15, weight: .medium))
+          .font(.body)
           .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
         Text(detailText)
-          .font(.adeMono(11))
-          .foregroundStyle(ADEColor.textMuted)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
           .truncationMode(.middle)
       }
       Spacer(minLength: 8)
       if let accessoryText {
         Text(accessoryText)
-          .font(.system(size: 13, weight: .semibold))
+          .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.accent)
       } else {
-        ADESettingsChevron()
+        Image(systemName: "chevron.forward")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(.horizontal, ADEKit.inset)
-    .padding(.vertical, 11)
-    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .combine)
   }
 
   private var detailText: String {

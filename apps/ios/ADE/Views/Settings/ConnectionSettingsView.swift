@@ -77,11 +77,8 @@ struct ConnectionSettingsView: View {
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
-          Button {
+          Button(role: .close) {
             dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 13, weight: .semibold))
           }
           .accessibilityLabel("Close settings")
         }
@@ -320,7 +317,6 @@ struct ConnectionSettingsView: View {
         pinPreset = .discover(host)
       }
       .environmentObject(syncService)
-      .presentationDetents([.medium, .large])
 
     case .scan:
       SettingsPairingScannerSheet { payload in

@@ -71,6 +71,8 @@ struct HubScreen: View {
   @Environment(\.scenePhase) private var scenePhase
   /// The inner display is wide enough for the two-page Home.
   @Environment(\.duoLayout) private var duo
+  /// The signed-in account, for the inner display's toolbar.
+  @ObservedObject private var account = AccountService.shared
 
   private var isNoMachineBlankState: Bool {
     // A send switching machines keeps the hub (and its composer) up through
@@ -89,23 +91,9 @@ struct HubScreen: View {
   }
 
   var body: some View {
-    NavigationStack {
-      ZStack(alignment: .top) {
-        ADEColor.pageBackground.ignoresSafeArea()
-        if openChatTarget != nil {
-          HubCoverParkingSurface()
-        } else if isNoMachineBlankState {
-          HubNoMachineState(onConnectSuccess: triggerConnectBeat)
-        } else {
-          connectedHub
-        }
-      }
-      .overlay {
-        if showConnectBeat { ConnectSuccessBeat() }
-      }
-      .navigationDestination(isPresented: $personalChatsPresented) {
-        PersonalChatsScreen()
-      }
+    hubRoot
+    .overlay {
+      if showConnectBeat { ConnectSuccessBeat() }
     }
     .sheet(isPresented: $addProjectSheetPresented) {
       RemoteProjectAddSheet().environmentObject(syncService)
@@ -145,6 +133,36 @@ struct HubScreen: View {
     }
     .task(id: workSessionDeepLinkKey) {
       handleRequestedWorkSessionNavigation()
+    }
+  }
+
+  /// The inner display's Home is two pages, each its own navigation stack (the
+  /// trailing one's toolbar is the edge bar), so it cannot sit inside the
+  /// phone's single stack: a stack nested in another merges into its bar.
+  private var usesWideHome: Bool {
+    duo.isWide && openChatTarget == nil && !isNoMachineBlankState
+  }
+
+  @ViewBuilder
+  private var hubRoot: some View {
+    if usesWideHome {
+      connectedHub
+    } else {
+      NavigationStack {
+        ZStack(alignment: .top) {
+          ADEColor.pageBackground.ignoresSafeArea()
+          if openChatTarget != nil {
+            HubCoverParkingSurface()
+          } else if isNoMachineBlankState {
+            HubNoMachineState(onConnectSuccess: triggerConnectBeat)
+          } else {
+            connectedHub
+          }
+        }
+        .navigationDestination(isPresented: $personalChatsPresented) {
+          PersonalChatsScreen()
+        }
+      }
     }
   }
 
@@ -193,10 +211,6 @@ struct HubScreen: View {
       guard !Task.isCancelled else { return }
       withAnimation(.easeOut(duration: 0.2)) { showConnectBeat = false }
     }
-  }
-
-  private func collapseComposer() {
-    withAnimation(hubComposerSpring) { composerExpanded = false }
   }
 
   private func openCreated(_ created: HubCreatedChat) {
@@ -324,71 +338,48 @@ struct HubScreen: View {
     }
   }
 
-  /// The top bar and the roster filter move into the system toolbar here, so
-  /// the Duo's edge bar holds them (see `DuoHomeToolbar`).
+  /// The toolbar's actions, shared by every form of the Hub.
+  private var hubToolbarActions: HubToolbarActions {
+    HubToolbarActions(
+      chatsAvailable: syncService.supportsPersonalChats,
+      chatsAttentionCount: chatsAttentionCount,
+      onAdd: { addProjectSheetPresented = true },
+      onOpenChats: { personalChatsPresented = true },
+      onOpenActivity: { syncService.attentionDrawerPresented = true },
+      onOpenSettings: { syncService.settingsPresented = true }
+    )
+  }
+
+  /// Two pages with the filter and the rest of the controls in the edge bar
+  /// (see `DuoHomeWide`); Chats pushes on the projects page.
   private var wideHome: some View {
-    let machines = duoHomeMachines(syncService: syncService, fleet: machineFleet)
-    return DuoHomeWide(
-      machines: machines,
+    DuoHomeWide(
+      machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
       needsYou: duoNeedsYouItems(from: hubProjectPresentations),
+      actions: hubToolbarActions,
+      filter: $rosterFilter,
+      filterCounts: hubRosterFilterCounts,
+      account: account.identity,
+      showsOverview: canShowProjects || !hubProjectPresentations.isEmpty,
       onOpenNeedsYou: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },
-      onOpenActivity: { syncService.attentionDrawerPresented = true },
-      onOpenMachines: { syncService.settingsPresented = true },
+      chatsPresented: $personalChatsPresented,
+      title: { HubLiveConnectionMenu() },
       projects: { rosterList },
-      composer: { composerBar }
+      composer: { composerBar },
+      chatsDestination: { PersonalChatsScreen() }
     )
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      DuoHomeToolbar(
-        onAdd: { addProjectSheetPresented = true },
-        chatsAvailable: syncService.supportsPersonalChats,
-        chatsAttentionCount: chatsAttentionCount,
-        onOpenChats: { personalChatsPresented = true },
-        filter: $rosterFilter,
-        filterCounts: hubRosterFilterCounts,
-        machines: machines,
-        onOpenSettings: { syncService.settingsPresented = true },
-        onOpenActivity: { syncService.attentionDrawerPresented = true }
-      )
-    }
   }
 
   private var phoneHub: some View {
-    VStack(spacing: 0) {
-      hubTopBar
-      rosterFilterBar
-      rosterList
-        // While the composer is expanded, a dim scrim sits between the list and
-        // the composer: it swallows taps/drags (no accidental row opens) and any
-        // touch on it collapses the composer. Layered before safeAreaInset so
-        // the composer itself stays above and interactive.
-        .overlay {
-          if composerExpanded {
-            Color.black.opacity(0.38)
-              .ignoresSafeArea()
-              .onTapGesture { collapseComposer() }
-              .gesture(
-                DragGesture(minimumDistance: 12).onEnded { value in
-                  if value.translation.height > 24 { collapseComposer() }
-                }
-              )
-              .transition(.opacity)
-          }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-          composerBar
-        }
-    }
-  }
-
-  private var hubTopBar: some View {
-    HubTopBar(
-      onAdd: { addProjectSheetPresented = true },
-      chatsAvailable: syncService.supportsPersonalChats,
-      chatsAttentionCount: chatsAttentionCount,
-      onOpenChats: { personalChatsPresented = true }
+    HubPhoneLayout(
+      composerExpanded: $composerExpanded,
+      actions: hubToolbarActions,
+      title: { HubLiveConnectionMenu() },
+      filterBar: { rosterFilterBar },
+      roster: { rosterList },
+      composer: { composerBar }
     )
   }
 
@@ -406,8 +397,8 @@ struct HubScreen: View {
     // Kept while a send switches machines: the primary is reconnecting, and the
     // draft and any error belong to this composer.
     if canShowProjects || composerSwitchingMachine {
-      // No band behind it: the glass composer floats over the list, which
-      // scrolls under it edge to edge.
+      // The list ends above it: the composer is the screen's footer, never a
+      // layer over the last rows.
       HubInlineComposer(
         expanded: $composerExpanded,
         onCreated: handleCreated,
@@ -862,6 +853,54 @@ struct HubScreen: View {
         try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: project)
       }
     }
+  }
+}
+
+/// The Hub on the phone, the Duo's outer display and every other iPhone: the
+/// roster filter row, the project list, and the composer under it as the
+/// screen's footer (the list ends above it). The controls are system toolbar
+/// items, so iOS places them: the top bar on a phone, the vertical bar on the
+/// outer display's curved edge.
+struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View>: View {
+  @Binding var composerExpanded: Bool
+  let actions: HubToolbarActions
+  @ViewBuilder var title: () -> Title
+  @ViewBuilder var filterBar: () -> FilterBar
+  @ViewBuilder var roster: () -> Roster
+  @ViewBuilder var composer: () -> Composer
+
+  var body: some View {
+    VStack(spacing: 0) {
+      filterBar()
+      roster()
+        .frame(maxHeight: .infinity)
+        // While the composer is expanded, a dim scrim covers the list: it
+        // swallows taps and drags (no accidental row opens), and any touch on
+        // it collapses the composer.
+        .overlay {
+          if composerExpanded {
+            Color.black.opacity(0.38)
+              .ignoresSafeArea()
+              .onTapGesture { collapse() }
+              .gesture(
+                DragGesture(minimumDistance: 12).onEnded { value in
+                  if value.translation.height > 24 { collapse() }
+                }
+              )
+              .transition(.opacity)
+          }
+        }
+      composer()
+    }
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarLeading) { title() }
+      HubToolbar(form: .bar, actions: actions)
+    }
+  }
+
+  private func collapse() {
+    withAnimation(hubComposerSpring) { composerExpanded = false }
   }
 }
 

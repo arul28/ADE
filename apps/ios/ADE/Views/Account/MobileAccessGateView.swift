@@ -19,142 +19,134 @@ struct MobileAccessGateView: View {
 
   var body: some View {
     NavigationStack {
-      GeometryReader { geometry in
-        ScrollView {
-          VStack(spacing: 0) {
-            Spacer(minLength: 44)
+      // Hero and actions on separate pages when the Duo is folded, so
+      // neither sits on the fold; one centered column otherwise.
+      HubFoldAwarePage(maxWidth: 420) {
+        VStack(spacing: 0) {
+          // Hero: the real ADE wordmark, big and centered, over a single line of
+          // device-neutral copy. No explanatory paragraphs (M1).
+          Image("BrandMark")
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: 220)
+            .frame(height: 108)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("ADE")
+            .padding(.bottom, 24)
 
-            // Hero: the real ADE wordmark, big and centered, over a single line of
-            // device-neutral copy. No explanatory paragraphs (M1).
-            Image("BrandMark")
-              .resizable()
-              .renderingMode(.original)
-              .interpolation(.high)
-              .aspectRatio(contentMode: .fit)
-              .frame(maxWidth: 220)
-              .frame(height: 108)
-              .frame(maxWidth: .infinity)
-              .accessibilityLabel("ADE")
-              .padding(.bottom, 24)
-
-            Text("Your agents, anywhere.")
-              .font(.system(size: 19, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .multilineTextAlignment(.center)
-
-            Spacer()
-
-            VStack(spacing: 14) {
-              Button {
-                accountConnectionError = nil
-                presentedSheet = .signIn
-              } label: {
-                Group {
-                  if accountLoading {
-                    HStack(spacing: 8) {
-                      ProgressView()
-                        .controlSize(.small)
-                      Text("Checking account…")
-                    }
-                  } else {
-                    Text(accountSignedIn ? "View your computers" : "Sign in")
-                  }
+          Text("Your agents, anywhere.")
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .multilineTextAlignment(.center)
+        }
+      } actions: {
+        VStack(spacing: 14) {
+          Button {
+            accountConnectionError = nil
+            presentedSheet = .signIn
+          } label: {
+            Group {
+              if accountLoading {
+                HStack(spacing: 8) {
+                  ProgressView()
+                    .controlSize(.small)
+                  Text("Checking account…")
                 }
-                .frame(maxWidth: .infinity)
-              }
-              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-              .disabled(!accountConfigured || accountLoading)
-
-              if !accountConfigured && !accountLoading {
-                Text("Account sign-in is not configured on this device.")
-                  .font(.footnote)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .multilineTextAlignment(.center)
-              }
-
-              // ADE requires an account, so there is no "skip this" here any
-              // more. What remains are the two cases with somewhere to go:
-              //
-              //  - an unreadable pairing credential, which is a fault to repair
-              //    rather than a step to redo, and
-              //  - a phone already paired to a computer, which has cached work
-              //    to show. Blocking that would be a brick, and the signed-out
-              //    bar nags on every screen until they sign in.
-              //
-              // A phone with neither has nothing to pass through to, exactly
-              // like the hosted web client, so the button is absent rather than
-              // disabled.
-              if credentialUnreadable || hasPairedHost {
-                Button {
-                  if credentialUnreadable {
-                    presentedSheet = .pairMachine
-                  } else {
-                    onContinue()
-                  }
-                } label: {
-                  Text(credentialUnreadable ? "Pair again" : "Continue to your work")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(credentialUnreadable ? ADEColor.accent : ADEColor.textSecondary)
-                    .frame(minHeight: 44)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-              }
-
-              // A pairing whose credential cannot be read is a fault, not a
-              // missing step. Without this the button re-presents the same
-              // connect sheet the user already completed, with nothing to
-              // explain why it did not take.
-              if credentialUnreadable {
-                Text(
-                  """
-                  This iPhone is paired with a computer, but the saved key for it \
-                  can no longer be read. Pair again to restore the connection.
-                  """
-                )
-                .font(.footnote)
-                .foregroundStyle(ADEColor.textMuted)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-              }
-
-              if syncService.connectionState == .connecting,
-                 let stage = syncService.accountConnectStageLabel {
-                Text(stage)
-                  .font(.footnote.weight(.medium))
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .multilineTextAlignment(.center)
-                  .transition(.opacity)
-              }
-
-              if let accountConnectionError {
-                VStack(spacing: 8) {
-                  Text(accountConnectionError)
-                    .font(.footnote)
-                    .foregroundStyle(ADEColor.danger)
-                    .multilineTextAlignment(.center)
-                  if let fallbackHost = syncService.accountPairingPinFallbackHost {
-                    Button("Pair with PIN instead") {
-                      pinPreset = .discover(fallbackHost)
-                    }
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(ADEColor.accent)
-                    .frame(minHeight: 44)
-                    .buttonStyle(.plain)
-                  }
-                }
+              } else {
+                Text(accountSignedIn ? "View your computers" : "Sign in")
               }
             }
-            .frame(maxWidth: 420)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 40)
+            .frame(maxWidth: .infinity)
           }
-          .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          .disabled(!accountConfigured || accountLoading)
+
+          if !accountConfigured && !accountLoading {
+            Text("Account sign-in is not configured on this device.")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textMuted)
+              .multilineTextAlignment(.center)
+          }
+
+          // ADE requires an account, so there is no "skip this" here any
+          // more. What remains are the two cases with somewhere to go:
+          //
+          //  - an unreadable pairing credential, which is a fault to repair
+          //    rather than a step to redo, and
+          //  - a phone already paired to a computer, which has cached work
+          //    to show. Blocking that would be a brick, and the signed-out
+          //    bar nags on every screen until they sign in.
+          //
+          // A phone with neither has nothing to pass through to, exactly
+          // like the hosted web client, so the button is absent rather than
+          // disabled.
+          if credentialUnreadable || hasPairedHost {
+            Button {
+              if credentialUnreadable {
+                presentedSheet = .pairMachine
+              } else {
+                onContinue()
+              }
+            } label: {
+              Text(credentialUnreadable ? "Pair again" : "Continue to your work")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(credentialUnreadable ? ADEColor.accent : ADEColor.textSecondary)
+                .frame(minHeight: 44)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+          }
+
+          // A pairing whose credential cannot be read is a fault, not a
+          // missing step. Without this the button re-presents the same
+          // connect sheet the user already completed, with nothing to
+          // explain why it did not take.
+          if credentialUnreadable {
+            Text(
+              """
+              This iPhone is paired with a computer, but the saved key for it \
+              can no longer be read. Pair again to restore the connection.
+              """
+            )
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+          }
+
+          if syncService.connectionState == .connecting,
+             let stage = syncService.accountConnectStageLabel {
+            Text(stage)
+              .font(.footnote.weight(.medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .multilineTextAlignment(.center)
+              .transition(.opacity)
+          }
+
+          if let accountConnectionError {
+            VStack(spacing: 8) {
+              Text(accountConnectionError)
+                .font(.footnote)
+                .foregroundStyle(ADEColor.danger)
+                .multilineTextAlignment(.center)
+              if let fallbackHost = syncService.accountPairingPinFallbackHost {
+                Button("Pair with PIN instead") {
+                  pinPreset = .discover(fallbackHost)
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .frame(minHeight: 44)
+                .buttonStyle(.plain)
+              }
+            }
+          }
         }
-        .scrollIndicators(.hidden)
-        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .frame(maxWidth: 360)
       }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
     }
