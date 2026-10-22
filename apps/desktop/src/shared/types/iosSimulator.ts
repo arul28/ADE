@@ -300,6 +300,7 @@ export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
   "duo_app_store_shots",
   "device_rendered",
   "duo_skill_added",
+  "device_leased",
 ] as const;
 export type AppleDeviceAnalyticsOutcome = (typeof APPLE_DEVICE_ANALYTICS_OUTCOMES)[number];
 

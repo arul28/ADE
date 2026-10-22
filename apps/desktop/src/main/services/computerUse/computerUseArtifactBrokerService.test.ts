@@ -1637,11 +1637,15 @@ describe("proof provenance", () => {
     it("refuses a renamed copy of existing proof and names the earlier one", async () => {
       const broker = makeBroker();
       const bytes = mp4Bytes(null, 2);
-      await attach(broker, writeCacheFile("google-search.mp4", bytes), "Google search");
+      const earlier = await attach(broker, writeCacheFile("google-search.mp4", bytes), "Google search");
+      const earlierId = earlier.artifacts[0]!.id;
       const before = storedFiles().length;
 
-      await expect(attach(broker, writeCacheFile("safari-reddit-search.mp4", bytes), "Safari Reddit search"))
-        .rejects.toThrow(/^PROOF_DUPLICATE: Same bytes as "Google search" \(filed .+\)\. This file is already proof\. Record a new one, or report that recording failed\.$/);
+      const refusal = attach(broker, writeCacheFile("safari-reddit-search.mp4", bytes), "Safari Reddit search");
+      await expect(refusal).rejects.toThrow(/^PROOF_DUPLICATE: Same bytes as "Google search"/);
+      // The refusal hands back the earlier proof's citation, so a caller can
+      // show the shot that is already filed instead of attaching it again.
+      await expect(refusal).rejects.toThrow(`cite: ![Google search](ade-proof://${earlierId})`);
       // The staged copy of the refused file is removed, and no row is written.
       expect(storedFiles()).toHaveLength(before);
       expect(broker.listArtifacts({})).toHaveLength(1);

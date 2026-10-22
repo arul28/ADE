@@ -2184,6 +2184,21 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       // start a recording without the service knowing anything about video.
       expect(noted.map((entry) => entry.kind)).toEqual(["tap", "type"]);
       expect(noted[0]).toMatchObject({ laneId: "lane-a", udid: "device-1", x: 100, y: 240 });
+
+      // Which picture the points are on. An agent measures on a screenshot
+      // (screen space; the helper turns it onto a turned framebuffer), a
+      // viewer has already mapped its click onto the framebuffer it draws.
+      expect(helper.sent[0]).toMatchObject({ phase: "begin", space: "screen" });
+      helper.sent.length = 0;
+      await service.tap({ deviceUdid: "device-1", x: 100, y: 240, laneId: "lane-a", source: "user" });
+      expect(helper.sent.map((command) => command.space)).toEqual(["frame", "frame"]);
+
+      // `down` reveals what is below: a positive delta, the helper's wheel
+      // convention (it swipes the finger up).
+      helper.sent.length = 0;
+      await service.scroll({ deviceUdid: "device-1", direction: "down", laneId: "lane-a" });
+      expect(helper.sent.at(-1)).toMatchObject({ type: "scroll", deltaX: 0, space: "screen" });
+      expect(Number(helper.sent.at(-1)!.deltaY)).toBeGreaterThan(0);
     } finally {
       service.dispose();
       restoreHelper();

@@ -7071,7 +7071,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceLease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; holder?: string | null; ttlMs?: number | null; waitMs?: number | null } = {}) => {
       const runtime = resolveRuntime(leaseArgs);
       const holder = leaseArgs.holder?.trim() || leaseArgs.chatSessionId?.trim() || "agent";
-      return deviceLeases.acquire({ key: runtime.key, holder, ttlMs: leaseArgs.ttlMs, waitMs: leaseArgs.waitMs });
+      const result = await deviceLeases.acquire({ key: runtime.key, holder, ttlMs: leaseArgs.ttlMs, waitMs: leaseArgs.waitMs });
+      // A new turn, not a renewal or a busy answer: agents taking turns.
+      if (result.acquired && !result.renewed) args.captureAnalytics?.("device_leased");
+      return result;
     },
     deviceLeaseRelease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; token?: string | null } = {}) => {
       const token = leaseArgs.token?.trim();
