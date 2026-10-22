@@ -1,5 +1,14 @@
+import { pathIsWithinRoot, samePathOnPlatform } from "./pathContainment";
+
 export const ADE_AGENT_SKILLS_DIRS_ENV = "ADE_AGENT_SKILLS_DIRS";
 export const ADE_BUNDLED_AGENT_SKILLS_DIR_ENV = "ADE_BUNDLED_AGENT_SKILLS_DIR";
+
+export type AgentSkillRootSource = "project" | "user" | "bundled";
+
+export type AgentSkillRootWithSource = {
+  root: string;
+  source: AgentSkillRootSource;
+};
 
 function processRef(): NodeJS.Process | null {
   return typeof process !== "undefined" ? process : null;
@@ -174,6 +183,79 @@ export function getAgentSkillRootCandidates(options: {
   for (const root of getAdeAgentSkillRootCandidates(options)) addPath(roots, seen, root);
 
   return roots;
+}
+
+/**
+ * Separates roots by who owns them, keeping project roots nearest-first.
+ * Bundled candidates under the active project are project skills in practice.
+ */
+export function getAgentSkillRootsWithSource(options: {
+  env?: NodeJS.ProcessEnv;
+  resourcesPath?: string | null;
+  cwd?: string | null;
+  processCwd?: string | null;
+  dirname?: string | null;
+  home?: string | null;
+  includeDeepSourceFallbacks?: boolean;
+} = {}): AgentSkillRootWithSource[] {
+  const proc = processRef();
+  const env = options.env ?? proc?.env ?? {};
+  const cwd = normalizePathEntry(options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null));
+  const home = normalizePathEntry(options.home) ?? homePath(env);
+
+  const projectRoots: string[] = [];
+  const projectSeen = new Set<string>();
+  let current = cwd;
+  for (let depth = 0; current && depth < 25; depth += 1) {
+    if (home && samePathOnPlatform(current, home, proc?.platform)) break;
+    for (const dirName of ancestorSkillDirs) {
+      addPath(projectRoots, projectSeen, joinPath(current, dirName, "skills"));
+    }
+    current = parentPath(current);
+  }
+
+  const userRoots: string[] = [];
+  const userSeen = new Set<string>();
+  if (home) {
+    for (const dirName of ancestorSkillDirs) {
+      addPath(userRoots, userSeen, joinPath(home, dirName, "skills"));
+    }
+  }
+
+  const bundledCandidates = getAdeAgentSkillRootCandidates(options);
+  const projectBundledRoots: string[] = [];
+  const projectBundledSeen = new Set<string>();
+  const bundledRoots: string[] = [];
+  const bundledSeen = new Set<string>();
+  for (const root of bundledCandidates) {
+    if (cwd && pathIsWithinRoot(cwd, root, proc?.platform)) {
+      addPath(projectBundledRoots, projectBundledSeen, root);
+    } else {
+      addPath(bundledRoots, bundledSeen, root);
+    }
+  }
+
+  const result: AgentSkillRootWithSource[] = [];
+  const seen = new Set<string>();
+  for (const root of projectRoots) addRootWithSource(result, seen, root, "project");
+  for (const root of projectBundledRoots) addRootWithSource(result, seen, root, "project");
+  for (const root of userRoots) addRootWithSource(result, seen, root, "user");
+  for (const root of bundledRoots) addRootWithSource(result, seen, root, "bundled");
+  return result;
+}
+
+function addRootWithSource(
+  target: AgentSkillRootWithSource[],
+  seen: Set<string>,
+  root: string,
+  source: AgentSkillRootSource,
+): void {
+  const normalized = normalizePathEntry(root);
+  if (!normalized) return;
+  const key = normalized.toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  target.push({ root: normalized, source });
 }
 
 /**

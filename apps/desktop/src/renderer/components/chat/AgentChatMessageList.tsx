@@ -2884,6 +2884,9 @@ function renderEvent(
     const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
       ? event.metadata.kind
       : null;
+    const remoteMcpLabel = typeof event.metadata?.remoteMcp?.label === "string"
+      ? event.metadata.remoteMcp.label.trim()
+      : "";
     // A brief handoff's first message is the hidden brief. The thread marks it
     // with a line, like the fork line, not with a label inside the bubble.
     const handoffBriefLabel = metadataKind === "handoff"
@@ -3015,6 +3018,14 @@ function renderEvent(
           <div data-ade-find-skip="" className="contents">
             <UserMessageSendConfirmations event={event} />
           </div>
+          {remoteMcpLabel ? (
+            <div
+              data-ade-find-skip=""
+              className="mt-2 text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45"
+            >
+              via {remoteMcpLabel}
+            </div>
+          ) : null}
         </div>
         <UserMessageStatusRow
           event={event}

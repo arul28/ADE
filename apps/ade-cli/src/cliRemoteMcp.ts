@@ -19,7 +19,9 @@ export const REMOTE_MCP_HELP = `
 
     $ ade mcp status --text                  On or off, the server URL, and every connection
     $ ade mcp on | off                       Turn ADE MCP on or off for this computer
-    $ ade mcp token create --label "Grok" [--read-only] --text
+    $ ade mcp token create --label "Grok" --read-only --text
+    $ ade mcp token create --label "Grok" --full-access --text
+    $ ade mcp token create --label "Grok" --scope read|write --text
                                              A token for apps that send a header (shown once)
     $ ade mcp scope <connection-id> read|write
                                              Change what a connection may do
@@ -63,6 +65,7 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
   const scopeFlag = readValue(args, ["--scope"]);
   const limitFlag = readValue(args, ["--limit"]);
   const readOnly = readFlag(args, ["--read-only", "--readonly"]);
+  const fullAccess = readFlag(args, ["--full-access"]);
   const words = args.filter((word) => !word.startsWith("-"));
   const sub = words[0] ?? "status";
   switch (sub) {
@@ -76,9 +79,18 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
       return call("mcp off", "setEnabled", { enabled: false });
     case "token": {
       if ((words[1] ?? "create") !== "create") {
-        throw new CliUsageError("Usage: ade mcp token create [--label <name>] [--read-only]");
+        throw new CliUsageError(
+          "Usage: ade mcp token create [--label <name>] (--read-only | --full-access | --scope read|write)",
+        );
       }
-      const scope = readOnly ? "read" : parseScopeWord(scopeFlag ?? "write");
+      const accessOptions = Number(readOnly) + Number(fullAccess) + Number(scopeFlag !== null);
+      if (accessOptions === 0) {
+        throw new CliUsageError("Pick the access: --read-only or --full-access.");
+      }
+      if (accessOptions > 1) {
+        throw new CliUsageError("Choose one access option: --read-only, --full-access, or --scope.");
+      }
+      const scope = readOnly ? "read" : fullAccess ? "write" : parseScopeWord(scopeFlag);
       return call("mcp token create", "createToken", { label: label ?? words[2] ?? "Token", scope });
     }
     case "scope": {

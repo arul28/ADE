@@ -492,6 +492,8 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
+import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
@@ -725,7 +727,7 @@ type ChatWaitTarget =
   | "terminal";
 
 export type CliPlan =
-  | { kind: "help"; text: string }
+  | { kind: "help"; text: string; catalogTopic?: string | null }
   | { kind: "static"; value: unknown; formatter?: FormatterId }
   | {
       kind: "execute";
@@ -1312,6 +1314,11 @@ export function topLevelHelpText(): string {
   return text;
 }
 
+function remoteMcpHelpScope(): "read" | "write" | undefined {
+  const scope = process.env.ADE_REMOTE_MCP_SCOPE;
+  return scope === "read" || scope === "write" ? scope : undefined;
+}
+
 function commandHelpText(key: string): string | undefined {
   if (key === "automations" && !automationsCliEnabled()) {
     return internalFeatureUnavailableHelp(
@@ -1333,6 +1340,29 @@ function commandHelpText(key: string): string | undefined {
   return HELP_BY_COMMAND[key];
 }
 
+function helpCatalogTopic(key: string): string {
+  if (key === "windows-desktop" || key === "windows-desk") return "screen";
+  if (
+    process.platform === "win32"
+    && (key === "mac-desktop" || key === "mac-desk" || key === "desk")
+  ) {
+    return "screen";
+  }
+  return key;
+}
+
+function buildHelpPlan(
+  text: string,
+  catalogTopic: string | null,
+  options: { json?: boolean },
+): CliPlan {
+  return {
+    kind: "help",
+    text,
+    ...(options.json ? { catalogTopic } : {}),
+  };
+}
+
 function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): string {
   const subcommand = args.find((arg) => arg !== "--" && !arg.startsWith("-"));
   if (!subcommand) return primaryKey;
@@ -1342,6 +1372,58 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   if (primaryKey === "new" && normalizedSubcommand === "cli") return "new chat";
   return `${primaryKey} ${normalizedSubcommand}`;
 }
+
+const CLI_COMMAND_ALIASES: Record<string, string> = {
+  lane: "lanes",
+  diff: "diff",
+  diffs: "diff",
+  file: "files",
+  pr: "prs",
+  pty: "shell",
+  term: "terminal",
+  chats: "chat",
+  work: "chat",
+  agents: "agent",
+  test: "tests",
+  computer: "proof",
+  "computer-use": "proof",
+  artifact: "proof",
+  artifacts: "proof",
+  apple: "apple",
+  "ios-sim": "apple",
+  ios: "apple",
+  simulator: "apple",
+  "mac-desk": "mac-desktop",
+  desk: "mac-desktop",
+  app: "app-control",
+  apps: "app-control",
+  electron: "app-control",
+  "ade-browser": "browser",
+  "built-in-browser": "browser",
+  "builtin-browser": "browser",
+  worktools: "work-tools",
+  "tools-pane": "work-tools",
+  setting: "settings",
+  config: "settings",
+  action: "actions",
+  coord: "coordinator",
+  automation: "automations",
+  "auto-update": "update",
+  updates: "update",
+  operation: "operations",
+  sessions: "session",
+  project: "projects",
+  machine: "machines",
+  quota: "usage",
+  quotas: "usage",
+  disk: "storage",
+  archived: "archive",
+  skills: "skill",
+  gh: "github",
+  create: "new",
+  login: "auth",
+  logout: "auth",
+};
 
 export const HELP_BY_COMMAND: Record<string, string> = {
   reset: `${ADE_BANNER}
@@ -10088,6 +10170,21 @@ export function formatChatLaunches(value: unknown): string {
  */
 const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
 
+function remoteMcpTurnMetadata(): { remoteMcp: { connectionId: string; label: string } } | null {
+  const connectionId = process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim();
+  if (!connectionId) return null;
+  const configuredLabel = process.env.ADE_REMOTE_MCP_CONNECTION_LABEL?.trim();
+  const label = configuredLabel?.slice(0, 80).trim() || "AI app";
+  return { remoteMcp: { connectionId, label } };
+}
+
+function mergeRemoteMcpTurnMetadata(args: JsonObject): JsonObject {
+  const metadata = remoteMcpTurnMetadata();
+  if (!metadata) return args;
+  const existingMetadata = isRecord(args.metadata) ? args.metadata : {};
+  return { ...args, metadata: { ...existingMetadata, ...metadata } };
+}
+
 /**
  * The target both handoff forms read the same way: the mode, the model (also
  * `--target` or a bare positional) and its settings. `sub` "fork" implies
@@ -10747,11 +10844,11 @@ function buildChatPlan(args: string[]): CliPlan {
                   arguments: {
                     domain: "chat",
                     action: "messageSession",
-                    args: {
+                    args: mergeRemoteMcpTurnMetadata({
                       sessionId: targetSession,
                       text: explicitKickoff,
                       kind: "auto",
-                    },
+                    }),
                   },
                 };
               },
@@ -10800,11 +10897,11 @@ function buildChatPlan(args: string[]): CliPlan {
             arguments: {
               domain: "chat",
               action: "messageSession",
-              args: {
+              args: mergeRemoteMcpTurnMetadata({
                 sessionId: targetSession,
                 text: explicitKickoff ?? deriveLinearKickoffPrompt(issueForKickoff),
                 kind: "auto",
-              },
+              }),
             },
           };
         },
@@ -10837,6 +10934,7 @@ function buildChatPlan(args: string[]): CliPlan {
       // "Start B after A": a durable wait that sends this prompt to B once
       // every chat named in --after is idle.
       const afterIds = afterValue.split(",").map((id) => id.trim()).filter(Boolean);
+      const sendMetadata = remoteMcpTurnMetadata();
       return {
         kind: "execute",
         label: "chat send after",
@@ -10847,17 +10945,18 @@ function buildChatPlan(args: string[]): CliPlan {
             waitFor: normalizeChatWaitTarget(afterWaitFor),
             sendToSessionId: targetSession,
             text: sendText,
+            ...(sendMetadata ? { sendMetadata } : {}),
             ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
           }),
         ],
       };
     }
-    const messageArgs = withSession({
+    const messageArgs = mergeRemoteMcpTurnMetadata(withSession({
       sessionId: targetSession,
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-    });
+    }));
     return {
       kind: "execute",
       label: "chat send",
@@ -10893,12 +10992,12 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "messageSession",
-          withSession({
+          mergeRemoteMcpTurnMetadata(withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-          }),
+          })),
         ),
       ],
     };
@@ -10920,12 +11019,12 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "steer",
-          withSession({
+          mergeRemoteMcpTurnMetadata(withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
             ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-          }),
+          })),
         ),
       ],
     };
@@ -20518,7 +20617,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -20529,63 +20628,12 @@ function buildCliPlan(
   }
   const primary = firstPositional(args);
   if (!primary) {
-    return { kind: "help", text: topLevelHelpText() };
+    return buildHelpPlan(topLevelHelpText(), null, options);
   }
   if (primary === "-h" || primary === "--help") {
-    return { kind: "help", text: topLevelHelpText() };
+    return buildHelpPlan(topLevelHelpText(), null, options);
   }
-  const aliases: Record<string, string> = {
-    lane: "lanes",
-    diff: "diff",
-    diffs: "diff",
-    file: "files",
-    pr: "prs",
-    pty: "shell",
-    term: "terminal",
-    chats: "chat",
-    work: "chat",
-    agents: "agent",
-    test: "tests",
-    computer: "proof",
-    "computer-use": "proof",
-    artifact: "proof",
-    artifacts: "proof",
-    apple: "apple",
-    "ios-sim": "apple",
-    ios: "apple",
-    simulator: "apple",
-    "mac-desk": "mac-desktop",
-    desk: "mac-desktop",
-    app: "app-control",
-    apps: "app-control",
-    electron: "app-control",
-    "ade-browser": "browser",
-    "built-in-browser": "browser",
-    "builtin-browser": "browser",
-    worktools: "work-tools",
-    "tools-pane": "work-tools",
-    setting: "settings",
-    config: "settings",
-    action: "actions",
-    coord: "coordinator",
-    automation: "automations",
-    "auto-update": "update",
-    updates: "update",
-    operation: "operations",
-    sessions: "session",
-    project: "projects",
-    machine: "machines",
-    quota: "usage",
-    quotas: "usage",
-    disk: "storage",
-    archived: "archive",
-    skills: "skill",
-    gh: "github",
-    create: "new",
-    login: "auth",
-    logout: "auth",
-  };
-  const primaryHelpKey = aliases[primary] ?? primary;
+  const primaryHelpKey = CLI_COMMAND_ALIASES[primary] ?? primary;
   // The browser grammar carries values the global table does not, and a `--`
   // that belongs to one of them must not fence `--help` out of the scan.
   const helpCarriers =
@@ -20607,43 +20655,51 @@ function buildCliPlan(
   if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "apple") {
-      return { kind: "help", text: buildIosSimulatorHelp(args) };
+      return buildHelpPlan(buildIosSimulatorHelp(args), helpCatalogTopic(helpKey), options);
     }
     if (primaryHelpKey === "cursor") {
-      return { kind: "help", text: buildCursorHelp(args) };
+      return buildHelpPlan(buildCursorHelp(args), helpCatalogTopic(helpKey), options);
     }
     if (primaryHelpKey === "app-control") {
-      return { kind: "help", text: buildAppControlHelp(args) };
+      return buildHelpPlan(buildAppControlHelp(args), helpCatalogTopic(helpKey), options);
     }
-    return {
-      kind: "help",
-      text: commandHelpText(helpKey) ?? commandHelpText(primaryHelpKey) ?? topLevelHelpText(),
-    };
+    const text = commandHelpText(helpKey) ?? commandHelpText(primaryHelpKey) ?? topLevelHelpText();
+    return buildHelpPlan(text, helpCatalogTopic(helpKey), options);
   }
   if (primary === "help") {
     const topics = args
       .filter((arg) => arg !== "--" && !arg.startsWith("-"))
       .map((arg) => arg.toLowerCase());
     const topic = topics[0] ?? "";
-    const key = aliases[topic] ?? topic;
+    const key = CLI_COMMAND_ALIASES[topic] ?? topic;
     const subtopic = topics[1];
     const helpKey = subtopic ? helpKeyWithSubcommand(key, [subtopic]) : key;
     const nestedHelpArgs = subtopic ? topics.slice(1) : [];
     if (key === "apple") {
-      return { kind: "help", text: buildIosSimulatorHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildIosSimulatorHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
     if (key === "cursor") {
-      return { kind: "help", text: buildCursorHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildCursorHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
     if (key === "app-control") {
-      return { kind: "help", text: buildAppControlHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildAppControlHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
-    return {
-      kind: "help",
-      text: key
-        ? commandHelpText(helpKey) ?? commandHelpText(key) ?? topLevelHelpText()
-        : topLevelHelpText(),
-    };
+    const text = key
+      ? commandHelpText(helpKey) ?? commandHelpText(key) ?? topLevelHelpText()
+      : topLevelHelpText();
+    return buildHelpPlan(text, key ? helpCatalogTopic(helpKey) : null, options);
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
@@ -35185,11 +35241,37 @@ async function runParsedCli(
     warnDeprecatedIosSimAlias();
   }
   const plan = buildCliPlan(parsed.command, parsed.options);
-  if (plan.kind === "help")
-    return {
-      output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
-      exitCode: 0,
-    };
+  if (plan.kind === "help") {
+    let output: string;
+    if (parsed.options.json && plan.catalogTopic !== undefined) {
+      const scope = remoteMcpHelpScope();
+      const catalog = createHelpCatalog({
+        version: VERSION,
+        pages: HELP_BY_COMMAND,
+        aliases: CLI_COMMAND_ALIASES,
+        topic: plan.catalogTopic,
+        scope,
+        availability: remoteCommandAvailability,
+      });
+      if (!catalog) {
+        const topic = plan.catalogTopic ?? "";
+        throw new CliUsageError(`Unknown help topic '${topic}'. Run 'ade help'.`);
+      }
+      output = `${JSON.stringify(catalog, null, 2)}\n`;
+    } else {
+      output = plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`;
+      if (
+        (process.env.ADE_REMOTE_MCP_CONNECTION_ID || process.stdout.isTTY !== true)
+        && output.startsWith(ADE_BANNER)
+      ) {
+        output = output.slice(ADE_BANNER.length);
+      }
+      // Through ADE MCP, a page lists only the commands this connection can run.
+      const scope = remoteMcpHelpScope();
+      if (scope) output = filterHelpTextForScope(output, scope, remoteCommandAvailability);
+    }
+    return { output, exitCode: 0 };
+  }
   if (plan.kind === "static")
     return {
       output: formatOutput(plan.value, parsed.options, plan.formatter),
