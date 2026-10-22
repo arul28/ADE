@@ -118,3 +118,70 @@ struct DuoLocalFoldReader<Content: View>: View {
     }
   }
 }
+
+// MARK: - Families and the seam
+
+/// The three layout families every Duo-aware screen designs for. See
+/// `.ade/cache/duo/briefs/DESIGN.md` §0.
+enum DuoFamily: Equatable {
+  /// The outer display and every other iPhone: today's phone layout.
+  case compact
+  /// The inner display held landscape (open wide, or book-folded).
+  case wide
+  /// The inner display held portrait (open tall, laptop, or tent).
+  case tall
+}
+
+extension DuoLayout {
+  /// The family for a screen of `size`. Callers pass the size of the area
+  /// they lay out (a GeometryReader's size), not the screen's.
+  func family(for size: CGSize) -> DuoFamily {
+    guard isWide else { return .compact }
+    return size.width > size.height ? .wide : .tall
+  }
+}
+
+/// The boundary between two columns or two halves. Flat, it is a hairline;
+/// folded, it is empty space exactly the fold's size, so the hinge itself is
+/// the divider. A bend-scaled shadow gives the fold its depth. Never a control
+/// surface.
+struct DuoSeam: View {
+  enum Axis {
+    /// Between two side-by-side columns.
+    case vertical
+    /// Between a top half and a bottom half.
+    case horizontal
+  }
+
+  let axis: Axis
+  /// The fold this seam stands on, or nil when the screen is flat.
+  var foldRect: CGRect?
+
+  @Environment(\.duoLayout) private var duo
+
+  var body: some View {
+    Group {
+      if let foldRect {
+        let thickness = axis == .vertical ? foldRect.width : foldRect.height
+        Color.clear
+          .frame(
+            width: axis == .vertical ? max(thickness, 1) : nil,
+            height: axis == .horizontal ? max(thickness, 1) : nil
+          )
+          .overlay {
+            LinearGradient(
+              colors: [.black.opacity(0), .black.opacity(0.10 * duo.bend), .black.opacity(0)],
+              startPoint: axis == .vertical ? .leading : .top,
+              endPoint: axis == .vertical ? .trailing : .bottom
+            )
+          }
+      } else if axis == .vertical {
+        Divider()
+      } else {
+        Divider()
+      }
+    }
+    .accessibilityHidden(true)
+    .allowsHitTesting(false)
+  }
+}
