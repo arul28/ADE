@@ -66,6 +66,12 @@ export const DECODE_FAILURE_WINDOW_MS = 5_000;
  * pointer WAS.
  */
 export const MAX_DECODE_QUEUE = 1;
+/**
+ * How long a dialled stream may keep sending delta frames the picture cannot
+ * use (it is waiting for a keyframe) before it redials. The host sends a
+ * keyframe when a reader attaches; a still screen sends no other.
+ */
+const KEYFRAME_WAIT_REDIAL_MS = 1_000;
 
 type DecodedFrame = { displayWidth: number; displayHeight: number; close: () => void };
 
@@ -318,6 +324,8 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
    * wrong with the simulator · Decoding error." over a device that was fine.
    */
   let failures: number[] = [];
+  /** When the picture started waiting for a keyframe while deltas kept coming. */
+  let keyframeWaitSince: number | null = null;
 
   /**
    * Whether the decoder is behind the stream: it still holds more chunks than
@@ -440,7 +448,18 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
     // applies to every source.
     // Sampled before anything this turn is submitted, keyframes included.
     const behind = decoderBehind(decoder);
-    if (!gate.shouldDeliver(record.keyframe, record.seq)) return;
+    if (!gate.shouldDeliver(record.keyframe, record.seq)) {
+      // Deltas the picture cannot use. A dialled source asks again rather
+      // than wait for a keyframe that a still screen never sends.
+      const now = Date.now();
+      keyframeWaitSince ??= now;
+      if (source.kind !== "push" && now - keyframeWaitSince >= KEYFRAME_WAIT_REDIAL_MS) {
+        keyframeWaitSince = null;
+        connect();
+      }
+      return;
+    }
+    keyframeWaitSince = null;
     // Newest frame wins: a decoder behind the stream paints where the pointer
     // WAS, so a delta that would queue behind older ones is skipped. Skipping
     // one delta breaks the reference chain of every delta after it — decoding

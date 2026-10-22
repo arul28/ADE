@@ -13,13 +13,16 @@ import {
 const FOLD_HOLD_MS = 4_000;
 /** A hinge drag sends its latest angle once the drag pauses, not every frame. */
 const ANGLE_DEBOUNCE_MS = 250;
+/** When the first read does not know how the phone is held, read once more after this. */
+const POSTURE_REREAD_MS = 1_500;
 
 /**
  * The inner panel's picture, a quarter turn on from the device's orientation:
  * the panel is mounted that way, so its raw framebuffer is portrait while its
  * picture is landscape. The stage already turns a raw frame for a sideways
  * device, so the inner panel is drawn one quarter turn further on (and taps
- * are inverted by the same turn).
+ * are inverted by the same turn). Only a fallback: the guest's own report of
+ * the live panel's turn (`displayOrientation`) wins whenever it is there.
  */
 const APPLE_DUO_INNER_ORIENTATION: Record<AppleDeviceOrientation, AppleDeviceOrientation> = {
   portrait: "landscape-left",
@@ -33,12 +36,35 @@ export function appleDuoInnerPanelLive(posture: AppleDevicePosture | null | unde
   return Boolean(posture?.supported && posture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID);
 }
 
-/** How a stage should draw the stream for a device held at `orientation`, given the Duo's live panel. */
+/**
+ * How a stage should draw the stream for a device held at `orientation`, given
+ * the Duo's live panel. A Duo says how its live panel's picture sits on the
+ * framebuffer, for either panel and whatever the app on it decided; that is
+ * drawn as reported.
+ */
 export function appleDuoDisplayOrientation(
   orientation: AppleDeviceOrientation,
   posture: AppleDevicePosture | null | undefined,
 ): AppleDeviceOrientation {
+  if (posture?.supported && posture.displayOrientation) return posture.displayOrientation;
   return appleDuoInnerPanelLive(posture) ? APPLE_DUO_INNER_ORIENTATION[orientation] : orientation;
+}
+
+/**
+ * The orientation a Duo is held at, in the rotate control's terms. CoreDevice
+ * names the DEVICE's orientation and the control the interface's, and the two
+ * landscapes swap between them (a phone turned landscape-left shows its
+ * interface landscape-right). Null when the simulator has not said, or the
+ * phone lies face down or up.
+ */
+export function appleDuoHeldOrientation(posture: AppleDevicePosture | null | undefined): AppleDeviceOrientation | null {
+  switch (posture?.supported ? posture.orientation : null) {
+    case "portrait": return "portrait";
+    case "pud": return "portrait-upside-down";
+    case "landscape-left": return "landscape-right";
+    case "landscape-right": return "landscape-left";
+    default: return null;
+  }
 }
 
 /**
@@ -89,17 +115,24 @@ export function useAppleDuoPosture({
       return;
     }
     let cancelled = false;
-    void window.ade.iosSimulator
-      .getPosture({ ...scopeRef.current, deviceUdid }, runtimePinRef.current)
-      .then((next) => {
-        if (cancelled) return;
-        setPosture(next);
-        if (next.angle !== null) onAngleRef.current?.(next.angle);
-      })
-      // The view draws without a posture; the events fill it in once they come.
-      .catch((cause: unknown) => {
-        logRendererDebugEvent("apple.posture_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
-      });
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const read = (again: boolean) => {
+      void window.ade.iosSimulator
+        .getPosture({ ...scopeRef.current, deviceUdid }, runtimePinRef.current)
+        .then((next) => {
+          if (cancelled) return;
+          setPosture(next);
+          if (next.angle !== null) onAngleRef.current?.(next.angle);
+          // A capture that just started has not heard how the phone is held
+          // yet; it does within a moment, and a still phone sends no event.
+          if (again && next.supported && next.orientation === null) retry = setTimeout(() => read(false), POSTURE_REREAD_MS);
+        })
+        // The view draws without a posture; the events fill it in once they come.
+        .catch((cause: unknown) => {
+          logRendererDebugEvent("apple.posture_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+        });
+    };
+    read(true);
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
       if (event.type !== "apple.device.posture" || event.udid !== deviceUdid) return;
       setPosture(event.posture);
@@ -114,6 +147,7 @@ export function useAppleDuoPosture({
     }, runtimePinRef.current);
     return () => {
       cancelled = true;
+      if (retry) clearTimeout(retry);
       unsubscribe?.();
     };
   }, [enabled, deviceUdid, pinKey, runtimePinRef]);
@@ -140,5 +174,8 @@ export function useAppleDuoPosture({
     if (angleTimerRef.current) clearTimeout(angleTimerRef.current);
   }, []);
 
-  return { posture, sendPosture, sendAngleSoon };
+  /** A posture read elsewhere (a rotate's answer), shown until the next event. */
+  const showPosture = useCallback((next: AppleDevicePosture) => setPosture(next), []);
+
+  return { posture, sendPosture, sendAngleSoon, showPosture };
 }

@@ -13,6 +13,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleNewDeviceSpec,
   AppleDeviceOrientation,
+  AppleDevicePosture,
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
   AppleLaneDevice,
@@ -32,7 +33,8 @@ import {
   APPLE_DUO_NUDGE_DEGREES,
   clampAppleDuoAngle,
   createAppleDuoState,
-  nearestAppleDuoStance,
+  appleDuoStanceFor,
+  type AppleDuoStanceId,
   reduceAppleDuoState,
 } from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
@@ -73,11 +75,11 @@ import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
 import { useAppleDuoModel } from "./useAppleDuoModel";
 import { AppleRenderSheet } from "./AppleRenderSheet";
-import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
+import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID, APPLE_ROTATE_NOT_ADOPTED_CODE } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
-import { AppleDuoHingeBar } from "./AppleDuoHingeBar";
-import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
+import { AppleDuoDock } from "./AppleDuoDock";
+import { appleDuoDisplayOrientation, appleDuoHeldOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
 import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
@@ -217,6 +219,8 @@ export function AppleDevicePane({
    */
   const [duoState, setDuoState] = useState(() => createAppleDuoState());
   const [rotating, setRotating] = useState(false);
+  /** The Duo hook's `showPosture`, for a rotate's answer (the hook is declared below). */
+  const showDuoPostureRef = useRef<((posture: AppleDevicePosture) => void) | null>(null);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [screenshotPending, setScreenshotPending] = useState(false);
@@ -755,6 +759,20 @@ export function AppleDevicePane({
     void window.ade.iosSimulator
       .rotate({ orientation: next, laneId, deviceUdid }, runtimePinRef.current)
       .then((result) => {
+        // A Duo answers with its posture, which says how to draw its live
+        // panel whether or not the app on it turned.
+        if (result?.posture) showDuoPostureRef.current?.(result.posture);
+        if (result?.applied !== true && result?.reason === APPLE_ROTATE_NOT_ADOPTED_CODE) {
+          // Not a failure: iOS turned the phone and the app on screen chose to
+          // stay. Say so once, quietly, and let it go.
+          showToast({
+            id: "apple-rotate-not-adopted",
+            tone: "info",
+            title: "The screen stayed as it was",
+            message: result.detail ?? "The app on screen does not support that orientation.",
+          });
+          return;
+        }
         if (result?.applied !== true) {
           // The reason CODE leads, because `describeAppleError` matches on it
           // and would otherwise fall back to "Something went wrong" — which is
@@ -764,7 +782,14 @@ export function AppleDevicePane({
           const detail = result?.detail ?? "The simulator did not rotate, and it did not say why.";
           throw new Error(reason ? `${reason}: ${detail}` : detail);
         }
-        setOrientation(next);
+        // "Already on that axis" cannot tell portrait from upside down, or one
+        // landscape from the other, so the side the picture is drawn at stays
+        // as it was: turning it on the request drew the Home Screen upside down.
+        setOrientation((current) => (
+          result.verification === "already-on-axis" && appleOrientationFamily(current) === appleOrientationFamily(next)
+            ? current
+            : next
+        ));
       })
       .catch((cause: unknown) => setError(cause))
       .finally(() => setRotating(false));
@@ -849,6 +874,7 @@ export function AppleDevicePane({
     posture: duoPosture,
     sendPosture: sendDuoPosture,
     sendAngleSoon: sendDuoAngleSoon,
+    showPosture: showDuoPosture,
   } = useAppleDuoPosture({
     enabled: duoCapable && state === "live",
     deviceUdid,
@@ -861,6 +887,33 @@ export function AppleDevicePane({
       : reduceAppleDuoState(current, { type: "angle", angle }))),
     onError: (cause) => setError(cause),
   });
+  showDuoPostureRef.current = showDuoPosture;
+  /** How the Duo is held, in the rotate control's terms; null until it says. */
+  const duoHeld = duoCapable ? appleDuoHeldOrientation(duoPosture) : null;
+  /**
+   * Tent's Table Mode. A helper that did not set it only sees the phone lie
+   * face down, which nothing but Tent does (ADE stands the phone up for any
+   * other fold).
+   */
+  const duoTent = duoPosture?.tableMode === true || duoPosture?.orientation === "facedown";
+  const duoStance = appleDuoStanceFor({
+    angle: duoState.pose.angle,
+    held: duoHeld ? appleOrientationFamily(duoHeld) : null,
+    tableMode: duoTent,
+  });
+  const duoLiveScreen = duoPosture?.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
+    ? "cover" as const
+    : duoPosture?.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" as const : null;
+  /** Whether the live panel's picture runs wide (both framebuffers are portrait). */
+  const duoWide = duoPosture?.displayOrientation
+    ? appleOrientationFamily(duoPosture.displayOrientation) === "landscape"
+    : null;
+  /** Pick a named posture: fold the simulator, then frame it the way that posture is looked at. */
+  const pickDuoStance = (stance: AppleDuoStanceId) => {
+    setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
+    sendDuoPosture({ pose: stance });
+    setViewNonce((nonce) => nonce + 1);
+  };
   const duoProps: AppleDeviceDuoProps | undefined = duoCapable && canUse3d
     ? {
         enabled: true,
@@ -869,6 +922,7 @@ export function AppleDevicePane({
         model: duoModel,
         activeScreenId: duoPosture?.activeScreenId ?? null,
         physicalOrientation: duoPosture?.orientation ?? null,
+        tableMode: duoTent,
         onHingeChange: (angle) => {
           setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
           sendDuoAngleSoon(angle);
@@ -1067,24 +1121,6 @@ export function AppleDevicePane({
               powered-off lane device read as one that was about to come up. The
               label sits outside the stage so the dimming does not fade it too.
             */}
-            {/* The hinge drives the real simulator, so it shows in flat mode too. */}
-            {duoCapable && state === "live" ? (
-              <div className="pointer-events-none absolute inset-x-0 bottom-4 z-[3] flex justify-center">
-                <AppleDuoHingeBar
-                  angle={duoState.pose.angle}
-                  reported={duoPosture
-                    ? {
-                      angle: duoPosture.angle,
-                      panel: duoPosture.activeScreenId === APPLE_DUO_COVER_SCREEN_ID
-                        ? "cover"
-                        : duoPosture.activeScreenId === APPLE_DUO_INNER_SCREEN_ID ? "inner" : null,
-                    }
-                    : null}
-                  onPreview={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
-                  onCommit={(angle) => sendDuoPosture({ angle })}
-                />
-              </div>
-            ) : null}
             {state === "stopped" ? (
               <div
                 data-apple-off-screen=""
@@ -1254,6 +1290,25 @@ export function AppleDevicePane({
             picture. */}
         <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
           {viewport}
+          {/* The Duo's hinge and hold drive the real simulator, so they get a band of their own. */}
+          {duoCapable && state === "live" ? (
+            <AppleDuoDock
+              mode={effectiveMode === "flat" ? "flat" : "3d"}
+              angle={duoState.pose.angle}
+              screen={duoLiveScreen}
+              held={duoHeld}
+              turnPending={rotating}
+              reported={duoPosture ? { angle: duoPosture.angle, wide: duoWide } : null}
+              onPreviewAngle={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
+              onCommitAngle={(angle) => sendDuoPosture({ angle })}
+              onScreen={(screen) => {
+                const angle = screen === "cover" ? 0 : 180;
+                setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
+                sendDuoPosture({ angle });
+              }}
+              onTurn={rotateTo}
+            />
+          ) : null}
 
           {appleRailVisible(state) ? (
             <AppleDeviceRail
@@ -1274,13 +1329,10 @@ export function AppleDevicePane({
                 ? {
                     capable: true,
                     angle: duoState.pose.angle,
-                    stance: nearestAppleDuoStance(duoState.pose.angle),
+                    stance: duoStance,
                   }
                 : undefined}
-              onDuoStance={(stance) => {
-                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }));
-                sendDuoPosture({ pose: stance });
-              }}
+              onDuoStance={pickDuoStance}
               onDuoAppStoreShots={() => {
                 showToast({ id: "apple-duo-app-store", tone: "info", title: "Taking App Store screenshots…", message: "Folding the Duo closed, then open." });
                 void window.ade.iosSimulator
@@ -1309,7 +1361,8 @@ export function AppleDevicePane({
                 setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }));
                 sendDuoPosture({ angle: next });
               }}
-              orientation={orientation}
+              orientation={duoHeld ?? orientation}
+              orientationInDock={duoCapable}
               orientationPending={rotating}
               onOrientation={rotateTo}
               onScreenshot={screenshot}

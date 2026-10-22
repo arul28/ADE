@@ -28,6 +28,36 @@ import { appleEaseFactor } from "./appleDeviceOrbit";
 /** The bundled bodies' normalized height; the open Duo is scaled to its width. */
 const DUO_OPEN_WIDTH = 2.8;
 const DEG = Math.PI / 180;
+/** How far above the table the camera looks down on a laptop or a tent. */
+const LAPTOP_LOOK_DOWN = 22 * DEG;
+const TENT_LOOK_DOWN = 12 * DEG;
+
+/**
+ * How far the held phone tips about the view's X axis to stand as it would
+ * on a table, in radians, for a hinge at `angle`.
+ *
+ * Held sideways and folded, the Duo is a laptop: the lower half lies flat and
+ * the upper half stands, seen from a little above. Both halves fold toward the
+ * camera, so the lower half points down by 90° − φ (φ is each half's fold);
+ * tipping by that much lays it flat. The stand fades in from flat (180°) to
+ * 120°, so a hinge drag moves the view smoothly rather than snapping at a pose.
+ * A tent stands on its edges with the cover toward the viewer, seen from a
+ * little above. Everything else is seen face on.
+ */
+export function appleDuoStandTilt(input: {
+  angle: number;
+  sideways: boolean;
+  tableMode: boolean;
+  coverLive: boolean;
+}): number {
+  if (input.tableMode) return TENT_LOOK_DOWN;
+  if (!input.sideways || input.coverLive) return 0;
+  const angle = clampAppleDuoAngle(input.angle);
+  const phi = ((180 - angle) / 2) * DEG;
+  const t = Math.min(1, Math.max(0, (180 - angle) / 60));
+  const weight = t * t * (3 - 2 * t);
+  return weight * (LAPTOP_LOOK_DOWN - (Math.PI / 2 - phi));
+}
 
 type PanelMap = {
   meshes: Mesh[];
@@ -186,10 +216,16 @@ export function createV68DuoBody(
   let physicalTurn = 0;
   let targetTurn = 0;
   let coverYaw = 0;
+  /** Tent's Table Mode: the phone stands on its edges. */
+  let tableMode = false;
+  /** The tip that stands the phone as it would sit on a table (`appleDuoStandTilt`). */
+  let standTilt = 0;
   let lastAnimateAt = 0;
   const holder = new THREE.Group();
   holder.add(orientation);
-  root.add(holder);
+  const stand = new THREE.Group();
+  stand.add(holder);
+  root.add(stand);
   const activeMap = () => (activeScreenId === APPLE_DUO_COVER_SCREEN_ID ? coverMap : innerMap);
 
   const paintPanels = () => {
@@ -217,7 +253,15 @@ export function createV68DuoBody(
     // `model.position` is in its parent's (orientation's) space.
     model.position.copy(orientation.worldToLocal(centerWorld).negate());
     holder.rotation.z = physicalTurn;
+    stand.rotation.x = standTilt;
   };
+
+  const targetStandTilt = () => appleDuoStandTilt({
+    angle: targetAngle,
+    sideways: Math.abs(Math.abs(targetTurn) - Math.PI / 2) < 0.01,
+    tableMode,
+    coverLive: activeScreenId === APPLE_DUO_COVER_SCREEN_ID,
+  });
 
   /** The turn that puts the cover toward the camera at the TARGET fold. */
   const targetCoverYaw = () => {
@@ -235,21 +279,25 @@ export function createV68DuoBody(
     const k = appleEaseFactor(lastAnimateAt, now, 0.1);
     lastAnimateAt = now;
     const yawGoal = targetCoverYaw();
+    const tiltGoal = targetStandTilt();
     const settled = Math.abs(targetAngle - angle) < 0.05
       && Math.abs(targetTurn - physicalTurn) < 0.001
-      && Math.abs(yawGoal - coverYaw) < 0.001;
+      && Math.abs(yawGoal - coverYaw) < 0.001
+      && Math.abs(tiltGoal - standTilt) < 0.001;
     if (settled) {
-      if (angle === targetAngle && physicalTurn === targetTurn && coverYaw === yawGoal) {
+      if (angle === targetAngle && physicalTurn === targetTurn && coverYaw === yawGoal && standTilt === tiltGoal) {
         lastAnimateAt = 0;
         return false;
       }
       angle = targetAngle;
       physicalTurn = targetTurn;
       coverYaw = yawGoal;
+      standTilt = tiltGoal;
     } else {
       angle += (targetAngle - angle) * k;
       physicalTurn += (targetTurn - physicalTurn) * k;
       coverYaw += (yawGoal - coverYaw) * k;
+      standTilt += (tiltGoal - standTilt) * k;
     }
     applyPose();
     return true;
@@ -267,8 +315,16 @@ export function createV68DuoBody(
     setHinge(next) {
       targetAngle = clampAppleDuoAngle(next);
     },
-    setPhysicalOrientation(value) {
-      targetTurn = value === "landscape-left" ? Math.PI / 2 : value === "landscape-right" ? -Math.PI / 2 : 0;
+    setPhysicalOrientation(value, nextTableMode) {
+      tableMode = nextTableMode === true;
+      // A tent stands hinge up with its halves across the view: the cover
+      // then faces out the way its landscape picture reads upright (checked
+      // with Safari on the cover; a quarter turn the other way stood it on
+      // its hinge, upside down).
+      targetTurn = tableMode
+        ? -Math.PI / 2
+        : value === "landscape-left" ? Math.PI / 2
+          : value === "landscape-right" ? -Math.PI / 2 : value === "pud" ? Math.PI : 0;
     },
     setActivePanel(screenId) {
       if (screenId !== APPLE_DUO_COVER_SCREEN_ID && screenId !== APPLE_DUO_INNER_SCREEN_ID) return;

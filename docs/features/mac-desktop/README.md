@@ -571,7 +571,10 @@ screen streamers that feel live on a LAN (SameDesk, OpenDisplay, VoidDisplay):
   loop, so the picture never shows where the pointer *was*. A skipped delta
   breaks the reference chain, so the picture then holds until the next keyframe
   instead of painting corruption; keyframes are always decoded. A burst read in
-  one chunk never counts as falling behind.
+  one chunk never counts as falling behind. A still screen sends no next
+  keyframe, so a dialled stream that has held for one for a second while
+  deltas keep coming redials; the host sends a keyframe to a reader that
+  attaches.
 - **60 fps active, 10 idle.** The idle floor was 3, so every first drag after a
   pause started as a slideshow and ramped up.
 - **The floating preview is a JPEG snapshot of the live canvas, four times a

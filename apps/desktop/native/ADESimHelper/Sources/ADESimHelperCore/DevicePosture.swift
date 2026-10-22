@@ -91,11 +91,15 @@ enum DevicePosture {
             return State(supported: false, angle: nil, orientation: nil, tableMode: nil, displays: [])
         }
         let hinge = await bridge.hingeState(udid: udid)
+        // What this helper sent is only known to this helper; a fresh one (or
+        // a pose set elsewhere) learns how the phone is held from the guest's
+        // own device-state stream, which runs while the device streams.
+        let observed = await bridge.observedDeviceState(udid: udid).state
         return State(
             supported: true,
             angle: hinge.angle,
-            orientation: hinge.orientation,
-            tableMode: hinge.tableMode,
+            orientation: hinge.orientation ?? observed.orientation,
+            tableMode: hinge.tableMode ?? observed.tableMode,
             displays: await displays(udid: udid)
         )
     }
@@ -137,10 +141,28 @@ enum DevicePosture {
         // up, or the cover stays the live panel at any angle.
         guard await bridge.setHingeAngle(udid: udid, angle: target) else { return false }
         _ = await bridge.setTableMode(udid: udid, enabled: false)
-        if await bridge.hingeState(udid: udid).orientation == "facedown" {
+        // A helper that did not lay it face down learns that from the guest.
+        let sentOrientation = await bridge.hingeState(udid: udid).orientation
+        let observedOrientation = await bridge.observedDeviceState(udid: udid).state.orientation
+        if (sentOrientation ?? observedOrientation) == "facedown" {
             _ = await bridge.setPhysicalOrientation(udid: udid, value: "portrait")
         }
         return true
+    }
+
+    /// Turn a foldable the way Device Hub's orientation picker does.
+    ///
+    /// The legacy GSEvent rotation never reaches the Duo's inner panel: the
+    /// device stays put and so does the picture. CoreDevice's physical
+    /// orientation is what the guest reads on a Duo, for either panel. `value`
+    /// is the UIDeviceOrientation the `orientation` command carries. Tent's
+    /// Table Mode is released first, as a raw angle does.
+    static func setOrientation(udid: String, value: Int) async -> Bool {
+        let bridge = CoreDeviceBridge.shared
+        guard await bridge.supportsHingeAngle(udid: udid) else { return false }
+        // Always: a helper that did not set Table Mode cannot tell it is on.
+        _ = await bridge.setTableMode(udid: udid, enabled: false)
+        return await bridge.setOrientation(udid: udid, deviceOrientation: UInt32(value))
     }
 }
 
@@ -184,11 +206,12 @@ actor DevicePostureWatchers {
         let stop = await CoreDeviceBridge.shared.subscribeDeviceState(udid: udid) { snapshot in
             Task {
                 await self.note(udid: udid, generation: snapshot.generation, revision: snapshot.revision)
-                // The guest elects the new panel a moment after the hinge
-                // moves, so one read right away still names the old one.
-                // Re-read over the next second; report each read that changes
-                // the active panel, plus the first.
-                var lastActive: UInt32?? = .none
+                // The guest elects the new panel, and turns its picture, a
+                // moment after the hinge or the phone moves, so one read right
+                // away still names the old ones. Re-read over the next second;
+                // report each read that changes the live panel or its turn,
+                // plus the first.
+                var lastActive: DevicePosture.Display?? = .none
                 for delayMs in [0, 250, 600, 1_200] {
                     if delayMs > 0 { try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
                     let state = DevicePosture.State(
@@ -200,8 +223,9 @@ actor DevicePostureWatchers {
                     )
                     // A newer snapshot owns the report from here on.
                     guard await self.isLatest(udid: udid, generation: snapshot.generation, revision: snapshot.revision) else { return }
-                    if case let .some(previous) = lastActive, previous == state.activeScreenID { continue }
-                    lastActive = .some(state.activeScreenID)
+                    let active = state.displays.first(where: \.active)
+                    if case let .some(previous) = lastActive, previous == active { continue }
+                    lastActive = .some(active)
                     onChange(state)
                 }
             }

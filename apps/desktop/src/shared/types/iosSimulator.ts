@@ -1015,6 +1015,13 @@ export type AppleDevicePosture = {
   tableMode: boolean | null;
   /** The panel that is on, and the one ADE streams and sends input to. */
   activeScreenId: number | null;
+  /**
+   * How the live panel's picture is turned on its framebuffer, as the guest
+   * reports it. The inner panel is mounted a quarter turn, so a phone held
+   * portrait reads `landscape-left` here; an app that keeps its own
+   * orientation leaves it where it was. Null when it was not reported.
+   */
+  displayOrientation: AppleDeviceOrientation | null;
 };
 
 export type AppleSetPostureArgs = {
@@ -2386,6 +2393,8 @@ export type AppleRotateResult = {
   /** Framebuffer pixels read before the request, and after the wait. */
   frameBefore: AppleRotateFrame | null;
   frameAfter: AppleRotateFrame | null;
+  /** A foldable's posture after the turn (its live panel's picture included); absent on other devices. */
+  posture?: AppleDevicePosture | null;
 };
 
 /** Which lane's recordings a record verb acts on. */

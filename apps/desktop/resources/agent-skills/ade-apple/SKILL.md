@@ -244,6 +244,11 @@ Name elements, not pixels.
   refusal as a broken simulator. `verification: already-on-axis` means the
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
+  On an iPhone Duo, `rotate` turns the phone the way Device Hub does and
+  reads back how the live panel's picture sits (`posture.displayOrientation`
+  in the answer). The inner display takes all four orientations, upside down
+  included; the cover's Home Screen is portrait-only. Held `portrait`, the
+  inner picture is landscape: the panel is mounted a quarter turn.
 
 - Folding (iPhone Duo only): `fold closed|open|laptop|book|tent` or
   `fold --angle 120`, then read `posture` back. The answer is what the

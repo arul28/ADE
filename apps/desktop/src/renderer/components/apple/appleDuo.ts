@@ -18,7 +18,7 @@
 
 import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
 
-export type AppleDuoStanceId = "open" | "laptop" | "tent" | "closed";
+export type AppleDuoStanceId = "open" | "laptop" | "book" | "tent" | "closed";
 
 export type AppleDuoPose = {
   /** Interior hinge angle in degrees: 0 = folded shut, 180 = flat. */
@@ -55,6 +55,9 @@ export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
   // The simulator's own preset angles (APPLE_DEVICE_POSE_TARGETS): drawn at
   // anything else, the hinge jumped when the simulator's report landed.
   { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: true },
+  // Book is Laptop's angle held upright: the simulator tells them apart by
+  // how the phone is held, not by the hinge.
+  { id: "book", label: "Book", angle: APPLE_DEVICE_POSE_TARGETS.book.angle, lowerFlat: false },
   { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle, lowerFlat: false },
   { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, lowerFlat: false },
 ];
@@ -95,6 +98,24 @@ export function nearestAppleDuoStance(angle: number): AppleDuoStanceId {
     }
   }
   return best.id;
+}
+
+/**
+ * The named posture the phone is in, from what the simulator reports.
+ *
+ * The angle alone cannot tell Laptop from Book (both fold to 90°); how the
+ * phone is held does: sideways is a laptop, upright a book. Tent is its own
+ * Table Mode. Without a report this falls back to the nearest angle.
+ */
+export function appleDuoStanceFor(input: {
+  angle: number;
+  held: "portrait" | "landscape" | null;
+  tableMode: boolean;
+}): AppleDuoStanceId {
+  if (input.tableMode) return "tent";
+  if (input.angle <= 5) return "closed";
+  if (input.angle >= 175 || input.held === null) return nearestAppleDuoStance(input.angle);
+  return input.held === "landscape" ? "laptop" : "book";
 }
 
 /**

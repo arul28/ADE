@@ -4,11 +4,13 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { decodeScenePngDataUrl, decodeSceneWebmDataUrl } from "../scenes/sceneSnapshot";
 import {
+  APPLE_DEVICE_ORIENTATIONS,
   APPLE_DEVICE_POSES,
   APPLE_DEVICE_POSE_TARGETS,
   APPLE_DUO_COVER_SCREEN_ID,
   APPLE_DUO_INNER_SCREEN_ID,
   type AppleAddDuoSkillResult,
+  type AppleDeviceOrientation,
   type AppleDevicePose,
   type AppleDevicePosture,
   type AppleDuoAppStoreScreenshotsResult,
@@ -73,6 +75,19 @@ const NOT_FOLDABLE_RECHECK_MS = 10_000;
 /** iOS animates into the new panel's layout after it switches. */
 const LAYOUT_SETTLE_MS = 1_200;
 
+/**
+ * The live panel's picture turn, from the helper's display list. The guest
+ * names it as SimScreen does (`landscape_left`); ADE spells it with a hyphen.
+ */
+function liveDisplayOrientation(displays: unknown): AppleDeviceOrientation | null {
+  if (!Array.isArray(displays)) return null;
+  const live = displays.find((display): display is Record<string, unknown> => (
+    Boolean(display) && typeof display === "object" && (display as Record<string, unknown>).active === true
+  ));
+  const name = typeof live?.orientation === "string" ? live.orientation.replace(/_/g, "-") : "";
+  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(name) ? name as AppleDeviceOrientation : null;
+}
+
 /** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
 export function parseHelperPosture(payload: Record<string, unknown>): AppleDevicePosture {
   const supported = payload.supported !== false && (payload.supported === true || typeof payload.angle === "number");
@@ -82,6 +97,7 @@ export function parseHelperPosture(payload: Record<string, unknown>): AppleDevic
     orientation: typeof payload.orientation === "string" ? payload.orientation : null,
     tableMode: typeof payload.tableMode === "boolean" ? payload.tableMode : null,
     activeScreenId: typeof payload.activeScreenId === "number" ? payload.activeScreenId : null,
+    displayOrientation: liveDisplayOrientation(payload.displays),
   };
 }
 
