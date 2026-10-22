@@ -176,7 +176,8 @@ export function WebConnectionsChip() {
   }, []);
 
   useEffect(() => {
-    if (!open || !focusMachineRequest) return;
+    // The rows render only once the popover has measured its anchor.
+    if (!open || !anchor || !focusMachineRequest) return;
     if (focusedMachineRequestRef.current === focusMachineRequest.id) return;
     const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(focusMachineRequest.machineKey)}"]`);
     if (!row) return;
@@ -189,7 +190,7 @@ export function WebConnectionsChip() {
       window.clearTimeout(timer);
       stopHighlight();
     };
-  }, [focusMachineRequest, machines, open]);
+  }, [anchor, focusMachineRequest, machines, open]);
 
   useEffect(() => {
     if (!open) return;
