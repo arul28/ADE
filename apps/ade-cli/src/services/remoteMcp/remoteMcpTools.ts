@@ -76,7 +76,15 @@ function optionalWord(input: TypedToolInput, key: string): { value: string | nul
   return word(input, key);
 }
 
-function records(value: unknown): Record<string, unknown>[] {
+/**
+ * The rows of a CLI list. Most lists print a bare array; some wrap it
+ * (`{ lanes }`, `{ prs }`), the same keys the CLI's own text output reads.
+ */
+function records(value: unknown, wrapperKeys: readonly string[] = []): Record<string, unknown>[] {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const wrapped = wrapperKeys.map((key) => (value as Record<string, unknown>)[key]).find(Array.isArray);
+    if (wrapped) return records(wrapped);
+  }
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object");
 }
@@ -130,10 +138,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     build: (input) => ({
       argv: ["lanes", "list", "--json", "--no-visual", ...(input.include_archived === true ? ["--include-archived"] : [])],
     }),
-    shape: (value) => {
-      const lanes = value && typeof value === "object" ? (value as { lanes?: unknown }).lanes : value;
-      return records(lanes);
-    },
+    shape: (value) => records(value, ["lanes"]),
   },
   {
     name: "lanes_show",
@@ -266,7 +271,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const state = PR_STATES.find((candidate) => candidate === input.state) ?? "open";
       const lane = text(input, "lane");
       const limit = integer(input, "limit", 30, 200);
-      return records(value)
+      return records(value, ["prs", "pullRequests"])
         .filter((pr) => state === "all" || String(pr.state ?? "").toLowerCase() === state)
         .filter((pr) => !lane || pr.laneId === lane)
         .sort((a, b) => timestamp(b.updatedAt ?? b.createdAt) - timestamp(a.updatedAt ?? a.createdAt))
@@ -316,7 +321,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       return { argv };
     },
     maxOutputBytes: LARGE_OUTPUT_BYTES,
-    shape: (value, input) => records(value)
+    shape: (value, input) => records(value, ["sessions", "chats"])
       .sort((a, b) => timestamp(b.lastActivityAt) - timestamp(a.lastActivityAt))
       .slice(0, integer(input, "limit", 30, 200))
       .map((chat) => pick(chat, CHAT_FIELDS)),
