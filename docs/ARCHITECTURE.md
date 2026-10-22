@@ -1347,12 +1347,13 @@ directly out of the desktop tree, the hosted web client ships the same bundle,
 and iOS re-implements it in Swift because it cannot import any of it.
 
 `shared/chips.ts` is the current example. One `Chip`
-(`{ kind, token, label, detail, source }`) unifies three grammars that used to
-produce pills independently — chat mentions (`@chat:` / `@lane:` / `@term:`),
-URL-shaped smart links, and file paths — and routes `ade://` URLs through the
-real `deeplinks.ts` parser instead of one opaque kind. The canonical `token`
-travelling next to the display `label` is what lets a chip survive copy, paste
-into a *different* chat, a send, and a re-render on another device. See
+(`{ kind, token, label, detail, source }`) combines chat mentions
+(`@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` / `@mcp:`), model and
+permission mentions, URL-shaped smart links, file paths, and folders. It routes
+`ade://` URLs through the real `deeplinks.ts` parser instead of one opaque kind.
+The canonical `token` travelling next to the display `label` is what lets a
+chip survive copy, paste into a *different* chat, a send, and a re-render on
+another device. See
 [Chips](./features/chat/composer-and-ui.md#chips).
 
 `shared/threadEntities.ts` is the newer one. It holds the pure rules that find

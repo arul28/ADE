@@ -1939,10 +1939,11 @@ with its own tools), which was removed; the CTO chat now uses this same button.
 ## Chips
 
 Every special token ADE draws as a pill comes from one model in
-`apps/desktop/src/shared/chips.ts`. It exists because three unrelated grammars
-used to produce chips independently: `chatMentions.ts` owns `@chat:` / `@lane:` /
-`@term:`, `smartLinks.ts` owns URL-shaped links, and a file path was a chip only
-because its label happened to equal its token.
+`apps/desktop/src/shared/chips.ts`. It combines the shared `@chat:` / `@lane:` /
+`@term:` / `@pr:` / `@mac:` / `@mcp:` mention grammar, model and permission
+mentions, URL-shaped smart links, and file or folder paths. It also represents
+the richer transcript chips for skills, artifacts, commits, branches, and web
+pages.
 
 A `Chip` always carries its canonical `token` next to its display `label`. That
 one property is what makes the rest work:
@@ -1956,10 +1957,11 @@ one property is what makes the rest work:
   what makes a paste into a *different* chat work: the rebuild only promotes a
   token it has a label for, and a new chat's registry starts empty.
 - **Sent messages** render through `splitTextIntoChipParts` in `ChipText.tsx`, so
-  the transcript shows the same pill the composer did. `@pr:` and `@mac:` mentions are
-  `pr` and `machine` chips; in the transcript they are labels, not links (a PR
-  mention carries ADE's row id, not a GitHub number, and a machine has no
-  in-app destination).
+  the transcript shows the same pill the composer did. Clicking a chat, lane,
+  or terminal mention opens that target through its owning machine. A machine
+  mention opens its facts card; a PR mention resolves ADE's row id before
+  opening its PR destination; an MCP mention opens this computer's MCP Settings
+  page focused on that server.
 - **Typed ADE deeplinks.** `deeplinks.ts` parses `ade://` URLs into a precise
   target, which `smartLinks.ts` discarded in favour of one generic
   `ADE · <path>` kind. Chips route through the real parser, so `ade://pr/...`
@@ -1978,8 +1980,8 @@ without becoming an attachment, because a folder has no bytes to upload.
 |---|---|
 | Desktop composer | `contentEditable` spans (`contenteditable=false`, `data-composer-chip`, `data-composer-chip-text`). `composerChipDom.serializeComposerDom` walks them back to draft text for **both** send and copy. |
 | Desktop transcript | `ChipText.splitTextIntoChipParts` over the stored `event.text` for user bubbles, and `remarkThreadEntities` (see [Entities an agent's reply names](#entities-an-agents-reply-names)) over the markdown of assistant replies and user briefs. The text on disk is unchanged; only the rendering differs. |
-| `ade code` TUI | Imports `shared/chips.ts` directly from the desktop tree (`apps/ade-cli/src/tuiClient/promptSmartLinks.ts`) and renders `CHIP_GLYPH_ASCII`. |
-| iOS | Swift re-implementations (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to the TypeScript by `shared/__fixtures__/chipCases.json`. |
+| `ade code` TUI | Imports `shared/chips.ts` directly from the desktop tree (`apps/ade-cli/src/tuiClient/promptSmartLinks.ts`), inserts `@mcp:<server>` from chat mention suggestions, and renders the shared chip with `CHIP_GLYPH_ASCII` and the MCP kind label. |
+| iOS | Swift re-implementations (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to the TypeScript by `shared/__fixtures__/chipCases.json`. The composer and transcript parse and draw `@mcp` as a named MCP chip; tapping a machine mention opens its native facts sheet. |
 
 Only one of the four can import the model. That is why the fixture exists, and
 why the `test-ios` CI gate watches `apps/desktop/src/shared/__fixtures__/` as
@@ -2069,54 +2071,70 @@ the composer draws, from four rules:
 - **Inline code is the strong signal.** Agents put identifiers in backticks, so
   `matchInlineCodeEntity` reads whole code spans: explicit tokens
   (`@lane:…`, `@model:…`, an `ade://` link), lane names, ids and unique 8+
-  character prefixes, the distinctive permission values, `#123`, `/skill`, a
-  known `TEAM-123`, a zoned ISO timestamp, a bare `3461-3468` that follows a
-  file in the same block, a commit SHA, and a registry model with a `-` or `/`.
+  character prefixes, explicit mentions including `@mcp:…`, the distinctive
+  permission values, `#123`, `/skill`, a known `TEAM-123`, a zoned ISO
+  timestamp, a bare `3461-3468` that follows a file in the same block, a commit
+  SHA, and a registry model with a `-` or `/`.
 - **Prose is narrow.** `findProseEntities` only matches shapes that cannot be
   ordinary words: full UUIDs, zoned ISO timestamps, `PR #123`, and known Linear
   keys. A lane named in prose does not chip.
 - **The token stays the truth.** A chip carries the raw text the agent wrote as
   its token, so a hover always shows the original.
 
-Ids and names are live: `ChipText.tsx` resolves a lane chip to the lane's own
-name and colour and a chat chip to its title and running/waiting dot, read from
-the chat's machine. A zoned timestamp renders in the reader's local time, and a
-tap toggles back to the raw text iOS-side. The rules are shared code, not
-re-implemented prose: the TUI imports them (`tuiClient/threadEntityRuns.ts`
-paints a coloured, OSC 8-linked run) and iOS ports them
-(`WorkThreadEntityRules.swift`), which drops the bare line follow-up because its
-markdown renderer does not link file paths. Permission and skill are the two
-chip kinds this feature added to `shared/chips.ts`.
+Ids and names are live: `ChipText.tsx` resolves lane names and colours and chat
+titles and live dots from the chat's machine. A zoned timestamp renders in the
+reader's local time, and a tap toggles back to raw text iOS-side. The rules are
+shared code, not re-implemented prose: the TUI imports them
+(`tuiClient/threadEntityRuns.ts` paints a coloured, OSC 8-linked run) and iOS
+ports them (`WorkThreadEntityRules.swift`), which drops the bare line follow-up
+because its markdown renderer does not link file paths. Model, permission, and
+skill chips also use the shared model.
 
 ### Chips are pointers, so pointers need hover cards
 
-A chip is deliberately compact — `#1237` or `Lane 25f280a4` says nothing about
-what it refers to. `ChipHoverCard.tsx` answers that in place, for PR, lane,
-chat, and Linear chips, under four constraints:
+A chip is deliberately compact — `#1237` or `Lane 25f280a4` says little about
+what it refers to. `ChipHoverCard.tsx`, `chipMenu.ts`, and `chipActions.ts`
+provide an on-demand card and action menu. A held hover or keyboard focus opens
+the card; a right-click opens the contextual menu. The chip's primary click
+uses its target action. Cards cover PRs, lanes, chats, terminals, models,
+permission modes, skills, artifacts, commits, branches, web pages, machines,
+and MCP servers, as well as the existing issue links.
 
 - **It never steals focus.** A `pointer-events-none` portal with
   `role="tooltip"`, not a Radix `Popover` (which moves focus into its content by
   design). The caret stays in the composer and a hover cannot swallow the next
   keystroke.
-- **It degrades to nothing.** No lane, no session row, no PR record: no card.
-  There is no error state for a hover.
-- **It reads rather than fetches**, except for PRs, which go through
-  `listPrsCoalesced`, the renderer's coalescing PR reader, and only once the
-  user has actually hovered.
-- **It reads the chat's machine, not the tab's.** Lane ids are unique per
-  machine, not globally, so resolving one against the project tab's lane list
-  can match a *different* lane and then print its name and branch. Every read
-  goes through `useChatRuntimeScope()` plus `useLanesForPin` /
-  `useSessionsForPin`; nothing here touches a global store selector. The card
-  renders inside the shared `ViewportOverlayHost` tooltip layer, which owns the
-  viewport anchoring.
+- **It stays lazy.** The card reads only after it opens. Missing or stale
+  records leave out the card details; they do not change the transcript.
+- **It uses the owning machine.** Chat, lane, terminal, commit, skill, artifact,
+  and PR reads use the chat runtime pin. A chat or lane mention navigates to its
+  target on that machine, and a terminal mention focuses the terminal there.
+  PR, branch, and commit cards use the chat's pinned project data. Machine
+  facts come from the account directory and the shared connection snapshot.
+- **It explains the target.** Terminal cards show its title, lane, tool, state,
+  and start time; model cards show model and routing facts; permission and skill
+  cards explain their setting or source; artifact cards show the proof kind and
+  time; commit and branch cards show their repository facts; web page cards use
+  the cached title, host, and preview. MCP cards show cached server state,
+  transport, tool count and names, plus the last provider error after secret
+  redaction. These cards do not probe MCP servers on hover.
 - **Machine mentions show connection facts.** `@mac:<key>` chips read the
   account directory through its shared TTL cache and use the same presence
-  resolver and remote connection snapshot as Connections. Clicking a transcript
-  chip opens its short action card, including a targeted Connections handoff;
-  clicking the composer's atom opens the same facts in a caret-safe portal.
-  The card omits identity, build, or route details that are unavailable on the
-  current client.
+  resolver and remote connection snapshot as Connections. The card shows
+  presence and available route details; **Open in Connections** selects the
+  Machines page and focuses that machine. The composer opens the same facts in
+  a caret-safe portal, and iOS shows them in a native sheet. Unavailable
+  identity, build, or route details stay omitted.
+- **MCP mentions stay references.** `@mcp:<server>` points to a server from the
+  chat brain's cached registry. Its card shows cached status and redacted
+  runtime details; the chip click and **Open MCP settings** action focus that
+  server in this computer's account-scoped Settings. The route does not move
+  the tab or select the chat's machine, and the mention does not attach tools
+  or grant authority.
+- **Model chips can start a draft.** The model chip menu's **New chat with this
+  model** action opens an unsent Work draft in the same lane and machine and
+  requests the model, effort, and permission choices carried by the chip. The
+  user still sends the draft to create the chat.
 
 Enrichment follows the same split. The composer already asked the runtime for a
 page title and favicon and redrew its chip when the answer landed; the

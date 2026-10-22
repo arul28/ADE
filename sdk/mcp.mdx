@@ -185,7 +185,7 @@ The runtime does not keep header values either. After it restarts, a server whos
 
 ### Redaction
 
-The runtime removes secrets from MCP error and notice text before it writes them to the transcript or the log: the query string, fragment and user info of a URL, `Bearer` tokens, and the exact header values of the server. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors.
+The runtime removes secrets from MCP error and notice text before it writes them to the transcript or the log: the query string, fragment and user info of a URL, `Bearer` tokens, and the exact header and stdio environment values of the server. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors. This protects returned text from echoing a secret; it does not change the fact that stdio `env` values are stored in plaintext.
 
 ## Resource links
 
