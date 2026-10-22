@@ -1444,9 +1444,10 @@ Renderer — settings:
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account
-  whose weekly window resets soonest, ranks an account short on five-hour room
-  last, skips a login that is gone, and reports why it skipped when no account
-  was a real choice.
+  with the most weekly room left relative to its reset, after subtracting the
+  burn already committed there (measured, pending and reserved), gates on the
+  projected five-hour room, skips a login that is gone, and reports why it
+  skipped when no account was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
   best-effort lightweight request per enabled Claude/Codex account shortly
   after a five-hour reset, or right after the provider ends the window early
@@ -2635,13 +2636,12 @@ under the status chip instead.
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance normally sends new
-  chats to the account whose weekly room resets soonest, so room is used before
-  it resets. When another usable account has at least 30 percentage points
-  more five-hour headroom, Claude routes two consecutive new chats to the
-  weekly-first account, then one to the account with the most five-hour room.
-  This rotation ends when the gap reaches 15 points. **Next chat** previews
-  the next slot. Codex remains weekly-first. A
+  and one line saying where new chats go. Smart balance sends new chats to the
+  account that needs the most weekly room spent before its reset, after
+  subtracting the burn already committed there: measured quota movement,
+  chats just placed, and reservations for open-but-idle chats. The five-hour
+  window is a gate, not a ranking; a chat is never refused when every account
+  is blocked. **Next chat** previews that pick. A
   running chat stays on its account; one that hits a usage limit moves to
   another account with room (with the switch off, the limit offers that move
   instead). Auto-start sends one tiny request on the cheapest model when a

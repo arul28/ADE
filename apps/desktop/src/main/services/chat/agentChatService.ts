@@ -816,7 +816,14 @@ import { readProjectSecretRequestCard } from "../../../shared/projectSecretReque
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
+import {
+  accountBalanceModelWeight,
+  pickAlternateInstanceForLimitedChat,
+  type AccountBalanceIdleChat,
+  type AccountBalanceLoad,
+  type AccountBalanceResult,
+  type ProviderAccountChatLoad,
+} from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
 import {
   findInstanceHoldingNewestClaudeThread,
@@ -1140,6 +1147,7 @@ import {
 } from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
+  isPersistedTurnFailureCurrent,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -10797,9 +10805,11 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 /** What chat creation and the usage-limit switch read from the usage tracker. */
 export type ChatAccountUsage = {
   getUsageSnapshot: () => Pick<UsageSnapshot, "windows" | "accounts">;
-  resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
-  /** Preview the upcoming account without consuming a Claude rotation slot. */
+  resolveBalancedInstance: (provider: "claude" | "codex", modelId?: string | null) => AccountBalanceResult | null;
+  /** Preview the upcoming account without placing a chat on it. */
   peekBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
+  /** Measured burn and open-chat reservations, for the usage-limit rescue. */
+  getAccountBalanceLoad: (provider: "claude" | "codex") => ReadonlyMap<string, AccountBalanceLoad>;
 };
 
 /** Claude could not resume the thread id it was given. */
@@ -10889,6 +10899,51 @@ class ScheduledWakeRetryableRefusalError extends Error {
     super(message);
     this.name = "ScheduledWakeRetryableRefusalError";
   }
+}
+
+/**
+ * Every chat service on this machine, for smart balance. Provider quota is a
+ * machine fact, so a balance decision must see chats in every open project,
+ * not only the one whose settings page asked. A service registers its load
+ * reader when it starts and drops it when it shuts down.
+ */
+type MachineChatLoadReader = {
+  read: () => Map<string, ProviderAccountChatLoad>;
+  logger: Pick<Logger, "warn">;
+};
+const machineChatLoadProviders = new Set<MachineChatLoadReader>();
+
+function registerProviderAccountChatLoad(
+  read: () => Map<string, ProviderAccountChatLoad>,
+  logger: Pick<Logger, "warn">,
+): () => void {
+  const reader = { read, logger };
+  machineChatLoadProviders.add(reader);
+  return () => {
+    machineChatLoadProviders.delete(reader);
+  };
+}
+
+/** Union every live chat service's load. Keys are `<provider>:<instanceId>`. */
+export function listMachineProviderAccountChatLoad(): Map<string, ProviderAccountChatLoad> {
+  const merged = new Map<string, { runningWeight: number; idle: AccountBalanceIdleChat[] }>();
+  for (const reader of machineChatLoadProviders) {
+    try {
+      for (const [accountKey, load] of reader.read()) {
+        const current = merged.get(accountKey) ?? { runningWeight: 0, idle: [] };
+        current.runningWeight += load.runningWeight;
+        current.idle.push(...load.idle);
+        merged.set(accountKey, current);
+      }
+    } catch (error) {
+      // One project's closed database must not erase every other project's
+      // load; the healthy readers still merge, and this line reaches Sentry.
+      reader.logger.warn("agent_chat.provider_account_chat_load_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return merged;
 }
 
 export function createAgentChatService(args: {
@@ -11745,7 +11800,7 @@ export function createAgentChatService(args: {
   /**
    * The account a background call made before its chat exists (naming a new
    * lane from the opening prompt) runs as: smart balance's current preview.
-   * The preview does not consume a Claude rotation slot; chat creation makes
+   * The preview does not place a chat on the account; chat creation makes
    * its own pick. Undefined means the provider's default account, which is
    * what chat creation falls back to as well.
    */
@@ -21476,6 +21531,7 @@ export function createAgentChatService(args: {
         accounts: (snapshot.accounts ?? []).filter((account) => account.provider === provider),
         windowsByAccountId,
         nowMs: Date.now(),
+        loadByInstanceId: usage.getAccountBalanceLoad(provider),
       });
       if (!pick) return null;
       return {
@@ -47272,7 +47328,10 @@ export function createAgentChatService(args: {
     if (!requestedInstanceId?.trim() && (effectiveProvider === "claude" || effectiveProvider === "codex")) {
       const accountUsage = getAccountUsage();
       if (accountUsage) {
-        balancedInstance = accountUsage.resolveBalancedInstance(effectiveProvider === "claude" ? "claude" : "codex");
+        balancedInstance = accountUsage.resolveBalancedInstance(
+          effectiveProvider === "claude" ? "claude" : "codex",
+          normalizedModel,
+        );
       } else {
         logger.error("chat.account_balance_unavailable", { provider: effectiveProvider });
       }
@@ -63707,6 +63766,120 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The account and model a chat was launched with. A live chat has them in
+   * memory; an idle chat keeps them in its persisted state, which is the only
+   * place a chat's account is written (the terminal row has no instance
+   * column). Cache by session and last activity so a balance read does not
+   * reopen the same file.
+   */
+  type ChatAccountProjection = {
+    provider: ProviderInstanceProvider | null;
+    instanceId: string | null;
+    model: string | null;
+    modelId: string | null;
+  };
+  const chatAccountProjectionCache = new Map<string, {
+    stamp: string;
+    readAtMs: number;
+    value: ChatAccountProjection;
+  }>();
+
+  function chatAccountProjection(
+    sessionId: string,
+    lastActivityAt: string | null | undefined,
+    startedAt: string,
+    live: { provider: string; instanceId?: string | null; model?: string | null; modelId?: string | null } | undefined,
+  ): ChatAccountProjection {
+    if (live) {
+      return {
+        provider: isProviderInstanceProvider(live.provider) ? live.provider : null,
+        instanceId: live.instanceId?.trim() || null,
+        model: live.model ?? null,
+        modelId: live.modelId ?? null,
+      };
+    }
+    const stamp = lastActivityAt ?? startedAt;
+    const cached = chatAccountProjectionCache.get(sessionId);
+    if (cached && cached.stamp === stamp && Date.now() - cached.readAtMs < 30_000) {
+      return cached.value;
+    }
+    const state = readPersistedState(sessionId);
+    const value: ChatAccountProjection = {
+      provider: state && isProviderInstanceProvider(state.provider) ? state.provider : null,
+      instanceId: state?.instanceId?.trim() || null,
+      model: state?.model ?? null,
+      modelId: state?.modelId ?? null,
+    };
+    if (chatAccountProjectionCache.size > 512) chatAccountProjectionCache.clear();
+    chatAccountProjectionCache.set(sessionId, { stamp, readAtMs: Date.now(), value });
+    return value;
+  }
+
+  /**
+   * Chat state per provider account, for smart balance. A live turn is read
+   * from the in-memory session, not the terminal row: chats persist
+   * `status: "running"` between turns, so the row would call every open chat
+   * busy. Idle chats reserve room, and settled, snoozed, archived or ended
+   * chats claim nothing. This is raw state: balance owns the weights.
+   */
+  function listProviderAccountChatLoad(): Map<string, ProviderAccountChatLoad> {
+    const nowMs = Date.now();
+    // Keyed `<provider>:<instanceId>`, the same shape as `usageAccountId`, so
+    // the producer and `balanceLoad` cannot join the wrong login.
+    const byAccountKey = new Map<string, {
+      runningWeight: number;
+      idle: AccountBalanceIdleChat[];
+    }>();
+    for (const row of sessionService.list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES })) {
+      if (row.archivedAt) continue;
+      const live = managedSessions.get(row.id)?.session;
+      const running = live?.currentTurnStartedAt != null;
+      if (!running) {
+        if (row.status === "disposed" || row.status === "detached") continue;
+        // Mirror canonicalSessionState: an explicit "active" pin overrides a
+        // settledAt column, and a settle only counts at rest.
+        const pinnedActive = row.settleOverride === "active";
+        if (!pinnedActive && (row.settleOverride === "settled" || Boolean(row.settledAt))) continue;
+        const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
+        if (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs) continue;
+      }
+      const wakeAtMs = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
+      const idleSinceMs = Date.parse(row.lastActivityAt ?? row.startedAt);
+      const idleMs = Number.isFinite(idleSinceMs) ? Math.max(0, nowMs - idleSinceMs) : 0;
+      // A chat idle past the longest weekly window cannot claim room before a
+      // reset, unless a scheduled wake brings it back.
+      if (!running && wakeAtMs == null && idleMs > 7 * 24 * 60 * 60_000) continue;
+      const projection = chatAccountProjection(row.id, row.lastActivityAt, row.startedAt, live);
+      if (!projection.provider) continue;
+      const instanceId = projection.instanceId ?? defaultProviderInstanceId(projection.provider);
+      if (!instanceId) continue;
+      const accountKey = `${projection.provider}:${instanceId}`;
+      const modelWeight = accountBalanceModelWeight(projection.modelId ?? projection.model);
+      const current = byAccountKey.get(accountKey) ?? { runningWeight: 0, idle: [] };
+      if (running) {
+        current.runningWeight += modelWeight;
+        byAccountKey.set(accountKey, current);
+        continue;
+      }
+      current.idle.push({
+        idleMs,
+        modelWeight,
+        ...(wakeAtMs != null ? { wakeAtMs } : {}),
+        ...(row.lastTurnFailedAt && isPersistedTurnFailureCurrent({
+          lastTurnFailedAt: row.lastTurnFailedAt,
+          lastActivityAt: row.lastActivityAt,
+        })
+          ? { failed: true }
+          : {}),
+      });
+      byAccountKey.set(accountKey, current);
+    }
+    return byAccountKey;
+  }
+
+  const unregisterProviderAccountChatLoad = registerProviderAccountChatLoad(listProviderAccountChatLoad, logger);
+
   const listSessions = async (
     laneId?: string,
     options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
@@ -67405,6 +67578,7 @@ export function createAgentChatService(args: {
   };
 
   const disposeAll = async (): Promise<void> => {
+    unregisterProviderAccountChatLoad();
     beginDispose();
     disposeModelManifestListener();
     unsubscribeRecordingStatus();
@@ -67420,6 +67594,7 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
+    unregisterProviderAccountChatLoad();
     beginDispose();
     disposeModelManifestListener();
     codexVoice.endAll((sessionId) => managedSessions.get(sessionId));
@@ -72443,6 +72618,7 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listProviderAccountChatLoad,
     listSubagentLinks,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,

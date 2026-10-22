@@ -49,30 +49,34 @@ brain scope is running, which is also the only time that tracker polls.
 Smart balance applies to Claude and Codex when it is enabled for that provider.
 New chats consider only signed-in instances, and an account whose stored login
 is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Weekly room left at the reset is lost, so the usable account whose
-weekly window resets soonest is the default choice: it is spent first, and
-accounts that reset later keep their room for after it. Claude adds a limited
-five-hour reserve rotation when another usable account has at least 30
-percentage points more five-hour headroom than that weekly-first choice: two
-consecutive new chats go to the weekly-first account, then the third goes to
-the account with the most five-hour room. The rotation stays active while the
-gap is above 15 points and ends at or below 15; after it ends, that pair must
-reach 30 points again to
-restart. A changed pair starts fresh at the 30-point threshold. The slot count
-resets to the weekly-first account when ADE's usage service restarts. The
-Settings **Next chat** mark previews the next slot without consuming it. Codex
-keeps weekly-first routing.
+are not room. Weekly room left at the reset is lost, so the account that needs
+the most room spent is the default choice. For each account the service computes
+a required rate (weekly room ÷ hours until its reset), subtracts the burn
+already committed there, and sends the chat to the largest remaining deficit.
+Committed burn is the measured rate from consecutive quota readings — which
+includes the CLI and other clients on the login — or, before a rate exists, a
+prior from the chats mid-turn, scaled by model family (Haiku 0.3, Sonnet 1,
+Fable and Opus 2.4). The same scale sizes the first-turn gate. Measured
+movement always wins once a poll sees it. Open-but-idle chats add a
+reservation: a chat idle for hours is unlikely to resume before the reset, one
+idle for minutes probably will, and settled, snoozed and archived chats reserve
+nothing. A new chat is recorded as pending and decays over the next hour; the
+larger of that decaying commitment and the measured rate wins, so a burst is
+never hidden. Ten chats created together spread across accounts instead of all
+choosing the same one. The Settings **Next chat** mark previews that pick
+without placing a chat.
 
-An account with less than 25% of its five-hour window left, and more than an
-hour until that window resets, ranks after every account without that limit.
+The five-hour window is a gate, not a ranking. An account with less than 10% of
+its five-hour window, or less than 5% of its weekly room, left is out.
+Otherwise the service projects the measured
+five-hour burn over at most the next 1.5 hours and refuses an account whose
+projected room cannot cover a first turn plus a margin. A window about to reset
+does not get a free pass: the first turn still has to fit. When two accounts'
+deficits are within 0.15 points per hour, the sooner weekly reset wins, then the
+healthier five-hour window, then the default. When every account is blocked, the
+new chat still starts on the one that survives the five-hour projection longest.
 An account with a weekly reading and no five-hour window is idle, so it counts
-as full five-hour room; an account with no weekly reading counts as a week from
-its reset in the weekly-first order, but can take a Claude reserve slot when its
-five-hour reading shows substantially more room. An account at or below its
-minimum five-hour or weekly headroom is out. A tie prefers the higher five-hour
-headroom, then the default. The usage-limit move to another account keeps the
-weekly-first order and does not use the new-chat rotation. No usable readings
-fall back to the default, and
+as full five-hour room. No usable readings fall back to the default, and
 `UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
 could not run. An explicit account selection always wins over balancing.
 
@@ -82,11 +86,13 @@ home (`chat/providerThreadMove.ts`) and the same thread resumes there, so the
 model keeps the conversation. The chat's account changes, and the move runs
 once even when the provider reports the limit twice. An account the chat
 already left at a limit is excluded, a subagent never moves, and an account
-with no readable windows or a window already at 100% is not a candidate. If the
-thread cannot move — the chat has no provider thread yet, or the copy fails —
-ADE falls back to the usage-limit handoff: it starts a new chat on the other
-account in the same lane and sends the interrupted task there, and the original
-stops waiting to resume. With smart balance off, the same account is only an
+with no readable windows or a window already at 100% is not a candidate. The
+rescue prefers the account with the most projected five-hour room, then the
+most weekly room, so the chat is not moved onto an account that is also about
+to stop. If the thread cannot move — the chat has no provider thread yet, or
+the copy fails — ADE falls back to the usage-limit handoff: it starts a new
+chat on the other account in the same lane and sends the interrupted task
+there, and the original stops waiting to resume. With smart balance off, the same account is only an
 offer on the usage-limit pill (Continue on that account). A chat created by
 that handoff does not hop again on its own.
 

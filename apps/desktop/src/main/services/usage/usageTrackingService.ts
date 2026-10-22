@@ -86,14 +86,20 @@ import {
   defaultProviderInstanceId,
   isBaseProviderInstance,
   providerInstanceHasAccount,
+  type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
 import {
+  accountBalanceModelWeight,
+  firstTurnFiveHourBurnForModel,
   pickInstanceForNewChat,
+  PRIOR_FIVE_HOUR_BURN_PER_RUNNING_CHAT,
+  PRIOR_WEEKLY_BURN_PER_RUNNING_CHAT,
+  type AccountBalanceLoad,
   type AccountBalanceResult,
-  type AccountBalanceRotationState,
+  type ProviderAccountChatLoad,
 } from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
@@ -205,7 +211,7 @@ import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelCatalogArgs, ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
-import { usageAccountId } from "./usageAccountId";
+import { usageAccountId, usageAccountIdForInstance } from "./usageAccountId";
 import {
   EMPTY_GITHUB_STATS,
   makeEmptyGithubStats,
@@ -234,6 +240,21 @@ import {
 const DEFAULT_POLL_INTERVAL_MS = 2 * 60_000; // 2 min
 const MIN_POLL_INTERVAL_MS = 60_000;          // 1 min
 const MAX_POLL_INTERVAL_MS = 15 * 60_000;     // 15 min
+/**
+ * How long a measured burn rate stays useful without new movement. A chat that
+ * went idle stops moving the provider's percentage, and a rate that never
+ * decays would keep an account looking busy forever.
+ */
+const WEEKLY_BURN_HALF_LIFE_MS = 45 * 60_000;
+const FIVE_HOUR_BURN_HALF_LIFE_MS = 20 * 60_000;
+/** A just-assigned chat's placeholder burn, before the next poll sees it. */
+const PENDING_ASSIGNMENT_HALF_LIFE_MS = 20 * 60_000;
+const PENDING_ASSIGNMENT_TTL_MS = 60 * 60_000;
+/** The chat service's load is read at most this often; a new chat is pending. */
+const CHAT_LOAD_CACHE_MS = 15_000;
+/** Provider readings round to whole points; below this a delta is noise. */
+const MIN_BURN_SAMPLE_MS = 60_000;
+const MAX_BURN_POINTS_PER_HOUR = 200;
 const ACTIVE_POLL_INTERVAL_MS = 60_000;
 const IDLE_POLL_INTERVAL_MS = 5 * 60_000;
 const IDLE_AFTER_MS = 15 * 60_000;
@@ -3893,6 +3914,11 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
     ReturnType<typeof getMachineProviderInstanceStore>,
     "list" | "getProviderSettings"
   >;
+  /**
+   * Chat state per provider account, for smart balance's reservations. Omitted
+   * (tests, a host with no chat service) means balance sees measured burn only.
+   */
+  listProviderAccountChatLoad?: () => ReadonlyMap<string, ProviderAccountChatLoad>;
   /** Home directory holding the shared-source marker (injected for tests). */
   transcriptHome?: string;
   /** Filesystem seam for the shared-source marker (injected for tests). */
@@ -4782,11 +4808,176 @@ export function createUsageTrackingService({
    * Cleared by the next decision that picks an account on the numbers.
    */
   const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
-  /** Per-provider Claude rotation; previews read this but only chat creation advances it. */
-  const balanceRotationStates = new Map<ProviderInstanceProvider, AccountBalanceRotationState>();
+
+  /**
+   * Burn learned from consecutive quota readings: the provider's own percentage
+   * moved by this much per hour in this window instance. It is the only load
+   * signal that sees every client on the login (the CLI, another machine, the
+   * phone), not only the chats this process happens to know about.
+   */
+  type BurnReading = {
+    percentUsed: number;
+    resetsAt: string;
+    rate?: number;
+    /** Last time the percentage actually moved; the rate's own anchor. */
+    rateAtMs: number;
+  };
+  const burnReadings = new Map<string, BurnReading>();
+  /**
+   * Chats this process just assigned, before the next poll can show their burn.
+   * Without this, ten chats created in one minute all see the same idle
+   * snapshot and all choose the same account.
+   */
+  const pendingAssignments = new Map<string, Array<{ atMs: number; weight: number }>>();
+  let chatLoadCache: { atMs: number; byInstanceId: ReadonlyMap<string, ProviderAccountChatLoad> } | null = null;
 
   function providerTitle(provider: ProviderInstanceProvider): string {
     return provider === "claude" ? "Claude" : "Codex";
+  }
+
+  function sameBurnWindow(a: { resetsAt: string }, b: { resetsAt: string }): boolean {
+    const left = Date.parse(a.resetsAt);
+    const right = Date.parse(b.resetsAt);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return a.resetsAt === b.resetsAt;
+    return Math.abs(left - right) <= 5 * 60_000;
+  }
+
+  function burnKey(
+    provider: string,
+    accountId: string,
+    windowType: "weekly" | "five_hour",
+  ): string {
+    return `${provider}|${accountId}|${windowType}`;
+  }
+
+  /**
+   * Learn a burn rate from the snapshot the poller just produced. Only a
+   * changed percentage teaches anything: a stale or failed poll repeats the
+   * old reading and must not be read as "nothing burned".
+   */
+  function observeBurnReadings(snapshot: UsageSnapshot): void {
+    const atMs = Date.parse(snapshot.lastPolledAt);
+    if (!Number.isFinite(atMs)) return;
+    for (const window of snapshot.windows) {
+      if (!window.accountId) continue;
+      if (window.windowType !== "weekly" && window.windowType !== "five_hour") continue;
+      const key = burnKey(window.provider, window.accountId, window.windowType);
+      const previous = burnReadings.get(key);
+      if (!previous || !sameBurnWindow(previous, window) || window.percentUsed < previous.percentUsed) {
+        burnReadings.set(key, {
+          percentUsed: window.percentUsed,
+          resetsAt: window.resetsAt,
+          rateAtMs: atMs,
+        });
+        continue;
+      }
+      const delta = window.percentUsed - previous.percentUsed;
+      if (delta <= 0) continue;
+      // Divide by the time since the percentage last moved, not the last poll:
+      // whole-point readings often sit still for several polls, and dividing by
+      // one poll interval would overstate the rate many times over.
+      const elapsedMs = atMs - previous.rateAtMs;
+      if (elapsedMs < MIN_BURN_SAMPLE_MS) continue;
+      const sample = Math.min(MAX_BURN_POINTS_PER_HOUR, delta / (elapsedMs / 3_600_000));
+      const rate = previous.rate == null ? sample : previous.rate * 0.4 + sample * 0.6;
+      burnReadings.set(key, {
+        percentUsed: window.percentUsed,
+        resetsAt: window.resetsAt,
+        rate: Math.min(MAX_BURN_POINTS_PER_HOUR, Math.max(0, rate)),
+        rateAtMs: atMs,
+      });
+    }
+  }
+
+  /** A rate decays when the window stops moving; idleness is not a guess. */
+  function measuredBurn(
+    provider: ProviderInstanceProvider,
+    accountId: string,
+    windowType: "weekly" | "five_hour",
+    nowMs: number,
+  ): number | undefined {
+    const reading = burnReadings.get(burnKey(provider, accountId, windowType));
+    if (!reading?.rate) return undefined;
+    if (Date.parse(reading.resetsAt) <= nowMs) return undefined;
+    const halfLife = windowType === "five_hour" ? FIVE_HOUR_BURN_HALF_LIFE_MS : WEEKLY_BURN_HALF_LIFE_MS;
+    const ageMs = Math.max(0, nowMs - reading.rateAtMs);
+    return reading.rate * 0.5 ** (ageMs / halfLife);
+  }
+
+  function pendingBurn(instanceId: string, nowMs: number): { weekly: number; fiveHour: number } {
+    const assignments = pendingAssignments.get(instanceId);
+    if (!assignments?.length) return { weekly: 0, fiveHour: 0 };
+    let weekly = 0;
+    let fiveHour = 0;
+    for (const assignment of assignments) {
+      const ageMs = Math.max(0, nowMs - assignment.atMs);
+      if (ageMs > PENDING_ASSIGNMENT_TTL_MS) continue;
+      const decay = 0.5 ** (ageMs / PENDING_ASSIGNMENT_HALF_LIFE_MS);
+      const weight = Math.max(0, assignment.weight);
+      weekly += PRIOR_WEEKLY_BURN_PER_RUNNING_CHAT * weight * decay;
+      fiveHour += PRIOR_FIVE_HOUR_BURN_PER_RUNNING_CHAT * weight * decay;
+    }
+    return { weekly, fiveHour };
+  }
+
+  /** Remember a chat this process just placed, so the next one sees it. */
+  function recordBalanceAssignment(instanceId: string, modelWeight: number): void {
+    const nowMs = Date.now();
+    const assignments = (pendingAssignments.get(instanceId) ?? [])
+      .filter((assignment) => nowMs - assignment.atMs <= PENDING_ASSIGNMENT_TTL_MS);
+    assignments.push({ atMs: nowMs, weight: Math.max(0, modelWeight) });
+    pendingAssignments.set(instanceId, assignments);
+  }
+
+  function readChatLoad(): ReadonlyMap<string, ProviderAccountChatLoad> {
+    const nowMs = Date.now();
+    if (chatLoadCache && nowMs - chatLoadCache.atMs < CHAT_LOAD_CACHE_MS) {
+      return chatLoadCache.byInstanceId;
+    }
+    let byInstanceId: ReadonlyMap<string, ProviderAccountChatLoad> = new Map();
+    try {
+      byInstanceId = dependencies?.listProviderAccountChatLoad?.() ?? new Map();
+    } catch (error) {
+      logger.warn("usage.account_chat_load_failed", { error: getErrorMessage(error) });
+    }
+    chatLoadCache = { atMs: nowMs, byInstanceId };
+    return byInstanceId;
+  }
+
+  /**
+   * The load map the picker scores against: a pending assignment covers the
+   * gap before the next poll, and chat state supplies the reservations for
+   * chats that are open but not burning. The picker takes the larger of the
+   * measured rate and the pending commitment.
+   */
+  function balanceLoad(
+    provider: ProviderInstanceProvider,
+    instances: readonly ProviderInstance[],
+    snapshot: UsageSnapshot,
+    nowMs: number,
+  ): Map<string, AccountBalanceLoad> {
+    const chatLoad = readChatLoad();
+    const out = new Map<string, AccountBalanceLoad>();
+    for (const instance of instances) {
+      if (instance.provider !== provider) continue;
+      const accountId = usageAccountIdForInstance({
+        provider,
+        instanceId: instance.id,
+        accounts: snapshot.accounts,
+      });
+      const measuredWeekly = measuredBurn(provider, accountId, "weekly", nowMs);
+      const measuredFiveHour = measuredBurn(provider, accountId, "five_hour", nowMs);
+      const pending = pendingBurn(instance.id, nowMs);
+      const chat = chatLoad.get(`${provider}:${instance.id}`);
+      out.set(instance.id, {
+        ...(measuredWeekly != null ? { weeklyRate: measuredWeekly } : {}),
+        ...(measuredFiveHour != null ? { fiveHourRate: measuredFiveHour } : {}),
+        ...(pending.weekly > 0 ? { pendingWeeklyRate: pending.weekly } : {}),
+        ...(pending.fiveHour > 0 ? { pendingFiveHourRate: pending.fiveHour } : {}),
+        ...(chat ? { runningWeight: chat.runningWeight, idle: chat.idle } : {}),
+      });
+    }
+    return out;
   }
 
   /**
@@ -4843,53 +5034,40 @@ export function createUsageTrackingService({
   /**
    * Smart balance's pick for a provider on one snapshot, or `null` when the
    * provider has balance off. Chat creation and the Settings preview both use
-   * it, so the account marked "Next chat" is the one a new chat gets.
+   * it; the preview assumes a normal chat, so a Fable/Opus chat can choose a
+   * different account when the five-hour gate is the deciding constraint.
    */
-  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
-    return balancedPickWithRotation(provider, snapshot, balanceRotationStates.get(provider));
+  function balancedPick(
+    provider: ProviderInstanceProvider,
+    snapshot: UsageSnapshot,
+    firstTurnFiveHourBurn?: number,
+  ): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    const nowMs = Date.now();
+    const instances = providerInstanceStore.list(provider);
+    return pickInstanceForNewChat({
+      provider,
+      instances,
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs,
+      loadByInstanceId: balanceLoad(provider, instances, snapshot, nowMs),
+      ...(firstTurnFiveHourBurn != null ? { firstTurnFiveHourBurn } : {}),
+    });
   }
 
-  /** Preview the next account without consuming a Claude rotation slot. */
+  /** Preview the next account without placing a chat on it. */
   function peekBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     return balancedPick(provider, lastSnapshot);
   }
 
-  function balancedPickWithRotation(
-    provider: ProviderInstanceProvider,
-    snapshot: UsageSnapshot,
-    rotationState?: AccountBalanceRotationState | null,
-  ): AccountBalanceResult | null {
-    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
-    return pickInstanceForNewChat({
-      provider,
-      instances: providerInstanceStore.list(provider),
-      accounts: snapshot.accounts ?? [],
-      windowsByAccountId: windowsByAccount(snapshot.windows),
-      nowMs: Date.now(),
-      rotationState,
-    });
-  }
-
-  /** Drop a Claude rotation when its account pair or headroom gap is no longer eligible. */
-  function reconcileBalanceRotationStates(snapshot: UsageSnapshot): void {
-    for (const [provider, state] of balanceRotationStates) {
-      try {
-        const result = balancedPickWithRotation(provider, snapshot, state);
-        if (
-          !result?.rotationState
-          || result.rotationState.primaryInstanceId !== state.primaryInstanceId
-          || result.rotationState.reserveInstanceId !== state.reserveInstanceId
-        ) {
-          balanceRotationStates.delete(provider);
-        }
-      } catch (error) {
-        // A transient preview failure must not disturb the next real selection.
-        logger.warn("usage.account_balance_rotation_reconcile_failed", {
-          provider,
-          error: getErrorMessage(error),
-        });
-      }
-    }
+  /**
+   * The load the picker uses for one provider, so the usage-limit rescue scores
+   * the same measured burn and reservations as a new chat.
+   */
+  function getAccountBalanceLoad(provider: ProviderInstanceProvider): ReadonlyMap<string, AccountBalanceLoad> {
+    const nowMs = Date.now();
+    return balanceLoad(provider, providerInstanceStore.list(provider), lastSnapshot, nowMs);
   }
 
   /**
@@ -4923,14 +5101,16 @@ export function createUsageTrackingService({
     };
   }
 
-  // Cached `balanceNext` may contain a Claude rotation slot from the previous
-  // process. Rotation state is intentionally in-memory and restarts at the
-  // weekly-first account, so refresh the cached marker before this service can
-  // return its initial snapshot.
+  // Cached `balanceNext` was computed by a previous process. Refresh it before
+  // this service can return its initial snapshot: measured burn and pending
+  // assignments start empty, so the marker must be recomputed from today's data.
   lastSnapshot = withBalanceIssues(lastSnapshot);
 
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
-    reconcileBalanceRotationStates(snapshot);
+    // Only a snapshot with a new window array came from a real poll. Balance-only
+    // updates and the error path reuse the old readings; observing them would
+    // teach the learner that nothing burned.
+    if (snapshot.windows !== lastSnapshot.windows) observeBurnReadings(snapshot);
     const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
@@ -6041,31 +6221,13 @@ export function createUsageTrackingService({
     return true;
   }
 
-  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): boolean {
+  /** Set the provider's balance issue. The caller publishes once, after this. */
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
     const previous = balancePickIssues.get(provider);
-    if (!issue && !previous) return false;
-    if (issue && previous?.kind === issue.kind) return false;
+    if (!issue && !previous) return;
+    if (issue && previous?.kind === issue.kind) return;
     if (issue) balancePickIssues.set(provider, issue);
     else balancePickIssues.delete(provider);
-    // Balance-only updates do not re-run quota polling, the ledger, or the
-    // auto-start scheduler. They also carry the next deterministic chat slot.
-    publishBalanceIndicators();
-    return true;
-  }
-
-  function setBalanceRotationState(
-    provider: ProviderInstanceProvider,
-    state: AccountBalanceRotationState | undefined,
-  ): boolean {
-    const previous = balanceRotationStates.get(provider);
-    if (
-      previous?.primaryInstanceId === state?.primaryInstanceId
-      && previous?.reserveInstanceId === state?.reserveInstanceId
-      && previous?.nextSlot === state?.nextSlot
-    ) return false;
-    if (state) balanceRotationStates.set(provider, state);
-    else balanceRotationStates.delete(provider);
-    return true;
   }
 
   /**
@@ -6077,52 +6239,53 @@ export function createUsageTrackingService({
    * silent fallback to the default account is how smart balance stayed off
    * for weeks without anyone seeing it.
    */
-  function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
+  function resolveBalancedInstance(
+    provider: ProviderInstanceProvider,
+    modelId?: string | null,
+  ): AccountBalanceResult | null {
     try {
-      const result = balancedPick(provider, lastSnapshot);
-      if (!result) {
-        if (setBalanceRotationState(provider, undefined)) publishBalanceIndicators();
-        return null;
-      }
-      const { rotationState, ...pick } = result;
-      const rotationChanged = setBalanceRotationState(provider, rotationState);
+      const result = balancedPick(provider, lastSnapshot, firstTurnFiveHourBurnForModel(modelId));
+      if (!result) return null;
       if (result.skip === "one_account") {
         // Nothing to balance; an issue from an earlier pick no longer applies.
-        const issueChanged = setBalancePickIssue(provider, null);
-        if (rotationChanged && !issueChanged) publishBalanceIndicators();
+        setBalancePickIssue(provider, null);
+        publishBalanceIndicators();
         return null;
       }
+      // This chat is now committed to the account. The next chat in this batch
+      // sees that commitment before the poll does; without it, ten chats created
+      // in one minute all read the same idle snapshot and choose one account.
+      // Record before publishing so the preview it emits already includes it.
+      recordBalanceAssignment(result.instanceId, accountBalanceModelWeight(modelId));
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
-        const issueChanged = setBalancePickIssue(provider, {
+        setBalancePickIssue(provider, {
           provider,
           kind: "no_usage_data",
           title: `${providerTitle(provider)} balance has no usage data`,
           detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
           at: nowIso(),
         });
-        if (rotationChanged && !issueChanged) publishBalanceIndicators();
       } else {
         if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
-        const issueChanged = setBalancePickIssue(provider, null);
-        if (rotationChanged && !issueChanged) publishBalanceIndicators();
+        setBalancePickIssue(provider, null);
       }
-      return pick;
+      publishBalanceIndicators();
+      return result;
     } catch (error) {
-      const rotationChanged = setBalanceRotationState(provider, undefined);
       const message = getErrorMessage(error);
       // The Error itself, so `logBridge` lifts it into the Sentry event and the
       // issue groups by the real failure; `errorText` keeps the sentence on
       // disk, which `JSON.stringify` writes an Error without.
       logger.error("usage.account_balance_resolve_failed", { error, errorText: message, provider });
-      const issueChanged = setBalancePickIssue(provider, {
+      setBalancePickIssue(provider, {
         provider,
         kind: "error",
         title: `${providerTitle(provider)} balance failed`,
         detail: `Smart balance could not choose an account for the last new chat: ${message}`,
         at: nowIso(),
       });
-      if (rotationChanged && !issueChanged) publishBalanceIndicators();
+      publishBalanceIndicators();
       return null;
     }
   }
@@ -6256,6 +6419,7 @@ export function createUsageTrackingService({
       getUsageRollup,
       resolveBalancedInstance,
       peekBalancedInstance,
+      getAccountBalanceLoad,
       getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
       applyAccountRollups,
@@ -6302,6 +6466,7 @@ export function createUsageTrackingService({
     getUsageRollup,
     resolveBalancedInstance,
     peekBalancedInstance,
+    getAccountBalanceLoad,
     getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
     applyAccountRollups,

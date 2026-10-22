@@ -385,14 +385,15 @@ describe("suggestLaneNameFromPrompt", () => {
     }));
   });
 
-  it("previews Claude's lane-naming account without consuming the next chat slot", async () => {
+  it("previews Claude's lane-naming account without placing a chat on it", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
     const accountUsage = {
       getUsageSnapshot: vi.fn(() => ({ windows: [], accounts: [] })),
-      resolveBalancedInstance: vi.fn(() => ({ instanceId: "claude", reason: "weekly-first" })),
-      peekBalancedInstance: vi.fn(() => ({ instanceId: "work", reason: "reserve-preview" })),
+      resolveBalancedInstance: vi.fn(() => ({ instanceId: "claude", reason: "most room to spend before reset" })),
+      peekBalancedInstance: vi.fn(() => ({ instanceId: "work", reason: "preview" })),
+      getAccountBalanceLoad: vi.fn(() => new Map()),
     };
     const { service, aiIntegrationService } = createService({
       getAccountUsage: () => accountUsage as any,

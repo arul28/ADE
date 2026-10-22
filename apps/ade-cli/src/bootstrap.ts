@@ -87,7 +87,7 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
@@ -3338,6 +3338,10 @@ export async function createAdeRuntime(args: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
           modelRouter,
+          // Provider quota is machine-wide, so balance unions every live chat
+          // service on this machine, not only this project's. A host with no
+          // chat service (headless CLI) leaves the registry empty.
+          listProviderAccountChatLoad: listMachineProviderAccountChatLoad,
         },
       }),
       {
