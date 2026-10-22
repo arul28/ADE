@@ -89,35 +89,83 @@ function skillDirectoryExists(root: string, dirent: fs.Dirent): boolean {
   }
 }
 
-function buildCatalog(cwd: string, includeUser: boolean, env?: NodeJS.ProcessEnv): CatalogSkill[] {
-  const roots = getAgentSkillRootsWithSource({
+/** Called for a skill folder or file that exists but could not be read. */
+export type SkillCatalogErrorHandler = (filePath: string, error: unknown) => void;
+
+/** A path that is simply not there; anything else is worth reporting. */
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function realpathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    return null;
+  }
+}
+
+function isInside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function buildCatalog(
+  cwd: string,
+  includeUser: boolean,
+  env?: NodeJS.ProcessEnv,
+  onError?: SkillCatalogErrorHandler,
+): CatalogSkill[] {
+  const allRoots = getAgentSkillRootsWithSource({
     cwd,
     env,
     includeDeepSourceFallbacks: true,
-  }).filter((candidate) => includeUser || candidate.source !== "user");
+  });
+  // Personal skills stay hidden even when a project folder links to them
+  // (`.agents/skills -> ~/.agents/skills`): compare real paths, not names.
+  const personalRoots = includeUser
+    ? []
+    : allRoots
+      .filter((candidate) => candidate.source === "user")
+      .map((candidate) => realpathOrNull(candidate.root))
+      .filter((root): root is string => root !== null);
+  const isPersonal = (target: string): boolean => {
+    if (personalRoots.length === 0) return false;
+    const real = realpathOrNull(target);
+    return real !== null && personalRoots.some((root) => isInside(root, real));
+  };
+  const roots = allRoots.filter((candidate) => includeUser || candidate.source !== "user");
   const seenRoots = new Set<string>();
   const byName = new Map<string, CatalogSkill>();
+  const report = (filePath: string, error: unknown): void => {
+    if (!isMissingPathError(error)) onError?.(filePath, error);
+  };
 
   for (const candidate of roots) {
     let rootKey: string;
     let dirents: fs.Dirent[];
     try {
       if (!fs.statSync(candidate.root).isDirectory()) continue;
+      if (isPersonal(candidate.root)) continue;
       rootKey = canonicalRootKey(candidate.root);
       if (seenRoots.has(rootKey)) continue;
       seenRoots.add(rootKey);
       dirents = fs.readdirSync(candidate.root, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      report(candidate.root, error);
       continue;
     }
 
     for (const dirent of dirents) {
       if (!skillDirectoryExists(candidate.root, dirent)) continue;
+      if (isPersonal(path.join(candidate.root, dirent.name))) continue;
       const skillPath = path.join(candidate.root, dirent.name, "SKILL.md");
       let content: string;
       try {
         content = fs.readFileSync(skillPath, "utf8");
-      } catch {
+      } catch (error) {
+        report(skillPath, error);
         continue;
       }
       const parsed = parseSkillFile(content, dirent.name);
@@ -140,7 +188,15 @@ function buildCatalog(cwd: string, includeUser: boolean, env?: NodeJS.ProcessEnv
   return [...byName.values()].sort((left, right) => left.entry.name.localeCompare(right.entry.name));
 }
 
-function catalogFor(cwd: string, includeUser: boolean, env?: NodeJS.ProcessEnv): CatalogSkill[] {
+type CatalogOptions = {
+  cwd: string;
+  includeUser: boolean;
+  env?: NodeJS.ProcessEnv;
+  /** Told about skill folders or files that exist but could not be read. */
+  onError?: SkillCatalogErrorHandler;
+};
+
+function catalogFor({ cwd, includeUser, env, onError }: CatalogOptions): CatalogSkill[] {
   const resolvedCwd = path.resolve(cwd);
   const cacheKey = `${resolvedCwd}\0${includeUser ? "user" : "no-user"}`;
   const now = Date.now();
@@ -157,26 +213,22 @@ function catalogFor(cwd: string, includeUser: boolean, env?: NodeJS.ProcessEnv):
     catalogMemo.delete(oldestKey);
   }
 
-  const skills = buildCatalog(resolvedCwd, includeUser, env);
+  const skills = buildCatalog(resolvedCwd, includeUser, env, onError);
   catalogMemo.set(cacheKey, { expiresAt: Date.now() + CATALOG_MEMO_TTL_MS, skills });
   return skills;
 }
 
-export function listAgentSkills(options: {
-  cwd: string;
-  includeUser: boolean;
-  env?: NodeJS.ProcessEnv;
-}): AgentSkillEntry[] {
-  return catalogFor(options.cwd, options.includeUser, options.env).map(({ entry }) => ({ ...entry }));
+export function listAgentSkills(options: CatalogOptions): AgentSkillEntry[] {
+  return catalogFor(options).map(({ entry }) => ({ ...entry }));
 }
 
 export function readAgentSkill(
   name: string,
-  options: { cwd: string; includeUser: boolean; env?: NodeJS.ProcessEnv },
+  options: CatalogOptions,
 ): { entry: AgentSkillEntry; body: string; content: string } | null {
   const nameKey = normalizedSkillName(name);
   if (!nameKey) return null;
-  const skill = catalogFor(options.cwd, options.includeUser, options.env)
+  const skill = catalogFor(options)
     .find((candidate) => normalizedSkillName(candidate.entry.name) === nameKey);
   if (!skill) return null;
   return { entry: { ...skill.entry }, body: skill.body, content: skill.content };

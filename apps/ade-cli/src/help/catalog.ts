@@ -40,7 +40,9 @@ const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
  * skipped; `a|b` alternatives count when any one of them is available.
  */
 export function usageLineAvailable(line: string, scope: "read" | "write", availability: Availability): boolean {
-  const tokens = line.trim().replace(/^\$\s*/, "").replace(/^ade\s+/, "").split(/\s+/);
+  // A help page's line ends in a description column after a wide gap.
+  const usage = line.trim().replace(/^\$\s*/, "").replace(/\s{2,}.*$/, "");
+  const tokens = usage.replace(/^ade\s+/, "").split(/\s+/);
   let index = 0;
   while (tokens[index]?.startsWith("-")) {
     const option = tokens[index]!;
@@ -50,9 +52,12 @@ export function usageLineAvailable(line: string, scope: "read" | "write", availa
   }
   const command = tokens[index];
   if (!command || !COMMAND_WORD.test(command)) return true;
+  // The whole line is checked, flags included: `chat wait <id> --async` is
+  // refused at read only even though `chat wait` is not.
   const alternatives = (tokens[index + 1] ?? "").split("|").filter((word) => COMMAND_WORD.test(word));
-  if (alternatives.length === 0) return availability(command, scope).allowed;
-  return alternatives.some((sub) => availability(`${command} ${sub}`, scope).allowed);
+  if (alternatives.length === 0) return availability(tokens.slice(index).join(" "), scope).allowed;
+  const rest = tokens.slice(index + 2);
+  return alternatives.some((sub) => availability([command, sub, ...rest].join(" "), scope).allowed);
 }
 
 /** Drops the `$ ade …` lines of a help page that the scope cannot run. */

@@ -3617,6 +3617,22 @@ function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): b
     || chatArgs.subagentTakeoverPromptShown === true;
 }
 
+/**
+ * `chat.armWait` arguments without the caller's own provenance. An unbound
+ * CLI keeps only the ADE MCP app label: it may already put any metadata on a
+ * direct send, and the label is what makes a delayed send from a connected
+ * app say which app sent it.
+ */
+function armWaitArgsWithoutCallerProvenance(
+  session: SessionState,
+  chatArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const { sendMetadata: callerMetadata, ...waitArgs } = chatArgs;
+  if (!isUnboundAdeCliCaller(session)) return waitArgs;
+  const remoteMcp = isRecord(callerMetadata) ? callerMetadata.remoteMcp : undefined;
+  return isRecord(remoteMcp) ? { ...waitArgs, sendMetadata: { remoteMcp } } : waitArgs;
+}
+
 function scopeChatAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3628,8 +3644,8 @@ function scopeChatAdeActionArgs(
   if (action === "armWait") {
     // Provenance on the prompt a send wait delivers is the host's to derive,
     // never a caller's to assert.
+    if (isUnboundAdeCliCaller(session)) return armWaitArgsWithoutCallerProvenance(session, chatArgs);
     const { sendMetadata: _callerProvenance, ...waitArgs } = chatArgs;
-    if (isUnboundAdeCliCaller(session)) return waitArgs;
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     const sendTo = asOptionalTrimmedString(waitArgs.sendToSessionId);
     if (sendTo) {
@@ -5815,8 +5831,9 @@ async function runTool(args: {
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : domain === "chat" && action === "armWait"
         // A send wait's provenance is derived by the host (bound agents, in
-        // the chat scoping below) and never accepted from any caller.
-        ? (({ sendMetadata: _callerProvenance, ...waitArgs }) => waitArgs)(safeObject(toolArgs.args))
+        // the chat scoping below), not accepted from the caller; only the ADE
+        // MCP app label survives, and only from an unbound CLI.
+        ? armWaitArgsWithoutCallerProvenance(session, safeObject(toolArgs.args))
         : safeObject(toolArgs.args);
     // `inputOrigin` names the desktop a person is talking from, and show
     // requests follow it. Only a user client may say where that person is.

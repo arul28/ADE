@@ -24,7 +24,8 @@ the service (`remoteMcpTools.ts`).
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router, MCP JSON-RPC (stateless Streamable HTTP, JSON responses), OAuth endpoints, the `ade` tool, Settings actions. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, project resolution, run limits. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, and how its JSON is trimmed. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpCommandPolicy.ts` | Which commands run at each access level; the read-only allowlist; argv splitting; log redaction. |
@@ -224,7 +225,8 @@ brain through `agentSkillCatalogService`, the same catalog `ade skill list`
 uses: project skills (`.agents`, `.claude`, `.ade`, `.cursor`, `.codex` from the
 project up), then ADE's bundled skills. **Personal skills in the home folder
 never reach a connected app**: prompts leave them out, and `ade skill list|show`
-hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set.
+hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set. The check compares
+real paths, so a project folder linked to `~/.agents/skills` stays hidden too.
 
 ## Chat turns from an app
 
@@ -234,7 +236,9 @@ shows "via <label>" under it, so the person and their agents can tell it from
 the person's own messages. It is still a person-side message (it is not in the
 host-authored key lists): it clears attention like any message the person sends.
 This is provenance, not a boundary: a full-access app can already pass its own
-metadata.
+metadata. `chat send --after` carries the label too: the brain strips a
+caller's own provenance from a delayed send, except this one key from an
+unbound CLI (`armWaitArgsWithoutCallerProvenance` in `adeRpcServer.ts`).
 
 `serverInfo.version` is ADE's version, so a client can tell which tools a
 machine's server has.

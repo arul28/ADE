@@ -70,12 +70,19 @@ export function runSkillCommand(rest: string[]): SkillCliResult {
   }
 }
 
+/** A skill folder ADE could not read is named on stderr, so a short list is not a silent one. */
+function warnUnreadable(filePath: string, error: unknown): void {
+  const code = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
+  process.stderr.write(`ade: could not read ${filePath} (${code})\n`);
+}
+
 export function runSkillList(args: string[]): SkillCliResult {
   const { format } = extractFormat(args);
   const entries = listAgentSkills({
     cwd: process.cwd(),
     includeUser: !isRemoteMcpInvocation(process.env),
     env: process.env,
+    onError: warnUnreadable,
   });
   if (format === "text") {
     if (entries.length === 0) {
@@ -104,7 +111,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
     throw new CliSkillUsageError("ade skill show <name> [--text|--json]");
   }
   const includeUser = !isRemoteMcpInvocation(process.env);
-  const skill = readAgentSkill(name, { cwd: process.cwd(), includeUser, env: process.env });
+  const skill = readAgentSkill(name, { cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
   if (!skill) {
     if (!includeUser) {
       const personalSkill = readAgentSkill(name, { cwd: process.cwd(), includeUser: true, env: process.env });
@@ -114,7 +121,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
         );
       }
     }
-    const entries = listAgentSkills({ cwd: process.cwd(), includeUser, env: process.env });
+    const entries = listAgentSkills({ cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
     const available = entries.map((candidate) => candidate.name).join(", ") || "(none found)";
     throw new CliSkillUsageError(
       `Unknown skill: ${name}. Available skills: ${available}.`,
