@@ -29,6 +29,7 @@ const MCP_APP_PROVIDER_TIMEOUT_MS = 60_000;
 type McpServerObservation = {
   name: string;
   toolNames?: string[];
+  success: boolean;
   error?: string;
 };
 
@@ -64,10 +65,12 @@ export function claudeMcpAppLink(args: {
       const query = await liveQuery();
       const servers = await withTimeout(query.mcpServerStatus(), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not list its MCP tools in time.");
       for (const server of servers) {
+        const error = server.error ?? (server.status === "failed" ? "MCP server failed" : null);
         args.onServerStatus?.({
           name: server.name,
+          success: server.status === "connected" && error == null,
           ...(server.status === "connected" ? { toolNames: (server.tools ?? []).map((tool) => tool.name) } : {}),
-          ...(server.error ? { error: server.error } : server.status === "failed" ? { error: "MCP server failed" } : {}),
+          ...(error ? { error } : {}),
         });
       }
       return servers.flatMap((server): McpAppToolDescriptor[] => server.status !== "connected"
@@ -159,10 +162,12 @@ export function codexMcpAppLink(args: {
           const status = stringOrNull(server?.status ?? server?.state);
           const errorRecord = asRecord(server?.error);
           const error = stringOrNull(errorRecord?.message ?? server?.error ?? server?.errorMessage ?? server?.message);
+          const reportedError = error ?? (status && /(?:fail|error|closed|refused|timeout|unavailable)/i.test(status) ? status : null);
           args.onServerStatus?.({
             name: serverName,
             ...(serverTools ? { toolNames } : {}),
-            ...(error ? { error } : status && /(?:fail|error|closed|refused|timeout|unavailable)/i.test(status) ? { error: status } : {}),
+            success: reportedError == null,
+            ...(reportedError ? { error: reportedError } : {}),
           });
         }
         cursor = stringOrNull(listed?.nextCursor);

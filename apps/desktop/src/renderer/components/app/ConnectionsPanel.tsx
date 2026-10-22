@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   DesktopTower,
@@ -40,6 +40,7 @@ import {
   useAccountStatus,
 } from "../../lib/account";
 import type { ConnectionsPanelTab } from "../../lib/connectionsPanel";
+import { flashRowHighlight } from "../../lib/flashRowHighlight";
 
 type ConnectionsPanelProps = {
   initialTab?: ConnectionsPanelTab;
@@ -308,18 +309,18 @@ export function ConnectionsPanel({
     void loadAccountMachines();
   }, [loadAccountMachines, tab]);
 
+  const focusedMachineRequestRef = useRef<{ machineId: string; focused: boolean } | null>(null);
   useEffect(() => {
+    if (focusedMachineRequestRef.current?.machineId !== machineId) {
+      focusedMachineRequestRef.current = machineId ? { machineId, focused: false } : null;
+    }
+    const request = focusedMachineRequestRef.current;
     if (tab !== "machines" || !machineId || !accountMachines) return;
+    if (!request || request.focused) return;
     const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(machineId)}"]`);
     if (!row) return;
-    row.scrollIntoView({ block: "center", behavior: "smooth" });
-    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
-    row.style.outlineOffset = "4px";
-    const timer = window.setTimeout(() => {
-      row.style.outline = "";
-      row.style.outlineOffset = "";
-    }, 1400);
-    return () => window.clearTimeout(timer);
+    request.focused = true;
+    return flashRowHighlight(row);
   }, [accountMachines, machineId, tab]);
 
   const goToAccount = useCallback(() => {

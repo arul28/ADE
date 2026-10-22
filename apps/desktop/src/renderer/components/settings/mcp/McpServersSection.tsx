@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
+import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
   MCP_TRANSPORT_LABEL,
   mcpRegistryState,
@@ -73,6 +74,7 @@ export function McpServersSection() {
   const registry = useMcpRegistry();
   const [searchParams] = useSearchParams();
   const focusServer = searchParams.get("mcpServer")?.trim() ?? "";
+  const focusedServerRef = useRef<{ name: string; focused: boolean } | null>(null);
   const projectName = useAppStore((state) => state.project?.displayName?.trim() || null);
   const [dialog, setDialog] = useState<{ editing: McpRegistryServer | null } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -82,17 +84,16 @@ export function McpServersSection() {
   const ready = registry.phase === "ready";
 
   useEffect(() => {
+    if (focusedServerRef.current?.name !== focusServer) {
+      focusedServerRef.current = focusServer ? { name: focusServer, focused: false } : null;
+    }
+    const request = focusedServerRef.current;
     if (!focusServer || !ready) return;
+    if (!request || request.focused) return;
     const row = document.querySelector<HTMLElement>(`[data-mcp-server="${CSS.escape(focusServer)}"]`);
     if (!row) return;
-    row.scrollIntoView({ block: "center", behavior: "smooth" });
-    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
-    row.style.outlineOffset = "4px";
-    const timer = window.setTimeout(() => {
-      row.style.outline = "";
-      row.style.outlineOffset = "";
-    }, 1400);
-    return () => window.clearTimeout(timer);
+    request.focused = true;
+    return flashRowHighlight(row);
   }, [focusServer, ready, registry.servers]);
 
   /** Runs one change on one row, and says so when it did not take. */

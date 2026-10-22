@@ -12652,7 +12652,7 @@ export function createAgentChatService(args: {
   let mcpMentionRowsCache: { at: number; rows: McpMentionServerRow[] } | null = null;
   const rememberMcpMentionStatus = (
     serverName: string,
-    update: { toolNames?: readonly string[]; error?: string | null },
+    update: { toolNames?: readonly string[]; error?: string | null; success?: boolean },
   ): void => {
     const name = serverName.trim();
     if (!name || name.length > 128) return;
@@ -12664,8 +12664,8 @@ export function createAgentChatService(args: {
     const next: McpMentionRuntimeStatus = {
       toolNames: tools ? tools.slice(0, 32).map((tool) => tool.slice(0, 120)) : previous?.toolNames ?? [],
       toolCount: tools ? tools.length : previous?.toolCount ?? null,
-      lastError: error ?? previous?.lastError ?? null,
-      lastErrorAt: error ? Date.now() : previous?.lastErrorAt ?? null,
+      lastError: error ?? (update.success ? null : previous?.lastError ?? null),
+      lastErrorAt: error ? Date.now() : update.success ? null : previous?.lastErrorAt ?? null,
     };
     mcpMentionStatusByServer.delete(name);
     mcpMentionStatusByServer.set(name, next);
@@ -12702,6 +12702,7 @@ export function createAgentChatService(args: {
           runtime,
           onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
             ...(status.toolNames ? { toolNames: status.toolNames } : {}),
+            success: status.success,
             ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
           }),
         });
@@ -12716,6 +12717,7 @@ export function createAgentChatService(args: {
           serverConfig: (server) => callerMcpServersForLaunch(managed)?.[server],
           onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
             ...(status.toolNames ? { toolNames: status.toolNames } : {}),
+            success: status.success,
             ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
           }),
         });

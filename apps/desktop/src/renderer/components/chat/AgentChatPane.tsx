@@ -17289,6 +17289,8 @@ export function AgentChatPane({
     );
     const nativePermission = resolveModelPermissionValue(provider, request.permission);
     if (!nativePermission) return;
+    const requestedFamily = permissionLadderFamilyForProvider(provider);
+    if (requestedFamily) visitedLadderFamiliesRef.current.add(requestedFamily);
     if (provider === "cursor") {
       void updateNativeControls({ cursorModeId: nativePermission });
       return;

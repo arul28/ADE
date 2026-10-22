@@ -3083,6 +3083,9 @@ function AgentChatComposerImpl({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const [machineChipPopover, setMachineChipPopover] = useState<{ machineKey: string; anchor: HTMLElement } | null>(null);
+  useEffect(() => {
+    setMachineChipPopover(null);
+  }, [draft]);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
   // Which DOM node the editor was last seeded into. The editor has two homes —
@@ -8946,6 +8949,8 @@ function AgentChatComposerImpl({
                     const machineChip = target?.closest?.<HTMLElement>("[data-composer-chip-kind='machine']");
                     const machineToken = machineChip?.dataset.composerChipText;
                     if (machineChip && machineToken) {
+                      event.preventDefault();
+                      event.stopPropagation();
                       const machineKey = machineToken.slice(machineToken.indexOf(":") + 1);
                       setMachineChipPopover({ machineKey, anchor: machineChip });
                       return;
@@ -9025,7 +9030,7 @@ function AgentChatComposerImpl({
                     }
                   }}
                 />
-                {machineChipPopover ? (
+                {machineChipPopover?.anchor.isConnected ? (
                   <ComposerMachineChipPopover
                     machineKey={machineChipPopover.machineKey}
                     anchor={machineChipPopover.anchor}

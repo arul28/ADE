@@ -8205,7 +8205,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let cancelled = false;
     const query = range.query.trim().toLowerCase();
     const mcpFilterQuery = /^(?:mcp|servers?)(?:\s|:|$)/i.test(query);
-    const mcpSearchText = mcpFilterQuery ? query : query ? `mcp ${query}` : "mcp";
+    const colonMcpQuery = /^(mcp|servers?):\s*(.*)$/i.exec(query);
+    const mcpSearchText = colonMcpQuery
+      ? `${colonMcpQuery[1]}${colonMcpQuery[2] ? ` ${colonMcpQuery[2]}` : ""}`
+      : mcpFilterQuery ? query : query ? `mcp ${query}` : "mcp";
     const suggestionRankQuery = query.replace(/^(?:mcp|servers?)(?:\s+|:)?/i, "").trim();
     const fileQuery = composerFileSearchQuery(range.query).toLowerCase();
     const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {

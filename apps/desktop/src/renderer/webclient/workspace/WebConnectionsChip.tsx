@@ -16,6 +16,7 @@ import {
   useWebMachines,
   type WebWorkspaceContextValue,
 } from "./WebWorkspaceContext";
+import { flashRowHighlight } from "../../lib/flashRowHighlight";
 import { WEB_MACHINE_SESSION_LIMIT } from "./WebMachineSessionManager";
 import {
   WEB_MACHINE_DOT_COLOR,
@@ -159,12 +160,15 @@ export function WebConnectionsChip() {
    * not need a handle on the chip, and the chip stays the only thing that knows
    * how to render machines.
    */
-  const [focusMachineKey, setFocusMachineKey] = useState<string | null>(null);
+  const [focusMachineRequest, setFocusMachineRequest] = useState<{ machineKey: string; id: number } | null>(null);
+  const focusMachineRequestIdRef = useRef(0);
+  const focusedMachineRequestRef = useRef<number | null>(null);
   useEffect(() => {
     const onOpenRequest = (event: Event) => {
       // A machine chip's "Open in Connections" names the machine to show.
       const machineId = (event as CustomEvent<{ machineId?: string } | undefined>).detail?.machineId;
-      setFocusMachineKey(machineId?.trim() || null);
+      const machineKey = machineId?.trim() || null;
+      setFocusMachineRequest(machineKey ? { machineKey, id: ++focusMachineRequestIdRef.current } : null);
       setOpen(true);
     };
     window.addEventListener(WEB_OPEN_CONNECTIONS_EVENT, onOpenRequest);
@@ -172,17 +176,20 @@ export function WebConnectionsChip() {
   }, []);
 
   useEffect(() => {
-    if (!open || !focusMachineKey) return;
-    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(focusMachineKey)}"]`);
+    if (!open || !focusMachineRequest) return;
+    if (focusedMachineRequestRef.current === focusMachineRequest.id) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(focusMachineRequest.machineKey)}"]`);
     if (!row) return;
-    row.scrollIntoView({ block: "nearest" });
-    row.style.outline = "1px solid var(--color-accent, #68a8ff)";
+    focusedMachineRequestRef.current = focusMachineRequest.id;
+    const stopHighlight = flashRowHighlight(row, { block: "nearest" });
     const timer = window.setTimeout(() => {
-      row.style.outline = "";
-      setFocusMachineKey(null);
+      setFocusMachineRequest((current) => current?.id === focusMachineRequest.id ? null : current);
     }, 1400);
-    return () => window.clearTimeout(timer);
-  }, [focusMachineKey, machines, open]);
+    return () => {
+      window.clearTimeout(timer);
+      stopHighlight();
+    };
+  }, [focusMachineRequest, machines, open]);
 
   useEffect(() => {
     if (!open) return;

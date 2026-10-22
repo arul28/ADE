@@ -778,7 +778,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     const record = deps.listMcpServers?.().find(({ server }) => server.name === name);
     if (!record) return null;
     const tools = record.toolNames?.slice(0, 32) ?? [];
-    const toolCount = record.toolCount ?? (tools.length ? tools.length : null);
+    const toolCount = record.toolCount ?? (record.toolNames ? record.toolNames.length : null);
     return {
       kind: "mcp",
       id: record.server.name,
