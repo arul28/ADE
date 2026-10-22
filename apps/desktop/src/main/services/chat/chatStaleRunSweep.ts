@@ -101,6 +101,13 @@ export type StaleRunSweepDeps<TManaged extends StaleRunSweepManagedSession> = {
   /** Scheduled-work emission, so a live runtime's row bookkeeping stays in sync. */
   emitScheduledWorkUpdate: (managed: TManaged, event: ScheduledWorkEvent) => void;
   persistChatState: (managed: TManaged) => void;
+  /**
+   * The timer sweep closed rows a dead process left running in a chat no
+   * runtime here owns. That is a restart's damage reaching a chat nobody has
+   * touched, so the host runs its restart recovery from here (the row may not
+   * be marked detached for minutes, or ever, on a headless brain).
+   */
+  onSweptStaleRows?: (managed: TManaged) => void;
   logger: {
     info: (message: string, meta?: Record<string, unknown>) => void;
     warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -340,7 +347,18 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     // than trusting the verdict the candidate list was built from.
     if (!chatRuntimeAdoptable(sessionId, { quiet: true })) return null;
 
-    return emitStaleTerminals(managed, restartRecoveryStopAttribution(sessionId), stale);
+    const outcome = emitStaleTerminals(managed, restartRecoveryStopAttribution(sessionId), stale);
+    if (outcome.backgroundStopped > 0 || outcome.subagentsTerminalized > 0) {
+      try {
+        deps.onSweptStaleRows?.(managed);
+      } catch (error) {
+        logger.warn("agent_chat.stale_run_recovery_hook_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return outcome;
   };
 
   /** Chats this brain should look at, newest first, already cheaply filtered. */

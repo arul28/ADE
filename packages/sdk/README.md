@@ -24,9 +24,10 @@ npm install @ade-dev/sdk
 Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
-SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
-lower bound did not move in 0.5 — nothing in that line needs a new wire, so a
-host on runtime 1.2.82 keeps working. An older or newer runtime still
+SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
+lower bound did not move in 0.5 or 0.6, so a host on runtime 1.2.82 keeps
+working; the 0.6 MCP features (tool filters, mid-turn server updates) check
+the runtime's capability flags and are refused or fall back on an older one. An older or newer runtime still
 connects, logs one warning, and degrades feature by feature. Pass
 `requireCompatibleRuntime: true` to refuse it with
 `runtime_incompatible`. `doctor().runtime.compatibility` reports the verdict.

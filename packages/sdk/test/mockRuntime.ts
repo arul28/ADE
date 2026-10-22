@@ -35,6 +35,13 @@ export type MockRuntimeOptions = {
   updateMcpServers?: boolean;
   /** Advertise archive/unarchive/delete/getEventHistoryPage. Default true. */
   lifecycleActions?: boolean;
+  /** Advertise `capabilities.personalChats.mcpToolFilters`. Default false. */
+  mcpToolFilters?: boolean;
+  /**
+   * Advertise `capabilities.personalChats.deferredMcpUpdates` and queue a
+   * mid-turn `updateSession({ mcpServers })` instead of refusing it. Default false.
+   */
+  deferredMcpUpdates?: boolean;
 };
 
 type Session = {
@@ -54,6 +61,8 @@ type Session = {
   instructionsCapability: Record<string, unknown> | null;
   settingSourcesCapability: Record<string, unknown> | null;
   permissionCapability: Record<string, unknown> | null;
+  /** Servers a mid-turn update queued; installed before the next turn. */
+  pendingMcpServers?: Record<string, unknown>;
 };
 
 export class MockRuntime {
@@ -128,6 +137,8 @@ export class MockRuntime {
       providersStatus: options.providersStatus ?? false,
       pendingInputs: options.pendingInputs ?? true,
       updateMcpServers: options.updateMcpServers ?? false,
+      mcpToolFilters: options.mcpToolFilters ?? false,
+      deferredMcpUpdates: options.deferredMcpUpdates ?? false,
       lifecycleActions: options.lifecycleActions ?? true,
       runtimeVersion: options.runtimeVersion ?? "1.2.69",
     };
@@ -275,6 +286,8 @@ export class MockRuntime {
               pushEvents: this.options.pushEvents,
               mcpServers: this.options.mcpServers,
               ...(this.options.updateMcpServers ? { updateMcpServers: true } : {}),
+              ...(this.options.mcpToolFilters ? { mcpToolFilters: true } : {}),
+              ...(this.options.deferredMcpUpdates ? { deferredMcpUpdates: true } : {}),
             },
             ...(this.options.providersStatus
               ? { providers: { status: true, cacheTtlMs: 60_000 } }
@@ -389,6 +402,14 @@ export class MockRuntime {
       case "steer": {
         const sessionId = String(args.sessionId ?? "");
         if (!this.sessions.has(sessionId)) throw new Error("Personal chat session not found.");
+        // A queued mid-turn update goes in before the next turn, as the
+        // engine installs it at the turn boundary.
+        const sending = this.sessions.get(sessionId)!;
+        if (action === "send" && sending.pendingMcpServers) {
+          sending.createArgs = { ...sending.createArgs, mcpServers: sending.pendingMcpServers };
+          sending.mcpCapability = this.suppressMcpCapability ? null : this.capabilityReport(sending.createArgs);
+          delete sending.pendingMcpServers;
+        }
         this.emitChatEvent(sessionId, { type: "user_message", text: String(args.text ?? "") });
         return { ok: true };
       }
@@ -435,7 +456,16 @@ export class MockRuntime {
         if (args.reasoningEffort !== undefined) session.createArgs = { ...session.createArgs, reasoningEffort: args.reasoningEffort };
         if (args.fastMode !== undefined) session.createArgs = { ...session.createArgs, fastMode: args.fastMode };
         if (args.mcpServers !== undefined) {
-          if (session.status === "active") throw new Error("invalid_argument: mcpServers cannot change with a turn in flight");
+          if (session.status === "active") {
+            if (!this.options.deferredMcpUpdates) {
+              throw new Error("invalid_argument: mcpServers cannot change with a turn in flight");
+            }
+            // Validated at once (a bad map still fails), queued for the turn's end.
+            this.capabilityReport({ ...session.createArgs, mcpServers: args.mcpServers });
+            session.pendingMcpServers = args.mcpServers as Record<string, unknown>;
+            return { ...toSummary(session), mcpServersPending: true };
+          }
+          delete session.pendingMcpServers;
           session.createArgs = { ...session.createArgs, mcpServers: args.mcpServers };
           session.mcpCapability = this.suppressMcpCapability ? null : this.capabilityReport(session.createArgs);
         }
@@ -571,6 +601,34 @@ const DEFAULT_MCP_VERDICT = {
   residual: "a plugin-contributed server cannot be enumerated and survives",
 };
 
+/**
+ * Which per-server tool filters each provider can enforce. Source of truth:
+ * `CALLER_MCP_SUPPORT[provider].toolFilters` in
+ * `apps/desktop/src/shared/callerMcpServers.ts` (Claude hides tools only,
+ * Codex does both, every other provider neither). A filter a provider cannot
+ * enforce is refused at create, update and model switch, never dropped.
+ */
+const PROVIDER_TOOL_FILTERS: Record<string, { allowedTools: boolean; disallowedTools: boolean }> = {
+  claude: { allowedTools: false, disallowedTools: true },
+  codex: { allowedTools: true, disallowedTools: true },
+};
+
+function refuseUnenforceableToolFilters(provider: string, servers: unknown): void {
+  if (!servers || typeof servers !== "object") return;
+  const support = Object.prototype.hasOwnProperty.call(PROVIDER_TOOL_FILTERS, provider)
+    ? PROVIDER_TOOL_FILTERS[provider]!
+    : { allowedTools: false, disallowedTools: false };
+  for (const filter of ["allowedTools", "disallowedTools"] as const) {
+    if (support[filter]) continue;
+    const names = Object.entries(servers as Record<string, Record<string, unknown>>)
+      .filter(([, config]) => Array.isArray(config?.[filter]) && (config[filter] as unknown[]).length > 0)
+      .map(([name]) => name);
+    if (names.length) {
+      throw new Error(`invalid_argument: provider '${provider}' cannot enforce ${filter} on MCP server '${names.join("', '")}'.`);
+    }
+  }
+}
+
 function capabilityFor(args: Record<string, unknown>): Record<string, unknown> | null {
   // The runtime's own gate: servers were injected, OR strictness was explicitly
   // requested. `strictMcpConfig: false` alone asks for neither, so no report is
@@ -589,6 +647,7 @@ function capabilityFor(args: Record<string, unknown>): Record<string, unknown> |
   // "toString" would otherwise resolve to an `Object.prototype` function and be
   // destructured as a verdict. Same guard the real table uses in
   // `apps/desktop/src/shared/callerMcpServers.ts`.
+  refuseUnenforceableToolFilters(provider, args.mcpServers);
   const verdict = Object.prototype.hasOwnProperty.call(PROVIDER_MCP_VERDICTS, provider)
     ? PROVIDER_MCP_VERDICTS[provider]!
     : { ...DEFAULT_MCP_VERDICT, strictMechanism: `${provider} overlay` };

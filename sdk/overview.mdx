@@ -51,9 +51,17 @@ The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --soc
 
 Provider logins are **not** stored under the sidecar home. Claude / Codex / Cursor credentials stay in those tools' own config homes. If the machine user can already run that provider in a terminal, the sidecar can too.
 
+## What's new in 0.6
+
+`@ade-dev/sdk` 0.6.0 and `@ade-dev/chat-ui` 0.6.0 are the current versions. SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0`, the same range as 0.5; the new MCP features check the runtime's capability flags and are refused, or fall back, on an older runtime.
+
+- **Tokens that expire during a chat.** `mcpHeaders` may be async, and it runs before every `send`, `retry` and `editLast`: a changed token is pushed before the turn, and `thread.refreshMcpHeaders()` pushes one on demand. See [Tokens that expire during a chat](/sdk/mcp#tokens-that-expire-during-a-chat).
+- **Per-server tool filters.** `allowedTools` / `disallowedTools` on an MCP server choose which of its tools reach the model. A filter the provider cannot enforce is refused, never dropped. See [Filtering a server's tools](/sdk/mcp#filtering-a-servers-tools).
+- **`updateMcpServers` during a turn.** The runtime queues the servers for the turn's end instead of refusing, and the session summary reports `mcpServersPending: true` until the swap.
+
 ## What's new in 0.5
 
-`@ade-dev/sdk` 0.5.1, `@ade-dev/chat-ui` 0.5.1 and runtime 1.2.83 are the current versions. SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move across 0.5: nothing in that line needs a new wire, so a host on runtime 1.2.82 keeps working. Patch 0.5.1 carries one tidy that landed on main after 0.5.0 published: the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives. See [Version compatibility](/sdk/runtime#version-compatibility).
+SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move across 0.5: nothing in that line needs a new wire, so a host on runtime 1.2.82 keeps working. Patch 0.5.1 carries one tidy that landed on main after 0.5.0 published: the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives. See [Version compatibility](/sdk/runtime#version-compatibility).
 
 - **Attachment roots that fail the whole open.** `checkAttachmentRoot(path, home)` and `filterAttachmentRoots(list, home)` test a root before you send it, so one bad entry no longer locks every chat. An identical list is not sent again. See [Where a path may point](/sdk/threads#where-a-path-may-point).
 - **A host hook for removals.** `registerAdeIpc({ onThreadRemoved })` fires for every delete and archive the served client reports, whoever made it, so your chat list stays exact. It follows a client swapped per account as soon as the bridge serves a call. See [Electron](/sdk/electron#hosts-with-many-threads).

@@ -16,7 +16,7 @@ import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
 import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
 import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
-import type { AgentChatEventEnvelope } from "./types/chat";
+import { CHAT_STOP_REASON_BRAIN_RESTARTED, type AgentChatEventEnvelope } from "./types/chat";
 
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
 export const AUTO_RESUME_SCHEDULED_WORK_SOURCE = "auto_resume_limit";
@@ -357,11 +357,39 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
   for (const envelope of events) {
     if (envelope.event.type === "done" && envelope.timestamp > lastDoneAt) lastDoneAt = envelope.timestamp;
   }
-  const closedByRestart = (summary: string | null | undefined, at: string | null | undefined): boolean =>
-    Boolean(summary && ORPHAN_RESTART_SUMMARIES.has(summary) && (at ?? "") > lastDoneAt);
+  // The stale-run sweep usually reaches a dead brain's chat seconds after the
+  // new brain starts, well before the row is marked detached and recovery
+  // runs. It closes a subagent row with the agent's last progress text or
+  // "Stopped: the ADE brain restarted", not one of the summaries above, so its
+  // attribution is what marks the row as this restart's damage. Spawn names
+  // come from `subagent_started`: a row's label follows its progress
+  // ("Running Sleep 590 seconds…"), not what the agent was asked to do.
+  const restartClosedIds = new Set<string>();
+  const spawnNameById = new Map<string, string>();
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "subagent_started") {
+      const name = event.description?.trim();
+      if (name && !spawnNameById.has(event.taskId)) spawnNameById.set(event.taskId, name);
+      continue;
+    }
+    if (event.type === "subagent_result" || event.type === "scheduled_work_update") {
+      const id = event.type === "subagent_result" ? event.taskId : event.id;
+      if (event.stopReason === CHAT_STOP_REASON_BRAIN_RESTARTED && envelope.timestamp > lastDoneAt) {
+        restartClosedIds.add(id);
+      }
+    }
+  }
+  const closedByRestart = (
+    summary: string | null | undefined,
+    at: string | null | undefined,
+    id?: string,
+  ): boolean =>
+    Boolean(id && restartClosedIds.has(id))
+    || Boolean(summary && ORPHAN_RESTART_SUMMARIES.has(summary) && (at ?? "") > lastDoneAt);
   for (const item of deriveBackgroundItems(events)) {
     const live = item.status === "running" || item.status === "scheduled";
-    if (!live && !closedByRestart(item.summary, item.updatedAt)) continue;
+    if (!live && !closedByRestart(item.summary, item.updatedAt, item.id)) continue;
     const label = clampLabel(backgroundCommandLabel(item.title) || item.title || item.summary || "background command");
     const key = `command:${item.sourceTaskId ?? item.id}`;
     if (seen.has(key)) continue;
@@ -370,7 +398,7 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
   }
   for (const snapshot of subagentSnapshotsFromEvents(events)) {
     const live = snapshot.status === "running";
-    if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt)) continue;
+    if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt, snapshot.id)) continue;
     if (snapshot.id.startsWith("chat:")) continue;
     const key = `subagent:${snapshot.id}`;
     if (seen.has(key)) continue;
@@ -378,7 +406,10 @@ export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): R
     const kind: RestartCancelledWork["kind"] = snapshot.taskType === "local_workflow"
       ? "workflow"
       : snapshot.taskType === "subagent" || snapshot.kind === "teammate" ? "subagent" : "task";
-    out.push({ kind, label: clampLabel(snapshot.label || snapshot.name || snapshot.workflowName || "subagent") });
+    out.push({
+      kind,
+      label: clampLabel(spawnNameById.get(snapshot.id) || snapshot.label || snapshot.name || snapshot.workflowName || "subagent"),
+    });
   }
   return out;
 }
@@ -431,6 +462,8 @@ export function buildBackgroundWorkLostNote(args: {
  *   • reconfigure / runtime_exit / explicit_restart — a chat that sat waiting
  *     on the work is woken now (once per chain),
  *   • shutdown — same, but the wake is armed for restart recovery,
+ *   • brain_restart — found by restart recovery (a crash, or a shutdown that
+ *     could not record it); the recovery wake is a durable resume row,
  *   • user_stop / closed / eviction — the agent is told on its next turn and
  *     nothing starts on its own.
  */
@@ -438,6 +471,7 @@ export type BackgroundLossCause =
   | "reconfigure"
   | "runtime_exit"
   | "shutdown"
+  | "brain_restart"
   | "explicit_restart"
   | "user_stop"
   | "closed"
@@ -448,6 +482,7 @@ export const BACKGROUND_LOSS_CAUSE_COPY: Record<BackgroundLossCause, string> = {
   reconfigure: "ADE restarted it after the chat's model, MCP servers, account or settings changed",
   runtime_exit: "it exited on its own",
   shutdown: "ADE shut down",
+  brain_restart: "ADE restarted",
   explicit_restart: "the agent session was restarted",
   user_stop: "the chat was stopped",
   closed: "the chat was closed",

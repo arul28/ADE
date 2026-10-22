@@ -328,6 +328,46 @@ describe("Claude query lifecycle", () => {
     expect(lifecycleRestartNotices(events)).toHaveLength(0);
   });
 
+  // A chat waiting on background work it then loses must be told once, and
+  // only once: the wake turn starts the work again, and if a second restart
+  // loses that too, waking again would loop for as long as restarts happen.
+  it("wakes a chat once when a restart by name loses the background work it waits on", async () => {
+    const { service, events, session } = await createDrivenSession([
+      {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "background-task-1", task_type: "local_bash", description: "Run the verification suite" }],
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "background-task-1",
+        task_type: "local_bash",
+        description: "Run the verification suite",
+        command: "npm test",
+      },
+    ]);
+    const wakeTurns = () => events.filter((envelope) =>
+      envelope.event.type === "user_message"
+      && (envelope.event.metadata as { hostContinuation?: { reason?: string } } | undefined)
+        ?.hostContinuation?.reason === "background_work_lost");
+    const lossNotices = () => events.filter((envelope) =>
+      envelope.event.type === "system_notice" && /ended with the agent process/.test(envelope.event.message));
+
+    await service.restartSession({ sessionId: session.id });
+    await vi.waitFor(() => expect(wakeTurns()).toHaveLength(1));
+    expect(lossNotices()[0]?.event).toMatchObject({ message: expect.stringContaining("npm test") });
+    // The wake turn ran the same work again, and it is running when the next restart lands.
+    await vi.waitFor(() => expect(events.filter((envelope) => envelope.event.type === "done")).toHaveLength(2));
+
+    await service.restartSession({ sessionId: session.id });
+    await vi.waitFor(() => expect(lossNotices()).toHaveLength(2));
+    // A wake is armed on a zero-delay timer; let any due one fire before counting.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wakeTurns()).toHaveLength(1);
+  });
+
   it("does not emit an orphan notice when reset has no open background task", async () => {
     const { service, events, session } = await createDrivenSession([]);
 
