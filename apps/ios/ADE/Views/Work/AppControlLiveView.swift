@@ -574,15 +574,19 @@ struct AppControlViewer: View {
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
+      // In the tools pane the picture sits on the pane's own background.
+      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
       VStack(spacing: 0) {
-        controls
+        // In the Work tools pane these are the pane's toolbar items instead.
+        if !embedded {
+          controls
+        }
         // The stage fills the space between the controls and the footer, and
         // a zoomed picture may use all of it.
         stage
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .livePictureViewport()
-        if !compactHeight {
+        if !compactHeight && !embedded {
           footer
         }
       }
@@ -594,6 +598,12 @@ struct AppControlViewer: View {
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
     .preferredColorScheme(embedded ? nil : .dark)
+    .modifier(AppControlPaneChrome(
+      enabled: embedded,
+      subtitle: appControl.map { appControlIsLive($0) ? "Watching · Live" : "Watching · Off" } ?? appControlTagLabel,
+      session: syncService.supportsViewerRemoteAction("appControl.inspectPoint") ? session : nil,
+      onInspect: { beginInspect() }
+    ))
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -680,22 +690,26 @@ struct AppControlViewer: View {
       if loaded {
         stageMessage("No app is attached in this lane.")
       } else {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
     } else if let session {
-      AppControlLivePicture(session: session, live: appControlIsLive(appControl), zoomable: true, inCard: false)
-        .padding(.horizontal, 12)
+      // In the pane: the card style (a window's rounded corners, readable
+      // waiting text on the pane's background), lifted by a soft shadow.
+      AppControlLivePicture(session: session, live: appControlIsLive(appControl), zoomable: true, inCard: embedded)
+        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
+        .padding(.horizontal, embedded ? 16 : 12)
+        .padding(.vertical, embedded ? 16 : 0)
     } else if syncService.connectionState != .connected {
       stageMessage("Waiting for the connection to your Mac…")
     } else {
-      ProgressView().tint(.white)
+      ProgressView().tint(embedded ? nil : .white)
     }
   }
 
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(.white.opacity(0.85))
+      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
@@ -816,5 +830,48 @@ private struct AppControlInspectButton: View {
       .accessibilityLabel("Inspect")
       .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
     }
+  }
+}
+
+/// The App Control viewer's controls as the Work tools pane's toolbar items,
+/// and its Live/Off tag as the pane's subtitle. Off (the full-screen viewer),
+/// it changes nothing.
+private struct AppControlPaneChrome: ViewModifier {
+  let enabled: Bool
+  let subtitle: String
+  let session: AppControlLiveSession?
+  let onInspect: () -> Void
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content
+        .navigationSubtitle(subtitle)
+        .duoKeptToolbar {
+          ToolbarSpacer(.fixed, placement: .topBarTrailing)
+          ToolbarItem(placement: .topBarTrailing) {
+            if let session {
+              AppControlInspectToolbarButton(session: session, action: onInspect)
+            }
+          }
+        }
+    } else {
+      content
+    }
+  }
+}
+
+/// Inspect, as a toolbar item, once there is a frame to freeze. Its own view so
+/// the frame's arrival re-renders the item, not the viewer.
+private struct AppControlInspectToolbarButton: View {
+  @ObservedObject var session: AppControlLiveSession
+  let action: () -> Void
+
+  var body: some View {
+    Button("Inspect", systemImage: "viewfinder") {
+      ADEHaptics.light()
+      action()
+    }
+    .disabled(session.image == nil)
+    .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
   }
 }

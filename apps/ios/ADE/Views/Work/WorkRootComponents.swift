@@ -332,6 +332,12 @@ struct WorkSidebarSectionHeader: View {
   /// quiet zone reads as its own region rather than one more lane. Same fence the
   /// desktop sidebar draws (`renderQuietZone` in `SessionListPane.tsx`).
   var startsQuietZone = false
+  /// Wide display only: the lane's branch under its name, as desktop's header
+  /// shows it.
+  var branch: String? = nil
+  /// Wide display only: the lane tools live on this lane, from the open chat's
+  /// own chip poll (the one lane the phone already polls).
+  var toolMarks: [DuoToolTab] = []
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -381,10 +387,19 @@ struct WorkSidebarSectionHeader: View {
               .frame(maxWidth: .infinity)
               .accessibilityHidden(true)
           } else {
-            Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
-              .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
-              .foregroundStyle(quietAwareLabelColor)
-              .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+              Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
+                .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+                .foregroundStyle(quietAwareLabelColor)
+                .lineLimit(1)
+              if let branch, !branch.isEmpty, !isQuietRow, branch != group.label {
+                Text(branch)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(ADEColor.textMuted)
+                  .lineLimit(1)
+                  .truncationMode(.middle)
+              }
+            }
             if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
               WorkRemoteLaneGlyph()
             }
@@ -418,6 +433,18 @@ struct WorkSidebarSectionHeader: View {
       // competes with the count.
       if !isQuietRow, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
         laneGitStateChips(laneStatus)
+      }
+
+      if !toolMarks.isEmpty, !isQuietRow {
+        HStack(spacing: 5) {
+          ForEach(toolMarks) { tab in
+            Image(systemName: tab.symbolName)
+              .font(.caption2.weight(.semibold))
+          }
+        }
+        .foregroundStyle(ADEColor.textSecondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Live tools: \(toolMarks.map(\.title).joined(separator: ", "))")
       }
 
       if let pullRequest {
@@ -725,6 +752,8 @@ struct WorkSessionListRow: View {
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
   var waitingOnSubagent: Bool = false
+  /// A card on the Duo's board (see `WorkSessionRow.boardCard`).
+  var boardCard = false
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -949,7 +978,8 @@ struct WorkSessionListRow: View {
           compact: compact,
           nestedSubagent: nestedSubagent,
           showsLaneIdentity: showsLaneIdentity,
-          waitingOnSubagent: waitingOnSubagent
+          waitingOnSubagent: waitingOnSubagent,
+          boardCard: boardCard
         )
         .equatable()
       }
@@ -1945,16 +1975,27 @@ private struct WorkHeaderSearchField: View {
 /// `unreadCount` the bell used — so moving the bell in here loses no signal.
 ///
 /// The only observer in the header, and of `ActivityDrawerModel` alone.
-private struct WorkHeaderOverflowMenu: View {
+struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
   let actions: WorkRootHeaderActions
+  /// In a system toolbar: a plain symbol label (with the unread count as the
+  /// item's badge), which the toolbar styles and lays out itself.
+  var toolbarLabel = false
 
   private var unread: Int { drawer.unreadCount }
 
   var body: some View {
+    if toolbarLabel {
+      menu
+    } else {
+      menu.buttonStyle(.plain)
+    }
+  }
+
+  private var menu: some View {
     Menu {
       Button {
         ADEHaptics.light()
@@ -1994,26 +2035,131 @@ private struct WorkHeaderOverflowMenu: View {
         Label("Settings", systemImage: "gearshape")
       }
     } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .frame(width: 32, height: 44)
-        .overlay(alignment: .topTrailing) {
-          if unread > 0 {
-            Circle()
-              .fill(ADEColor.warning)
-              .frame(width: 8, height: 8)
-              .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
-              .offset(x: -2, y: 10)
-              .transition(.scale.combined(with: .opacity))
-          }
-        }
-        .contentShape(Rectangle())
+      if toolbarLabel {
+        Label("More", systemImage: unread > 0 ? "ellipsis.circle.fill" : "ellipsis")
+      } else {
+        phoneLabel
+      }
     }
-    .buttonStyle(.plain)
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
     .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+  }
+
+  private var phoneLabel: some View {
+    Image(systemName: "ellipsis")
+      .font(.system(size: 18, weight: .semibold))
+      .foregroundStyle(ADEColor.textPrimary)
+      .frame(width: 32, height: 44)
+      .overlay(alignment: .topTrailing) {
+        if unread > 0 {
+          Circle()
+            .fill(ADEColor.warning)
+            .frame(width: 8, height: 8)
+            .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
+            .offset(x: -2, y: 10)
+            .transition(.scale.combined(with: .opacity))
+        }
+      }
+      .contentShape(Rectangle())
+  }
+}
+
+/// Desktop's filter panel (`WorkFilterPanel.tsx`) as one native menu, for the
+/// Duo's sessions toolbar: "View" groups and never hides a chat; "Show only"
+/// does. Same bindings as the phone's floating panel, so the two can never
+/// disagree about what is filtered.
+struct WorkFilterMenu: View {
+  @Binding var organization: WorkSessionOrganization
+  @Binding var foldBusyLanes: Bool
+  @Binding var selectedStatus: WorkSessionStatusFilter
+  @Binding var selectedLaneId: String
+  @Binding var machineFilter: String
+  let machineOptions: [WorkMachineFilterOption]
+  let lanes: [LaneSummary]
+  let activeFilterCount: Int
+  let onClear: () -> Void
+
+  private var selectedMachines: Set<String> { workParseMachineFilter(machineFilter) }
+
+  var body: some View {
+    Menu {
+      Section("Group by") {
+        Picker("Group by", selection: $organization.animation(.snappy(duration: 0.18))) {
+          ForEach(WorkSessionOrganization.allCases) { option in
+            Text(option.title).tag(option)
+          }
+        }
+        .pickerStyle(.inline)
+        if organization == .byLane {
+          Toggle("Fold busy lanes", isOn: $foldBusyLanes.animation(.snappy(duration: 0.18)))
+        }
+      }
+      Section("Show only") {
+        Picker(selection: $selectedStatus.animation(.snappy(duration: 0.18))) {
+          ForEach(WorkSessionStatusFilter.allCases) { status in
+            Text(status == .all ? "Any status" : status.title).tag(status)
+          }
+        } label: {
+          Label("Status", systemImage: "circle.dashed")
+        }
+        .pickerStyle(.menu)
+        if machineOptions.count > 1 || !selectedMachines.isEmpty {
+          Menu {
+            ForEach(machineOptions) { machine in
+              Toggle(
+                machine.isLive ? machine.name : "\(machine.name) (offline)",
+                isOn: Binding(
+                  get: { selectedMachines.contains(machine.id) },
+                  set: { on in
+                    var next = selectedMachines
+                    if on { next.insert(machine.id) } else { next.remove(machine.id) }
+                    withAnimation(.snappy(duration: 0.18)) { machineFilter = workSerializeMachineFilter(next) }
+                  }
+                )
+              )
+            }
+            if !selectedMachines.isEmpty {
+              Divider()
+              Button("Show all machines") {
+                withAnimation(.snappy(duration: 0.18)) { machineFilter = "" }
+              }
+            }
+          } label: {
+            Label("Machine", systemImage: "desktopcomputer")
+          }
+        }
+        Picker(selection: $selectedLaneId) {
+          Text("All lanes").tag("all")
+          ForEach(lanes) { lane in
+            Text(laneMenuTitle(lane)).tag(lane.id)
+          }
+        } label: {
+          Label("Lane", systemImage: "arrow.triangle.branch")
+        }
+        .pickerStyle(.menu)
+      }
+      if activeFilterCount > 0 {
+        Button("Clear filters", systemImage: "xmark.circle") {
+          withAnimation(.snappy(duration: 0.18)) { onClear() }
+        }
+      }
+    } label: {
+      Label(
+        activeFilterCount > 0 ? "Filters, \(activeFilterCount) on" : "Filters",
+        systemImage: activeFilterCount > 0
+          ? "line.3.horizontal.decrease.circle.fill"
+          : "line.3.horizontal.decrease"
+      )
+    }
+    .accessibilityIdentifier("Duo.Work.FilterMenu")
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the menu entry.
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
   }
 }
 

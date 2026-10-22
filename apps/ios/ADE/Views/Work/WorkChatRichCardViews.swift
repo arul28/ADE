@@ -3097,7 +3097,34 @@ func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> I
 /// Schedule. Mirrors the desktop chat-info pane (`buildSubagentPaneRows` +
 /// `deriveScheduleItems` / `deriveBackgroundItems`). Empty sections are hidden;
 /// a shared empty state renders only when all three are empty.
+/// Which parts of Chat Info a surface shows. The sheet shows all of it; the
+/// Duo's tools pane splits it into desktop's drawer tabs: Agents (subagents and
+/// background work) and Info (tasks, schedule and sources).
+struct WorkChatInfoSections: OptionSet, Equatable {
+  let rawValue: Int
+  static let agents = WorkChatInfoSections(rawValue: 1 << 0)
+  static let info = WorkChatInfoSections(rawValue: 1 << 1)
+  static let all: WorkChatInfoSections = [.agents, .info]
+
+  var title: String {
+    switch self {
+    case .agents: return "Agents"
+    case .info: return "Info"
+    default: return "Chat Info"
+    }
+  }
+
+  var emptyMessage: String {
+    switch self {
+    case .agents: return "No agents yet. Subagents and background work show up as the chat runs."
+    case .info: return "Nothing here yet. Tasks, schedules and sources show up as the chat runs."
+    default: return "Nothing here yet. Agents, tasks and sources show up as the chat runs."
+    }
+  }
+}
+
 struct WorkChatInfoDetailsSheet: View {
+  var sections: WorkChatInfoSections = .all
   let sessionId: String
   let subagentSnapshots: [WorkSubagentSnapshot]
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
@@ -3132,6 +3159,7 @@ struct WorkChatInfoDetailsSheet: View {
   private let scheduleCap = 10
 
   init(
+    sections: WorkChatInfoSections = .all,
     sessionId: String,
     subagentSnapshots: [WorkSubagentSnapshot],
     scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
@@ -3149,6 +3177,7 @@ struct WorkChatInfoDetailsSheet: View {
     onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil,
     onStopTask: (@MainActor (String) async -> Void)? = nil
   ) {
+    self.sections = sections
     self.sessionId = sessionId
     self.subagentSnapshots = subagentSnapshots
     self.scheduledWorkSnapshots = scheduledWorkSnapshots
@@ -3156,9 +3185,12 @@ struct WorkChatInfoDetailsSheet: View {
     self.nextWakeAt = nextWakeAt
     self.provider = provider
     self.sessionModel = sessionModel
-    self.sourceRefs = sourceRefs
-    self.omittedSourceRefCount = max(0, omittedSourceRefCount)
-    self.taskList = taskList
+    // Tasks and sources are Info; a surface showing Agents only drops them here
+    // so every section below reads one source of truth.
+    let showsInfo = sections.contains(.info)
+    self.sourceRefs = showsInfo ? sourceRefs : []
+    self.omittedSourceRefCount = showsInfo ? max(0, omittedSourceRefCount) : 0
+    self.taskList = showsInfo ? taskList : nil
     self.onResolveSourceFavicons = onResolveSourceFavicons
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
@@ -3180,15 +3212,18 @@ struct WorkChatInfoDetailsSheet: View {
   /// merged into one list. Source order is stable; terminal rows move into the
   /// Earlier partition without reordering survivors.
   private var subagents: [WorkSubagentSnapshot] {
-    workChatInfoSubagents(subagentSnapshots)
+    guard sections.contains(.agents) else { return [] }
+    return workChatInfoSubagents(subagentSnapshots)
   }
 
   private var backgroundItems: [WorkScheduledWorkSnapshot] {
-    workChatInfoBackgroundItems(scheduledWorkSnapshots)
+    guard sections.contains(.agents) else { return [] }
+    return workChatInfoBackgroundItems(scheduledWorkSnapshots)
   }
 
   private var scheduleItems: [WorkScheduledWorkSnapshot] {
-    workChatInfoScheduleItems(scheduledWorkSnapshots)
+    guard sections.contains(.info) else { return [] }
+    return workChatInfoScheduleItems(scheduledWorkSnapshots)
   }
 
   private var isEmpty: Bool {
@@ -3373,7 +3408,7 @@ struct WorkChatInfoDetailsSheet: View {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 0) {
           if isEmpty {
-            Text("Nothing here yet. Agents, tasks and sources show up as the chat runs.")
+            Text(sections.emptyMessage)
               .font(.footnote)
               .foregroundStyle(ADEColor.textMuted)
               .padding(.vertical, 16)
@@ -3514,7 +3549,7 @@ struct WorkChatInfoDetailsSheet: View {
       }
       .scrollIndicators(.hidden)
       .background(workChatCanvasBackground.ignoresSafeArea())
-      .navigationTitle("Chat Info")
+      .navigationTitle(sections.title)
       .navigationBarTitleDisplayMode(.inline)
       .task(id: visibleSourceHosts.joined(separator: "|")) {
         guard !visibleSourceHosts.isEmpty, let onResolveSourceFavicons else { return }

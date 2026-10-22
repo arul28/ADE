@@ -124,6 +124,9 @@ struct WorkChatHeaderMenuModel: Equatable {
 /// something the menu actually displays has changed.
 struct WorkChatHeaderMenu: View, Equatable {
   var model: WorkChatHeaderMenuModel
+  /// In a system toolbar (the Duo's wide chat column): a plain ellipsis label
+  /// the toolbar styles itself, instead of the phone header's glass circle.
+  var toolbarLabel = false
   var onShowChatInfo: () -> Void
   var onShowProof: () -> Void
   var onViewPrDetails: () -> Void
@@ -143,10 +146,21 @@ struct WorkChatHeaderMenu: View, Equatable {
   var onAttachIssue: (() -> Void)? = nil
 
   static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
-    lhs.model == rhs.model
+    lhs.model == rhs.model && lhs.toolbarLabel == rhs.toolbarLabel
   }
 
   var body: some View {
+    if toolbarLabel {
+      menu
+        .accessibilityLabel("More")
+    } else {
+      menu
+        .buttonStyle(.plain)
+        .accessibilityLabel("Chat actions")
+    }
+  }
+
+  private var menu: some View {
     Menu {
       Button(action: onShowChatInfo) {
         if model.chatInfoCount == 0 {
@@ -185,10 +199,12 @@ struct WorkChatHeaderMenu: View, Equatable {
 
       sessionItems
     } label: {
-      WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
+      if toolbarLabel {
+        Label("More", systemImage: "ellipsis")
+      } else {
+        WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
+      }
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Chat actions")
   }
 
   @ViewBuilder

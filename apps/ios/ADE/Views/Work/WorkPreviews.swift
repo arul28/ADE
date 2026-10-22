@@ -254,6 +254,37 @@ private enum WorkPreviewData {
     automationSummary.sessionId: automationSummary,
   ]
 
+  /// The preview transcript plus two subagents (one running, one done), for
+  /// the Duo fixtures' Agents tab.
+  static var duoTranscript: [WorkChatEnvelope] {
+    let base = transcript
+    let next = (base.compactMap(\.sequence).max() ?? 0) + 1
+    return base + [
+      envelope(sequence: next, event: .subagentStarted(
+        taskId: "duo-agent-1", agentId: "agent-1", agentType: "general-purpose",
+        parentToolUseId: "tool-agent-1", description: "Profile the Work tab's tab-switch path",
+        background: false, label: "Profiler", model: "claude-opus-5", reasoningEffort: nil, turnId: "turn-1"
+      )),
+      envelope(sequence: next + 1, event: .subagentProgress(
+        taskId: "duo-agent-1", agentId: "agent-1", agentType: "general-purpose",
+        parentToolUseId: "tool-agent-1", description: "Profile the Work tab's tab-switch path",
+        summary: "Tracing body counts while switching from Work to Lanes and back.",
+        toolName: "Bash", label: "Profiler", model: "claude-opus-5", reasoningEffort: nil, turnId: "turn-1"
+      )),
+      envelope(sequence: next + 2, event: .subagentStarted(
+        taskId: "duo-agent-2", agentId: "agent-2", agentType: "Explore",
+        parentToolUseId: "tool-agent-2", description: "Find every reload keyed on the database revision",
+        background: false, label: "Explorer", model: "claude-sonnet-5", reasoningEffort: nil, turnId: "turn-1"
+      )),
+      envelope(sequence: next + 3, event: .subagentResult(
+        taskId: "duo-agent-2", agentId: "agent-2", agentType: "Explore",
+        parentToolUseId: "tool-agent-2", status: "completed",
+        summary: "Four tabs reload on every revision; Lanes and Files ignore isTabActive.",
+        label: "Explorer", model: "claude-sonnet-5", reasoningEffort: nil, turnId: "turn-1"
+      )),
+    ]
+  }
+
   static let transcript: [WorkChatEnvelope] = [
     envelope(
       sequence: 1,
@@ -573,6 +604,18 @@ func workPreviewChatSessionView(
   }
   .environmentObject(WorkPreviewData.syncService)
   .environmentObject(WorkPreviewData.dictationController)
+}
+
+/// The Work preview transcript as a thread, for the Duo's `duo-work*`
+/// fixtures, which mount the real destination rather than the bare chat view.
+@MainActor
+func workPreviewDuoThreadModel(sessionId: String) -> ChatThreadModel {
+  workPreviewThreadModel(
+    sessionId: sessionId,
+    transcript: WorkPreviewData.duoTranscript,
+    artifacts: [WorkPreviewData.artifact],
+    provider: WorkPreviewData.chatSummary.provider
+  )
 }
 
 /// A thread model holding one frame folded from a fixed transcript, for

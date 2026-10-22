@@ -725,6 +725,9 @@ struct WorkChatSessionView: View {
   /// chip's tool as a pane tab instead of a full-screen cover, and the chip's
   /// own poll is the pane's only state source. Nil on every pushed chat.
   var duoPane: DuoWorkPaneModel? = nil
+  /// The tools pane is open beside this chat. Its tools are then in the pane's
+  /// toolbar, so the composer drops its lane tool chips (never the chat's own).
+  var duoPaneOpen = false
 
   @State private var threadCommentsSheetPresented = false
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
@@ -1109,7 +1112,7 @@ struct WorkChatSessionView: View {
   /// Lane tool chips: the lane's running simulator, browser tabs and App
   /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
   var showsComposerLaneToolChips: Bool {
-    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
+    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty && !duoPaneOpen
   }
 
   /// The thread-comments chip: only while the chat has at least one comment
@@ -2019,7 +2022,10 @@ struct WorkChatSessionView: View {
         // keyboard (like the composer) is just more bottom inset. A keyboard
         // show/hide is then an inset change, which re-pins a following reader
         // and leaves everyone else's offset untouched.
-        .ignoresSafeArea(edges: [.top, .bottom])
+        // In the Duo's wide column the header is a native navigation bar, so
+        // the thread starts under it rather than running beneath it: a short
+        // half (laptop) must not tuck its first message under the bar.
+        .ignoresSafeArea(edges: duoPane == nil ? [.top, .bottom] : [.bottom])
         // The proxy reports the layout frame; the bands the transcript was
         // allowed to grow into (header + status bar above, home indicator or
         // keyboard below) come back as its safe-area insets.
@@ -2127,7 +2133,9 @@ struct WorkChatSessionView: View {
   /// Band the header covers at the top of the transcript: the status bar and
   /// header the transcript grew under.
   var transcriptTopInset: CGFloat {
-    max(9, transcriptSafeInsets.top.rounded() + 6)
+    // The Duo column's thread starts under a native bar, whose scroll-edge
+    // effect softens the first few points; the first message starts clear of it.
+    max(duoPane == nil ? 9 : 22, transcriptSafeInsets.top.rounded() + 6)
   }
 
   /// Band the composer stack (chips included) covers at the bottom: the

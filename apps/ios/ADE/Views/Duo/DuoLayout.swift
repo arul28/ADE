@@ -169,8 +169,14 @@ struct DuoSeam: View {
             height: axis == .horizontal ? max(thickness, 1) : nil
           )
           .overlay {
+            // Only a hint of depth, in the middle third of the fold: the hinge
+            // itself is the divider, and a wider or darker band reads as a slab.
             LinearGradient(
-              colors: [.black.opacity(0), .black.opacity(0.10 * duo.bend), .black.opacity(0)],
+              stops: [
+                .init(color: .black.opacity(0), location: 0.35),
+                .init(color: .black.opacity(0.04 * duo.bend), location: 0.5),
+                .init(color: .black.opacity(0), location: 0.65),
+              ],
               startPoint: axis == .vertical ? .leading : .top,
               endPoint: axis == .vertical ? .trailing : .bottom
             )

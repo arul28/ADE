@@ -379,7 +379,13 @@ struct WorkLaneToolsPresenter: ViewModifier {
       // Which tools exist is the same answer the chips give; the pane only
       // needs the identities, and this fires only when the chip set changes.
       .onChange(of: model.chips, initial: true) { _, chips in
-        duoPane?.setToolTabs(chips.map(\.duoToolTab))
+        duoPane?.setToolTabs(chips.map(\.duoToolTab), seed: DuoToolSeed(
+          appleStatus: model.appleStatus,
+          macDesktop: model.macDesktopState,
+          appControl: model.appControlState,
+          appControlStream: model.appControlStream,
+          macDesktopStream: syncService.supportsMacDesktopStream
+        ))
       }
       .sheet(isPresented: model.isPresented(.toolSheet(.browser))) {
         toolSheet(.browser)

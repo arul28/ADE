@@ -203,6 +203,9 @@ struct WorkChatPrDetailsSheet: View {
   var onDismissStackOffer: () -> Void = {}
   var onLinkPr: (String, Bool) -> Void = { _, _ in }
   var onUnlink: () -> Void = {}
+  /// In the Duo's tools pane: the pane's bar carries the title (as subtitle)
+  /// and Refresh, so the sheet's own centered title row goes.
+  var embedded = false
 
   @State private var linkPickerOpen = false
 
@@ -239,8 +242,26 @@ struct WorkChatPrDetailsSheet: View {
   }
 
   var body: some View {
+    if embedded {
+      content
+        .navigationSubtitle(sheetTitle)
+        .duoKeptToolbar {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+              .disabled(isRefreshing)
+              .accessibilityLabel("Refresh pull request details")
+          }
+        }
+    } else {
+      content
+    }
+  }
+
+  private var content: some View {
     VStack(spacing: 0) {
-      topBar
+      if !embedded {
+        topBar
+      }
 
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
@@ -251,6 +272,7 @@ struct WorkChatPrDetailsSheet: View {
             emptyPrContent
           }
         }
+        .padding(.top, embedded ? 8 : 0)
       }
       .scrollIndicators(.hidden)
     }

@@ -382,6 +382,9 @@ struct WorkSessionRow: View, Equatable {
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
   var waitingOnSubagent: Bool = false
+  /// A card on the Duo's board: narrow, so the PR mark moves up to the lane
+  /// line, the title gets two lines, and the provider mark goes.
+  var boardCard: Bool = false
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -397,8 +400,10 @@ struct WorkSessionRow: View, Equatable {
     compact: Bool = false,
     nestedSubagent: Bool = false,
     showsLaneIdentity: Bool = true,
-    waitingOnSubagent: Bool = false
+    waitingOnSubagent: Bool = false,
+    boardCard: Bool = false
   ) {
+    self.boardCard = boardCard
     self.session = session
     self.lane = lane
     self.pullRequest = pullRequest
@@ -429,7 +434,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   static func == (lhs: WorkSessionRow, rhs: WorkSessionRow) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
+    lhs.renderSignature == rhs.renderSignature && lhs.boardCard == rhs.boardCard
   }
 
   var body: some View {
@@ -587,11 +592,19 @@ struct WorkSessionRow: View, Equatable {
         if showsLaneIdentity {
           laneChip
           laneGitState
+          if boardCard, let pullRequest {
+            WorkLanePrIndicator(tag: pullRequest)
+              .fixedSize()
+          }
         }
         lineageMark(font: .caption2)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      statusSlot(wraps: false)
+      // On the board the column is the status; the narrow card spends the
+      // line on the lane and its PR instead.
+      if !boardCard {
+        statusSlot(wraps: false)
+      }
     }
   }
 
@@ -647,12 +660,12 @@ struct WorkSessionRow: View, Equatable {
 
   private var lineTwo: some View {
     HStack(spacing: 6) {
-      titleView(lineLimit: 1)
+      titleView(lineLimit: boardCard ? 2 : 1)
 
       // Only on a headerless row. Under a lane header the PR already sits on the
       // header, so rendering it per row prints the same "#14 Open" down the
-      // whole section.
-      if showsLaneIdentity, let pullRequest {
+      // whole section. A board card carries it on the lane line instead.
+      if showsLaneIdentity, !boardCard, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
       }
@@ -697,16 +710,18 @@ struct WorkSessionRow: View, Equatable {
       // The branded mark, and only the mark. The provider's NAME used to sit on
       // this same line next to it, restating in words what the logo already says
       // — and between them, the model label and the lane chip, they left the
-      // preview truncating mid-word.
-      WorkProviderBareLogo(
-        provider: chatSummary?.provider ?? session.toolType,
-        fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
-        tint: providerTintColor,
-        size: 18
-      )
-      .opacity(0.75)
-      .fixedSize()
-      .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
+      // preview truncating mid-word. A board card is too narrow to spare it.
+      if !boardCard {
+        WorkProviderBareLogo(
+          provider: chatSummary?.provider ?? session.toolType,
+          fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
+          tint: providerTintColor,
+          size: 18
+        )
+        .opacity(0.75)
+        .fixedSize()
+        .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
+      }
     }
   }
 

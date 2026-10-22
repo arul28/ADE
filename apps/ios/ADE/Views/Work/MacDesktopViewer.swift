@@ -65,12 +65,16 @@ struct MacDesktopViewer: View {
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
+      // In the tools pane the picture sits on the pane's own background.
+      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
 
       // One tree in both orientations. A branch per orientation would rebuild
       // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
-        controls
+        // In the Work tools pane these are the pane's toolbar items instead.
+        if !embedded {
+          controls
+        }
         if let stopError {
           Text(stopError).font(.caption).foregroundStyle(ADEColor.warning).padding(.horizontal)
         }
@@ -79,7 +83,7 @@ struct MacDesktopViewer: View {
         stage
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .livePictureViewport()
-        if !compactHeight {
+        if !compactHeight && !embedded {
           footer
         }
       }
@@ -91,6 +95,28 @@ struct MacDesktopViewer: View {
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
     .preferredColorScheme(embedded ? nil : .dark)
+    .modifier(MacDesktopPaneChrome(
+      enabled: embedded,
+      subtitle: macDesktopViewerRibbon(
+        controlling: controlling,
+        lease: desktop?.lease,
+        displayName: desktop?.display?.name
+      ),
+      stopSeat: paneStopSeat,
+      stopping: stopping,
+      canInspect: syncService.supportsViewerRemoteAction("macDesktop.observe") && desktop?.display != nil,
+      confirmingStop: $confirmingStop,
+      onInspect: { beginInspect() }
+    ))
+    .confirmationDialog(
+      paneStopSeat.map { "\(windowsDesktopStopCopy(seat: $0).action)?" } ?? "",
+      isPresented: Binding(get: { embedded && confirmingStop }, set: { confirmingStop = $0 }),
+      titleVisibility: .visible
+    ) {
+      if let seat = paneStopSeat { stopDialogActions(seat: seat) }
+    } message: {
+      if let seat = paneStopSeat { Text(windowsDesktopStopCopy(seat: seat).consequence) }
+    }
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -114,6 +140,13 @@ struct MacDesktopViewer: View {
   }
 
   // MARK: - Pieces
+
+  /// The Windows seat the pane's Stop acts on, when this host can stop it.
+  private var paneStopSeat: String? {
+    guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
+          syncService.canStopWindowsDesktop(seat: seat) else { return nil }
+    return seat
+  }
 
   private var controls: some View {
     HStack(spacing: 14) {
@@ -139,18 +172,7 @@ struct MacDesktopViewer: View {
           isPresented: $confirmingStop,
           titleVisibility: .visible
         ) {
-          Button(copy.action, role: .destructive) {
-            Task {
-              stopping = true
-              stopError = nil
-              defer { stopping = false }
-              do {
-                try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
-                await refresh()
-              } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
-            }
-          }
-          Button("Keep running", role: .cancel) {}
+          stopDialogActions(seat: seat)
         } message: {
           Text(copy.consequence)
         }
@@ -168,6 +190,24 @@ struct MacDesktopViewer: View {
     .overlay { title }
     .padding(.horizontal, 18)
     .padding(.vertical, compactHeight ? 6 : 12)
+  }
+
+  /// Asks first, like every Stop on the desktop: the private screen signs out
+  /// and closes the lane's apps; the main desktop is handed back.
+  @ViewBuilder
+  private func stopDialogActions(seat: String) -> some View {
+    Button(windowsDesktopStopCopy(seat: seat).action, role: .destructive) {
+      Task {
+        stopping = true
+        stopError = nil
+        defer { stopping = false }
+        do {
+          try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+          await refresh()
+        } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
+      }
+    }
+    Button("Keep running", role: .cancel) {}
   }
 
   private var title: some View {
@@ -223,14 +263,16 @@ struct MacDesktopViewer: View {
             onReconnect: { reconnect() }
           )
         }
-        .padding(.horizontal, 12)
+        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
+        .padding(.horizontal, embedded ? 16 : 12)
+        .padding(.vertical, embedded ? 16 : 0)
       } else if syncService.connectionState != .connected {
         stageMessage("Waiting for the connection to your Mac…")
       } else {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
     } else if desktop == nil {
-      ProgressView().tint(.white)
+      ProgressView().tint(embedded ? nil : .white)
     } else {
       offCard
     }
@@ -241,7 +283,7 @@ struct MacDesktopViewer: View {
   private var offCard: some View {
     VStack(spacing: 12) {
       if starting {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
@@ -257,10 +299,10 @@ struct MacDesktopViewer: View {
         } label: {
           Text("Start")
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(embedded ? ADEColor.accent : .white)
             .padding(.horizontal, 18)
             .padding(.vertical, 9)
-            .background(Color.white.opacity(0.16), in: Capsule())
+            .background(embedded ? ADEColor.accent.opacity(0.12) : Color.white.opacity(0.16), in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
@@ -272,7 +314,7 @@ struct MacDesktopViewer: View {
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(.white.opacity(0.85))
+      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
@@ -765,5 +807,46 @@ enum MacDesktopViewerRotation {
   private static func activeScene() -> UIWindowScene? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+  }
+}
+
+/// The Mac Desktop viewer's controls as the Work tools pane's toolbar items,
+/// and its ribbon as the pane's subtitle. Off (the full-screen viewer), it
+/// changes nothing.
+private struct MacDesktopPaneChrome: ViewModifier {
+  let enabled: Bool
+  let subtitle: String
+  let stopSeat: String?
+  let stopping: Bool
+  let canInspect: Bool
+  @Binding var confirmingStop: Bool
+  let onInspect: () -> Void
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content
+        .navigationSubtitle(subtitle)
+        .duoKeptToolbar {
+          ToolbarSpacer(.fixed, placement: .topBarTrailing)
+          ToolbarItemGroup(placement: .topBarTrailing) {
+            if canInspect {
+              Button("Inspect", systemImage: "viewfinder") {
+                ADEHaptics.light()
+                onInspect()
+              }
+              .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+            }
+            if let stopSeat {
+              Button(windowsDesktopStopCopy(seat: stopSeat).action, systemImage: "stop.fill") {
+                ADEHaptics.light()
+                confirmingStop = true
+              }
+              .disabled(stopping)
+            }
+          }
+        }
+    } else {
+      content
+    }
   }
 }
