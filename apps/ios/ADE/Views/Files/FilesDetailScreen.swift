@@ -9,6 +9,10 @@ struct FilesDetailScreen: View {
   let focusLine: Int?
   let transitionNamespace: Namespace.ID?
   let navigateToDirectory: (String) -> Void
+  /// Set by the Duo's Files window: the viewer's controls move into the system
+  /// toolbar (the edge bar held landscape) and the breadcrumb becomes the
+  /// subtitle. Nil keeps the phone's in-content strip.
+  var duoChrome: FilesDuoEditorChrome? = nil
 
   @State var blob: SyncFileBlob?
   @State var errorMessage: String?
@@ -81,58 +85,64 @@ struct FilesDetailScreen: View {
     .adeNavigationGlass()
     .adeRootTabBarHidden()
     .adeAnalyticsScreen(.fileDetail)
-    .navigationTitle(lastPathComponent(relativePath))
+    .modifier(FilesDuoEditorTitle(chrome: duoChrome, title: lastPathComponent(relativePath), subtitle: duoSubtitle))
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        Menu {
-          Button("Copy Full Path") {
-            UIPasteboard.general.string = fullPath
-          }
+      if let duoChrome {
+        duoEditorToolbar(duoChrome)
+      } else {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          Menu {
+            Button("Copy Full Path") {
+              UIPasteboard.general.string = fullPath
+            }
 
-          Button("Copy Relative Path") {
-            UIPasteboard.general.string = relativePath
+            Button("Copy Relative Path") {
+              UIPasteboard.general.string = relativePath
+            }
+          } label: {
+            Image(systemName: "ellipsis.circle")
           }
-        } label: {
-          Image(systemName: "ellipsis.circle")
-        }
-        .accessibilityLabel("File actions")
+          .accessibilityLabel("File actions")
 
-        Button {
-          isDetailsSheetPresented = true
-        } label: {
-          Image(systemName: "info.circle")
+          Button {
+            isDetailsSheetPresented = true
+          } label: {
+            Image(systemName: "info.circle")
+          }
+          .accessibilityLabel("File details")
+          .disabled(blob == nil)
         }
-        .accessibilityLabel("File details")
-        .disabled(blob == nil)
       }
     }
     .safeAreaInset(edge: .top, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
-        FilesBreadcrumbBar(
-          relativePath: relativePath,
-          includeCurrentFile: true,
-          onSelectDirectory: { path in
-            if path.isEmpty {
-              navigateToDirectory("")
-            } else {
-              navigateToDirectory(path)
+        if duoChrome == nil {
+          FilesBreadcrumbBar(
+            relativePath: relativePath,
+            includeCurrentFile: true,
+            onSelectDirectory: { path in
+              if path.isEmpty {
+                navigateToDirectory("")
+              } else {
+                navigateToDirectory(path)
+              }
             }
-          }
-        )
-        .padding(.horizontal, 16)
-
-        if let blob {
-          FilesViewerControlStrip(
-            editorModes: editorModes,
-            mode: $mode,
-            showsMarkdownToggle: mode == .preview && isMarkdownFile,
-            markdownViewMode: $markdownViewMode,
-            showsLayoutToggle: showsCodeLayoutControl(blob: blob),
-            codeLayoutMode: $codeLayoutMode,
-            showsDiffScopeToggle: mode == .diff && workspace.laneId != nil,
-            diffMode: $diffMode
           )
+          .padding(.horizontal, 16)
+
+          if let blob {
+            FilesViewerControlStrip(
+              editorModes: editorModes,
+              mode: $mode,
+              showsMarkdownToggle: mode == .preview && isMarkdownFile,
+              markdownViewMode: $markdownViewMode,
+              showsLayoutToggle: showsCodeLayoutControl(blob: blob),
+              codeLayoutMode: $codeLayoutMode,
+              showsDiffScopeToggle: mode == .diff && workspace.laneId != nil,
+              diffMode: $diffMode
+            )
+          }
         }
 
         if let errorMessage {
@@ -146,8 +156,8 @@ struct FilesDetailScreen: View {
           .padding(.horizontal, 16)
         }
       }
-      .padding(.top, 4)
-      .padding(.bottom, 6)
+      .padding(.top, duoChrome == nil ? 4 : 0)
+      .padding(.bottom, duoChrome == nil ? 6 : 0)
       .background(ADEColor.pageBackground.opacity(0.94))
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "container", workspaceId: workspace.id, path: relativePath), in: transitionNamespace)
@@ -182,7 +192,7 @@ struct FilesDetailScreen: View {
     }
   }
 
-  private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
+  func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
     switch mode {
     case .preview:
       if isMarkdownFile {

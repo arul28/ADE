@@ -66,6 +66,7 @@ struct ContentView: View {
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.duoLayout) private var duo
 
   /// One spring for the top banner stack (connect toast + update banner), so
   /// the two cannot slide at different speeds when they overlap. Reduce Motion
@@ -145,19 +146,10 @@ struct ContentView: View {
 
   private var rootWithChrome: some View {
     observedRootContent
-      .sheet(isPresented: $syncService.settingsPresented) {
-        ConnectionSettingsView(syncService: syncService)
-          .environmentObject(appUpdateAdvisor)
-      }
-      .sheet(isPresented: $syncService.attentionDrawerPresented) {
-        ActivityDrawerSheet()
-          .environmentObject(syncService)
-          .environmentObject(syncService.attentionDrawer)
-      }
-      .sheet(isPresented: $syncService.linearPanePresented) {
-        LinearPaneSheet(syncService: syncService)
-          .environmentObject(syncService)
-      }
+      // Settings, Activity and Linear: the phone's sheets, or on the Duo's
+      // inner display a two-column window, an inspector column and a
+      // three-pane window (Views/Duo/DuoWindows.swift).
+      .modifier(DuoWindowPresentations(syncService: syncService, appUpdateAdvisor: appUpdateAdvisor))
       .sheet(isPresented: $syncService.cursorCloudPanePresented) {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
@@ -344,7 +336,9 @@ struct ContentView: View {
     } label: {
       Label("Work", systemImage: "terminal")
     }
-    .badge(syncService.runningChatSessionCount)
+    // The sidebar counts what needs the user, like desktop's Work row; the
+    // phone's bar keeps its running count.
+    .badge(duo.isWide ? syncService.awaitingInputSessionsCount : syncService.runningChatSessionCount)
   }
 
   private var lanesTab: some TabContent<RootTab> {

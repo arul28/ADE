@@ -833,6 +833,9 @@ struct ADESettingsLink<Destination: View>: View {
   var symbol: String?
   var value: String?
   @ViewBuilder var destination: () -> Destination
+  /// Set by the Duo's two-column Settings: the row whose page fills the right
+  /// column draws the selection, as Apple Settings' sidebar does.
+  @Environment(\.duoSettingsSelection) private var splitSelection
 
   var body: some View {
     NavigationLink(destination: destination) {
@@ -849,6 +852,14 @@ struct ADESettingsLink<Destination: View>: View {
       }
     }
     .buttonStyle(ADEKitRowButtonStyle())
+    .background {
+      if let splitSelection, splitSelection.wrappedValue == title {
+        ADEColor.accent.opacity(0.14)
+      }
+    }
+    .simultaneousGesture(TapGesture().onEnded {
+      splitSelection?.wrappedValue = title
+    })
   }
 }
 

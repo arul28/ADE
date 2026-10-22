@@ -324,24 +324,35 @@ struct HubScreen: View {
     }
   }
 
+  /// The top bar and the roster filter move into the system toolbar here, so
+  /// the Duo's edge bar holds them (see `DuoHomeToolbar`).
   private var wideHome: some View {
-    DuoHomeWide(
-      machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
+    let machines = duoHomeMachines(syncService: syncService, fleet: machineFleet)
+    return DuoHomeWide(
+      machines: machines,
       needsYou: duoNeedsYouItems(from: hubProjectPresentations),
       onOpenNeedsYou: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },
       onOpenActivity: { syncService.attentionDrawerPresented = true },
       onOpenMachines: { syncService.settingsPresented = true },
-      projects: {
-        VStack(spacing: 0) {
-          hubTopBar
-          rosterFilterBar
-          rosterList
-        }
-      },
+      projects: { rosterList },
       composer: { composerBar }
     )
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      DuoHomeToolbar(
+        onAdd: { addProjectSheetPresented = true },
+        chatsAvailable: syncService.supportsPersonalChats,
+        chatsAttentionCount: chatsAttentionCount,
+        onOpenChats: { personalChatsPresented = true },
+        filter: $rosterFilter,
+        filterCounts: hubRosterFilterCounts,
+        machines: machines,
+        onOpenSettings: { syncService.settingsPresented = true },
+        onOpenActivity: { syncService.attentionDrawerPresented = true }
+      )
+    }
   }
 
   private var phoneHub: some View {

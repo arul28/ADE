@@ -7,6 +7,7 @@ import UIKit
 /// thread's place.
 struct CtoRootScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.duoLayout) private var duo
   var isTabActive = true
 
   @State private var snapshot: CtoSnapshot?
@@ -20,16 +21,20 @@ struct CtoRootScreen: View {
 
   var body: some View {
     NavigationStack {
-      content
+      screenBody
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(ADEColor.ctoAccent)
         .adeScreenBackground()
         .adeNavigationGlass()
-        .navigationTitle("")
+        .navigationTitle(duo.isWide ? topBarTitle : "")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .navigationBar)
+        // The inner display uses the system toolbar (the edge bar held
+        // landscape); the phone keeps its own top bar.
+        .toolbar(duo.isWide ? .automatic : .hidden, for: .navigationBar)
         .safeAreaInset(edge: .top, spacing: 0) {
-          topBar
+          if !duo.isWide {
+            topBar
+          }
         }
         .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
           guard isTabActive else { return }
@@ -52,6 +57,23 @@ struct CtoRootScreen: View {
           }
           .environmentObject(syncService)
         }
+    }
+  }
+
+  /// The chat, or on the Duo's inner display the chat beside its live
+  /// overview (Views/Duo/DuoWindows.swift).
+  @ViewBuilder
+  private var screenBody: some View {
+    if duo.isWide {
+      DuoCtoWide(
+        title: topBarTitle,
+        onOpenSettings: { showingSettings = true },
+        isTabActive: isTabActive
+      ) {
+        content
+      }
+    } else {
+      content
     }
   }
 

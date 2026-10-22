@@ -117,7 +117,7 @@ struct FilesRootScreen: View {
       // The Duo's inner display has room for the file list beside the viewer;
       // every other size keeps the phone's push navigation.
       if duoLayout.isWide && !embeddedInPane {
-        duoFilesSplitBody
+        duoFilesWindowBody
       } else {
         filesPhoneBody
       }

@@ -24,9 +24,10 @@ enum DuoPreviewRouter {
       DuoShellPreviews.view,
       DuoHomePreviews.view,
       DuoWorkPreviews.view,
+      // Ahead of the split fixtures: `duo-files` is the Files window now.
+      DuoWindowsPreviews.view,
       DuoSplitPreviews.view,
       DuoFoldPreviews.view,
-      DuoWindowsPreviews.view,
       LiveInspectMarkupPreviews.view,
     ]
     for provider in providers {

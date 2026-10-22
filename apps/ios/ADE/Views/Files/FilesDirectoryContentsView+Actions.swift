@@ -30,6 +30,12 @@ extension FilesDirectoryContentsView {
       open(node)
     }
 
+    if node.type == "file", let openToSide {
+      Button("Open to the Side", systemImage: "rectangle.split.2x1") {
+        openToSide(node.path)
+      }
+    }
+
     Button("Copy Full Path") {
       copyAbsolutePath(for: node)
     }

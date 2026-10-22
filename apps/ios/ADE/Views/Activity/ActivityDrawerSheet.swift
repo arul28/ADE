@@ -24,12 +24,22 @@ struct ActivityDrawerSheet: View {
     /// thing that caused it rather than to a modal over the whole sheet.
     @State private var connectingRowId: String?
     @State private var connectFailureRowId: String?
+    /// Set on the Duo's inner display, where Activity is a trailing inspector
+    /// column rather than a sheet: native segmented controls in place of the
+    /// phone's chips, and Done closes the column.
+    var onCloseInspector: (() -> Void)? = nil
+
+    private var isInspector: Bool { onCloseInspector != nil }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                bucketPicker
-                if bucket == .sessions, !drawer.sessions.isEmpty {
+                if isInspector {
+                    DuoActivityInspectorFilters(bucket: $bucket)
+                } else {
+                    bucketPicker
+                }
+                if bucket == .sessions, !drawer.sessions.isEmpty, !isInspector {
                     HubRosterFilterBar(
                         counts: HubRosterFilter.counts(from: drawer.columnCounts),
                         selection: Binding(
@@ -52,8 +62,21 @@ struct ActivityDrawerSheet: View {
             .navigationTitle("Activity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
+                if let onCloseInspector {
+                    // The Duo's column: a close symbol, and the state filter
+                    // as a menu, both in the edge bar beside the column.
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close Activity", systemImage: "xmark", action: onCloseInspector)
+                    }
+                    if bucket == .sessions, !drawer.sessions.isEmpty {
+                        ToolbarItem(placement: .primaryAction) {
+                            DuoActivityStateMenu()
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {

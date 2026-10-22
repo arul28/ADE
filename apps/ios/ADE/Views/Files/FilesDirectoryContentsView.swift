@@ -2,6 +2,8 @@ import SwiftUI
 
 struct FilesDirectoryContentsView: View {
   @EnvironmentObject var syncService: SyncService
+  /// Set by the Duo's Files window, which can open a second editor group.
+  @Environment(\.filesOpenToSide) var openToSide
 
   let workspace: FilesWorkspace
   let parentPath: String

@@ -8,14 +8,15 @@ import SwiftUI
 //
 // `DuoShellChrome.sidebarPreferredHidden` asks the shell to fold the sidebar
 // away so a surface that wants the whole inner display is not squeezed by it.
-// Work owns the only reason to set it: a chat with its tools pane open.
+// Work sets it for a chat with its tools pane open; Files for two editor groups.
 //
 //     DuoShellChrome.shared.setSidebarPreferredHidden(true)   // tools pane open
 //     DuoShellChrome.shared.setSidebarPreferredHidden(false)  // pane closed
 //
 // Set it when the pane opens, clear it when the pane closes, the chat is left,
 // or the chat view disappears — a value left `true` keeps every tab in the
-// compact presentation. Nothing else writes it.
+// compact presentation. The Files window is the only other writer, under the
+// same contract, while it shows two editor groups.
 //
 // The shell only answers on the inner display (`duo.isWide`). The outer display
 // and every other iPhone keep today's bottom bar, tab for tab, exactly as they
@@ -60,6 +61,9 @@ where Content.TabValue == SelectionValue {
   @Binding private var selection: SelectionValue
   @ObservedObject private var chrome = DuoShellChrome.shared
   @Environment(\.duoLayout) private var duo
+  /// Held portrait (open tall, laptop, tent): 669pt is not enough for the
+  /// sidebar and two columns, so the tabs start as the top glass bar there.
+  @State private var isPortrait = false
   private let content: Content
 
   init(
@@ -91,7 +95,12 @@ where Content.TabValue == SelectionValue {
       content
     }
     .tabViewStyle(.sidebarAdaptable)
-    .duoDefaultTabPlacement(chrome.sidebarPreferredHidden ? .tabBar : .sidebar)
+    .duoDefaultTabPlacement(chrome.sidebarPreferredHidden || isPortrait ? .tabBar : .sidebar)
+    .onGeometryChange(for: Bool.self) { proxy in
+      proxy.size.height >= proxy.size.width
+    } action: { portrait in
+      isPortrait = portrait
+    }
     // When a pane has folded the sidebar away the shell falls back to the bar;
     // this keeps that bar out of the way on scroll, the same Liquid Glass
     // behaviour the bar has everywhere else on iOS 26.
@@ -120,16 +129,15 @@ extension View {
 /// The bottom of the sidebar: the three surfaces the bottom bar never had a row
 /// for. Home returns to the all-projects Hub (the phone's only way back besides
 /// a screen's own Back), Activity is the dashboard the bell opens, Settings is
-/// the sheet the gear opens.
+/// the window the gear opens. Drawn at the tab rows' metrics so the sidebar
+/// reads as one list.
 struct DuoSidebarFooter: View {
   @EnvironmentObject private var syncService: SyncService
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 1) {
-      Rectangle()
-        .fill(ADEKit.rule)
-        .frame(height: 0.75)
-        .padding(.horizontal, 8)
+    VStack(alignment: .leading, spacing: 2) {
+      Divider()
+        .padding(.leading, 40)
         .padding(.bottom, 6)
 
       DuoSidebarFooterButton(title: "Home", systemImage: "square.grid.2x2") {
@@ -144,7 +152,6 @@ struct DuoSidebarFooter: View {
         syncService.settingsPresented = true
       }
     }
-    .padding(.horizontal, 10)
     .padding(.bottom, 10)
   }
 }
@@ -152,20 +159,15 @@ struct DuoSidebarFooter: View {
 private struct DuoSidebarFooterButton: View {
   let title: String
   let systemImage: String
-  var badge: String?
+  var badge: Int = 0
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       DuoSidebarFooterRow(title: title, systemImage: systemImage, badge: badge)
     }
-    .buttonStyle(ADEKitRowButtonStyle())
-    .accessibilityLabel(accessibilityText)
-  }
-
-  private var accessibilityText: String {
-    guard let badge else { return title }
-    return "\(title), \(badge)"
+    .buttonStyle(DuoSidebarRowButtonStyle())
+    .accessibilityLabel(badge > 0 ? "\(title), \(badge)" : title)
   }
 }
 
@@ -175,9 +177,9 @@ private struct DuoSidebarActivityButton: View {
 
   var body: some View {
     Button(action: action) {
-      DuoSidebarFooterRow(title: "Activity", systemImage: "bell", badge: drawer.badgeLabel)
+      DuoSidebarFooterRow(title: "Activity", systemImage: "bell", badge: drawer.unreadCount)
     }
-    .buttonStyle(ADEKitRowButtonStyle())
+    .buttonStyle(DuoSidebarRowButtonStyle())
     .accessibilityLabel(
       drawer.unreadCount > 0
         ? "Activity, \(drawer.unreadCount) needing you"
@@ -186,37 +188,47 @@ private struct DuoSidebarActivityButton: View {
   }
 }
 
+/// A footer row with the sidebar tab rows' anatomy: tinted symbol, body text,
+/// the count in the trailing secondary style the system badges use.
 private struct DuoSidebarFooterRow: View {
   let title: String
   let systemImage: String
-  var badge: String?
+  var badge: Int = 0
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: 12) {
       Image(systemName: systemImage)
-        .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 20, alignment: .center)
+        .font(.body)
+        .foregroundStyle(.tint)
+        .frame(width: 26, alignment: .center)
 
       Text(title)
-        .font(.system(size: 14, weight: .medium))
+        .font(.body)
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
 
       Spacer(minLength: 4)
 
-      if let badge {
-        Text(badge)
-          .font(.system(size: 10, weight: .bold).monospacedDigit())
-          .foregroundStyle(ADEColor.pageBackground)
-          .padding(.horizontal, 5)
-          .frame(minWidth: 16, minHeight: 16)
-          .background(ADEColor.warning, in: Capsule())
+      if badge > 0 {
+        Text(badge > 99 ? "99+" : "\(badge)")
+          .font(.body.monospacedDigit())
+          .foregroundStyle(.secondary)
       }
     }
-    .padding(.horizontal, 8)
-    .frame(height: 34)
-    .contentShape(Rectangle())
+    .frame(minHeight: 44)
+    .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+  }
+}
+
+/// The sidebar's pressed state: the same soft capsule the selected tab row
+/// draws, briefly.
+private struct DuoSidebarRowButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .background(
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+          .fill(Color.primary.opacity(configuration.isPressed ? 0.08 : 0))
+      )
   }
 }
 
@@ -232,81 +244,46 @@ enum DuoShellPreviews {
   }
 }
 
-/// The five root tabs, mirrored for the fixture only. The shipping shell reads
-/// the same five from `ContentView`'s own tab builders.
-private enum DuoShellFixtureTab: String, Hashable, Identifiable {
-  case work, lanes, prs, files, cto
-
-  var id: Self { self }
-
-  var title: String {
-    switch self {
-    case .work: return "Work"
-    case .lanes: return "Lanes"
-    case .prs: return "PRs"
-    case .files: return "Files"
-    case .cto: return "CTO"
-    }
-  }
-
-  var symbol: String {
-    switch self {
-    case .work: return "terminal"
-    case .lanes: return "square.stack.3d.up"
-    case .prs: return "arrow.triangle.pull"
-    case .files: return "doc.text"
-    case .cto: return "brain"
-    }
-  }
-
-  var blurb: String {
-    switch self {
-    case .work: return "Every chat, CLI and shell on every connected machine."
-    case .lanes: return "Lanes across your machines, with their branches and pull requests."
-    case .prs: return "Open pull requests, checks and review threads."
-    case .files: return "The workspace on the machine that owns the lane."
-    case .cto: return "The project's chief-of-staff chat."
-    }
-  }
-}
-
-/// The real shell with fixture panes, launched with
-/// `-adePreviewScreen duo-shell`. The tab views are stand-ins (Work, Lanes, PRs
-/// and Files need a live brain), but the shell around them is the shipping one:
-/// the same `DuoAdaptableTabShell`, sidebar footer and badges. Open it on the
-/// inner display to see the sidebar; in compact it is today's bottom bar.
+/// The real shell around the real tab screens, launched with
+/// `-adePreviewScreen duo-shell`. Each tab hosts that area's own fixture (the
+/// shipping view over in-process data), so the sidebar, its footer, the badges
+/// and every tab's toolbar are what the device shows.
 private struct DuoShellFixtureScreen: View {
-  @State private var selection: DuoShellFixtureTab = .work
+  private enum FixtureTab: String, Hashable {
+    case work, lanes, prs, files, cto
+  }
+
+  @State private var selection: FixtureTab = .files
 
   var body: some View {
     DuoAdaptableTabShell(selection: $selection) {
-      Tab(value: DuoShellFixtureTab.work) {
-        DuoShellFixturePane(tab: .work)
+      Tab(value: FixtureTab.work) {
+        DuoPreviewRouter.view(named: "duo-work")
       } label: {
         Label("Work", systemImage: "terminal")
       }
-      .badge(3)
+      .badge(2)
 
-      Tab(value: DuoShellFixtureTab.lanes) {
-        DuoShellFixturePane(tab: .lanes)
+      Tab(value: FixtureTab.lanes) {
+        DuoPreviewRouter.view(named: "duo-lanes")
       } label: {
         Label("Lanes", systemImage: "square.stack.3d.up")
       }
 
-      Tab(value: DuoShellFixtureTab.prs) {
-        DuoShellFixturePane(tab: .prs)
+      Tab(value: FixtureTab.prs) {
+        DuoPreviewRouter.view(named: "duo-prs")
       } label: {
         Label("PRs", systemImage: "arrow.triangle.pull")
       }
 
-      Tab(value: DuoShellFixtureTab.files) {
-        DuoShellFixturePane(tab: .files)
+      Tab(value: FixtureTab.files) {
+        DuoPreviewRouter.view(named: "duo-files")
       } label: {
         Label("Files", systemImage: "doc.text")
       }
 
-      Tab(value: DuoShellFixtureTab.cto) {
-        DuoShellFixturePane(tab: .cto)
+      Tab(value: FixtureTab.cto) {
+        DuoPreviewRouter.view(named: "duo-cto")
       } label: {
         Label("CTO", image: "CtoMark")
       }
@@ -315,43 +292,6 @@ private struct DuoShellFixtureScreen: View {
     }
     .tint(ADEColor.accent)
     .adeScreenBackground()
-  }
-}
-
-/// One fixture pane: a native navigation bar over the rows a real tab would
-/// list, drawn as quiet placeholders so the shell is what the screen shows.
-private struct DuoShellFixturePane: View {
-  let tab: DuoShellFixtureTab
-
-  var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          VStack(alignment: .leading, spacing: 6) {
-            Text(tab.title)
-              .font(.system(size: 28, weight: .bold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text(tab.blurb)
-              .font(.system(size: 14))
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-
-          VStack(spacing: 10) {
-            ForEach(0..<4, id: \.self) { index in
-              ADESkeletonView(height: index == 0 ? 58 : 46, cornerRadius: ADEKit.radius)
-            }
-          }
-        }
-        .padding(20)
-        .frame(maxWidth: 640, alignment: .leading)
-        .frame(maxWidth: .infinity)
-      }
-      .scrollIndicators(.hidden)
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle(tab.title)
-      .navigationBarTitleDisplayMode(.inline)
-    }
   }
 }
 #endif

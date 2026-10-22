@@ -19,6 +19,7 @@ struct LinearLaunchDestination: View {
 /// button and by `ade://linear-issue/<IDENT>` deep links. Active-project scoped.
 struct LinearPaneSheet: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.duoLayout) private var duo
   @StateObject private var store: LinearPaneStore
   @State private var path: [LinearRoute] = []
   @State private var started = false
@@ -55,32 +56,7 @@ struct LinearPaneSheet: View {
   }
 
   var body: some View {
-    NavigationStack(path: $path) {
-      Group {
-        if isDisconnected {
-          connectPrompt
-        } else {
-          LinearIssueListScreen(
-            store: store,
-            onClose: close,
-            showsClose: !embedded,
-            onAttachIssue: effectiveAttachSessionId == nil ? nil : { issue in
-              Task { await attachIssue(issue) }
-            }
-          )
-        }
-      }
-      .navigationDestination(for: LinearRoute.self) { route in
-        switch route {
-        case let .issue(issue):
-          LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
-        case let .launch(issue, laneOnly):
-          LinearLaunchDestination(issue: issue, laneOnly: laneOnly)
-        case .connection:
-          LinearConnectionScreen(store: store)
-        }
-      }
-    }
+    paneBody
     .tint(LinearBrand.primaryBright)
     .alert("Couldn't attach issue", isPresented: Binding(
       get: { attachError != nil },
@@ -99,6 +75,56 @@ struct LinearPaneSheet: View {
     .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, id in
       guard id != nil else { return }
       Task { await consumePendingDeepLink() }
+    }
+  }
+
+  /// The Duo's inner display, held landscape, gets desktop's three panes
+  /// (views rail, issues, detail) in place of the pushed stack. The Work tools
+  /// pane's copy stays one column.
+  @ViewBuilder
+  private var paneBody: some View {
+    if duo.isWide && !embedded && !isDisconnected {
+      DuoLinearWindow(store: store, path: $path, onClose: close) {
+        issueList
+      } destination: { route in
+        routeDestination(route)
+      }
+    } else {
+      NavigationStack(path: $path) {
+        Group {
+          if isDisconnected {
+            connectPrompt
+          } else {
+            issueList
+          }
+        }
+        .navigationDestination(for: LinearRoute.self) { route in
+          routeDestination(route)
+        }
+      }
+    }
+  }
+
+  private var issueList: some View {
+    LinearIssueListScreen(
+      store: store,
+      onClose: close,
+      showsClose: !embedded,
+      onAttachIssue: effectiveAttachSessionId == nil ? nil : { issue in
+        Task { await attachIssue(issue) }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private func routeDestination(_ route: LinearRoute) -> some View {
+    switch route {
+    case let .issue(issue):
+      LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+    case let .launch(issue, laneOnly):
+      LinearLaunchDestination(issue: issue, laneOnly: laneOnly)
+    case .connection:
+      LinearConnectionScreen(store: store)
     }
   }
 
