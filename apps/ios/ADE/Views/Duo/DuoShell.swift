@@ -295,3 +295,86 @@ private struct DuoShellFixtureScreen: View {
   }
 }
 #endif
+
+// MARK: - App tabs on the edge bar
+
+/// One root destination the inner display's edge bar offers: a tab, or Home.
+struct DuoAppTabItem: Identifiable, Equatable {
+  let id: String
+  let title: String
+  /// An SF Symbol, or nil when `assetImage` names the glyph.
+  var systemImage: String?
+  var assetImage: String?
+  var badge: Int = 0
+}
+
+/// The app's root destinations, for the bottom of the edge bar.
+///
+/// On the Duo's inner display there is no tab bar and no sidebar: every
+/// screen's trailing column ends its toolbar with `DuoAppTabsToolbar`, so the
+/// same tab buttons sit at the bottom of the curved edge on every screen
+/// (DESIGN.md §2). `ContentView` owns the selection and keeps this in sync;
+/// screens only read it.
+@MainActor
+final class DuoAppNavigation: ObservableObject {
+  static let shared = DuoAppNavigation()
+
+  @Published private(set) var items: [DuoAppTabItem] = []
+  @Published private(set) var selectedId: String?
+  private var onSelect: (String) -> Void = { _ in }
+
+  func configure(items: [DuoAppTabItem], selectedId: String?, onSelect: @escaping (String) -> Void) {
+    if self.items != items { self.items = items }
+    if self.selectedId != selectedId { self.selectedId = selectedId }
+    self.onSelect = onSelect
+  }
+
+  func select(_ id: String) {
+    onSelect(id)
+  }
+}
+
+/// The app tabs as the bottom group of a trailing column's toolbar. Held
+/// landscape on the inner display that is the bottom of the vertical edge bar;
+/// held portrait it is the bottom toolbar. Add it to the trailing column of
+/// every inner-display screen, after the screen's own items.
+struct DuoAppTabsToolbar: ToolbarContent {
+  @ObservedObject var navigation = DuoAppNavigation.shared
+
+  var body: some ToolbarContent {
+    ToolbarItemGroup(placement: .bottomBar) {
+      ForEach(navigation.items) { item in
+        DuoAppTabButton(item: item, isSelected: navigation.selectedId == item.id) {
+          navigation.select(item.id)
+        }
+      }
+    }
+  }
+}
+
+private struct DuoAppTabButton: View {
+  let item: DuoAppTabItem
+  let isSelected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: {
+      ADEHaptics.light()
+      action()
+    }) {
+      Group {
+        if let asset = item.assetImage {
+          Label(item.title, image: asset)
+        } else {
+          Label(item.title, systemImage: item.systemImage ?? "circle")
+        }
+      }
+      .symbolVariant(isSelected ? .fill : .none)
+      .foregroundStyle(isSelected ? ADEColor.accent : Color.primary)
+    }
+    .badge(item.badge)
+    .accessibilityLabel(item.badge > 0 ? "\(item.title), \(item.badge)" : item.title)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+    .accessibilityIdentifier("Duo.AppTab.\(item.id)")
+  }
+}
