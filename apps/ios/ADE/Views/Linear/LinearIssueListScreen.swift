@@ -17,6 +17,8 @@ enum LinearRoute: Hashable {
 struct LinearIssueListScreen: View {
   @ObservedObject var store: LinearPaneStore
   var onClose: () -> Void = {}
+  /// False inside the Work tools pane, whose own close button is the way out.
+  var showsClose = true
   var onAttachIssue: ((NormalizedLinearIssue) -> Void)? = nil
 
   private enum Mode {
@@ -75,11 +77,13 @@ struct LinearIssueListScreen: View {
   // (the List + searchable + onChange chain + toolbar together tip it over).
   @ToolbarContentBuilder
   private var linearToolbar: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      Button { onClose() } label: {
-        Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+    if showsClose {
+      ToolbarItem(placement: .topBarLeading) {
+        Button { onClose() } label: {
+          Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+        }
+        .accessibilityLabel("Close Linear")
       }
-      .accessibilityLabel("Close Linear")
     }
     ToolbarItem(placement: .topBarTrailing) {
       NavigationLink(value: LinearRoute.connection) {

@@ -24,6 +24,11 @@ struct AppleDeviceViewer: View {
   /// The card's last status, so the ribbon and the aspect are right on the
   /// first frame rather than after the viewer's own first poll.
   var initialStatus: AppleDeviceStatus?
+  /// The viewer is a column in a split, not a full-screen cover: it keeps the
+  /// device name and status (small) and gives up its own close button, the
+  /// dark window preference and the status-bar hiding, because it shares the
+  /// window with a chat that must keep its appearance.
+  var embedded = false
   #if DEBUG
   /// Fixture seam (`-adePreviewScreen apple-viewer`): a seeded model and a
   /// drawn stand-in for the picture, with no sync and no socket.
@@ -115,12 +120,15 @@ struct AppleDeviceViewer: View {
       }
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
-    .preferredColorScheme(.dark)
-    .statusBarHidden(model.mode == .controlling || !showsChrome)
+    // Only a full-screen viewer owns the window's appearance. In a pane the
+    // pane scopes dark itself; a preferredColorScheme here would turn the whole
+    // app dark around the chat.
+    .preferredColorScheme(embedded ? nil : .dark)
+    .statusBarHidden(!embedded && (model.mode == .controlling || !showsChrome))
     // A swipe up from the bottom of the simulator must reach the simulator,
     // not close this app.
     .defersSystemGestures(on: model.mode == .controlling ? .all : [])
-    .persistentSystemOverlays(model.mode == .controlling ? .hidden : .automatic)
+    .persistentSystemOverlays(embedded ? .automatic : (model.mode == .controlling ? .hidden : .automatic))
     .task(id: laneId) {
       #if DEBUG
       if let preview {
@@ -326,15 +334,18 @@ struct AppleDeviceViewer: View {
   // MARK: - Bars
 
   private var topBar: some View {
-    HStack(spacing: 12) {
-      roundButton(systemName: "xmark", label: "Close") {
-        model.stop()
-        dismiss()
+    HStack(spacing: embedded ? 8 : 12) {
+      // The pane's own close button is the way out of an embedded viewer.
+      if !embedded {
+        roundButton(systemName: "xmark", label: "Close") {
+          model.stop()
+          dismiss()
+        }
       }
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: embedded ? 0 : 2) {
         Text(model.status?.device?.name ?? "Simulator")
           .shadow(color: .black.opacity(0.6), radius: 3)
-          .font(.subheadline.weight(.semibold))
+          .font(embedded ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
           .foregroundStyle(.white)
           .lineLimit(1)
         Text(ribbon)

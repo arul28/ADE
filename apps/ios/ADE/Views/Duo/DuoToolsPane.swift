@@ -15,6 +15,9 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   case appControl
   case browser
   case pr
+  case git
+  case files
+  case issues
   case proof
   case chatInfo
 
@@ -28,6 +31,9 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .appControl: return "App"
     case .browser: return "Browser"
     case .pr: return "PR"
+    case .git: return "Git"
+    case .files: return "Files"
+    case .issues: return "Issues"
     case .proof: return "Proof"
     case .chatInfo: return "Info"
     }
@@ -40,6 +46,9 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .appControl: return "macwindow"
     case .browser: return "globe"
     case .pr: return "arrow.triangle.pull"
+    case .git: return "arrow.triangle.branch"
+    case .files: return "folder"
+    case .issues: return "list.bullet.rectangle"
     case .proof: return "cube.transparent"
     case .chatInfo: return "info.circle"
     }
@@ -71,16 +80,18 @@ struct DuoToolSeed: Equatable {
 
 /// Which tool the Work tab's third column is showing, and whether it is up.
 ///
-/// One model per Work root, shared by the sessions column (it collapses to a
-/// rail while this is open), the chat (its chips and menu open tabs here), and
-/// the destination (it lays the pane out beside the thread).
+/// One model per Work root, shared by the sessions column (it collapses fully
+/// while this is open, like the desktop sidebar), the chat (its chips and menu
+/// open tabs here), and the destination (it lays the pane out beside the
+/// thread).
 @MainActor
 final class DuoWorkPaneModel: ObservableObject {
   @Published private(set) var isOpen = false
   @Published private(set) var tab: DuoToolTab?
   /// The tabs the chat's chips can show, published by the chat's own poll.
   @Published private(set) var toolTabs: [DuoToolTab] = []
-  /// The tabs the destination can show (PR, proof, chat info, terminal).
+  /// The tabs the destination can show (PR, Git, Files, Issues, proof, chat
+  /// info).
   @Published private(set) var surfaceTabs: [DuoToolTab] = []
   @Published private(set) var availableTabs: [DuoToolTab] = []
   @Published private(set) var seed = DuoToolSeed()
@@ -288,6 +299,7 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View>: View {
         tools()
           .frame(maxWidth: .infinity)
           .frame(height: max(200, rect.minY - DuoWorkMetrics.hingeGutter / 2))
+          .transition(.move(edge: .top).combined(with: .opacity))
         DuoHingeGutter(axis: .horizontal)
         chat()
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -299,21 +311,15 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View>: View {
         if isOpen {
           DuoHingeGutter(axis: .vertical)
           tools()
-            .frame(width: paneWidth(available: size.width, fold: fold))
+            .frame(width: DuoWorkMetrics.paneWidth(available: size.width, fold: fold))
+            // The tool column slides in from the trailing edge while the
+            // sessions column slides out; one animation owns both.
+            .transition(.move(edge: .trailing).combined(with: .opacity))
         }
       }
     }
   }
 
-  /// In a book fold the boundary IS the fold, so the thread's controls stop at
-  /// the page break. Everywhere else the pane takes a little under half.
-  private func paneWidth(available: CGFloat, fold: DuoFold) -> CGFloat {
-    if case .sideBySide(let rect) = fold {
-      let boundary = rect.minX
-      if boundary > 240, available - boundary > 260 { return available - boundary }
-    }
-    return min(max(320, available * 0.46), 560)
-  }
 }
 
 /// The hinge band between two panes: a quiet gutter, never a control surface.

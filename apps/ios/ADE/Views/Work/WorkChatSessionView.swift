@@ -2831,6 +2831,43 @@ private struct WorkChatComposerDraftInput: View {
   /// Mode the failed send used, so Retry repeats that send rather than
   /// silently downgrading an interrupt to a staged message.
   @State private var lastSendMode: WorkActiveSendMode = .queue
+  /// True while this composer is the one on screen. An inspect handoff with no
+  /// session id (a viewer opened outside a chat) goes to the visible chat of
+  /// its lane, and only that one.
+  @State private var isOnScreen = false
+
+  /// Takes an inspect handoff into this draft: the picture becomes a ready
+  /// attachment and the packet is appended to the text. Nothing is sent.
+  private func acceptLiveInspectHandoff(_ handoff: LiveInspectComposerHandoff) {
+    let chatId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let handoffChatId = handoff.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let matchesChat = !handoffChatId.isEmpty && handoffChatId == chatId
+    let matchesVisibleLane = handoffChatId.isEmpty
+      && isOnScreen
+      && !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && handoff.laneId == laneId
+    guard matchesChat || matchesVisibleLane else { return }
+
+    if attachmentsAvailable,
+       let attachment = workChatInputAttachment(
+         from: handoff.image,
+         filename: "inspect-\(UUID().uuidString.prefix(8)).jpg"
+       ) {
+      var next = inputAttachments
+      next.removeAll { $0.filename == "attachment-limit" }
+      if next.count < workChatInputAttachmentLimit {
+        next.append(attachment)
+        inputAttachments = next
+      }
+    }
+
+    let text = handoff.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !text.isEmpty {
+      draftState.text = draftState.trimmedText.isEmpty ? text : draftState.text + "\n\n" + text
+    }
+    if composerCollapsed { applyFold(.expand) }
+    ADEHaptics.success()
+  }
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -3192,6 +3229,15 @@ private struct WorkChatComposerDraftInput: View {
       guard request.sessionId == sessionId else { return }
       draftState.applySceneReply(request.text)
     }
+    // Inspect's Send hands the annotated picture and its element packet here:
+    // this chat's composer takes them when the handoff names this chat, or when
+    // it names only this lane and this is the chat on screen.
+    .onReceive(NotificationCenter.default.publisher(for: .liveInspectComposerHandoff)) { notification in
+      guard let handoff = notification.object as? LiveInspectComposerHandoff else { return }
+      acceptLiveInspectHandoff(handoff)
+    }
+    .onAppear { isOnScreen = true }
+    .onDisappear { isOnScreen = false }
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }

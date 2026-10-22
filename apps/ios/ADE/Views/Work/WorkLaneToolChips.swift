@@ -395,10 +395,18 @@ struct WorkLaneToolsPresenter: ViewModifier {
         AppleDeviceViewer(laneId: laneId, chatSessionId: chatSessionId, initialStatus: model.appleStatus)
       }
       .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
-        MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)
+        MacDesktopViewer(
+          laneId: laneId,
+          initialState: model.macDesktopState,
+          chatSessionId: chatSessionId
+        )
       }
       .fullScreenCover(isPresented: model.isPresented(.appControl)) {
-        AppControlViewer(laneId: laneId, initialState: model.appControlState)
+        AppControlViewer(
+          laneId: laneId,
+          initialState: model.appControlState,
+          chatSessionId: chatSessionId
+        )
       }
   }
 

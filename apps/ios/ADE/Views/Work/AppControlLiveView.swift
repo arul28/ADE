@@ -537,6 +537,12 @@ func appControlStatusLabel(_ status: String) -> String {
 /// (`MacDesktopViewerOrientation`, `livePictureZoom`).
 struct AppControlViewer: View {
   let laneId: String
+  /// The chat this viewer was opened from, so an inspect handoff goes back to
+  /// the right composer. Nil for a viewer opened without a chat.
+  var chatSessionId: String?
+  /// A column in a split, not a full-screen cover: no close button of its own
+  /// and no window-wide dark preference (the pane scopes dark itself).
+  var embedded = false
 
   private static let refreshInterval: Duration = .seconds(3)
 
@@ -553,8 +559,15 @@ struct AppControlViewer: View {
   @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-  init(laneId: String, initialState: WorkToolsAppControlState?) {
+  init(
+    laneId: String,
+    initialState: WorkToolsAppControlState?,
+    chatSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.embedded = embedded
     _appControl = State(initialValue: initialState)
     _loaded = State(initialValue: initialState != nil)
   }
@@ -580,7 +593,7 @@ struct AppControlViewer: View {
       }
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
-    .preferredColorScheme(.dark)
+    .preferredColorScheme(embedded ? nil : .dark)
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -604,9 +617,12 @@ struct AppControlViewer: View {
 
   private var controls: some View {
     HStack(spacing: 14) {
-      controlButton(systemName: "xmark", label: "Close") {
-        stopSession()
-        dismiss()
+      // In a pane the pane's close button is the way out.
+      if !embedded {
+        controlButton(systemName: "xmark", label: "Close") {
+          stopSession()
+          dismiss()
+        }
       }
       Spacer(minLength: 0)
       if syncService.supportsViewerRemoteAction("appControl.inspectPoint"), let session {
@@ -761,7 +777,7 @@ struct AppControlViewer: View {
   private func beginInspect() {
     guard inspect == nil, let session, let image = session.image else { return }
     ADEHaptics.light()
-    let model = LiveInspectMarkupModel(surface: .appControl, laneId: laneId, chatSessionId: nil)
+    let model = LiveInspectMarkupModel(surface: .appControl, laneId: laneId, chatSessionId: chatSessionId)
     model.begin(
       plan: .appControl(
         image: image,

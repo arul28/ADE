@@ -13,6 +13,9 @@ struct LaneDetailScreen: View {
   /// False when the screen is a split column's detail: there is nothing to go
   /// back to in that column.
   let showsBackButton: Bool
+  /// Shown inside another surface (the Work tools pane) rather than as a
+  /// screen of its own: it must not hide the root tab bar around it.
+  let embedded: Bool
   let onRefreshRoot: @MainActor () async -> Void
 
   @State private(set) var detail: LaneDetailPayload?
@@ -59,6 +62,7 @@ struct LaneDetailScreen: View {
     transitionNamespace: Namespace.ID? = nil,
     initialSection: LaneDetailSection = .git,
     showsBackButton: Bool = true,
+    embedded: Bool = false,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
@@ -66,6 +70,7 @@ struct LaneDetailScreen: View {
     self.allLaneSnapshots = allLaneSnapshots
     self.transitionNamespace = transitionNamespace
     self.showsBackButton = showsBackButton
+    self.embedded = embedded
     self.onRefreshRoot = onRefreshRoot
   }
 
@@ -112,8 +117,8 @@ struct LaneDetailScreen: View {
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .navigationBar)
-    .toolbar(.hidden, for: .tabBar)
-    .adeRootTabBarHidden()
+    .toolbar(embedded ? .automatic : .hidden, for: .tabBar)
+    .adeRootTabBarHidden(!embedded)
     .adeAnalyticsScreen(.laneDetail)
     .safeAreaInset(edge: .top, spacing: 0) {
       laneDetailTopBar

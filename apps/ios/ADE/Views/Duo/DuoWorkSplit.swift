@@ -1,93 +1,27 @@
 import SwiftUI
 
 /// Fixed metrics for the wide Work layout. Kept in one place so the sessions
-/// column, the rail and the tools pane agree on how much room each takes.
+/// column and the tools pane agree on how much room each takes.
 enum DuoWorkMetrics {
   /// The sessions column on a flat or laptop-open display.
   static let listWidth: CGFloat = 300
-  /// What the sessions column shrinks to while a tool is open: one dot per chat.
-  static let railWidth: CGFloat = 56
   /// The band the fold gets. Content stops here; nothing interactive lives on it.
   static let hingeGutter: CGFloat = 14
   /// A thread narrower than this cannot hold a transcript and a composer.
   static let minChatWidth: CGFloat = 340
-}
 
-/// One chat in the minimized sessions rail: enough to recognise it (status hue,
-/// selection) without the list itself, which is unmounted while a tool is open.
-struct DuoWorkRailItem: Identifiable, Equatable {
-  let id: String
-  let title: String
-  /// The row's canonical status hue, the same one its Work row wears.
-  let tint: Color
-  let isSelected: Bool
-  let isBusy: Bool
-}
-
-/// The minimized sessions column. Tapping a dot selects that chat; the button
-/// at the top brings the whole list back as an overlay.
-struct DuoWorkSessionsRail: View {
-  let items: [DuoWorkRailItem]
-  let onSelect: (String) -> Void
-  let onExpand: () -> Void
-
-  var body: some View {
-    VStack(spacing: 4) {
-      Button(action: onExpand) {
-        WorkChatGlassCircleLabel(systemName: "sidebar.left", size: 36, glyphSize: 14)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Show chats")
-      .accessibilityIdentifier("Duo.Work.Rail.Expand")
-      .padding(.top, 8)
-
-      ScrollView(.vertical, showsIndicators: false) {
-        VStack(spacing: 6) {
-          ForEach(items) { item in
-            dot(item)
-          }
-        }
-        .padding(.vertical, 8)
-      }
-      .scrollBounceBehavior(.basedOnSize)
-
-      Spacer(minLength: 0)
+  /// How wide the tools pane wants to be, given the space left for the thread
+  /// and the pane together. On a book fold the pane IS the trailing page, so
+  /// its edge sits on the hinge; otherwise it takes a little under half.
+  ///
+  /// Shared by the split that lays the pane out and by the sidebar toggle,
+  /// which has to know whether the list and the pane can both stay.
+  static func paneWidth(available: CGFloat, fold: DuoFold) -> CGFloat {
+    if case .sideBySide(let rect) = fold {
+      let boundary = rect.minX
+      if boundary > 240, available - boundary > 260 { return available - boundary }
     }
-    .frame(maxHeight: .infinity)
-    .background(ADEColor.surfaceBackground)
-    .overlay(alignment: .trailing) {
-      Rectangle()
-        .fill(ADEColor.glassBorder)
-        .frame(width: 0.5)
-        .accessibilityHidden(true)
-    }
-    .accessibilityIdentifier("Duo.Work.SessionsRail")
-  }
-
-  private func dot(_ item: DuoWorkRailItem) -> some View {
-    Button {
-      ADEHaptics.light()
-      onSelect(item.id)
-    } label: {
-      Circle()
-        .fill(item.tint.opacity(item.isBusy ? 1 : 0.55))
-        .frame(width: item.isBusy ? 15 : 12, height: item.isBusy ? 15 : 12)
-        .frame(width: 34, height: 34)
-        .background(
-          item.isSelected ? ADEColor.glassBackground : Color.clear,
-          in: Circle()
-        )
-        .overlay {
-          if item.isSelected {
-            Circle()
-              .strokeBorder(ADEColor.textPrimary.opacity(0.75), lineWidth: 1.5)
-              .frame(width: 26, height: 26)
-          }
-        }
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(item.title)
-    .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+    return min(max(320, available * 0.46), 560)
   }
 }
 
@@ -106,40 +40,14 @@ struct DuoWorkEmptyDetail: View {
 }
 
 extension WorkRootListScreen {
-  /// The chats the rail stands for: the list's own display order, one dot each,
-  /// wearing the tone the row behind it already wears.
-  var duoRailItems: [DuoWorkRailItem] {
-    let now = Date()
-    var items: [DuoWorkRailItem] = []
-    for session in mergedSessions where isChatSession(session) {
-      let presentation = workSessionRowPresentation(
-        session: session,
-        summary: chatSummaries[session.id],
-        now: now
-      )
-      items.append(DuoWorkRailItem(
-        id: session.id,
-        title: session.title,
-        tint: activityToneColor(presentation.tone),
-        isSelected: duoSelectedRoute?.sessionId == session.id,
-        isBusy: presentation.phase == .running
-          || presentation.phase == .starting
-          || presentation.phase == .needsYou
-      ))
-      if items.count >= 12 { break }
-    }
-    return items
-  }
-
   /// Selecting in the column replaces the thread in place instead of pushing:
-  /// the list stays where the user left it, and Back on the chat header clears
-  /// the column rather than popping a stack.
+  /// the list stays where the user left it, and the split's sidebar toggle
+  /// hides the list rather than popping a stack.
   func duoSelectSession(_ session: TerminalSessionSummary) {
     guard !workIsPendingChatCreationSession(session) else { return }
     if let previous = duoSelectedRoute?.sessionId, previous != session.id {
       WorkSeenStore.stamp([previous])
     }
-    duoRailExpanded = false
     if duoPane.isOpen { duoPane.close() }
     // Keeps the route the phone layout will push if the display folds, and the
     // matched-geometry transition's source id.
@@ -165,19 +73,11 @@ extension WorkRootListScreen {
     scheduleSessionPresentationRebuild()
   }
 
-  func duoSelectRailItem(_ sessionId: String) {
-    guard let session = mergedSessions.first(where: { $0.id == sessionId }) else { return }
-    duoRailExpanded = false
-    duoSelectSession(session)
-  }
-
-  /// Back on the chat header, and the app's "nothing open" state: the thread is
-  /// gone, the list is back, and the chat is stamped as seen.
+  /// The chat was deleted (or the column was emptied): back to the list.
   func duoClearSelection() {
     if let sessionId = duoSelectedRoute?.sessionId {
       WorkSeenStore.stamp([sessionId])
     }
-    duoRailExpanded = false
     if duoPane.isOpen { duoPane.close() }
     duoSelectedRoute = nil
     selectedSessionTransitionId = nil

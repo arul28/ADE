@@ -27,9 +27,27 @@ struct LinearPaneSheet: View {
   @State private var justConnectedOrg: String?
   @State private var attachError: String?
   @State private var attachingIssue = false
+  /// The chat a pane's "Attach issue" attaches to. Nil defers to the global
+  /// sheet's own attach target.
+  private let attachSessionId: String?
+  /// Shown inside the Work tools pane rather than as a sheet: no close button
+  /// of its own, and attaching does not close a sheet that is not there.
+  private let embedded: Bool
 
-  init(syncService: SyncService) {
+  init(
+    syncService: SyncService,
+    attachSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
+    self.attachSessionId = attachSessionId
+    self.embedded = embedded
+  }
+
+  /// The chat "Attach issue" targets. Explicit in the pane; the global sheet
+  /// reads the presentation state it was opened with.
+  private var effectiveAttachSessionId: String? {
+    attachSessionId ?? syncService.linearPaneAttachSessionId
   }
 
   private var isDisconnected: Bool {
@@ -45,7 +63,8 @@ struct LinearPaneSheet: View {
           LinearIssueListScreen(
             store: store,
             onClose: close,
-            onAttachIssue: syncService.linearPaneAttachSessionId == nil ? nil : { issue in
+            showsClose: !embedded,
+            onAttachIssue: effectiveAttachSessionId == nil ? nil : { issue in
               Task { await attachIssue(issue) }
             }
           )
@@ -127,11 +146,13 @@ struct LinearPaneSheet: View {
     .navigationTitle("Linear")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button { close() } label: {
-          Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+      if !embedded {
+        ToolbarItem(placement: .topBarLeading) {
+          Button { close() } label: {
+            Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+          }
+          .accessibilityLabel("Close Linear")
         }
-        .accessibilityLabel("Close Linear")
       }
       ToolbarItem(placement: .topBarTrailing) {
         NavigationLink(value: LinearRoute.connection) {
@@ -143,19 +164,27 @@ struct LinearPaneSheet: View {
   }
 
   private func close() {
+    // Inside the pane there is no sheet to dismiss; the pane's close owns that.
+    guard !embedded else { return }
     syncService.linearPanePresented = false
     syncService.linearPaneAttachSessionId = nil
   }
 
   private func attachIssue(_ issue: NormalizedLinearIssue) async {
-    guard let sessionId = syncService.linearPaneAttachSessionId else { return }
+    guard let sessionId = effectiveAttachSessionId else { return }
     guard !attachingIssue else { return }
     attachingIssue = true
     defer { attachingIssue = false }
     do {
       try await syncService.attachLinearIssueToChat(chatSessionId: sessionId, issue: issue)
       ADEHaptics.success()
-      close()
+      if embedded {
+        // Stay on the list and let it show the issue as attached; closing would
+        // leave the pane with nothing behind it.
+        store.refreshAttachedIssueIds()
+      } else {
+        close()
+      }
     } catch {
       attachError = error.localizedDescription
     }

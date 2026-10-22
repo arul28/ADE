@@ -12,6 +12,10 @@ struct FilesRootScreen: View {
   @EnvironmentObject var syncService: SyncService
   @Namespace var fileTransitionNamespace
   var isTabActive = true
+  /// Set by the Work tools pane: the same browser, scoped to a chat's lane
+  /// workspace, in one column with no claim on the Files tab's deeplinks.
+  var preferredLaneId: String? = nil
+  var embeddedInPane = false
 
   @State var workspaces: [FilesWorkspace] = []
   @State var lanes: [LaneSummary] = []
@@ -40,7 +44,8 @@ struct FilesRootScreen: View {
   }
 
   var filesNavigationRequestKey: String? {
-    guard isTabActive else { return nil }
+    // A pane's copy must never consume a deeplink meant for the Files tab.
+    guard isTabActive, !embeddedInPane else { return nil }
     return syncService.requestedFilesNavigation?.id
   }
 
@@ -111,7 +116,7 @@ struct FilesRootScreen: View {
     Group {
       // The Duo's inner display has room for the file list beside the viewer;
       // every other size keeps the phone's push navigation.
-      if duoLayout.isWide {
+      if duoLayout.isWide && !embeddedInPane {
         duoFilesSplitBody
       } else {
         filesPhoneBody

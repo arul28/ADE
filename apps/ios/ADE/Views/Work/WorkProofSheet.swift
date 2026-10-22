@@ -157,6 +157,9 @@ struct WorkProofSheet: View {
   /// Narrowed to the records a thread link counted; its chip clears it.
   var focus: WorkProofDrawerFocus? = nil
   var onClearFocus: () -> Void = {}
+  /// Shown inside a split column rather than as a sheet: the pane owns closing,
+  /// so the nav bar's Done would be a dead control.
+  var embedded = false
 
   @Environment(\.dismiss) private var dismiss
   @State private var viewerRequest: WorkProofViewerRequest?
@@ -243,8 +246,10 @@ struct WorkProofSheet: View {
       .navigationTitle("Proof")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
+        if !embedded {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done") { dismiss() }
+          }
         }
       }
       .fullScreenCover(item: $viewerRequest) { request in

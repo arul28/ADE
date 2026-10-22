@@ -33,6 +33,9 @@ struct WorkToolsSheet: View {
 
   let laneId: String
   let tool: Tool
+  /// Shown inside a split column rather than as a sheet: the pane owns closing,
+  /// so the nav bar's Done would be a dead control.
+  var embedded = false
 
   /// Poll cadence while the sheet is visible. Slow enough to be free on a
   /// cellular link, fast enough that switching tools on the Mac reads as live.
@@ -90,8 +93,10 @@ struct WorkToolsSheet: View {
       .navigationTitle(tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
+        if !embedded {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done") { dismiss() }
+          }
         }
       }
     }

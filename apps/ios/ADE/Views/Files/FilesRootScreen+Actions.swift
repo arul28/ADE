@@ -65,9 +65,14 @@ extension FilesRootScreen {
       if lanes != loadedLanes {
         lanes = loadedLanes
       }
+      // A pane opens on the chat's own lane workspace; every other caller keeps
+      // the first workspace (or the one the user already chose).
+      let preferredLaneWorkspaceId = preferredLaneId.flatMap { laneId in
+        loadedWorkspaces.first(where: { $0.laneId == laneId })?.id
+      }
       let nextSelectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
         loadedWorkspaces.contains(where: { $0.id == candidate }) ? candidate : nil
-      } ?? loadedWorkspaces.first?.id
+      } ?? preferredLaneWorkspaceId ?? loadedWorkspaces.first?.id
       if selectedWorkspaceId != nextSelectedWorkspaceId {
         selectedWorkspaceId = nextSelectedWorkspaceId
       }

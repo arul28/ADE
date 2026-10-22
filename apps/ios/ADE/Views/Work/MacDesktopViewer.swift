@@ -18,6 +18,12 @@ import UIKit
 /// cannot unsubscribe each other on the host.
 struct MacDesktopViewer: View {
   let laneId: String
+  /// The chat this viewer was opened from, so an inspect handoff goes back to
+  /// the right composer. Nil for a viewer opened without a chat.
+  var chatSessionId: String?
+  /// A column in a split, not a full-screen cover: no close button of its own
+  /// and no window-wide dark preference (the pane scopes dark itself).
+  var embedded = false
 
   /// Poll cadence for the lease, recording and stream summary. Same as the
   /// tools sheet: this is a surface the user opened to watch.
@@ -45,8 +51,15 @@ struct MacDesktopViewer: View {
   @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-  init(laneId: String, initialState: WorkToolsMacDesktopState?) {
+  init(
+    laneId: String,
+    initialState: WorkToolsMacDesktopState?,
+    chatSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.embedded = embedded
     _desktop = State(initialValue: initialState)
   }
 
@@ -77,7 +90,7 @@ struct MacDesktopViewer: View {
       }
     }
     .animation(.easeOut(duration: 0.18), value: inspect != nil)
-    .preferredColorScheme(.dark)
+    .preferredColorScheme(embedded ? nil : .dark)
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -104,9 +117,12 @@ struct MacDesktopViewer: View {
 
   private var controls: some View {
     HStack(spacing: 14) {
-      controlButton(systemName: "xmark", label: "Close") {
-        stopSession()
-        dismiss()
+      // In a pane the pane's close button is the way out.
+      if !embedded {
+        controlButton(systemName: "xmark", label: "Close") {
+          stopSession()
+          dismiss()
+        }
       }
       Spacer(minLength: 0)
       if let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
@@ -381,7 +397,7 @@ struct MacDesktopViewer: View {
   private func beginInspect() {
     guard inspect == nil, desktop?.display != nil else { return }
     ADEHaptics.light()
-    let model = LiveInspectMarkupModel(surface: .macDesktop, laneId: laneId, chatSessionId: nil)
+    let model = LiveInspectMarkupModel(surface: .macDesktop, laneId: laneId, chatSessionId: chatSessionId)
     model.begin(plan: .macDesktop, using: syncService)
     inspect = model
     stopSession()

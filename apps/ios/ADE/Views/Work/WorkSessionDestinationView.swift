@@ -306,8 +306,13 @@ struct WorkSessionDestinationView: View {
   /// Mirrors `duoPane?.isOpen` so the equatable gate below re-lays out when the
   /// pane opens or closes (the model itself is not Equatable).
   var duoPaneOpen = false
-  /// Wide column only: the chat header's Back clears the column instead of
-  /// popping a stack that is not there.
+  /// Wide column only: whether the sessions column is showing beside this chat,
+  /// so the header's sidebar toggle can name what it will do.
+  var duoShowsSidebar = false
+  /// Wide column only: shows or hides the sessions column. This is the header's
+  /// leading control; a split has nothing to go back to, so there is no chevron.
+  var onDuoToggleSidebar: (() -> Void)?
+  /// Wide column only: empties the column when the chat is deleted.
   var onDuoBack: (() -> Void)?
 
   @MainActor
@@ -332,6 +337,8 @@ struct WorkSessionDestinationView: View {
     liveRedirectOnlySends: Bool = false,
     duoPane: DuoWorkPaneModel? = nil,
     duoPaneOpen: Bool = false,
+    duoShowsSidebar: Bool = false,
+    onDuoToggleSidebar: (() -> Void)? = nil,
     onDuoBack: (() -> Void)? = nil
   ) {
     let initStart = CACurrentMediaTime()
@@ -357,6 +364,8 @@ struct WorkSessionDestinationView: View {
     self.liveRedirectOnlySends = liveRedirectOnlySends
     self.duoPane = duoPane
     self.duoPaneOpen = duoPaneOpen
+    self.duoShowsSidebar = duoShowsSidebar
+    self.onDuoToggleSidebar = onDuoToggleSidebar
     self.onDuoBack = onDuoBack
 
     _session = State(initialValue: initialSession)
@@ -773,13 +782,40 @@ struct WorkSessionDestinationView: View {
   /// exists only when the corresponding menu item exists.
   private var duoToolSurfaceTabs: [DuoToolTab] {
     var tabs: [DuoToolTab] = []
-    if showsLaneActions && !personalChat { tabs.append(.pr) }
+    if showsLaneActions && !personalChat && duoHasPullRequest { tabs.append(.pr) }
+    if duoToolLane != nil { tabs.append(.git) }
+    if duoToolLane != nil { tabs.append(.files) }
+    if !personalChat && syncService.activeProjectId != nil { tabs.append(.issues) }
     if !personalChat { tabs.append(.proof) }
     let chatLike = (session ?? initialSession).map(isChatSession) ?? false
     if chatLike { tabs.append(.chatInfo) }
     // A CLI session has no separate terminal to offer: the chat column IS the
     // terminal, so a Terminal tab would only ever duplicate it.
     return tabs
+  }
+
+  /// The lane Git and Files tabs read from. Only a lane this project can
+  /// resolve: a cross-project quick look or a lane on another machine has no
+  /// snapshot path here, and inventing one would be a new fetch.
+  private var duoToolLane: LaneSummary? {
+    guard crossProjectContext == nil, !personalChat else { return nil }
+    let laneId = (session?.laneId ?? initialSession?.laneId ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !laneId.isEmpty, !isWorkRemoteLaneId(laneId) else { return nil }
+    return lanes.first(where: { $0.id == laneId })
+  }
+
+  /// This project's lanes as first-frame snapshots. `LaneDetailScreen` reads the
+  /// real detail itself; the snapshots only let its header and manage sheet
+  /// resolve siblings on the first frame.
+  private var duoToolLaneSnapshots: [LaneListSnapshot] {
+    lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
+  }
+
+  /// The PR badge chip's own condition: a PR the chat can show, not merely a
+  /// lane that could have one.
+  private var duoHasPullRequest: Bool {
+    duoPanePrTag != nil || duoPanePr != nil || duoPanePrSummary != nil
   }
 
   @ViewBuilder
@@ -798,25 +834,50 @@ struct WorkSessionDestinationView: View {
       duoSimulatorContent(seed)
     case .macDesktop:
       if seed.macDesktopStream {
-        MacDesktopViewer(laneId: duoToolLaneId, initialState: seed.macDesktop)
+        MacDesktopViewer(
+          laneId: duoToolLaneId,
+          initialState: seed.macDesktop,
+          chatSessionId: sessionId,
+          embedded: true
+        )
+        // Only the pane is dark, never the window around it.
+        .environment(\.colorScheme, .dark)
       } else {
-        WorkToolsSheet(laneId: duoToolLaneId, tool: .macDesktop)
+        duoLaneToolSheet(.macDesktop)
       }
     case .appControl:
       if seed.appControlStream {
-        AppControlViewer(laneId: duoToolLaneId, initialState: seed.appControl)
+        AppControlViewer(
+          laneId: duoToolLaneId,
+          initialState: seed.appControl,
+          chatSessionId: sessionId,
+          embedded: true
+        )
+        .environment(\.colorScheme, .dark)
       } else {
-        WorkToolsSheet(laneId: duoToolLaneId, tool: .appControl)
+        duoLaneToolSheet(.appControl)
       }
     case .browser:
-      WorkToolsSheet(laneId: duoToolLaneId, tool: .browser)
+      duoLaneToolSheet(.browser)
     case .pr:
       chatPrDetailsContent
     case .proof:
       duoProofContent
     case .chatInfo:
       chatInfoDetailsContent
+    case .git:
+      duoLaneGitContent
+    case .files:
+      duoLaneFilesContent
+    case .issues:
+      duoLaneIssuesContent
     }
+  }
+
+  /// The sheet-shaped lane tools, embedded: no Done (the pane closes), same
+  /// content and same poll.
+  private func duoLaneToolSheet(_ tool: WorkToolsSheet.Tool) -> some View {
+    WorkToolsSheet(laneId: duoToolLaneId, tool: tool, embedded: true)
   }
 
   /// The same viewer the chip opened before, seeded with the status the chip
@@ -824,31 +885,38 @@ struct WorkSessionDestinationView: View {
   /// before Control is the viewer's own and is untouched by living in a pane.
   @ViewBuilder
   private func duoSimulatorContent(_ seed: DuoToolSeed) -> some View {
-    #if DEBUG
-    if WorkRootPreviewFixture.active != nil {
+    Group {
+      #if DEBUG
+      if WorkRootPreviewFixture.active != nil {
+        AppleDeviceViewer(
+          laneId: duoToolLaneId,
+          chatSessionId: sessionId,
+          initialStatus: seed.appleStatus,
+          embedded: true,
+          preview: AppleDeviceViewerPreview(
+            status: WorkProofPreviewData.toolChipsAppleStatus,
+            mode: .watching
+          )
+        )
+      } else {
+        AppleDeviceViewer(
+          laneId: duoToolLaneId,
+          chatSessionId: sessionId,
+          initialStatus: seed.appleStatus,
+          embedded: true
+        )
+      }
+      #else
       AppleDeviceViewer(
         laneId: duoToolLaneId,
         chatSessionId: sessionId,
         initialStatus: seed.appleStatus,
-        preview: AppleDeviceViewerPreview(
-          status: WorkProofPreviewData.toolChipsAppleStatus,
-          mode: .watching
-        )
+        embedded: true
       )
-    } else {
-      AppleDeviceViewer(
-        laneId: duoToolLaneId,
-        chatSessionId: sessionId,
-        initialStatus: seed.appleStatus
-      )
+      #endif
     }
-    #else
-    AppleDeviceViewer(
-      laneId: duoToolLaneId,
-      chatSessionId: sessionId,
-      initialStatus: seed.appleStatus
-    )
-    #endif
+    // Only the pane is dark, never the window around it.
+    .environment(\.colorScheme, .dark)
   }
 
   private var duoProofContent: some View {
@@ -868,7 +936,8 @@ struct WorkSessionDestinationView: View {
         } else {
           await loadArtifactContent(artifact, intent)
         }
-      }
+      },
+      embedded: true
     )
   }
 
@@ -969,6 +1038,76 @@ struct WorkSessionDestinationView: View {
     if DuoWorkPreviewState.pr != nil { return nil }
     #endif
     return chatDisplayPrSummary
+  }
+
+  /// The lane's git actions, exactly the surface the Lanes tab's detail shows:
+  /// stage, commit, push, stash, history. `LaneDetailScreen` fetches the lane
+  /// detail itself, so this adds no data path — only the first-frame snapshot.
+  @ViewBuilder
+  private var duoLaneGitContent: some View {
+    if let lane = duoToolLane {
+      let snapshots = duoToolLaneSnapshots
+      let initial = snapshots.first(where: { $0.lane.id == lane.id })
+        ?? LaneListSnapshot(lane: lane, runtime: syncRemoteLaneEmptyRuntime)
+      // Its own stack, so a file the git pane opens lands inside the column
+      // instead of covering the split.
+      NavigationStack {
+        LaneDetailScreen(
+          laneId: lane.id,
+          initialSnapshot: initial,
+          allLaneSnapshots: snapshots,
+          transitionNamespace: nil,
+          initialSection: .git,
+          showsBackButton: false,
+          embedded: true,
+          onRefreshRoot: {}
+        )
+      }
+    } else {
+      duoLaneToolUnavailable(
+        "Git",
+        message: "This chat's lane is on another machine or in another project, so its git actions open from the Lanes tab."
+      )
+    }
+  }
+
+  /// The lane's files, browsed by the Files tab's own screen scoped to this
+  /// chat's lane workspace.
+  @ViewBuilder
+  private var duoLaneFilesContent: some View {
+    if let lane = duoToolLane {
+      FilesRootScreen(
+        isTabActive: true,
+        preferredLaneId: lane.id,
+        embeddedInPane: true
+      )
+    } else {
+      duoLaneToolUnavailable(
+        "Files",
+        message: "This chat's lane is on another machine or in another project, so its files open from the Files tab."
+      )
+    }
+  }
+
+  /// Linear, with "Attach issue" aimed at this chat when the host offers it.
+  @ViewBuilder
+  private var duoLaneIssuesContent: some View {
+    if syncService.activeProjectId != nil {
+      LinearPaneSheet(
+        syncService: syncService,
+        attachSessionId: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+          ? sessionId
+          : nil,
+        embedded: true
+      )
+    } else {
+      duoLaneToolUnavailable("Issues", message: "Open a project to browse its Linear issues.")
+    }
+  }
+
+  private func duoLaneToolUnavailable(_ title: String, message: String) -> some View {
+    ADEEmptyStateView(symbol: "exclamationmark.circle", title: title, message: message)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
   /// Opening a menu item that lives in the pane must not also present its sheet.
@@ -1223,7 +1362,12 @@ struct WorkSessionDestinationView: View {
         mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
         title: sessionDestinationNavigationTitle,
         subtitle: sessionDestinationNavigationSubtitle,
-        onBack: onDuoBack,
+        leadingSymbol: "sidebar.left",
+        leadingLabel: duoShowsSidebar ? "Hide chats" : "Show chats",
+        leadingIdentifier: "Duo.Work.SidebarToggle",
+        // A split column has no stack to pop: the leading control is the
+        // sidebar toggle, and only the delete path uses `onDuoBack`.
+        onBack: duoUsesPane ? onDuoToggleSidebar : onDuoBack,
         trailingControls: { sessionHeaderTrailingControls }
       )
       // No zoom navigation transition here: a zoom-pushed screen closes on a
@@ -2953,6 +3097,8 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.isLive == rhs.isLive
       && lhs.navigationChrome == rhs.navigationChrome
       && lhs.duoPaneOpen == rhs.duoPaneOpen
+      && lhs.duoShowsSidebar == rhs.duoShowsSidebar
+      && (lhs.onDuoToggleSidebar == nil) == (rhs.onDuoToggleSidebar == nil)
       && (lhs.onDuoBack == nil) == (rhs.onDuoBack == nil)
       && lhs.showsLaneActions == rhs.showsLaneActions
       // `compactComposer` is passed down to the composer like the other two
@@ -2979,6 +3125,11 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   /// Overrides Back for `.column` and any other mode that supplies one. Nil
   /// keeps the pushed-detail dismiss.
   let onBack: (() -> Void)?
+  /// Symbol, spoken label and accessibility id for `.column`'s leading control.
+  /// The pushed detail always keeps the back chevron.
+  let leadingSymbol: String
+  let leadingLabel: String
+  let leadingIdentifier: String
   let trailingControls: () -> TrailingControls
 
   @ViewBuilder
@@ -3023,14 +3174,17 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     case .column:
       content
         // Floats over the thread exactly as the pushed header does; only the
-        // Back action and the tab bar differ, because a column has no stack to
-        // pop and no full-screen presentation to hide the root tabs behind.
+        // leading control and the tab bar differ. A split has no stack to pop,
+        // so the leading control is the sidebar toggle, never a chevron.
         .safeAreaInset(edge: .top, spacing: 0) {
           WorkChatGlassHeader(
             title: title,
             subtitle: subtitle,
             onBack: { onBack?() },
-            trailingControls: trailingControls
+            trailingControls: trailingControls,
+            leadingSymbol: leadingSymbol,
+            leadingLabel: leadingLabel,
+            leadingIdentifier: leadingIdentifier
           )
         }
         .navigationTitle("")
@@ -3069,6 +3223,9 @@ extension View {
     mode: WorkSessionNavigationChrome,
     title: String,
     subtitle: String? = nil,
+    leadingSymbol: String = "chevron.left",
+    leadingLabel: String = "Back",
+    leadingIdentifier: String = "Work.Chat.Header.Back",
     onBack: (() -> Void)? = nil,
     @ViewBuilder trailingControls: @escaping () -> TrailingControls
   ) -> some View {
@@ -3078,6 +3235,9 @@ extension View {
         title: title,
         subtitle: subtitle,
         onBack: onBack,
+        leadingSymbol: leadingSymbol,
+        leadingLabel: leadingLabel,
+        leadingIdentifier: leadingIdentifier,
         trailingControls: trailingControls
       )
     )
@@ -3101,15 +3261,20 @@ struct WorkChatGlassHeader<TrailingControls: View>: View {
   let subtitle: String?
   let onBack: () -> Void
   let trailingControls: () -> TrailingControls
+  /// The leading control. A pushed chat is a back chevron; a split column swaps
+  /// in the sidebar toggle, because there is nothing to go back to.
+  var leadingSymbol = "chevron.left"
+  var leadingLabel = "Back"
+  var leadingIdentifier = "Work.Chat.Header.Back"
 
   var body: some View {
     HStack(alignment: .center, spacing: 8) {
       Button(action: onBack) {
-        WorkChatGlassCircleLabel(systemName: "chevron.left", glyphSize: 18)
+        WorkChatGlassCircleLabel(systemName: leadingSymbol, glyphSize: 18)
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Back")
-      .accessibilityIdentifier("Work.Chat.Header.Back")
+      .accessibilityLabel(leadingLabel)
+      .accessibilityIdentifier(leadingIdentifier)
 
       titleCapsule
         .layoutPriority(1)

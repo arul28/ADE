@@ -465,10 +465,15 @@ struct WorkRootListScreen: View, Equatable {
   // display, where the chat is pushed exactly as it always was.
   /// The chat the wide detail column is showing. Nil means the empty column.
   @State var duoSelectedRoute: WorkSessionRoute?
-  /// The chat's tool column: what is open, and whether the sessions rail has
-  /// been expanded back into the full list.
+  /// The chat's tool column: what is open, and whether the sessions column is
+  /// showing beside it. Opening a tool collapses the column fully (like the
+  /// desktop sidebar); the chat header's sidebar toggle brings it back.
   @StateObject var duoPane = DuoWorkPaneModel()
-  @State var duoRailExpanded = false
+  @State var duoShowsSessionList = true
+  /// The wide split's last measured size and fold, so the sidebar toggle can
+  /// answer "does the thread still get a readable width?" without guessing.
+  @State var duoWideSize: CGSize = .zero
+  @State var duoWideFold: DuoFold = .none
 
   var selectedStatus: WorkSessionStatusFilter {
     get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
@@ -892,9 +897,8 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   /// Wide display: sessions | chat, and the chat's tools as a third column on
-  /// the trailing side. The list is one instance either way — while a tool is
-  /// open it is replaced by the rail and comes back as an overlay, so the rows
-  /// and their list-level work are not mounted twice.
+  /// the trailing side. Opening a tool collapses the sessions column the way
+  /// the desktop's sidebar does; the chat header's toggle brings it back.
   private var duoWideBody: some View {
     NavigationStack(path: $path) {
       duoWideSplit
@@ -905,38 +909,40 @@ struct WorkRootListScreen: View, Equatable {
   private var duoWideSplit: some View {
     GeometryReader { proxy in
       let fold = DuoFoldReading.fold(in: proxy)
-      ZStack(alignment: .leading) {
-        HStack(spacing: 0) {
-          if duoPane.isOpen {
-            DuoWorkSessionsRail(
-              items: duoRailItems,
-              onSelect: duoSelectRailItem,
-              onExpand: {
-                withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-                  duoRailExpanded = true
-                }
-              }
-            )
-            .frame(width: DuoWorkMetrics.railWidth)
-          } else {
-            duoSessionsColumn
-              .frame(width: duoSessionsColumnWidth(total: proxy.size.width, fold: fold))
-              .overlay(alignment: .trailing) {
-                Rectangle()
-                  .fill(ADEColor.glassBorder)
-                  .frame(width: 0.5)
-                  .accessibilityHidden(true)
-              }
-          }
-          duoDetailColumn
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+      HStack(spacing: 0) {
+        if duoShowsSessionList {
+          duoSessionsColumn
+            .frame(width: duoSessionsColumnWidth(total: proxy.size.width, fold: fold))
+            .overlay(alignment: .trailing) {
+              Rectangle()
+                .fill(ADEColor.glassBorder)
+                .frame(width: 0.5)
+                .accessibilityHidden(true)
+            }
+            .transition(.move(edge: .leading).combined(with: .opacity))
         }
-        if duoPane.isOpen && duoRailExpanded {
-          duoSessionsExpandedOverlay
-        }
+        duoDetailColumn
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
       .background(ADEColor.pageBackground)
-      .animation(ADEMotion.quick(reduceMotion: reduceMotion), value: duoPane.isOpen)
+      .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+        if duoWideSize != size { duoWideSize = size }
+      }
+      .onChange(of: fold) { _, next in
+        if duoWideFold != next { duoWideFold = next }
+      }
+      // Opening a tool cedes the column, exactly like the desktop sidebar;
+      // closing it hands the column back.
+      .onChange(of: duoPane.isOpen) { _, open in
+        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+          duoShowsSessionList = !open
+        }
+      }
+      .onAppear {
+        duoWideFold = fold
+        duoWideSize = proxy.size
+      }
+      .animation(ADEMotion.quick(reduceMotion: reduceMotion), value: duoShowsSessionList)
     }
   }
 
@@ -947,6 +953,36 @@ struct WorkRootListScreen: View, Equatable {
       workList(proxy: proxy)
     }
     .background(ADEColor.pageBackground)
+  }
+
+  /// The chat header's sidebar button. Hiding the list gives the thread its
+  /// width back; showing it must not squeeze the thread below something
+  /// readable, and when the pane is the reason it would, the pane gives way.
+  private func toggleDuoSessionsColumn() {
+    withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      if duoShowsSessionList {
+        duoShowsSessionList = false
+      } else {
+        duoShowsSessionList = true
+        if duoPane.isOpen, duoChatWidthWithList() < DuoWorkMetrics.minChatWidth {
+          duoPane.close()
+        }
+      }
+    }
+  }
+
+  /// The thread's width if the sessions column were showing now, with the pane
+  /// still open. The pane's own width rule is shared, so the two cannot
+  /// disagree about whether everything fits.
+  private func duoChatWidthWithList() -> CGFloat {
+    let total = duoWideSize.width
+    guard total > 0 else { return DuoWorkMetrics.minChatWidth }
+    let list = duoSessionsColumnWidth(total: total, fold: duoWideFold)
+    let detail = max(0, total - list - DuoWorkMetrics.hingeGutter)
+    // Laptop/tent: the tool takes the top half, so it costs the thread no width.
+    if duoWideFold.isStacked { return detail }
+    let pane = DuoWorkMetrics.paneWidth(available: detail, fold: duoWideFold)
+    return detail - pane
   }
 
   /// On a book fold the list takes the leading page and the chat the other, so
@@ -972,34 +1008,11 @@ struct WorkRootListScreen: View, Equatable {
     }
   }
 
-  /// The list, brought back from the rail as an overlay over the detail column.
-  /// It is the same list, so picking a chat here closes the overlay by way of
-  /// `duoSelectRailItem`'s selection path.
-  private var duoSessionsExpandedOverlay: some View {
-    ZStack(alignment: .leading) {
-      Color.black.opacity(0.28)
-        .ignoresSafeArea()
-        .contentShape(Rectangle())
-        .accessibilityHidden(true)
-        .onTapGesture {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            duoRailExpanded = false
-          }
-        }
-      duoSessionsColumn
-        .frame(width: 320)
-        .background(ADEColor.pageBackground)
-        .shadow(color: .black.opacity(0.18), radius: 20, x: 8, y: 0)
-        .transition(.move(edge: .leading))
-    }
-  }
-
   /// A width change is the one moment the two layouts disagree about where the
   /// open chat lives. Carrying it over keeps unfolding from dumping the reader
   /// back on the list.
   private func handleDuoWidthChange(_ wide: Bool) {
     guard wide else {
-      duoRailExpanded = false
       // Folding back to the phone layout carries the open chat into the stack,
       // so the reader does not land back on the list.
       if path.isEmpty, let route = duoSelectedRoute {
@@ -1007,6 +1020,9 @@ struct WorkRootListScreen: View, Equatable {
       }
       return
     }
+    // A tool was open before the fold: keep the column collapsed so the split
+    // does not have to give up room it had already ceded.
+    duoShowsSessionList = !duoPane.isOpen
     if duoSelectedRoute == nil,
        let transition = selectedSessionTransitionId {
       if let session = mergedSessions.first(where: { $0.id == transition }) {
@@ -1077,6 +1093,8 @@ struct WorkRootListScreen: View, Equatable {
         crossProjectContext: route.remoteChat,
         duoPane: inColumn ? duoPane : nil,
         duoPaneOpen: inColumn && duoPane.isOpen,
+        duoShowsSidebar: inColumn && duoShowsSessionList,
+        onDuoToggleSidebar: inColumn ? { toggleDuoSessionsColumn() } : nil,
         onDuoBack: inColumn ? { duoClearSelection() } : nil
       )
       .equatable()
