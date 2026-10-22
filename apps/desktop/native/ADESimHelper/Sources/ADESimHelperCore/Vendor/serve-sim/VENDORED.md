@@ -15,13 +15,15 @@ written to satisfy Apache-2.0 §4 attribution for a derivative distribution.
 
 ## Files taken verbatim
 
-Every file below is byte-for-byte upstream except `CaptureEngine.swift`, which
-carries one documented ADE patch (see "ADE patches" below). Do not hand-edit the
-verbatim files; re-vendor from a newer commit and update the table instead.
+Every file below is byte-for-byte upstream except the ones marked ADE-patched,
+which carry documented ADE patches (see "ADE patches" below; their SHA-256 is
+upstream's). Do not hand-edit the verbatim files; re-vendor from a newer commit
+and update the table instead, and reapply every ADE patch to a re-vendored
+patched file.
 
 | File | SHA-256 |
 |---|---|
-| `AccessibilityBridge.swift` | `d3163df97c1efef3ea7aa0e45a939cfa77fa374a968e5fb7964f7f4c4630044d` |
+| `AccessibilityBridge.swift` | `d3163df97c1efef3ea7aa0e45a939cfa77fa374a968e5fb7964f7f4c4630044d` (ADE-patched — see below; reapply on re-vendor) |
 | `CaptureEngine.swift` | `5a796d364cf2f1e74e81fa4e3817c43c95f32bda3a3e4086f7a38ea6cf7919ba` (ADE-patched — see below) |
 | `FrameCapture.swift` | `1923bf752f82a1023395b556f428861b2f5c26d1c78dfe49e6a51f8a9559399a` |
 | `H264Encoder.swift` | `11dfb325ab7764009ff04e01e84b9f0fa1c9c2975fca872044c84237ac6e836b` |

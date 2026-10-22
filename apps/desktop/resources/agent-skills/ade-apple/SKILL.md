@@ -270,8 +270,8 @@ Name elements, not pixels.
 
   | You want (inner display) | Do | Screenshot |
   |---|---|---|
-  | Wide, flat open | `fold open` (or `rotate portrait`) | 2853x2007 |
-  | Tall (upright), flat open | `fold laptop`, then `fold --angle 180` (or `rotate landscape-left`) | 2007x2853 |
+  | Wide, flat open | `fold open` (or, already flat open, `rotate portrait`) | 2853x2007 |
+  | Tall (upright), flat open | `fold laptop`, then `fold --angle 180` (or, already flat open, `rotate landscape-left`) | 2007x2853 |
   | Laptop (half open, tall) | `fold laptop` | 2007x2853 |
   | Book (half open, wide) | `fold book` | 2853x2007 |
 

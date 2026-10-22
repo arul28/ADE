@@ -955,7 +955,14 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
           result.forgottenRows.push({ laneId: extra.laneId, udid: extra.udid });
           continue;
         }
-        if (isLaneLive(extra.laneId) || !deps.store) continue;
+        if (isLaneLive(extra.laneId) || !deps.store) {
+          // A held extra that lost its marker gets it back, so a later lost
+          // row still finds it as an extra rather than leaving it behind.
+          if (!readAppleDeviceMarker(root, extra.udid)) {
+            writeMarker(extra.udid, { laneId: extra.laneId, name: extra.name, createdAt: extra.createdAt, extra: true });
+          }
+          continue;
+        }
         await deps.releaseDeviceHolds?.(extra.udid).catch(() => undefined);
         await deleteAppleSimulator(extra.udid, { run: deps.run, powerOff: deps.powerOffDevice });
         forgetExtra(extra.laneId, extra.udid);

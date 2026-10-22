@@ -124,8 +124,9 @@ export function useAppleRenderRequests({
         duoCapable,
         runtimePinRef,
       });
-      // Local only when neither the pane's pin nor the tab points at another machine.
-      const local = !runtimePinRef.current && useAppStore.getState().projectBinding?.kind !== "remote";
+      // The files are on this computer when the pane's pin (else the tab) is local.
+      const binding = runtimePinRef.current ?? useAppStore.getState().projectBinding;
+      const local = binding?.kind !== "remote";
       showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local }));
       setRenderOpen(false);
       return filed;

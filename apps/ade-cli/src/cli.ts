@@ -15107,6 +15107,11 @@ function buildIosSimulatorPlan(
     // `--device` names one of the lane's extra devices (or, as the pane does,
     // the lane's own device the caller read).
     const udid = readIosSimulatorDevice(args);
+    // An empty `--device "$UDID"` must not fall through to deleting the
+    // lane's own device.
+    if (udid !== null && !udid.trim()) {
+      throw new CliUsageError("--device needs a udid or name; leave it out to delete the lane's own device.");
+    }
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {

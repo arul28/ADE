@@ -2144,6 +2144,7 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
 const AGENT_EXTRA_DEVICE_REFUSED_ACTIONS = new Set<string>([
   "launch", "openDevice", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
   "recordStart", "startEventLog", "stopEventLog", "getEventLog", "selectPoint", "duoAppStoreScreenshots", "getInspectorSnapshot",
+  "frame",
 ]);
 
 /** Who holds the session, when it is an agent on another machine. */
@@ -6323,7 +6324,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const deviceCreate = async (deviceArgs: AppleDeviceCreateArgs = {}): Promise<AppleLaneDevice> => {
     assertDarwin();
     const runtime = requireLaneScope(deviceArgs);
-    const device = await laneDevices.deviceCreate({
+    const create = () => laneDevices.deviceCreate({
       laneId: runtime.key,
       from: deviceArgs.from,
       runtime: deviceArgs.runtime,
@@ -6331,6 +6332,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       name: deviceArgs.name,
       extra: deviceArgs.extra === true,
     });
+    // Extras queue per lane: two at once would both pass the limit check
+    // before either row is written.
+    const device = deviceArgs.extra === true ? await serializeDeviceLifecycle(runtime, create) : await create();
     invalidateDeviceList();
     invalidateStatus(runtime);
     // An extra device has no pane or `start` of its own: it comes up booted,
