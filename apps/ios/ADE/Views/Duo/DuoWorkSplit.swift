@@ -588,17 +588,24 @@ struct DuoChatRail: ViewModifier {
     if !duo.hasEdgeBar {
       ToolbarSpacer(.fixed, placement: .topBarLeading)
     }
-    // The chat's buttons step aside while a pane holds the right side, and
-    // are back the moment it closes.
-    if !paneBesideChat {
-      if model.isChat {
-        ToolbarItem(placement: .topBarTrailing) { chatInfoButton }
-          .visibilityPriority(.high)
+    // Two fixed slots, declared unconditionally: the edge bar did not take
+    // back items that were removed while a pane was open and declared again
+    // when it closed (the rail kept only the tabs). So the slots stay, and
+    // only what they show changes:
+    // - slot 1: Chat Info, or with a pane open on the edge bar, Close;
+    // - slot 2: Tools (switching what the pane shows stays useful).
+    ToolbarItem(placement: .topBarTrailing) {
+      if paneOnBar {
+        paneCloseButton
+      } else {
+        chatInfoButton
+          .disabled(!model.isChat)
       }
-      ToolbarItem(placement: .topBarTrailing) { toolsMenu }
-        .visibilityPriority(.high)
     }
-    // The pane's controls (a tool's own; the PR's watch), then Close.
+    .visibilityPriority(.high)
+    ToolbarItem(placement: .topBarTrailing) { toolsMenu }
+      .visibilityPriority(.high)
+    // The pane's own controls (a tool's rotate, speed…), while it is open.
     if paneOnBar {
       ToolbarItemGroup(placement: .topBarTrailing) {
         if let paneActions {
@@ -606,14 +613,6 @@ struct DuoChatRail: ViewModifier {
             .environment(\.duoPaneControlsInBar, true)
         }
       }
-      ToolbarItem(placement: .topBarTrailing) {
-        Button("Close \(pane.tab?.title ?? "pane")", systemImage: "xmark") {
-          ADEHaptics.light()
-          pane.close()
-        }
-        .accessibilityIdentifier("Duo.Work.ToolsPane.Close")
-      }
-      .visibilityPriority(.high)
     }
     // The bar's one ⋯: the chat's actions, or with a pane open the pane's
     // own (the PR's actions). Whatever the bar cannot fit joins it.
@@ -676,6 +675,14 @@ struct DuoChatRail: ViewModifier {
   }
 
   private var chatInfoShown: Bool { pane.isOpen && pane.tab == .chatInfo }
+
+  private var paneCloseButton: some View {
+    Button("Close \(pane.tab?.title ?? "pane")", systemImage: "xmark") {
+      ADEHaptics.light()
+      pane.close()
+    }
+    .accessibilityIdentifier("Duo.Work.ToolsPane.Close")
+  }
 
   /// Chat info: Agents, background work, proof and sources, beside the thread.
   private var chatInfoButton: some View {
