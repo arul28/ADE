@@ -1,5 +1,7 @@
 import { useCallback, type CSSProperties, type ReactNode } from "react";
 import { useAppStore } from "../../../state/appStore";
+import { useAppearanceStore } from "../../../state/appearanceStore";
+import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 import { ADE_TIPS, runTipAction, tipActionAvailable } from "../../../onboarding/adeTips";
 import { markTipTried } from "../../../onboarding/situationalSuggestions";
 import { useGoTo } from "../../onboarding/spotlight/useGoTo";
@@ -26,15 +28,13 @@ export type WhatsNewFeatureProps = {
   action?: { tipId: string; label: string };
 };
 
-function reducedMotion(): boolean {
-  if (typeof window === "undefined") return false;
-  return document.documentElement.dataset.motion === "reduced"
-    || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-}
-
 export function WhatsNewFeature({ close, place, headline, sentence, media, action }: WhatsNewFeatureProps) {
   const goTo = useGoTo();
   const hasProject = useAppStore((state) => state.project != null);
+  // ADE's Reduce motion setting or the system's; either one, changed while the page is open, swaps the GIF for its still.
+  const appReduceMotion = useAppearanceStore((state) => state.interfacePreferences.reduceMotion);
+  const systemReduceMotion = usePrefersReducedMotion();
+  const reduceMotion = appReduceMotion || systemReduceMotion;
   const tip = action ? ADE_TIPS.find((entry) => entry.id === action.tipId) : undefined;
   const canRun = Boolean(tip?.action && tipActionAvailable(tip.action));
   const run = useCallback(() => {
@@ -61,7 +61,7 @@ export function WhatsNewFeature({ close, place, headline, sentence, media, actio
       </div>
       <figure className="ade-wnf-media" style={{ "--wnf-ratio": media.width / media.height } as CSSProperties}>
         <img
-          src={reducedMotion() ? media.still : media.gif}
+          src={reduceMotion ? media.still : media.gif}
           width={media.width}
           height={media.height}
           alt={media.alt}
