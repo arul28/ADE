@@ -32,7 +32,18 @@
 //     plus `useLanesForPin` / `useSessionsForPin` resolve. Nothing here
 //     touches a global store read.
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
 import type { Chip } from "../../../shared/chips";
@@ -52,6 +63,7 @@ import { relativeWhen } from "../../lib/format";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { ContextMenuRows, type ContextMenuEntry } from "../ui/ContextMenu";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChipPreviewImage } from "./chipPreviewStore";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
@@ -95,6 +107,10 @@ const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 
 /** Long enough that skimming a message never flashes cards; short enough to feel attached. */
 const HOVER_DELAY_MS = 360;
+/** Holding the pointer this long turns the facts card into the chip's menu. */
+const MENU_DWELL_MS = 1000;
+/** Time to cross from the chip onto its menu before it closes. */
+const MENU_LEAVE_GRACE_MS = 220;
 const GAP = 6;
 const VIEWPORT_PAD = 10;
 
@@ -407,19 +423,24 @@ function cardPlacement(trigger: HTMLElement, card: HTMLElement): TooltipPlacemen
 }
 
 export type ChipHoverCard = {
-  /** True when this chip has a card kind at all — drives the native-title swap. */
+  /** True when this chip has a card or a menu at all — drives the native-title swap. */
   supported: boolean;
   /** True while the card is on screen. */
   visible: boolean;
   triggerRef: (node: HTMLElement | null) => void;
-  /** Spread onto the chip element; all passive, none of them focus-moving. */
+  /** Spread onto the chip element; none of them move focus on hover. */
   triggerProps: {
     onMouseEnter?: () => void;
     onMouseLeave?: () => void;
     onFocus?: () => void;
     onBlur?: () => void;
+    onContextMenu?: (event: ReactMouseEvent) => void;
+    onKeyDown?: (event: ReactKeyboardEvent) => void;
     "aria-describedby"?: string;
+    "aria-haspopup"?: "menu";
   };
+  /** Open the card with its actions now, e.g. a click on a chip whose click IS the card. */
+  openMenu: () => void;
   /** Portal node. Render it as a sibling of the chip; it is out of flow. */
   card: ReactNode;
 };
@@ -428,6 +449,19 @@ export type ChipHoverCard = {
  * Hover-card behavior for one chip, returned as props to spread rather than a
  * wrapper element: a chip lives inline in flowing prose, and wrapping it in a
  * positioned box would change how the sentence wraps around it.
+ *
+ * Two stages, so a skim never turns into a menu:
+ *
+ *   - **Peek** (`HOVER_DELAY_MS`): the facts card, inert and click-through,
+ *     exactly the tooltip it always was.
+ *   - **Menu** (`MENU_DWELL_MS`, a right-click, Shift+F10, or `openMenu`): the
+ *     same card gains the chip's actions under its facts and starts taking the
+ *     pointer, so the user can move onto it. A chip with no facts card (a
+ *     machine, a skill) shows only the actions. Hover still never moves focus;
+ *     a keyboard open does, so arrow-less Tab reaches the rows.
+ *
+ * `menuEntries` is a builder, not a list: it runs only when a menu opens, so a
+ * transcript of hundreds of pills builds no rows until one is held.
  */
 export function useChipHoverCard(
   chip: Chip,
@@ -439,6 +473,7 @@ export function useChipHoverCard(
    */
   scoped: ChipScopeSources,
   previewImageUrl: string | null = null,
+  menuEntries: (() => ContextMenuEntry[]) | null = null,
 ): ChipHoverCard {
   const cardId = useId();
   const scope = useChatRuntimeScope();
@@ -454,6 +489,9 @@ export function useChipHoverCard(
     pin: scope.pin,
     rootPath: scope.rootPath,
   };
+  const menuEntriesRef = useRef(menuEntries);
+  menuEntriesRef.current = menuEntries;
+  const hasMenu = menuEntries !== null;
   // A stable key, so re-pinning the chat reloads an open card without the
   // binding object's identity churn doing it on every merge.
   const pinKey = scope.pin?.key ?? null;
@@ -461,41 +499,89 @@ export function useChipHoverCard(
   // `chip` is stable per message (memoized parse), so a PR chip parses its
   // GitHub URL once rather than on every re-render of the transcript.
   const target = useMemo(() => chipCardTarget(chip), [chip]);
-  const supported = target !== null;
+  const supported = target !== null || hasMenu;
 
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"peek" | "menu">("peek");
+  const [entries, setEntries] = useState<ContextMenuEntry[]>([]);
   const [data, setData] = useState<ChipCardData | null>(null);
   const [coords, setCoords] = useState<TooltipPlacement | null>(null);
   const triggerElementRef = useRef<HTMLElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const menuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusMenuRef = useRef(false);
 
-  const clearShowTimer = useCallback(() => {
-    if (showTimerRef.current === null) return;
-    clearTimeout(showTimerRef.current);
-    showTimerRef.current = null;
+  const clearTimers = useCallback(() => {
+    for (const ref of [showTimerRef, menuTimerRef, hideTimerRef]) {
+      if (ref.current === null) continue;
+      clearTimeout(ref.current);
+      ref.current = null;
+    }
   }, []);
 
   const close = useCallback(() => {
-    clearShowTimer();
+    clearTimers();
     setOpen(false);
+    setMode("peek");
     setCoords(null);
-  }, [clearShowTimer]);
+  }, [clearTimers]);
 
-  const openNow = useCallback(() => {
-    clearShowTimer();
+  const enterMenu = useCallback((focus: boolean) => {
+    const build = menuEntriesRef.current;
+    if (!build) return;
+    const rows = build();
+    if (rows.length === 0) return;
+    clearTimers();
+    focusMenuRef.current = focus;
+    setEntries(rows);
+    setMode("menu");
     setOpen(true);
-  }, [clearShowTimer]);
+  }, [clearTimers]);
 
-  const openAfterDelay = useCallback(() => {
-    clearShowTimer();
-    showTimerRef.current = setTimeout(() => {
-      showTimerRef.current = null;
-      setOpen(true);
-    }, HOVER_DELAY_MS);
-  }, [clearShowTimer]);
+  const openPeek = useCallback(() => {
+    clearTimers();
+    setOpen(true);
+  }, [clearTimers]);
 
-  useEffect(() => clearShowTimer, [clearShowTimer]);
+  const onMouseEnter = useCallback(() => {
+    // Back onto the chip from its own card: keep what is open.
+    if (hideTimerRef.current !== null) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (open && mode === "menu") return;
+    if (showTimerRef.current === null && !open && target) {
+      showTimerRef.current = setTimeout(() => {
+        showTimerRef.current = null;
+        setOpen(true);
+      }, HOVER_DELAY_MS);
+    }
+    if (menuEntriesRef.current && menuTimerRef.current === null) {
+      menuTimerRef.current = setTimeout(() => {
+        menuTimerRef.current = null;
+        enterMenu(false);
+      }, MENU_DWELL_MS);
+    }
+  }, [enterMenu, mode, open, target]);
+
+  const onMouseLeave = useCallback(() => {
+    if (showTimerRef.current !== null) clearTimeout(showTimerRef.current);
+    if (menuTimerRef.current !== null) clearTimeout(menuTimerRef.current);
+    showTimerRef.current = null;
+    menuTimerRef.current = null;
+    if (!open) return;
+    if (mode !== "menu") {
+      close();
+      return;
+    }
+    // A menu card is something to move onto, so give the pointer time to
+    // cross the gap; entering the card cancels this.
+    hideTimerRef.current = setTimeout(close, MENU_LEAVE_GRACE_MS);
+  }, [close, mode, open]);
+
+  useEffect(() => clearTimers, [clearTimers]);
 
   // Load on demand. Two hundred chips in a transcript must cost zero reads
   // until one of them is actually hovered.
@@ -513,22 +599,35 @@ export function useChipHoverCard(
   }, [open, target, previewTitle, previewImageUrl, pinKey]);
 
   // Escape dismisses, and any scroll does too: the card is absolutely placed
-  // against a trigger that a scrolling transcript moves out from under it.
+  // against a trigger that a scrolling transcript moves out from under it. A
+  // menu also closes on a press anywhere outside it and its chip.
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key !== "Escape") return;
+      const restoreFocus = mode === "menu" && cardRef.current?.contains(document.activeElement);
+      close();
+      if (restoreFocus) triggerElementRef.current?.focus();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const node = event.target as Node | null;
+      if (node && (cardRef.current?.contains(node) || triggerElementRef.current?.contains(node))) return;
+      close();
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("scroll", close, true);
+    if (mode === "menu") window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", close, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, [open, close]);
+  }, [open, mode, close]);
+
+  const showCard = open && (data !== null || (mode === "menu" && entries.length > 0));
 
   useLayoutEffect(() => {
-    if (!open || !data) return;
+    if (!showCard) return;
     const trigger = triggerElementRef.current;
     const card = cardRef.current;
     if (!trigger || !card) return;
@@ -539,22 +638,30 @@ export function useChipHoverCard(
       ));
     };
     place();
-    // A link card's reserved image box collapses when the image fails; re-place
-    // so a top-placed card stays attached to its chip instead of floating.
-    if (data.kind !== "link" || typeof ResizeObserver === "undefined") return;
+    // The card changes size after it is placed — a link image fails and its box
+    // collapses, the facts land after the menu rows, a peek grows into a menu —
+    // so re-place to keep it attached to its chip instead of floating.
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(place);
     observer.observe(card);
     return () => observer.disconnect();
-  }, [open, data]);
+  }, [showCard, data, mode]);
 
+  // A keyboard open puts focus on the first row; a hover open never does.
+  useEffect(() => {
+    if (!showCard || mode !== "menu" || !coords || !focusMenuRef.current) return;
+    focusMenuRef.current = false;
+    cardRef.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+  }, [showCard, mode, coords]);
 
   const triggerRef = useCallback((node: HTMLElement | null) => {
     triggerElementRef.current = node;
   }, []);
 
-  const visible = supported && open && data !== null;
+  const isMenu = mode === "menu" && entries.length > 0;
+  const visible = supported && showCard;
 
-  const card = open && data && typeof document !== "undefined"
+  const card = showCard && typeof document !== "undefined"
     ? createPortal(
         // The host owns the viewport anchoring and the tooltip layer; the card
         // is placed inside it at the viewport point computeTooltipPosition gave.
@@ -562,10 +669,11 @@ export function useChipHoverCard(
           <div
             ref={cardRef}
             id={cardId}
-            role="tooltip"
-            data-chip-hover-card={data.kind}
+            role={isMenu ? "menu" : "tooltip"}
+            aria-label={isMenu ? chip.label : undefined}
+            data-chip-hover-card={data?.kind ?? "menu"}
             className={
-              "pointer-events-none absolute max-w-[300px] rounded-lg border border-fg/12"
+              `${isMenu ? "pointer-events-auto min-w-[200px]" : "pointer-events-none"} absolute max-w-[300px] rounded-lg border border-fg/12`
               + " bg-(color:--work-popover-bg) px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
             }
             style={{
@@ -575,8 +683,22 @@ export function useChipHoverCard(
               // the card never flashes at the top-left corner of the window.
               visibility: coords ? "visible" : "hidden",
             }}
+            onMouseEnter={isMenu ? () => {
+              if (hideTimerRef.current === null) return;
+              clearTimeout(hideTimerRef.current);
+              hideTimerRef.current = null;
+            } : undefined}
+            onMouseLeave={isMenu ? () => {
+              hideTimerRef.current = setTimeout(close, MENU_LEAVE_GRACE_MS);
+            } : undefined}
+            onContextMenu={isMenu ? (event) => event.preventDefault() : undefined}
           >
-            <ChipCardBody data={data} />
+            {data ? <ChipCardBody data={data} /> : null}
+            {isMenu ? (
+              <div className={`-mx-1.5 ${data ? "mt-2 border-t border-fg/10 pt-1" : "-my-1"}`}>
+                <ContextMenuRows entries={entries} onClose={close} />
+              </div>
+            ) : null}
           </div>
         </ViewportOverlayHost>,
         document.body,
@@ -584,7 +706,7 @@ export function useChipHoverCard(
     : null;
 
   if (!supported) {
-    return { supported: false, visible: false, triggerRef, triggerProps: {}, card: null };
+    return { supported: false, visible: false, triggerRef, triggerProps: {}, openMenu: () => {}, card: null };
   }
 
   return {
@@ -592,14 +714,39 @@ export function useChipHoverCard(
     visible,
     triggerRef,
     triggerProps: {
-      onMouseEnter: openAfterDelay,
-      onMouseLeave: close,
+      onMouseEnter,
+      onMouseLeave,
       // Keyboard parity: tabbing onto a chip shows its card immediately. The
-      // card itself is inert, so focus stays exactly where the user put it.
-      onFocus: openNow,
-      onBlur: close,
+      // peek itself is inert, so focus stays exactly where the user put it.
+      onFocus: target ? () => {
+        if (!open) openPeek();
+      } : undefined,
+      onBlur: () => {
+        // Focus moving into the open menu is not a blur that should close it.
+        requestAnimationFrame(() => {
+          if (cardRef.current?.contains(document.activeElement)) return;
+          if (mode === "menu" && cardRef.current?.matches(":hover")) return;
+          close();
+        });
+      },
+      ...(hasMenu ? {
+        "aria-haspopup": "menu" as const,
+        onContextMenu: (event: ReactMouseEvent) => {
+          event.preventDefault();
+          // The transcript row's own menu must not open on top of this one.
+          event.stopPropagation();
+          enterMenu(false);
+        },
+        onKeyDown: (event: ReactKeyboardEvent) => {
+          if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+            event.preventDefault();
+            enterMenu(true);
+          }
+        },
+      } : {}),
       ...(visible ? { "aria-describedby": cardId } : {}),
     },
+    openMenu: () => enterMenu(true),
     card,
   };
 }

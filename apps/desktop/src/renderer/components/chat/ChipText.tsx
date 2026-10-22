@@ -54,6 +54,7 @@ import { AttachmentPeekCard, useAttachmentThumbnail } from "./AttachmentChipPeek
 import { useAttachmentPreview } from "./ChatAttachmentTray";
 import { useMentionChipResolution } from "./mentionChipLabels";
 import { getFileIcon } from "../files/filePresentation";
+import { buildChipMenuEntries } from "./chipMenu";
 
 /** Where a click on this chip should land, or null when it is not actionable. */
 function openChip(
@@ -319,7 +320,13 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
     if (prTarget) openAdeDeeplink(buildDeeplink(prTarget));
     else openChip(chip, chatScope, openWorkspacePath);
   };
-  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped, preview?.imageUrl ?? null);
+  // Built only when a menu opens (held hover, right-click), never per render.
+  const menuEntries = () => buildChipMenuEntries(chip, {
+    label,
+    open: actionable ? open : null,
+    runtimePin: chatScope.pin,
+  });
+  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped, preview?.imageUrl ?? null, menuEntries);
   const tokenTitle = chipTokenTitle(chip, label);
 
   return (
@@ -334,16 +341,18 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
         // draw a second box on top of it.
         title={hoverCard.visible ? undefined : tokenTitle}
         role={actionable ? "button" : undefined}
-        tabIndex={actionable ? 0 : undefined}
         onClick={actionable ? open : undefined}
-        onKeyDown={actionable
-          ? (event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            open();
-          }
-          : undefined}
         {...hoverCard.triggerProps}
+        // Focusable even when a click does nothing, so the menu (Shift+F10)
+        // stays reachable from the keyboard.
+        tabIndex={actionable || hoverCard.supported ? 0 : undefined}
+        onKeyDown={(event) => {
+          hoverCard.triggerProps.onKeyDown?.(event);
+          if (!actionable || event.defaultPrevented) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          open();
+        }}
       >
         <ChipIcon chip={chip} markSvg={markSvg} iconDataUrl={preview?.iconDataUrl ?? null} />
         <span className="truncate">{label}</span>
