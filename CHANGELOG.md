@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.118] - 2026-10-22
+
+### Desktop and web
+
+- Agent taps land on turned simulator screens (iPhone Duo inner display, landscape iPhones) (#1869).
+- `ade apple render` works without the Apple pane open; sharper 3D device view (#1869).
+- `apple lease`, launch arguments, `--configuration`, `foreground --wait`, screenshots file proof (#1869).
+
 ## [1.2.117] - 2026-10-22
 
 ### Desktop and web
@@ -2673,7 +2681,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.117...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.118...HEAD
+[1.2.118]: https://github.com/arul28/ADE/compare/v1.2.117...v1.2.118
 [1.2.117]: https://github.com/arul28/ADE/compare/v1.2.116...v1.2.117
 [1.2.116]: https://github.com/arul28/ADE/compare/v1.2.115...v1.2.116
 [1.2.115]: https://github.com/arul28/ADE/compare/v1.2.114...v1.2.115
