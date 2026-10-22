@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
 import { showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { useAppStore } from "../../state/appStore";
 import type { AppleDeviceRenderer } from "./AppleDevice3DView";
 import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
 
@@ -38,7 +39,11 @@ function renderFiledToast(
   if (local && firstFile) {
     actions.push({
       label: "Show in Finder",
-      onClick: () => { void window.ade.app.revealPath(firstFile).catch(() => {}); },
+      onClick: () => {
+        void window.ade.app.revealPath(firstFile).catch((error: unknown) => {
+          logRendererDebugEvent("apple.render_reveal_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
+      },
     });
   }
   return {
@@ -103,7 +108,7 @@ export function useAppleRenderRequests({
   }, [effectiveMode]);
 
   /** The Render sheet's (and the CLI's) render, with this pane's busy state, toast and errors. */
-  const runRender = useCallback(async (request: AppleRenderRequestSpec): Promise<number> => {
+  const runRender = useCallback(async (request: AppleRenderRequestSpec): Promise<AppleRenderFiled> => {
     if (!rendererRef.current) {
       showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
       throw new Error("The 3D view is still loading.");
@@ -119,9 +124,11 @@ export function useAppleRenderRequests({
         duoCapable,
         runtimePinRef,
       });
-      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local: !runtimePinRef.current }));
+      // Local only when neither the pane's pin nor the tab points at another machine.
+      const local = !runtimePinRef.current && useAppStore.getState().projectBinding?.kind !== "remote";
+      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local }));
       setRenderOpen(false);
-      return filed.filed;
+      return filed;
     } catch (cause) {
       onErrorRef.current?.(cause);
       throw cause;

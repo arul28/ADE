@@ -3200,7 +3200,7 @@ declare global {
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
         renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         renderComplete: (
-          args: { requestId: string; filed: number; error: string | null },
+          args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (

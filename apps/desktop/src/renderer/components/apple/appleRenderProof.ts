@@ -132,16 +132,18 @@ export async function completeAppleRenderRequest({
 }: {
   requestId: string;
   pin: OpenProjectBinding | null;
-  render: () => Promise<number>;
+  render: () => Promise<AppleRenderFiled>;
   onLostAnswer?: (cause: unknown) => void;
 }): Promise<void> {
   let filed = 0;
+  let proofArtifactIds: string[] = [];
   let error: string | null = null;
   try {
-    filed = await render();
+    ({ filed, artifactIds: proofArtifactIds } = await render());
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
-  await window.ade.iosSimulator.renderComplete({ requestId, filed, error }, pin)
+  // This render's own proofs, so `ade apple render` cites exactly them.
+  await window.ade.iosSimulator.renderComplete({ requestId, filed, error, proofArtifactIds }, pin)
     .catch((cause: unknown) => onLostAnswer?.(cause));
 }

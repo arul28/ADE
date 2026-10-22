@@ -460,13 +460,8 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * first renders, and reports when it has filed the proof.
    */
   const pendingRenders = new Map<string, {
-    /** The lane asking, so the proofs a render files are credited to it. */
-    laneKey: string | null;
-    acked: () => boolean;
     /** True for the first pane to take it; every later one stands down. */
     ack: () => boolean;
-    /** What `attachRenderProof` filed for this lane while the render ran, so the CLI can cite it. */
-    proofArtifactIds: string[];
     complete: (result: AppleRenderRequestResult) => void;
   }>();
   const requestRender = async (renderArgs: AppleRenderRequestArgs): Promise<AppleRenderRequestResult> => {
@@ -494,9 +489,6 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       }, 240_000);
       (doneTimer as unknown as { unref?: () => void }).unref?.();
       pendingRenders.set(requestId, {
-        laneKey: runtime.key ?? null,
-        acked: () => acked,
-        proofArtifactIds: [],
         ack: () => {
           if (acked) return false;
           acked = true;
@@ -526,12 +518,20 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     const pending = typeof ackArgs?.requestId === "string" ? pendingRenders.get(ackArgs.requestId) : undefined;
     return { ok: pending ? pending.ack() : false };
   };
-  const renderComplete = async (doneArgs: { requestId?: string; filed?: number; error?: string | null }): Promise<{ ok: boolean }> => {
+  const renderComplete = async (doneArgs: {
+    requestId?: string;
+    filed?: number;
+    error?: string | null;
+    /** The proofs this render filed, as the window that drew it reports them, so the CLI can cite them. */
+    proofArtifactIds?: unknown;
+  }): Promise<{ ok: boolean }> => {
     const pending = typeof doneArgs?.requestId === "string" ? pendingRenders.get(doneArgs.requestId) : undefined;
     pending?.complete({
       filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
       error: typeof doneArgs.error === "string" ? doneArgs.error : null,
-      proofArtifactIds: [...pending.proofArtifactIds],
+      proofArtifactIds: Array.isArray(doneArgs.proofArtifactIds)
+        ? doneArgs.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [],
     });
     return { ok: Boolean(pending) };
   };
@@ -562,13 +562,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       runtime,
       webm ? { kind: "video_recording", mimeType: "video/webm" } : { kind: "screenshot", mimeType: "image/png" },
     );
-    if (proofArtifactId) {
-      deps.captureAnalytics("device_rendered");
-      // An `ade apple render` this lane is waiting on reports what it filed.
-      for (const pending of pendingRenders.values()) {
-        if (pending.acked() && pending.laneKey === (runtime.key ?? null)) pending.proofArtifactIds.push(proofArtifactId);
-      }
-    }
+    if (proofArtifactId) deps.captureAnalytics("device_rendered");
     return { proofArtifactId, chatSessionId: deps.proofOwnerChatId(proofArgs, runtime), filePath };
   };
 

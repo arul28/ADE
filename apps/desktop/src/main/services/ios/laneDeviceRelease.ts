@@ -255,7 +255,11 @@ export async function endLaneExtraDevices(input: {
   let extras: AppleLaneDevice[];
   try {
     extras = readLaneAppleExtraDevices(input.store, input.laneId);
-  } catch {
+  } catch (error) {
+    input.logger.warn?.("lane.end.apple_extra_device_read_failed", {
+      laneId: input.laneId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return result;
   }
   for (const device of extras) {
@@ -275,7 +279,12 @@ export async function endLaneExtraDevices(input: {
     try {
       forgetLaneAppleExtraDevice(input.store, input.laneId, device.udid);
       result.deleted.push(device.udid);
-    } catch {
+    } catch (error) {
+      input.logger.warn?.("lane.end.apple_extra_device_forget_failed", {
+        laneId: device.laneId,
+        udid: device.udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
       result.failed.push(device.udid);
     }
   }
@@ -360,7 +369,7 @@ export async function releaseLaneAppleDevice(input: {
     }
   }
 
-  if (result.deletedUdid || result.detachedUdid || extras.deleted.length || result.removedRecordings || result.removedDerivedData) {
+  if (result.deletedUdid || result.detachedUdid || extras.deleted.length || extras.failed.length || result.removedRecordings || result.removedDerivedData) {
     input.logger.info("lane.end.apple_device_released", {
       laneId,
       ...result,

@@ -224,6 +224,8 @@ export type LaneDeviceRegistry = {
   get(laneId: string): AppleLaneDevice | null;
   /** The lane's extra devices (`device-create --extra`), oldest first. */
   extras(laneId: string): AppleLaneDevice[];
+  /** The lane's extra device a `--device` value names (udid, then name), or null. */
+  findExtra(laneId: string | null, wanted: string | null): AppleLaneDevice | null;
   /**
    * Delete one of the lane's extra devices. Nothing happens for a udid that
    * is not one of them; the lane's own device is `deviceDelete`.
@@ -1123,7 +1125,19 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       return device;
     },
     get: (laneId: string) => readOne(laneId),
-    extras: (laneId: string) => readExtras(laneId.trim() || null).filter((device) => device.laneId === laneId.trim()),
+    extras: (laneId: string) => {
+      const id = laneId.trim();
+      return id ? readExtras(id) : [];
+    },
+    findExtra: (laneId: string | null, wanted: string | null) => {
+      const id = laneId?.trim();
+      const value = wanted?.trim();
+      if (!id || !value) return null;
+      const extras = readExtras(id);
+      return extras.find((device) => device.udid === value)
+        ?? extras.find((device) => device.name.toLowerCase() === value.toLowerCase())
+        ?? null;
+    },
     async deviceDeleteExtra(args: { laneId: string; udid: string }) {
       const laneId = requireLaneId(args.laneId);
       const device = readExtras(laneId).find((entry) => entry.udid === args.udid?.trim());

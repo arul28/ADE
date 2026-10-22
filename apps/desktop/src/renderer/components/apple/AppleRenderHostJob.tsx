@@ -10,7 +10,7 @@ import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
 import { useAppleDuoModel } from "./useAppleDuoModel";
-import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderJob } from "./appleRenderProof";
+import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled, type AppleRenderJob } from "./appleRenderProof";
 
 /**
  * One `ade apple render` taken by `AppleRenderHost`: the lane's device, its
@@ -56,7 +56,7 @@ export default function AppleRenderHostJob({
   callbacksRef.current = { onAnswering, onDone };
 
   /** Render (or fail) once, report to the machine that asked, then unmount. */
-  const finish = useCallback((render: () => Promise<number>) => {
+  const finish = useCallback((render: () => Promise<AppleRenderFiled>) => {
     if (finishedRef.current) return;
     finishedRef.current = true;
     callbacksRef.current.onAnswering(job.requestId);
@@ -157,7 +157,7 @@ export default function AppleRenderHostJob({
   const ready = device !== null && bodyReady && hasFrames && duoSettled;
   useEffect(() => {
     if (!ready || !device) return;
-    finish(async () => (await renderAppleDeviceToProof({
+    finish(() => renderAppleDeviceToProof({
       request: job.request,
       rendererRef,
       laneId: job.laneId,
@@ -165,7 +165,7 @@ export default function AppleRenderHostJob({
       deviceName: device.name,
       duoCapable,
       runtimePinRef: pinRef,
-    })).filed);
+    }));
   }, [device, duoCapable, finish, job, ready]);
 
   if (!device) return null;

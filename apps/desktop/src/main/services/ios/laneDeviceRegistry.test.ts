@@ -1130,6 +1130,7 @@ describe("lane device lifecycle", () => {
     const laneDevices = {
       get: () => bound,
       list: () => (bound ? [bound] : []),
+      findExtra: () => null,
       deviceDetach: vi.fn(async () => {
         const detached = bound;
         bound = null;

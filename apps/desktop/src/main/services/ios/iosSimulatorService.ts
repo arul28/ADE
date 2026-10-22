@@ -19,7 +19,6 @@ import type {
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
   AppleDeviceCreateArgs,
-  AppleDeviceDeleteArgs,
   AppleDeviceListArgs,
   AppleRunTestsArgs,
   AppleRunTestsResult,
@@ -121,6 +120,7 @@ import type {
 import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
@@ -2134,6 +2134,17 @@ const AGENT_DEVICE_CREATING_ACTIONS = new Set<string>(["launch", "openDevice", "
 const AGENT_DEVICE_CHECKED_ACTIONS = [
   "deviceStop", "closeDevice", "stopStream", "stopEventLog", "getEventLog", "listLaunchTargets",
 ] as const;
+
+/**
+ * Actions that work the lane's live view, its claim, its recordings or its
+ * builds, which belong to the lane's own device: `--device <extra>` on one of
+ * them is refused rather than quietly acting on (or rebinding) the lane's
+ * device. Everything else acts on the device it is given.
+ */
+const AGENT_EXTRA_DEVICE_REFUSED_ACTIONS = new Set<string>([
+  "launch", "openDevice", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
+  "recordStart", "startEventLog", "stopEventLog", "getEventLog", "selectPoint", "duoAppStoreScreenshots", "getInspectorSnapshot",
+]);
 
 /** Who holds the session, when it is an agent on another machine. */
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
@@ -6338,15 +6349,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     maintenance?.touch(device.udid);
   };
 
-  /** The lane's extra device a `--device` value names (udid, then name), or null. */
-  const laneExtraDevice = (laneKeyValue: string | null, wanted: string | null): AppleLaneDevice | null => {
-    if (!laneKeyValue || !wanted) return null;
-    const extras = laneDevices.extras(laneKeyValue);
-    return extras.find((device) => device.udid === wanted)
-      ?? extras.find((device) => device.name.toLowerCase() === wanted.toLowerCase())
-      ?? null;
-  };
-
   const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
     assertDarwin();
     const runtime = requireLaneScope(deviceArgs);
@@ -6939,8 +6941,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         let laneDevice = laneDevices.get(runtime.key);
         // One of the lane's extra devices (`device-create --extra`), named by
         // udid or name: the call runs on it, booted first.
-        const extra = explicit && explicit !== laneDevice?.udid ? laneExtraDevice(runtime.key, explicit) : null;
+        const extra = explicit && explicit !== laneDevice?.udid ? laneDevices.findExtra(runtime.key, explicit) : null;
         if (extra) {
+          if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
+            throw new Error(
+              `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
+              + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
+              + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+            );
+          }
           if (mode === "drive") await bootExtraDevice(extra);
           const onExtra = { ...callArgs, deviceUdid: extra.udid, ...(callArgs.udid !== undefined ? { udid: extra.udid } : {}) };
           return (original as (...params: unknown[]) => unknown)(onExtra, ...rest);
@@ -7024,19 +7033,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /** Power the lane's simulator off and leave it registered. Not `shutdown`. */
     deviceStop,
     deviceList,
-    deviceDelete: async (deleteArgs: AppleDeviceDeleteArgs = {}) => {
-      // `device-delete --device <udid>` naming one of the lane's extra devices.
-      const udid = deleteArgs.udid?.trim() || null;
-      const runtime = udid ? resolveRuntime(deleteArgs) : null;
-      const extra = runtime ? laneExtraDevice(runtime.key, udid) : null;
-      if (runtime && extra) {
-        await laneDevices.deviceDeleteExtra({ laneId: runtime.key!, udid: extra.udid });
-        invalidateDeviceList();
-        invalidateStatus(runtime);
-        return;
-      }
-      return lifecycle.deviceDelete(deleteArgs);
-    },
+    deviceDelete: lifecycle.deviceDelete,
     /** Unbind the lane's device and keep the simulator. The off card's "Choose another device". */
     deviceDetach: lifecycle.deviceDetach,
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,

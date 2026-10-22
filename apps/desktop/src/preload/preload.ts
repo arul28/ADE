@@ -9809,7 +9809,7 @@ const adeBridge = {
     renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
       callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),
     renderComplete: (
-      args: { requestId: string; filed: number; error: string | null },
+      args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: boolean }> =>
       callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderComplete", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderComplete, args)),
