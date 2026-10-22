@@ -50,7 +50,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatAttachmentLimits.ts` | The three ceilings and the two rejection messages, shared by the renderer, the desktop main process, and the CLI sync host. `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) governs attachments that move as *files* — a local disk-to-disk copy or a streamed HTTP upload, where the bytes never sit in a JS string. `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB) governs attachments that move as base64 inside a command payload, which is buffered in memory on both ends and chunked into 720 KiB frames under a 25 MB payload cap over sync. `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB) and the image limits `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB) / `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px) are independent of both, and the constant's comment states each provider's real limit — see `providerInlineImage.ts` in the chat [README](README.md#source-file-map). `formatAttachmentSize`, `legacyAttachmentCapMessage`, and `attachmentTooLargeMessage` render every ceiling from its constant, so raising one cannot leave a stale "10 MB" behind in a message. `maxBase64EncodedLength` is the one encoded-length check every base64 sink runs before it decodes, so an oversized payload is refused without a second, decoded copy in memory; `approxDecodedBytes` sizes the message for it. |
 | `apps/desktop/src/shared/chatAttachmentStagingFs.ts` | Node-only disk rule for writing into `<projectRoot>/.ade/attachments` — UUID basename, validated extension, containment re-check, stat-before-copy. Shared by desktop main, the ADE action registry, and the CLI sync host's upload route; full contract in the chat [README](README.md#source-file-map). Cursor local chats may Read those staged files (and Cursor's own `~/.cursor/projects/<slug>/assets` copies) through the SDK hook allowlist when worker init supplies the project root; writes stay denied. |
 | `attachmentViewerTarget.ts` | Locates a chat attachment inside a Files workspace so the Files viewers can open it. Attachments live at `<projectRoot>/.ade/attachments/<uuid><ext>`, already inside the primary workspace, so this is a containment question rather than a new capability — and resolving it on the client keeps the whole lookup pin-aware, so an attachment staged on a paired host is read from that host instead of silently matching a same-named path here. Splits on both separators (a Windows attachment path resolves too), compares segment-for-segment through the shared `normalizePathForComparison` so `/a/ADE-backup` cannot match `/a/ADE`, and the longest matching root wins — an attachment inside a lane worktree resolves to the lane's workspace, not the project containing it. |
-| `ChatCommandMenu.tsx` | Popover for slash commands, the `@` menu, and the `#` pull-request menu. A bare `@` browses recent rows **grouped by kind** under headers (Chats, Lanes, Terminals, Pull requests, Machines, Files), five per section. Typing a kind word — `@pr`, `@mac` (or `@machine`), `@chat`, `@lane`, `@term` — narrows the menu to that one section and searches the text after it (`parseChatMentionKindFilter`; files are not searched then). Any other query is one mixed list (files, **folders**, chats, lanes, terminals, PRs, machines ranked together by match quality, each row showing a kind icon). PR rows show a state dot (open/draft), `#<n> title`, and a checks glyph (✓ passing, … pending, ✕ failing); machine rows show an online dot, the name, and "this machine · online / last seen · N projects". The `#` pull-request menu which lists the PRs this chat can reach (`ComposerPrSuggestion`, read from `prs.listAll` on the chat's runtime pin) and inserts a PR chip. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one). Files and mentions are two independently debounced (40 ms) `useDebouncedSuggestions` sources sharing one hook; `rankComposerAtMenuItems` then scores file paths (basename as subtitle) against entity titles with the same exact/prefix/substring/subsequence tiers. Each keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs, and both caches clear when the menu closes or the provider identity changes. A bare `@` is a browse of recency-ranked entities (file search returns nothing until there is a query). Multi-word `@` queries stay active through spaces and use the same cached/debounced search path. Flat keyboard-nav indices are precomputed in the sections memo (no render-time counters); all three row types share the `MenuRow` chrome. Selecting a mention inserts an opaque `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<id>` / `@mac:<id>` pointer while the composer displays a compact title chip with a kind icon (a PR chip reads `#1319 title`, a machine chip its name) (see `shared/chatMentions.ts`). An `onNoMatches?(trigger)` callback fires once when a **non-empty** `@` query settles with zero rows, so the owner can close the menu instead of leaving it parked over the draft while the user types the rest of a sentence; an empty query is a browse, not a search — it can legitimately show nothing now and match once the user types — so it never reports. `useDebouncedSuggestions` carries the `query` its results belong to alongside the provider identity, and results from a previous provider *or a previous query* are discarded **and count as still-loading**: state updates from this render's effects are not visible to consumers until the next render, so `loading` alone would read "settled" for one frame after every keystroke and fire a false no-match. The `/` menu groups into Commands, Skills, and MCP prompts (one group per MCP server) and ranks with the shared tiers (`shared/slashCommandSections.ts`) so `/test` ranks `test` first. Both menus use an opaque background (`ade-chat-drawer-solid`) instead of the see-through `ade-chat-drawer-glass`, because the glass backdrop blur does not take effect in these portaled menus. |
+| `ChatCommandMenu.tsx` | Popover for slash commands, the `@` menu, and the `#` pull-request menu. A bare `@` browses recent rows **grouped by kind** under headers (Chats, Lanes, Terminals, Pull requests, Machines, MCP servers, Files), five per section. Typing a kind word — `@pr`, `@mac` (or `@machine`), `@mcp` (or `@server`), `@chat`, `@lane`, `@term` — narrows the menu to that one section and searches the text after it (`parseChatMentionKindFilter`; files are not searched then). Any other query is one mixed list (files, **folders**, chats, lanes, terminals, PRs, machines, MCP servers ranked together by match quality, each row showing a kind icon). MCP rows name servers from the chat machine's registry; selecting one inserts a named chip, send-time expansion adds a pointer block, and the transcript hover card reads through the chat's runtime pin and shows its cached tool count, first tool names, and last known provider error without probing on hover. The transcript-chip click and its **Open MCP settings** menu action open the account-scoped MCP Settings page on this computer, focused on and briefly highlighting that server; the mention picker still inserts a chip, and this Settings page does not select the chat's machine. PR rows show a state dot (open/draft), `#<n> title`, and a checks glyph (✓ passing, … pending, ✕ failing); machine rows show an online dot, the name, and "this machine · online / last seen · N projects". The `#` pull-request menu which lists the PRs this chat can reach (`ComposerPrSuggestion`, read from `prs.listAll` on the chat's runtime pin) and inserts a PR chip. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one). Files and mentions are two independently debounced (40 ms) `useDebouncedSuggestions` sources sharing one hook; `rankComposerAtMenuItems` then scores file paths (basename as subtitle) against entity titles with the same exact/prefix/substring/subsequence tiers. Each keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs, and both caches clear when the menu closes or the provider identity changes. A bare `@` is a browse of recency-ranked entities (file search returns nothing until there is a query). Multi-word `@` queries stay active through spaces and use the same cached/debounced search path. Flat keyboard-nav indices are precomputed in the sections memo (no render-time counters); all three row types share the `MenuRow` chrome. Selecting a mention inserts an opaque `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<id>` / `@mac:<id>` / `@mcp:<name>` pointer while the composer displays a compact title chip with a kind icon (a PR chip reads `#1319 title`, a machine chip its name) (see `shared/chatMentions.ts`). An `onNoMatches?(trigger)` callback fires once when a **non-empty** `@` query settles with zero rows, so the owner can close the menu instead of leaving it parked over the draft while the user types the rest of a sentence; an empty query is a browse, not a search — it can legitimately show nothing now and match once the user types — so it never reports. `useDebouncedSuggestions` carries the `query` its results belong to alongside the provider identity, and results from a previous provider *or a previous query* are discarded **and count as still-loading**: state updates from this render's effects are not visible to consumers until the next render, so `loading` alone would read "settled" for one frame after every keystroke and fire a false no-match. The `/` menu groups into Commands, Skills, and MCP prompts (one group per MCP server) and ranks with the shared tiers (`shared/slashCommandSections.ts`) so `/test` ranks `test` first. Both menus use an opaque background (`ade-chat-drawer-solid`) instead of the see-through `ade-chat-drawer-glass`, because the glass backdrop blur does not take effect in these portaled menus. |
 | `apps/desktop/src/shared/composerTriggers.ts` | Cursor-relative typed-trigger detection shared by the desktop chat composer (rich + textarea), the `WorkViewArea` continue composer, and the ade-code TUI (iOS mirrors the same regexes in Swift). `detectComposerTrigger(text, cursorPos)` finds an in-progress `/command`, `@`, or `#` query ending at the cursor at any position, and when several match the one typed closest to the cursor wins, so the menu always answers the token still being typed. The `#` token is a number or a short whitespace-free query, which is what keeps a markdown heading (`# Title`) from triggering — the space after `#` ends the token immediately — and a `#` inside a word such as `owner/repo#12` is not a trigger either, because that text is already a chip. `@` queries may contain spaces for multi-word entity names but stop at a newline or another `@`; selecting a matching suggestion narrows the replacement span to its label so trailing prose is preserved; `replaceComposerTriggerSpan` splices exactly that span; `findConfirmedComposerTokens` locates confirmed chip tokens for overlay/prompt styling (`ComposerTokenKind` is `"file" | "command" | "mention"`; mention bodies are self-identifying via the `chat:`/`lane:`/`term:`/`pr:`/`mac:` prefix grammar, so callers pass a purely syntactic `isMention` predicate); `composerTriggerSpansWholeDraft` distinguishes a lone leading command from a mid-sentence one. It also owns popover dismissal: `ComposerTriggerDismissal` is `Pick<ComposerTrigger, "type" | "start" | "query">` and `isComposerTriggerDismissed(trigger, dismissal)` reports whether a trigger is still covered by an earlier one. Suggestion search only *narrows* as the query grows — once nothing matched `@cursor`, `@cursor agent` cannot match either — so any extension of a dismissed query stays dismissed, while backspacing out of it, editing it into a different query, or typing a new `@` elsewhere all produce a genuinely new search and reopen. |
 | `apps/desktop/src/shared/smartLinks.ts` | Cross-client URL catalog and deterministic fallback labels. Recognizes GitHub PR/issue/repo/commit/action-run links, Linear issues, `ade://` deeplinks, and generic HTTP(S) pages; trims sentence punctuation, caps each draft at 12 matches, and keeps the canonical URL separate from optional title/favicon metadata. Desktop, hosted web, and ADE Code import this contract; iOS mirrors it in `WorkSmartLinkDetector`. Its `ade_deeplink` provider is a URL *shape*, not a target: `chips.ts` re-parses those URLs through the real `deeplinks.ts` parser, so `ade://pr/owner/repo/1237` becomes the same PR chip a github.com URL produces instead of a generic `ADE · <path>` label. |
 | `apps/desktop/src/main/services/chat/smartLinkPreviewService.ts` | Runtime-owned best-effort metadata resolver. GitHub and Linear titles use configured provider services; generic pages use bounded public-network HTML/favicon reads with DNS pinning and SSRF checks. Generic previews cache at most 256 public entries for 30 minutes (five minutes for metadata misses); credential-backed provider results are never stored in that process-global cache. Any error returns the deterministic local preview rather than blocking composition. |
@@ -61,7 +61,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/renderer/state/composerDraftPresenceStore.ts` | Which sessions hold an unsent composer draft, in memory. The draft itself lives in `localStorage` under `COMPOSER_DRAFT_STORAGE_KEY_PREFIX` (exported here, one definition shared with `AgentChatPane`); this store seeds once from those persisted keys (parsing segment 2 of `<prefix>:<projectRoot>:<sessionId>:<profile>:<kind>`) and `AgentChatPane` publishes a session's presence whenever its draft text or attachments change. `useComposerDraftPresence(sessionId)` reads a single boolean through `useSyncExternalStore`, so a row re-renders only when its own presence flips, never per keystroke across a long list. |
 | `composerChipDom.ts` | `serializeComposerDom(root)` — the single walker that turns the composer's `contentEditable` DOM back into draft text plus a token→label map. Send (`serializeRichEditor`) and copy both call it. They were two copies of one traversal, and the copy had already lost the chat-context placeholder handling, so copying a selection containing a chat-context chip produced different text than sending the same draft. |
 | `ChipText.tsx` | Renders sent message text with its tokens drawn as pills, via `splitTextIntoChipParts`. The raw text is never destroyed — it is still `event.text`, and copy still yields canonical tokens. `[Image #k]` / `[File #k: name]` attachment tokens resolve against the message's own `event.attachments` (`shared/attachmentLabels.ts`): an image draws a 14 px thumbnail, a file the file-type glyph, and a token whose ordinal has no attachment stays plain text rather than becoming an empty chip. A sent pill does the two things its composer twin already did: it enriches itself with the page title and favicon from `chipPreviewStore` (first paint is always synchronous from the raw label, so a message never waits on the network to appear), and it opens a hover card. |
-| `ChipHoverCard.tsx` | The hover card a pointer chip provokes — what is this, and is it still open — answered in place for PR, lane, chat, and Linear chips. A `pointer-events-none` portal with `role="tooltip"`, deliberately not a Radix `Popover`, because a popover moves focus into its content by design and the caret must stay in the composer. Placement reuses `computeTooltipPosition`. It degrades to nothing: no lane, no session row, no PR record means no card and no error state. It reads app state for lanes, chats, and Linear issues, and goes through `listPrsCoalesced` (the same coalesced reader the `#` menu uses) only once the user has actually hovered. Everything it reads belongs to the **chat's** machine, resolved through `useChatRuntimeScope()` plus `useLanesForPin` / `useMachineEntryForBinding` — a lane id is unique per machine, not globally, so resolving one against the project tab's lane list can match a different lane and print its name and branch. |
+| `ChipHoverCard.tsx` | The hover card a pointer chip provokes — what is this, and is it still open — answered in place for PR, commit, lane, chat, and Linear chips. Commit cards read the subject, author, age, and lane through the chat's pinned Git reader, only after hover; a missing lane or commit gives no card. A `pointer-events-none` portal with `role="tooltip"`, deliberately not a Radix `Popover`, because a popover moves focus into its content by design and the caret must stay in the composer. Placement reuses `computeTooltipPosition`. It degrades to nothing: no lane, no session row, no PR record means no card and no error state. It reads app state for lanes, chats, and Linear issues, and goes through `listPrsCoalesced` (the same coalesced reader the `#` menu uses) only once the user has actually hovered. Everything it reads belongs to the **chat's** machine, resolved through `useChatRuntimeScope()` plus `useLanesForPin` / `useMachineEntryForBinding` — a lane id is unique per machine, not globally, so resolving one against the project tab's lane list can match a different lane and print its name and branch. |
 | `chipPreviewStore.ts` | The renderer-side cache that lets the transcript reuse the composer's `agentChat.resolveSmartLinkPreview` route without hammering it. Deliberately not a React context: a transcript renders hundreds of chips and a context would re-render all of them whenever any one preview resolved, so each chip subscribes itself through `useSyncExternalStore`. One request per URL (concurrent askers share the in-flight promise), never throws (a failed preview is cached as "nothing to add", which is what stops a retry loop), and keyed by URL **plus the active project's state key** — the runtime keeps authenticated provider titles out of its process-global cache because those titles were read with one project's credentials, and a URL-only cache here would reintroduce exactly that leak across a project switch. |
 | `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels and their mapping onto every provider's own vocabulary. See [Agent Routing](agent-routing.md#the-permission-ladder). |
 | `apps/desktop/src/shared/__fixtures__/chipCases.json` | The cross-surface chip parity fixture, asserted by both `shared/chips.test.ts` and the iOS suite (`WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture`, which reads the file from disk relative to `#filePath`). iOS re-implements `chips.ts` and `deeplinks.ts` in Swift and cannot import the TypeScript; hand-written twin tests prove today's parity and nothing about tomorrow's. Adding a row here fails the iOS suite until Swift matches. `.github/workflows/ci.yml`'s `test-ios` gate includes this directory alongside `apps/ios/**`, so a desktop-only PR that adds a row cannot skip the Swift suite. |
@@ -1939,10 +1939,11 @@ with its own tools), which was removed; the CTO chat now uses this same button.
 ## Chips
 
 Every special token ADE draws as a pill comes from one model in
-`apps/desktop/src/shared/chips.ts`. It exists because three unrelated grammars
-used to produce chips independently: `chatMentions.ts` owns `@chat:` / `@lane:` /
-`@term:`, `smartLinks.ts` owns URL-shaped links, and a file path was a chip only
-because its label happened to equal its token.
+`apps/desktop/src/shared/chips.ts`. It combines the shared `@chat:` / `@lane:` /
+`@term:` / `@pr:` / `@mac:` / `@mcp:` mention grammar, model and permission
+mentions, URL-shaped smart links, and file or folder paths. It also represents
+the richer transcript chips for skills, artifacts, commits, branches, and web
+pages.
 
 A `Chip` always carries its canonical `token` next to its display `label`. That
 one property is what makes the rest work:
@@ -1956,10 +1957,11 @@ one property is what makes the rest work:
   what makes a paste into a *different* chat work: the rebuild only promotes a
   token it has a label for, and a new chat's registry starts empty.
 - **Sent messages** render through `splitTextIntoChipParts` in `ChipText.tsx`, so
-  the transcript shows the same pill the composer did. `@pr:` and `@mac:` mentions are
-  `pr` and `machine` chips; in the transcript they are labels, not links (a PR
-  mention carries ADE's row id, not a GitHub number, and a machine has no
-  in-app destination).
+  the transcript shows the same pill the composer did. Clicking a chat, lane,
+  or terminal mention opens that target through its owning machine. A machine
+  mention opens its facts card; a PR mention resolves ADE's row id before
+  opening its PR destination; an MCP mention opens this computer's MCP Settings
+  page focused on that server.
 - **Typed ADE deeplinks.** `deeplinks.ts` parses `ade://` URLs into a precise
   target, which `smartLinks.ts` discarded in favour of one generic
   `ADE · <path>` kind. Chips route through the real parser, so `ade://pr/...`
@@ -1978,8 +1980,8 @@ without becoming an attachment, because a folder has no bytes to upload.
 |---|---|
 | Desktop composer | `contentEditable` spans (`contenteditable=false`, `data-composer-chip`, `data-composer-chip-text`). `composerChipDom.serializeComposerDom` walks them back to draft text for **both** send and copy. |
 | Desktop transcript | `ChipText.splitTextIntoChipParts` over the stored `event.text` for user bubbles, and `remarkThreadEntities` (see [Entities an agent's reply names](#entities-an-agents-reply-names)) over the markdown of assistant replies and user briefs. The text on disk is unchanged; only the rendering differs. |
-| `ade code` TUI | Imports `shared/chips.ts` directly from the desktop tree (`apps/ade-cli/src/tuiClient/promptSmartLinks.ts`) and renders `CHIP_GLYPH_ASCII`. |
-| iOS | Swift re-implementations (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to the TypeScript by `shared/__fixtures__/chipCases.json`. |
+| `ade code` TUI | Imports `shared/chips.ts` directly from the desktop tree (`apps/ade-cli/src/tuiClient/promptSmartLinks.ts`), inserts `@mcp:<server>` from chat mention suggestions, and renders the shared chip with `CHIP_GLYPH_ASCII` and the MCP kind label. |
+| iOS | Swift re-implementations (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to the TypeScript by `shared/__fixtures__/chipCases.json`. The composer and transcript parse and draw `@mcp` as a named MCP chip; tapping a machine mention opens its native facts sheet. |
 
 Only one of the four can import the model. That is why the fixture exists, and
 why the `test-ios` CI gate watches `apps/desktop/src/shared/__fixtures__/` as
@@ -2021,7 +2023,10 @@ spelling out the model id and the flags.
   tells the agent to ask, not guess. A thinking level the model does not accept
   is dropped from the flags and named in the block.
 - **Transcript.** `chips.ts` parses the token into a `model` chip whose label
-  is `Display name · Level · Mode`. It is a label, not a link.
+  is `Display name · Level · Mode`. Its chip menu offers **New chat with this
+  model**, which opens an unsent Work draft in the same lane and machine and
+  selects the model, thinking level, and permission mode when that model is in
+  the chat machine's catalog.
 
 ### Local files an agent embeds
 
@@ -2066,47 +2071,70 @@ the composer draws, from four rules:
 - **Inline code is the strong signal.** Agents put identifiers in backticks, so
   `matchInlineCodeEntity` reads whole code spans: explicit tokens
   (`@lane:…`, `@model:…`, an `ade://` link), lane names, ids and unique 8+
-  character prefixes, the distinctive permission values, `#123`, `/skill`, a
-  known `TEAM-123`, a zoned ISO timestamp, a bare `3461-3468` that follows a
-  file in the same block, a commit SHA, and a registry model with a `-` or `/`.
+  character prefixes, explicit mentions including `@mcp:…`, the distinctive
+  permission values, `#123`, `/skill`, a known `TEAM-123`, a zoned ISO
+  timestamp, a bare `3461-3468` that follows a file in the same block, a commit
+  SHA, and a registry model with a `-` or `/`.
 - **Prose is narrow.** `findProseEntities` only matches shapes that cannot be
   ordinary words: full UUIDs, zoned ISO timestamps, `PR #123`, and known Linear
   keys. A lane named in prose does not chip.
 - **The token stays the truth.** A chip carries the raw text the agent wrote as
   its token, so a hover always shows the original.
 
-Ids and names are live: `ChipText.tsx` resolves a lane chip to the lane's own
-name and colour and a chat chip to its title and running/waiting dot, read from
-the chat's machine. A zoned timestamp renders in the reader's local time, and a
-tap toggles back to the raw text iOS-side. The rules are shared code, not
-re-implemented prose: the TUI imports them (`tuiClient/threadEntityRuns.ts`
-paints a coloured, OSC 8-linked run) and iOS ports them
-(`WorkThreadEntityRules.swift`), which drops the bare line follow-up because its
-markdown renderer does not link file paths. Permission and skill are the two
-chip kinds this feature added to `shared/chips.ts`.
+Ids and names are live: `ChipText.tsx` resolves lane names and colours and chat
+titles and live dots from the chat's machine. A zoned timestamp renders in the
+reader's local time, and a tap toggles back to raw text iOS-side. The rules are
+shared code, not re-implemented prose: the TUI imports them
+(`tuiClient/threadEntityRuns.ts` paints a coloured, OSC 8-linked run) and iOS
+ports them (`WorkThreadEntityRules.swift`), which drops the bare line follow-up
+because its markdown renderer does not link file paths. Model, permission, and
+skill chips also use the shared model.
 
 ### Chips are pointers, so pointers need hover cards
 
-A chip is deliberately compact — `#1237` or `Lane 25f280a4` says nothing about
-what it refers to. `ChipHoverCard.tsx` answers that in place, for PR, lane,
-chat, and Linear chips, under four constraints:
+A chip is deliberately compact — `#1237` or `Lane 25f280a4` says little about
+what it refers to. `ChipHoverCard.tsx`, `chipMenu.ts`, and `chipActions.ts`
+provide an on-demand card and action menu. A held hover or keyboard focus opens
+the card; a right-click opens the contextual menu. The chip's primary click
+uses its target action. Cards cover PRs, lanes, chats, terminals, models,
+permission modes, skills, artifacts, commits, branches, web pages, machines,
+and MCP servers, as well as the existing issue links.
 
 - **It never steals focus.** A `pointer-events-none` portal with
   `role="tooltip"`, not a Radix `Popover` (which moves focus into its content by
   design). The caret stays in the composer and a hover cannot swallow the next
   keystroke.
-- **It degrades to nothing.** No lane, no session row, no PR record: no card.
-  There is no error state for a hover.
-- **It reads rather than fetches**, except for PRs, which go through
-  `listPrsCoalesced`, the renderer's coalescing PR reader, and only once the
-  user has actually hovered.
-- **It reads the chat's machine, not the tab's.** Lane ids are unique per
-  machine, not globally, so resolving one against the project tab's lane list
-  can match a *different* lane and then print its name and branch. Every read
-  goes through `useChatRuntimeScope()` plus `useLanesForPin` /
-  `useSessionsForPin`; nothing here touches a global store selector. The card
-  renders inside the shared `ViewportOverlayHost` tooltip layer, which owns the
-  viewport anchoring.
+- **It stays lazy.** The card reads only after it opens. Missing or stale
+  records leave out the card details; they do not change the transcript.
+- **It uses the owning machine.** Chat, lane, terminal, commit, skill, artifact,
+  and PR reads use the chat runtime pin. A chat or lane mention navigates to its
+  target on that machine, and a terminal mention focuses the terminal there.
+  PR, branch, and commit cards use the chat's pinned project data. Machine
+  facts come from the account directory and the shared connection snapshot.
+- **It explains the target.** Terminal cards show its title, lane, tool, state,
+  and start time; model cards show model and routing facts; permission and skill
+  cards explain their setting or source; artifact cards show the proof kind and
+  time; commit and branch cards show their repository facts; web page cards use
+  the cached title, host, and preview. MCP cards show cached server state,
+  transport, tool count and names, plus the last provider error after secret
+  redaction. These cards do not probe MCP servers on hover.
+- **Machine mentions show connection facts.** `@mac:<key>` chips read the
+  account directory through its shared TTL cache and use the same presence
+  resolver and remote connection snapshot as Connections. The card shows
+  presence and available route details; **Open in Connections** selects the
+  Machines page and focuses that machine. The composer opens the same facts in
+  a caret-safe portal, and iOS shows them in a native sheet. Unavailable
+  identity, build, or route details stay omitted.
+- **MCP mentions stay references.** `@mcp:<server>` points to a server from the
+  chat brain's cached registry. Its card shows cached status and redacted
+  runtime details; the chip click and **Open MCP settings** action focus that
+  server in this computer's account-scoped Settings. The route does not move
+  the tab or select the chat's machine, and the mention does not attach tools
+  or grant authority.
+- **Model chips can start a draft.** The model chip menu's **New chat with this
+  model** action opens an unsent Work draft in the same lane and machine and
+  requests the model, effort, and permission choices carried by the chip. The
+  user still sends the draft to create the chat.
 
 Enrichment follows the same split. The composer already asked the runtime for a
 page title and favicon and redrew its chip when the answer landed; the

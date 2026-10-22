@@ -971,8 +971,11 @@ export function redactCallerMcpText(
   if (servers) {
     const secrets = new Set<string>();
     for (const config of Object.values(servers)) {
-      if (config.type === "stdio" || !config.headers) continue;
-      for (const value of Object.values(config.headers)) {
+      // A stdio server's secrets ride in its environment, an http one's in
+      // its headers; a failing server can echo either back in its error.
+      const values = config.type === "stdio" ? config.env : config.headers;
+      if (!values) continue;
+      for (const value of Object.values(values)) {
         const trimmed = value.trim();
         if (trimmed.length >= 4) secrets.add(trimmed);
         // `Bearer abc…`: the token alone may be echoed without its scheme.

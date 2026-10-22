@@ -15,7 +15,7 @@ import {
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
-import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -99,7 +99,7 @@ import {
   AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
 } from "../../../shared/types/chat";
-import { musePermissionModeFromLegacyPermissionMode } from "../../../shared/modelPermissions";
+import { musePermissionModeFromLegacyPermissionMode, nativePermissionToCliMode, resolveModelPermissionValue } from "../../../shared/modelPermissions";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
@@ -340,7 +340,7 @@ import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./Compose
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
-import { cancelWorkDraftLaneRequest } from "../../lib/workDraft";
+import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -509,6 +509,7 @@ import {
   CLAUDE_SESSION_QUOTA_FORK_NOTE,
 } from "../../../shared/claudeSessionQuota";
 import {
+  applyUnifiedPermissionToNativeControls,
   defaultNativeControls,
   summarizeNativeControls as summarizeNativeLaunchControls,
 } from "../../lib/nativeLaunchControls";
@@ -4489,6 +4490,15 @@ export function AgentChatPane({
     setProofFocus(focus ?? null);
     setChatActionsOpen(true);
   }, []);
+  useEffect(() => {
+    const onOpenArtifact = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null; artifactId?: string }>).detail;
+      if (!detail?.artifactId || detail.sessionId !== selectedSessionId) return;
+      openProofDrawer(proofDrawerFocus("Artifact", [{ id: detail.artifactId }]));
+    };
+    window.addEventListener("ade:chat:open-artifact", onOpenArtifact);
+    return () => window.removeEventListener("ade:chat:open-artifact", onOpenArtifact);
+  }, [openProofDrawer, selectedSessionId]);
   const clearProofFocus = useCallback(() => setProofFocus(null), []);
   // The thread's "N sources" chip opens the drawer with Sources narrowed to
   // that turn; the section's "Show all" clears it.
@@ -11065,12 +11075,16 @@ export function AgentChatPane({
   // may still target "Auto-create lane", which would hide that lane and create
   // a new one on send.
   const workDraftProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const applyWorkDraftModelRequestRef = useRef<(request: WorkDraftModelRequest) => void>(() => {});
   useWorkDraftLaneRequest({
-    ready: isWorkDraftComposer && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue,
+    ready: isWorkDraftComposer
+      && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue
+      && preferencesReady,
     projectStateKey: workDraftProjectStateKey,
-    onRequest: () => {
+    onRequest: ({ modelRequest }) => {
       setDraftLaunchTargetId(null);
       clearNewLaneConfig();
+      if (modelRequest) applyWorkDraftModelRequestRef.current(modelRequest);
     },
   });
 
@@ -17259,6 +17273,40 @@ export function AgentChatPane({
     applyModelSelectionSnapshot(snapshot);
   };
   composerModelChangeRef.current = handleComposerModelChange;
+  applyWorkDraftModelRequestRef.current = (request) => {
+    // Both catalogs follow the chat's composer machine. A model missing there
+    // is left alone; the draft itself still opens on the requested lane.
+    if (
+      !availableModelIds.includes(request.modelId)
+      && !runtimeCatalogModelIds(modelCatalogScopeKey).includes(request.modelId)
+    ) return;
+    handleComposerModelChange(request.modelId);
+    handleReasoningEffortChange(request.reasoningEffort);
+
+    if (!request.permission) return;
+    const provider = resolveChatRuntimeProvider(
+      resolveScopedModelDescriptor(request.modelId, modelCatalogScopeKey),
+    );
+    const nativePermission = resolveModelPermissionValue(provider, request.permission);
+    if (!nativePermission) return;
+    const requestedFamily = permissionLadderFamilyForProvider(provider);
+    if (requestedFamily) visitedLadderFamiliesRef.current.add(requestedFamily);
+    if (provider === "cursor") {
+      void updateNativeControls({ cursorModeId: nativePermission });
+      return;
+    }
+    if (provider === "droid") {
+      void updateNativeControls({ droidPermissionMode: nativePermission as AgentChatDroidPermissionMode });
+      return;
+    }
+    const permissionMode = nativePermissionToCliMode(provider, nativePermission);
+    if (!permissionMode) return;
+    void updateNativeControls(applyUnifiedPermissionToNativeControls(
+      request.modelId,
+      permissionMode as AgentChatPermissionMode,
+      nativeControlsRef.current,
+    ));
+  };
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}

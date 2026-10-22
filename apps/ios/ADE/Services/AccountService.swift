@@ -826,6 +826,12 @@ final class AccountService: ObservableObject {
   @Published private(set) var machines: [AccountMachine] = []
   @Published private(set) var machinesState: MachinesState = .idle
 
+#if DEBUG
+  func seedPreviewMachines(_ previewMachines: [AccountMachine]) {
+    machines = previewMachines
+  }
+#endif
+
   /// The account-directory row for a saved fleet key (`machine:<deviceId>`),
   /// matched by device identity. Nil when the key carries no identity or the
   /// directory has not listed that device.

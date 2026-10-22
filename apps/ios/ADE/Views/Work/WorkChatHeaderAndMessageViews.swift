@@ -638,9 +638,14 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
         return nil
       }
       return URL(string: "ade://pr/\(encoded)")
-    case .terminal, .machine:
-      // No surface navigates to a terminal session or to another machine
-      // from a chat bubble; a readable pointer beats a dead tap.
+    case .machine:
+      guard let encoded = mention.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+      return URL(string: "ade://machine/\(encoded)")
+    case .terminal:
+      // No surface navigates to a terminal session from a chat bubble.
+      return nil
+    case .mcp:
+      // MCP server mentions are named pointers, not navigation targets.
       return nil
     }
   }
@@ -838,6 +843,7 @@ struct WorkChipMessageText: View {
   /// Lane names, colours and chat titles for the chips. Republishes only when
   /// one of those changes.
   @ObservedObject private var entities = WorkThreadEntityDirectory.shared
+  @State private var machineDetails: AccountMachine?
 
   /// One cheap scan before any regex runs. The overwhelming majority of
   /// messages contain no chip at all, and this view is rebuilt for every
@@ -860,7 +866,7 @@ struct WorkChipMessageText: View {
           foreground: foreground,
           chipBackground: chipBackground
         )
-        .environment(\.openURL, workChipOpenURLAction)
+        .environment(\.openURL, chipOpenURLAction)
       } else if mayContainChip {
         Text(
           workChipAttributedMessage(
@@ -871,7 +877,7 @@ struct WorkChipMessageText: View {
             attachments: attachments.isEmpty ? nil : attachments
           )
         )
-        .environment(\.openURL, OpenURLAction { url in workOpenChipURL(url) })
+        .environment(\.openURL, chipOpenURLAction)
       } else {
         Text(text)
       }
@@ -882,6 +888,86 @@ struct WorkChipMessageText: View {
     .multilineTextAlignment(.leading)
     .fixedSize(horizontal: false, vertical: true)
     .textSelection(.enabled)
+    .sheet(item: $machineDetails) { machine in
+      WorkMachineChipFactsSheet(machine: machine)
+        .presentationDetents([.height(230)])
+        .presentationDragIndicator(.visible)
+    }
+  }
+
+  private var chipOpenURLAction: OpenURLAction {
+    OpenURLAction { url in
+      if url.scheme?.lowercased() == "ade", url.host?.lowercased() == "machine",
+         let key = url.pathComponents.dropFirst().first?.removingPercentEncoding,
+         let machine = AccountService.shared.machines.first(where: { workMachineMentionId($0) == key })
+           ?? AccountService.shared.machines.first(where: { $0.machineKey == key })
+           ?? AccountService.shared.machines.first(where: { $0.deviceId == key }) {
+        machineDetails = machine
+        return .handled
+      }
+      return workOpenChipURL(url)
+    }
+  }
+}
+
+private struct WorkMachineChipFactsSheet: View {
+  let machine: AccountMachine
+
+  private var status: String {
+    let lastSeenAt = machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+    let presence = syncMachinePresence(
+      connected: false,
+      online: machine.online,
+      sleepState: machine.sleepState,
+      sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
+      lastSeenAt: lastSeenAt
+    )
+    switch presence {
+    case .connected, .online:
+      return "Online"
+    case .asleep:
+      return "Asleep"
+    case .offline:
+      if let lastSeenAt {
+        return "Offline · last seen \(lastSeenAt.formatted(.relative(presentation: .named)))"
+      }
+      return "Offline"
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Label(machine.displayName, systemImage: "desktopcomputer").font(.headline)
+      Text(status).font(.subheadline).foregroundStyle(.secondary)
+      if let install = machine.installLabel { Text(install).font(.caption).foregroundStyle(.secondary) }
+      if let endpoint = machine.preferredEndpoint {
+        Text("\(endpoint.host):\(endpoint.port)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+      } else {
+        Text("via ADE relay").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(20)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+private func workMachineMentionId(_ machine: AccountMachine) -> String {
+  let key = machine.machineKey.trimmingCharacters(in: .whitespacesAndNewlines)
+  if workChatMentionIdIsValid(key) { return key }
+  let deviceId = machine.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if workChatMentionIdIsValid(deviceId) { return deviceId }
+  let encoded = key.utf16.map { unit in
+    let hex = String(unit, radix: 16)
+    return String(repeating: "0", count: max(0, 4 - hex.count)) + hex
+  }.joined()
+  return "x.\(encoded)"
+}
+
+private func workChatMentionIdIsValid(_ id: String) -> Bool {
+  !id.isEmpty && id.utf16.allSatisfy { unit in
+    (48...57).contains(unit) || (65...90).contains(unit) || (97...122).contains(unit)
+      || unit == 46 || unit == 95 || unit == 45
   }
 }
 

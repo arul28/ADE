@@ -415,6 +415,15 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import {
+  mcpOAuthTokenState,
+  mcpOAuthVaultKey,
+  mcpRegistryState,
+  parseMcpOAuthToken,
+  type McpRegistryServer,
+  type McpRegistryState,
+} from "../../../shared/mcpRegistry";
+import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
 import { createChatUserMcp } from "../mcp/chatUserMcp";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -12624,6 +12633,59 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   const copilotMcpAuthNotices = new Set<string>();
 
+  type McpMentionRuntimeStatus = {
+    toolNames: string[];
+    toolCount: number | null;
+    lastError: string | null;
+    lastErrorAt: number | null;
+  };
+  type McpMentionServerRow = {
+    server: McpRegistryServer;
+    state: McpRegistryState;
+    needsSignIn: boolean;
+    toolNames: string[];
+    toolCount: number | null;
+    lastError: string | null;
+    lastErrorAt: number | null;
+  };
+  const mcpMentionStatusByServer = new Map<string, McpMentionRuntimeStatus>();
+  let mcpMentionRowsCache: { at: number; rows: McpMentionServerRow[] } | null = null;
+  const rememberMcpMentionStatus = (
+    serverName: string,
+    update: { toolNames?: readonly string[]; error?: string | null; success?: boolean },
+  ): void => {
+    const name = serverName.trim();
+    if (!name || name.length > 128) return;
+    const previous = mcpMentionStatusByServer.get(name);
+    const tools = update.toolNames === undefined
+      ? null
+      : [...new Set(update.toolNames.map((tool) => tool.trim()).filter(Boolean))];
+    const error = update.error?.replace(/\s+/g, " ").trim().slice(0, 280) || null;
+    const next: McpMentionRuntimeStatus = {
+      toolNames: tools ? tools.slice(0, 32).map((tool) => tool.slice(0, 120)) : previous?.toolNames ?? [],
+      toolCount: tools ? tools.length : previous?.toolCount ?? null,
+      lastError: error ?? (update.success ? null : previous?.lastError ?? null),
+      lastErrorAt: error ? Date.now() : update.success ? null : previous?.lastErrorAt ?? null,
+    };
+    mcpMentionStatusByServer.delete(name);
+    mcpMentionStatusByServer.set(name, next);
+    while (mcpMentionStatusByServer.size > 64) {
+      const oldest = mcpMentionStatusByServer.keys().next().value;
+      if (oldest === undefined) break;
+      mcpMentionStatusByServer.delete(oldest);
+    }
+    mcpMentionRowsCache = null;
+  };
+
+  /**
+   * A server's status error, safe to cache and show in another chat's `@mcp`
+   * card. Redacts against every server this chat launched with — the registry
+   * and ADE's own servers too, not only the chat's list — since any of them can
+   * echo its header or env values back.
+   */
+  const redactMcpStatusError = (managed: ManagedChatSession, error: string): string =>
+    redactSecrets(redactCallerMcpText(error, withRegistryMcpServers(managed, managed.session.mcpServers ?? null)));
+
   /* MCP Apps (`shared/mcpApp.ts`, `mcpAppHost.ts`, `mcpAppProviderLinks.ts`). */
   const mcpApps = createMcpAppHost({
     store: createMcpAppStore({
@@ -12635,7 +12697,15 @@ export function createAgentChatService(args: {
       if (!managed || managed.closed || managed.deleted || managed.session.status === "ended") return null;
       const runtime = managed.runtime;
       if (runtime?.kind === "claude") {
-        return claudeMcpAppLink({ protocolCapabilities: managed.session.protocolCapabilities, runtime });
+        return claudeMcpAppLink({
+          protocolCapabilities: managed.session.protocolCapabilities,
+          runtime,
+          onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
+            ...(status.toolNames ? { toolNames: status.toolNames } : {}),
+            success: status.success,
+            ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
+          }),
+        });
       }
       if (runtime?.kind === "codex") {
         return codexMcpAppLink({
@@ -12645,6 +12715,11 @@ export function createAgentChatService(args: {
           // The merged map Codex was launched with: a registry server is in
           // it and is not in the session's own list.
           serverConfig: (server) => callerMcpServersForLaunch(managed)?.[server],
+          onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
+            ...(status.toolNames ? { toolNames: status.toolNames } : {}),
+            success: status.success,
+            ...(status.error ? { error: redactMcpStatusError(managed, status.error) } : {}),
+          }),
         });
       }
       // Every other provider: no way to read a tool's page or to call back.
@@ -25680,6 +25755,9 @@ export function createAgentChatService(args: {
       });
       return;
     }
+    rememberMcpMentionStatus(status.serverName, {
+      error: redactSecrets(status.message ?? status.status ?? "MCP server failed"),
+    });
     const key = `${status.serverName}:${status.status ?? ""}:${status.message ?? ""}`;
     if (runtime.mcpStartupNoticeKeys.has(key)) return;
     runtime.mcpStartupNoticeKeys.add(key);
@@ -72132,6 +72210,33 @@ export function createAgentChatService(args: {
     listAccountMachines: accountMachineMentions?.listAccountMachines ?? null,
     getAccountActivity: accountMachineMentions?.getAccountActivity ?? null,
     getLocalMachineKey: accountMachineMentions?.getLocalMachineKey ?? null,
+    listMcpServers: () => {
+      if (mcpMentionRowsCache && Date.now() - mcpMentionRowsCache.at < 1500) return mcpMentionRowsCache.rows;
+      const adeHome = args.machineAdeHome?.trim();
+      if (!adeHome) return [];
+      const registry = readCachedMcpRegistry(adeHome, projectRoot).cached;
+      if (!registry) {
+        mcpMentionRowsCache = { at: Date.now(), rows: [] };
+        return [];
+      }
+      const rows = registry.servers.map((server) => {
+        const token = server.url && args.readAccountSecret
+          ? parseMcpOAuthToken(args.readAccountSecret(mcpOAuthVaultKey(server.name)))
+          : null;
+        const runtimeStatus = mcpMentionStatusByServer.get(server.name);
+        return {
+          server,
+          state: mcpRegistryState(server, registry.off),
+          needsSignIn: Boolean(token && mcpOAuthTokenState(token, server) === "expired"),
+          toolNames: runtimeStatus?.toolNames ?? [],
+          toolCount: runtimeStatus?.toolCount ?? null,
+          lastError: runtimeStatus?.lastError ?? null,
+          lastErrorAt: runtimeStatus?.lastErrorAt ?? null,
+        };
+      });
+      mcpMentionRowsCache = { at: Date.now(), rows };
+      return rows;
+    },
     describeModel: (modelId) => {
       const descriptor = getModelById(modelId);
       if (!descriptor) return null;

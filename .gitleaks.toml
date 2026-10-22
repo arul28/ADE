@@ -23,6 +23,8 @@ regexes = [
   # phc_ project tokens are public-by-design client tokens in any case, and
   # the phx_ fixture exists to prove personal keys are REJECTED.
   '''a3f2c1d4e5b60718293a4b5c6d7e8f90''',
+  # The fake machine key in the iOS Work preview fixtures (WorkPreviews.swift).
+  '''0123456789abcdef0123456789abcdef''',
   '''phc_abcdefgh12345678''',
   '''phx_personalkey123''',
   # The machine key store's file NAME, "api-keys.v1.bin". A path segment, not a

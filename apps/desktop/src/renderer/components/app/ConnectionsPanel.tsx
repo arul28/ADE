@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   DesktopTower,
@@ -40,9 +40,11 @@ import {
   useAccountStatus,
 } from "../../lib/account";
 import type { ConnectionsPanelTab } from "../../lib/connectionsPanel";
+import { flashRowHighlight } from "../../lib/flashRowHighlight";
 
 type ConnectionsPanelProps = {
   initialTab?: ConnectionsPanelTab;
+  machineId?: string | null;
   onClose: () => void;
   onDisconnectRequested?: (target: RemoteRuntimeTarget) => boolean | Promise<boolean>;
   onRemoveRequested?: (target: RemoteRuntimeTarget) => boolean | Promise<boolean>;
@@ -219,6 +221,7 @@ const confirmRevoke: RevokeConfirm = ({ name, connected }) =>
 
 export function ConnectionsPanel({
   initialTab = "machines",
+  machineId = null,
   onClose,
   onDisconnectRequested,
   onRemoveRequested,
@@ -305,6 +308,20 @@ export function ConnectionsPanel({
     if (tab !== "machines") return;
     void loadAccountMachines();
   }, [loadAccountMachines, tab]);
+
+  const focusedMachineRequestRef = useRef<{ machineId: string; focused: boolean } | null>(null);
+  useEffect(() => {
+    if (focusedMachineRequestRef.current?.machineId !== machineId) {
+      focusedMachineRequestRef.current = machineId ? { machineId, focused: false } : null;
+    }
+    const request = focusedMachineRequestRef.current;
+    if (tab !== "machines" || !machineId || !accountMachines) return;
+    if (!request || request.focused) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(machineId)}"]`);
+    if (!row) return;
+    request.focused = true;
+    return flashRowHighlight(row);
+  }, [accountMachines, machineId, tab]);
 
   const goToAccount = useCallback(() => {
     onClose();

@@ -134,18 +134,15 @@ describe("ChipText", () => {
     expect(container.querySelector("span")).toBeNull();
   });
 
-  it("draws a file path as a clickable pill and a folder as a plain label", () => {
+  it("draws file and folder paths as clickable pills", () => {
     // The composer inserts `@<path>` for a quick-open pick, so these are the
-    // most common chips in a message. A FILE opens; a FOLDER must not look
-    // clickable, because the navigation target is `kind: "file"` and there is
-    // no folder destination to send it to.
+    // most common chips in a message. Both open through the chat's path opener.
     const { unmount } = render(<ChipText text="see @src/shared/chips.ts ok" />);
     expect(screen.getByRole("button").textContent).toContain("chips.ts");
     unmount();
 
     render(<ChipText text="look in @src/shared/ please" />);
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.getByText("shared/")).toBeTruthy();
+    expect(screen.getByRole("button").textContent).toContain("shared/");
   });
 
   it("shows a lane hover card on focus and hides it on Escape", async () => {
@@ -199,7 +196,7 @@ describe("ChipText", () => {
     expect(screen.getByRole("tooltip").textContent).toContain("Last activity 2m ago");
   });
 
-  it("draws the lanes, chats and PRs a reply or a sent message names as live chips", () => {
+  it("draws the lanes, chats and PRs a reply or a sent message names as live chips", async () => {
     const sessionId = "8b1f0c2e-33aa-4b7d-9f10-6d2a51c7e004";
     useAppStore.setState({
       crossMachineLanesByMachineId: {
@@ -232,9 +229,10 @@ describe("ChipText", () => {
       expect(screen.getAllByRole("button", { name: /thread-chips/ })).toHaveLength(2);
       expect(screen.getByRole("button", { name: /Audit findings/ })).toBeTruthy();
 
-      // A PR named by number alone opens through the in-app PR route.
+      // A PR named by number alone, with no local row or linked chat, opens
+      // through the in-app PR route.
       fireEvent.click(screen.getByRole("button", { name: /#1407/ }));
-      expect(navigations).toEqual([{ kind: "pr", prNumber: 1407 }]);
+      await waitFor(() => expect(navigations).toEqual([{ kind: "pr", prNumber: 1407 }]));
     } finally {
       window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
     }

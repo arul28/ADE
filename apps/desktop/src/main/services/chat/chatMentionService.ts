@@ -51,6 +51,7 @@ import type { AgentChatSessionSummary, AgentChatTranscriptEntry } from "../../..
 import type { LaneSummary } from "../../../shared/types/lanes";
 import type { PrSummary } from "../../../shared/types/prs";
 import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../shared/types/sessions";
+import type { McpRegistryServer, McpRegistryState } from "../../../shared/mcpRegistry";
 
 /** Transcript entries pulled for one chat preview. Kept tiny on purpose. */
 const CHAT_PREVIEW_ENTRY_LIMIT = 6;
@@ -119,6 +120,16 @@ export type ChatMentionServiceDeps = {
    * expand as unavailable, which tells the agent to ask instead of guess.
    */
   describeModel?: ((modelId: string) => ModelMentionModelInfo | null) | null;
+  /** MCP servers as configured on this brain. Never returns secret values. */
+  listMcpServers?: (() => Array<{
+    server: McpRegistryServer;
+    state: McpRegistryState;
+    needsSignIn?: boolean;
+    toolNames?: string[];
+    toolCount?: number | null;
+    lastError?: string | null;
+    lastErrorAt?: number | null;
+  }>) | null;
 };
 
 /** Cap on model blocks per message, like `CHAT_MENTION_MAX_PER_MESSAGE`. */
@@ -431,6 +442,22 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     });
   };
 
+  const buildMcpCandidates = async (): Promise<ChatMentionSuggestion[]> =>
+    (deps.listMcpServers?.() ?? []).map(({ server, state, needsSignIn, toolNames = [], toolCount, lastError = null, lastErrorAt = null }) => ({
+      kind: "mcp" as const,
+      id: server.name,
+      title: server.name,
+      subtitle: `${needsSignIn && state === "on" ? "needs sign-in" : state} · ${server.transport}`,
+      mcp: {
+        state: needsSignIn && state === "on" ? "needs-sign-in" : state,
+        transport: server.transport,
+        toolNames: toolNames.slice(0, 32),
+        ...(toolCount != null ? { toolCount } : {}),
+        lastError,
+        ...(lastErrorAt != null ? { lastErrorAt } : {}),
+      },
+    }));
+
   const candidateBuildersByKind: Record<
     ChatMentionKind,
     (args: ChatMentionSuggestArgs) => Promise<ChatMentionSuggestion[]>
@@ -440,6 +467,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     terminal: () => buildTerminalCandidates(),
     pr: () => buildPrCandidates(),
     machine: () => buildMachineCandidates(),
+    mcp: () => buildMcpCandidates(),
   };
 
   /**
@@ -746,8 +774,29 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     };
   };
 
+  const resolveMcpDetail = async (name: string): Promise<ChatMentionDetail | null> => {
+    const record = deps.listMcpServers?.().find(({ server }) => server.name === name);
+    if (!record) return null;
+    const tools = record.toolNames?.slice(0, 32) ?? [];
+    const toolCount = record.toolCount ?? (record.toolNames ? record.toolNames.length : null);
+    return {
+      kind: "mcp",
+      id: record.server.name,
+      title: record.server.name,
+      attributes: [
+        ["state", record.needsSignIn && record.state === "on" ? "needs sign-in" : record.state],
+        ["transport", record.server.transport],
+        ["toolCount", toolCount != null ? String(toolCount) : "not reported"],
+        ["lastError", record.lastError ?? "not reported"],
+      ],
+      hint: "Pointer to an MCP server configured in ADE on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
+      previewLabel: toolCount != null ? "Available tool names:" : "Available tool names (not reported):",
+      preview: tools.length ? tools.join("\n") : null,
+    };
+  };
+
   const detailResolversByKind: Record<
-    Exclude<ChatMentionKind, "machine">,
+    Exclude<ChatMentionKind, "machine" | "mcp">,
     (id: string, roster: MentionRoster) => Promise<ChatMentionDetail | null>
   > = {
     chat: resolveChatDetail,
@@ -792,6 +841,8 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
             activity: null,
           }));
           out.set(key, await resolveMachineDetail(target.id, await machines, reasons));
+        } else if (target.kind === "mcp") {
+          out.set(key, await resolveMcpDetail(target.id));
         } else {
           out.set(key, await detailResolversByKind[target.kind](target.id, roster));
         }

@@ -15,6 +15,7 @@ const KIND_LABELS: Record<MentionSuggestion["kind"], string> = {
   lane: "Lane",
   chat: "Chat",
   pr: "PR",
+  mcp: "MCP",
   file: "File",
   commit: "Commit",
   model: "Model",
@@ -56,6 +57,8 @@ function useLabel(suggestion: MentionSuggestion): string {
       return "Adds a lane/worktree reference";
     case "chat":
       return "Adds a chat transcript reference";
+    case "mcp":
+      return "Adds an MCP server reference";
     case "model":
       return "Adds a model with a thinking level and permissions";
   }

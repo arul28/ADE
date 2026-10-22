@@ -18,9 +18,9 @@ import { findMachineByMentionId } from "../../../shared/accountMachineSnapshot";
 import type { Chip } from "../../../shared/chips";
 import type { DeeplinkPrTarget } from "../../../shared/deeplinks";
 import type { OpenProjectBinding, PrSummary } from "../../../shared/types";
-import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { listPrsCoalesced } from "../../lib/prReadCache";
+import { fetchAccountMachines } from "../../lib/account";
 
 const rememberedLabels = new Map<string, string>();
 const MAX_REMEMBERED = 500;
@@ -28,7 +28,7 @@ const MAX_REMEMBERED = 500;
 /** Keep PR and machine labels from @-menu results for later transcript chips. */
 export function rememberMentionSuggestionLabels(suggestions: readonly ChatMentionSuggestion[]): void {
   for (const suggestion of suggestions) {
-    if (suggestion.kind !== "pr" && suggestion.kind !== "machine") continue;
+    if (suggestion.kind !== "pr" && suggestion.kind !== "machine" && suggestion.kind !== "mcp") continue;
     const token = formatChatMentionToken(suggestion.kind, suggestion.id);
     rememberedLabels.delete(token);
     rememberedLabels.set(token, suggestion.title);
@@ -38,24 +38,6 @@ export function rememberMentionSuggestionLabels(suggestions: readonly ChatMentio
     if (oldest === undefined) break;
     rememberedLabels.delete(oldest);
   }
-}
-
-let machinesRead: Promise<AdeAccountMachine[]> | null = null;
-
-function readAccountMachinesOnce(): Promise<AdeAccountMachine[]> {
-  machinesRead ??= (async () => {
-    const result = await window.ade?.account?.listMachines?.();
-    if (result?.state !== "ok") {
-      // Signed out or unreachable: allow a later chip to try again.
-      machinesRead = null;
-      return [];
-    }
-    return result.machines;
-  })().catch(() => {
-    machinesRead = null;
-    return [];
-  });
-  return machinesRead;
 }
 
 export type MentionChipResolution = {
@@ -83,7 +65,7 @@ export function useMentionChipResolution(
   scope: { pin: OpenProjectBinding | null; rootPath: string | null },
 ): MentionChipResolution {
   const source = chip.source;
-  const mention = source.origin === "mention" && (source.mentionKind === "pr" || source.mentionKind === "machine")
+  const mention = source.origin === "mention" && (source.mentionKind === "pr" || source.mentionKind === "machine" || source.mentionKind === "mcp")
     ? { kind: source.mentionKind, id: source.id }
     : null;
   const remembered = mention ? rememberedLabels.get(chip.token) ?? null : null;
@@ -94,7 +76,7 @@ export function useMentionChipResolution(
     if (!mention) return;
     // A remembered machine label is all a machine chip needs; a PR chip still
     // reads its row so a click knows the number and repo.
-    if (mention.kind === "machine" && remembered) return;
+    if ((mention.kind === "machine" || mention.kind === "mcp") && remembered) return;
     let cancelled = false;
     const load = mention.kind === "pr"
       ? listPrsCoalesced({ pin: scope.pin, projectRoot: scope.rootPath })
@@ -102,8 +84,8 @@ export function useMentionChipResolution(
           const pr = prs.find((entry) => entry.id === mention.id);
           return pr ? prResolution(pr) : NONE;
         })
-      : readAccountMachinesOnce().then((machines) => {
-          const machine = findMachineByMentionId(machines, mention.id);
+      : mention.kind === "mcp" ? Promise.resolve(NONE) : fetchAccountMachines().then((result) => {
+          const machine = result.state === "ok" ? findMachineByMentionId(result.machines, mention.id) : null;
           const name = machine ? accountMachineDisplayName(machine) : null;
           return name ? { label: name, prTarget: null } : NONE;
         });
