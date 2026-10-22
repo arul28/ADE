@@ -369,10 +369,13 @@ public actor DeviceSession {
      * panel from the simulator's own screen list, rather than defaulting to
      * the cover while the inner display is showing.
      */
-    private func resolvePanelForInput() async {
-        if engine != nil, activeScreenID != nil { return }
-        let active = await DevicePosture.displays(udid: udid).first(where: \.active)?.screenID
-        guard let active else { return }
+    /// Returns the displays it read, for the gesture's other questions; nil
+    /// when a running stream already knew.
+    @discardableResult
+    private func resolvePanelForInput() async -> [DevicePosture.Display]? {
+        if engine != nil, activeScreenID != nil { return nil }
+        let displays = await DevicePosture.displays(udid: udid)
+        guard let active = displays.first(where: \.active)?.screenID else { return displays }
         activeScreenID = active
         if panelMetrics[active] == nil {
             let udid = self.udid
@@ -382,6 +385,7 @@ public actor DeviceSession {
             }
         }
         if engine == nil, let measured = panelMetrics[active] { metrics = measured }
+        return displays
     }
 
     /// The live screen's picture, in quarter turns clockwise on its
@@ -390,12 +394,12 @@ public actor DeviceSession {
     /// mid-gesture cannot bend it.
     private var screenTurns = 0
 
-    private func readScreenTurns() async -> Int {
+    private func readScreenTurns(_ known: [DevicePosture.Display]?) async -> Int {
         // A frame that already arrives wide has been turned for us.
         if metrics.pointWidth > metrics.pointHeight { return 0 }
         // A foldable marks its live panel; a phone with one screen marks none,
         // and its screen is the main display.
-        let displays = await DevicePosture.displays(udid: udid)
+        let displays = if let known { known } else { await DevicePosture.displays(udid: udid) }
         let live = displays.first(where: \.active) ?? displays.first(where: { $0.screenID == 1 })
         switch live?.orientation {
         case "landscape_left": return 1
@@ -421,20 +425,22 @@ public actor DeviceSession {
         }
     }
 
-    /// Onto the frame, at a gesture's begin learning how the picture sits.
-    /// A foldable's live panel is settled first: its size is the frame's.
+    /// What a gesture needs settled before its first point: a foldable's live
+    /// panel (its size is the frame's) and, for screen-space input, how the
+    /// picture sits. One display read serves both.
+    private func beginGesture(screenSpace: Bool) async {
+        let displays = await foldableInput() != nil ? await resolvePanelForInput() : nil
+        if screenSpace { screenTurns = await readScreenTurns(displays) }
+    }
+
+    /// Onto the frame, settling the gesture at its begin.
     private func framePoints(_ phase: TouchPhase, _ points: [DevicePoint]) async -> [DevicePoint] {
-        guard points.contains(where: { $0.space == .screen }) else { return points }
-        if phase == .begin {
-            if await foldableInput() != nil { await resolvePanelForInput() }
-            screenTurns = await readScreenTurns()
-        }
+        if phase == .begin { await beginGesture(screenSpace: points.contains(where: { $0.space == .screen })) }
         return points.map(toFrame)
     }
 
     private func foldableTouch(_ phase: TouchPhase, _ points: [DevicePoint]) async throws -> Bool {
         guard let foldable = await foldableInput() else { return false }
-        if phase == .begin { await resolvePanelForInput() }
         try await foldable.touch(
             phase: phase,
             screenID: activeScreenID ?? DuoScreen.cover,
@@ -538,9 +544,8 @@ public actor DeviceSession {
         var deltaX = deltaX
         var deltaY = deltaY
         var anchor = anchor
+        await beginGesture(screenSpace: space == .screen)
         if space == .screen {
-            if await foldableInput() != nil { await resolvePanelForInput() }
-            screenTurns = await readScreenTurns()
             anchor = anchor.map(toFrame)
             switch screenTurns {
             case 1: (deltaX, deltaY) = (deltaY, -deltaX)

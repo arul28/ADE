@@ -173,6 +173,7 @@ import {
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createAppleDeviceLeases } from "./appleDeviceLease";
+import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
 import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
@@ -285,16 +286,31 @@ function isAppleScrollDirection(value: string): value is AppleScrollDirection {
 const APPLE_SCROLL_DEFAULT_AMOUNT = 600;
 
 /**
- * Viewport direction to the helper's content-movement delta.
- *
- * Inverted on purpose: the finger moves opposite to the content, so revealing
- * what is BELOW (`down`) moves the content UP, which is a negative deltaY.
+ * Which picture an input's points are measured on (the helper's `space`). A
+ * viewer (the pane, a remote window, the phone; all `source: "user"`) maps a
+ * click onto the raw framebuffer it draws turned; everyone else measures on
+ * what a screenshot and the accessibility tree show. The helper turns the
+ * second onto the first where the picture sits turned on its framebuffer: any
+ * device held landscape, and the iPhone Duo's inner display always.
+ */
+type HelperPointSpace = "frame" | "screen";
+
+function inputPointSpace(source: AppleInputSource | undefined): HelperPointSpace {
+  return source === "user" ? "frame" : "screen";
+}
+
+/**
+ * Viewport direction to the helper's scroll delta, which reads like a wheel's:
+ * positive `deltaY` reveals what is below (the helper swipes the finger up),
+ * positive `deltaX` what is to the right. Measured on an iPhone 17 and the
+ * iPhone Duo: the opposite signs, used until 2026-10, scrolled every agent
+ * the wrong way.
  */
 const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { deltaX: number; deltaY: number }> = {
-  down: (amount) => ({ deltaX: 0, deltaY: -amount }),
-  up: (amount) => ({ deltaX: 0, deltaY: amount }),
-  right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
-  left: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  down: (amount) => ({ deltaX: 0, deltaY: amount }),
+  up: (amount) => ({ deltaX: 0, deltaY: -amount }),
+  right: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  left: (amount) => ({ deltaX: -amount, deltaY: 0 }),
 };
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
@@ -1492,32 +1508,6 @@ function normalizeLaunchEnvironment(value: unknown): Record<string, string> {
   return normalized;
 }
 
-/**
- * The Xcode configuration to build: `Debug` unless the caller named one. A
- * name, not a flag: it lands in xcodebuild's argv and in a products path.
- */
-function normalizeBuildConfiguration(value: unknown): string {
-  if (value == null) return "Debug";
-  const name = typeof value === "string" ? value.trim() : "";
-  if (!name) return "Debug";
-  if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/.test(name)) {
-    throw new Error(`'${String(value)}' is not an Xcode build configuration name.`);
-  }
-  return name;
-}
-
-function normalizeLaunchArguments(value: unknown): string[] {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("iOS Simulator launch arguments must be an array.");
-  }
-  for (const item of value) {
-    if (typeof item !== "string") {
-      throw new Error("iOS Simulator launch arguments must be an array of strings.");
-    }
-  }
-  return value as string[];
-}
 
 function normalizeCoordinate(value: unknown, label: string): number {
   const coordinate = typeof value === "number" ? value : Number(value);
@@ -2317,6 +2307,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
+  const deviceLeases = createAppleDeviceLeases();
 
   /**
    * The lane a call is about, and a note that its device was used.
@@ -2325,7 +2316,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * poll while it is on screen, so this is where "someone is using this lane's
    * device" is recorded for idle power-off.
    */
-  const deviceLeases = createAppleDeviceLeases();
 
   const resolveRuntime = (
     scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
@@ -4403,6 +4393,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
     if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
+    // The caller's own inputs, refused before a boot or a build costs anything.
+    const buildConfiguration = normalizeBuildConfiguration(launchArgs.configuration);
+    const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
     // A launch that names no chat session may not evict one that does: an
     // agent's anonymous CLI launch would otherwise silently take the simulator
@@ -4539,7 +4532,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else {
         emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, buildStepExtra);
       }
-      const buildConfiguration = normalizeBuildConfiguration(launchArgs.configuration);
       const appBundle = target.shouldBuild || target.shouldInstall
         ? await buildProjectApp(target, device, projectRoot, buildConfiguration)
         : target.appBundlePath;
@@ -4574,7 +4566,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
 
       const launchEnvironment = normalizeLaunchEnvironment(launchArgs.environment);
-      const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
       const startedAt = nowIso();
       const session: IosSimulatorSession = {
         id: randomUUID(),
@@ -5773,18 +5764,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /* ───────────────────────── input ───────────────────────── */
 
   /**
-   * Which picture an input's points are measured on. A viewer (the pane, a
-   * remote window, the phone; all `source: "user"`) maps a click onto the raw
-   * framebuffer it draws turned; everyone else measures on what a screenshot
-   * and the accessibility tree show. The helper turns the second onto the
-   * first where the picture sits turned on its panel, as the iPhone Duo's
-   * inner screen always does.
-   */
-  type HelperPointSpace = "frame" | "screen";
-  const inputPointSpace = (source: AppleInputSource | undefined): HelperPointSpace =>
-    source === "user" ? "frame" : "screen";
-
-  /**
    * A tap, as the helper wants it: a begin and an end at the same point.
    *
    * The helper's wire unit is DEVICE POINTS (`Protocol.swift`'s `DevicePoint`,
@@ -6147,7 +6126,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const LIVE_TOUCH_IDLE_RELEASE_MS = 4_000;
 
   const sendTouch = (udid: string, phase: "begin" | "move" | "end", x: number, y: number): Promise<unknown> =>
-    helper().send({ type: "touch", udid, phase, x, y });
+    // A viewer's finger, already on the framebuffer it draws.
+    helper().send({ type: "touch", udid, phase, x, y, space: "frame" satisfies HelperPointSpace });
 
   /** Lift a lane's held finger, if any. Best-effort: the device may be gone. */
   const liftLiveTouch = async (laneKey: string, reason: string, laneId: string | null): Promise<void> => {

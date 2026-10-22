@@ -1234,7 +1234,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --wait <seconds>       How long to wait in line; default 0 (answer at once). Max 540.
     --ttl <seconds>        How long the lease lasts unless renewed; default 600.
-    --holder <name>        Who is asking; defaults to this chat.
+    --holder <name>        Who is asking; defaults to this chat (or, with no chat, this shell).
     --token <t>            For release: the token the lease printed.
     --lane, --lane-id <id> Lane whose device.
 `,

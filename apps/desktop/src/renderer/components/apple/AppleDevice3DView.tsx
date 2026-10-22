@@ -618,6 +618,14 @@ function createViewer(
     }
     const u = Math.min(1, Math.max(0, (localHit.x + body.screenWidth / 2) / body.screenWidth));
     const vFromBottom = Math.min(1, Math.max(0, (localHit.y + body.screenHeight / 2) / body.screenHeight));
+    if (!layout.rawLandscape) {
+      // A portrait frame lies on the panel as is, whichever way the phone is
+      // turned: the hit is a point on the framebuffer, which is what the flat
+      // view sends and the device takes (`source: "user"` input is frame
+      // space). Only a frame the helper already turned wide is the picture.
+      const raw = appleDeviceInputSize(props.devicePointSize, props.screenPixelSize);
+      return { x: u * raw.width, y: (1 - vFromBottom) * raw.height };
+    }
     const oriented = portraitToOriented(u, vFromBottom, props.orientation);
     return { x: oriented.x * points.width, y: oriented.y * points.height };
   };

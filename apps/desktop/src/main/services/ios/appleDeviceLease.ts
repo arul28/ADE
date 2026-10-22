@@ -10,6 +10,10 @@ import { randomUUID } from "node:crypto";
  * agent that never asked, still goes through, because a person must never be
  * locked out of their own device by an agent that forgot to let go. The TTL is
  * what makes forgetting safe: a lease nobody renews lapses.
+ *
+ * Who gets a device someone let go of is decided in one place, `handOn`: a
+ * release and an expiry (noticed by its timer or by a read) both go through
+ * it, so the device is never free while someone waits for it.
  */
 
 export const APPLE_DEVICE_LEASE_DEFAULT_TTL_MS = 10 * 60_000;
@@ -32,7 +36,7 @@ export type AppleDeviceLeaseAcquireResult =
   | { acquired: false; current: AppleDeviceLeaseOther; queued: number };
 
 type Lease = { holder: string; token: string; acquiredAtMs: number; expiresAtMs: number };
-type Waiter = { holder: string; ttlMs: number; grant: (lease: Lease) => void };
+type Waiter = { holder: string; ttlMs: number; handOff: (lease: Lease) => void };
 
 export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
   const now = options.now ?? Date.now;
@@ -59,21 +63,26 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
     return Math.min(APPLE_DEVICE_LEASE_MAX_TTL_MS, Math.max(5_000, value));
   };
 
+  const queueLength = (key: string) => queues.get(key)?.length ?? 0;
+
+  /**
+   * The lease that holds the device now. One that has run out is let go here,
+   * and the device passes to the next in line, whether the expiry timer or a
+   * read noticed first.
+   */
   const live = (key: string): Lease | null => {
     const lease = leases.get(key);
     if (!lease) return null;
     if (lease.expiresAtMs > now()) return lease;
     leases.delete(key);
-    return null;
+    handOn(key);
+    return leases.get(key) ?? null;
   };
 
   const armExpiry = (key: string, lease: Lease) => {
     clearTimeout(expiryTimers.get(key));
     const timer = setTimeout(() => {
-      if (leases.get(key) === lease && lease.expiresAtMs <= now()) {
-        leases.delete(key);
-        handOn(key);
-      }
+      if (leases.get(key) === lease) live(key);
     }, Math.max(0, lease.expiresAtMs - now()) + 5);
     (timer as { unref?: () => void }).unref?.();
     expiryTimers.set(key, timer);
@@ -89,12 +98,43 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
 
   /** The device is free: the next one in line gets it. */
   const handOn = (key: string) => {
-    if (live(key)) return;
+    if (leases.has(key)) return;
     const queue = queues.get(key);
     const next = queue?.shift();
     if (!queue?.length) queues.delete(key);
-    if (next) next.grant(grant(key, next.holder, next.ttlMs));
+    if (next) next.handOff(grant(key, next.holder, next.ttlMs));
     else clearTimeout(expiryTimers.get(key));
+  };
+
+  /** Stand in line for up to `waitMs`; a turn or the current holder answers. */
+  const waitForTurn = (args: { key: string; holder: string; ttlMs: number; waitMs: number }): Promise<AppleDeviceLeaseAcquireResult> => {
+    const startedAt = now();
+    return new Promise((resolve) => {
+      let giveUp: ReturnType<typeof setTimeout> | null = null;
+      const waiter: Waiter = {
+        holder: args.holder,
+        ttlMs: args.ttlMs,
+        handOff: (lease) => {
+          if (giveUp) clearTimeout(giveUp);
+          resolve({ acquired: true, renewed: false, waitedMs: now() - startedAt, ...describe(lease) });
+        },
+      };
+      const queue = queues.get(args.key) ?? [];
+      queue.push(waiter);
+      queues.set(args.key, queue);
+      giveUp = setTimeout(() => {
+        const line = queues.get(args.key);
+        const index = line?.indexOf(waiter) ?? -1;
+        if (!line || index < 0) return;
+        line.splice(index, 1);
+        if (!line.length) queues.delete(args.key);
+        const holderNow = live(args.key);
+        resolve(holderNow
+          ? { acquired: false, current: describeOther(holderNow), queued: queueLength(args.key) }
+          // Nobody has it, nobody else is waiting for it: ours.
+          : { acquired: true, renewed: false, waitedMs: now() - startedAt, ...describe(grant(args.key, args.holder, args.ttlMs)) });
+      }, args.waitMs);
+    });
   };
 
   return {
@@ -111,36 +151,15 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
         armExpiry(args.key, current);
         return { acquired: true, renewed: true, waitedMs: 0, ...describe(current) };
       }
+      // Free means nobody is waiting either: every release and expiry hands
+      // the device straight to the next in line (`handOn`).
       if (!current) {
-        const lease = grant(args.key, args.holder, ttlMs);
-        return { acquired: true, renewed: false, waitedMs: 0, ...describe(lease) };
+        return { acquired: true, renewed: false, waitedMs: 0, ...describe(grant(args.key, args.holder, ttlMs)) };
       }
       if (waitMs <= 0) {
-        return { acquired: false, current: describeOther(current), queued: queues.get(args.key)?.length ?? 0 };
+        return { acquired: false, current: describeOther(current), queued: queueLength(args.key) };
       }
-      const startedAt = now();
-      return new Promise((resolve) => {
-        const waiter: Waiter = {
-          holder: args.holder,
-          ttlMs,
-          grant: (lease) => {
-            clearTimeout(giveUp);
-            resolve({ acquired: true, renewed: false, waitedMs: now() - startedAt, ...describe(lease) });
-          },
-        };
-        const giveUp = setTimeout(() => {
-          const queue = queues.get(args.key);
-          const index = queue?.indexOf(waiter) ?? -1;
-          if (queue && index >= 0) queue.splice(index, 1);
-          if (queue && !queue.length) queues.delete(args.key);
-          const holderNow = live(args.key);
-          if (holderNow) resolve({ acquired: false, current: describeOther(holderNow), queued: queues.get(args.key)?.length ?? 0 });
-          else resolve({ acquired: true, renewed: false, waitedMs: now() - startedAt, ...describe(grant(args.key, args.holder, ttlMs)) });
-        }, waitMs);
-        const queue = queues.get(args.key) ?? [];
-        queue.push(waiter);
-        queues.set(args.key, queue);
-      });
+      return waitForTurn({ key: args.key, holder: args.holder, ttlMs, waitMs });
     },
 
     /** Let go. Only the token's holder can; a stale token is a no-op. */
@@ -154,7 +173,7 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
 
     status(key: string): { held: boolean; current: AppleDeviceLeaseOther | null; queued: number } {
       const current = live(key);
-      return { held: Boolean(current), current: current ? describeOther(current) : null, queued: queues.get(key)?.length ?? 0 };
+      return { held: Boolean(current), current: current ? describeOther(current) : null, queued: queueLength(key) };
     },
 
     dispose(): void {

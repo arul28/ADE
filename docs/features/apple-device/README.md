@@ -469,7 +469,7 @@ to every such window, and the first `renderAck` takes the job:
   anywhere wins, then acks with that surface's own binding as the pin (an ack
   only succeeds on the machine that asked). The winner loads
   `AppleRenderHostJob` on demand, reads the lane's device, streams it into a
-  3D view mounted far off screen (fixed outside the viewport, no pointer
+  3D view mounted far off screen (absolute, left of the page, no pointer
   events, not focusable; never `display: none`, which stops WebGL), renders
   through the pane's own `renderAppleDeviceToProof`, and unmounts, which hands
   the stream lease back. Idle, the host is one event callback: no stream, no
@@ -607,7 +607,7 @@ ade --socket apple start [--udid <udid>|--runtime <r> --device-type <t>|--create
 ade --socket apple stop [--force] --text
 ade --socket apple device-detach [--force] --text
 ade --socket apple show [--floating] --text
-ade --socket apple scroll --x <x> --y <y> --dy <delta> --text
+ade --socket apple scroll down [--anchor-x <x> --anchor-y <y>] [--amount <n>] --text
 ade --socket apple foreground [--wait <seconds>] --text
 ade --socket apple screenshot [--out <path>] [--no-proof] --text
 ade --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text

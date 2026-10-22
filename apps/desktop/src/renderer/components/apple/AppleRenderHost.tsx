@@ -4,7 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { useAppStoreApi } from "../../state/appStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { isWebClientMode } from "../../lib/webClientMode";
-import type { AppleRenderJob } from "./AppleRenderHostJob";
+import type { AppleRenderJob } from "./appleRenderProof";
 
 /**
  * The job (a stream, the 3D view and three.js) is loaded with the first
@@ -30,7 +30,7 @@ const AppleRenderHostJob = React.lazy(() => import("./AppleRenderHostJob"));
  * two windows with no pane settle on whichever acks first.
  *
  * Taken, the request mounts a 3D view of the lane's device far off screen
- * (fixed, outside the viewport, no pointer events, not focusable), streams the
+ * (absolute, left of the page, no pointer events, not focusable), streams the
  * device into it, renders through the pane's own `renderAppleDeviceToProof`,
  * reports, and unmounts, which hands the stream lease back.
  */
@@ -41,10 +41,11 @@ const APPLE_RENDER_HOST_CLAIM_DELAY_MS = 1_500;
  * Out of the viewport rather than hidden: WebGL and the decoder must keep
  * drawing, which `display: none` (no layout box) or a parked surface's
  * `content-visibility` would stop. Portalled to `body` for the same reason.
- * Square, so the view lays out the way a pane would.
+ * Square, so the view lays out the way a pane would. Absolute on `body`, left
+ * of the page: content past the left edge never scrolls into view.
  */
 const OFF_SCREEN_STYLE: CSSProperties = {
-  position: "fixed",
+  position: "absolute",
   left: -10_000,
   top: 0,
   width: 480,
@@ -55,6 +56,11 @@ const OFF_SCREEN_STYLE: CSSProperties = {
 };
 
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+/** A render answer that did not arrive leaves the CLI waiting: say so in the log. */
+const logLostAnswer = (cause: unknown) => {
+  logRendererDebugEvent("apple.render_host_complete_failed", { error: messageOf(cause) });
+};
 
 /**
  * One per project surface, for that project's lanes.
@@ -106,7 +112,7 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
             void api.renderComplete(
               { requestId: job.requestId, filed: 0, error: "The ADE window closed before the render started." },
               pin,
-            ).catch(() => undefined);
+            ).catch(logLostAnswer);
             return;
           }
           setJobs((current) => [...current, job]);
@@ -123,10 +129,11 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
     };
   }, [binding.key, enabled, store]);
 
+  const answeringRef = useRef(new Set<string>());
   const onDone = useCallback((requestId: string) => {
+    answeringRef.current.delete(requestId);
     setJobs((current) => current.filter((job) => job.requestId !== requestId));
   }, []);
-  const answeringRef = useRef(new Set<string>());
   const onAnswering = useCallback((requestId: string) => {
     answeringRef.current.add(requestId);
   }, []);
@@ -142,7 +149,7 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
       void api?.renderComplete(
         { requestId: job.requestId, filed: 0, error: "The ADE window closed before the render finished." },
         job.pin,
-      ).catch(() => undefined);
+      ).catch(logLostAnswer);
     }
   }, []);
 
@@ -154,7 +161,7 @@ export function AppleRenderHost({ binding }: { binding: OpenProjectBinding }) {
       void window.ade?.iosSimulator?.renderComplete(
         { requestId: job.requestId, filed: 0, error: `The render failed: ${messageOf(cause)}` },
         job.pin,
-      ).catch(() => undefined);
+      ).catch(logLostAnswer);
     }
     onDone(job.requestId);
   }, [onDone]);

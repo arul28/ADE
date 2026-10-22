@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeLaunchArguments } from "./iosLaunchArgs";
 import type {
   IosScreenSnapshot,
   IosSimulatorAppState,
@@ -627,14 +628,11 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       // this an empty bundle id would be swallowed there and then handed to
       // `launch` anyway.
       if (!args.bundleId?.trim()) throw new Error("A relaunch needs a bundle id.");
+      const launchArguments = normalizeLaunchArguments(args.arguments);
       await tools.terminateApp(udid, args.bundleId).catch(() => {
         // Terminating an app that is not running is not a failure; the launch
         // below is what the caller actually asked for.
       });
-      const launchArguments = args.arguments ?? [];
-      if (!Array.isArray(launchArguments) || launchArguments.some((value) => typeof value !== "string")) {
-        throw new Error("Relaunch arguments must be an array of strings.");
-      }
       await tools.launchApp(udid, args.bundleId, launchArguments);
       recordAction(
         `Relaunched ${args.bundleId}.`,

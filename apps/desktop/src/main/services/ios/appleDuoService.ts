@@ -477,7 +477,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         reject(new Error(
           // Nothing here can draw: renders come from a desktop window's 3D
           // view, and the service never opens a window or a pane unasked.
-          "No ADE desktop window has this project open. Renders are drawn by a desktop window's 3D view: open the project in ADE on a desktop, then render again.",
+          "No ADE desktop window took this render. Renders are drawn by a desktop window's 3D view: open the project in ADE on a desktop (a project on another machine must be the window's front tab), then render again.",
         ));
       }, APPLE_RENDER_ACK_TIMEOUT_MS);
       const doneTimer = setTimeout(() => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { appleDuoInTent } from "../../../shared/appleOrientation";
 import type { AppleDeviceRenderer } from "./AppleDevice3DView";
@@ -10,7 +10,7 @@ import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPosture";
 import { useAppleDuoModel } from "./useAppleDuoModel";
-import { completeAppleRenderRequest, renderAppleDeviceToProof } from "./useAppleRenderRequests";
+import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderJob } from "./appleRenderProof";
 
 /**
  * One `ade apple render` taken by `AppleRenderHost`: the lane's device, its
@@ -23,15 +23,6 @@ import { completeAppleRenderRequest, renderAppleDeviceToProof } from "./useApple
 const APPLE_RENDER_HOST_READY_TIMEOUT_MS = 45_000;
 /** How long a Duo waits for Apple's model before rendering the drawn body. */
 const APPLE_RENDER_HOST_DUO_MODEL_WAIT_MS = 8_000;
-
-export type AppleRenderJob = {
-  requestId: string;
-  laneId: string;
-  chatSessionId: string | null;
-  request: AppleRenderRequestSpec;
-  /** The machine that asked, held for the whole job: every call goes there. */
-  pin: OpenProjectBinding;
-};
 
 type AppleRenderJobDevice = {
   udid: string;

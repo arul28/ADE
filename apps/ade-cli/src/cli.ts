@@ -2980,7 +2980,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple tap 120 420                      Tap in the simulator
     $ ade apple drag 120 700 120 250             Drag in the simulator
     $ ade apple swipe 120 700 120 250            Swipe in the simulator
-    $ ade apple scroll --x 200 --y 500 --dy -400 Scroll at a point
+    $ ade apple scroll down --anchor-x 200 --anchor-y 500  Scroll the view under a point
     $ ade apple type "hello" --text              Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer
@@ -5059,6 +5059,16 @@ export function readNumberOption(
     throw new CliUsageError(`${names[0]} must be a number.`);
   }
   return parsed;
+}
+
+/**
+ * A number flag whose value is optional: `--wait 10` and `--wait=10` read 10,
+ * a bare `--wait` reads `bareValue`, no flag reads undefined.
+ */
+function readOptionalNumberOption(args: string[], names: string[], bareValue: number): number | undefined {
+  const value = readNumberOption(args, names);
+  if (value != null) return value;
+  return readFlag(args, names) ? bareValue : undefined;
 }
 
 function readJsonOption(
@@ -14751,17 +14761,10 @@ function buildIosSimulatorPlan(
     // bridge — the question an agent that has just arrived actually has.
     // `--wait [seconds]`: keep asking until an app is in front (default 10 s),
     // for the moment after a launch when the tree still names nothing.
-    const waitIndex = args.indexOf("--wait");
-    let waitMs = 0;
-    if (waitIndex >= 0) {
-      const next = args[waitIndex + 1];
-      const seconds = next != null && /^\d+(\.\d+)?$/.test(next) ? Number(next) : 10;
-      args.splice(waitIndex, next != null && /^\d+(\.\d+)?$/.test(next) ? 2 : 1);
-      waitMs = Math.round(seconds * 1000);
-    }
+    const waitSeconds = readOptionalNumberOption(args, ["--wait"], 10);
     return iosAction("Apple device foreground app", "getForegroundApp", {
       deviceUdid: readIosSimulatorDevice(args),
-      ...(waitMs > 0 ? { waitMs } : {}),
+      ...(waitSeconds ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
     });
   }
   if (sub === "app-state") {
@@ -15206,7 +15209,10 @@ function buildIosSimulatorPlan(
     // Every flag first: a flag's value must not be read as the verb.
     const waitSeconds = readNumberOption(args, ["--wait"]);
     const ttlSeconds = readNumberOption(args, ["--ttl"]);
-    const holder = readValue(args, ["--holder", "--name"]);
+    // A shell with no chat is its own holder (its parent, the shell), so two
+    // terminals queue instead of both renewing one anonymous lease.
+    const holder = readValue(args, ["--holder", "--name"])
+      ?? (claimArgs.chatSessionId ? null : `shell ${process.ppid}`);
     const tokenFlag = readValue(args, ["--token"]);
     const verb = firstPositional(args) ?? "acquire";
     const scope = { ...(laneId ? { laneId } : {}), ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}) };
@@ -31232,6 +31238,8 @@ function formatIosSimSnapshot(value: unknown): string {
         `${provider.source}:${provider.available ? (provider.elementCount ?? "ok") : "unavailable"}`,
     )
     .join(", ");
+  const filePath = asString(screenshot.filePath);
+  const proofArtifactId = asString(screenshot.proofArtifactId);
   return [
     renderKeyValues("ADE iOS simulator snapshot", [
       ["device", snapshot.deviceUdid],
@@ -31253,12 +31261,10 @@ function formatIosSimSnapshot(value: unknown): string {
     ]),
     // Printed raw rather than as a table cell: agents Read this path back,
     // and the key/value renderer truncates long values.
-    asString(screenshot.filePath) ? `file: ${asString(screenshot.filePath)}` : "",
+    filePath ? `file: ${filePath}` : "",
     // A shot filed as proof is cited from here: attaching the same file again
     // is refused as a duplicate.
-    ...(asString(screenshot.proofArtifactId)
-      ? [`cite: ${proofCitationMarkdown(asString(screenshot.proofArtifactId)!, "Simulator screenshot")}`]
-      : []),
+    ...(proofArtifactId ? [`cite: ${proofCitationMarkdown(proofArtifactId, "Simulator screenshot")}`] : []),
     elements.length ? "" : "",
     elements.length
       ? renderTable(
