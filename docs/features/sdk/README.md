@@ -179,14 +179,22 @@ link handler.
 
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
-SDK 0.6.0 (with chat-ui 0.6.0, same content as 0.5.x) keeps the 0.4.0 runtime
-range too. Its MCP additions — async `mcpHeaders`, the before-turn header
-refresh and `thread.refreshMcpHeaders()`, per-server `allowedTools` /
-`disallowedTools`, and mid-turn `updateMcpServers` queued by the runtime
-(`mcpServersPending`) — are gated per runtime on
-`capabilities.personalChats.mcpToolFilters` and `deferredMcpUpdates`, so an
-older runtime still connects: filters are refused before they are sent and a
-mid-turn update is refused with `turn_in_flight` as before.
+SDK 0.6.0 keeps the 0.4.0 runtime range too (chat-ui is bumped to 0.6.0 with
+it; its source is unchanged). Its MCP additions behave on an older runtime as
+follows:
+
+- Async `mcpHeaders`, the before-turn header refresh and
+  `thread.refreshMcpHeaders()` need no new capability: they push through the
+  existing `updateSession({ mcpServers })` (`updateMcpServers`, runtime
+  1.2.81+).
+- Per-server `allowedTools` / `disallowedTools` are gated on
+  `capabilities.personalChats.mcpToolFilters`: without it the SDK refuses
+  them before they are sent.
+- A mid-turn `updateMcpServers` is queued by a runtime that does it
+  (`mcpServersPending` on the summary; the runtime advertises
+  `deferredMcpUpdates`, which the SDK does not read). An older runtime refuses
+  it with `turn_in_flight`: `updateMcpServers()` throws that, and the
+  before-turn refresh and an open-time `refresh` catch it and log a line.
 
 SDK 0.5.1 keeps the same 0.4.0 runtime range, `>=1.2.82 <2.0.0`, because nothing
 in that line needs a new wire. It adds three host-side surfaces and no protocol change:

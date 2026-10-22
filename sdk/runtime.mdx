@@ -97,12 +97,14 @@ The SDK and the runtime release on separate cadences, and a downloaded runtime c
 | SDK | Supported runtime |
 |---|---|
 | 0.6.0 | `>=1.2.82 <2.0.0` |
+| 0.5.3 | `>=1.2.82 <2.0.0` |
+| 0.5.2 | `>=1.2.82 <2.0.0` |
 | 0.5.1 | `>=1.2.82 <2.0.0` |
 | 0.5.0 | `>=1.2.82 <2.0.0` |
 | 0.4.0 | `>=1.2.82 <2.0.0` |
 | 0.3.0 | `>=1.2.81 <2.0.0` |
 
-The lower bound has **not** moved across 0.5 or 0.6, so a host on runtime 1.2.82 keeps working. The 0.6 MCP features check the runtime's capability flags instead: tool filters need `capabilities.personalChats.mcpToolFilters` (refused before they are sent otherwise), and a mid-turn `updateMcpServers` is queued only on a runtime with `deferredMcpUpdates` (an older one refuses it with `turn_in_flight`). `@ade-dev/sdk` 0.6.0 and `@ade-dev/chat-ui` 0.6.0 are the current versions. Patch 0.5.1 carries one tidy that landed on `main` after 0.5.0 published — the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives — so `main` and the published packages agree again.
+The lower bound has **not** moved across 0.5 or 0.6, so a host on runtime 1.2.82 keeps working. Of the 0.6 MCP features, only tool filters check a capability flag: they need `capabilities.personalChats.mcpToolFilters` and are refused before they are sent otherwise. A mid-turn `updateMcpServers` is queued by a runtime that supports it and refused with `turn_in_flight` by an older one; the async `mcpHeaders` refresh uses the existing `updateMcpServers` path and needs nothing new. `@ade-dev/sdk` 0.6.0 and `@ade-dev/chat-ui` 0.6.0 are the current versions (chat-ui's source is unchanged). Patch 0.5.1 carries one tidy that landed on `main` after 0.5.0 published — the buffered-event category list no longer names `cto_voice`, a category an `agent`-role sidecar never receives — so `main` and the published packages agree again.
 
 An embedded runtime used to print four lines on every start — the role-ceiling sentence, its `brain.role_ceiling_below_cto` warning, and the two "could not bound runtime log" lines for `launchd` files it never has. All four are gone from runtime 1.2.83; an older runtime still prints them.
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import { collectRestartCancelledWork } from "../../../shared/chatAutoResume";
 import {
   createStaleRunSweep,
   STALE_RUN_SWEEP_SESSIONS_PER_PASS,
@@ -50,6 +51,7 @@ function harness(overrides: {
   ensureError?: (sessionId: string) => Error | null;
   /** Fired only when a managed session is newly created for a chat. */
   onEnsureManagedSession?: (sessionId: string) => void;
+  onSweptStaleRows?: (managed: FakeManaged, swept: { leftRunningIds: readonly string[] }) => void;
   now?: () => number;
 } = {}) {
   const transcripts = overrides.transcripts ?? {};
@@ -91,6 +93,7 @@ function harness(overrides: {
     emitChatEvent: (managed, event) => emitted.push({ sessionId: managed.session.id, event }),
     emitScheduledWorkUpdate: (managed, event) => emitted.push({ sessionId: managed.session.id, event }),
     persistChatState,
+    ...(overrides.onSweptStaleRows ? { onSweptStaleRows: overrides.onSweptStaleRows } : {}),
     logger: { info: () => {}, warn: (message, meta) => warnings.push({ message, meta }) },
     ...(overrides.now ? { now: overrides.now } : {}),
   });
@@ -225,9 +228,11 @@ describe("terminalizeStaleRowsForSession", () => {
 });
 
 describe("reconcileStaleRuns", () => {
-  it("terminalizes a chat nobody reopened, exactly once across passes", () => {
+  it("terminalizes a chat nobody reopened, exactly once across passes, and hands it to restart recovery", () => {
     const sessionId = "chat-sweep";
-    const { sweep, emitted } = harness({ transcripts: { [sessionId]: orphanTranscript(sessionId) } });
+    const transcript = orphanTranscript(sessionId);
+    const onSweptStaleRows = vi.fn();
+    const { sweep, emitted } = harness({ transcripts: { [sessionId]: transcript }, onSweptStaleRows });
 
     sweep.reconcileStaleRuns();
     sweep.reconcileStaleRuns();
@@ -235,6 +240,23 @@ describe("reconcileStaleRuns", () => {
     expect(results(emitted)).toHaveLength(1);
     expect(scheduled(emitted)).toHaveLength(1);
     expect(results(emitted)[0]).toMatchObject({ status: "stopped", stopSource: "system" });
+    expect(onSweptStaleRows).toHaveBeenCalledTimes(1);
+    expect(onSweptStaleRows.mock.calls[0]?.[1]).toEqual({ leftRunningIds: [] });
+    // What recovery then reads: the rows the sweep just closed still count as
+    // this restart's loss, named by what each agent was spawned as.
+    const afterSweep = [
+      ...transcript,
+      ...emitted.map((entry, index) => ({
+        sessionId,
+        timestamp: "2026-09-18T02:05:00.000Z",
+        sequence: 100 + index,
+        event: entry.event,
+      }) as AgentChatEventEnvelope),
+    ];
+    expect(collectRestartCancelledWork(afterSweep).map((work) => work.label)).toEqual(["npm run serve", "look"]);
+    // A row the sweep reports as left running (its delegate is alive) stays out.
+    expect(collectRestartCancelledWork(afterSweep, { excludeIds: new Set(["subagent:sub-1"]) })
+      .map((work) => work.label)).toEqual(["npm run serve"]);
   });
 
   it("leaves a delegate whose own chat is still alive running, and keeps re-checking it", () => {

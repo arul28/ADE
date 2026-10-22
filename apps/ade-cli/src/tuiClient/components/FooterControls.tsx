@@ -175,6 +175,7 @@ function FooterControlsComponent({
   multiViewMap,
   workPaneFocused,
   compactFirst,
+  pendingSettingsLabel,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -204,6 +205,8 @@ function FooterControlsComponent({
   workPaneFocused?: boolean;
   /** A Claude chat whose prompt cache expired: whether the next send compacts first, and the sizes. */
   compactFirst?: { enabled: boolean; contextTokens: number; estimatedPostTokens: number } | null;
+  /** "Effort pending" / "Fast mode pending": a setting change the host holds until the chat's background work ends. */
+  pendingSettingsLabel?: string | null;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -275,6 +278,12 @@ function FooterControlsComponent({
               accentColor={accentColor}
               hovered={inlineHovered("reasoning")}
             />
+          </>
+        ) : null}
+        {pendingSettingsLabel ? (
+          <>
+            <Text>{"  "}</Text>
+            <Text color={theme.color.t4} dimColor>{pendingSettingsLabel}</Text>
           </>
         ) : null}
         {permissionLabel ? (

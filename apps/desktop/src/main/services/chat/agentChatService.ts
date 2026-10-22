@@ -2369,6 +2369,8 @@ type PersistedChatState = {
   pendingRestartNote?: string | null;
   /** See ManagedChatSession.backgroundLossWakePending. */
   backgroundLossWakePending?: true;
+  /** See ManagedChatSession.reportedRestartLossIds. */
+  reportedRestartLossIds?: string[];
   /**
    * Durable record that this chat was born from a replay-fork handoff. It
    * outlives the replay text itself, because the failure it repairs — the
@@ -3109,7 +3111,7 @@ type ClaudeRuntime = {
    * description). Its live `description` follows progress, so a lost agent is
    * named from here.
    */
-  subagentSpawnNameById?: Map<string, string>;
+  subagentSpawnNameById: Map<string, string>;
   scheduledWorkKindById: Map<string, AgentChatScheduledWorkKind>;
   scheduledWorkIdByTaskId: Map<string, string>;
   scheduledWorkIdByToolUseId: Map<string, string>;
@@ -3194,6 +3196,12 @@ function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   syncClaudeBackgroundWorkAnchor(runtime);
 }
 
+/** What restart recovery asks its caller to arm: the turn's resume, a lost-work wake, or nothing. */
+type RestartRecoveryArm = "resume" | "lost_work_wake" | null;
+
+/** Bound on `reportedRestartLossIds`; the newest are kept. */
+const REPORTED_RESTART_LOSS_IDS_LIMIT = 200;
+
 const CLAUDE_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
   "subagent",
   "agent",
@@ -3251,7 +3259,7 @@ function collectClaudeLostBackgroundWork(runtime: ClaudeRuntime): RestartCancell
     // the description it was spawned with.
     const label = shell
       ? subagent.command?.trim() || subagent.description
-      : runtime.subagentSpawnNameById?.get(subagent.taskId)
+      : runtime.subagentSpawnNameById.get(subagent.taskId)
         || subagent.description || subagent.workflowName || subagent.agentType || "subagent";
     out.push({ kind, label: label || kind });
   }
@@ -5157,6 +5165,13 @@ type ManagedChatSession = {
    * waiting for a report that will never come. Cleared once the wake is armed.
    */
   backgroundLossWakePending?: boolean;
+  /**
+   * Rows (`command:…` / `subagent:…`) a restart recovery already reported as
+   * lost. Their restart attribution stays "after the last finished turn" until
+   * a turn ends, so without this every later restart would report them again
+   * and arm another wake. Persisted, newest kept.
+   */
+  reportedRestartLossIds?: string[];
   /**
    * The in-process "re-run your lost background work" wake: `scheduled` until
    * it fires, then `dispatched` until a turn that is not that wake is prepared.
@@ -19638,6 +19653,7 @@ export function createAgentChatService(args: {
         : null,
       pendingRestartNote: managed.pendingRestartNote?.trim() ? managed.pendingRestartNote : null,
       ...(managed.backgroundLossWakePending ? { backgroundLossWakePending: true as const } : {}),
+      ...(managed.reportedRestartLossIds?.length ? { reportedRestartLossIds: managed.reportedRestartLossIds } : {}),
       ...(managed.claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
       ...(managed.transcriptReplayOrigin
         ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
@@ -20182,6 +20198,13 @@ export function createAgentChatService(args: {
           ? { pendingRestartNote: record.pendingRestartNote }
           : {}),
         ...(record.backgroundLossWakePending === true ? { backgroundLossWakePending: true as const } : {}),
+        ...(Array.isArray(record.reportedRestartLossIds)
+          ? {
+              reportedRestartLossIds: record.reportedRestartLossIds
+                .filter((id): id is string => typeof id === "string" && id.length > 0)
+                .slice(-REPORTED_RESTART_LOSS_IDS_LIMIT),
+            }
+          : {}),
         ...(claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
         ...(asyncQuestions?.length ? { asyncQuestions } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
@@ -21058,28 +21081,46 @@ export function createAgentChatService(args: {
     })();
   };
 
+  /**
+   * Repair a chat a restart cut off: close its orphaned turn, tell it what
+   * background work the dead process took with it (notice + restart note), and
+   * say what should be armed for it. The caller arms it
+   * (`armRestartRecovery`): a turn that is starting anyway arms nothing.
+   * Reach it through `runRestartRecoveryIfPending`, which owns the guards.
+   */
   const recoverDetachedChatAfterRestart = (
     managed: ManagedChatSession,
     unsettled: UnsettledParentTurn | null,
     transcriptEvents: AgentChatEventEnvelope[],
-    /**
-     * A turn is starting on this chat right now (see
-     * `recoverBeforeTurnStartIfPending`): it carries the restart note, so no
-     * resume or wake turn is armed.
-     */
-    options?: { turnStarting?: boolean },
-  ): void => {
-    const turnStarting = options?.turnStarting === true;
-    if (managed.restartRecoveryDone) return;
+    options?: {
+      excludeIds?: ReadonlySet<string>;
+      /**
+       * Copy only: a turn is starting and carries the note, so the notices say
+       * this turn is told rather than promising a resume or wake. What is armed
+       * is still the caller's decision.
+       */
+      announceThisTurn?: boolean;
+    },
+  ): RestartRecoveryArm => {
+    const announceThisTurn = options?.announceThisTurn === true;
+    if (managed.restartRecoveryDone) return null;
     managed.restartRecoveryDone = true;
     // Read before `reopen` clears the row's end time.
     const recent = cutOffRecently(sessionService.get(managed.session.id));
-    // Read before the orphan sweep closes those rows: what the transcript
-    // still shows running is exactly what the dead process took with it.
+    // Rows the transcript still shows running, plus rows the stale-run sweep
+    // closed for this restart: what the dead process took with it. Minus what
+    // an earlier recovery already reported (those rows keep their restart
+    // attribution until a turn finishes, so every later restart would count
+    // them again) and what the sweep left running on purpose.
+    const reported = new Set(managed.reportedRestartLossIds ?? []);
     const cancelled = collectRestartCancelledWork(mergeEnvelopeStreams(
       transcriptEvents,
       eventHistoryBySession.get(managed.session.id) ?? [],
-    ));
+    ), { excludeIds: new Set([...reported, ...(options?.excludeIds ?? [])]) });
+    if (cancelled.length > 0) {
+      for (const work of cancelled) if (work.id) reported.add(work.id);
+      managed.reportedRestartLossIds = [...reported].slice(-REPORTED_RESTART_LOSS_IDS_LIMIT);
+    }
     const note = buildRestartNote({ interruptedTurn: unsettled !== null, cancelled });
     // Merged, not replaced: a shutdown that ended this chat's agent process
     // may already have left a note naming work it stopped.
@@ -21091,8 +21132,7 @@ export function createAgentChatService(args: {
     managed.backgroundLossWakePending = false;
     if (unsettled) {
       const row = sessionService.get(managed.session.id);
-      const willContinue = !turnStarting
-        && continueAfterRestartEnabled()
+      const willContinue = continueAfterRestartEnabled()
         && recent
         && !row?.settledAt
         && !row?.archivedAt;
@@ -21102,9 +21142,11 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: willContinue
-          ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
-          : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
+        message: announceThisTurn
+          ? `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`
+          : willContinue
+            ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
+            : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
         turnId: unsettled.turnId,
       });
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
@@ -21122,8 +21164,7 @@ export function createAgentChatService(args: {
     let wakeForLostWork = false;
     if (lostAwaitedWork) {
       const row = sessionService.get(managed.session.id);
-      wakeForLostWork = !turnStarting
-        && continueAfterRestartEnabled() && recent && !row?.settledAt && !row?.archivedAt;
+      wakeForLostWork = continueAfterRestartEnabled() && recent && !row?.settledAt && !row?.archivedAt;
       // A shutdown that recorded the loss already named it in its own notice;
       // only work the transcript shows (a crash, or rows the stale-run sweep
       // closed) needs naming here.
@@ -21134,7 +21175,7 @@ export function createAgentChatService(args: {
           message: formatBackgroundLossNotice({
             cause: "brain_restart",
             lost: cancelled,
-            wake: wakeForLostWork ? "now" : "none",
+            wake: announceThisTurn ? "this_turn" : wakeForLostWork ? "now" : "none",
           }),
         });
       }
@@ -21145,8 +21186,14 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
-    if (unsettled && recent && !turnStarting) armRestartResume(managed);
-    else if (wakeForLostWork) {
+    if (unsettled && recent) return "resume";
+    return wakeForLostWork ? "lost_work_wake" : null;
+  };
+
+  /** Arm what `recoverDetachedChatAfterRestart` asked for. */
+  const armRestartRecovery = (managed: ManagedChatSession, arm: RestartRecoveryArm): void => {
+    if (arm === "resume") armRestartResume(managed);
+    else if (arm === "lost_work_wake") {
       armRestartResume(managed, {
         prompt: BACKGROUND_WORK_LOST_RESUME_PROMPT,
         reason: BACKGROUND_WORK_LOST_RESUME_REASON,
@@ -21155,44 +21202,60 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Restart recovery for a chat the stale-run sweep just closed rows in. The
-   * sweep already decided the chat is adoptable and its owner is gone, so this
-   * only checks that recovery has not run and no runtime here owns the chat.
-   * Unlike the turn-start path this arms the resume / lost-work wake, gated by
-   * "Continue chats after restarts" as usual.
-   */
-  const recoverAfterSweptStaleRows = (managed: ManagedChatSession): void => {
-    if (managed.restartRecoveryDone || managed.runtime || managed.deleted || managed.closed) return;
-    const events = readTranscriptEnvelopes(managed);
-    recoverDetachedChatAfterRestart(managed, findUnsettledParentTurn(managed, events), events);
-  };
-
-  /**
-   * Run a chat's pending restart recovery before a turn starts on it.
+   * The one way into restart recovery. Four callers reach a chat a restart
+   * cut off, whichever comes first:
+   *   • `load` — the loader, for a row already marked `detached`,
+   *   • `startup_sweep` — the startup pass over recent `detached` rows,
+   *   • `stale_rows_swept` — the stale-run sweep just closed rows a dead
+   *     process left running (the only path on a headless brain, whose dead
+   *     owner the rescan may never mark `detached`),
+   *   • `turn_start` — a turn arriving before any of those; it carries the
+   *     restart note, so nothing is armed for it.
    *
-   * Recovery normally runs once the dead brain's row is marked `detached`,
-   * minutes after a restart (the rescan delay). A message, wake or scheduled
-   * turn that arrives first would reopen the row, recovery would never run,
-   * and the agent would never hear what the restart cancelled. So the turn
-   * start folds it in: same notices and restart note (which this turn then
-   * carries), and no resume or wake of its own, since a turn is starting.
-   * Pending means: no runtime here, not yet recovered, and the row is
-   * `detached` or its runtime stamp names a brain that is gone.
+   * Guards, the same for all: recovery not run yet in this process, no runtime
+   * here, not deleted, and `chatAutoAdoptable` (dead or no owner, not yielding
+   * to the machine brain, account known here), so a dev or secondary brain on
+   * a shared home never recovers, or arms a resume for, a chat the machine
+   * brain owns. `closed` is not a guard: every `detached` row loads closed,
+   * and recovery is what reopens it (the sweep already skips closed chats).
+   * A turn start also needs the chat to look cut off: its row `detached`, or
+   * its runtime stamp naming a brain that is gone.
    */
-  const recoverBeforeTurnStartIfPending = (managed: ManagedChatSession): void => {
+  const runRestartRecoveryIfPending = (
+    managed: ManagedChatSession,
+    args: {
+      reason: "load" | "startup_sweep" | "stale_rows_swept" | "turn_start";
+      events?: AgentChatEventEnvelope[];
+      persisted?: PersistedChatState | null;
+      excludeIds?: ReadonlySet<string>;
+    },
+  ): void => {
     if (managed.restartRecoveryDone || managed.runtime || managed.deleted) return;
     const sessionId = managed.session.id;
-    const persisted = readPersistedState(sessionId);
-    const row = sessionService.get(sessionId);
-    const ownerGone = chatRuntimeOwnershipDecision(persisted?.runtimeOwner ?? null).verdict === "dead-owner";
-    if (row?.status !== "detached" && !ownerGone) return;
-    if (!chatAutoAdoptable(sessionId, persisted, { quiet: true })) return;
     try {
-      const events = readTranscriptEnvelopes(managed);
-      recoverDetachedChatAfterRestart(managed, findUnsettledParentTurn(managed, events), events, { turnStarting: true });
+      const persisted = args.persisted !== undefined ? args.persisted : readPersistedState(sessionId);
+      if (args.reason === "turn_start") {
+        const ownerGone = chatRuntimeOwnershipDecision(persisted?.runtimeOwner ?? null).verdict === "dead-owner";
+        if (sessionService.get(sessionId)?.status !== "detached" && !ownerGone) return;
+      }
+      if (!chatAutoAdoptable(sessionId, persisted, { quiet: args.reason !== "load" })) return;
+      const events = args.events ?? readTranscriptEnvelopes(managed);
+      // Rows whose delegate is still alive are not lost, on every path: the
+      // loader or the startup pass can reach the chat before the sweep does.
+      const excludeIds = new Set(args.excludeIds ?? []);
+      for (const id of staleRunSweep.liveDelegateRowIds(sessionId, events)) excludeIds.add(`subagent:${id}`);
+      const arm = recoverDetachedChatAfterRestart(
+        managed,
+        findUnsettledParentTurn(managed, events),
+        events,
+        { excludeIds, announceThisTurn: args.reason === "turn_start" },
+      );
+      if (args.reason !== "turn_start") armRestartRecovery(managed, arm);
     } catch (error) {
-      logger.warn("agent_chat.restart_recovery_before_turn_failed", {
+      logger.warn("agent_chat.restart_recovery_failed", {
         sessionId,
+        provider: managed.session.provider,
+        reason: args.reason,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -23144,8 +23207,16 @@ export function createAgentChatService(args: {
       const point = compactionSettingsFor(managed).atTokens;
       if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
     }
-    if (event.type === "subagent_started" && managed.runtime?.kind === "claude" && event.description?.trim()) {
-      (managed.runtime.subagentSpawnNameById ??= new Map()).set(event.taskId, event.description.trim());
+    if (managed.runtime?.kind === "claude") {
+      const spawnNames = managed.runtime.subagentSpawnNameById;
+      // First wins: a later `subagent_started` re-emits enriched snapshots,
+      // and the name is what the agent was asked to do (same rule as
+      // `collectRestartCancelledWork`).
+      if (event.type === "subagent_started" && event.description?.trim() && !spawnNames.has(event.taskId)) {
+        spawnNames.set(event.taskId, event.description.trim());
+      } else if (event.type === "subagent_result") {
+        spawnNames.delete(event.taskId);
+      }
     }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
@@ -27220,6 +27291,7 @@ export function createAgentChatService(args: {
       );
       runtime.taskToolInputByToolUseId.clear();
       runtime.subagentLabelById.clear();
+      runtime.subagentSpawnNameById.clear();
       runtime.subagentEffortById.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
@@ -27791,6 +27863,7 @@ export function createAgentChatService(args: {
       managed.pendingRestartNote = persisted.pendingRestartNote;
     }
     if (persisted?.backgroundLossWakePending === true) managed.backgroundLossWakePending = true;
+    if (persisted?.reportedRestartLossIds?.length) managed.reportedRestartLossIds = [...persisted.reportedRestartLossIds];
     if (persisted?.claudeFreshThreadPending === true) managed.claudeFreshThreadPending = true;
     for (const entry of persisted?.asyncQuestions ?? []) {
       managed.asyncQuestions.set(entry.itemId, {
@@ -27821,20 +27894,12 @@ export function createAgentChatService(args: {
     // same as "no runtime". A second brain on the same ADE home sees every
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
-    if (row.status === "detached" && chatAutoAdoptable(sessionId, persisted)) {
-      try {
-        recoverDetachedChatAfterRestart(
-          managed,
-          findUnsettledParentTurn(managed, transcriptHydration.transcriptEvents),
-          transcriptHydration.transcriptEvents,
-        );
-      } catch (error) {
-        logger.warn("agent_chat.restart_recovery_failed", {
-          sessionId,
-          provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    if (row.status === "detached") {
+      runRestartRecoveryIfPending(managed, {
+        reason: "load",
+        events: transcriptHydration.transcriptEvents,
+        persisted,
+      });
     }
     // Any status, not only `detached`: a clean shutdown can also end the
     // process mid-steer.
@@ -44859,6 +44924,7 @@ export function createAgentChatService(args: {
     runtime.seenBackgroundTaskIds.clear();
     runtime.stoppingBackgroundTaskIds.clear();
     runtime.backgroundTaskTitleById.clear();
+    runtime.subagentSpawnNameById.clear();
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
     runtime.activeProviderCronIds.clear();
@@ -46082,6 +46148,7 @@ export function createAgentChatService(args: {
       detachedToolCalls: new Map(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
+      subagentSpawnNameById: new Map(),
       subagentEffortById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
@@ -52578,8 +52645,8 @@ export function createAgentChatService(args: {
     // the Codex goal follow-up, `runSessionTurn`.
     assertNoRerunInFlight(managed, rerunToken);
     // A turn that beats restart recovery to this chat runs it first, so the
-    // restart note reaches this turn (see `recoverBeforeTurnStartIfPending`).
-    recoverBeforeTurnStartIfPending(managed);
+    // restart note reaches this turn (see `runRestartRecoveryIfPending`).
+    runRestartRecoveryIfPending(managed, { reason: "turn_start" });
     // Any turn other than the lost-work wake ends that wake's chain; the next
     // loss is a new one and may wake the chat again.
     if (metadata?.hostContinuation?.reason !== "background_work_lost") managed.backgroundLossWakeState = undefined;
@@ -68147,7 +68214,10 @@ export function createAgentChatService(args: {
     // The sweep is often the first (on a headless brain, the only) code that
     // reaches an untouched chat after a restart: run its restart recovery so a
     // chat that sat waiting on background work gets its notice, note and wake.
-    onSweptStaleRows: (managed) => recoverAfterSweptStaleRows(managed),
+    onSweptStaleRows: (managed, swept) => runRestartRecoveryIfPending(managed, {
+      reason: "stale_rows_swept",
+      excludeIds: new Set(swept.leftRunningIds.map((id) => `subagent:${id}`)),
+    }),
     logger,
   });
   // Autonomous scheduling is off under test: a background pass firing partway
@@ -68185,11 +68255,10 @@ export function createAgentChatService(args: {
         if (!loaded) {
           // Loading is what recovers it; the loader checks runtime ownership.
           ensureManagedSession(row.id);
-        } else if (!loaded.runtime && !loaded.deleted && chatAutoAdoptable(row.id, undefined, { quiet: true })) {
+        } else {
           // Loaded while its row still read "running" (the dead owner is only
           // detected by the rescan), so the loader never recovered it.
-          const events = readTranscriptEnvelopes(loaded);
-          recoverDetachedChatAfterRestart(loaded, findUnsettledParentTurn(loaded, events), events);
+          runRestartRecoveryIfPending(loaded, { reason: "startup_sweep" });
         }
       } catch (error) {
         logger.warn("agent_chat.restart_recovery_sweep_failed", {

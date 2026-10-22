@@ -8,6 +8,7 @@ import { resolveCurrentCliEntry } from "../lib/cliDelegation";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
+import { pendingSettingsAfterBackgroundShortLabel } from "../../../desktop/src/shared/chatTurnStatus";
 import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
@@ -5888,6 +5889,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     contextTokens: compactFirstState.offer.contextTokens,
     estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
   } : null, [compactFirstState]);
+  // An effort / fast-mode change the host holds until the chat's background
+  // work ends (desktop shows the same "Effort pending" chip in the composer).
+  const activePendingSettings = activeSession?.pendingSettingsAfterBackground;
+  const footerPendingSettingsLabel = useMemo(
+    () => activePendingSettings?.length ? pendingSettingsAfterBackgroundShortLabel(activePendingSettings) : null,
+    [activePendingSettings],
+  );
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
@@ -18933,6 +18941,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           multiViewMap={footerMultiViewMap}
           workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
           compactFirst={compactFirstFooter}
+          pendingSettingsLabel={footerPendingSettingsLabel}
         />
           </Box>
           {rightPaneVisible ? (

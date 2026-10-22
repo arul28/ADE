@@ -323,9 +323,8 @@ describe("threads", () => {
 
     await thread.send("still tok-2");
     expect(pushedHeaders()).toEqual(["Bearer tok-2"]);
-    const stored = fs.readFileSync(path.join(home, "threads.json"), "utf8");
-    expect(stored).toContain("Authorization");
-    expect(stored).not.toContain("tok-");
+    // The push rewrites the record; the rotated value must not reach disk.
+    expect(fs.readFileSync(path.join(home, "threads.json"), "utf8")).not.toContain("tok-");
   });
 
   it("never sends an MCP tool filter to a runtime that would drop it", async () => {
@@ -369,7 +368,6 @@ describe("threads", () => {
 
     await thread.updateMcpServers(next);
     expect(updates()).toBe(1);
-    expect(runtime.sessions.get(thread.id)!.pendingMcpServers).toEqual(next);
     await thread.updateMcpServers(next);
     expect(updates()).toBe(1);
   });

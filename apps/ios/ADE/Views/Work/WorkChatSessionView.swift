@@ -273,6 +273,9 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// `pending_input_resolved` receipt — see `WorkPendingInputQueue.resolved(_:)`.
   let pendingInputItemId: String?
   let activeBackgroundTaskCount: Int?
+  /// "Effort pending" / "Fast mode pending" / "Settings pending" while the host
+  /// holds a setting change until background work ends; nil otherwise.
+  let pendingSettingsLabel: String?
   /// Live usage-limit resume state, already normalized (and back-filled from the
   /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
   /// one and only reason the resume pill renders.
@@ -319,6 +322,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.parentTitle = nil
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
+      self.pendingSettingsLabel = nil
       self.usageLimitResume = nil
       self.crossMachineHandoff = nil
       self.crossMachineBatchApproval = nil
@@ -362,6 +366,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.parentTitle = parentTitle
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
+    self.pendingSettingsLabel = workPendingSettingsAfterBackgroundShortLabel(summary.pendingSettingsAfterBackground)
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
@@ -3081,6 +3086,9 @@ private struct WorkChatComposerDraftInput: View {
       // taking width from the send row.
       if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
         WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
+      }
+      if !isDictating, let pendingSettingsLabel = chatSummary.pendingSettingsLabel {
+        WorkPendingSettingsChip(label: pendingSettingsLabel)
       }
 
       ADEGlassComposerCard(

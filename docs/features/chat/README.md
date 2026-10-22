@@ -1556,43 +1556,48 @@ reboot — the turn cannot be saved, but the chat can continue. With **Continue
 chats after restarts** on (Settings → Chat, the default; config
 `ai.chat.continueAfterRestart`):
 
-- On load, `recoverDetachedChatAfterRestart` closes the orphaned turn as
-  before, then `armRestartResume` arms one durable "continue" row
-  (`RESTART_RESUME_PROMPT`). It uses the same deterministic id and
-  `update_restart` tag as an update resume, so a chat an update already armed
-  is not armed twice, and the user typing into the chat cancels it.
+- `recoverDetachedChatAfterRestart` closes the orphaned turn and returns what
+  to arm; for an orphaned turn that is one durable "continue" row
+  (`armRestartResume`, `RESTART_RESUME_PROMPT`). It uses the same deterministic
+  id and `update_restart` tag as an update resume, so a chat an update already
+  armed is not armed twice, and the user typing into the chat cancels it.
 - Settled and archived chats stay asleep. A chat whose turn had already ended,
   or that the user stopped, has no unsettled turn and is not resumed — unless it
   was waiting on background work the restart (or the shutdown before it)
-  stopped: non-monitor work the transcript still showed running, or the
-  persisted `backgroundLossWakePending` flag. That chat gets a notice naming
-  the work and the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`,
-  so it re-runs what it still needs instead of waiting for a report that cannot
-  come.
-- Ordering: the stale-run sweep reaches a dead brain's chat about 5 s after
-  start, but the row only turns `detached` (and recovery runs) after the
-  rescan, minutes later. So `collectRestartCancelledWork` also counts rows
-  closed after the last finished turn with the restart attribution
-  (`stopReason` = `CHAT_STOP_REASON_BRAIN_RESTARTED`), whatever summary the
-  sweep gave them. Agents are named by their `subagent_started` description,
-  not their latest progress text.
-- A turn that reaches the chat before recovery does (a message, a wake,
-  scheduled work) runs that recovery first (`recoverBeforeTurnStartIfPending`
-  in `prepareSendMessage`): pending means no runtime here, not yet recovered,
-  and the row is `detached` or its runtime stamp names a brain that is gone.
-  The notices and restart note land as usual and this turn carries the note;
-  no resume or wake is armed, since a turn is already starting.
-- A chat nobody touches is recovered by the stale-run sweep: when its timer
-  pass (about 5 s after start, then every minute) closes rows a dead process
-  left running in a chat with no runtime here, it calls
-  `recoverAfterSweptStaleRows`, which runs restart recovery with the usual
-  resume / lost-work wake. This does not wait for the row to be marked
-  `detached`. On a headless brain that may never happen: the dead brain's
-  `runtime_processes` row is gone after it stops, so the startup rescan does
-  not treat its pid as a known dead owner.
-- Recovery is lazy (a detached chat is repaired when it is first loaded), so a
-  startup sweep loads the chats a restart cut off in the last 6 hours (at most
-  25, only chats this brain may adopt) and each recovers and resumes on its own.
+  stopped: non-monitor work in `collectRestartCancelledWork`, or the persisted
+  `backgroundLossWakePending` flag. That chat gets a notice naming the work and
+  the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
+  what it still needs instead of waiting for a report that cannot come.
+- Every entry goes through `runRestartRecoveryIfPending`, which holds the
+  guards (not recovered yet in this process, no runtime here, not deleted,
+  `chatAutoAdoptable`: owner gone, not yielding to the machine brain, account
+  known here) and logs failures by entry. The entries, whichever reaches the
+  chat first:
+  - **The stale-run sweep.** Its pass about 5 s after start (then every
+    minute) closes rows a dead process left running in a chat with no runtime
+    here, then runs recovery for that chat. This is what recovers an untouched
+    chat. It does not wait for the row to be marked `detached`, which on a
+    headless brain may never happen: the dead brain's `runtime_processes` row
+    is gone after it stops, so the startup rescan does not see its pid as a
+    known dead owner.
+  - **Load and the startup pass**, for rows already marked `detached` (the
+    pass covers the last 6 hours, at most 25 chats).
+  - **A turn start** (`prepareSendMessage`: a message, a wake, scheduled
+    work) on a chat whose row is `detached` or whose runtime stamp names a
+    gone brain. The notices and restart note land, worded "the agent is told
+    on this turn", and this turn carries the note; nothing is armed, since a
+    turn is already starting.
+- On every path, rows the sweep leaves running on purpose (a delegate that is
+  still alive: a live child chat, or a tracked CLI child, per
+  `staleRunSweep.liveDelegateRowIds`) are not reported as lost.
+- Because the sweep closes rows before recovery reads them,
+  `collectRestartCancelledWork` counts rows closed after the last finished turn
+  with a restart attribution (`stopReason` "the ADE brain restarted" or
+  "another ADE brain took over this chat"), whatever summary the sweep gave
+  them. Agents are named by their `subagent_started` description, not their
+  latest progress text. What a recovery reported is remembered
+  (`reportedRestartLossIds`, persisted), so a later restart before the next
+  finished turn does not report it, or wake for it, again.
 - The chat's notice says what happens: "The agent picks up where it stopped"
   with the setting on, "retry or continue when ready" with it off.
 

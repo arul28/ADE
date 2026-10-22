@@ -331,7 +331,7 @@ describe("Claude query lifecycle", () => {
   // A chat waiting on background work it then loses must be told once, and
   // only once: the wake turn starts the work again, and if a second restart
   // loses that too, waking again would loop for as long as restarts happen.
-  it("wakes a chat once when a restart by name loses the background work it waits on", async () => {
+  it("wakes once, not again when a second restart loses the work the wake turn restarted", async () => {
     const { service, events, session } = await createDrivenSession([
       {
         type: "system",
@@ -362,9 +362,11 @@ describe("Claude query lifecycle", () => {
 
     await service.restartSession({ sessionId: session.id });
     await vi.waitFor(() => expect(lossNotices()).toHaveLength(2));
-    // A wake is armed on a zero-delay timer; let any due one fire before counting.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The second loss's notice is the receipt of its wake decision, written
+    // synchronously when the loss is reported: no wake, the next turn is told.
+    expect(lossNotices()[1]?.event).toMatchObject({
+      message: expect.stringContaining("The agent is told on its next turn."),
+    });
     expect(wakeTurns()).toHaveLength(1);
   });
 
