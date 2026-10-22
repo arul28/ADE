@@ -42,7 +42,7 @@ import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
 
 const SMART_BALANCE_HINT =
-  "On: each new chat goes to the account that needs the most room spent before its weekly reset, after counting the chats already running there, so no account's room expires unused and no account is stacked with more work than it can finish. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
+  "On: each new chat goes to the account furthest behind the pace needed to use its weekly room before it resets, after counting the chats already running there, so no account's room expires unused and no account is stacked with more work than it can finish. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
 const AUTO_START_HINT =
   "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
 
@@ -419,7 +419,7 @@ export function ProviderAccountsPanel({
             {showSmartBalance ? (
               <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
                 {settings.smartBalance
-                  ? "New chats go to the account that needs the most room spent before its reset."
+                  ? "New chats go to the account furthest behind the pace needed to use its weekly room before it resets."
                   : "New chats use the account marked New chats."}
               </span>
             ) : null}

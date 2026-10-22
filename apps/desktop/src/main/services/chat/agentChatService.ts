@@ -10907,26 +10907,40 @@ class ScheduledWakeRetryableRefusalError extends Error {
  * not only the one whose settings page asked. A service registers its load
  * reader when it starts and drops it when it shuts down.
  */
-const machineChatLoadProviders = new Set<() => Map<string, ProviderAccountChatLoad>>();
+type MachineChatLoadReader = {
+  read: () => Map<string, ProviderAccountChatLoad>;
+  logger: Pick<Logger, "warn">;
+};
+const machineChatLoadProviders = new Set<MachineChatLoadReader>();
 
 function registerProviderAccountChatLoad(
-  provider: () => Map<string, ProviderAccountChatLoad>,
+  read: () => Map<string, ProviderAccountChatLoad>,
+  logger: Pick<Logger, "warn">,
 ): () => void {
-  machineChatLoadProviders.add(provider);
+  const reader = { read, logger };
+  machineChatLoadProviders.add(reader);
   return () => {
-    machineChatLoadProviders.delete(provider);
+    machineChatLoadProviders.delete(reader);
   };
 }
 
 /** Union every live chat service's load. Keys are `<provider>:<instanceId>`. */
 export function listMachineProviderAccountChatLoad(): Map<string, ProviderAccountChatLoad> {
   const merged = new Map<string, { runningWeight: number; idle: AccountBalanceIdleChat[] }>();
-  for (const provider of machineChatLoadProviders) {
-    for (const [accountKey, load] of provider()) {
-      const current = merged.get(accountKey) ?? { runningWeight: 0, idle: [] };
-      current.runningWeight += load.runningWeight;
-      current.idle.push(...load.idle);
-      merged.set(accountKey, current);
+  for (const reader of machineChatLoadProviders) {
+    try {
+      for (const [accountKey, load] of reader.read()) {
+        const current = merged.get(accountKey) ?? { runningWeight: 0, idle: [] };
+        current.runningWeight += load.runningWeight;
+        current.idle.push(...load.idle);
+        merged.set(accountKey, current);
+      }
+    } catch (error) {
+      // One project's closed database must not erase every other project's
+      // load; the healthy readers still merge, and this line reaches Sentry.
+      reader.logger.warn("agent_chat.provider_account_chat_load_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return merged;
@@ -63864,7 +63878,7 @@ export function createAgentChatService(args: {
     return byAccountKey;
   }
 
-  const unregisterProviderAccountChatLoad = registerProviderAccountChatLoad(listProviderAccountChatLoad);
+  const unregisterProviderAccountChatLoad = registerProviderAccountChatLoad(listProviderAccountChatLoad, logger);
 
   const listSessions = async (
     laneId?: string,
