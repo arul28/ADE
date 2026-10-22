@@ -55,6 +55,8 @@ export type AppleDeviceDuoProps = {
   activeScreenId?: number | null | undefined;
   /** How the phone is held (`portrait`, `landscape-left`, …), as the simulator reports it. */
   physicalOrientation?: string | null | undefined;
+  /** Tent's Table Mode: the phone stands on its edges. */
+  tableMode?: boolean | null | undefined;
 };
 
 /** The model id a procedural Duo body reports. */
@@ -547,6 +549,7 @@ function createViewer(
           angle: duo.angle,
           activeScreenId: duo.activeScreenId ?? null,
         });
+        v68.duo?.setPhysicalOrientation?.(duo.physicalOrientation ?? null, duo.tableMode === true);
         installBody(v68);
         paintDisplay();
         hooks.onReady({ modelId: v68.modelId });
@@ -646,7 +649,7 @@ function createViewer(
       } else if (body?.duo) {
         body.duo.setHinge(duo.angle, duo.lowerFlat);
         body.duo.setActivePanel?.(duo.activeScreenId ?? null);
-        body.duo.setPhysicalOrientation?.(duo.physicalOrientation ?? null);
+        body.duo.setPhysicalOrientation?.(duo.physicalOrientation ?? null, duo.tableMode === true);
         applyPose();
         // Folding changes the phone's shape: frame it again.
         fitCamera();
@@ -1207,6 +1210,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.duo?.model,
     props.duo?.activeScreenId,
     props.duo?.physicalOrientation,
+    props.duo?.tableMode,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

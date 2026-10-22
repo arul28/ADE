@@ -1137,6 +1137,11 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   two landscapes) leaves the pixel size unchanged and reports
   verification already-on-axis, which does not confirm the exact side.
 
+  On an iPhone Duo the phone turns the way Device Hub turns it, and the answer
+  is read from the live panel (posture.displayOrientation in the result). The
+  inner display takes all four orientations, upside down included; held
+  portrait, its picture is landscape. The cover's Home Screen is portrait-only.
+
   Flags:
     --orientation <o>      Orientation; also accepted as the next positional.
     --device, --udid <id>  Simulator device.
@@ -1191,8 +1196,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   posture: `${ADE_BANNER}
   Apple device: posture (iPhone Duo)
 
-  Reads a foldable simulator's hinge angle, physical orientation, Table Mode
-  and active panel (activeScreenId 1 is the cover, 3 the inner display).
+  Reads a foldable simulator's hinge angle, physical orientation, Table Mode,
+  active panel (activeScreenId 1 is the cover, 3 the inner display) and how
+  that panel's picture sits (displayOrientation).
 
     $ ade apple posture --text
 

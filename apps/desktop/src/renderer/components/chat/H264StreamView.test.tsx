@@ -272,6 +272,32 @@ describe("H264StreamView over a loopback body", () => {
     });
     expect(dials).toHaveLength(5);
   });
+  it("redials for a keyframe when a still stream sends none, and stops once a frame is drawn", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const { dials } = installFetch();
+    render(<H264StreamView source={{ kind: "http", url: "http://127.0.0.1:51234/ios-simulator-video", bearerToken: "t" }} />);
+    const settle = () => vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(dials).toHaveLength(1);
+
+    // A config, then a delta the new decoder cannot use, then nothing: a
+    // still screen sends no next keyframe, so the player has to ask again.
+    const config = attachBytes().subarray(0, attachBytes().byteLength - (IOS_VIDEO_RECORD_HEADER_BYTES + 3));
+    dials[0]!.write(config);
+    dials[0]!.write(framed(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([4]), false));
+    await settle();
+    expect(decoders()[0]?.decode).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(dials).toHaveLength(2);
+
+    // The new reader gets the host's keyframe and draws; nothing redials after.
+    dials[1]!.write(attachBytes());
+    await settle();
+    decoders().at(-1)!.drawFrame();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(dials).toHaveLength(2);
+    vi.useRealTimers();
+  });
 });
 
 describe("H264StreamView over the brain's relay socket", () => {

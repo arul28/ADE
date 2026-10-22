@@ -2518,7 +2518,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         deviceUdid: "device-1",
         laneId: "lane-a",
       });
-      expect(helper.sent).toEqual([
+      expect(helper.sent.filter((command) => command.type === "orientation")).toEqual([
         expect.objectContaining({ type: "orientation", udid: "device-1", value: 4 }),
       ]);
       expect(rotated).toMatchObject({
@@ -2596,6 +2596,92 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
       platformSpy.mockRestore();
+    }
+  });
+
+  /*
+   * An iPhone Duo is judged from what the guest says its live panel shows,
+   * never from the framebuffer read (which names the cover whatever is on,
+   * and the inner panel's framebuffer never changes shape).
+   */
+  it("judges a foldable's rotation from its live panel, including a half turn that lands late", async () => {
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-duo-rotate-`);
+    const run = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    // The fake Duo: how it is held (CoreDevice's names), the live panel, and
+    // the picture the app on it shows, which can lag the turn.
+    const physical: Record<number, string> = { 1: "portrait", 2: "pud", 3: "landscape-left", 4: "landscape-right" };
+    const innerPicture: Record<string, string> = {
+      portrait: "landscape_left", "landscape-right": "portrait_upside_down", pud: "landscape_right", "landscape-left": "portrait",
+    };
+    const duo = { held: "portrait", screenId: 3, picture: "landscape_left", adopts: true, lagReads: 0 };
+    let pending: string | null = null;
+    const helper = fakeSimHelper({
+      onSend: (command) => {
+        if (command.type === "orientation") {
+          duo.held = physical[command.value as number]!;
+          if (duo.adopts) pending = duo.screenId === 3 ? innerPicture[duo.held]! : duo.picture;
+          return { applied: true };
+        }
+        if (command.type === "posture-get") {
+          if (pending && duo.lagReads-- <= 0) {
+            duo.picture = pending;
+            pending = null;
+          }
+          return {
+            supported: true,
+            angle: duo.screenId === 3 ? 180 : 0,
+            orientation: duo.held,
+            activeScreenId: duo.screenId,
+            displays: [{ screenId: duo.screenId, active: true, orientation: duo.picture }],
+          };
+        }
+        return {};
+      },
+    });
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    const rotate = async (orientation: "portrait" | "portrait-upside-down" | "landscape-left" | "landscape-right") => {
+      const answer = service.rotate({ orientation, deviceUdid: "device-1", laneId: "lane-a" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      return answer;
+    };
+
+    try {
+      // Held portrait the inner picture runs wide; landscape-left turns it.
+      const turned = await rotate("landscape-left");
+      expect(turned).toMatchObject({ applied: true, verification: "rotated", reason: null });
+      expect(turned.posture?.displayOrientation).toBe("portrait-upside-down");
+
+      // The other landscape keeps the picture's axis and lands a few reads
+      // late: the answer waits for it rather than reporting the old picture.
+      duo.lagReads = 3;
+      const halfTurn = await rotate("landscape-right");
+      expect(halfTurn).toMatchObject({ applied: true, verification: "rotated" });
+      expect(halfTurn.posture?.displayOrientation).toBe("portrait");
+
+      // On the cover an app that keeps portrait refuses a landscape turn.
+      Object.assign(duo, { screenId: 1, held: "portrait", picture: "portrait", adopts: false, lagReads: 0 });
+      const refused = await rotate("landscape-left");
+      expect(refused).toMatchObject({ applied: false, verification: "not-adopted", reason: "APPLE_ROTATE_NOT_ADOPTED" });
+      expect(refused.detail).toMatch(/cover/i);
+
+      // None of it read the framebuffer, which cannot see either panel turn.
+      expect(run.mock.calls.some(([, commandArgs]) => (commandArgs as string[]).includes("screenshot"))).toBe(false);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 
