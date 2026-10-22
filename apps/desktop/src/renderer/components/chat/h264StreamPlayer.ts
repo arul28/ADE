@@ -69,9 +69,12 @@ export const MAX_DECODE_QUEUE = 1;
 /**
  * How long a dialled stream may keep sending delta frames the picture cannot
  * use (it is waiting for a keyframe) before it redials. The host sends a
- * keyframe when a reader attaches; a still screen sends no other.
+ * keyframe when a reader attaches; a still screen sends no other. Each redial
+ * that does not get a frame drawn doubles the wait, up to the cap: on the
+ * simulator a redial rebuilds the shared encoder for every reader.
  */
 const KEYFRAME_WAIT_REDIAL_MS = 1_000;
+const KEYFRAME_WAIT_REDIAL_MAX_MS = 8_000;
 
 type DecodedFrame = { displayWidth: number; displayHeight: number; close: () => void };
 
@@ -324,8 +327,28 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
    * wrong with the simulator · Decoding error." over a device that was fine.
    */
   let failures: number[] = [];
-  /** When the picture started waiting for a keyframe while deltas kept coming. */
-  let keyframeWaitSince: number | null = null;
+  /**
+   * The redial armed when the picture starts waiting for a keyframe, so a
+   * stream that goes quiet mid-wait still asks again. Cleared by a delivered
+   * record, a new connection or config, and stop.
+   */
+  let keyframeRedial: ReturnType<typeof setTimeout> | null = null;
+  /** The current wait before a keyframe redial; reset when a frame is drawn. */
+  let keyframeRedialMs = KEYFRAME_WAIT_REDIAL_MS;
+  const clearKeyframeRedial = (): void => {
+    if (keyframeRedial) clearTimeout(keyframeRedial);
+    keyframeRedial = null;
+  };
+  // Only a dialled source can ask again: pushed records cannot ask for a keyframe.
+  const armKeyframeRedial = (): void => {
+    if (keyframeRedial || source.kind === "push") return;
+    keyframeRedial = setTimeout(() => {
+      keyframeRedial = null;
+      if (stopped) return;
+      keyframeRedialMs = Math.min(keyframeRedialMs * 2, KEYFRAME_WAIT_REDIAL_MAX_MS);
+      connect();
+    }, keyframeRedialMs);
+  };
 
   /**
    * Whether the decoder is behind the stream: it still holds more chunks than
@@ -360,6 +383,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
         onDimensions?.({ width: frame.displayWidth, height: frame.displayHeight });
       }
       context.drawImage(frame as unknown as CanvasImageSource, 0, 0);
+      keyframeRedialMs = KEYFRAME_WAIT_REDIAL_MS;
       // Playing is a drawn frame, not an accepted chunk: an encoded chunk
       // says the decoder took the bytes, and a decoder that then errors out
       // would still have claimed the picture was up.
@@ -436,6 +460,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
   const consume = (record: IosSimVideoRecord): void => {
     if (record.kind === "config") {
       lastConfig = record;
+      clearKeyframeRedial();
       buildDecoder(record);
       gate.reset();
       if (record.width && record.height) {
@@ -449,17 +474,12 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
     // Sampled before anything this turn is submitted, keyframes included.
     const behind = decoderBehind(decoder);
     if (!gate.shouldDeliver(record.keyframe, record.seq)) {
-      // Deltas the picture cannot use. A dialled source asks again rather
-      // than wait for a keyframe that a still screen never sends.
-      const now = Date.now();
-      keyframeWaitSince ??= now;
-      if (source.kind !== "push" && now - keyframeWaitSince >= KEYFRAME_WAIT_REDIAL_MS) {
-        keyframeWaitSince = null;
-        connect();
-      }
+      // Deltas the picture cannot use. Ask again rather than wait for a
+      // keyframe that a still screen never sends.
+      armKeyframeRedial();
       return;
     }
-    keyframeWaitSince = null;
+    clearKeyframeRedial();
     // Newest frame wins: a decoder behind the stream paints where the pointer
     // WAS, so a delta that would queue behind older ones is skipped. Skipping
     // one delta breaks the reference chain of every delta after it — decoding
@@ -467,6 +487,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
     // the picture until the next keyframe. A keyframe is always decoded.
     if (!record.keyframe && behind) {
       gate.requireKeyframe();
+      armKeyframeRedial();
       return;
     }
     timestampUs += 33_333;
@@ -480,6 +501,8 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
   const connect = (): void => {
     if (source.kind === "push") return;
     connection?.abort();
+    // A new connection waits for its own keyframe from now.
+    clearKeyframeRedial();
     const abort = new AbortController();
     connection = abort;
     const current = (): boolean => !stopped && connection === abort;
@@ -535,6 +558,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
       connection = null;
       unsubscribe?.();
       unsubscribe = null;
+      clearKeyframeRedial();
       closeDecoder();
     },
   };

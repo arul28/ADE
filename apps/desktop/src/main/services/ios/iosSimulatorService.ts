@@ -24,7 +24,6 @@ import type {
   AppleRunTestsResult,
   AppleDeviceListResult,
   AppleDeviceOrientation,
-  AppleDevicePosture,
   AppleFrameArgs,
   AppleFrameResult,
   AppleHardwareButtonName,
@@ -122,8 +121,6 @@ import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
-  APPLE_DUO_COVER_SCREEN_ID,
-  APPLE_DUO_INNER_SCREEN_ID,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
   APPLE_ROTATE_SEND_FAILED_CODE,
   APPLE_ROTATE_UNMEASURABLE_CODE,
@@ -174,6 +171,7 @@ import {
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
+import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 
@@ -225,21 +223,6 @@ const HELPER_ORIENTATION_VALUE: Record<AppleDeviceOrientation, number> = {
 
 function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonName {
   return (APPLE_HARDWARE_BUTTONS as readonly string[]).includes(value);
-}
-
-function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
-  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
-}
-
-/**
- * Portrait and upside-down are one axis; the two landscapes are the other.
- *
- * The axis is all the framebuffer can tell you, because a 180-degree turn
- * inside one axis produces exactly the same pixel geometry. Naming that limit
- * here keeps `rotate` from pretending otherwise.
- */
-function appleOrientationAxis(orientation: AppleDeviceOrientation): "portrait" | "landscape" {
-  return orientation === "landscape-left" || orientation === "landscape-right" ? "landscape" : "portrait";
 }
 
 function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
@@ -5907,82 +5890,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   });
 
   /**
-   * A foldable turns through CoreDevice (the helper's `orientation` picks
-   * that path for a hinged device), and the guest reports how the live
-   * panel's picture sits after it. That report is the measurement here: the
-   * framebuffer read the rigid path uses names the cover panel whatever is
-   * on, and the inner panel's framebuffer never changes shape.
-   */
-  const rotateFoldable = async (
-    deviceUdid: string,
-    orientation: AppleDeviceOrientation,
-    value: number,
-    before: AppleDevicePosture,
-  ): Promise<AppleRotateResult> => {
-    const base = { orientation, frameBefore: null, frameAfter: null };
-    const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
-    if (payload.applied !== true) {
-      return {
-        ...base,
-        applied: false,
-        verification: "send-failed",
-        reason: APPLE_ROTATE_SEND_FAILED_CODE,
-        detail: "The simulator helper could not turn this foldable.",
-        posture: before,
-      };
-    }
-    // Both panels' framebuffers are portrait, and the inner one is mounted a
-    // quarter turn: held portrait, its picture runs landscape.
-    const pictureAxis = (posture: AppleDevicePosture): "portrait" | "landscape" | null => (
-      posture.displayOrientation ? appleOrientationAxis(posture.displayOrientation) : null
-    );
-    const wantedAxis = (posture: AppleDevicePosture): "portrait" | "landscape" => {
-      const axis = appleOrientationAxis(orientation);
-      if (posture.activeScreenId !== APPLE_DUO_INNER_SCREEN_ID) return axis;
-      return axis === "portrait" ? "landscape" : "portrait";
-    };
-    const deadline = Date.now() + APPLE_ROTATE_SETTLE_TIMEOUT_MS;
-    let after = before;
-    for (;;) {
-      await delay(200);
-      after = await duo.readPosture(deviceUdid).catch(() => after);
-      if (pictureAxis(after) === wantedAxis(after)) {
-        const already = pictureAxis(before) === wantedAxis(before) && before.displayOrientation === after.displayOrientation;
-        return {
-          ...base,
-          applied: true,
-          verification: already ? "already-on-axis" : "rotated",
-          reason: null,
-          detail: null,
-          posture: after,
-        };
-      }
-      if (Date.now() >= deadline) break;
-    }
-    if (!pictureAxis(after)) {
-      return {
-        ...base,
-        applied: false,
-        verification: "unmeasurable",
-        reason: APPLE_ROTATE_UNMEASURABLE_CODE,
-        detail: "The phone turned, but the simulator did not say how its screen sits, so nothing is confirmed.",
-        posture: after,
-      };
-    }
-    const cover = after.activeScreenId === APPLE_DUO_COVER_SCREEN_ID;
-    return {
-      ...base,
-      applied: false,
-      verification: "not-adopted",
-      reason: APPLE_ROTATE_NOT_ADOPTED_CODE,
-      detail: cover
-        ? "The phone turned, and the cover screen stayed as it was. The cover's Home Screen is portrait-only; open an app that rotates, or unfold the phone."
-        : "The phone turned, and the app on the inner screen kept its own orientation.",
-      posture: after,
-    };
-  };
-
-  /**
    * Set the device orientation, and then go and look.
    *
    * The helper's `orientation` command answers `true` when its GSEvent reached
@@ -6013,10 +5920,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(rotateArgs);
     const deviceUdid = await resolveControlDeviceUdid(rotateArgs.deviceUdid, runtime);
     const value = HELPER_ORIENTATION_VALUE[rawOrientation];
-    const wantedAxis = appleOrientationAxis(rawOrientation);
+    const wantedAxis = appleOrientationFamily(rawOrientation);
     return enqueueControl("rotate", async () => {
-      const postureBefore = await duo.readPosture(deviceUdid).catch(() => null);
-      if (postureBefore?.supported) return rotateFoldable(deviceUdid, rawOrientation, value, postureBefore);
+      const postureBefore = await duo.foldablePosture(deviceUdid, "apple.rotate_posture_unreadable");
+      if (postureBefore) return duo.rotate(deviceUdid, rawOrientation, value, postureBefore, APPLE_ROTATE_SETTLE_TIMEOUT_MS);
       const frameBefore = await readSimulatorFramebufferGeometry(deviceUdid);
       const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };

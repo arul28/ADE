@@ -103,9 +103,11 @@ export function nearestAppleDuoStance(angle: number): AppleDuoStanceId {
 /**
  * The named posture the phone is in, from what the simulator reports.
  *
- * The angle alone cannot tell Laptop from Book (both fold to 90°); how the
- * phone is held does: sideways is a laptop, upright a book. Tent is its own
- * Table Mode. Without a report this falls back to the nearest angle.
+ * Tent is its own Table Mode. Otherwise the angle picks the nearest of
+ * Closed, the 90° fold and Open (a custom angle reads as its closest label,
+ * as `nearestAppleDuoStance` does), and how the phone is held tells the two
+ * 90° poses apart: sideways is a laptop, upright a book. Without a report of
+ * the hold, the 90° fold reads as Laptop.
  */
 export function appleDuoStanceFor(input: {
   angle: number;
@@ -113,9 +115,12 @@ export function appleDuoStanceFor(input: {
   tableMode: boolean;
 }): AppleDuoStanceId {
   if (input.tableMode) return "tent";
-  if (input.angle <= 5) return "closed";
-  if (input.angle >= 175 || input.held === null) return nearestAppleDuoStance(input.angle);
-  return input.held === "landscape" ? "laptop" : "book";
+  const angle = clampAppleDuoAngle(input.angle);
+  const fold = APPLE_DEVICE_POSE_TARGETS.laptop.angle;
+  const toFold = Math.abs(angle - fold);
+  if (toFold > Math.abs(angle - APPLE_DEVICE_POSE_TARGETS.open.angle)) return "open";
+  if (toFold > Math.abs(angle - APPLE_DEVICE_POSE_TARGETS.closed.angle)) return "closed";
+  return input.held === "portrait" ? "book" : "laptop";
 }
 
 /**

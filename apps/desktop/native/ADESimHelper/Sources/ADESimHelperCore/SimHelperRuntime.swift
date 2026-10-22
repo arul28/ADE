@@ -234,7 +234,8 @@ public actor SimHelperRuntime {
                 // A foldable turns through CoreDevice; everything else keeps
                 // the GSEvent path.
                 let applied: Bool
-                if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
+                // The session caches the answer, a "no" included.
+                if try await session(for: udid).isFoldable() {
                     applied = await DevicePosture.setOrientation(udid: udid, value: value)
                     if applied { await watchPostureIfStreaming(udid: udid) }
                 } else {

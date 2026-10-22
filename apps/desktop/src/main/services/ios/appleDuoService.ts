@@ -4,7 +4,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { decodeScenePngDataUrl, decodeSceneWebmDataUrl } from "../scenes/sceneSnapshot";
 import {
-  APPLE_DEVICE_ORIENTATIONS,
   APPLE_DEVICE_POSES,
   APPLE_DEVICE_POSE_TARGETS,
   APPLE_DUO_COVER_SCREEN_ID,
@@ -22,7 +21,18 @@ import {
   type IosSimulatorEventPayload,
   type IosSimulatorScreenshot,
   type IosSimulatorScreenshotArgs,
+  APPLE_ROTATE_NOT_ADOPTED_CODE,
+  APPLE_ROTATE_SEND_FAILED_CODE,
+  APPLE_ROTATE_UNMEASURABLE_CODE,
+  type AppleRotateResult,
 } from "../../../shared/types";
+import {
+  appleDuoPanelOrientation,
+  appleDuoPhysicalOrientation,
+  appleDuoScreenName,
+  appleOrientationFamily,
+  isAppleDeviceOrientation,
+} from "../../../shared/appleOrientation";
 
 /**
  * The iPhone Duo's own surface: folding and reading its pose, the panel a
@@ -85,7 +95,7 @@ function liveDisplayOrientation(displays: unknown): AppleDeviceOrientation | nul
     Boolean(display) && typeof display === "object" && (display as Record<string, unknown>).active === true
   ));
   const name = typeof live?.orientation === "string" ? live.orientation.replace(/_/g, "-") : "";
-  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(name) ? name as AppleDeviceOrientation : null;
+  return isAppleDeviceOrientation(name) ? name : null;
 }
 
 /** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
@@ -193,6 +203,87 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     return result;
   };
 
+  /**
+   * Turn a foldable and report what its live panel did. The helper's
+   * `orientation` command sends CoreDevice's physical orientation for a
+   * hinged device (the GSEvent never reaches the inner panel), and the guest's
+   * report of the live panel's turn is the measurement: the framebuffer read
+   * the rigid path uses names the cover whatever is on, and the inner panel's
+   * framebuffer never changes shape. Runs inside the caller's control slot.
+   */
+  const rotate = async (
+    deviceUdid: string,
+    orientation: AppleDeviceOrientation,
+    value: number,
+    before: AppleDevicePosture,
+    settleMs: number,
+  ): Promise<AppleRotateResult> => {
+    const base = { orientation, frameBefore: null, frameAfter: null };
+    const payload = await deps.helperSend({ type: "orientation", udid: deviceUdid, value });
+    if (payload.applied !== true) {
+      return {
+        ...base,
+        applied: false,
+        verification: "send-failed",
+        reason: APPLE_ROTATE_SEND_FAILED_CODE,
+        detail: "The simulator helper could not turn this foldable.",
+        posture: before,
+      };
+    }
+    const pictureAxis = (posture: AppleDevicePosture) => (
+      posture.displayOrientation ? appleOrientationFamily(posture.displayOrientation) : null
+    );
+    const wantedAxis = (posture: AppleDevicePosture) => appleOrientationFamily(
+      appleDuoPanelOrientation(orientation, appleDuoScreenName(posture.activeScreenId) === "inner"),
+    );
+    // Already held that way: nothing will turn, so do not wait for it.
+    if (before.orientation === appleDuoPhysicalOrientation(orientation) && pictureAxis(before) === wantedAxis(before)) {
+      return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: before };
+    }
+    // A half turn keeps the picture on its axis, so the first reading would
+    // already match; wait for the picture itself to move, then settle for the
+    // axis at the deadline.
+    const sameAxisAtStart = pictureAxis(before) === wantedAxis(before);
+    const deadline = Date.now() + settleMs;
+    let after = before;
+    for (;;) {
+      await sleep(200);
+      after = await readPosture(deviceUdid).catch((cause: unknown) => {
+        deps.logger.warn("apple.rotate_posture_unreadable", { udid: deviceUdid, error: cause instanceof Error ? cause.message : String(cause) });
+        return after;
+      });
+      const onAxis = pictureAxis(after) === wantedAxis(after);
+      const moved = after.displayOrientation !== before.displayOrientation || after.activeScreenId !== before.activeScreenId;
+      if (onAxis && (moved || !sameAxisAtStart)) {
+        return { ...base, applied: true, verification: "rotated", reason: null, detail: null, posture: after };
+      }
+      if (Date.now() >= deadline) {
+        if (onAxis) return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after };
+        break;
+      }
+    }
+    if (!pictureAxis(after)) {
+      return {
+        ...base,
+        applied: false,
+        verification: "unmeasurable",
+        reason: APPLE_ROTATE_UNMEASURABLE_CODE,
+        detail: "The phone turned, but the simulator did not say how its screen sits, so nothing is confirmed.",
+        posture: after,
+      };
+    }
+    return {
+      ...base,
+      applied: false,
+      verification: "not-adopted",
+      reason: APPLE_ROTATE_NOT_ADOPTED_CODE,
+      detail: appleDuoScreenName(after.activeScreenId) === "cover"
+        ? "The phone turned, and the cover screen stayed as it was. The cover's Home Screen is portrait-only; open an app that rotates, or unfold the phone."
+        : "The phone turned, and the app on the inner screen kept its own orientation.",
+      posture: after,
+    };
+  };
+
   const getPosture = async (postureArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> = {}): Promise<AppleDevicePosture> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(postureArgs);
@@ -208,17 +299,26 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    */
   /** "Not a foldable" answers, by when they were given: re-asked after 10 s, as the helper does. */
   const notFoldableAt = new Map<string, number>();
-  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
+  /**
+   * A foldable's posture, or null for a device without a hinge (cached, so a
+   * rigid device pays the CoreDevice lookup once per 10 s, not on every call)
+   * or one whose posture could not be read (logged under `event`).
+   */
+  const foldablePosture = async (udid: string, event: string): Promise<AppleDevicePosture | null> => {
     const no = notFoldableAt.get(udid);
-    if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return [];
+    if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return null;
     const posture = await readPosture(udid).catch((cause: unknown) => {
-      deps.logger.warn("apple.screenshot_posture_unreadable", { udid, error: cause instanceof Error ? cause.message : String(cause) });
+      deps.logger.warn(event, { udid, error: cause instanceof Error ? cause.message : String(cause) });
       return null;
     });
-    if (!posture) return [];
+    if (!posture) return null;
     if (posture.supported) notFoldableAt.delete(udid);
     else notFoldableAt.set(udid, Date.now());
-    return posture.supported && typeof posture.activeScreenId === "number" ? [`--display=${posture.activeScreenId}`] : [];
+    return posture.supported ? posture : null;
+  };
+  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
+    const posture = await foldablePosture(udid, "apple.screenshot_posture_unreadable");
+    return posture && typeof posture.activeScreenId === "number" ? [`--display=${posture.activeScreenId}`] : [];
   };
 
   /**
@@ -439,6 +539,8 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
   return {
     attachRenderProof,
     readPosture,
+    foldablePosture,
+    rotate,
     screenshotDisplayArgs,
     setPosture,
     getPosture,

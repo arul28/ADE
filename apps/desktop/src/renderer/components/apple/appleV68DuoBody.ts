@@ -28,6 +28,14 @@ import { appleEaseFactor } from "./appleDeviceOrbit";
 /** The bundled bodies' normalized height; the open Duo is scaled to its width. */
 const DUO_OPEN_WIDTH = 2.8;
 const DEG = Math.PI / 180;
+/** The held phone's turn about the view axis, by CoreDevice's orientation name. */
+const PHYSICAL_TURN: Readonly<Record<string, number>> = {
+  portrait: 0,
+  "landscape-left": Math.PI / 2,
+  "landscape-right": -Math.PI / 2,
+  pud: Math.PI,
+};
+
 /** How far above the table the camera looks down on a laptop or a tent. */
 const LAPTOP_LOOK_DOWN = 22 * DEG;
 const TENT_LOOK_DOWN = 12 * DEG;
@@ -321,10 +329,7 @@ export function createV68DuoBody(
       // then faces out the way its landscape picture reads upright (checked
       // with Safari on the cover; a quarter turn the other way stood it on
       // its hinge, upside down).
-      targetTurn = tableMode
-        ? -Math.PI / 2
-        : value === "landscape-left" ? Math.PI / 2
-          : value === "landscape-right" ? -Math.PI / 2 : value === "pud" ? Math.PI : 0;
+      targetTurn = tableMode ? -Math.PI / 2 : PHYSICAL_TURN[value ?? ""] ?? 0;
     },
     setActivePanel(screenId) {
       if (screenId !== APPLE_DUO_COVER_SCREEN_ID && screenId !== APPLE_DUO_INNER_SCREEN_ID) return;

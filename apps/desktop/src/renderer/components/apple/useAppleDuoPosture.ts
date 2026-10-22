@@ -8,6 +8,7 @@ import {
   type AppleDevicePosture,
   type OpenProjectBinding,
 } from "../../../shared/types";
+import { appleDuoPanelOrientation } from "../../../shared/appleOrientation";
 
 /** How long ADE's own fold may sweep before the simulator's reports count again. */
 const FOLD_HOLD_MS = 4_000;
@@ -15,21 +16,6 @@ const FOLD_HOLD_MS = 4_000;
 const ANGLE_DEBOUNCE_MS = 250;
 /** When the first read does not know how the phone is held, read once more after this. */
 const POSTURE_REREAD_MS = 1_500;
-
-/**
- * The inner panel's picture, a quarter turn on from the device's orientation:
- * the panel is mounted that way, so its raw framebuffer is portrait while its
- * picture is landscape. The stage already turns a raw frame for a sideways
- * device, so the inner panel is drawn one quarter turn further on (and taps
- * are inverted by the same turn). Only a fallback: the guest's own report of
- * the live panel's turn (`displayOrientation`) wins whenever it is there.
- */
-const APPLE_DUO_INNER_ORIENTATION: Record<AppleDeviceOrientation, AppleDeviceOrientation> = {
-  portrait: "landscape-left",
-  "landscape-left": "portrait-upside-down",
-  "portrait-upside-down": "landscape-right",
-  "landscape-right": "portrait",
-};
 
 /** The Duo's inner panel is the one showing (false for every rigid device). */
 export function appleDuoInnerPanelLive(posture: AppleDevicePosture | null | undefined): boolean {
@@ -40,31 +26,15 @@ export function appleDuoInnerPanelLive(posture: AppleDevicePosture | null | unde
  * How a stage should draw the stream for a device held at `orientation`, given
  * the Duo's live panel. A Duo says how its live panel's picture sits on the
  * framebuffer, for either panel and whatever the app on it decided; that is
- * drawn as reported.
+ * drawn as reported; without the report, the inner panel is drawn a quarter
+ * turn on (`appleDuoPanelOrientation`).
  */
 export function appleDuoDisplayOrientation(
   orientation: AppleDeviceOrientation,
   posture: AppleDevicePosture | null | undefined,
 ): AppleDeviceOrientation {
   if (posture?.supported && posture.displayOrientation) return posture.displayOrientation;
-  return appleDuoInnerPanelLive(posture) ? APPLE_DUO_INNER_ORIENTATION[orientation] : orientation;
-}
-
-/**
- * The orientation a Duo is held at, in the rotate control's terms. CoreDevice
- * names the DEVICE's orientation and the control the interface's, and the two
- * landscapes swap between them (a phone turned landscape-left shows its
- * interface landscape-right). Null when the simulator has not said, or the
- * phone lies face down or up.
- */
-export function appleDuoHeldOrientation(posture: AppleDevicePosture | null | undefined): AppleDeviceOrientation | null {
-  switch (posture?.supported ? posture.orientation : null) {
-    case "portrait": return "portrait";
-    case "pud": return "portrait-upside-down";
-    case "landscape-left": return "landscape-right";
-    case "landscape-right": return "landscape-left";
-    default: return null;
-  }
+  return appleDuoPanelOrientation(orientation, appleDuoInnerPanelLive(posture));
 }
 
 /**

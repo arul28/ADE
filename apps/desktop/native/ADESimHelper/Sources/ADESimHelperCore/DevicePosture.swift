@@ -90,18 +90,27 @@ enum DevicePosture {
         guard supported else {
             return State(supported: false, angle: nil, orientation: nil, tableMode: nil, displays: [])
         }
-        let hinge = await bridge.hingeState(udid: udid)
-        // What this helper sent is only known to this helper; a fresh one (or
-        // a pose set elsewhere) learns how the phone is held from the guest's
-        // own device-state stream, which runs while the device streams.
-        let observed = await bridge.observedDeviceState(udid: udid).state
+        let hinge = await held(udid: udid)
         return State(
             supported: true,
             angle: hinge.angle,
-            orientation: hinge.orientation ?? observed.orientation,
-            tableMode: hinge.tableMode ?? observed.tableMode,
+            orientation: hinge.orientation,
+            tableMode: hinge.tableMode,
             displays: await displays(udid: udid)
         )
+    }
+
+    /// The hinge as this helper sent it, filled in from the guest. What this
+    /// helper sent is only known to this helper; a fresh one (or a pose set
+    /// elsewhere) learns how the phone is held from the guest's own
+    /// device-state stream, which runs while the device streams.
+    private static func held(udid: String) async -> CoreDeviceBridge.HingeState {
+        let bridge = CoreDeviceBridge.shared
+        var state = await bridge.hingeState(udid: udid)
+        let observed = await bridge.observedDeviceState(udid: udid).state
+        if state.orientation == nil { state.orientation = observed.orientation }
+        if state.tableMode == nil { state.tableMode = observed.tableMode }
+        return state
     }
 
     /// The angle each of Device Hub's presets puts the hinge at.
@@ -141,10 +150,7 @@ enum DevicePosture {
         // up, or the cover stays the live panel at any angle.
         guard await bridge.setHingeAngle(udid: udid, angle: target) else { return false }
         _ = await bridge.setTableMode(udid: udid, enabled: false)
-        // A helper that did not lay it face down learns that from the guest.
-        let sentOrientation = await bridge.hingeState(udid: udid).orientation
-        let observedOrientation = await bridge.observedDeviceState(udid: udid).state.orientation
-        if (sentOrientation ?? observedOrientation) == "facedown" {
+        if await held(udid: udid).orientation == "facedown" {
             _ = await bridge.setPhysicalOrientation(udid: udid, value: "portrait")
         }
         return true
@@ -157,9 +163,9 @@ enum DevicePosture {
     /// orientation is what the guest reads on a Duo, for either panel. `value`
     /// is the UIDeviceOrientation the `orientation` command carries. Tent's
     /// Table Mode is released first, as a raw angle does.
+    /// The caller has checked the device folds.
     static func setOrientation(udid: String, value: Int) async -> Bool {
         let bridge = CoreDeviceBridge.shared
-        guard await bridge.supportsHingeAngle(udid: udid) else { return false }
         // Always: a helper that did not set Table Mode cannot tell it is on.
         _ = await bridge.setTableMode(udid: udid, enabled: false)
         return await bridge.setOrientation(udid: udid, deviceOrientation: UInt32(value))

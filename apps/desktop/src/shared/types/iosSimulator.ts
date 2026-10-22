@@ -2394,7 +2394,7 @@ export type AppleRotateResult = {
   frameBefore: AppleRotateFrame | null;
   frameAfter: AppleRotateFrame | null;
   /** A foldable's posture after the turn (its live panel's picture included); absent on other devices. */
-  posture?: AppleDevicePosture | null;
+  posture?: AppleDevicePosture;
 };
 
 /** Which lane's recordings a record verb acts on. */

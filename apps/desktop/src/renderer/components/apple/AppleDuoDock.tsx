@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { DeviceMobile } from "@phosphor-icons/react";
 import { APPLE_DEVICE_POSE_TARGETS, type AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
 import { appleOrientationIconDegrees, appleOrientationLabel } from "./appleDeviceState";
+import { appleDuoPanelOrientation, appleOrientationFamily, type AppleDuoScreen } from "../../../shared/appleOrientation";
 import { cn } from "../ui/cn";
 
 /**
@@ -9,21 +10,21 @@ import { cn } from "../ui/cn";
  *
  * A foldable is driven by two things at once, the hinge and how the phone is
  * held, and both decide what the screen shows; on the Duo they are used as
- * often as a tap, so they live in a band of their own beside the rail rather
- * than in its menus. Two groups, read left to right:
+ * often as a tap, so they live in a band of their own under the device rather
+ * than in the rail's menus. Two groups, read left to right:
  *
  * - **Hinge** (3D): a continuous slider that previews on drag and folds on
  *   release, with soft detents at Closed, Laptop and Open. **Screen** (flat,
  *   where there is no body to fold): Cover folds the phone shut, Inner
  *   unfolds it flat.
- * - **Turn**: the four ways to hold the phone. The pressed one is how the
- *   simulator says it is held; the app on screen decides whether its picture
- *   follows.
+ * - **Orientation**: the four ways to hold the phone, each drawn as the
+ *   SCREEN it gives, not the phone: the inner panel is mounted a quarter
+ *   turn, so holding the phone upright runs it wide, and a phone-shaped icon
+ *   there read backwards. The pressed one is how the simulator says the phone
+ *   is held; the app on screen decides whether its picture follows.
  *
  * Every device without a hinge keeps the rail's orientation menu instead.
  */
-
-export type AppleDuoScreen = "cover" | "inner";
 
 const DETENTS = [
   { angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, label: "Closed" },
@@ -32,7 +33,7 @@ const DETENTS = [
 ] as const;
 const DETENT_RANGE = 4;
 
-/** Left to right, each icon a quarter turn clockwise from the one before. */
+/** Left to right, each a quarter turn of the phone clockwise from the one before. */
 const TURNS: readonly AppleDeviceOrientation[] = ["portrait", "landscape-left", "portrait-upside-down", "landscape-right"];
 
 function snapToDetent(angle: number): number {
@@ -88,7 +89,7 @@ function HingeSlider({ angle, onPreview, onCommit }: {
             if (event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) commit();
           }}
         />
-        <div aria-hidden="true" className="pointer-events-none mt-0.5 hidden justify-between font-sans text-[9px] uppercase tracking-[0.06em] text-[var(--kit-text-3)] @[520px]:flex">
+        <div aria-hidden="true" className="kit-eyebrow pointer-events-none mt-0.5 hidden justify-between !text-[9px] !tracking-[0.08em] @[520px]:flex">
           {DETENTS.map((detent) => (
             <span key={detent.angle} className={value === detent.angle ? "text-fg" : undefined}>{detent.label}</span>
           ))}
@@ -126,6 +127,12 @@ export function AppleDuoDock({
   onScreen: (screen: AppleDuoScreen) => void;
   onTurn: (orientation: AppleDeviceOrientation) => void;
 }) {
+  const where = screen ? `${screen} screen` : "screen";
+  // Each hold, with the screen it gives; ordered by that screen, so the row
+  // always starts at an upright tall screen.
+  const turns = TURNS
+    .map((orientation) => ({ orientation, panel: appleDuoPanelOrientation(orientation, screen === "inner") }))
+    .sort((a, b) => TURNS.indexOf(a.panel) - TURNS.indexOf(b.panel));
   const readout = reported
     ? [
       reported.angle !== null ? `${Math.round(reported.angle)}°` : null,
@@ -136,7 +143,7 @@ export function AppleDuoDock({
   return (
     <div
       data-apple-duo-dock=""
-      className="relative shrink-0 border-t border-[color:var(--kit-rule)] bg-[color:var(--kit-card-bg)] pr-14 backdrop-blur-md"
+      className="relative shrink-0 border-t border-[color:var(--kit-rule)] bg-[color:var(--kit-card-bg)] pr-14"
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
     >
@@ -158,24 +165,26 @@ export function AppleDuoDock({
           </Group>
         )}
         <span aria-hidden="true" className="hidden h-5 w-px bg-[color:var(--kit-rule)] @[520px]:block" />
-        <Group label="Turn">
+        <Group label="Orientation">
           <div className="kit-seg">
-            {TURNS.map((orientation) => {
-              const label = appleOrientationLabel(orientation);
+            {turns.map(({ orientation, panel }) => {
+              const shape = appleOrientationFamily(panel) === "landscape" ? "Wide" : "Tall";
+              const turnedOver = panel === "portrait-upside-down" || panel === "landscape-right";
+              const label = `${shape} ${where}${turnedOver ? ", turned over" : ""} · phone held ${appleOrientationLabel(orientation).toLowerCase()}`;
               return (
                 <button
                   key={orientation}
                   type="button"
                   aria-pressed={held === orientation}
-                  aria-label={`Hold ${label.toLowerCase()}`}
-                  title={`Hold ${label.toLowerCase()}`}
+                  aria-label={label}
+                  title={label}
                   disabled={turnPending}
                   onClick={() => onTurn(orientation)}
                   className={cn("!px-1.5 disabled:opacity-50", turnPending && "cursor-progress")}
                 >
                   <DeviceMobile
                     size={14}
-                    style={{ transform: `rotate(${appleOrientationIconDegrees(orientation)}deg)` }}
+                    style={{ transform: `rotate(${appleOrientationIconDegrees(panel)}deg)` }}
                   />
                 </button>
               );
