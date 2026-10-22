@@ -2859,6 +2859,7 @@ describe("iosSimulatorService boot contract", () => {
       { name: "iPhone 17", udid: "device-2", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" },
     ];
     const calls: string[] = [];
+    let created = 0;
     const run = vi.fn(async (command: string, commandArgs: string[]) => {
       const joined = `${command} ${commandArgs.join(" ")}`;
       calls.push(joined);
@@ -2879,8 +2880,11 @@ describe("iosSimulatorService boot contract", () => {
         }] }), stderr: "" };
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "create") {
-        devices.push({ name: commandArgs[2] ?? "ADE · lane", udid: "device-created", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: commandArgs[3] ?? "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
-        return { stdout: "device-created\n", stderr: "" };
+        // The first device made is `device-created`; later ones are numbered.
+        created += 1;
+        const udid = created === 1 ? "device-created" : `device-created-${created}`;
+        devices.push({ name: commandArgs[2] ?? "ADE · lane", udid, state: "Shutdown", isAvailable: true, deviceTypeIdentifier: commandArgs[3] ?? "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
+        return { stdout: `${udid}\n`, stderr: "" };
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "shutdown") {
         options.onShutdown?.(commandArgs[2] ?? "");
@@ -3617,6 +3621,48 @@ describe("iosSimulatorService boot contract", () => {
       const deleteAt = calls.indexOf("xcrun simctl delete device-created");
       expect(deleteAt).toBeGreaterThan(shutdownAt);
       expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an agent drives its lane's extra device by --device, never another lane's, and lane-only verbs refuse it", async () => {
+    const { service, calls, helper, dispose } = setup();
+    try {
+      const own = await service.deviceCreate({ laneId: "lane-a" });
+      const extra = await service.deviceCreate({ laneId: "lane-a", deviceType: "iPhone 17", extra: true });
+      const otherLanes = await service.deviceCreate({ laneId: "lane-b", extra: true });
+      expect([own.udid, extra.udid, otherLanes.udid]).toEqual(["device-created", "device-created-2", "device-created-3"]);
+      // An extra comes up booted; it is never the lane's own device.
+      expect(extra.extra).toBe(true);
+      expect(calls).toContain("xcrun simctl boot device-created-2");
+      expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane?.udid).toBe("device-created");
+
+      // Named by udid or by name, input lands on the extra.
+      await service.tap({ laneId: "lane-a", deviceUdid: extra.udid, x: 1, y: 1, agentCaller: true } as never);
+      await service.tap({ laneId: "lane-a", deviceUdid: extra.name, x: 1, y: 1, agentCaller: true } as never);
+      expect(helper.sent.filter((command) => command.type === "touch").map((command) => command.udid))
+        .toEqual(["device-created-2", "device-created-2", "device-created-2", "device-created-2"]);
+      // Another lane's extra is foreign.
+      await expect(service.tap({ laneId: "lane-a", deviceUdid: otherLanes.udid, x: 1, y: 1, agentCaller: true } as never))
+        .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
+      // The lane's live view, stop and recordings stay on its own device.
+      for (const refused of [
+        () => service.startStream({ laneId: "lane-a", deviceUdid: extra.udid, agentCaller: true } as never),
+        () => service.deviceStop({ laneId: "lane-a", udid: extra.udid, agentCaller: true } as never),
+        () => service.recordStart({ laneId: "lane-a", deviceUdid: extra.udid, agentCaller: true } as never),
+      ]) {
+        await expect(refused()).rejects.toThrow(/APPLE_DEVICE_IS_EXTRA/);
+      }
+      expect(calls).not.toContain("xcrun simctl shutdown device-created-2");
+
+      // device-delete --device deletes the extra and leaves the lane's own device.
+      await service.deviceDelete({ laneId: "lane-a", udid: extra.udid, ignoreOwnership: true });
+      expect(calls).toContain("xcrun simctl delete device-created-2");
+      expect(calls).not.toContain("xcrun simctl delete device-created");
+      const after = await service.deviceList({ laneId: "lane-a", installed: false });
+      expect(after.lane?.udid).toBe("device-created");
+      expect(after.extras).toEqual([]);
     } finally {
       dispose();
     }

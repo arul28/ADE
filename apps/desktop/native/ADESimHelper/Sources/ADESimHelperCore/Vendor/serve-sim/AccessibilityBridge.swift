@@ -92,7 +92,7 @@ final class AccessibilityBridge: NSObject {
     /// matching the `axe describe-ui` flat-array output. Throws on
     /// framework load failure or if the simulator returns no frontmost
     /// application (e.g. SpringBoard hasn't come up yet).
-    func describeUI(udid: String) throws -> Data {
+    func describeUI(udid: String, displayId: UInt32 = 0, displayOrientation: String? = nil) throws -> Data {
         try ensureLoaded()
 
         guard let device = FrameCapture.findSimDevice(udid: udid) else {
@@ -121,7 +121,7 @@ final class AccessibilityBridge: NSObject {
             throw AccessibilityError.translatorUnavailable
         }
         let frontmost = unsafeBitCast(frontmostIMP, to: FrontmostFunc.self)
-        guard let translation = frontmost(translator, frontmostSel, 0, token as NSString) as? NSObject else {
+        guard let translation = frontmost(translator, frontmostSel, displayId, token as NSString) as? NSObject else {
             throw AccessibilityError.noFrontmostApplication
         }
         translation.setValue(token, forKey: "bridgeDelegateToken")
@@ -176,6 +176,8 @@ final class AccessibilityBridge: NSObject {
             let discovered = discoverByGrid(
                 token: token,
                 bounds: screenFrame,
+                displayId: displayId,
+                toFrame: Self.probeToFrame(orientation: displayOrientation, bounds: screenFrame),
                 coverage: &coverage,
                 visited: &visited,
                 remainingElements: &remainingElements
@@ -294,6 +296,8 @@ final class AccessibilityBridge: NSObject {
     private func discoverByGrid(
         token: String,
         bounds: CGRect,
+        displayId: UInt32,
+        toFrame: (CGPoint) -> CGPoint,
         coverage: inout AccessibilityCoverage,
         visited: inout Set<ObjectIdentifier>,
         remainingElements: inout Int
@@ -325,10 +329,10 @@ final class AccessibilityBridge: NSObject {
                 // is the load-bearing optimization. Once a card's text
                 // element is cataloged, every other grid point that falls
                 // inside the same text frame avoids an XPC round-trip.
-                if coverage.contains(point) { continue }
+                if coverage.contains(toFrame(point)) { continue }
                 pointBudget -= 1
 
-                guard let translation = objectAtPoint(translator, pointSel, point, 0, token as NSString) as? NSObject else {
+                guard let translation = objectAtPoint(translator, pointSel, point, displayId, token as NSString) as? NSObject else {
                     continue
                 }
                 translation.setValue(token, forKey: "bridgeDelegateToken")
@@ -365,6 +369,22 @@ final class AccessibilityBridge: NSObject {
             y += step
         }
         return discovered
+    }
+
+    /// A grid point is asked in the panel's own space (the app's frame),
+    /// while element frames come back in the picture's. On a panel whose
+    /// picture is turned (the iPhone Duo's inner display, reported by
+    /// CoreDevice as the live display's orientation) the two differ by that
+    /// turn, so the coverage check must turn the point first or it skips
+    /// points over the wrong elements. Measured on the iPhone Duo, iOS 27.1.
+    static func probeToFrame(orientation: String?, bounds: CGRect) -> (CGPoint) -> CGPoint {
+        let width = bounds.width, height = bounds.height
+        switch orientation?.replacingOccurrences(of: "_", with: "-") {
+        case "landscape-left": return { CGPoint(x: height - $0.y, y: $0.x) }
+        case "portrait-upside-down": return { CGPoint(x: width - $0.x, y: height - $0.y) }
+        case "landscape-right": return { CGPoint(x: $0.y, y: width - $0.x) }
+        default: return { $0 }
+        }
     }
 
     // MARK: - Token registry

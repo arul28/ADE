@@ -15,6 +15,7 @@ import {
   type AppleDuoAppStoreScreenshotsResult,
   type AppleDuoModelResult,
   type AppleRenderRequestArgs,
+  type AppleRenderProofResult,
   type AppleRenderRequestResult,
   type AppleSetPostureArgs,
   type AppleSetPostureResult,
@@ -59,6 +60,8 @@ export type AppleDuoServiceDeps<Runtime extends { key: string | null }> = {
     runtime: Runtime,
     render?: { kind: "screenshot" | "video_recording"; mimeType: string },
   ) => string | null;
+  /** The chat `fileScreenshotAsProof` files to, so a render can say where it went. */
+  proofOwnerChatId: (arg: Pick<IosSimulatorScreenshotArgs, "chatSessionId">, runtime: Runtime) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: { warn: (event: string, fields?: Record<string, unknown>) => void };
   captureAnalytics: (outcome: "duo_folded" | "duo_app_store_shots" | "device_rendered" | "duo_skill_added") => void;
@@ -515,11 +518,20 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     const pending = typeof ackArgs?.requestId === "string" ? pendingRenders.get(ackArgs.requestId) : undefined;
     return { ok: pending ? pending.ack() : false };
   };
-  const renderComplete = async (doneArgs: { requestId?: string; filed?: number; error?: string | null }): Promise<{ ok: boolean }> => {
+  const renderComplete = async (doneArgs: {
+    requestId?: string;
+    filed?: number;
+    error?: string | null;
+    /** The proofs this render filed, as the window that drew it reports them, so the CLI can cite them. */
+    proofArtifactIds?: unknown;
+  }): Promise<{ ok: boolean }> => {
     const pending = typeof doneArgs?.requestId === "string" ? pendingRenders.get(doneArgs.requestId) : undefined;
     pending?.complete({
       filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
       error: typeof doneArgs.error === "string" ? doneArgs.error : null,
+      proofArtifactIds: Array.isArray(doneArgs.proofArtifactIds)
+        ? doneArgs.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [],
     });
     return { ok: Boolean(pending) };
   };
@@ -530,7 +542,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * render is drawn by whichever window shows the pane, which may be another
    * machine; its bytes come here so the proof lands where the chat lives.
    */
-  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<{ proofArtifactId: string | null }> => {
+  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<AppleRenderProofResult> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(proofArgs);
     const png = decodeScenePngDataUrl(proofArgs.dataUrl ?? null);
@@ -551,7 +563,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       webm ? { kind: "video_recording", mimeType: "video/webm" } : { kind: "screenshot", mimeType: "image/png" },
     );
     if (proofArtifactId) deps.captureAnalytics("device_rendered");
-    return { proofArtifactId };
+    return { proofArtifactId, chatSessionId: deps.proofOwnerChatId(proofArgs, runtime), filePath };
   };
 
   return {

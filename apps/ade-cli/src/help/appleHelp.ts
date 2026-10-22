@@ -860,8 +860,16 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     $ ade --socket apple device-create --text
     $ ade --socket apple device-create --runtime "iOS 26.3" --device-type "iPhone 17e" --text
     $ ade --socket apple device-create --from "iPhone 17 Pro" --text
+    $ ade --socket apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text
+
+  --extra makes a SECOND device beside the lane's own (an iPad next to an
+  iPhone Duo; at most 2, APPLE_EXTRA_DEVICE_LIMIT). It comes up booted, and
+  any command reaches it with --device <udid|name>; without --device every
+  command still drives the lane's own device. It is deleted with the lane,
+  or now with "device-delete --device <udid>".
 
   Flags:
+    --extra                      An extra device; the lane keeps its own.
     --runtime <id|name>          Runtime, e.g. "iOS 26.3".
     --device-type, --model <id|name>  Device type, e.g. "iPhone 17 Pro".
     --from, --simulator <id>     Copy this installed simulator's model and runtime (not its data).
@@ -1007,8 +1015,10 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade --socket apple device-delete --text
     $ ade --socket apple device-delete --force --text
+    $ ade --socket apple device-delete --device <udid> --text   One of the lane's extra devices
 
   Flags:
+    --device, --udid <id>  One of the lane's extra devices (device-create --extra).
     --force, -f            Detach an attached device instead of refusing.
     --ignore-ownership     Delete even while another chat is driving it. Ask first.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
@@ -1182,6 +1192,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Poses: closed (0°), open (180°), laptop (90°, landscape), book (90°,
   portrait), tent (80°, face down). --sequence runs them in order and adds a
   step caption to a running recording before each one, for demos.
+
+  The answer names the live screen and its picture: "inner display, wide" or
+  "inner display, tall". The inner display runs a quarter turn from the
+  phone, so open and book (held portrait) are WIDE, laptop (held landscape)
+  is TALL. For a tall, flat-open screen: fold laptop, then fold --angle 180
+  (a raw angle keeps how the phone is held). "rotate portrait" turns it wide
+  again.
 
   On a device without a hinge it answers applied false, supported false.
 

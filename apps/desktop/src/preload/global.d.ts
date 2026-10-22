@@ -51,6 +51,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleDevicePosture,
   AppleDuoAppStoreScreenshotsResult,
+  AppleRenderProofResult,
   AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
@@ -3199,7 +3200,7 @@ declare global {
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
         renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         renderComplete: (
-          args: { requestId: string; filed: number; error: string | null },
+          args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (
@@ -3209,7 +3210,7 @@ declare global {
         attachRenderProof: (
           args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
           pin?: OpenProjectBinding | null,
-        ) => Promise<{ proofArtifactId: string | null }>;
+        ) => Promise<AppleRenderProofResult>;
         addDuoSkill: (
           args?: { laneId?: string | null; chatSessionId?: string | null },
           pin?: OpenProjectBinding | null,

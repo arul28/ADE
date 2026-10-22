@@ -183,6 +183,17 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
     const runtime = deps.requireLaneScope(deleteArgs);
     await deps.serializeDeviceLifecycle(runtime, async () => {
+      // `device-delete --device <udid|name>` naming one of the lane's extra devices.
+      const extra = deps.laneDevices.findExtra(runtime.key, deleteArgs.udid ?? null);
+      if (extra) {
+        // The same single-owner rule as the lane's own device: a chat that does
+        // not hold the lane's devices cannot delete one out from under it.
+        deps.assertSessionOwner(runtime, { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership });
+        await deps.laneDevices.deviceDeleteExtra({ laneId: extra.laneId, udid: extra.udid });
+        deps.invalidateDeviceList();
+        deps.invalidateStatus(runtime);
+        return;
+      }
       const laneDevice = deps.laneDevices.get(runtime.key);
       if (!laneDevice) return;
       assertExpectedDevice(laneDevice, deleteArgs.udid);

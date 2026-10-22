@@ -15,13 +15,15 @@ written to satisfy Apache-2.0 §4 attribution for a derivative distribution.
 
 ## Files taken verbatim
 
-Every file below is byte-for-byte upstream except `CaptureEngine.swift`, which
-carries one documented ADE patch (see "ADE patches" below). Do not hand-edit the
-verbatim files; re-vendor from a newer commit and update the table instead.
+Every file below is byte-for-byte upstream except the ones marked ADE-patched,
+which carry documented ADE patches (see "ADE patches" below; their SHA-256 is
+upstream's). Do not hand-edit the verbatim files; re-vendor from a newer commit
+and update the table instead, and reapply every ADE patch to a re-vendored
+patched file.
 
 | File | SHA-256 |
 |---|---|
-| `AccessibilityBridge.swift` | `d3163df97c1efef3ea7aa0e45a939cfa77fa374a968e5fb7964f7f4c4630044d` |
+| `AccessibilityBridge.swift` | `d3163df97c1efef3ea7aa0e45a939cfa77fa374a968e5fb7964f7f4c4630044d` (ADE-patched — see below; reapply on re-vendor) |
 | `CaptureEngine.swift` | `5a796d364cf2f1e74e81fa4e3817c43c95f32bda3a3e4086f7a38ea6cf7919ba` (ADE-patched — see below) |
 | `FrameCapture.swift` | `1923bf752f82a1023395b556f428861b2f5c26d1c78dfe49e6a51f8a9559399a` |
 | `H264Encoder.swift` | `11dfb325ab7764009ff04e01e84b9f0fa1c9c2975fca872044c84237ac6e836b` |
@@ -122,4 +124,5 @@ ADE's own code on top of it lives outside `Vendor/`: `DevicePosture.swift` and t
 
 - `FrameCapture.swift`: `setPreferredScreen(_:)` and a `screenProperties` → `screenID` read, so capture follows the panel CoreDevice reports active (the Duo keeps both panels' surfaces alive and the largest is always the inner one). With no preferred screen the upstream largest-surface pick is unchanged, which is every non-foldable device.
 - `CaptureEngine.swift`: `setPreferredScreen(_:)` forwarding to it.
+- `AccessibilityBridge.swift` (no longer byte-for-byte; the SHA-256 above is upstream's): `describeUI(udid:displayId:displayOrientation:)` sends the frontmost-app read and every grid hit-test to the live panel's display (the Duo's inner display is 3; display 0 finds nothing there), and `probeToFrame` turns a grid point by that panel's picture turn before the coverage check, since probes are in the app frame and element frames in the picture. Upstream's display 0 and identity turn are the defaults, which is every non-foldable device.
 - `CoreDeviceShim/CoreDeviceTrampolines.S` and `CoreDeviceShim/CoreDeviceShim.m` (no longer byte-for-byte; the SHA-256s above are upstream's): on x86_64 the four cross-file async descriptors are zero (x86_64 Mach-O cannot encode that relative pointer) and `SSCoreDeviceInitialize` returns false. ADE's helper is universal; the Duo needs Xcode 27.1, which runs only on Apple silicon.

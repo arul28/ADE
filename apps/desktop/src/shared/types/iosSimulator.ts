@@ -291,7 +291,7 @@ export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
 /**
  * The Apple panel's product facts (`ade_feature_used`, `action: "apple_device"`):
  * whether the runtime manager and the iPhone Duo surface are used at all.
- * Closed: a seventh spelling is dropped by the analytics policy, not widened.
+ * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
  */
 export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
   "runtime_installed",
@@ -301,6 +301,7 @@ export const APPLE_DEVICE_ANALYTICS_OUTCOMES = [
   "device_rendered",
   "duo_skill_added",
   "device_leased",
+  "extra_device_created",
 ] as const;
 export type AppleDeviceAnalyticsOutcome = (typeof APPLE_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -982,7 +983,12 @@ export type AppleRenderRequestArgs = {
   request: AppleRenderRequestSpec;
 };
 
-export type AppleRenderRequestResult = { filed: number; error: string | null };
+export type AppleRenderRequestResult = {
+  filed: number;
+  error: string | null;
+  /** The proofs the render filed, for the CLI's `cite:` lines. */
+  proofArtifactIds?: string[];
+};
 
 /**
  * The service asks every window with the project open to render: a live Apple
@@ -1052,6 +1058,17 @@ export type AppleSetPostureArgs = {
   pose?: AppleDevicePose | null;
   /** Degrees, 0–180. */
   angle?: number | null;
+};
+
+/**
+ * One 3D render filed as proof, on the machine that owns the device: the
+ * artifact, the chat whose drawer it went to (null when only the lane owns
+ * it), and the file, so the window that rendered can say where it went.
+ */
+export type AppleRenderProofResult = {
+  proofArtifactId: string | null;
+  chatSessionId: string | null;
+  filePath: string | null;
 };
 
 export type AppleSetPostureResult = {
@@ -1721,7 +1738,20 @@ export type AppleLaneDevice = {
   family: AppleLaneDeviceFamily;
   runtime: string;
   createdAt: string;
+  /**
+   * One of the lane's extra devices (`device-create --extra`), not its own
+   * device: reached with `--device <udid|name>`, never the default target,
+   * never streamed in the pane. Absent on the lane's device.
+   */
+  extra?: boolean;
 };
+
+/** How many extra devices one lane may hold beside its own (an iPad next to an iPhone Duo). */
+export const APPLE_LANE_EXTRA_DEVICE_LIMIT = 2;
+/** `device-create --extra` on a lane that already holds the limit. */
+export const APPLE_EXTRA_DEVICE_LIMIT_CODE = "APPLE_EXTRA_DEVICE_LIMIT";
+/** `device-attach` (or the picker) naming a device that is a lane's extra device. */
+export const APPLE_DEVICE_IS_EXTRA_CODE = "APPLE_DEVICE_IS_EXTRA";
 
 /**
  * `deviceCreate`: a new, empty device for the lane.
@@ -1741,6 +1771,13 @@ export type AppleDeviceCreateArgs = {
   /** udid or name of an installed simulator whose model and runtime to copy. Its data is not copied. */
   from?: string | null;
   name?: string | null;
+  /**
+   * Make an EXTRA device for the lane instead of its own one: the lane keeps
+   * its device, and the new one is booted and reached with `--device`.
+   * Deleted with the lane, like the lane's own. At most
+   * `APPLE_LANE_EXTRA_DEVICE_LIMIT` per lane.
+   */
+  extra?: boolean | null;
 };
 
 /** A device model an installed runtime can run. */
@@ -2075,6 +2112,8 @@ export type AppleSimulatorOwner = {
   origin: AppleLaneDeviceOrigin;
   /** True when the owning lane is the lane this list was computed for. */
   mine: boolean;
+  /** One of that lane's extra devices: held, but never the lane's own device. */
+  extra?: boolean;
 };
 
 /** One device data directory's cost on disk. */
@@ -2103,6 +2142,8 @@ export type AppleDeviceDiskUsage = {
 export type AppleDeviceListResult = {
   installed: AppleInstalledSimulator[];
   lane: AppleLaneDevice | null;
+  /** The lane's extra devices (`device-create --extra`), each reached with `--device`. */
+  extras?: AppleLaneDevice[];
   /**
    * Every lane binding this project knows about, mine flagged.
    *

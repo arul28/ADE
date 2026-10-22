@@ -19,6 +19,15 @@ export type AppleRenderJob = {
   pin: OpenProjectBinding;
 };
 
+/** What one render filed: the count, the artifacts, the chat whose drawer has them, and the files. */
+export type AppleRenderFiled = {
+  filed: number;
+  artifactIds: string[];
+  /** Null when only the lane owns them (no chat drove or claimed the device). */
+  chatSessionId: string | null;
+  filePaths: string[];
+};
+
 /**
  * Render the lane's device and file every image (and the video) to the proof
  * drawer. For a Duo each pose folds the REAL simulator first and waits for it
@@ -45,7 +54,7 @@ export async function renderAppleDeviceToProof({
   deviceName: string | null;
   duoCapable: boolean;
   runtimePinRef: { current: OpenProjectBinding | null };
-}): Promise<number> {
+}): Promise<AppleRenderFiled> {
   if (!rendererRef.current) throw new Error("The 3D view is still loading.");
   const options = {
     width: 1600,
@@ -74,12 +83,17 @@ export async function renderAppleDeviceToProof({
   const name = deviceName ?? "device";
   // Filed by the device's own machine, to the chat and lane there: this
   // window may be another machine pinned to it.
+  const outcome: AppleRenderFiled = { filed: 0, artifactIds: [], chatSessionId: null, filePaths: [] };
   const attachRenderProof = async (proof: { dataUrl: string; title: string }) => {
     const result = await window.ade.iosSimulator.attachRenderProof(
       { laneId, chatSessionId, ...proof },
       runtimePinRef.current,
     );
-    return Boolean(result.proofArtifactId);
+    if (result.filePath) outcome.filePaths.push(result.filePath);
+    if (!result.proofArtifactId) return false;
+    outcome.artifactIds.push(result.proofArtifactId);
+    outcome.chatSessionId ??= result.chatSessionId ?? null;
+    return true;
   };
   let filed = 0;
   for (const image of images) {
@@ -101,7 +115,8 @@ export async function renderAppleDeviceToProof({
       if (await attachRenderProof({ dataUrl, title: `${name} · turntable` })) filed++;
     }
   }
-  return filed;
+  outcome.filed = filed;
+  return outcome;
 }
 
 /**
@@ -117,16 +132,18 @@ export async function completeAppleRenderRequest({
 }: {
   requestId: string;
   pin: OpenProjectBinding | null;
-  render: () => Promise<number>;
+  render: () => Promise<AppleRenderFiled>;
   onLostAnswer?: (cause: unknown) => void;
 }): Promise<void> {
   let filed = 0;
+  let proofArtifactIds: string[] = [];
   let error: string | null = null;
   try {
-    filed = await render();
+    ({ filed, artifactIds: proofArtifactIds } = await render());
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
-  await window.ade.iosSimulator.renderComplete({ requestId, filed, error }, pin)
+  // This render's own proofs, so `ade apple render` cites exactly them.
+  await window.ade.iosSimulator.renderComplete({ requestId, filed, error, proofArtifactIds }, pin)
     .catch((cause: unknown) => onLostAnswer?.(cause));
 }

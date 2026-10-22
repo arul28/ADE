@@ -120,6 +120,7 @@ import type {
 import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
@@ -419,7 +420,12 @@ export class IosSimulatorOutPathOutsideRootError extends Error {
   readonly code: typeof IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE;
 
   constructor(outPath: string, root: string) {
-    super(`${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${outPath} is outside the build root ${root}.`);
+    // Says which paths ARE allowed: callers over MCP or the web see only this
+    // message, not the CLI's hint.
+    super(
+      `${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${outPath} is outside the build root ${root}. `
+      + `--out must be a path inside that root; a relative path resolves under it (for example .ade/tmp/shot.png).`,
+    );
     this.name = "IosSimulatorOutPathOutsideRootError";
   }
 }
@@ -2128,6 +2134,18 @@ const AGENT_DEVICE_CREATING_ACTIONS = new Set<string>(["launch", "openDevice", "
 const AGENT_DEVICE_CHECKED_ACTIONS = [
   "deviceStop", "closeDevice", "stopStream", "stopEventLog", "getEventLog", "listLaunchTargets",
 ] as const;
+
+/**
+ * Actions that work the lane's live view, its claim, its recordings or its
+ * builds, which belong to the lane's own device: `--device <extra>` on one of
+ * them is refused rather than quietly acting on (or rebinding) the lane's
+ * device. Everything else acts on the device it is given.
+ */
+const AGENT_EXTRA_DEVICE_REFUSED_ACTIONS = new Set<string>([
+  "launch", "openDevice", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
+  "recordStart", "startEventLog", "stopEventLog", "getEventLog", "selectPoint", "duoAppStoreScreenshots", "getInspectorSnapshot",
+  "frame",
+]);
 
 /** Who holds the session, when it is an agent on another machine. */
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
@@ -4802,6 +4820,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * hear about: the PNG on disk is the result that was asked for, and a drawer
    * that refused the row must not turn a good capture into a thrown call.
    */
+  /** The chat a capture is filed to: the caller's, else the chat that claimed the device. */
+  const proofOwnerChatId = (arg: Pick<IosSimulatorScreenshotArgs, "chatSessionId">, runtime: LaneRuntime): string | null =>
+    arg.chatSessionId?.trim() || runtime.activeSession?.chatSessionId || null;
+
   const fileScreenshotAsProof = (
     shot: Pick<IosSimulatorScreenshot, "deviceUdid" | "filePath" | "capturedAt" | "width" | "height">,
     arg: IosSimulatorScreenshotArgs,
@@ -4811,9 +4833,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   ): string | null => {
     const filer = args.recordingDeps?.artifactFiler;
     if (!filer) return null;
-    const chatSessionId = arg.chatSessionId?.trim()
-      || runtime.activeSession?.chatSessionId
-      || null;
+    const chatSessionId = proofOwnerChatId(arg, runtime);
     const caption = arg.caption?.trim()
       || `Simulator screenshot · ${deviceLabelForUdid(shot.deviceUdid)}`;
     /*
@@ -5052,7 +5072,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const elements = syntheticElements.length
       ? mergeScreenElements(baseElements, syntheticElements)
       : baseElements;
-    const screen = inspectorSnapshot?.screen ?? {
+    // The app's inspector names the screen only when it described this one: a
+    // snapshot it published before a turn or a fold (the iPhone Duo's inner
+    // display held upright read 669x835 against a 669x951 picture) is stale.
+    const inspectorScreen = inspectorSnapshot?.screen;
+    const inspectorScreenIsCurrent = Boolean(
+      inspectorScreen
+      && inspectorElements.length
+      && (!shot.width || !shot.height
+        || (Math.abs(inspectorScreen.width * inspectorScreen.scale - shot.width) <= 2
+          && Math.abs(inspectorScreen.height * inspectorScreen.scale - shot.height) <= 2)),
+    );
+    const screen = (inspectorScreenIsCurrent ? inspectorScreen : null) ?? {
       width: accessibilityScreen?.width ?? shot.width ?? 0,
       height: accessibilityScreen?.height ?? shot.height ?? 0,
       scale: accessibilityScreen?.scale ?? 1,
@@ -5919,6 +5950,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     resolveScopedRootForSession,
     enqueueControl,
     fileScreenshotAsProof,
+    proofOwnerChatId,
     emit,
     logger: args.logger,
     captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
@@ -6292,16 +6324,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const deviceCreate = async (deviceArgs: AppleDeviceCreateArgs = {}): Promise<AppleLaneDevice> => {
     assertDarwin();
     const runtime = requireLaneScope(deviceArgs);
-    const device = await laneDevices.deviceCreate({
+    const create = () => laneDevices.deviceCreate({
       laneId: runtime.key,
       from: deviceArgs.from,
       runtime: deviceArgs.runtime,
       deviceType: deviceArgs.deviceType,
       name: deviceArgs.name,
+      extra: deviceArgs.extra === true,
     });
+    // Extras queue per lane: two at once would both pass the limit check
+    // before either row is written.
+    const device = deviceArgs.extra === true ? await serializeDeviceLifecycle(runtime, create) : await create();
     invalidateDeviceList();
     invalidateStatus(runtime);
+    // An extra device has no pane or `start` of its own: it comes up booted,
+    // so the next `--device` command finds it ready.
+    if (device.extra) {
+      args.captureAnalytics?.("extra_device_created");
+      await bootExtraDevice(device);
+    }
     return device;
+  };
+
+  /** Boot one of a lane's extra devices if it is off, and note that it was used. */
+  const bootExtraDevice = async (device: AppleLaneDevice): Promise<void> => {
+    const listed = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
+    if (listed?.state !== "Booted") {
+      await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" });
+      invalidateDeviceList();
+    }
+    maintenance?.touch(device.udid);
   };
 
   const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
@@ -6554,8 +6606,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     let onlyUdids: Set<string> | null = null;
     if (cleanupArgs.agentCaller === true) {
-      const own = laneDevices.get(resolveRuntime(cleanupArgs).key);
-      onlyUdids = new Set(own ? [own.udid] : []);
+      const key = resolveRuntime(cleanupArgs).key;
+      const own = laneDevices.get(key);
+      // The lane's extra devices are its own too.
+      onlyUdids = new Set([...(own ? [own.udid] : []), ...(key ? laneDevices.extras(key).map((device) => device.udid) : [])]);
     }
     const result = await laneMaintenance().runCleanup({ powerOffIdle: cleanupArgs.powerOffIdle === true, onlyUdids });
     invalidateDeviceList();
@@ -6799,6 +6853,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // chat claim go first, then the power. The device stays the lane's.
       // The udid the pass checked, not whatever the lane holds by now.
       powerOffDevice: async (device) => {
+        // An extra device has no stream or claim of its own to stop first.
+        if (device.extra) {
+          await power.powerOffDevice(device.udid, "power-off");
+          return;
+        }
         await deviceStop({ laneId: device.laneId, udid: device.udid, ignoreOwnership: true });
       },
       isBusyHere,
@@ -6887,6 +6946,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           .map((value) => (typeof value === "string" ? value.trim() : ""))
           .find(Boolean) ?? null;
         let laneDevice = laneDevices.get(runtime.key);
+        // One of the lane's extra devices (`device-create --extra`), named by
+        // udid or name: the call runs on it, booted first.
+        const extra = explicit && explicit !== laneDevice?.udid ? laneDevices.findExtra(runtime.key, explicit) : null;
+        if (extra) {
+          if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
+            throw new Error(
+              `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
+              + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
+              + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+            );
+          }
+          if (mode === "drive") await bootExtraDevice(extra);
+          const onExtra = { ...callArgs, deviceUdid: extra.udid, ...(callArgs.udid !== undefined ? { udid: extra.udid } : {}) };
+          return (original as (...params: unknown[]) => unknown)(onExtra, ...rest);
+        }
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
