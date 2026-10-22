@@ -1858,6 +1858,8 @@ async function findAppBundle(
      */
     productName?: string | null;
     appBundlePath?: string | null;
+    /** Only a bundle that matches by id or name; never the first one found. */
+    matchOnly?: boolean;
   },
 ): Promise<string | null> {
   if (criteria.appBundlePath && fs.existsSync(criteria.appBundlePath)) return criteria.appBundlePath;
@@ -1879,7 +1881,7 @@ async function findAppBundle(
     const match = appBundles.find((candidate) => path.basename(candidate) === expectedName);
     if (match) return match;
   }
-  return appBundles[0] ?? null;
+  return criteria.matchOnly ? null : appBundles[0] ?? null;
 }
 
 function unquotePbxValue(raw: string | null | undefined): string | null {
@@ -4281,7 +4283,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (configurationNamed && !built) {
       throw new Error(`${configuration} has not been built for this lane. Launch without --no-build to build it, or drop --configuration.`);
     }
-    return findAppBundle(built ? productRoot : derivedDataPath, {
+    const appBundle = await findAppBundle(built ? productRoot : derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
       // productName lives on the underlying launch target (ResolvedLaunchTarget
@@ -4290,7 +4292,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // differs from the produced .app, still resolves to the right bundle.
       productName: target.target.productName,
       appBundlePath: target.appBundlePath,
+      // Without a build just now, a named configuration's folder may hold
+      // only another target's app; never install that under this name.
+      matchOnly: configurationNamed && !target.shouldBuild,
     });
+    if (!appBundle && configurationNamed && !target.shouldBuild) {
+      throw new Error(`${configuration} has no build of ${target.scheme ?? "this target"} for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    return appBundle;
   };
 
   const attachToChatSession = (
