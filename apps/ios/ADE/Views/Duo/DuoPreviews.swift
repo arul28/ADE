@@ -35,4 +35,16 @@ enum DuoPreviewRouter {
     return AnyView(Text("No Duo fixture named \(name)").padding())
   }
 }
+
+/// Supplies the app-level models the real root injects, so a fixture can
+/// mount any screen that reads them (the Work header's Activity bell, …).
+struct DuoPreviewHost: View {
+  let name: String
+  @StateObject private var activityDrawer = ActivityDrawerModel()
+
+  var body: some View {
+    DuoPreviewRouter.view(named: name)
+      .environmentObject(activityDrawer)
+  }
+}
 #endif

@@ -45,7 +45,7 @@ struct ADEApp: App {
       // no network. Absent the argument this is the normal app, and the whole
       // branch is compiled out of release.
       if let duoPreview = DuoPreviewRouter.requestedName {
-        DuoPreviewRouter.view(named: duoPreview)
+        DuoPreviewHost(name: duoPreview)
           .duoLayoutRoot()
           .environmentObject(syncService)
           .environmentObject(machineFleet)
