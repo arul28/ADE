@@ -44,7 +44,14 @@ struct ADEApp: App {
       // simulator can screenshot a design change with no pairing, no brain, and
       // no network. Absent the argument this is the normal app, and the whole
       // branch is compiled out of release.
-      if let previewScreen = ADEPreviewScreen.requested {
+      if let duoPreview = DuoPreviewRouter.requestedName {
+        DuoPreviewRouter.view(named: duoPreview)
+          .duoLayoutRoot()
+          .environmentObject(syncService)
+          .environmentObject(machineFleet)
+          .environmentObject(dictationController)
+          .environmentObject(accountService)
+      } else if let previewScreen = ADEPreviewScreen.requested {
         ADEPreviewScreenHost(screen: previewScreen)
           .environmentObject(syncService)
           .environmentObject(machineFleet)
