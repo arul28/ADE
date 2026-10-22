@@ -544,7 +544,10 @@ struct DuoChatRail: ViewModifier {
     let chat = paneBesideChat ? columnWidth / 2 : columnWidth
     let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 36 : 250
     let width = max(150, chat - trailing - sidebar)
-    return spansColumn ? width : min(420, width)
+    // The bar drops a leading item wider than its slot (the column runs under
+    // the rail's inset), so the spanning capsule keeps clear of the bar's own
+    // margins.
+    return spansColumn ? max(150, width - 48) : min(420, width)
   }
 
   func body(content: Content) -> some View {
