@@ -1096,8 +1096,12 @@ enum HubProjectGridMetrics {
 /// icon…, Move to top, Copy path, and Remove from list.
 struct HubProjectTile: View, Equatable {
   let presentation: HubProjectPresentation
-  /// "Arul’s Mac Studio" or "2 machines"; nil hides the chip.
+  /// "Arul’s Mac Studio" or "2 machines": spoken, and the long-press menu's
+  /// header. nil when the user has one machine.
   var machineLabel: String?
+  /// How many machines the project is on; the chip shows the count, which
+  /// never truncates in a narrow tile. 0 hides it.
+  var machineCount = 0
   /// The project's machines can store a new icon (`projectIcon` feature).
   var canChangeIcon = false
   var canMoveToTop = true
@@ -1122,8 +1126,8 @@ struct HubProjectTile: View, Equatable {
         HStack(alignment: .top, spacing: 6) {
           HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
           Spacer(minLength: 4)
-          if let machineLabel {
-            HubProjectMachineChip(label: machineLabel)
+          if machineLabel != nil, machineCount > 0 {
+            HubProjectMachineChip(count: machineCount)
           }
         }
         Spacer(minLength: 8)
@@ -1176,6 +1180,9 @@ struct HubProjectTile: View, Equatable {
     .accessibilityLabel(tileSpokenLabel)
     .accessibilityHint("Opens the project.")
     .contextMenu {
+      if let machineLabel {
+        Section("On \(machineLabel)") {}
+      }
       Button(action: onOpenProject) {
         Label("Open", systemImage: "arrow.up.forward.app")
       }
@@ -1224,29 +1231,30 @@ struct HubProjectTile: View, Equatable {
   static func == (lhs: HubProjectTile, rhs: HubProjectTile) -> Bool {
     lhs.presentation == rhs.presentation
       && lhs.machineLabel == rhs.machineLabel
+      && lhs.machineCount == rhs.machineCount
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
   }
 }
 
-/// The machines a project is on, as the quiet chip desktop's project cards
-/// carry: one machine's name, or "2 machines".
+/// How many machines a project is on, as a quiet chip: a computer glyph and
+/// the count. The names are in the long-press menu and the spoken label.
 struct HubProjectMachineChip: View {
-  let label: String
+  let count: Int
 
   var body: some View {
     HStack(spacing: 3) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 9, weight: .semibold))
-      Text(label)
-        .font(.caption2.weight(.medium))
-        .lineLimit(1)
-        .truncationMode(.middle)
+      Image(systemName: count > 1 ? "macbook.and.iphone" : "desktopcomputer")
+        .font(.system(size: 10, weight: .semibold))
+      Text("\(count)")
+        .font(.caption2.weight(.semibold))
+        .monospacedDigit()
     }
     .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 7)
     .padding(.vertical, 3)
     .background(ADEKit.track, in: Capsule())
+    .fixedSize()
     .accessibilityHidden(true)
   }
 }

@@ -405,6 +405,12 @@ private struct PersonalChatRow: View {
     return "\(providerLabel(summary.provider)) · \(modelLabel)"
   }
 
+  /// Model, then the machine when the list spans several.
+  private var metaLine: String? {
+    let parts = [subtitle == modelContext ? nil : modelContext, showsMachine ? machineName : nil].compactMap { $0 }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
   private var accessibilityStatus: String {
     switch status {
     case "active": return "Working"
@@ -454,21 +460,14 @@ private struct PersonalChatRow: View {
       }
 
       VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 8) {
+        // The title gets the row: the time never wraps, and the machine moves
+        // to the quiet meta line, where a narrow column cannot squeeze both.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(title)
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          if showsMachine {
-            Text(machineName)
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 3)
-              .background(ADEKit.track, in: Capsule())
-              .accessibilityLabel("On \(machineName)")
-          }
+            .lineLimit(2)
+            .layoutPriority(1)
           if summary.archivedAt != nil {
             Image(systemName: "archivebox.fill")
               .font(.caption2)
@@ -479,13 +478,15 @@ private struct PersonalChatRow: View {
           Text(relativeTimestamp(summary.lastActivityAt))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .fixedSize()
         }
         Text(subtitle)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
-        if subtitle != modelContext {
-          Text(modelContext)
+        if let metaLine {
+          Text(metaLine)
             .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)

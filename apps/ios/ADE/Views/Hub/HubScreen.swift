@@ -426,6 +426,7 @@ struct HubScreen: View {
         HubProjectTile(
           presentation: presentation,
           machineLabel: hubMachineLabel(for: project),
+          machineCount: hubMachineCount(for: project),
           canChangeIcon: hubCanChangeIcon(for: project),
           canMoveToTop: projectOrder.first != project.id,
           onOpenProject: { openHubProject(project) },
@@ -508,6 +509,10 @@ struct HubScreen: View {
     if onFocused { return syncService.focusedMachineDisplayName }
     guard let key = others.first?.machineKey else { return nil }
     return machineFleet.machine(for: key)?.name ?? "Another machine"
+  }
+
+  private func hubMachineCount(for project: MobileProjectSummary) -> Int {
+    hubProjectLocations(project).count + (fleetMerge.projectOwners[project.id] == nil ? 1 : 0)
   }
 
   /// Change icon… shows when a machine the project is on can store one.
