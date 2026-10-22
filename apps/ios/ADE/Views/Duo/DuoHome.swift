@@ -462,6 +462,11 @@ struct DuoPersonalChatsWindow: View {
 
   @State private var selection: Selection?
   @State private var listShown = true
+  @State private var newChatShown = false
+  /// The chat column's tools pane and rail, the same model Work's chat column
+  /// owns: handed to the chat, it builds the column's one stack itself, so its
+  /// title sits on the top row and Chat Info, Tools and ⋯ go to the rail.
+  @StateObject private var pane = DuoWorkPaneModel()
 
   var body: some View {
     Group {
@@ -491,30 +496,36 @@ struct DuoPersonalChatsWindow: View {
         detail
       }
     }
+    .onChange(of: selection) { _, _ in pane.close() }
   }
 
+  @ViewBuilder
   private var detail: some View {
-    NavigationStack {
-      if let selection {
-        WorkSessionDestinationView(
-          sessionId: selection.summary.sessionId,
-          initialOpeningPrompt: nil,
-          initialSession: makePersonalChatSessionStub(selection.summary),
-          initialChatSummary: selection.summary,
-          transitionNamespace: nil,
-          isLive: selection.summary.archivedAt == nil,
-          navigationChrome: .column,
-          showsLaneActions: false,
-          navigationTitleOverride: selection.summary.title,
-          lanes: [],
-          personalChat: true,
-          personalChatMachineKey: selection.machineKey,
-          duoShowsSidebar: listShown,
-          onDuoToggleSidebar: { withAnimation(.snappy(duration: 0.25)) { listShown.toggle() } },
-          onDuoBack: { self.selection = nil }
-        )
-        .id(selection.id)
-      } else {
+    if let selection {
+      // No stack around it: with `duoPane` the chat is its own stack (two
+      // nested stacks would merge bars and lose the rail).
+      WorkSessionDestinationView(
+        sessionId: selection.summary.sessionId,
+        initialOpeningPrompt: nil,
+        initialSession: makePersonalChatSessionStub(selection.summary),
+        initialChatSummary: selection.summary,
+        transitionNamespace: nil,
+        isLive: selection.summary.archivedAt == nil,
+        navigationChrome: .column,
+        showsLaneActions: false,
+        navigationTitleOverride: selection.summary.title,
+        lanes: [],
+        personalChat: true,
+        personalChatMachineKey: selection.machineKey,
+        duoPane: pane,
+        duoPaneOpen: pane.isOpen,
+        duoShowsSidebar: listShown,
+        onDuoToggleSidebar: { withAnimation(.snappy(duration: 0.25)) { listShown.toggle() } },
+        onDuoBack: { self.selection = nil }
+      )
+      .id(selection.id)
+    } else {
+      NavigationStack {
         ContentUnavailableView(
           "Pick a chat",
           systemImage: "bubble.left.and.bubble.right",
@@ -522,6 +533,17 @@ struct DuoPersonalChatsWindow: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ADEColor.pageBackground.ignoresSafeArea())
+        // The empty column's rail offers what Work's empty detail does: a
+        // new chat, at its top.
+        .toolbar {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button { newChatShown = true } label: {
+              Label("New chat", systemImage: "square.and.pencil")
+            }
+            .accessibilityHint("Starts a conversation that is not linked to a project.")
+          }
+        }
+        .navigationDestination(isPresented: $newChatShown) { PersonalChatNewScreen() }
       }
     }
   }
