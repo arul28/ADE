@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.116] - 2026-10-21
+
+### Desktop and web
+
+- First-run setup, a guided tour, ADE Tips and situational suggestions (#1857).
+- Manage simulator runtimes from the Apple panel; iPhone Duo folds for real (#1852).
+- Project notes shared by every ADE agent; cleaner Project settings (#1855).
+- Jev decides chat status, model hints, ⌘K and lane emoji, with a fallback (#1858).
+- Quieter receipt notices (#1851); Focus no longer holds busy lanes open for finished chats (#1854); agents keep replies out of thinking (#1859).
+- Landing page story film fixes (#1860, #1861).
+
+### iOS
+
+- Drive the Mac's simulator live from the phone (#1853), in a new TestFlight build.
+
 ## [1.2.115] - 2026-10-21
 
 ### Desktop and web
@@ -2644,7 +2659,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.115...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.116...HEAD
+[1.2.116]: https://github.com/arul28/ADE/compare/v1.2.115...v1.2.116
 [1.2.115]: https://github.com/arul28/ADE/compare/v1.2.114...v1.2.115
 [1.2.114]: https://github.com/arul28/ADE/compare/v1.2.113...v1.2.114
 [1.2.113]: https://github.com/arul28/ADE/compare/v1.2.112...v1.2.113
