@@ -623,7 +623,10 @@ struct DuoChatRail: ViewModifier {
         if let overflow {
           overflow.content
         }
-        DuoAppUtilityMenuItems()
+        // Only while the sessions column (whose ⋯ has them) is away.
+        if showsSidebarButton {
+          DuoAppUtilityMenuItems()
+        }
       }
     }
   }
@@ -657,7 +660,10 @@ struct DuoChatRail: ViewModifier {
           WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
             .equatable()
         }
-        DuoAppUtilityMenuItems()
+        // Only while the sessions column (whose ⋯ has them) is away.
+        if showsSidebarButton {
+          DuoAppUtilityMenuItems()
+        }
       }
     }
     // On the edge bar, Activity and Settings live in the bar's one ⋯ (below

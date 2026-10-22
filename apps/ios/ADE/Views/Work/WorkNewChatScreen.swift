@@ -979,6 +979,9 @@ struct WorkNewChatScreen: View {
         composerBar
       }
       .padding(.bottom, 4)
+      // Held landscape on the Duo, the prompt box's bottom lines up with the
+      // edge bar's last capsule.
+      .duoEdgeBarAlignedBottom(contentBottomPadding: 4)
       .onGeometryChange(for: CGFloat.self) { proxy in
         proxy.size.height
       } action: { height in
@@ -1017,8 +1020,10 @@ struct WorkNewChatScreen: View {
           WorkNewSessionModePreferences.save(mode, projectId: activeProjectId)
         })
       }
-      ToolbarItem(placement: .topBarTrailing) {
-        if busy {
+      // Declared only while busy: an always-declared item with nothing in it
+      // still draws an empty glass circle in the bar.
+      if busy {
+        ToolbarItem(placement: .topBarTrailing) {
           ProgressView().controlSize(.small)
         }
       }

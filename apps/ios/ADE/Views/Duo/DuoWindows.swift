@@ -182,6 +182,10 @@ struct DuoActivityStateMenu: View {
 /// the settings list on the left and the page a row opens on the right. A book
 /// fold puts each on its own page. Held upright it is the phone's stack.
 struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
+  /// Closes Settings. The split puts its close button on the page column, the
+  /// trailing stack, so held landscape iOS puts it at the top of the edge bar
+  /// under the thumb; the list column carries none.
+  let onClose: () -> Void
   @ViewBuilder var sidebar: () -> Sidebar
   @ViewBuilder var landing: () -> Landing
 
@@ -197,15 +201,18 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
             .navigationSplitViewColumnWidth(sidebarWidth(fold: fold, size: size))
             .toolbar(removing: .sidebarToggle)
             .environment(\.duoSettingsSelection, $selection)
+            .environment(\.duoSettingsClose, onClose)
         } detail: {
           NavigationStack {
             landing()
+              .modifier(DuoSettingsCloseItem(onClose: onClose))
           }
         }
         .navigationSplitViewStyle(.balanced)
       } else {
         NavigationStack {
           sidebar()
+            .modifier(DuoSettingsCloseItem(onClose: onClose))
         }
       }
     }
@@ -222,6 +229,24 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
 extension EnvironmentValues {
   /// The two-column Settings window's selected row (by title). Nil outside it.
   @Entry var duoSettingsSelection: Binding<String?>? = nil
+  /// The two-column Settings window's close, which every page a row opens in
+  /// the right column carries (so it stays on the edge bar). Nil outside it.
+  @Entry var duoSettingsClose: (() -> Void)? = nil
+}
+
+/// Settings' close button, the standard close role, on the trailing side of
+/// a page's bar: held landscape in the right column that is the edge bar.
+struct DuoSettingsCloseItem: ViewModifier {
+  let onClose: () -> Void
+
+  func body(content: Content) -> some View {
+    content.toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        Button(role: .close, action: onClose)
+          .accessibilityLabel("Close settings")
+      }
+    }
+  }
 }
 
 // MARK: - Linear

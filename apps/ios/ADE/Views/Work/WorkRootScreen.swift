@@ -1034,8 +1034,12 @@ struct WorkRootListScreen: View, Equatable {
     let column = DuoWorkMetrics.sessionsColumn(total: size.width, fold: fold)
     let listShown = duoShowsSessionList
     return HStack(spacing: 0) {
+      // The list is always laid out at the column's full width; collapsing
+      // only narrows the window onto it. A list whose own width animated from
+      // zero kept rows (and its header) sized to a mid-animation width.
       duoSessionsColumn
-        .frame(width: listShown ? column.width : 0)
+        .frame(width: column.width)
+        .frame(width: listShown ? column.width : 0, alignment: .leading)
         .mask { Rectangle().ignoresSafeArea() }
         .opacity(listShown ? 1 : 0)
         .allowsHitTesting(listShown)
@@ -1122,7 +1126,8 @@ struct WorkRootListScreen: View, Equatable {
       DuoWorkEmptyDetail(canCreate: inputs.isLive, onNewChat: pushNewChatRoute)
         .toolbar {
           ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
-          DuoAppTabsToolbar()
+          // Activity and Settings are in the sessions ⋯, not on the rail.
+          DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
         }
         .modifier(duoShowSessionsItem)
     }
@@ -1144,7 +1149,8 @@ struct WorkRootListScreen: View, Equatable {
             }
             .accessibilityIdentifier("Duo.Work.NewChat.Cancel")
           }
-          DuoAppTabsToolbar()
+          // Activity and Settings are in the sessions ⋯, not on the rail.
+          DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
         }
         .modifier(duoShowSessionsItem)
     }
@@ -1176,7 +1182,7 @@ struct WorkRootListScreen: View, Equatable {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
-        DuoAppTabsToolbar()
+        DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
       }
       .modifier(duoShowSessionsItem)
     }
@@ -1390,7 +1396,7 @@ struct WorkRootListScreen: View, Equatable {
           .accessibilityIdentifier("Duo.Work.NewChat")
       }
       if duoListIsPage {
-        DuoAppTabsToolbar()
+        DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
       }
     }
   }
@@ -1641,6 +1647,10 @@ struct WorkRootListScreen: View, Equatable {
       // The header sits in a safe-area inset directly above; the list's own
       // top margin would double the gap under it.
       .contentMargins(.top, 0, for: .scrollContent)
+      // A regular-width list may add its own readable-width side margins; the
+      // sessions column is narrow and its rows carry their own insets, so it
+      // takes the column's whole width.
+      .contentMargins(.horizontal, duoColumn ? 0 : nil, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
     let list = workListChrome(rows, duoColumn: duoColumn)

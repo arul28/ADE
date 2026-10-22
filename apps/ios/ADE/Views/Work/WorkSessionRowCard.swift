@@ -615,61 +615,77 @@ struct WorkSessionRow: View, Equatable {
 
   /// Lane, machine, PR, then status and time hard against the trailing edge.
   /// The lane and PR only where no lane header above already says them.
+  ///
+  /// Nothing on this line may draw over anything else: when it does not fit,
+  /// the PR tag goes first, then the lane's git state, then the machine; the
+  /// lane name truncates last.
   private var duoMetaLine: some View {
     HStack(spacing: 6) {
-      HStack(spacing: 6) {
-        if session.pinned {
-          Image(systemName: "pin.fill")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        if isMuted {
-          Image(systemName: "bell.slash")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        if let goal = renderSignature.activeGoal {
-          Image(systemName: "target")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
-            .accessibilityHidden(true)
-        }
-        lineageMark(font: .caption2)
-        if showsLaneIdentity {
-          HStack(spacing: 4) {
-            Circle()
-              .fill(laneTint)
-              .frame(width: 7, height: 7)
-            Text(renderSignature.laneName)
-              .font(.caption.weight(.medium))
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(1)
-          }
-          .layoutPriority(-1)
-          laneGitState
-        }
-        if let machineName, !machineName.isEmpty {
-          Label(machineName, systemImage: "desktopcomputer")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-            .labelStyle(.titleAndIcon)
-            .lineLimit(1)
-            .layoutPriority(-1)
-        }
-        if showsLaneIdentity, let pullRequest {
-          WorkLanePrIndicator(tag: pullRequest)
-            .fixedSize()
-        }
-        if let exitCode = failedExitCode {
-          Text("EXIT \(exitCode)")
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize()
-        }
+      ViewThatFits(in: .horizontal) {
+        duoMetaItems(pr: true, git: true, machine: true)
+        duoMetaItems(pr: false, git: true, machine: true)
+        duoMetaItems(pr: false, git: false, machine: true)
+        duoMetaItems(pr: false, git: false, machine: false)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+      .clipped()
 
       duoStatus
+    }
+  }
+
+  private func duoMetaItems(pr: Bool, git: Bool, machine: Bool) -> some View {
+    HStack(spacing: 6) {
+      if session.pinned {
+        Image(systemName: "pin.fill")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if isMuted {
+        Image(systemName: "bell.slash")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if let goal = renderSignature.activeGoal {
+        Image(systemName: "target")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
+          .accessibilityHidden(true)
+      }
+      lineageMark(font: .caption2)
+      if showsLaneIdentity {
+        HStack(spacing: 4) {
+          Circle()
+            .fill(laneTint)
+            .frame(width: 7, height: 7)
+          Text(renderSignature.laneName)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        .layoutPriority(-1)
+        if git {
+          laneGitState
+        }
+      }
+      if machine, let machineName, !machineName.isEmpty {
+        Label(machineName, systemImage: "desktopcomputer")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .labelStyle(.titleAndIcon)
+          .lineLimit(1)
+          .layoutPriority(-1)
+      }
+      if pr, showsLaneIdentity, let pullRequest {
+        WorkLanePrIndicator(tag: pullRequest)
+          .fixedSize()
+      }
+      if let exitCode = failedExitCode {
+        Text("EXIT \(exitCode)")
+          .font(.caption2.monospaced().weight(.semibold))
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize()
+      }
     }
   }
 

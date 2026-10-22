@@ -43,8 +43,8 @@ struct ConnectionSettingsView: View {
     // the left, the page a row opens on the right. Everywhere else it is the
     // one pushed stack it has always been.
     if duo.isWide && !pairingOnly {
-      DuoSettingsSplit {
-        settingsChrome(settingsList)
+      DuoSettingsSplit(onClose: { dismiss() }) {
+        settingsChrome(settingsList, includesClose: false)
       } landing: {
         connectionLandingPage
       }
@@ -71,16 +71,20 @@ struct ConnectionSettingsView: View {
 
   /// The title, close button, sheets and observers the settings root carries,
   /// whichever column layout hosts it.
-  private func settingsChrome<Content: View>(_ content: Content) -> some View {
+  /// `includesClose: false` for the Duo's two columns, which put the close
+  /// button on the page column instead (see `DuoSettingsSplit`).
+  private func settingsChrome<Content: View>(_ content: Content, includesClose: Bool = true) -> some View {
     content
       .adeNavigationGlass()
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button(role: .close) {
-            dismiss()
+        if includesClose {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) {
+              dismiss()
+            }
+            .accessibilityLabel("Close settings")
           }
-          .accessibilityLabel("Close settings")
         }
       }
       .sheet(item: $presentedSheet) { route in

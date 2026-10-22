@@ -836,9 +836,18 @@ struct ADESettingsLink<Destination: View>: View {
   /// Set by the Duo's two-column Settings: the row whose page fills the right
   /// column draws the selection, as Apple Settings' sidebar does.
   @Environment(\.duoSettingsSelection) private var splitSelection
+  /// The two-column window's close: the page this row opens in the right
+  /// column carries it, so it stays on the edge bar.
+  @Environment(\.duoSettingsClose) private var splitClose
 
   var body: some View {
-    NavigationLink(destination: destination) {
+    NavigationLink {
+      if let splitClose {
+        destination().modifier(DuoSettingsCloseItem(onClose: splitClose))
+      } else {
+        destination()
+      }
+    } label: {
       ADESettingsRow(title: title, hint: hint, symbol: symbol) {
         HStack(spacing: 6) {
           if let value {
