@@ -979,6 +979,52 @@ export function importProjectIconBytes(projectRoot: string, fileName: string, da
 }
 
 /**
+ * Validates and decodes icon bytes that arrived inline from another device
+ * (`projects.setIcon` from a remote desktop, `project_set_icon_request` from
+ * a phone): a supported extension, a matching MIME type when one is given,
+ * and at most `REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES`, checked before the
+ * base64 is decoded so an oversized upload is never materialized. Throws an
+ * Error whose message names `label` (the request that carried it).
+ */
+export function decodeProjectIconUpload(
+  input: { fileName?: unknown; mimeType?: unknown; dataBase64?: unknown },
+  label: string,
+): { fileName: string; data: Buffer } {
+  const fileName = typeof input.fileName === "string" ? input.fileName.trim() : "";
+  if (!fileName) throw new Error(`${label} requires fileName.`);
+  // Only the last path segment matters; the extension picks the format.
+  const baseName = fileName.split(/[\\/]/).pop() ?? "";
+  const extension = path.extname(baseName).toLowerCase();
+  const allowedMimeTypes = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension];
+  if (!allowedMimeTypes) throw new Error(PROJECT_ICON_TYPE_ERROR);
+  const mimeType = typeof input.mimeType === "string" ? input.mimeType.trim().toLowerCase() : "";
+  if (mimeType && !allowedMimeTypes.includes(mimeType)) {
+    throw new Error(`Project icon type ${mimeType} does not match a ${extension} file.`);
+  }
+  const dataBase64 = typeof input.dataBase64 === "string" ? input.dataBase64.trim() : "";
+  // base64 expands 3 bytes to 4 characters.
+  if (!dataBase64 || dataBase64.length > Math.ceil(REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / 3) * 4) {
+    throw new Error(
+      dataBase64
+        ? `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`
+        : `${label} requires dataBase64.`,
+    );
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
+    throw new Error(`${label} dataBase64 is not valid base64.`);
+  }
+  const data = Buffer.from(dataBase64, "base64");
+  if (data.length === 0 || data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      data.length === 0
+        ? "Project icon file is empty."
+        : `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`,
+    );
+  }
+  return { fileName: baseName, data };
+}
+
+/**
  * Reads a picked icon file so it can be sent to a host. The size check runs
  * after the read, so a file that grows after it was picked is still caught.
  */

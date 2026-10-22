@@ -242,6 +242,7 @@ import {
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
 import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
+import { decodeProjectIconUpload, importProjectIconBytes } from "./services/projects/projectIconResolver";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -272,6 +273,8 @@ import type {
   SyncMobileProjectSummary,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
+  SyncProjectSetIconRequestPayload,
+  SyncProjectSetIconResultPayload,
   SyncProjectOpenRequestPayload,
   SyncPeerConnectionState,
   SyncProjectConnectionPayload,
@@ -5644,6 +5647,7 @@ app.whenReady().then(async () => {
         cloneProject: (input: CloneProjectInput) =>
           cloneMobileSyncProject(input, projectScaffoldService),
         forgetProject: forgetMobileSyncProject,
+        setProjectIcon: setMobileSyncProjectIcon,
         listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
           projectScaffoldService.listMyGitHubRepos(input),
       },
@@ -7170,6 +7174,55 @@ app.whenReady().then(async () => {
   ): Promise<SyncMobileProjectSummary> {
     const result = await scaffoldService.cloneRepository(input);
     return await mobileProjectSummaryForRoot(result.rootPath);
+  }
+
+  /**
+   * A phone's "Change icon…" for a project this desktop hosts: the same store
+   * the desktop's own icon editor writes, so the next catalog carries it.
+   */
+  async function setMobileSyncProjectIcon(
+    input: SyncProjectSetIconRequestPayload,
+  ): Promise<SyncProjectSetIconResultPayload> {
+    const requestedProjectId = typeof input.projectId === "string" && input.projectId.trim()
+      ? input.projectId.trim()
+      : null;
+    const requestedRoot = typeof input.rootPath === "string" && input.rootPath.trim()
+      ? normalizeProjectRoot(input.rootPath)
+      : null;
+    const localRecents = (readGlobalState(globalStatePath).recentProjects ?? []).filter((entry) => !entry.remote);
+    const knownRoots = new Set([
+      ...localRecents.map((entry) => normalizeProjectRoot(entry.rootPath)),
+      ...projectContexts.keys(),
+    ]);
+    const rootFromId = requestedProjectId == null
+      ? null
+      : [...projectContexts.entries()].find(([, ctx]) => ctx.projectId === requestedProjectId)?.[0] ?? null;
+    const root = requestedRoot && knownRoots.has(requestedRoot) ? requestedRoot : rootFromId;
+    if (!root) {
+      return {
+        ok: false,
+        message: "That project is not on this ADE machine.",
+        projectId: requestedProjectId,
+        rootPath: requestedRoot,
+      };
+    }
+    try {
+      const upload = decodeProjectIconUpload(input, "project_set_icon_request");
+      importProjectIconBytes(root, upload.fileName, upload.data);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
+        projectId: requestedProjectId,
+        rootPath: root,
+      };
+    }
+    return {
+      ok: true,
+      projectId: requestedProjectId,
+      rootPath: root,
+      iconDataUrl: mobileProjectIconDataUrl(root),
+    };
   }
 
   async function forgetMobileSyncProject(

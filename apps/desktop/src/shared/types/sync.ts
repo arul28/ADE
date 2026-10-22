@@ -985,6 +985,15 @@ export type SyncFeatureFlags = {
   projectActions: {
     enabled: boolean;
   };
+  /**
+   * The host answers `project_set_icon_request`. Older hosts omit it; a
+   * client hides "Change icon…" for a project on such a machine.
+   */
+  projectIcon?: {
+    enabled: true;
+    /** Largest icon file the request may carry, in bytes. */
+    maxBytes: number;
+  };
   changesetAck: {
     enabled: boolean;
   };
@@ -1265,6 +1274,31 @@ export type SyncProjectForgetResultPayload = {
   message?: string | null;
   projectId?: string | null;
   rootPath?: string | null;
+};
+
+/**
+ * Sets a registered project's icon from a picked image (a phone's photo
+ * library). The bytes travel inline, so they are capped at
+ * `REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES`; the host stores them in the project
+ * the way a desktop's "Change icon…" does, so every device shows the new icon
+ * from the next project catalog on.
+ */
+export type SyncProjectSetIconRequestPayload = {
+  projectId?: string | null;
+  rootPath?: string | null;
+  /** Picked file's name; only its extension and base name are used. */
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+};
+
+export type SyncProjectSetIconResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  projectId?: string | null;
+  rootPath?: string | null;
+  /** The thumbnail every device's catalog now carries, when it rendered. */
+  iconDataUrl?: string | null;
 };
 
 export type SyncProjectOpenRequestPayload = {
@@ -3080,6 +3114,8 @@ export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_
 export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
 export type SyncProjectForgetRequestEnvelope = SyncEnvelopeWithPayload<"project_forget_request", SyncProjectForgetRequestPayload>;
 export type SyncProjectForgetResultEnvelope = SyncEnvelopeWithPayload<"project_forget_result", SyncProjectForgetResultPayload>;
+export type SyncProjectSetIconRequestEnvelope = SyncEnvelopeWithPayload<"project_set_icon_request", SyncProjectSetIconRequestPayload>;
+export type SyncProjectSetIconResultEnvelope = SyncEnvelopeWithPayload<"project_set_icon_result", SyncProjectSetIconResultPayload>;
 export type SyncProjectBrowseRequestEnvelope = SyncEnvelopeWithPayload<"project_browse_request", ProjectBrowseInput>;
 export type SyncProjectBrowseResultEnvelope = SyncEnvelopeWithPayload<"project_browse_result", SyncProjectBrowseResultPayload>;
 export type SyncProjectDefaultParentDirRequestEnvelope = SyncEnvelopeWithPayload<"project_default_parent_dir_request", Record<string, never>>;
@@ -3194,6 +3230,8 @@ export type SyncEnvelope =
   | SyncProjectSwitchResultEnvelope
   | SyncProjectForgetRequestEnvelope
   | SyncProjectForgetResultEnvelope
+  | SyncProjectSetIconRequestEnvelope
+  | SyncProjectSetIconResultEnvelope
   | SyncProjectBrowseRequestEnvelope
   | SyncProjectBrowseResultEnvelope
   | SyncProjectDefaultParentDirRequestEnvelope

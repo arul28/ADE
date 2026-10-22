@@ -17,18 +17,27 @@ import SwiftUI
 // `ContentView` owns the selection and configures `DuoAppNavigation`; screens
 // only add the toolbar content.
 
-/// Kept for the panes that still write it (a Work chat with its tools open,
-/// Files with two editor groups). The inner display has no sidebar any more,
-/// so nothing reads it; the writers' contract is unchanged and harmless.
+/// Shell-wide flags the inner display's screens publish. `sidebarPreferredHidden`
+/// is kept for the panes that still write it (a Work chat with its tools open,
+/// Files with two editor groups); nothing reads it any more. `hubHostsActivity`
+/// tells the app-wide Activity presentation that the Hub shows it itself.
 @MainActor
 final class DuoShellChrome: ObservableObject {
   static let shared = DuoShellChrome()
 
   @Published var sidebarPreferredHidden = false
+  /// The Hub's two pages are on screen and show Activity in their right page,
+  /// so the app-wide Activity column (or sheet) stays out of the way.
+  @Published private(set) var hubHostsActivity = false
 
   func setSidebarPreferredHidden(_ hidden: Bool) {
     guard sidebarPreferredHidden != hidden else { return }
     sidebarPreferredHidden = hidden
+  }
+
+  func setHubHostsActivity(_ hosts: Bool) {
+    guard hubHostsActivity != hosts else { return }
+    hubHostsActivity = hosts
   }
 }
 

@@ -3,6 +3,11 @@ import SwiftUI
 struct PersonalChatsScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
+  /// The Duo's two-column Chats window: a row picks the chat for the detail
+  /// column instead of pushing it. Nil everywhere else.
+  var onSelect: ((AgentChatSessionSummary, _ machineKey: String?) -> Void)? = nil
+  /// The chat the detail column shows, drawn selected in the list.
+  var selectedSessionId: String? = nil
   @State private var searchText = ""
   @State private var loading = false
   @State private var errorMessage: String?
@@ -159,10 +164,26 @@ struct PersonalChatsScreen: View {
           if index > 0 {
             Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 70)
           }
-          NavigationLink {
-            PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
-          } label: {
-            PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+          Group {
+            if let onSelect {
+              Button {
+                onSelect(summary, entry.machineKey)
+              } label: {
+                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+              }
+              .background {
+                if summary.sessionId == selectedSessionId {
+                  ADEColor.accent.opacity(0.14)
+                }
+              }
+              .accessibilityAddTraits(summary.sessionId == selectedSessionId ? .isSelected : [])
+            } else {
+              NavigationLink {
+                PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
+              } label: {
+                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+              }
+            }
           }
           .buttonStyle(ADEKitRowButtonStyle())
           .contextMenu {

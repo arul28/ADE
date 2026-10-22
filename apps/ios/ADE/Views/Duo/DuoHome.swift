@@ -3,16 +3,16 @@ import SwiftUI
 // The Hub (Home) on the Duo's inner display, and the pieces it shares with
 // the phone's Hub.
 //
-//   Projects (left page / top half)   Needs you · Machines · composer
-//   ---------------------------------------------------------------
-//   the same project cards            two widgets that fill the page,
-//                                     the composer at the very bottom
+//   Projects (left page / top half)   status filters · agent list · composer
+//   ---------------------------------------------------------------------
+//   the same project grid             the chats in one status across every
+//                                     project; Activity takes this page over
 //
-// The pages are the components the phone draws — `HubProjectCard`,
-// `HubInlineComposer`, `HubToolbar` — so a project, a chat row or a machine
-// means the same thing in either posture. Nothing here fetches: the widgets
-// read the presentations the Hub already built and the fleet the connection
-// menu already shows.
+// The pages are the components the phone draws — `HubProjectTile`,
+// `HubInlineComposer`, `HubToolbar` — so a project or a chat row means the
+// same thing in either posture. Nothing here fetches: the agent list reads
+// the presentations the Hub already built, and the rail's Machines menu the
+// fleet the connection menu already shows.
 
 // MARK: - Needs you
 
@@ -251,6 +251,7 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @ViewBuilder var chatsDestination: () -> ChatsDestination
 
   @Environment(\.duoLayout) private var duo
+  @EnvironmentObject private var syncService: SyncService
   @State private var agentFilter: HubRosterFilter?
   /// The projects page's width, so its title can make room for Activity,
   /// Chats and Add where they share its bar.
@@ -275,7 +276,24 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
 
   // MARK: Two pages
 
+  /// Chats replaces both pages with its own two columns (the list and the
+  /// chat, like Work); its Home button comes back here.
+  @ViewBuilder
   private var pagesLayout: some View {
+    Group {
+      if chatsPresented {
+        DuoPersonalChatsWindow(onClose: { chatsPresented = false })
+      } else {
+        projectPages
+      }
+    }
+    // The right page shows Activity itself, so the app-wide Activity column
+    // (or sheet) stays away while these pages are up.
+    .onAppear { DuoShellChrome.shared.setHubHostsActivity(true) }
+    .onDisappear { DuoShellChrome.shared.setHubHostsActivity(false) }
+  }
+
+  private var projectPages: some View {
     DuoTwoPages(flatShare: 0.54, sideBySideWhenUpright: true) {
       NavigationStack {
         projects()
@@ -302,9 +320,20 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
             }
             ToolbarItem(placement: .topBarTrailing) { addButton }
           }
-          .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
       }
     } second: {
+      if syncService.attentionDrawerPresented {
+        // Activity takes the right page; the projects page stays as it is.
+        // Its own stack, so its close and filter are this page's rail.
+        ActivityDrawerSheet(onCloseInspector: { syncService.attentionDrawerPresented = false })
+          .environmentObject(syncService.attentionDrawer)
+      } else {
+        agentsStack
+      }
+    }
+  }
+
+  private var agentsStack: some View {
       NavigationStack {
         agentsPage
           .duoEdgeBarAlignedBottom(contentBottomPadding: HubInlineComposer.bottomPadding)
@@ -323,7 +352,6 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
             }
           }
       }
-    }
   }
 
   // MARK: Laptop / tent
@@ -412,6 +440,90 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
     }
     .tint(ADEColor.textPrimary)
     .accessibilityHint("Adds a project from one of your machines.")
+  }
+}
+
+// MARK: - Chats window
+
+/// Chats on the inner display (and an iPad): the Work tab's shape for the
+/// conversations that belong to no project. The chat list (with search) on
+/// the left, the picked chat on the right with its actions on the rail, and
+/// "Pick a chat" until one is. Home returns to the Hub. A phone keeps the
+/// pushed list it has always had.
+struct DuoPersonalChatsWindow: View {
+  let onClose: () -> Void
+
+  private struct Selection: Equatable {
+    let summary: AgentChatSessionSummary
+    let machineKey: String?
+    var id: String { "\(machineKey ?? "focused")|\(summary.sessionId)" }
+    static func == (lhs: Selection, rhs: Selection) -> Bool { lhs.id == rhs.id }
+  }
+
+  @State private var selection: Selection?
+  @State private var listShown = true
+
+  var body: some View {
+    Group {
+      if listShown {
+        DuoTwoPages(flatShare: 0.38, sideBySideWhenUpright: true) {
+          NavigationStack {
+            PersonalChatsScreen(
+              onSelect: { summary, machineKey in
+                selection = Selection(summary: summary, machineKey: machineKey)
+              },
+              selectedSessionId: selection?.summary.sessionId
+            )
+            .duoLeadingColumnContent()
+            .toolbar {
+              ToolbarItem(placement: .topBarLeading) {
+                Button(action: onClose) {
+                  Label("Home", systemImage: "chevron.backward")
+                }
+                .accessibilityHint("Returns to all projects.")
+              }
+            }
+          }
+        } second: {
+          detail
+        }
+      } else {
+        detail
+      }
+    }
+  }
+
+  private var detail: some View {
+    NavigationStack {
+      if let selection {
+        WorkSessionDestinationView(
+          sessionId: selection.summary.sessionId,
+          initialOpeningPrompt: nil,
+          initialSession: makePersonalChatSessionStub(selection.summary),
+          initialChatSummary: selection.summary,
+          transitionNamespace: nil,
+          isLive: selection.summary.archivedAt == nil,
+          navigationChrome: .column,
+          showsLaneActions: false,
+          navigationTitleOverride: selection.summary.title,
+          lanes: [],
+          personalChat: true,
+          personalChatMachineKey: selection.machineKey,
+          duoShowsSidebar: listShown,
+          onDuoToggleSidebar: { withAnimation(.snappy(duration: 0.25)) { listShown.toggle() } },
+          onDuoBack: { self.selection = nil }
+        )
+        .id(selection.id)
+      } else {
+        ContentUnavailableView(
+          "Pick a chat",
+          systemImage: "bubble.left.and.bubble.right",
+          description: Text("Chats here aren’t tied to a project.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+      }
+    }
   }
 }
 
@@ -756,6 +868,8 @@ private struct DuoWidgetRowButtonStyle: ButtonStyle {
 ///     duo-home        the Hub at real volume (16 projects, 19 need you, 5 machines)
 ///     duo-home-quiet  the same Hub with nothing needing you
 ///     duo-home-filtered  the Hub with the Working filter on
+///     duo-home-chats  Chats open (the two-column chats window on the inner display)
+///     duo-activity    (DuoWindows) the Hub with Activity open in its right page
 enum DuoHomePreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
@@ -763,6 +877,7 @@ enum DuoHomePreviews {
     case "duo-home", "duo-home-outer": return AnyView(DuoHomeFixtureScreen())
     case "duo-home-quiet": return AnyView(DuoHomeFixtureScreen(quiet: true))
     case "duo-home-filtered": return AnyView(DuoHomeFixtureScreen(initialFilter: .working))
+    case "duo-home-chats": return AnyView(DuoHomeFixtureScreen(opensChats: true))
     case "duo-nomachine": return AnyView(DuoConnectFixtures.noMachine)
     case "duo-signin": return AnyView(DuoConnectFixtures.gate)
     case "duo-signin-sheet": return AnyView(DuoConnectFixtures.gate(sheet: .signIn))
@@ -869,10 +984,10 @@ private struct DuoHomeFixtureScreen: View {
   var quiet = false
   /// The filter a fixture opens on; nil is each layout's default.
   var initialFilter: HubRosterFilter?
+  var opensChats = false
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.duoLayout) private var duo
   @State private var composerExpanded = false
-  @State private var collapsedLaneKeys: Set<String> = []
   @State private var rosterFilter: HubRosterFilter = .all
   @State private var chatsPresented = false
 
@@ -911,7 +1026,7 @@ private struct DuoHomeFixtureScreen: View {
           title: { title },
           projects: { roster },
           composer: { HubInlineComposer(expanded: $composerExpanded, onCreated: { _ in }) },
-          chatsDestination: { Text("Chats") }
+          chatsDestination: { PersonalChatsScreen() }
         )
       } else {
         NavigationStack {
@@ -931,7 +1046,10 @@ private struct DuoHomeFixtureScreen: View {
         }
       }
     }
-    .onAppear { if !duo.isWide { rosterFilter = initialFilter ?? .all } }
+    .onAppear {
+      if !duo.isWide { rosterFilter = initialFilter ?? .all }
+      if opensChats { chatsPresented = true }
+    }
     // The toolbar's Activity item reads the drawer, and every control the
     // app's tint; the app sets both at the root, which the fixture stands in for.
     .environmentObject(syncService.attentionDrawer)
@@ -954,14 +1072,11 @@ private struct DuoHomeFixtureScreen: View {
         ForEach(presentations.compactMap { hubProjectPresentation($0, matching: duo.isWide ? .all : rosterFilter) }) { presentation in
           HubProjectTile(
             presentation: presentation,
-            collapsedLaneKeysSnapshot: collapsedLaneKeys,
-            collapsedLaneKeys: $collapsedLaneKeys,
+            machineLabel: DuoHomeFixture.machineLabel(for: presentation.project),
+            canChangeIcon: true,
             onOpenProject: {},
-            onOpenChat: { _, _ in },
-            onViewLaneInWork: { _ in },
-            onViewLaneInLanes: { _ in },
-            onArchiveChat: { _ in },
-            onDeleteChat: { _ in },
+            onChangeIcon: { _ in },
+            onMoveToTop: {},
             onForget: {}
           )
           .equatable()
@@ -999,6 +1114,17 @@ private enum DuoHomeFixture {
     DuoHomeMachine(id: "fixture-machine-mini", name: "Build Mac mini", statusWord: "Paused", tone: .neutral),
     DuoHomeMachine(id: "fixture-machine-linux", name: "linux-gpu-box", statusWord: "Offline", tone: .crit),
   ]
+
+  /// Realistic machine chips: most projects on the Mac Studio, some on two
+  /// machines, a few only on the MacBook Pro.
+  static func machineLabel(for project: MobileProjectSummary) -> String? {
+    let index = Int(project.id.split(separator: "-").last ?? "") ?? 0
+    switch index % 5 {
+    case 1: return "2 machines"
+    case 3: return "Arul’s MacBook Pro"
+    default: return "Arul’s Mac Studio"
+    }
+  }
 
   static func stamp(minutesAgo: Int) -> String {
     ISO8601DateFormatter().string(from: Date().addingTimeInterval(-Double(minutesAgo) * 60))

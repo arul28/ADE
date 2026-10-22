@@ -29,9 +29,15 @@ struct DuoWindowPresentations: ViewModifier {
 
   @Environment(\.duoLayout) private var duo
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @ObservedObject private var chrome = DuoShellChrome.shared
   @State private var isLandscape = false
 
   private var wideLandscape: Bool { duo.isWide && isLandscape }
+  /// Activity as the app-wide trailing column: held landscape, unless the
+  /// Hub's two pages are up, which show it in their right page instead.
+  private var activityColumn: Bool { wideLandscape && !chrome.hubHostsActivity }
+  /// Activity as a sheet: held upright or on a phone, unless the Hub hosts it.
+  private var activitySheet: Bool { !wideLandscape && !chrome.hubHostsActivity }
   /// Settings' two columns: held landscape only. Upright the window is under
   /// ~700pt wide, where a split view lays its list over a dimmed page instead
   /// of beside it, so Settings stays the sheet there.
@@ -50,9 +56,9 @@ struct DuoWindowPresentations: ViewModifier {
         // The column takes the curved edge, so the app beside it lays its
         // controls out in top bars instead of an edge bar it no longer reaches.
         .transformEnvironment(\.duoLayout) { layout in
-          layout.edgeBarYielded = wideLandscape && syncService.attentionDrawerPresented
+          layout.edgeBarYielded = activityColumn && syncService.attentionDrawerPresented
         }
-      if wideLandscape && syncService.attentionDrawerPresented {
+      if activityColumn && syncService.attentionDrawerPresented {
         DuoSeam(axis: .vertical)
           .ignoresSafeArea()
         ActivityDrawerSheet(onCloseInspector: {
@@ -64,7 +70,7 @@ struct DuoWindowPresentations: ViewModifier {
         .transition(.move(edge: .trailing))
       }
     }
-    .animation(motion, value: wideLandscape && syncService.attentionDrawerPresented)
+    .animation(motion, value: activityColumn && syncService.attentionDrawerPresented)
     .onGeometryChange(for: Bool.self) { proxy in
       proxy.size.width > proxy.size.height
     } action: { landscape in
@@ -76,7 +82,7 @@ struct DuoWindowPresentations: ViewModifier {
     .fullScreenCover(isPresented: shown($syncService.settingsPresented, when: settingsWindow)) {
       settings
     }
-    .sheet(isPresented: shown($syncService.attentionDrawerPresented, when: !wideLandscape)) {
+    .sheet(isPresented: shown($syncService.attentionDrawerPresented, when: activitySheet)) {
       ActivityDrawerSheet()
         .environmentObject(syncService)
         .environmentObject(syncService.attentionDrawer)

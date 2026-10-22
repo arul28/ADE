@@ -4663,6 +4663,8 @@ final class SyncService: ObservableObject {
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
+  /// The focused machine answers `project_set_icon_request`.
+  @Published private(set) var supportsProjectIcon = false
   private var supportsChatStreaming = false
   private var supportsChatHistoryPaging = false
   /// `hello.features.macDesktopStream`: the host can push the lane's Mac
@@ -5466,6 +5468,37 @@ final class SyncService: ObservableObject {
       }
       try? await Task.sleep(nanoseconds: 200_000_000)
     }
+  }
+
+  /// Stores a project's icon on the focused machine (`project_set_icon_request`),
+  /// the store the desktop's icon editor writes, so every device shows it
+  /// from the next catalog. Callers send the same icon to each other machine
+  /// the project is on through `MachineConnection.setProjectIcon`.
+  func setProjectIcon(_ project: MobileProjectSummary, png: Data) async throws {
+    guard supportsProjectIcon, canSendLiveRequests() else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "This machine can’t change project icons. Update ADE on it.",
+      ])
+    }
+    let requestId = makeRequestId()
+    let payload = mobileProjectSetIconPayload(projectId: project.id, rootPath: project.rootPath, png: png)
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out changing the project icon.",
+      timeoutNanoseconds: 20_000_000_000
+    ) {
+      self.sendEnvelope(type: "project_set_icon_request", requestId: requestId, payload: payload)
+    }
+    let result = try decode(raw, as: MobileProjectSetIconResultPayload.self)
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The machine could not change the icon.",
+      ])
+    }
+    // The host re-sends its catalog on success; ask the roster too, so the
+    // project card picks the icon up without waiting.
+    requestRosterSnapshot()
   }
 
   func forgetProject(_ project: MobileProjectSummary) {
@@ -20603,6 +20636,7 @@ final class SyncService: ObservableObject {
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
+    supportsProjectIcon = featureEnabled("projectIcon", "project_icon")
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
     supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
@@ -21039,6 +21073,7 @@ final class SyncService: ObservableObject {
          "project_create_result",
          "project_clone_result",
          "project_forget_result",
+         "project_set_icon_result",
          "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":

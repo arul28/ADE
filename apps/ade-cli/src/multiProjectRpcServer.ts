@@ -1,10 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import {
-  PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
-  PROJECT_ICON_TYPE_ERROR,
-  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
-} from "../../desktop/src/shared/projectIcons";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -54,6 +49,7 @@ import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
+  decodeProjectIconUpload,
   importProjectIconBytes,
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   removeProjectIconOverride,
@@ -580,57 +576,14 @@ function readProjectIconUpload(params: Record<string, unknown>): {
   fileName: string;
   data: Buffer;
 } {
-  const fileName = readOptionalString(params.fileName);
-  if (!fileName) {
+  try {
+    return decodeProjectIconUpload(params, "projects.setIcon");
+  } catch (error) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "projects.setIcon requires fileName.",
+      error instanceof Error ? error.message : String(error),
     );
   }
-  // Only the last path segment matters; the extension picks the format.
-  const baseName = fileName.split(/[\\/]/).pop() ?? "";
-  const extension = path.extname(baseName).toLowerCase();
-  const allowedMimeTypes = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension];
-  if (!allowedMimeTypes) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      PROJECT_ICON_TYPE_ERROR,
-    );
-  }
-  const mimeType = readOptionalString(params.mimeType)?.toLowerCase();
-  if (mimeType && !allowedMimeTypes.includes(mimeType)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Project icon type ${mimeType} does not match a ${extension} file.`,
-    );
-  }
-  const dataBase64 = typeof params.dataBase64 === "string" ? params.dataBase64.trim() : "";
-  // Reject before decoding so an oversized upload is never materialized.
-  // base64 expands 3 bytes to 4 characters.
-  if (!dataBase64 || dataBase64.length > Math.ceil(REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / 3) * 4) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      dataBase64
-        ? `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`
-        : "projects.setIcon requires dataBase64.",
-    );
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      "projects.setIcon dataBase64 is not valid base64.",
-    );
-  }
-  const data = Buffer.from(dataBase64, "base64");
-  if (data.length === 0 || data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      data.length === 0
-        ? "Project icon file is empty."
-        : `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`,
-    );
-  }
-  return { fileName: baseName, data };
 }
 
 function readProjectBrowseInput(

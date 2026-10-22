@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 // Visual building blocks for the all-projects hub: the toolbar, project cards
@@ -1075,8 +1076,7 @@ struct HubProjectCard: View, Equatable {
 
 /// The Hub's projects as a grid of square-ish tiles: two across on a phone and
 /// the closed Duo, three (or more, as width allows) on the Duo's projects page
-/// and an iPad. Each tile is the row's data and actions in a card: tapping it
-/// opens the project, its corner button lists the project's lanes and chats.
+/// and an iPad. A tile opens its project; the Hub shows no lanes or chats.
 enum HubProjectGridMetrics {
   /// The narrowest a tile gets before the grid drops a column.
   static let minTileWidth: CGFloat = 128
@@ -1088,32 +1088,44 @@ enum HubProjectGridMetrics {
   }
 }
 
-/// One project as a grid tile: its icon, name (two lines at most), how its
-/// agents stand (the coloured per-state counts), its lane count, and the open
-/// chevron. The whole tile opens the project; the corner button shows its
-/// chats.
+/// One project as a grid tile, modelled on desktop's project cards: its icon,
+/// the machines it is on (a chip, when the user has more than one machine),
+/// its name (two lines at most), how its agents stand (the coloured per-state
+/// counts), its lane count, and the open chevron. Tapping the tile opens the
+/// project, the only way to its lanes and chats. Long-press for Open, Change
+/// icon…, Move to top, Copy path, and Remove from list.
 struct HubProjectTile: View, Equatable {
   let presentation: HubProjectPresentation
-  let collapsedLaneKeysSnapshot: Set<String>
-  @Binding var collapsedLaneKeys: Set<String>
-  var allowsCollapse: Bool = true
+  /// "Arul’s Mac Studio" or "2 machines"; nil hides the chip.
+  var machineLabel: String?
+  /// The project's machines can store a new icon (`projectIcon` feature).
+  var canChangeIcon = false
+  var canMoveToTop = true
   let onOpenProject: () -> Void
-  let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
-  let onViewLaneInWork: (RemoteRosterLane) -> Void
-  let onViewLaneInLanes: (RemoteRosterLane) -> Void
-  let onArchiveChat: (RemoteRosterChat) -> Void
-  let onDeleteChat: (RemoteRosterChat) -> Void
+  /// A picked image, already a small PNG, for every machine the project is on.
+  let onChangeIcon: (Data) -> Void
+  let onMoveToTop: () -> Void
   let onForget: () -> Void
 
-  @State private var chatsShown = false
+  @State private var iconPickerShown = false
+  @State private var pickedIcon: PhotosPickerItem?
 
   private var project: MobileProjectSummary { presentation.project }
-  private var hasChats: Bool { !presentation.lanes.isEmpty }
+  private var rootPath: String? {
+    let path = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return path?.isEmpty == false ? path : nil
+  }
 
   var body: some View {
     Button(action: onOpenProject) {
       VStack(alignment: .leading, spacing: 0) {
-        HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
+        HStack(alignment: .top, spacing: 6) {
+          HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
+          Spacer(minLength: 4)
+          if let machineLabel {
+            HubProjectMachineChip(label: machineLabel)
+          }
+        }
         Spacer(minLength: 8)
         Text(project.displayName)
           .font(.system(size: 15, weight: .semibold))
@@ -1157,142 +1169,108 @@ struct HubProjectTile: View, Equatable {
             .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
         }
       }
+      .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
       .contentShape(RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(tileSpokenLabel)
-    .accessibilityHint("Opens the full project view.")
-    // Outside the open button, so a tap on it never also opens the project.
-    .overlay(alignment: .topTrailing) {
-      if hasChats {
+    .accessibilityHint("Opens the project.")
+    .contextMenu {
+      Button(action: onOpenProject) {
+        Label("Open", systemImage: "arrow.up.forward.app")
+      }
+      if canChangeIcon {
+        Button { iconPickerShown = true } label: {
+          Label("Change icon…", systemImage: "photo")
+        }
+      }
+      if canMoveToTop {
+        Button(action: onMoveToTop) {
+          Label("Move to top", systemImage: "arrow.up.to.line")
+        }
+      }
+      if let rootPath {
         Button {
-          chatsShown = true
+          UIPasteboard.general.string = rootPath
         } label: {
-          Image(systemName: "list.bullet")
-            .font(.system(size: 13, weight: .semibold))
-            .frame(width: 30, height: 30)
+          Label("Copy path", systemImage: "doc.on.doc")
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .tint(ADEColor.textPrimary)
-        .padding(8)
-        .accessibilityLabel("Show chats in \(project.displayName)")
-        .popover(isPresented: $chatsShown, arrowEdge: .bottom) {
-          HubProjectChatsPanel(
-            presentation: presentation,
-            collapsedLaneKeysSnapshot: collapsedLaneKeysSnapshot,
-            collapsedLaneKeys: $collapsedLaneKeys,
-            allowsCollapse: allowsCollapse,
-            onOpenProject: { chatsShown = false; onOpenProject() },
-            onOpenChat: { chat, lane in chatsShown = false; onOpenChat(chat, lane) },
-            onViewLaneInWork: { lane in chatsShown = false; onViewLaneInWork(lane) },
-            onViewLaneInLanes: { lane in chatsShown = false; onViewLaneInLanes(lane) },
-            onArchiveChat: onArchiveChat,
-            onDeleteChat: onDeleteChat
-          )
-          .frame(minWidth: 340, idealWidth: 400, minHeight: 280, idealHeight: 460)
-          .presentationCompactAdaptation(.sheet)
-          .presentationDetents([.medium, .large])
-        }
+      }
+      Divider()
+      Button(role: .destructive, action: onForget) {
+        Label("Remove from list", systemImage: "trash")
       }
     }
-    .contextMenu {
-      Button { onOpenProject() } label: { Label("Open project", systemImage: "rectangle.stack") }
-      if hasChats {
-        Button { chatsShown = true } label: { Label("Show chats", systemImage: "list.bullet") }
+    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
+    .onChange(of: pickedIcon) { _, item in
+      guard let item else { return }
+      pickedIcon = nil
+      Task {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let png = hubProjectIconPNG(from: data) else { return }
+        onChangeIcon(png)
       }
-      Button(role: .destructive, action: onForget) { Label("Remove from list", systemImage: "trash") }
     }
   }
 
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
+    if let machineLabel { parts.append("on \(machineLabel)") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
     return parts.joined(separator: ", ")
   }
 
-  private var collapsedLaneSignature: [String] {
-    presentation.lanes.map { "\(project.id)/\($0.lane.id)" }
-      .filter { collapsedLaneKeysSnapshot.contains($0) }
-      .sorted()
-  }
-
   static func == (lhs: HubProjectTile, rhs: HubProjectTile) -> Bool {
     lhs.presentation == rhs.presentation
-      && lhs.allowsCollapse == rhs.allowsCollapse
-      && lhs.collapsedLaneSignature == rhs.collapsedLaneSignature
+      && lhs.machineLabel == rhs.machineLabel
+      && lhs.canChangeIcon == rhs.canChangeIcon
+      && lhs.canMoveToTop == rhs.canMoveToTop
   }
 }
 
-/// A project's lanes and chats, from its tile's corner button: the same lane
-/// sections the project row expanded to, under the project's name and Open.
-/// A popover beside the tile on a wide screen, a sheet on a phone.
-struct HubProjectChatsPanel: View {
-  let presentation: HubProjectPresentation
-  let collapsedLaneKeysSnapshot: Set<String>
-  @Binding var collapsedLaneKeys: Set<String>
-  let allowsCollapse: Bool
-  let onOpenProject: () -> Void
-  let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
-  let onViewLaneInWork: (RemoteRosterLane) -> Void
-  let onViewLaneInLanes: (RemoteRosterLane) -> Void
-  let onArchiveChat: (RemoteRosterChat) -> Void
-  let onDeleteChat: (RemoteRosterChat) -> Void
-
-  private var project: MobileProjectSummary { presentation.project }
+/// The machines a project is on, as the quiet chip desktop's project cards
+/// carry: one machine's name, or "2 machines".
+struct HubProjectMachineChip: View {
+  let label: String
 
   var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 10) {
-        HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 28)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(project.displayName)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          Text(presentation.metaLine)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        Spacer(minLength: 8)
-        Button("Open", action: onOpenProject)
-          .buttonStyle(.borderedProminent)
-          .buttonBorderShape(.capsule)
-          .tint(ADEColor.accent)
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
-      Divider()
-      ScrollView {
-        VStack(alignment: .leading, spacing: 6) {
-          ForEach(presentation.lanes) { lanePresentation in
-            let key = "\(project.id)/\(lanePresentation.lane.id)"
-            HubLaneSection(
-              project: project,
-              presentation: lanePresentation,
-              isCollapsed: collapsedLaneKeysSnapshot.contains(key),
-              allowsCollapse: allowsCollapse,
-              onToggle: {
-                guard allowsCollapse else { return }
-                withAnimation(.easeOut(duration: 0.16)) {
-                  if collapsedLaneKeys.contains(key) { collapsedLaneKeys.remove(key) } else { collapsedLaneKeys.insert(key) }
-                }
-              },
-              onOpenChat: { chat in onOpenChat(chat, lanePresentation.lane) },
-              onViewInWork: { onViewLaneInWork(lanePresentation.lane) },
-              onViewInLanes: { onViewLaneInLanes(lanePresentation.lane) },
-              onArchiveChat: onArchiveChat,
-              onDeleteChat: onDeleteChat
-            )
-            .equatable()
-          }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-      }
+    HStack(spacing: 3) {
+      Image(systemName: "desktopcomputer")
+        .font(.system(size: 9, weight: .semibold))
+      Text(label)
+        .font(.caption2.weight(.medium))
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .background(ADEColor.pageBackground)
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 7)
+    .padding(.vertical, 3)
+    .background(ADEKit.track, in: Capsule())
+    .accessibilityHidden(true)
+  }
+}
+
+/// A picked photo as a project icon: square-cropped from the centre, at most
+/// 512 points, as PNG — well under the 2 MB a host accepts inline, and the
+/// same format every machine already renders.
+func hubProjectIconPNG(from data: Data) -> Data? {
+  guard let image = UIImage(data: data) else { return nil }
+  let side = min(image.size.width, image.size.height)
+  guard side > 0 else { return nil }
+  let target = min(512, side)
+  let format = UIGraphicsImageRendererFormat()
+  format.scale = 1
+  let renderer = UIGraphicsImageRenderer(size: CGSize(width: target, height: target), format: format)
+  let scale = target / side
+  let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  return renderer.pngData { _ in
+    image.draw(in: CGRect(
+      x: (target - drawSize.width) / 2,
+      y: (target - drawSize.height) / 2,
+      width: drawSize.width,
+      height: drawSize.height
+    ))
   }
 }
 

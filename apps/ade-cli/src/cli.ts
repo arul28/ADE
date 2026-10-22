@@ -282,7 +282,11 @@ import type {
 } from "../../desktop/src/shared/types/core";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
-import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
+import {
+  decodeProjectIconUpload,
+  importProjectIconBytes,
+  resolveRemoteProjectIcon,
+} from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
@@ -398,6 +402,8 @@ import {
   type SyncPairingConnectInfo,
   type SyncProjectForgetRequestPayload,
   type SyncProjectForgetResultPayload,
+  type SyncProjectSetIconRequestPayload,
+  type SyncProjectSetIconResultPayload,
   type SyncProjectOpenRequestPayload,
   type SyncProjectSwitchRequestPayload,
   type SyncProjectSwitchResultPayload,
@@ -25752,7 +25758,7 @@ async function runServe(
     return await registerHeadlessMobileProject(result.rootPath);
   };
   const resolveHeadlessMobileProjectRequest = (
-    input: SyncProjectForgetRequestPayload | SyncProjectSwitchRequestPayload,
+    input: { projectId?: string | null; rootPath?: string | null },
   ): {
     requestedId: string;
     requestedRootPath: string;
@@ -25817,6 +25823,52 @@ async function runServe(
       ok: true,
       projectId: record.projectId,
       rootPath: record.rootPath,
+    };
+  };
+  // A phone's "Change icon…": the same store a desktop's icon editor writes
+  // (`projects.setIcon`), so the catalog every device reads carries it next.
+  const setHeadlessMobileProjectIcon = async (
+    input: SyncProjectSetIconRequestPayload,
+  ): Promise<SyncProjectSetIconResultPayload> => {
+    const { requestedId, requestedRootPath, record, conflict } = resolveHeadlessMobileProjectRequest(input);
+    if (!requestedId && !requestedRootPath) {
+      return { ok: false, message: "Project id or path is required." };
+    }
+    if (conflict) {
+      return { ok: false, message: "projectId and rootPath refer to different projects." };
+    }
+    if (!record) {
+      return {
+        ok: false,
+        message: "That project is not on this ADE machine.",
+        projectId: requestedId || null,
+        rootPath: requestedRootPath || null,
+      };
+    }
+    if (!fs.existsSync(record.rootPath)) {
+      return {
+        ok: false,
+        message: "That project's folder is missing on this machine.",
+        projectId: record.projectId,
+        rootPath: record.rootPath,
+      };
+    }
+    try {
+      const upload = decodeProjectIconUpload(input, "project_set_icon_request");
+      importProjectIconBytes(record.rootPath, upload.fileName, upload.data);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
+        projectId: record.projectId,
+        rootPath: record.rootPath,
+      };
+    }
+    return {
+      ok: true,
+      projectId: record.projectId,
+      rootPath: record.rootPath,
+      iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
@@ -25963,6 +26015,7 @@ async function runServe(
     createProject: createHeadlessMobileProject,
     cloneProject: cloneHeadlessMobileProject,
     forgetProject: forgetHeadlessMobileProject,
+    setProjectIcon: setHeadlessMobileProjectIcon,
     listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
       createHeadlessProjectScaffoldService().listMyGitHubRepos(input),
   };

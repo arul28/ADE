@@ -1,19 +1,12 @@
 import SwiftUI
 
-func hubProjectIdsCollapsedByDefault(
-  _ projects: [(id: String, isActive: Bool)]
-) -> Set<String> {
-  Set(projects.compactMap { $0.isActive ? nil : $0.id })
-}
-
 // The all-projects hub — the mobile app's main surface once a machine is
-// connected. Lists every project on the machine, each expandable to its chats
-// grouped by lane (sourced from the live roster feed). One compact row of
-// status counts filters that tree (All / Working / Needs you / Finished). Tapping a
-// project card opens its detailed tabbed view; tapping a chat opens that chat
-// immediately (presented over the hub, so Back returns here). The bottom
-// "type to vibecode" box is the inline new-chat composer — focusing it expands
-// the full controls above the keyboard (see HubInlineComposer).
+// connected. Every project on every paired machine as a grid of cards with
+// their agents' status counts (from the live roster feed); tapping a card
+// opens the project, the only way to its lanes and chats. One compact row of
+// status counts filters the grid (All / Needs you / Working / Waiting / Done).
+// The bottom "type to vibecode" box is the inline new-chat composer — focusing
+// it expands the full controls above the keyboard (see HubInlineComposer).
 //
 // Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
@@ -26,11 +19,8 @@ struct HubScreen: View {
   /// A project that lives only on another machine while the phone focuses it.
   @State private var switchingRemoteProjectId: String?
   @State private var addProjectSheetPresented = false
-  @State private var collapsedProjectIds: Set<String> = []
-  @State private var collapsedLaneKeys: Set<String> = []
-  @State private var collapsedDefaultsConnectionKey: String?
-  @State private var collapsedDefaultsSeededProjectIds: Set<String> = []
-  @State private var collapsedDefaultsSeededLaneKeys: Set<String> = []
+  /// The machine whose saved project order `projectOrder` holds.
+  @State private var layoutConnectionKey: String?
   // User's manual project order (drag-to-reorder). Persisted per machine so the
   // hub looks identical after opening a project and coming back — mobile-only,
   // never touches desktop ordering.
@@ -319,10 +309,6 @@ struct HubScreen: View {
         try? await Task.sleep(nanoseconds: 3_000_000_000)
       }
     }
-    // Persist the user's expand/collapse choices as they change so the hub
-    // restores identically after opening a project and returning.
-    .onChange(of: collapsedProjectIds) { _, _ in persistHubLayout() }
-    .onChange(of: collapsedLaneKeys) { _, _ in persistHubLayout() }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
   }
@@ -437,28 +423,14 @@ struct HubScreen: View {
       LazyVGrid(columns: HubProjectGridMetrics.columns, spacing: HubProjectGridMetrics.spacing) {
       ForEach(filteredHubProjectPresentations) { presentation in
         let project = presentation.project
-        let honoursCollapse = effectiveRosterFilter == .all
         HubProjectTile(
           presentation: presentation,
-          collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
-          collapsedLaneKeys: $collapsedLaneKeys,
-          allowsCollapse: honoursCollapse,
+          machineLabel: hubMachineLabel(for: project),
+          canChangeIcon: hubCanChangeIcon(for: project),
+          canMoveToTop: projectOrder.first != project.id,
           onOpenProject: { openHubProject(project) },
-          onOpenChat: { chat, lane in openHubChat(chat, lane: lane, project: project) },
-          onViewLaneInWork: { lane in
-            Task { @MainActor in
-              guard let laneId = await openLaneProject(lane, project: project) else { return }
-              syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
-            }
-          },
-          onViewLaneInLanes: { lane in
-            Task { @MainActor in
-              guard let laneId = await openLaneProject(lane, project: project) else { return }
-              syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
-            }
-          },
-          onArchiveChat: { chat in runRosterChatAction("chat.archive", chat: chat, project: project) },
-          onDeleteChat: { chat in runRosterChatAction("chat.delete", chat: chat, project: project) },
+          onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
+          onMoveToTop: { moveProjectToTop(project.id) },
           onForget: {
             // A project that lives only on another machine is forgotten there.
             guard fleetMerge.projectOwners[project.id] == nil else { return }
@@ -518,15 +490,85 @@ struct HubScreen: View {
     }
   }
 
-  /// Opens the project a lane belongs to (focusing its machine when needed)
-  /// and returns the lane's id on that machine.
-  private func openLaneProject(_ lane: RemoteRosterLane, project: MobileProjectSummary) async -> String? {
-    if let owner = fleetMerge.laneOwners[lane.id] {
-      await syncService.openProject(owner.project, onMachine: owner.machineKey)
-      return owner.lane?.id
+  // MARK: Project card actions
+
+  /// Every other machine that has this project, with its own id and root.
+  private func hubProjectLocations(_ project: MobileProjectSummary) -> [HubRemoteOwner] {
+    fleetMerge.projectLocations[project.id] ?? []
+  }
+
+  /// The card's machine chip: one machine's name, or "N machines". Nil while
+  /// the phone knows a single machine, where it would only repeat itself.
+  private func hubMachineLabel(for project: MobileProjectSummary) -> String? {
+    guard machineFleet.machines.contains(where: \.isPinned) else { return nil }
+    let others = hubProjectLocations(project)
+    let onFocused = fleetMerge.projectOwners[project.id] == nil
+    let count = others.count + (onFocused ? 1 : 0)
+    if count > 1 { return "\(count) machines" }
+    if onFocused { return syncService.focusedMachineDisplayName }
+    guard let key = others.first?.machineKey else { return nil }
+    return machineFleet.machine(for: key)?.name ?? "Another machine"
+  }
+
+  /// Change icon… shows when a machine the project is on can store one.
+  private func hubCanChangeIcon(for project: MobileProjectSummary) -> Bool {
+    if fleetMerge.projectOwners[project.id] == nil, syncService.supportsProjectIcon { return true }
+    return hubProjectLocations(project).contains { location in
+      machineFleet.connection(for: location.machineKey)?.supportsProjectIcon == true
     }
-    await syncService.openProjectForHubChat(project)
-    return lane.id
+  }
+
+  /// Sends a picked icon to every machine the project is on, each with its
+  /// own project id and root (a project on several machines shows the same
+  /// icon on all of them). A machine that is offline or too old is named in
+  /// the toast; the others still change.
+  private func changeHubProjectIcon(_ project: MobileProjectSummary, png: Data) {
+    let onFocused = fleetMerge.projectOwners[project.id] == nil
+    let locations = hubProjectLocations(project)
+    Task { @MainActor in
+      var failures: [String] = []
+      if onFocused {
+        do {
+          try await syncService.setProjectIcon(project, png: png)
+        } catch {
+          failures.append("\(syncService.focusedMachineDisplayName): \(error.localizedDescription)")
+        }
+      }
+      for location in locations {
+        let name = machineFleet.machine(for: location.machineKey)?.name ?? "Another machine"
+        guard let connection = machineFleet.connection(for: location.machineKey),
+              connection.isLive, connection.supportsProjectIcon else {
+          failures.append("\(name): can’t reach it, or its ADE is too old")
+          continue
+        }
+        do {
+          try await connection.setProjectIcon(
+            projectId: location.project.id,
+            rootPath: location.project.rootPath,
+            png: png
+          )
+        } catch {
+          failures.append("\(name): \(error.localizedDescription)")
+        }
+      }
+      projectOpenFailureToast = failures.isEmpty
+        ? ADEToastMessage(text: "Changed the icon for \(project.displayName).", kind: .info)
+        : ADEToastMessage(text: "Couldn’t change the icon on \(failures.joined(separator: "; "))", kind: .failure)
+    }
+  }
+
+  /// Move to top: the phone's own project order (desktop's "Pin to top"
+  /// lives in its recents; the Hub's order is this phone's).
+  private func moveProjectToTop(_ projectId: String) {
+    var order = projectOrder.isEmpty ? hubProjects.map(\.id) : projectOrder
+    order.removeAll { $0 == projectId }
+    order.insert(projectId, at: 0)
+    ADEHaptics.light()
+    withAnimation(.easeInOut(duration: 0.22)) {
+      projectOrder = order
+      rebuildHubProjectPresentations()
+    }
+    persistHubLayout()
   }
 
   private var foreignLaunchRefreshActive: Bool {
@@ -716,32 +758,24 @@ struct HubScreen: View {
     if nextPresentations != hubProjectPresentations {
       hubProjectPresentations = nextPresentations
     }
-    seedCollapsedHubDefaults(for: nextPresentations)
+    placeNewProjects(nextPresentations)
   }
 
   private func loadHubLayoutForConnection(_ connectionKey: String?) {
     guard let connectionKey else {
-      collapsedDefaultsConnectionKey = nil
+      layoutConnectionKey = nil
       return
     }
-    guard collapsedDefaultsConnectionKey != connectionKey else { return }
-    collapsedDefaultsConnectionKey = connectionKey
-
-    // Restore the last-known layout for this machine, then seed defaults for any
-    // project/lane we've never placed before.
-    let saved = HubLayoutStore.load(connectionKey)
-    projectOrder = saved.order
-    collapsedProjectIds = Set(saved.collapsedProjects)
-    collapsedLaneKeys = Set(saved.collapsedLanes)
-    collapsedDefaultsSeededProjectIds = Set(saved.seededProjects)
-    collapsedDefaultsSeededLaneKeys = Set(saved.seededLanes)
-    seedCollapsedHubDefaults(for: hubProjectPresentations)
+    guard layoutConnectionKey != connectionKey else { return }
+    layoutConnectionKey = connectionKey
+    // Restore the last-known order for this machine, then place any project
+    // we've never seen.
+    projectOrder = HubLayoutStore.load(connectionKey).order
+    placeNewProjects(hubProjectPresentations)
   }
 
-  private func seedCollapsedHubDefaults(for presentations: [HubProjectPresentation]) {
-    guard collapsedDefaultsConnectionKey != nil else { return }
-    var changed = false
-
+  private func placeNewProjects(_ presentations: [HubProjectPresentation]) {
+    guard layoutConnectionKey != nil else { return }
     // Append any newly-seen project to the manual order (alphabetically among the
     // newcomers). Never drop ids: a transient disconnect can briefly empty the
     // roster, and we must not lose the user's saved order over a blip.
@@ -751,50 +785,14 @@ struct HubScreen: View {
       .filter { !orderedIds.contains($0.id) }
       .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
       .map(\.id)
-    if !newProjectIds.isEmpty {
-      projectOrder.append(contentsOf: newProjectIds)
-      changed = true
-    }
-
-    let projectIds = Set(presentations.map { $0.project.id })
-    let unseededProjectIds = projectIds.subtracting(collapsedDefaultsSeededProjectIds)
-    if !unseededProjectIds.isEmpty {
-      let collapsedByDefault = hubProjectIdsCollapsedByDefault(
-        presentations
-          .filter { unseededProjectIds.contains($0.project.id) }
-          .map { (id: $0.project.id, isActive: $0.isActive) }
-      )
-      collapsedProjectIds.formUnion(collapsedByDefault)
-      for active in presentations where active.isActive && unseededProjectIds.contains(active.project.id) {
-        collapsedProjectIds.remove(active.project.id)
-      }
-      collapsedDefaultsSeededProjectIds.formUnion(unseededProjectIds)
-      changed = true
-    }
-
-    let laneKeys = Set(presentations.flatMap { presentation in
-      presentation.lanes.map { hubLaneKey(project: presentation.project, lane: $0.lane) }
-    })
-    let unseededLaneKeys = laneKeys.subtracting(collapsedDefaultsSeededLaneKeys)
-    if !unseededLaneKeys.isEmpty {
-      collapsedLaneKeys.formUnion(unseededLaneKeys)
-      collapsedDefaultsSeededLaneKeys.formUnion(unseededLaneKeys)
-      changed = true
-    }
-
-    if changed { persistHubLayout() }
+    guard !newProjectIds.isEmpty else { return }
+    projectOrder.append(contentsOf: newProjectIds)
+    persistHubLayout()
   }
 
   private func persistHubLayout() {
-    guard let connectionKey = collapsedDefaultsConnectionKey else { return }
-    let state = HubLayoutState(
-      order: projectOrder,
-      collapsedProjects: Array(collapsedProjectIds),
-      collapsedLanes: Array(collapsedLaneKeys),
-      seededProjects: Array(collapsedDefaultsSeededProjectIds),
-      seededLanes: Array(collapsedDefaultsSeededLaneKeys)
-    )
-    HubLayoutStore.save(state, for: connectionKey)
+    guard let connectionKey = layoutConnectionKey else { return }
+    HubLayoutStore.save(HubLayoutState(order: projectOrder), for: connectionKey)
   }
 
   /// Drag-reorder: drop `draggedId` onto `targetId`, moving it into that slot.
@@ -812,10 +810,6 @@ struct HubScreen: View {
       rebuildHubProjectPresentations()
     }
     persistHubLayout()
-  }
-
-  private func hubLaneKey(project: MobileProjectSummary, lane: RemoteRosterLane) -> String {
-    "\(project.id)/\(lane.id)"
   }
 
   private func mergedHubRoster(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {
@@ -841,21 +835,6 @@ struct HubScreen: View {
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     return merged.excludingIdentityChats()
-  }
-
-  private func toggle(_ set: inout Set<String>, _ id: String) {
-    if set.contains(id) { set.remove(id) } else { set.insert(id) }
-  }
-
-  private func runRosterChatAction(_ action: String, chat: RemoteRosterChat, project: MobileProjectSummary) {
-    let owner = fleetMerge.chatOwners[chat.id]
-    Task { @MainActor in
-      if let owner {
-        try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: owner.project, onMachine: owner.machineKey)
-      } else {
-        try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: project)
-      }
-    }
   }
 }
 
@@ -921,17 +900,12 @@ struct HubChatTarget: Identifiable, Equatable {
 
 // MARK: - Persisted layout
 
-/// The hub's per-machine layout: the user's manual project order plus which
-/// projects/lanes are collapsed. Persisted to the App Group so opening a project
-/// and returning restores the hub exactly. `seeded*` records which ids have
-/// already received a default so newly-appearing ones start collapsed while
-/// previously-expanded ones stay expanded.
+/// The hub's per-machine layout: the user's manual project order. Persisted to
+/// the App Group so opening a project and returning restores the hub exactly.
+/// (Older saves also carry collapse keys from the list layout; decoding
+/// ignores them.)
 struct HubLayoutState: Codable, Equatable {
   var order: [String] = []
-  var collapsedProjects: [String] = []
-  var collapsedLanes: [String] = []
-  var seededProjects: [String] = []
-  var seededLanes: [String] = []
 }
 
 enum HubLayoutStore {
