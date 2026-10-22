@@ -407,8 +407,10 @@ outside the rail and never over the picture, shown only for a foldable. Left,
 **Hinge** in 3D: a continuous slider that previews on drag and folds on
 release (detent labels hide in a narrow pane); in flat, where there is no
 body to fold, **Screen**: Cover folds the phone shut, Inner unfolds it flat,
-both by angle, keeping how it is held. Right, **Turn**: the four ways to hold
-the phone, the pressed one being how the simulator says it is held. A quiet
+both by angle, keeping how it is held. Right, **Orientation**: the four ways
+to hold the phone, each drawn as the screen it gives (the inner panel runs
+wide with the phone upright), the pressed one being how the simulator says it
+is held. A quiet
 readout (angle, live screen, wide or tall) follows when the pane is wide. On a
 Duo the rail drops its Orientation menu; every other device keeps it. A turn
 the app on screen does not follow (`APPLE_ROTATE_NOT_ADOPTED`) is an info
@@ -517,6 +519,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
+| `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
 | `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
 | `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |

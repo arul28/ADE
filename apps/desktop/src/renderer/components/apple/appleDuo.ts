@@ -81,32 +81,11 @@ export function appleDuoPoseForAngle(angle: number, lowerFlat = false): AppleDuo
 }
 
 /**
- * Which named posture this angle is nearest to.
- *
- * Used only to light the checked item in the stance menu; a custom angle still
- * reads as the closest label, which is the honest thing to show when the
- * slider sits between two presets.
- */
-export function nearestAppleDuoStance(angle: number): AppleDuoStanceId {
-  let best: AppleDuoStance = APPLE_DUO_STANCES[0]!;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const stance of APPLE_DUO_STANCES) {
-    const distance = Math.abs(stance.angle - angle);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = stance;
-    }
-  }
-  return best.id;
-}
-
-/**
  * The named posture the phone is in, from what the simulator reports.
  *
  * Tent is its own Table Mode. Otherwise the angle picks the nearest of
- * Closed, the 90° fold and Open (a custom angle reads as its closest label,
- * as `nearestAppleDuoStance` does), and how the phone is held tells the two
- * 90° poses apart: sideways is a laptop, upright a book. Without a report of
+ * Closed, the 90° fold and Open (a custom angle reads as its closest label),
+ * and how the phone is held tells the two 90° poses apart: sideways is a laptop, upright a book. Without a report of
  * the hold, the 90° fold reads as Laptop.
  */
 export function appleDuoStanceFor(input: {
