@@ -86,3 +86,15 @@ export function appleDuoHeldOrientation(posture: AppleDevicePosture | null | und
 export function appleDuoInTent(posture: AppleDevicePosture | null | undefined): boolean {
   return Boolean(posture?.supported && (posture.tableMode === true || posture.orientation === "facedown"));
 }
+
+/**
+ * Which way the live panel's picture runs, as a screenshot of it comes out:
+ * tall or wide. Null when the guest has not said. The Duo's inner panel runs
+ * a quarter turn from the phone, so held portrait it is wide and held
+ * landscape (laptop) it is tall; an agent naming the phone's orientation
+ * needs this to know what it will capture.
+ */
+export function appleDuoPictureShape(posture: AppleDevicePosture | null | undefined): "tall" | "wide" | null {
+  if (!posture?.supported || !posture.displayOrientation) return null;
+  return appleOrientationFamily(posture.displayOrientation) === "portrait" ? "tall" : "wide";
+}

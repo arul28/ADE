@@ -8,7 +8,12 @@ import type {
   AppleSimulatorOwner,
   AppleSimulatorOwnershipInfo,
 } from "../../../shared/types/iosSimulator";
-import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
+import {
+  APPLE_DEVICE_IS_EXTRA_CODE,
+  APPLE_EXTRA_DEVICE_LIMIT_CODE,
+  APPLE_LANE_EXTRA_DEVICE_LIMIT,
+  isAdeOwnedLaneDevice,
+} from "../../../shared/types/iosSimulator";
 import {
   AppleDeviceAttachedNotDeletableError,
   AppleDeviceExistsError,
@@ -41,8 +46,11 @@ import { endLaneDeviceRow, uninstallAdeApps } from "./laneDeviceRelease";
 import {
   LANE_APPLE_DEVICES_TABLE,
   LANE_DEVICE_COLUMNS,
+  forgetLaneAppleExtraDevice,
   readLaneAppleDevice,
   readLaneAppleDeviceRecord,
+  readLaneAppleExtraDevices,
+  writeLaneAppleExtraDevice,
   rowToDevice,
   writeAdeInstalledBundleIds,
   type LaneDeviceRow,
@@ -157,6 +165,8 @@ export type LaneDeviceCreateArgs = {
   runtime?: string | null;
   deviceType?: string | null;
   name?: string | null;
+  /** An extra device beside the lane's own one (`device-create --extra`). */
+  extra?: boolean | null;
 };
 
 export type LaneDeviceRegistry = {
@@ -212,7 +222,14 @@ export type LaneDeviceRegistry = {
   deviceDeleteInstalled(args: { udid: string }): Promise<void>;
   /** The lane's device without touching `simctl`. Null when the lane has none. */
   get(laneId: string): AppleLaneDevice | null;
-  /** Every lane device this project knows about. */
+  /** The lane's extra devices (`device-create --extra`), oldest first. */
+  extras(laneId: string): AppleLaneDevice[];
+  /**
+   * Delete one of the lane's extra devices. Nothing happens for a udid that
+   * is not one of them; the lane's own device is `deviceDelete`.
+   */
+  deviceDeleteExtra(args: { laneId: string; udid: string }): Promise<boolean>;
+  /** Every device this project's lanes hold: their own and their extras (`extra: true`). */
   list(): AppleLaneDevice[];
   /** Create on first ask — what `launch` and `open-device` call. */
   ensure(args: { laneId: string }): Promise<AppleLaneDevice>;
@@ -368,6 +385,33 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     deps.store.run(`delete from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`, [laneId]);
   };
 
+  /** Extra devices by udid, when there is no store. */
+  const memoryExtras = new Map<string, AppleLaneDevice>();
+  /** The extras of one lane, or of every lane. A failed read is none. */
+  const readExtras = (laneId: string | null): AppleLaneDevice[] => {
+    if (!deps.store) {
+      return [...memoryExtras.values()].filter((device) => !laneId || device.laneId === laneId);
+    }
+    try {
+      return readLaneAppleExtraDevices(deps.store, laneId);
+    } catch (error) {
+      deps.logger.debug("apple.lane_extra_device_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  };
+  const writeExtra = (device: AppleLaneDevice): void => {
+    if (!deps.store) memoryExtras.set(device.udid, { ...device, extra: true });
+    else writeLaneAppleExtraDevice(deps.store, device);
+  };
+  const forgetExtra = (laneId: string, udid: string): void => {
+    if (!deps.store) memoryExtras.delete(udid);
+    else forgetLaneAppleExtraDevice(deps.store, laneId, udid);
+  };
+  /** Every held device: each lane's own, then the extras. */
+  const readAllHeld = (): AppleLaneDevice[] => [...readAll(), ...readExtras(null)];
+
   /**
    * Mark a device as ADE's. Never fails the caller: a device without a marker
    * is still deleted with its lane through the row; the marker is what finds it
@@ -486,12 +530,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
    * id, so the renderer decides how to word "a lane we cannot name".
    */
   const ownersFor = (laneId: string | null): AppleSimulatorOwner[] =>
-    readAll().filter((device) => device.laneId === laneId || isLaneLive(device.laneId)).map((device) => ({
+    readAllHeld().filter((device) => device.laneId === laneId || isLaneLive(device.laneId)).map((device) => ({
       udid: device.udid,
       laneId: device.laneId,
       laneName: laneNameFor(device.laneId),
       origin: device.origin,
       mine: laneId != null && device.laneId === laneId,
+      ...(device.extra ? { extra: true } : {}),
     }));
 
   /**
@@ -543,8 +588,19 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
 
   const create = async (args: LaneDeviceCreateArgs): Promise<AppleLaneDevice> => {
     const laneId = requireLaneId(args.laneId);
-    const existing = readOne(laneId);
-    if (existing) throw new AppleDeviceExistsError(existing);
+    const extra = args.extra === true;
+    if (extra) {
+      const held = readExtras(laneId);
+      if (held.length >= APPLE_LANE_EXTRA_DEVICE_LIMIT) {
+        throw new Error(
+          `${APPLE_EXTRA_DEVICE_LIMIT_CODE}: this lane already has ${held.length} extra devices `
+          + `(${held.map((device) => device.name).join(", ")}). Delete one first: device-delete --device <udid>.`,
+        );
+      }
+    } else {
+      const existing = readOne(laneId);
+      if (existing) throw new AppleDeviceExistsError(existing);
+    }
     const [runtimes, installed] = await Promise.all([
       listRuntimes(),
       // Only `from` and the name collision check need it.
@@ -558,10 +614,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       from: args.from,
       lastDeviceType: lastDeviceType(),
     });
+    const laneName = laneNameFor(laneId);
     const name = appleLaneDeviceName({
       laneId,
-      laneName: laneNameFor(laneId),
-      requested: args.name,
+      laneName,
+      // An extra device says what it is, so `--device "<name>"` reads well.
+      requested: args.name?.trim()
+        || (extra ? `ADE · ${(laneName?.trim() || laneId.slice(0, 8)).replace(/\s+/g, " ")} · ${spec.deviceType.name}` : null),
       taken: installed.map((device) => device.name),
     });
     // `simctl create` prints the new udid and nothing else. Anything on stderr
@@ -579,7 +638,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     // The marker first, then the row: a crash between the two leaves a marked
     // device with no row, which the cleanup pass re-adopts or deletes. The other
     // order would leave an unmarked device, which nothing would ever delete.
-    writeMarker(udid, { laneId, name, createdAt });
+    writeMarker(udid, { laneId, name, createdAt, ...(extra ? { extra: true } : {}) });
     const device: AppleLaneDevice = {
       laneId,
       udid,
@@ -588,13 +647,21 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       family: spec.deviceType.family,
       runtime: spec.runtime.name,
       createdAt,
+      ...(extra ? { extra: true } : {}),
     };
-    write(device);
-    rememberDeviceType(spec.deviceType.identifier);
+    if (extra) {
+      writeExtra(device);
+    } else {
+      write(device);
+      // The project's default model follows its lanes' own devices, not an
+      // iPad a lane added beside one.
+      rememberDeviceType(spec.deviceType.identifier);
+    }
     deps.logger.info("apple.lane_device_created", {
       laneId,
       udid,
       name,
+      extra,
       runtime: spec.runtime.identifier,
       deviceType: spec.deviceType.identifier,
     });
@@ -622,6 +689,15 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       ?? installed.find((device) => matchesSimulatorName(device, wanted));
     if (!match) {
       throw new Error(`No installed simulator matches ${wanted}. Run device-list --installed to see what this Mac has.`);
+    }
+    // A lane's extra device is never anyone's own device, its lane's included:
+    // binding it twice is how one row deletes it under the other.
+    const extraHolder = readExtras(null).find((device) => device.udid === match.udid);
+    if (extraHolder) {
+      throw new Error(
+        `${APPLE_DEVICE_IS_EXTRA_CODE}: ${match.name} (${match.udid}) is an extra device of lane `
+        + `${laneNameFor(extraHolder.laneId) ?? extraHolder.laneId}. Drive it with --device ${match.udid}.`,
+      );
     }
     /*
      * EVERY other lane holding this udid, not just the first.
@@ -786,7 +862,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   const removeInstalled = async (args: { udid: string }): Promise<void> => {
     const udid = args.udid?.trim();
     if (!udid) throw new Error("A simulator udid is required.");
-    const holder = readAll().find((device) => device.udid === udid);
+    const holder = readAllHeld().find((device) => device.udid === udid);
     if (holder) throw new AppleDeviceOwnedByLaneError(holder);
     await deleteAppleSimulator(udid, { run: deps.run, powerOff: deps.powerOffDevice });
     deps.logger.info("apple.installed_device_deleted", { udid });
@@ -796,7 +872,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   const ownershipFor = (installed: AppleInstalledSimulator[]): AppleSimulatorOwnershipInfo[] =>
     appleSimulatorOwnership({
       installed,
-      heldUdids: new Set(readAll().map((device) => device.udid)),
+      heldUdids: new Set(readAllHeld().map((device) => device.udid)),
       dataRoot: dataRoot(),
       projectRoot: deps.projectRoot?.trim() || null,
       // Another project's device that project no longer uses is a leftover
@@ -808,7 +884,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     });
 
   /** A lane row holds this udid right now. Read fresh: the pass awaits between devices. */
-  const heldNow = (udid: string): boolean => readAll().some((device) => device.udid === udid);
+  const heldNow = (udid: string): boolean => readAllHeld().some((device) => device.udid === udid);
 
   const reconcile = async (): Promise<AppleDeviceCleanupResult> => {
     const result: AppleDeviceCleanupResult = { deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] };
@@ -868,6 +944,26 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       }
     }
 
+    // Extra devices: gone outside ADE, or their lane ended (a retry of the
+    // lane end's own delete). Each is ADE's, so it is deleted whole.
+    for (const extra of readExtras(null)) {
+      try {
+        if (!all.has(extra.udid)) {
+          forgetExtra(extra.laneId, extra.udid);
+          result.forgottenRows.push({ laneId: extra.laneId, udid: extra.udid });
+          continue;
+        }
+        if (isLaneLive(extra.laneId) || !deps.store) continue;
+        await deps.releaseDeviceHolds?.(extra.udid).catch(() => undefined);
+        await deleteAppleSimulator(extra.udid, { run: deps.run, powerOff: deps.powerOffDevice });
+        forgetExtra(extra.laneId, extra.udid);
+        result.released.push({ laneId: extra.laneId, udid: extra.udid });
+        result.deleted.push({ udid: extra.udid, name: extra.name, reason: "lane ended" });
+      } catch (error) {
+        result.errors.push({ udid: extra.udid, message: errorText(error) });
+      }
+    }
+
     /*
      * Marked devices no lane here holds.
      *
@@ -889,7 +985,27 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       const ours = appleMarkerIsProject(marker, projectRoot!);
       const foreign = ours ? null : foreignHolds(marker, udid);
       if (foreign === "held" || foreign === "unknown") continue;
-      if (ours && !marker.detachedAt && isLaneLive(marker.laneId) && !readOne(marker.laneId)) {
+      if (ours && !marker.detachedAt && marker.extra && isLaneLive(marker.laneId)) {
+        // An extra device that lost only its row: an extra again, never the
+        // lane's own device.
+        try {
+          writeExtra({
+            laneId: marker.laneId,
+            udid,
+            name: listed.name,
+            origin: "created",
+            family: appleDeviceFamily({ deviceTypeIdentifier: listed.deviceTypeIdentifier, name: listed.name }),
+            runtime: listed.runtime,
+            createdAt: marker.createdAt || now().toISOString(),
+            extra: true,
+          });
+          deps.logger.info("apple.lane_extra_device_readopted", { laneId: marker.laneId, udid });
+        } catch (error) {
+          result.errors.push({ udid, message: errorText(error) });
+        }
+        continue;
+      }
+      if (ours && !marker.detachedAt && !marker.extra && isLaneLive(marker.laneId) && !readOne(marker.laneId)) {
         // The lane is still here and lost only its row. Give the device back.
         try {
           write({
@@ -958,6 +1074,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       return {
         installed,
         lane: laneId ? readOne(laneId) : null,
+        extras: laneId ? readExtras(laneId) : [],
         owners: ownersFor(laneId),
         laneId,
         disk,
@@ -1006,7 +1123,18 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       return device;
     },
     get: (laneId: string) => readOne(laneId),
-    list: readAll,
+    extras: (laneId: string) => readExtras(laneId.trim() || null).filter((device) => device.laneId === laneId.trim()),
+    async deviceDeleteExtra(args: { laneId: string; udid: string }) {
+      const laneId = requireLaneId(args.laneId);
+      const device = readExtras(laneId).find((entry) => entry.udid === args.udid?.trim());
+      if (!device) return false;
+      await deps.releaseDeviceHolds?.(device.udid).catch(() => undefined);
+      await deleteAppleSimulator(device.udid, { run: deps.run, powerOff: deps.powerOffDevice });
+      forgetExtra(laneId, device.udid);
+      deps.logger.info("apple.lane_extra_device_deleted", { laneId, udid: device.udid });
+      return true;
+    },
+    list: readAllHeld,
     async ensure(args: { laneId: string }) {
       const laneId = requireLaneId(args.laneId);
       const existing = readOne(laneId);

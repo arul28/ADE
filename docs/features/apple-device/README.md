@@ -74,7 +74,26 @@ The picker offers the runtime (when there is more than one) and the model;
 `device-create --runtime --device-type` does the same from the CLI. Only
 installed runtimes — `APPLE_NO_INSTALLED_SIMULATORS` when none exist,
 `APPLE_RUNTIME_NOT_INSTALLED` when the one named is not there. A lane may
-instead `device-attach` an installed simulator the user names.
+instead `device-attach` an installed simulator the user names. A model named
+with no runtime gets the newest installed runtime that runs it: iOS 27.1 runs
+only the iPhone Duo, so `--device-type "iPad Pro 11-inch (M5)"` lands on 27.0.
+
+### Extra devices
+
+A lane may hold up to two EXTRA devices beside its own
+(`APPLE_LANE_EXTRA_DEVICE_LIMIT`), for a second model in the same piece of work:
+an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty ADE
+device named `ADE · <lane> · <model>`) and boots it. Extras are their own
+local-only table, `lane_apple_extra_devices` (keyed by udid), and their marker
+says `extra: true`, so a lost row is re-adopted as an extra, never as the lane's
+own device. They are reached only by name: `--device <udid|name>` on any command
+an agent may send runs that command on the extra (booted first, and its use
+noted for idle power-off); without `--device` everything still drives the lane's
+own device, and the pane never streams an extra. The cleanup pass treats them as
+held, idle power-off turns them off like any ADE device, and the lane's end
+(archive or delete) deletes them with the lane's own. `device-delete --device
+<udid>` deletes one now. The picker lists them with the held devices, never as
+free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
 
 ### Runtimes and Xcode
 
@@ -388,6 +407,24 @@ orientation control shows how the phone is held (CoreDevice names the
 device's orientation, the control the interface's, so the landscapes swap).
 The posture watcher also reports a change of the live panel's turn.
 
+The orientation names are how the PHONE is held, so on the inner display they
+read backwards to anyone who means the picture: held portrait (open, book) the
+picture is wide (2853x2007), held landscape (laptop) it is tall (2007x2853).
+The CLI's `rotate`, `fold` and `posture` print `picture inner display,
+tall|wide` (`appleDuoPictureShape`), `held` in `rotate`'s names rather than
+CoreDevice's swapped ones, and a note when the hold asked for gives the
+opposite shape. A raw `fold --angle` keeps the hold, so `fold laptop` then
+`fold --angle 180` is the tall, flat-open screen.
+
+**Accessibility.** The guest answers hit-tests only on the display that is on:
+the inner panel is display 3, and a grid probe sent to display 0 there finds
+nothing, which left `snapshot` and `tap-element` with only what the tree walk
+reaches (no sidebar rows, no toolbar items hidden in groups). The helper's
+`ax-describe` asks the live panel's display (`DevicePosture.accessibilityDisplay`)
+and turns each grid point by that panel's picture turn before its coverage
+check, because the probe space is the app frame while element frames are the
+picture's (measured on the iPhone Duo, iOS 27.1; see `VENDORED.md`).
+
 **3D.** Apple's own `V68.usdz` is read from the owning machine's Xcode
 (`getDuoModel`, never bundled) and parsed by serve-sim's vendored loader
 (`renderer/components/apple/vendor/serve-sim`). `appleV68DuoBody.ts` is a
@@ -456,7 +493,13 @@ contact sheet; a 6 s WebM turntable. For a Duo each chosen pose folds the real
 simulator (`setPosture` answers once it has landed on the pose's panel) before
 the shot. Each image and the video go to `attachRenderProof` on the device's
 own machine, which files them to the chat's and lane's proof drawer there, so a
-window pinned to another machine files where the chat lives.
+window pinned to another machine files where the chat lives. The answer names
+that chat and the file, so the toast says where the renders went ("this
+chat's proof drawer", the chat that holds the device, or the lane's proof)
+with **Open proof** (when it is the chat on screen) and, on the device's own
+machine, **Show in Finder**. `ade apple render` prints a `cite:` line per
+proof: the service credits each render filed for the lane while the request
+is open to it.
 
 `ade apple render` asks for the same thing from the CLI, and needs no pane:
 only an ADE desktop window with the project open, on the device's machine or
@@ -625,7 +668,8 @@ ade --socket apple type "reddit" --submit --text
 ade --socket apple key return --text
 ```
 
-`screenshot` files the shot as proof and prints its `cite:` line; a later
+`screenshot` reads no accessibility tree, so it prints no `elements` line
+(`snapshot` does). It files the shot as proof and prints its `cite:` line; a later
 `proof attach` of the same bytes is refused as `PROOF_DUPLICATE` and that
 refusal names the earlier proof's `cite:` line. `--no-proof` takes a scratch
 shot that files nothing, for a validation loop.
@@ -645,7 +689,8 @@ coordinator and its subagents). It queues: `--wait` stands in line, `release`
 hands the device to the next holder, and a lease nobody renews lapses after
 `--ttl`. It is advisory: no command checks it, so the pane and an agent that
 never asked are not blocked. `status` and a busy answer name the holder but
-never its token.
+never its token. The lane's device hint (`laneAppleDeviceDirective.ts`) tells every
+agent in the lane to take one before a run of builds, folds and shots.
 
 `type --submit` presses Return after the text, so a search or form submits.
 With `--submit` and no text, it presses Return alone. `key` presses one named
@@ -980,3 +1025,8 @@ recording. With no `outDir` the bundle lands in
 | `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` | Re-run `ade --socket apple apps --text`. |
 | `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `ade --socket apple shutdown --force --text`. |
 | `IOS_SIMULATOR_LANE_NOT_RESOLVED` | Pass `--project-root`. |
+| `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT` | `--out` must be inside the build root (the lane worktree); a relative path resolves there. |
+| `APPLE_EXTRA_DEVICE_LIMIT` | The lane holds two extra devices. `device-delete --device <udid>` one first. |
+| `APPLE_DEVICE_IS_EXTRA` | That simulator is a lane's extra device; drive it with `--device`, do not attach it. |
+| Push banners on screenshots | The simulator is signed in and paired, so it gets the machine's real pushes. Capture on an unpaired device (a fresh lane or extra device) or sign the app out. |
+| Several agents on one device | Take turns with `apple lease` (the lane device hint tells every agent about it). |

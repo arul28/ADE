@@ -35,7 +35,7 @@ export class AppleDeviceExistsError extends Error {
   readonly code = APPLE_DEVICE_EXISTS_CODE;
 
   constructor(readonly device: AppleLaneDevice) {
-    super(`${APPLE_DEVICE_EXISTS_CODE}: lane ${device.laneId} already has ${device.name} (${device.udid}). Delete it first to create another.`);
+    super(`${APPLE_DEVICE_EXISTS_CODE}: lane ${device.laneId} already has ${device.name} (${device.udid}). Delete it first to create another, or add a second one beside it with device-create --extra.`);
     this.name = "AppleDeviceExistsError";
   }
 }
@@ -78,9 +78,12 @@ export class AppleDeviceNotLaneOwnedError extends Error {
   readonly code = APPLE_DEVICE_NOT_LANE_OWNED_CODE;
 
   constructor(readonly simulator: { udid: string; name: string }, readonly reason: AppleDeviceNotLaneOwnedReason) {
-    const OWN_DEVICE = "Use this lane's own device: `ade apple device-create` makes one.";
+    // A second model (an iPad beside an iPhone Duo) is an extra device of the
+    // lane's own, not somebody else's simulator.
+    const EXTRA = " For another model alongside it, `ade apple device-create --extra --device-type <model>` makes the lane an extra device to drive with --device.";
+    const OWN_DEVICE = `Use this lane's own device: \`ade apple device-create\` makes one.${EXTRA}`;
     const ATTACH_FIRST = "If the user named it, attach it first with `ade apple device-attach --simulator <udid>`; "
-      + "otherwise use this lane's own device (`ade apple device-create` makes one).";
+      + `otherwise use this lane's own device (\`ade apple device-create\` makes one).${EXTRA}`;
     const explain: Record<AppleDeviceNotLaneOwnedReason["kind"], [string, string]> = {
       "other-lane": [`belongs to lane ${reason.kind === "other-lane" ? reason.laneLabel : ""}`, OWN_DEVICE],
       "other-project": ["is an ADE device that a lane of another ADE project is using", OWN_DEVICE],

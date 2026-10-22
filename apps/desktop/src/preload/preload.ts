@@ -1014,6 +1014,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleDevicePosture,
   AppleDuoAppStoreScreenshotsResult,
+  AppleRenderProofResult,
   AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
@@ -9796,7 +9797,7 @@ const adeBridge = {
     attachRenderProof: (
       args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ proofArtifactId: string | null }> =>
+    ): Promise<AppleRenderProofResult> =>
       callIosSimulatorMutation(pin, "attachRenderProof", args, IPC.iosSimulatorAttachRenderProof),
     /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
     addDuoSkill: (

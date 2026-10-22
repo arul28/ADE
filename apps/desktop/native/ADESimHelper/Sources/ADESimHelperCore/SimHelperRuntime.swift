@@ -258,9 +258,14 @@ public actor SimHelperRuntime {
                 if state.supported { await watchPostureIfStreaming(udid: udid) }
 
             case let .axDescribe(_, udid):
+                let display = await DevicePosture.accessibilityDisplay(udid: udid)
                 let json = try await offMainThread {
                     SimFrameworks.load()
-                    return try AccessibilityBridge.shared.describeUI(udid: udid)
+                    return try AccessibilityBridge.shared.describeUI(
+                        udid: udid,
+                        displayId: display.id,
+                        displayOrientation: display.orientation
+                    )
                 }
                 emit(.ok(id: id, payload: ["tree": String(decoding: json, as: UTF8.self)]))
 

@@ -157,7 +157,7 @@ export default function AppleRenderHostJob({
   const ready = device !== null && bodyReady && hasFrames && duoSettled;
   useEffect(() => {
     if (!ready || !device) return;
-    finish(() => renderAppleDeviceToProof({
+    finish(async () => (await renderAppleDeviceToProof({
       request: job.request,
       rendererRef,
       laneId: job.laneId,
@@ -165,7 +165,7 @@ export default function AppleRenderHostJob({
       deviceName: device.name,
       duoCapable,
       runtimePinRef: pinRef,
-    }));
+    })).filed);
   }, [device, duoCapable, finish, job, ready]);
 
   if (!device) return null;

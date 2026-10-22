@@ -198,11 +198,18 @@ export function pickAppleDeviceSpec(input: {
     wantedRuntime ??= source.runtime;
     wantedType ??= source.deviceTypeIdentifier;
   }
+  // With no runtime named, the newest iOS runtime that runs the model asked
+  // for. Point releases can be narrow: iOS 27.1 runs only the iPhone Duo, so
+  // "an iPad" means iOS 27.0 there.
+  const runsType = (candidate: AppleInstalledRuntime, wanted: string) =>
+    candidate.deviceTypes.some((type) => type.identifier === wanted || matchesName(type.name, wanted));
+  const iosRuntimes = runtimes.filter((candidate) => candidate.platform === "iOS");
+  const preferredType = wantedType;
   const runtime = wantedRuntime
     ? runtimes.find((candidate) => candidate.identifier === wantedRuntime
       || matchesName(candidate.name, wantedRuntime)
       || candidate.version === wantedRuntime)
-    : runtimes.find((candidate) => candidate.platform === "iOS");
+    : (preferredType ? iosRuntimes.find((candidate) => runsType(candidate, preferredType)) : undefined) ?? iosRuntimes[0];
   if (!wantedRuntime && !runtime) throw new AppleNoInstalledSimulatorsError();
   if (!runtime) throw new AppleRuntimeNotInstalledError(`Runtime ${wantedRuntime}`, runtimeNames);
   const findType = (wanted: string) => runtime.deviceTypes.find((type) => type.identifier === wanted || matchesName(type.name, wanted));

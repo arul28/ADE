@@ -102,7 +102,8 @@ function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDe
       if (/from lanes/i.test(sql)) return { name: `Lane ${String(params[0])}`, status: "active" } as never;
       return (rows[String(params[0])] ?? null) as never;
     },
-    all: () => Object.values(rows) as never,
+    // Only lane rows live here; the extra-device table is empty.
+    all: (sql) => (/lane_apple_extra_devices/i.test(sql) ? [] : Object.values(rows)) as never,
     getJson: (key) => (kv.get(key) ?? null) as never,
     setJson: (key, value) => { kv.set(key, value); },
   };

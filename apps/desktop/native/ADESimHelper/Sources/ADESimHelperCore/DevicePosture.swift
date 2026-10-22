@@ -84,6 +84,16 @@ enum DevicePosture {
         return (read ?? []).map { Display(screenID: $0.screenID, active: $0.isActive, orientation: $0.orientation) }
     }
 
+    /// The display the guest's accessibility answers on, and how its picture
+    /// is turned: the live panel of a foldable (the Duo's inner display is
+    /// screen 3, and a hit-test sent to display 0 there finds nothing), else
+    /// display 0, the main one, with no turn to undo.
+    static func accessibilityDisplay(udid: String) async -> (id: UInt32, orientation: String?) {
+        guard await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid),
+              let live = await displays(udid: udid).first(where: \.active) else { return (0, nil) }
+        return (live.screenID, live.orientation)
+    }
+
     static func read(udid: String) async -> State {
         let bridge = CoreDeviceBridge.shared
         let supported = await bridge.supportsHingeAngle(udid: udid)

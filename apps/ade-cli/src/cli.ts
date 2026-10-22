@@ -227,6 +227,14 @@ import {
   APPLE_RENDER_ANGLE_IDS,
   APPLE_RENDER_LIGHTINGS,
 } from "../../desktop/src/shared/types/iosSimulator";
+import type { AppleDeviceOrientation, AppleDevicePosture } from "../../desktop/src/shared/types/iosSimulator";
+import {
+  appleDuoHeldOrientation,
+  appleDuoPictureShape,
+  appleDuoScreenName,
+  appleOrientationFamily,
+  isAppleDeviceOrientation,
+} from "../../desktop/src/shared/appleOrientation";
 import {
   ADE_USAGE_COST_BREAKDOWN_BY,
   isAdeUsageCostBreakdownBy,
@@ -635,6 +643,8 @@ export type FormatterId =
   | "ios-sim-launch"
   | "ios-sim-stream"
   | "ios-sim-rotate"
+  | "apple-posture"
+  | "apple-render"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
@@ -2992,6 +3002,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Per-lane devices:
     $ ade apple device-create --text             Make a new, empty device for this lane
     $ ade apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
+    $ ade apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text   A second device beside the lane's own; drive it with --device
     $ ade apple device-attach --simulator <id>   Bind an installed simulator the user named
     $ ade apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
@@ -14984,12 +14995,15 @@ function buildIosSimulatorPlan(
     const name = readValue(args, ["--name"]);
     const runtime = readValue(args, ["--runtime"]);
     const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
+    // A second (or third) device beside the lane's own, booted, reached with --device.
+    const extra = readFlag(args, ["--extra", "--second"]);
     return iosAction("Apple device create", "deviceCreate", {
       ...(laneId ? { laneId } : {}),
       ...(from ? { from } : {}),
       ...(runtime ? { runtime } : {}),
       ...(deviceType ? { deviceType } : {}),
       ...(name ? { name } : {}),
+      ...(extra ? { extra: true } : {}),
     });
   }
   if (sub === "device-attach") {
@@ -15090,10 +15104,14 @@ function buildIosSimulatorPlan(
   }
   if (sub === "device-delete") {
     const force = readFlag(args, ["--force", "-f"]);
+    // `--device` names one of the lane's extra devices (or, as the pane does,
+    // the lane's own device the caller read).
+    const udid = readIosSimulatorDevice(args);
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {
       ...(laneId ? { laneId } : {}),
+      ...(udid ? { udid } : {}),
       ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),
       ...readIgnoreOwnershipArg(args),
@@ -31438,6 +31456,10 @@ function formatIosSimRotate(value: unknown): string {
     if (typeof width !== "number" || typeof height !== "number") return null;
     return `${String(width)}x${String(height)}`;
   };
+  const posture = isRecord(result.posture) ? (result.posture as AppleDevicePosture) : null;
+  const asked = typeof result.orientation === "string" && isAppleDeviceOrientation(result.orientation)
+    ? result.orientation
+    : null;
   return renderKeyValues("ADE Apple device rotate", [
     ["applied", result.applied],
     ["orientation", result.orientation],
@@ -31445,7 +31467,74 @@ function formatIosSimRotate(value: unknown): string {
     ["reason", result.reason],
     ["screen before", frame(result.frameBefore)],
     ["screen after", frame(result.frameAfter)],
+    ...appleDuoPictureRows(posture),
     ["detail", result.detail],
+    ["note", asked ? appleDuoTurnNote(posture, asked) : null],
+  ], ["note"]);
+}
+
+/**
+ * A foldable's live screen and how its picture runs. The iPhone Duo's inner
+ * display runs a quarter turn from the phone, so "held portrait" and "a tall
+ * screenshot" are different requests there; these rows name both.
+ */
+function appleDuoPictureRows(posture: AppleDevicePosture | null): Array<[string, unknown]> {
+  const shape = appleDuoPictureShape(posture);
+  if (!posture || !shape) return [];
+  const screen = appleDuoScreenName(posture.activeScreenId);
+  return [["picture", `${screen ? `${screen} display, ` : ""}${shape}`]];
+}
+
+/** Said when the hold asked for gives the other shape than its name suggests (the Duo's inner display). */
+function appleDuoTurnNote(posture: AppleDevicePosture | null, asked: AppleDeviceOrientation): string | null {
+  const shape = appleDuoPictureShape(posture);
+  if (!posture || !shape || appleDuoScreenName(posture.activeScreenId) !== "inner") return null;
+  const heldPortrait = appleOrientationFamily(asked) === "portrait";
+  if (heldPortrait && shape === "wide") {
+    return "The iPhone Duo's inner display runs a quarter turn from the phone: held portrait, its picture is wide. For a tall (upright) picture, hold it landscape: rotate landscape-left, or fold laptop.";
+  }
+  if (!heldPortrait && shape === "tall") {
+    return "The iPhone Duo's inner display runs a quarter turn from the phone: held landscape, its picture is tall. For a wide picture, hold it portrait: rotate portrait, or fold open.";
+  }
+  return null;
+}
+
+/** `render`: what was filed, where, and a `cite:` line per proof. */
+function formatAppleRender(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const ids = Array.isArray(result.proofArtifactIds)
+    ? result.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+  return [
+    renderKeyValues("ADE Apple device render", [
+      ["filed", result.filed],
+      ["error", result.error],
+      // A live pane files to the chat it shows; the off-screen host to the asking chat.
+      ["where", ids.length ? "the proof drawer and the lane's proof (ade proof list); cite below" : null],
+    ]),
+    ...ids.map((id, index) => `cite: ${proofCitationMarkdown(id, ids.length > 1 ? `3D render ${index + 1}` : "3D render")}`),
+  ].join("\n");
+}
+
+/** `fold` and `posture`: the hinge, how the phone is held, and the picture a screenshot will get. */
+function formatApplePosture(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const posture = (isRecord(result.posture) ? result.posture : result) as AppleDevicePosture;
+  if (posture.supported === false) {
+    return renderKeyValues("ADE Apple device posture", [
+      ["applied", result.applied],
+      ["supported", false],
+      ["detail", "This device has no hinge."],
+    ]);
+  }
+  return renderKeyValues("ADE Apple device posture", [
+    ["applied", result.applied],
+    ["angle", posture.angle],
+    // In `rotate`'s names: CoreDevice names the device's turn, which swaps
+    // the two landscapes against what `rotate landscape-left` asked for.
+    ["held", appleDuoHeldOrientation(posture) ?? posture.orientation],
+    ["table mode", posture.tableMode],
+    ...appleDuoPictureRows(posture),
   ]);
 }
 
@@ -31458,8 +31547,11 @@ function formatIosSimSnapshot(value: unknown): string {
   const providers = Array.isArray(snapshot.providers)
     ? snapshot.providers.filter(isRecord)
     : [];
-  const elements = Array.isArray(snapshot.elements)
-    ? snapshot.elements.filter(isRecord)
+  // A plain screenshot reads no accessibility tree, so it has no element
+  // list at all; printing "elements 0" there read as "the screen is empty".
+  const hasElements = Array.isArray(snapshot.elements);
+  const elements = hasElements
+    ? (snapshot.elements as unknown[]).filter(isRecord)
     : [];
   const providerSummary = providers
     .map(
@@ -31485,7 +31577,7 @@ function formatIosSimSnapshot(value: unknown): string {
           ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x`
           : null,
       ],
-      ["elements", elements.length],
+      ["elements", hasElements ? elements.length : null],
       ["providers", providerSummary],
     ]),
     // Printed raw rather than as a table cell: agents Read this path back,
@@ -33440,6 +33532,10 @@ function formatTextOutput(
       return formatIosSimStream(value);
     case "ios-sim-rotate":
       return formatIosSimRotate(value);
+    case "apple-posture":
+      return formatApplePosture(value);
+    case "apple-render":
+      return formatAppleRender(value);
     case "ios-sim-snapshot":
       return formatIosSimSnapshot(value);
     case "ios-sim-selection":
@@ -33655,6 +33751,8 @@ function inferFormatter(
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";
+  if (label === "apple device posture" || label === "apple device fold") return "apple-posture";
+  if (label === "apple device render") return "apple-render";
   if (
     label === "ios simulator tap" ||
     label === "ios simulator drag" ||

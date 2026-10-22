@@ -51,7 +51,8 @@ export type ApplePickerPartitionInput = {
 export function appleLaneOwnedUdid(input: ApplePickerPartitionInput): string | null {
   const direct = input.laneDevice?.udid?.trim();
   if (direct) return direct;
-  const flagged = (input.owners ?? []).find((owner) => owner.mine);
+  // An extra device is held by this lane but is never its own device.
+  const flagged = (input.owners ?? []).find((owner) => owner.mine && !owner.extra);
   return flagged?.udid?.trim() || null;
 }
 
@@ -72,7 +73,9 @@ export function partitionApplePickerDevices(input: ApplePickerPartitionInput): A
     const owner = owners.get(simulator.udid);
     // `mine` on a udid that is not this lane's own record would be a payload
     // contradiction; treat it as free rather than inventing a fourth group.
-    if (owner && !owner.mine) {
+    // The lane's extra devices (`device-create --extra`) are held, not free:
+    // shown with the other held devices, never offered as an Open.
+    if (owner && (!owner.mine || owner.extra)) {
       elsewhere.push({ simulator, owner });
       continue;
     }

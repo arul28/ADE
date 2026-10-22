@@ -1,9 +1,54 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
-import { showToast } from "../app/toast/toastStore";
+import { showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import type { AppleDeviceRenderer } from "./AppleDevice3DView";
-import { completeAppleRenderRequest, renderAppleDeviceToProof } from "./appleRenderProof";
+import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
+
+/**
+ * Where a render went, with a way there. The proof lands in the drawer of the
+ * chat that holds the device, which need not be the chat on screen, and a
+ * person who could not find it once is owed the name of the place.
+ */
+function renderFiledToast(
+  filed: AppleRenderFiled,
+  { paneChatSessionId, local }: { paneChatSessionId: string | null; local: boolean },
+): ToastInput {
+  const count = `${filed.filed} item${filed.filed === 1 ? "" : "s"}`;
+  const firstArtifact = filed.artifactIds[0] ?? null;
+  const firstFile = filed.filePaths[0] ?? null;
+  const here = Boolean(filed.chatSessionId && filed.chatSessionId === paneChatSessionId);
+  const where = !filed.chatSessionId
+    ? "Filed to this lane's proof (History)."
+    : here
+      ? "Filed to this chat's proof drawer."
+      : "Filed to the proof drawer of the chat that holds this device.";
+  const actions: ToastInput["actions"] = [];
+  if (here && firstArtifact) {
+    actions.push({
+      label: "Open proof",
+      onClick: () => {
+        window.dispatchEvent(new CustomEvent("ade:chat:open-artifact", {
+          detail: { sessionId: filed.chatSessionId, artifactId: firstArtifact },
+        }));
+      },
+    });
+  }
+  // The files sit on the device's machine; Finder can only show them there.
+  if (local && firstFile) {
+    actions.push({
+      label: "Show in Finder",
+      onClick: () => { void window.ade.app.revealPath(firstFile).catch(() => {}); },
+    });
+  }
+  return {
+    id: "apple-render",
+    tone: "success",
+    title: `Rendered ${count}`,
+    message: local && firstFile ? `${where} Saved in ${firstFile.replace(/[/\\][^/\\]*$/u, "")}.` : where,
+    ...(actions.length ? { actions } : {}),
+  };
+}
 
 /**
  * 3D renders of the lane's device, from the Render sheet or `ade apple
@@ -74,9 +119,9 @@ export function useAppleRenderRequests({
         duoCapable,
         runtimePinRef,
       });
-      showToast({ id: "apple-render", tone: "success", title: `Rendered ${filed} item${filed === 1 ? "" : "s"} to the proof drawer` });
+      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local: !runtimePinRef.current }));
       setRenderOpen(false);
-      return filed;
+      return filed.filed;
     } catch (cause) {
       onErrorRef.current?.(cause);
       throw cause;

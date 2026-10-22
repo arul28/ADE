@@ -15,6 +15,7 @@ import {
   type AppleDuoAppStoreScreenshotsResult,
   type AppleDuoModelResult,
   type AppleRenderRequestArgs,
+  type AppleRenderProofResult,
   type AppleRenderRequestResult,
   type AppleSetPostureArgs,
   type AppleSetPostureResult,
@@ -59,6 +60,8 @@ export type AppleDuoServiceDeps<Runtime extends { key: string | null }> = {
     runtime: Runtime,
     render?: { kind: "screenshot" | "video_recording"; mimeType: string },
   ) => string | null;
+  /** The chat `fileScreenshotAsProof` files to, so a render can say where it went. */
+  proofOwnerChatId: (arg: Pick<IosSimulatorScreenshotArgs, "chatSessionId">, runtime: Runtime) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: { warn: (event: string, fields?: Record<string, unknown>) => void };
   captureAnalytics: (outcome: "duo_folded" | "duo_app_store_shots" | "device_rendered" | "duo_skill_added") => void;
@@ -457,8 +460,13 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * first renders, and reports when it has filed the proof.
    */
   const pendingRenders = new Map<string, {
+    /** The lane asking, so the proofs a render files are credited to it. */
+    laneKey: string | null;
+    acked: () => boolean;
     /** True for the first pane to take it; every later one stands down. */
     ack: () => boolean;
+    /** What `attachRenderProof` filed for this lane while the render ran, so the CLI can cite it. */
+    proofArtifactIds: string[];
     complete: (result: AppleRenderRequestResult) => void;
   }>();
   const requestRender = async (renderArgs: AppleRenderRequestArgs): Promise<AppleRenderRequestResult> => {
@@ -486,6 +494,9 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       }, 240_000);
       (doneTimer as unknown as { unref?: () => void }).unref?.();
       pendingRenders.set(requestId, {
+        laneKey: runtime.key ?? null,
+        acked: () => acked,
+        proofArtifactIds: [],
         ack: () => {
           if (acked) return false;
           acked = true;
@@ -520,6 +531,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     pending?.complete({
       filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
       error: typeof doneArgs.error === "string" ? doneArgs.error : null,
+      proofArtifactIds: [...pending.proofArtifactIds],
     });
     return { ok: Boolean(pending) };
   };
@@ -530,7 +542,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * render is drawn by whichever window shows the pane, which may be another
    * machine; its bytes come here so the proof lands where the chat lives.
    */
-  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<{ proofArtifactId: string | null }> => {
+  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<AppleRenderProofResult> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(proofArgs);
     const png = decodeScenePngDataUrl(proofArgs.dataUrl ?? null);
@@ -550,8 +562,14 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       runtime,
       webm ? { kind: "video_recording", mimeType: "video/webm" } : { kind: "screenshot", mimeType: "image/png" },
     );
-    if (proofArtifactId) deps.captureAnalytics("device_rendered");
-    return { proofArtifactId };
+    if (proofArtifactId) {
+      deps.captureAnalytics("device_rendered");
+      // An `ade apple render` this lane is waiting on reports what it filed.
+      for (const pending of pendingRenders.values()) {
+        if (pending.acked() && pending.laneKey === (runtime.key ?? null)) pending.proofArtifactIds.push(proofArtifactId);
+      }
+    }
+    return { proofArtifactId, chatSessionId: deps.proofOwnerChatId(proofArgs, runtime), filePath };
   };
 
   return {
