@@ -618,6 +618,12 @@ func workPreviewDuoThreadModel(sessionId: String) -> ChatThreadModel {
   )
 }
 
+/// The `duo-work*` chat's filed proof.
+@MainActor
+func workPreviewDuoArtifacts() -> [ComputerUseArtifactSummary] {
+  [WorkPreviewData.artifact]
+}
+
 /// `duo-work-plain`: a quiet chat, the opening exchange only and no proof.
 @MainActor
 func workPreviewDuoPlainThreadModel(sessionId: String) -> ChatThreadModel {

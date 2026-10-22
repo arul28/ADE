@@ -1216,9 +1216,17 @@ struct WorkChatSessionView: View {
       ViewThatFits(in: .horizontal) {
         chips
         ScrollView(.horizontal, showsIndicators: false) {
-          chips.padding(.trailing, 8)
+          chips.padding(.trailing, 24)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        // More pills past the edge fade out rather than being cut mid-pill.
+        .mask {
+          HStack(spacing: 0) {
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+              .frame(width: 28)
+          }
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .frame(height: workChatComposerChipRowHeight, alignment: .leading)
@@ -1755,7 +1763,8 @@ struct WorkChatSessionView: View {
           // Floats over the thread like every other control: its own glass,
           // no band behind the composer stack.
           .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .frame(maxWidth: .infinity, alignment: .center)
+          // Leading, under the pills: one row each, one left edge.
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
 
       consolidatedPendingStripSection
@@ -2121,7 +2130,9 @@ struct WorkChatSessionView: View {
   /// Everything that floats over the bottom of the thread: the badge chips (and
   /// the jump-to-latest button in line with them), then the composer stack.
   private var bottomChrome: some View {
-    VStack(spacing: workChatFloatingBadgeRowBottomPadding) {
+    // The same 10pt rhythm the composer stack uses between its own rows, so
+    // the pills, a notice under them and the prompt box never crowd.
+    VStack(spacing: 10) {
       if showsComposerBadgeChips {
         HStack(spacing: 8) {
           composerBadgeChipRow

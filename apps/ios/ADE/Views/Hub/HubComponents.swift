@@ -54,10 +54,10 @@ struct HubToolbar: ToolbarContent {
     switch form {
     case .rail:
       if let account {
+        // A system label, so it joins the edge bar as its first capsule.
         ToolbarItem(placement: .topBarTrailing) {
-          HubAccountButton(identity: account, action: actions.onOpenSettings)
+          HubRailAccountButton(identity: account, action: actions.onOpenSettings)
         }
-        .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
       }
       activityAndChats
@@ -245,13 +245,13 @@ private struct HubRailFilterButton: View {
     Button(action: action) {
       // The edge bar only keeps an item vertical when it is a system label,
       // and it draws a label's icon alone. So the glyph and its count are
-      // one template image: the bar tints it like any other item, and the
+      // one image: at rest the bar tints it like any other item, and the
       // count stays quiet digits instead of a red badge that would read as
       // an alarm on every state.
       Label {
         Text(option.title)
       } icon: {
-        HubRailFilterGlyph(symbol: symbol, count: count, isSelected: isSelected)
+        HubRailFilterGlyph(symbol: symbol, count: count, isSelected: isSelected, hue: hue)
       }
     }
     .tint(isSelected ? hue : ADEColor.textPrimary)
@@ -262,13 +262,17 @@ private struct HubRailFilterButton: View {
   }
 }
 
-/// A filter's glyph over its count, rendered once per change into a template
-/// image (see `HubRailFilterButton`).
+/// A filter's glyph over its count, rendered once per change into an image
+/// (see `HubRailFilterButton`). At rest it is a template the bar tints like
+/// its other items; chosen, it keeps its own colours: the state's hue on a
+/// soft wash of it, so the choice reads at a glance without a solid blob.
 private struct HubRailFilterGlyph: View {
   let symbol: String
   let count: Int
   let isSelected: Bool
+  let hue: Color
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     if let image = rendered {
@@ -291,11 +295,81 @@ private struct HubRailFilterGlyph: View {
           .lineLimit(1)
           .fixedSize()
       }
-      .foregroundStyle(.black)
+      .foregroundStyle(isSelected ? hue : .black)
       .frame(minWidth: 24)
+      .padding(.horizontal, isSelected ? 6 : 0)
+      .padding(.vertical, isSelected ? 4 : 0)
+      .background {
+        if isSelected {
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(hue.opacity(0.18))
+        }
+      }
+      .environment(\.colorScheme, colorScheme)
     )
     renderer.scale = displayScale
-    return renderer.uiImage?.withRenderingMode(.alwaysTemplate)
+    return renderer.uiImage?.withRenderingMode(isSelected ? .alwaysOriginal : .alwaysTemplate)
+  }
+}
+
+/// The account's picture as the edge bar's first item. The bar only takes a
+/// system label into its capsules, and draws a label's icon as an image, so
+/// the picture is rendered into one: the photo once it has loaded (the same
+/// URL, from the same cache, the Settings avatar reads), the initials until
+/// then.
+struct HubRailAccountButton: View {
+  let identity: AccountIdentity
+  let action: () -> Void
+  @State private var photo: UIImage?
+  @Environment(\.displayScale) private var displayScale
+
+  var body: some View {
+    Button(action: action) {
+      Label {
+        Text("Account")
+      } icon: {
+        if let image = rendered {
+          Image(uiImage: image)
+        } else {
+          Image(systemName: "person.crop.circle")
+        }
+      }
+    }
+    .accessibilityLabel("Account: \(identity.displayName)")
+    .accessibilityHint("Opens Settings.")
+    .task(id: identity.imageURL) {
+      guard let url = identity.imageURL,
+            let (data, _) = try? await URLSession.shared.data(from: url),
+            let image = UIImage(data: data) else { return }
+      photo = image
+    }
+  }
+
+  private var initials: String {
+    let letters = identity.displayName.split(separator: " ").prefix(2).compactMap(\.first)
+    let text = String(letters).uppercased()
+    return text.isEmpty ? "AD" : text
+  }
+
+  @MainActor
+  private var rendered: UIImage? {
+    let renderer = ImageRenderer(content:
+      ZStack {
+        Circle().fill(identity.accent.opacity(0.18))
+        if let photo {
+          Image(uiImage: photo).resizable().aspectRatio(contentMode: .fill)
+        } else {
+          Text(initials)
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(identity.accent)
+        }
+      }
+      .frame(width: 28, height: 28)
+      .clipShape(Circle())
+      .overlay(Circle().stroke(identity.accent.opacity(0.4), lineWidth: 1))
+    )
+    renderer.scale = displayScale
+    return renderer.uiImage?.withRenderingMode(.alwaysOriginal)
   }
 }
 

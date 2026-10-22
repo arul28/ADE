@@ -398,6 +398,9 @@ struct WorkSessionDestinationView: View {
       _threadModel = State(initialValue: DuoWorkPreviewState.plain
         ? workPreviewDuoPlainThreadModel(sessionId: sessionId)
         : workPreviewDuoThreadModel(sessionId: sessionId))
+      if !DuoWorkPreviewState.plain {
+        _artifacts = State(initialValue: workPreviewDuoArtifacts())
+      }
     }
     #endif
   }
@@ -997,9 +1000,9 @@ struct WorkSessionDestinationView: View {
   /// several), and Watch / Ship.
   @ViewBuilder
   private var chatPullRequestAccessory: some View {
-    HStack(spacing: 6) {
+    Group {
       if laneChatPrs.count > 1 {
-        Menu {
+        DuoPaneActionMenu(title: "Switch pull request", systemImage: "arrow.triangle.swap") {
           Picker("Pull request", selection: Binding(
             get: { duoPanePr?.id ?? "" },
             set: { selectChatPr($0) }
@@ -1008,17 +1011,12 @@ struct WorkSessionDestinationView: View {
               Text("#\(pr.githubPrNumber) \(pr.title)").tag(pr.id)
             }
           }
-        } label: {
-          Image(systemName: "arrow.triangle.swap")
-            .font(.system(size: 15, weight: .medium))
-            .frame(width: 22, height: 22)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .accessibilityLabel("Switch pull request, \(laneChatPrs.count) linked")
       }
       if let watch = duoPanePrWatch {
-        WorkChatPrWatchChip(model: watch) { mode in Task { await setPrChatWatch(mode: mode) } }
+        DuoPaneRowOnly {
+          WorkChatPrWatchChip(model: watch) { mode in Task { await setPrChatWatch(mode: mode) } }
+        }
       }
     }
   }
@@ -2028,9 +2026,9 @@ struct WorkSessionDestinationView: View {
     let prPolicy = WorkChatLanePrPolicy(showsLaneActions: showsLaneActions)
     let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
       ? workChatPrBadgeModel(
-          tag: chatDisplayPrTag,
-          pr: chatDisplayPr,
-          summary: chatDisplayPrSummary,
+          tag: duoPanePrTag,
+          pr: duoPanePr,
+          summary: duoPanePrSummary,
           linkedCount: laneChatPrs.count
         )
       : nil

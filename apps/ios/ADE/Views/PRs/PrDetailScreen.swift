@@ -5,6 +5,7 @@ struct PrDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.duoSplit) private var duoSplit
+  @Environment(\.duoPaneControlsInBar) private var paneControlsInBar
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
@@ -457,6 +458,11 @@ struct PrDetailView: View {
       // Seed from the warm cache first so the first frame has content and, when
       // the entry is fresh, the sidecar fan-out below is skipped.
       seedFromWarmCacheIfNeeded()
+      #if DEBUG
+      // `duo-work-pr` fixture: the seeded cache is all there is; no host to
+      // reload from, and a reload would replace it with "unavailable".
+      if WorkRootPreviewFixture.active != nil, hasSeededFromWarmCache, hasPrDetailData { return }
+      #endif
       // Webhooks bump the projection revision; once the freshness window lapses
       // that bump refreshes threads, activity and checks as well.
       let needLiveSidecars = shouldFetchPrDetailLiveSidecars(
@@ -472,6 +478,9 @@ struct PrDetailView: View {
   /// the next-step bar at the bottom.
   private var phoneDetail: some View {
     detailList
+      // Rows scrolled under the clock and the floating back/actions buttons
+      // with nothing between them.
+      .scrollEdgeEffectStyle(.hard, for: .top)
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.visible, for: .navigationBar)
@@ -499,17 +508,14 @@ struct PrDetailView: View {
     detailList
       .duoPaneHeader(status: embeddedStatus) {
         if let embeddedHeaderAccessory { embeddedHeaderAccessory }
-        Menu {
-          moreMenuItems
-        } label: {
-          Image(systemName: "ellipsis")
-            .font(.system(size: 16, weight: .medium))
-            .frame(width: 22, height: 22)
+        // On the edge bar the PR's actions are the bar's own ⋯ (below).
+        if !paneControlsInBar {
+          DuoPaneActionMenu(title: "Pull request actions", systemImage: "ellipsis") {
+            moreMenuItems
+          }
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .accessibilityLabel("Pull request actions")
       }
+      .duoPaneOverflow { moreMenuItems }
   }
 
   /// "#1304 · Open · arul28", the pane header's line under its title.
@@ -605,13 +611,24 @@ struct PrDetailView: View {
     .adeFlatList()
     .listSectionSpacing(.compact)
     .contentMargins(.bottom, 16, for: .scrollContent)
-    // Rows scrolled under the clock and the floating back/actions buttons
-    // with nothing between them.
-    .scrollEdgeEffectStyle(.hard, for: .top)
     .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail")
     .safeAreaInset(edge: .bottom) {
       if hasPrDetailData {
         nextStepBar
+          // The page runs on under the bar to the bottom edge, so no row
+          // shows below it; rows scroll clear of it via the inset.
+          .background(alignment: .bottom) {
+            LinearGradient(
+              stops: [
+                .init(color: ADEColor.pageBackground.opacity(0), location: 0),
+                .init(color: ADEColor.pageBackground, location: 0.45),
+              ],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+          }
       }
     }
     .refreshable {

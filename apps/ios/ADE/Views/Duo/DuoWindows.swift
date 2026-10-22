@@ -18,9 +18,11 @@ import UIKit
 /// How the app root presents Settings, Activity and Linear.
 ///
 /// Compact: the sheets the phone has always used. Inner display: Settings is a
-/// full-screen two-column window held landscape (a sheet held portrait),
-/// Activity is a 360pt trailing column held landscape, and Linear is a
-/// full-screen window in both holds.
+/// full-screen two-column window held landscape (a sheet held upright, where a
+/// split view would overlay its list); Activity is a 360pt
+/// trailing column held landscape and a sheet held upright, where a 360pt
+/// column would leave the app too narrow to use; Linear is a full-screen
+/// window in both holds.
 struct DuoWindowPresentations: ViewModifier {
   @ObservedObject var syncService: SyncService
   let appUpdateAdvisor: AppUpdateAdvisor
@@ -30,6 +32,10 @@ struct DuoWindowPresentations: ViewModifier {
   @State private var isLandscape = false
 
   private var wideLandscape: Bool { duo.isWide && isLandscape }
+  /// Settings' two columns: held landscape only. Upright the window is under
+  /// ~700pt wide, where a split view lays its list over a dimmed page instead
+  /// of beside it, so Settings stays the sheet there.
+  private var settingsWindow: Bool { wideLandscape }
 
   private var motion: Animation? {
     reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
@@ -41,6 +47,11 @@ struct DuoWindowPresentations: ViewModifier {
     // (along the curved edge now) carries Done and its menu there.
     HStack(spacing: 0) {
       content
+        // The column takes the curved edge, so the app beside it lays its
+        // controls out in top bars instead of an edge bar it no longer reaches.
+        .transformEnvironment(\.duoLayout) { layout in
+          layout.edgeBarYielded = wideLandscape && syncService.attentionDrawerPresented
+        }
       if wideLandscape && syncService.attentionDrawerPresented {
         DuoSeam(axis: .vertical)
           .ignoresSafeArea()
@@ -59,10 +70,10 @@ struct DuoWindowPresentations: ViewModifier {
     } action: { landscape in
       isLandscape = landscape
     }
-    .sheet(isPresented: shown($syncService.settingsPresented, when: !wideLandscape)) {
+    .sheet(isPresented: shown($syncService.settingsPresented, when: !settingsWindow)) {
       settings
     }
-    .fullScreenCover(isPresented: shown($syncService.settingsPresented, when: wideLandscape)) {
+    .fullScreenCover(isPresented: shown($syncService.settingsPresented, when: settingsWindow)) {
       settings
     }
     .sheet(isPresented: shown($syncService.attentionDrawerPresented, when: !wideLandscape)) {
@@ -169,7 +180,7 @@ struct DuoActivityStateMenu: View {
 
 /// Settings held landscape on the inner display: Apple Settings' two columns,
 /// the settings list on the left and the page a row opens on the right. A book
-/// fold puts each on its own page. Held portrait it is the phone's stack.
+/// fold puts each on its own page. Held upright it is the phone's stack.
 struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
   @ViewBuilder var sidebar: () -> Sidebar
   @ViewBuilder var landing: () -> Landing
@@ -218,7 +229,8 @@ extension EnvironmentValues {
 /// Linear on the inner display: desktop's three panes. Held landscape, the
 /// views rail and the issue list share the leading column and the selected
 /// issue fills the detail column (one page each when book-folded). Held
-/// portrait, the issues are the top half and the issue the bottom half.
+/// upright, the issues are the top half and the issue the bottom half: under
+/// ~700pt a split view overlays its list rather than sitting beside it.
 ///
 /// The selected issue is the first `.issue` route of the pane's own path, so
 /// deep links and the launch flow keep working unchanged: a launch pushes onto
@@ -1121,8 +1133,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
 
 /// The CTO tab on the inner display: the CTO chat beside a live overview of
 /// what the CTO is watching. Held landscape they are two pages (one each when
-/// book-folded). Held portrait the chat is full and the overview sits on the
-/// top half in laptop, or behind the toolbar's Overview toggle flat.
+/// book-folded). Folded laptop the overview is the top half; upright and flat
+/// the chat is full and the toolbar's Overview toggle puts the overview beside
+/// it, as two narrower pages.
 struct DuoCtoWide<Chat: View>: View {
   let title: String
   let onOpenSettings: () -> Void
@@ -1178,10 +1191,12 @@ struct DuoCtoWide<Chat: View>: View {
         chat()
       }
     } else {
-      DuoTwoPages(flatShare: 0.42) {
-        DuoCtoOverview(isActive: isTabActive, fixedModel: overviewModel)
-      } second: {
+      // Upright and flat: the same two pages as held landscape, narrower. The
+      // overview starts hidden here (the chat would drop under ~430pt).
+      DuoTwoPages(flatShare: 0.56, sideBySideWhenUpright: true) {
         chat()
+      } second: {
+        DuoCtoOverview(isActive: isTabActive, fixedModel: overviewModel)
       }
     }
   }
@@ -1276,7 +1291,8 @@ struct DuoCtoOverview: View {
           )
         } else {
           ForEach(shown.needsYou) { item in
-            DuoOverviewChatRow(item: item) { openChat(item) }
+            DuoWidgetChatRow(item: item) { openChat(item) }
+              .listRowInsets(EdgeInsets())
           }
         }
       } header: {
@@ -1294,7 +1310,8 @@ struct DuoCtoOverview: View {
             .foregroundStyle(ADEColor.textSecondary)
         } else {
           ForEach(shown.running) { item in
-            DuoOverviewChatRow(item: item) { openChat(item) }
+            DuoWidgetChatRow(item: item) { openChat(item) }
+              .listRowInsets(EdgeInsets())
           }
         }
       } header: {
@@ -1328,9 +1345,10 @@ struct DuoCtoOverview: View {
 
       Section {
         ForEach(shown.machines) { machine in
-          DuoOverviewMachineRow(machine: machine) {
+          DuoWidgetMachineRow(machine: machine) {
             syncService.settingsPresented = true
           }
+          .listRowInsets(EdgeInsets())
         }
       } header: {
         DuoOverviewSectionHeader(

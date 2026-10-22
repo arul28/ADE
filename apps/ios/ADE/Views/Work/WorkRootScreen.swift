@@ -479,6 +479,9 @@ struct WorkRootListScreen: View, Equatable {
   @State var duoWideFold: DuoFold = .none
   /// Held landscape or held portrait, as last laid out.
   @State var duoWorkFamily: DuoFamily = .wide
+  /// The compact list is on a display with a vertical edge bar (the Duo's
+  /// closed outer display): its header actions move onto that bar.
+  @State var workListHasEdgeRail = false
   /// List or Board (desktop's view switch). Board shows only while no chat is
   /// open; it is a wide-display view, the phone keeps its list.
   @AppStorage("ade.work.duo.viewMode") var duoViewModeRaw = DuoWorkViewMode.list.rawValue
@@ -885,6 +888,11 @@ struct WorkRootListScreen: View, Equatable {
     .onChange(of: duoLayout.isWide, initial: true) { _, wide in
       handleDuoWidthChange(wide)
     }
+    #if DEBUG
+    .task(id: "\(duoLayout.isWide)|\(duoPreviewSelectionKey)") {
+      if !duoLayout.isWide { applyDuoPreviewSelectionIfNeeded() }
+    }
+    #endif
   }
 
   /// Today's layout, unchanged: one column, the chat pushed over the list.
@@ -908,6 +916,11 @@ struct WorkRootListScreen: View, Equatable {
             ScrollDiagnostics.shared.leave(.workList)
           }
       }
+    }
+    .onGeometryChange(for: Bool.self) { proxy in
+      workDisplayHasEdgeRail(proxy)
+    } action: { hasRail in
+      if workListHasEdgeRail != hasRail { workListHasEdgeRail = hasRail }
     }
   }
 
@@ -1225,12 +1238,17 @@ struct WorkRootListScreen: View, Equatable {
   /// stacked (tools over the chat) only while the hinge is bent with the fold
   /// across the screen: laptop and tent.
   private func duoFamily(fold: DuoFold) -> DuoFamily {
-    fold.isStacked && duoLayout.bend > 0 ? .tall : .wide
+    #if DEBUG
+    if DuoWorkPreviewState.forceStacked, WorkRootPreviewFixture.active != nil { return .tall }
+    #endif
+    return fold.isStacked && duoLayout.bend > 0 ? .tall : .wide
   }
 
   /// Whether the sessions column leaves the chat a readable width. Held
   /// upright the Duo is about as wide as an iPad mini: the column starts away.
   private func duoSessionsColumnFits(size: CGSize, fold: DuoFold) -> Bool {
+    // Book-folded the two pages are the list and the chat, always.
+    if case .sideBySide = fold { return true }
     let column = DuoWorkMetrics.sessionsColumn(total: size.width, fold: fold)
     return size.width - column.width >= DuoWorkMetrics.comfortableChatWidth
   }
@@ -1835,6 +1853,41 @@ struct WorkRootListScreen: View, Equatable {
       }
   }
 
+  /// New chat, Activity, Linear, GitHub Issues, Cursor Cloud and Settings as
+  /// separate buttons on the outer display's edge bar (the Hub's controls
+  /// land there the same way).
+  @ToolbarContentBuilder
+  private var workEdgeRailItems: some ToolbarContent {
+    let actions = workHeaderActions
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("New chat", systemImage: "square.and.pencil", action: actions.onNewChat)
+        .disabled(!inputs.isLive)
+    }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItemGroup(placement: .topBarTrailing) {
+      WorkActivityRailButton(action: actions.onOpenActivity)
+      if inputs.showsLinear {
+        Button(action: actions.onOpenLinear) {
+          Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if inputs.showsGitHubIssues {
+        Button(action: actions.onOpenGitHubIssues) {
+          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
+        }
+      }
+      if inputs.showsCursorCloud {
+        Button(action: actions.onOpenCursorCloud) {
+          Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
+        }
+      }
+    }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Settings", systemImage: "gearshape", action: actions.onOpenSettings)
+    }
+  }
+
   /// The list's chrome. The phone keeps its one-row header floating over the
   /// list; the Duo's sessions column is a native navigation bar with the title,
   /// search and the toolbar.
@@ -1848,6 +1901,29 @@ struct WorkRootListScreen: View, Equatable {
         // the bar keeps only the glass controls. Selecting shows the count.
         .toolbar(removing: isSelecting ? nil : .title)
         .toolbar { duoSessionsToolbar }
+    } else if workListHasEdgeRail {
+      // The Duo's closed outer display: its curved edge carries a vertical
+      // bar beside the clock. New chat and the header ⋯'s items become that
+      // bar's buttons, and the header row keeps the title and a wider search.
+      rows
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { workEdgeRailItems }
+        .safeAreaInset(edge: .top, spacing: 0) {
+          WorkRootHeader(
+            projectIconDataUrl: inputs.projectIconDataUrl,
+            searchText: searchTextBinding,
+            filterOpen: $filterPanelOpen,
+            activeFilterCount: workActiveFilterCount,
+            isLive: inputs.isLive,
+            showsLinear: inputs.showsLinear,
+            showsCursorCloud: inputs.showsCursorCloud,
+            showsGitHubIssues: inputs.showsGitHubIssues,
+            selectionCount: isSelecting ? selectedSessionIds.count : nil,
+            actions: workHeaderActions,
+            showsTrailingActions: false
+          )
+        }
     } else {
       rows
         .navigationTitle("")

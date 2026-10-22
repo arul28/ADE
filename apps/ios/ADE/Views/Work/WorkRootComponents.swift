@@ -1831,6 +1831,9 @@ struct WorkRootHeader: View {
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
+  /// New chat and ⋯ at the row's end. False on the Duo's outer display, where
+  /// they are the edge bar's buttons instead.
+  var showsTrailingActions = true
 
   var body: some View {
     HStack(spacing: 8) {
@@ -1859,6 +1862,7 @@ struct WorkRootHeader: View {
           filterOpen: $filterOpen,
           activeFilterCount: activeFilterCount
         )
+        if showsTrailingActions {
         Button(action: actions.onNewChat) {
           Image(systemName: "square.and.pencil")
             .font(.system(size: 18, weight: .medium))
@@ -1876,6 +1880,7 @@ struct WorkRootHeader: View {
           showsGitHubIssues: showsGitHubIssues,
           actions: actions
         )
+        }
       }
     }
     .padding(.horizontal, 16)
@@ -2009,6 +2014,36 @@ private struct WorkHeaderSearchField: View {
 /// `unreadCount` the bell used — so moving the bell in here loses no signal.
 ///
 /// The only observer in the header, and of `ActivityDrawerModel` alone.
+/// Activity as an edge-bar button, its unread count as the item's badge.
+struct WorkActivityRailButton: View {
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+  let action: () -> Void
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      action()
+    } label: {
+      Label("Activity", systemImage: drawer.unreadCount > 0 ? "bell.badge" : "bell")
+    }
+    .badge(drawer.unreadCount)
+  }
+}
+
+/// Whether this display has a vertical edge bar beside a camera/clock column
+/// (the Duo's closed outer display, held upright): a tall occlusion along the
+/// trailing edge. Every other iPhone has none, or a short one at the top.
+func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
+  guard proxy.size.height > proxy.size.width else { return false }
+  // Upright, only that display reserves a column on the trailing side.
+  if proxy.safeAreaInsets.trailing > 40 { return true }
+  guard #available(iOS 27.1, *) else { return false }
+  return proxy.reservedRegions(kind: .occlusion, options: .includeInactive).contains { region in
+    let frame = region.frame
+    return frame.height > frame.width * 2 && frame.minX > proxy.size.width / 2
+  }
+}
+
 struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool

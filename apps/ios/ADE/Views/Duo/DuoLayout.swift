@@ -42,10 +42,15 @@ struct DuoLayout: Equatable {
   /// The window is wider than tall.
   var isLandscape = false
 
+  /// Something else stands along the curved edge (Activity's column), so
+  /// the screen under it does not reach the edge and gets no edge bar.
+  var edgeBarYielded = false
+
   /// iOS draws the trailing column's toolbar as the vertical bar on the
   /// display's curved right edge: the Duo's inner display, held landscape.
-  /// Never on an iPad (same size class, no fold) and never held upright.
-  var hasEdgeBar: Bool { isWide && hasFold && isLandscape }
+  /// Never on an iPad (same size class, no fold), never held upright, and not
+  /// for a screen a column beside it has pushed off the edge.
+  var hasEdgeBar: Bool { isWide && hasFold && isLandscape && !edgeBarYielded }
 
   /// How far the hinge is bent away from flat, 0 (flat or closed) to 1
   /// (folded to a right angle). Drives the fold's depth effects.

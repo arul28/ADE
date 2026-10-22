@@ -286,7 +286,7 @@ struct WorkChatHeaderMenu: View, Equatable {
             onCreatePullRequest: onCreatePullRequest
           )
         } label: {
-          Label("Tools", systemImage: "square.split.2x1")
+          Label("Tools", systemImage: "wrench.and.screwdriver")
           if !model.tools.isEmpty {
             Text("\(model.tools.count) running")
           }

@@ -194,6 +194,55 @@ struct DuoPaneSelectionReader<Content: View>: View {
 
 // MARK: - Pane header contributions
 
+private struct DuoPaneControlsInBarKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// The pane's controls are drawn by the system bar (the Duo's edge bar), not
+  /// the pane's own header row: controls drop their own glass, and the
+  /// Watch | Control pair stands vertically like the rest of the bar.
+  var duoPaneControlsInBar: Bool {
+    get { self[DuoPaneControlsInBarKey.self] }
+    set { self[DuoPaneControlsInBarKey.self] = newValue }
+  }
+}
+
+private struct DuoPaneActionsRowKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// With the controls on the edge bar, the pane still draws a few of them in
+  /// its own top row: the ones that are not a single symbol (Watch | Control,
+  /// the PR's watch chip). True for that row's copy of the controls.
+  var duoPaneActionsRow: Bool {
+    get { self[DuoPaneActionsRowKey.self] }
+    set { self[DuoPaneActionsRowKey.self] = newValue }
+  }
+}
+
+/// A pane control that stays in the pane's own top row when the rest move to
+/// the edge bar (a capsule, not a single symbol).
+struct DuoPaneRowOnly<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+  @Environment(\.duoPaneControlsInBar) private var inBar
+  @Environment(\.duoPaneActionsRow) private var row
+
+  var body: some View {
+    if !inBar || row {
+      content()
+    }
+  }
+}
+
+extension DuoLayout {
+  /// The rule for who owns the edge bar's top: whatever is on the right of
+  /// the screen. With the pane open beside the chat on the Duo held
+  /// landscape, that is the pane, so its controls move onto the bar.
+  var paneControlsInBar: Bool { hasEdgeBar }
+}
+
 /// What the open tool adds to the pane header: its actions (Inspect, Rotate,
 /// Speed, Watch | Control…) and a one-line status ("iPhone 16 Pro · Watching").
 ///
@@ -205,7 +254,7 @@ struct DuoPaneHeaderActions {
   let content: AnyView
 }
 
-private struct DuoPaneHeaderActionsKey: PreferenceKey {
+struct DuoPaneHeaderActionsKey: PreferenceKey {
   static var defaultValue: DuoPaneHeaderActions?
   static func reduce(value: inout DuoPaneHeaderActions?, nextValue: () -> DuoPaneHeaderActions?) {
     value = value ?? nextValue()
@@ -219,7 +268,21 @@ private struct DuoPaneHeaderStatusKey: PreferenceKey {
   }
 }
 
+/// Menu items the open surface adds to the edge bar's ⋯ (the PR's actions),
+/// so the bar has one ⋯ rather than the surface's own beside the system's.
+struct DuoPaneOverflowKey: PreferenceKey {
+  static var defaultValue: DuoPaneHeaderActions?
+  static func reduce(value: inout DuoPaneHeaderActions?, nextValue: () -> DuoPaneHeaderActions?) {
+    value = value ?? nextValue()
+  }
+}
+
 extension View {
+  /// Menu items for the edge bar's ⋯ while this surface's controls are there.
+  func duoPaneOverflow<Items: View>(@ViewBuilder items: () -> Items) -> some View {
+    preference(key: DuoPaneOverflowKey.self, value: DuoPaneHeaderActions(content: AnyView(items())))
+  }
+
   /// Hands this tool's controls and status line to the tools pane header.
   /// Inert outside the pane: nothing else reads these preferences.
   func duoPaneHeader<Actions: View>(
@@ -239,21 +302,75 @@ struct DuoPaneActionButton: View {
   var isOn = false
   var role: ButtonRole?
   let action: () -> Void
+  @Environment(\.duoPaneControlsInBar) private var inBar
+  @Environment(\.duoPaneActionsRow) private var row
 
   var body: some View {
-    Button(role: role) {
+    if !(inBar && row) {
+      buttonBody
+    }
+  }
+
+  @ViewBuilder
+  private var buttonBody: some View {
+    let button = Button(role: role) {
       ADEHaptics.light()
       action()
     } label: {
-      Image(systemName: systemImage)
-        .font(.system(size: 16, weight: .medium))
-        .foregroundStyle(isOn ? ADEColor.accent : Color.primary)
-        .frame(width: 22, height: 22)
+      if inBar {
+        // A bar item: the bar draws the glass; the label names it for the
+        // bar's overflow menu and VoiceOver.
+        Label(title, systemImage: systemImage)
+          .symbolVariant(isOn ? .fill : .none)
+      } else {
+        Image(systemName: systemImage)
+          .font(.system(size: 16, weight: .medium))
+          .foregroundStyle(isOn ? ADEColor.accent : Color.primary)
+          .frame(width: 22, height: 22)
+      }
     }
-    .buttonStyle(.glass)
-    .buttonBorderShape(.circle)
     .accessibilityLabel(title)
     .accessibilityAddTraits(isOn ? .isSelected : [])
+    if inBar {
+      button
+    } else {
+      button
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+    }
+  }
+}
+
+/// A menu among the pane's controls (hardware buttons, the PR's ⋯): a glass
+/// circle in the pane header, a plain bar item on the edge bar.
+struct DuoPaneActionMenu<Items: View>: View {
+  let title: String
+  let systemImage: String
+  @ViewBuilder let items: () -> Items
+  @Environment(\.duoPaneControlsInBar) private var inBar
+  @Environment(\.duoPaneActionsRow) private var row
+
+  var body: some View {
+    if inBar && row {
+      EmptyView()
+    } else if inBar {
+      Menu {
+        items()
+      } label: {
+        Label(title, systemImage: systemImage)
+      }
+    } else {
+      Menu {
+        items()
+      } label: {
+        Image(systemName: systemImage)
+          .font(.system(size: 16, weight: .medium))
+          .frame(width: 22, height: 22)
+      }
+      .buttonStyle(.glass)
+      .buttonBorderShape(.circle)
+      .accessibilityLabel(title)
+    }
   }
 }
 
@@ -275,19 +392,35 @@ struct DuoToolsPane<Content: View>: View {
   @ObservedObject var model: DuoWorkPaneModel
   @ViewBuilder var content: (DuoToolTab, DuoToolSeed) -> Content
   @State private var status: String?
+  @Environment(\.duoWorkFamily) private var family
+  @Environment(\.duoLayout) private var duo
 
-  private var headerHeight: CGFloat { 56 }
+  /// The pane's controls (and Close) are on the edge bar: its own header is
+  /// just the name and status, one row.
+  private var controlsInBar: Bool { duo.paneControlsInBar && family != .tall }
+
+  /// Beside the thread the pane owns its column's full height: its header
+  /// sits on the chat title capsule's row, not a nav bar's height below it
+  /// (the bar's items are on the rail). Stacked, it sits under the top bar.
+  private var usesFullHeight: Bool { family != .tall }
+  /// Puts the header's centre on the title capsule's centre (the bar's row).
+  private var fullHeightTopInset: CGFloat { 20 }
+
+  private var headerHeight: CGFloat { 52 }
+  private var statusHeight: CGFloat { 18 }
 
   var body: some View {
     let tab = model.tab
     VStack(spacing: 0) {
       Color.clear
-        .frame(height: headerHeight)
+        .frame(height: (usesFullHeight ? fullHeightTopInset : 0) + headerHeight
+          + (status != nil && !controlsInBar ? statusHeight - 8 : 0))
       Group {
         if let tab {
           content(tab, model.seed)
             // A fresh viewer per tool: two tools never share a stream.
             .id(tab)
+            .environment(\.duoPaneControlsInBar, controlsInBar)
         } else {
           Color.clear
         }
@@ -300,6 +433,7 @@ struct DuoToolsPane<Content: View>: View {
     .onPreferenceChange(DuoPaneHeaderStatusKey.self) { next in
       if status != next { status = next }
     }
+    .ignoresSafeArea(.container, edges: usesFullHeight ? .top : [])
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .accessibilityIdentifier("Duo.Work.ToolsPane")
   }
@@ -309,39 +443,82 @@ struct DuoToolsPane<Content: View>: View {
   /// and the Tools button or a pill switches it.
   @ViewBuilder
   private func header(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
-    HStack(spacing: 8) {
+    if controlsInBar {
+      barHeader(tab: tab, actions: actions)
+    } else {
+      rowHeader(tab: tab, actions: actions)
+    }
+  }
+
+  /// Name and status side by side on the top row, level with the chat's title
+  /// capsule; the controls are the edge bar's.
+  private func barHeader(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
       if let tab {
-        HStack(spacing: 8) {
-          Image(systemName: tab.symbolName)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 22)
-          VStack(alignment: .leading, spacing: 0) {
-            Text(tab.title)
-              .font(.headline)
-              .foregroundStyle(ADEColor.textPrimary)
-            if let status {
-              Text(status)
-                .font(.footnote)
-                .foregroundStyle(ADEColor.textSecondary)
-                .truncationMode(.middle)
-            }
-          }
-          .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-        .layoutPriority(-1)
-        Spacer(minLength: 8)
-        if let actions {
-          HStack(spacing: 6) { actions.content }
-            .fixedSize()
-        }
+        Text(tab.title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .accessibilityAddTraits(.isHeader)
+          .layoutPriority(1)
       }
-      closeButton
+      if let status {
+        // Whole or not at all: a status cut to "iPh…ing" says nothing.
+        ViewThatFits(in: .horizontal) {
+          Text(status)
+          Color.clear.frame(width: 0, height: 0)
+        }
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+      }
+      Spacer(minLength: 8)
+      if let actions {
+        HStack(spacing: 6) { actions.content }
+          .environment(\.duoPaneControlsInBar, true)
+          .environment(\.duoPaneActionsRow, true)
+          .fixedSize()
+          .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }
+      }
+    }
+    .lineLimit(1)
+    .frame(height: headerHeight)
+    .padding(.top, fullHeightTopInset)
+    .padding(.horizontal, 16)
+  }
+
+  @ViewBuilder
+  private func rowHeader(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 8) {
+        if let tab {
+          Text(tab.title)
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .accessibilityAddTraits(.isHeader)
+          Spacer(minLength: 8)
+          if let actions {
+            HStack(spacing: 6) { actions.content }
+              .fixedSize()
+          }
+        }
+        closeButton
+      }
+      .frame(height: headerHeight)
+      .padding(.top, usesFullHeight ? fullHeightTopInset : 0)
+      // Tucked up under the name: the two read as one block.
+      .padding(.bottom, status != nil ? -8 : 0)
+      // The status gets the pane's whole width under the row, so a device
+      // name is never squeezed between the controls.
+      if let status {
+        Text(status)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(height: statusHeight, alignment: .top)
+      }
     }
     .padding(.horizontal, 14)
-    .frame(height: headerHeight)
   }
 
   private var closeButton: some View {
@@ -459,7 +636,8 @@ struct DuoToolTiles: View {
 
   var body: some View {
     GeometryReader { proxy in
-      let columns = max(2, min(4, Int(proxy.size.width / 170)))
+      // One row when the half allows it: the tiles never run into the fold.
+      let columns = max(2, min(max(tiles.count, 2), Int(proxy.size.width / 150)))
       VStack(alignment: .leading, spacing: 12) {
         Text(tiles.contains(where: { $0.tab.isTool }) ? "Open beside the chat" : "No tools are running")
           .font(.subheadline.weight(.semibold))
@@ -540,11 +718,19 @@ struct DuoWatchControlSwitch: View {
   let onEndControl: () -> Void
   let onBlocked: () -> Void
   let onEarlyRelease: () -> Void
+  @Environment(\.duoPaneControlsInBar) private var inBar
+  @Environment(\.duoPaneActionsRow) private var row
 
   var body: some View {
-    HStack(spacing: 0) { cells }
-      .padding(.horizontal, 2)
-      .glassEffect(.regular.interactive(), in: Capsule())
+    if inBar && !row {
+      // The edge bar's items are single symbols; the switch stays a capsule
+      // in the pane's own top row.
+      EmptyView()
+    } else {
+      HStack(spacing: 0) { cells }
+        .padding(.horizontal, 2)
+        .glassEffect(.regular.interactive(), in: Capsule())
+    }
   }
 
   private var controlEnabled: Bool { controlBlocker == nil }

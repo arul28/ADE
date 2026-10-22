@@ -177,16 +177,9 @@ struct AppleDeviceViewer: View {
         keyboardFocused = showsKeyboard
       }
       DuoPaneActionButton(title: "Home", systemImage: "house") { model.press("home") }
-      Menu {
+      DuoPaneActionMenu(title: "Hardware buttons", systemImage: "iphone.gen3") {
         hardwareButtonsMenuContent
-      } label: {
-        Image(systemName: "iphone.gen3")
-          .font(.system(size: 16, weight: .medium))
-          .frame(width: 22, height: 22)
       }
-      .buttonStyle(.glass)
-      .buttonBorderShape(.circle)
-      .accessibilityLabel("Hardware buttons")
     }
     DuoWatchControlSwitch(
       controlling: model.mode == .controlling,
