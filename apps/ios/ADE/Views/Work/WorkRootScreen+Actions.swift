@@ -823,13 +823,28 @@ extension WorkRootListScreen {
     navigationMutationPending = false
     selectedSessionTransitionId = request.sessionId
     var fresh = NavigationPath()
+    // A lane on another machine (the Lanes dashboard's chat rows) opens its
+    // chat through that machine, exactly like tapping its Work row does.
+    let remoteChat: WorkChatCrossProjectContext? = request.laneId.map(isWorkRemoteLaneId) == true
+      ? syncService.remoteMachineChat(sessionId: request.sessionId).map { remote in
+        WorkChatCrossProjectContext(
+          projectId: remote.projectId,
+          projectRootPath: remote.rootPath.isEmpty ? nil : remote.rootPath,
+          displayName: "",
+          machineKey: remote.machineKey
+        )
+      }
+      : nil
+    let route = WorkSessionRoute(sessionId: request.sessionId, remoteChat: remoteChat)
     if duoLayout.isWide {
-      duoSelectedRoute = WorkSessionRoute(sessionId: request.sessionId)
+      duoSelectedRoute = route
     } else {
-      fresh.append(WorkSessionRoute(sessionId: request.sessionId))
+      fresh.append(route)
     }
     path = fresh
-    syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    if remoteChat == nil {
+      syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    }
     // The chat is open: clear the request now, which also stops the outside-tap
     // watchdog. The acknowledgement below can take as long as the relay's
     // timeout, and holding the request across it let the watchdog close a chat

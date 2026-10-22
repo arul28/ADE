@@ -624,3 +624,431 @@ struct LaneChoiceList<Item: Identifiable, Row: View>: View {
     }
   }
 }
+
+// MARK: - Duo: lane dashboard and the two-page detail
+
+/// One lane's detail on the Duo's inner display, desktop's split: the lane
+/// dashboard beside the git actions. Held landscape they are two columns (one
+/// per page when book-folded); held portrait the dashboard is the top half
+/// and git the bottom (exactly the halves on a laptop fold). The column's
+/// controls are toolbar items, so held landscape they ride the edge bar.
+struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
+  let snapshot: LaneListSnapshot
+  let machineName: String?
+  /// The lane's open (else latest) pull request.
+  let pullRequest: PullRequestListItem?
+  let canCreatePullRequest: Bool
+  let onOpenPullRequest: (PullRequestListItem) -> Void
+  let onCreatePullRequest: () -> Void
+  let onRefresh: () -> Void
+  let onStackGraph: () -> Void
+  let onOpenFiles: () -> Void
+  let onManage: () -> Void
+  let onCopyLaneLink: () -> Void
+  let onCopyBranchLink: () -> Void
+  @ViewBuilder let dashboard: () -> Dashboard
+  @ViewBuilder let git: () -> Git
+
+  @Environment(\.duoSplit) private var split
+
+  /// Outside a split (a sheet) the column is narrow: lay it out as portrait.
+  private var family: DuoFamily { split?.family ?? .tall }
+
+  var body: some View {
+    withToolbar(
+      DuoLocalFoldReader { fold, size in
+        if family == .wide {
+          let leading: CGFloat = {
+            if case .sideBySide(let rect) = fold, rect.minX > 200 { return rect.minX }
+            // Git's action row needs a little more room than the dashboard.
+            return (size.width * 0.44).rounded()
+          }()
+          HStack(spacing: 0) {
+            dashboard().frame(width: leading)
+            DuoSeam(axis: .vertical, foldRect: {
+              if case .sideBySide(let rect) = fold { return rect }
+              return nil
+            }())
+            git().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+          }
+        } else {
+          let top: CGFloat = {
+            if case .stacked(let rect) = fold, rect.minY > 160 { return rect.minY }
+            return size.height * 0.45
+          }()
+          VStack(spacing: 0) {
+            dashboard().frame(height: top)
+            DuoSeam(axis: .horizontal, foldRect: {
+              if case .stacked(let rect) = fold { return rect }
+              return nil
+            }())
+            git().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+          }
+        }
+      }
+    )
+    .navigationTitle(snapshot.lane.name)
+    .navigationSubtitle(subtitle)
+    .navigationBarTitleDisplayMode(.inline)
+    .adeScreenBackground()
+  }
+
+  /// "ade/fix-sync-loop · Mac Studio"
+  private var subtitle: String {
+    [snapshot.lane.branchRef, machineName].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+  }
+
+  @ViewBuilder
+  private func withToolbar<Content: View>(_ content: Content) -> some View {
+    if #available(iOS 27.0, *) {
+      content.toolbar {
+        DuoSplitListToggle(split: split)
+        ToolbarItem(placement: .topBarPinnedTrailing) { pullRequestButton }
+          .visibilityPriority(.high)
+        commonItems
+        ToolbarOverflowMenu { overflowItems }
+      }
+    } else {
+      content.toolbar {
+        DuoSplitListToggle(split: split)
+        ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
+        commonItems
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu { overflowItems } label: { Image(systemName: "ellipsis") }
+            .accessibilityLabel("Lane options")
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var pullRequestButton: some View {
+    if let pullRequest {
+      Button("PR #\(pullRequest.githubPrNumber)", systemImage: "arrow.triangle.pull") {
+        onOpenPullRequest(pullRequest)
+      }
+    } else {
+      Button("Create pull request", systemImage: "plus.square.on.square", action: onCreatePullRequest)
+        .disabled(!canCreatePullRequest)
+    }
+  }
+
+  @ToolbarContentBuilder
+  private var commonItems: some ToolbarContent {
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Open in Files", systemImage: "folder", action: onOpenFiles)
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Stack", systemImage: "square.stack.3d.up", action: onStackGraph)
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Manage lane", systemImage: "slider.horizontal.3", action: onManage)
+    }
+  }
+
+  @ViewBuilder
+  private var overflowItems: some View {
+    Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
+    Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)
+  }
+}
+
+/// Desktop's lane dashboard: who the lane is, its pull request, the chats and
+/// CLIs working in it, its changes, its stack and its history, as inset
+/// grouped sections. Rows open their targets (a chat opens in Work).
+struct LaneDuoDashboard: View {
+  let snapshot: LaneListSnapshot
+  let detail: LaneDetailPayload?
+  let machineName: String?
+  let pullRequests: [PullRequestListItem]
+  let canCreatePullRequest: Bool
+  let onOpenPullRequest: (PullRequestListItem) -> Void
+  let onCreatePullRequest: () -> Void
+  let onOpenChat: (AgentChatSessionSummary) -> Void
+  let onOpenLane: (String) -> Void
+  let onStackGraph: () -> Void
+
+  private var lane: LaneSummary { snapshot.lane }
+
+  var body: some View {
+    List {
+      identitySection
+      pullRequestSection
+      sessionsSection
+      changesSection
+      stackSection
+      historySection
+    }
+    .listStyle(.insetGrouped)
+    .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground)
+    .listSectionSpacing(.compact)
+    .contentMargins(.bottom, 24, for: .scrollContent)
+  }
+
+  // MARK: Identity
+
+  private var identitySection: some View {
+    Section {
+      HStack(spacing: 10) {
+        WorkLaneLogoMark(
+          color: laneSurfaceTint(forHex: lane.color).text ?? ADEColor.accent,
+          laneIcon: lane.icon,
+          emoji: lane.emoji,
+          size: 18
+        )
+        VStack(alignment: .leading, spacing: 2) {
+          Text(lane.name)
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          Text(verbatim: lane.branchRef)
+            .font(.adeMono(12))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
+      if let machineName, !machineName.isEmpty {
+        LabeledContent("Machine", value: machineName)
+      }
+      LabeledContent("Base") {
+        Text(verbatim: lane.baseRef).font(.adeMono(13))
+      }
+      LabeledContent("Upstream", value: upstreamText)
+      LabeledContent("Working tree", value: lane.status.dirty ? "Uncommitted changes" : "Clean")
+      if snapshot.runtime.sessionCount > 0 {
+        LabeledContent("Sessions", value: runtimeText)
+      }
+    }
+    .font(.subheadline)
+  }
+
+  private var upstreamText: String {
+    if let sync = detail?.syncStatus, !sync.hasUpstream { return "Not pushed" }
+    let ahead = detail?.syncStatus?.ahead ?? lane.status.ahead
+    let behind = detail?.syncStatus?.behind ?? lane.status.behind
+    if ahead == 0 && behind == 0 { return "Up to date" }
+    return [ahead > 0 ? "\(ahead) ahead" : nil, behind > 0 ? "\(behind) behind" : nil]
+      .compactMap { $0 }
+      .joined(separator: " · ")
+  }
+
+  private var runtimeText: String {
+    let runtime = snapshot.runtime
+    var parts: [String] = []
+    if runtime.runningCount > 0 { parts.append("\(runtime.runningCount) running") }
+    if runtime.awaitingInputCount > 0 { parts.append("\(runtime.awaitingInputCount) waiting") }
+    if parts.isEmpty { parts.append("\(runtime.sessionCount) idle") }
+    return parts.joined(separator: " · ")
+  }
+
+  // MARK: Pull request
+
+  @ViewBuilder
+  private var pullRequestSection: some View {
+    Section("Pull request") {
+      if pullRequests.isEmpty {
+        Button(action: onCreatePullRequest) {
+          Label("Create pull request", systemImage: "plus.square.on.square")
+        }
+        .disabled(!canCreatePullRequest)
+      } else {
+        ForEach(pullRequests.prefix(3)) { pr in
+          Button {
+            onOpenPullRequest(pr)
+          } label: {
+            PrRowCard(pr: pr)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+    }
+  }
+
+  // MARK: Sessions
+
+  @ViewBuilder
+  private var sessionsSection: some View {
+    let chats = (detail?.chatSessions ?? [])
+      .sorted { $0.lastActivityAt > $1.lastActivityAt }
+    let terminals = (detail?.sessions ?? [])
+      .filter { $0.status == "running" }
+    if !chats.isEmpty || !terminals.isEmpty {
+      Section {
+        ForEach(chats.prefix(8)) { chat in
+          Button {
+            onOpenChat(chat)
+          } label: {
+            HStack(spacing: 10) {
+              Circle()
+                .fill(sessionTint(chat.status))
+                .frame(width: 8, height: 8)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(chat.title?.isEmpty == false ? chat.title! : "Chat")
+                  .font(.subheadline)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                Text(verbatim: chat.model.isEmpty ? chat.provider : chat.model)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .lineLimit(1)
+              }
+              Spacer(minLength: 8)
+              Text(prCompactRelativeTime(chat.lastActivityAt))
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+        }
+        ForEach(terminals.prefix(4)) { terminal in
+          HStack(spacing: 10) {
+            Image(systemName: "terminal")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 8)
+            Text(terminal.title)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(terminal.toolType ?? "shell")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+      } header: {
+        Text("Chats and CLIs")
+      }
+    }
+  }
+
+  private func sessionTint(_ status: String) -> Color {
+    switch status.lowercased() {
+    case "running", "active", "working": return ADEColor.success
+    case "awaiting_input", "waiting", "needs_input": return ADEColor.warning
+    case "error", "failed": return ADEColor.danger
+    default: return ADEColor.textMuted
+    }
+  }
+
+  // MARK: Changes
+
+  @ViewBuilder
+  private var changesSection: some View {
+    let staged = detail?.diffChanges?.staged ?? []
+    let unstaged = detail?.diffChanges?.unstaged ?? []
+    let all = staged + unstaged
+    let additions = all.reduce(0) { $0 + ($1.additions ?? 0) }
+    let deletions = all.reduce(0) { $0 + ($1.deletions ?? 0) }
+    Section("Changes") {
+      if all.isEmpty {
+        Text("No uncommitted changes")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+      } else {
+        LabeledContent("Staged", value: fileCount(staged.count))
+        LabeledContent("Unstaged", value: fileCount(unstaged.count))
+        LabeledContent("Lines") {
+          PrDiffStat(additions: additions, deletions: deletions, size: 12)
+        }
+      }
+    }
+    .font(.subheadline)
+  }
+
+  private func fileCount(_ count: Int) -> String {
+    "\(count) file\(count == 1 ? "" : "s")"
+  }
+
+  // MARK: Stack
+
+  @ViewBuilder
+  private var stackSection: some View {
+    let chain = detail?.stackChain ?? []
+    let children = detail?.children ?? []
+    if chain.count > 1 || !children.isEmpty {
+      Section {
+        ForEach(chain) { item in
+          Button {
+            if item.laneId != lane.id { onOpenLane(item.laneId) }
+          } label: {
+            HStack(spacing: 8) {
+              Image(systemName: item.laneId == lane.id ? "smallcircle.filled.circle" : "circle")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(item.laneId == lane.id ? ADEColor.accent : ADEColor.textMuted)
+              Text(item.laneName)
+                .font(.subheadline.weight(item.laneId == lane.id ? .semibold : .regular))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Spacer(minLength: 8)
+              if item.status.ahead > 0 || item.status.behind > 0 {
+                Text("↑\(item.status.ahead) ↓\(item.status.behind)")
+                  .font(.adeMono(11))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+            .padding(.leading, CGFloat(item.depth) * 14)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+        }
+        ForEach(children) { child in
+          Button {
+            onOpenLane(child.id)
+          } label: {
+            Label(child.name, systemImage: "arrow.turn.down.right")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+          }
+          .buttonStyle(.plain)
+        }
+      } header: {
+        HStack {
+          Text("Stack")
+          Spacer()
+          Button("Graph", action: onStackGraph)
+            .font(.caption.weight(.semibold))
+            .textCase(nil)
+        }
+      }
+    }
+  }
+
+  // MARK: History
+
+  @ViewBuilder
+  private var historySection: some View {
+    let commits = detail?.recentCommits ?? []
+    if !commits.isEmpty {
+      Section("History") {
+        ForEach(commits.prefix(8)) { commit in
+          VStack(alignment: .leading, spacing: 3) {
+            Text(commit.subject)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(2)
+            HStack(spacing: 6) {
+              Text(verbatim: commit.shortSha)
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.accent)
+              Text("\(commit.authorName) · \(prCompactRelativeTime(commit.authoredAt))")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+              if !commit.pushed {
+                Text("not pushed")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.warning)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,22 +2,91 @@ import SwiftUI
 
 // MARK: - The split frame
 
+/// What a split's detail column reads about the split around it, and asks of
+/// it: the layout family, whether the list column is folded behind a toggle,
+/// and whether the detail wants the whole width for now (a PR's Files tab).
+@Observable
+final class DuoSplitModel {
+  /// The family of the whole split, not of the detail column alone.
+  var family: DuoFamily = .wide
+  /// The list is folded away and the detail's sidebar toggle brings it back
+  /// as an overlay.
+  var listCollapsible = false
+  /// The folded list is showing beside the detail.
+  var listShown = false
+  /// The detail asked for every column the screen has.
+  var detailWantsFullWidth = false
+
+  func toggleList() {
+    listShown.toggle()
+  }
+
+  func setDetailWantsFullWidth(_ wants: Bool) {
+    guard detailWantsFullWidth != wants else { return }
+    detailWantsFullWidth = wants
+  }
+}
+
+extension EnvironmentValues {
+  /// The split the view sits in, or nil outside one (the phone, a sheet).
+  @Entry var duoSplit: DuoSplitModel? = nil
+}
+
+/// The detail column's sidebar toggle: shown only while the split can fold
+/// its list away (held portrait, or a detail that took the width).
+struct DuoSplitListToggle: ToolbarContent {
+  let split: DuoSplitModel?
+
+  var body: some ToolbarContent {
+    if let split, split.listCollapsible {
+      ToolbarItem(placement: .topBarLeading) {
+        Button(split.listShown ? "Hide list" : "Show list", systemImage: "sidebar.left") {
+          withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { split.toggleList() }
+        }
+      }
+    }
+  }
+}
+
 /// The list-and-detail frame the Duo's inner display gives the Lanes, PRs and
-/// Files tabs: a desktop-style sidebar on the left, the selected thing on the
-/// right. The sidebar keeps its width; the detail column takes the rest.
+/// Files tabs: a desktop-style list column on the left, the selected thing on
+/// the right. The list keeps its width; the detail column takes the rest.
 ///
 /// Book-folded, the column edge sits on the fold so each page keeps its own
-/// pane. Laptop and tent postures keep the columns side by side: their top half
-/// is read from a distance, so it must not carry the whole reading pane. The
-/// tab bars above each column stay clear of the horizontal fold.
+/// pane, and the hinge is the only divider.
+///
+/// `adaptive` screens (PRs, Lanes) also follow the Duo's families: held
+/// portrait the list folds behind the detail's sidebar toggle and comes back
+/// beside it; a detail that needs both pages (`detailTakesBothPages`
+/// book-folded, or a detail that asks through `DuoSplitModel`) folds it the
+/// same way. The detail column keeps its identity through all of it, so its
+/// state (the open tab, the scroll) survives a fold.
 struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
   /// The sidebar's width when the screen is not book-folded.
   var preferredListWidth: CGFloat = 320
   /// Below this the detail column stops being readable; the sidebar gives up
   /// the room first.
   var minimumDetailWidth: CGFloat = 360
+  var adaptive = false
+  /// Book-folded, the detail takes both pages (Lanes: dashboard | git).
+  var detailTakesBothPages = false
+  /// The selected row. Picking one closes the list's overlay.
+  var selection: String? = nil
+  /// Held landscape, ask the app shell to fold its sidebar away while this
+  /// is true: list, detail and the edge bar need the whole display.
+  var wantsWholeDisplay = false
   @ViewBuilder var list: (CGFloat) -> ListColumn
   @ViewBuilder var detail: () -> DetailColumn
+
+  @Environment(\.duoLayout) private var duo
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var model = DuoSplitModel()
+
+  private struct Arrangement: Equatable {
+    var family: DuoFamily
+    var collapsible: Bool
+    var hidesShellSidebar: Bool
+  }
 
   var body: some View {
     DuoLocalFoldReader { fold, size in
@@ -27,30 +96,64 @@ struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
         preferredListWidth: preferredListWidth,
         minimumDetailWidth: minimumDetailWidth
       )
+      let family = adaptive ? duo.family(for: size) : .wide
+      let bookFolded: Bool = {
+        if case .sideBySide = fold { return true }
+        return false
+      }()
+      let collapsible = adaptive
+        && (family == .tall || model.detailWantsFullWidth || (detailTakesBothPages && bookFolded))
+      let arrangement = Arrangement(
+        family: family,
+        collapsible: collapsible,
+        hidesShellSidebar: adaptive && wantsWholeDisplay && family == .wide
+      )
+      let foldedListWidth = family == .tall ? min(preferredListWidth, size.width * 0.45) : metrics.listWidth
+
       HStack(spacing: 0) {
-        list(metrics.listWidth)
-          .frame(width: metrics.listWidth)
-          .frame(maxHeight: .infinity, alignment: .top)
-        // The gutter is page, never a dark band: when the screen is book-folded
-        // the hinge itself separates the pages, so only the unfolded columns
-        // get a hairline.
-        ZStack {
-          ADEColor.pageBackground
-          if metrics.showsDividerRule {
-            Rectangle()
-              .fill(ADEKit.rule)
-              .frame(width: 1)
-          }
+        // A folded list comes back beside the detail, pushing it over, the
+        // way an iPad sidebar does held portrait. The detail stays in the
+        // same slot either way, so it keeps its state.
+        if !collapsible || model.listShown {
+          let width = collapsible ? foldedListWidth : metrics.listWidth
+          list(width)
+            .frame(width: width)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .transition(.move(edge: .leading))
+          DuoSeam(
+            axis: .vertical,
+            foldRect: metrics.showsDividerRule ? nil : CGRect(x: 0, y: 0, width: metrics.gutterWidth, height: size.height)
+          )
         }
-        .frame(width: metrics.gutterWidth)
-        .frame(maxHeight: .infinity)
-        .accessibilityHidden(true)
         detail()
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(ADEColor.pageBackground)
+      .onChange(of: arrangement, initial: true) { _, next in
+        model.family = next.family
+        if model.listCollapsible != next.collapsible {
+          model.listCollapsible = next.collapsible
+          // Held portrait with nothing open, the list is the screen.
+          model.listShown = next.collapsible && next.family == .tall && selection == nil
+        }
+        if adaptive {
+          DuoShellChrome.shared.setSidebarPreferredHidden(next.hidesShellSidebar)
+        }
+      }
     }
+    .environment(\.duoSplit, model)
+    .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86), value: model.listShown)
+    .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86), value: model.detailWantsFullWidth)
+    .onChange(of: selection) { _, _ in hideList() }
+    .onDisappear {
+      if adaptive { DuoShellChrome.shared.setSidebarPreferredHidden(false) }
+    }
+  }
+
+  private func hideList() {
+    guard model.listShown else { return }
+    model.listShown = false
   }
 }
 
@@ -100,36 +203,33 @@ struct DuoSplitPlaceholder: View {
   let message: String
 
   var body: some View {
-    VStack(spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: 30, weight: .light))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(title)
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
+    ContentUnavailableView {
+      Label(title, systemImage: symbol)
+    } description: {
       Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textMuted)
-        .multilineTextAlignment(.center)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: 300)
     }
-    .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ADEColor.surfaceBackground)
-    .accessibilityElement(children: .combine)
+    .background(ADEColor.pageBackground)
   }
 }
 
 // MARK: - Lanes
 
 extension LanesTabView {
-  /// The Lanes tab on the Duo's inner display: the lane list and the selected
-  /// lane's detail as two columns. Selecting a row fills the detail column
-  /// instead of pushing.
+  /// The Lanes tab on the Duo's inner display, desktop's three columns: the
+  /// lane list, then the selected lane's dashboard and git side by side.
+  /// Book-folded the dashboard and git take a page each and the list folds
+  /// behind the sidebar toggle; held portrait the list is an overlay too.
   @ViewBuilder
   var duoLanesSplitBody: some View {
-    DuoSplitScaffold { _ in
+    DuoSplitScaffold(
+      preferredListWidth: 280,
+      minimumDetailWidth: 420,
+      adaptive: true,
+      detailTakesBothPages: true,
+      selection: duoSelectedLaneId,
+      wantsWholeDisplay: duoSelectedLaneId != nil
+    ) { _ in
       duoLanesListColumn
     } detail: {
       duoLaneDetailColumn
@@ -137,52 +237,122 @@ extension LanesTabView {
     .adeScreenBackground()
   }
 
-  /// The same search, filters, notices, tray and rows the phone list draws.
+  /// The same notices, tray and rows the phone list draws, in a stack of its
+  /// own with native search; the filter and machine chips become toolbar
+  /// menus so nothing is clipped in a 300 pt column.
   var duoLanesListColumn: some View {
-    List {
-      Section {
-        laneSearchField
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-        if !laneSnapshots.isEmpty {
-          laneQuickFilterChips
-            .adeFlatRow(insets: EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
-        }
-        if !remoteLanes.machines.isEmpty {
-          laneMachineFilterChips
-            .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-        }
-        laneNoticeRows
-        if showsLaneLoadingSkeletons {
-          ForEach(0..<5, id: \.self) { _ in
-            LaneRowSkeleton()
-              .adeFlatRow(insets: laneRowInsets)
+    NavigationStack {
+      List {
+        Section {
+          laneNoticeRows
+          if showsLaneLoadingSkeletons {
+            ForEach(0..<5, id: \.self) { _ in
+              LaneRowSkeleton()
+                .adeFlatRow(insets: laneRowInsets)
+            }
+          }
+          if !openLaneSnapshots.isEmpty {
+            openLanesTray
+              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
           }
         }
-        if !openLaneSnapshots.isEmpty {
-          openLanesTray
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
+        laneListSections
+      }
+      .adeFlatList()
+      .listSectionSpacing(.compact)
+      .contentMargins(.bottom, 24, for: .scrollContent)
+      .environment(\.defaultMinListRowHeight, 0)
+      .adeScrollDiagnosticsSurface(.lanes, key: "lanes-split")
+      .refreshable { await refreshFromPullGesture() }
+      .searchable(
+        text: $searchText,
+        placement: .navigationBarDrawer(displayMode: .always),
+        prompt: "Search lanes, branches, is:dirty"
+      )
+      .navigationTitle(quickFilter == .active ? "Lanes" : quickFilter.title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) { duoLaneFilterMenu }
+        if !remoteLanes.machines.isEmpty {
+          ToolbarItem(placement: .topBarLeading) { duoLaneMachineMenu }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Add lane", systemImage: "plus") {
+            if canRunLiveActions {
+              addLaneSheetPresented = true
+            } else {
+              handleBlockedLiveAction()
+            }
+          }
         }
       }
-      laneListSections
     }
-    .adeFlatList()
-    .listSectionSpacing(.compact)
-    .contentMargins(.bottom, 24, for: .scrollContent)
-    .environment(\.defaultMinListRowHeight, 0)
-    .adeScrollDiagnosticsSurface(.lanes, key: "lanes-split")
-    .refreshable { await refreshFromPullGesture() }
-    .safeAreaInset(edge: .top, spacing: 0) {
-      ADERootTopBar(title: "Lanes") {
-        addLaneActionButton
+  }
+
+  /// Active / Running / Needs you / Changes / Archived, with counts.
+  private var duoLaneFilterMenu: some View {
+    Menu {
+      Picker("Show", selection: $quickFilter) {
+        ForEach(LaneQuickFilter.allCases) { filter in
+          let count = laneListPresentation.quickFilterCounts[filter] ?? 0
+          Text("\(filter.title) (\(count))").tag(filter)
+        }
       }
+    } label: {
+      Label(
+        "Filter",
+        systemImage: quickFilter == .active
+          ? "line.3.horizontal.decrease.circle"
+          : "line.3.horizontal.decrease.circle.fill"
+      )
     }
+    .accessibilityLabel("Lane filter: \(quickFilter.title)")
+  }
+
+  /// Which machines' lanes the list shows.
+  private var duoLaneMachineMenu: some View {
+    Menu {
+      Button {
+        machineFilter = .all
+      } label: {
+        if machineFilter == .all {
+          Label("All machines", systemImage: "checkmark")
+        } else {
+          Text("All machines")
+        }
+      }
+      Button {
+        machineFilter = .focused
+      } label: {
+        if machineFilter == .focused {
+          Label(focusedMachineName, systemImage: "checkmark")
+        } else {
+          Text(focusedMachineName)
+        }
+      }
+      ForEach(remoteLanes.machines) { machine in
+        Button {
+          machineFilter = .machine(machine.machineKey)
+        } label: {
+          if machineFilter == .machine(machine.machineKey) {
+            Label(machine.name, systemImage: "checkmark")
+          } else {
+            Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+          }
+        }
+      }
+    } label: {
+      Label("Machines", systemImage: machineFilter == .all ? "desktopcomputer" : "desktopcomputer.and.arrow.down")
+    }
+    .accessibilityLabel("Machines shown")
   }
 
   @ViewBuilder
   var duoLaneDetailColumn: some View {
     if let laneId = duoSelectedLaneId, duoLaneIsAvailable(laneId) {
       // A fresh screen per lane: the detail's own state (diffs, commit field,
-      // disclosures) belongs to one lane, never the previous one.
+      // disclosures) belongs to one lane, never the previous one. Its own
+      // stack, so held landscape its toolbar is the edge bar.
       NavigationStack {
         laneDestination(LaneRoute(laneId: laneId), showsBackButton: false)
       }
@@ -191,7 +361,7 @@ extension LanesTabView {
       DuoSplitPlaceholder(
         symbol: "square.stack.3d.up",
         title: "Select a lane",
-        message: "Pick a lane to see its branch, changes, commits and git actions."
+        message: "Pick a lane to see its dashboard, changes, commits and git actions."
       )
     }
   }
@@ -205,220 +375,6 @@ extension LanesTabView {
   }
 }
 
-// MARK: - PRs
-
-extension PRsTabView {
-  /// The PRs tab on the Duo's inner display: the PR list and the selected PR's
-  /// detail. Pushes made inside the detail (a rebase, a file) stay in its
-  /// column.
-  @ViewBuilder
-  var duoPrsSplitBody: some View {
-    DuoSplitScaffold { _ in
-      duoPrsListColumn
-    } detail: {
-      duoPrDetailColumn
-    }
-  }
-
-  /// The phone list with its own toolbar and search, as the sidebar.
-  var duoPrsListColumn: some View {
-    NavigationStack {
-      List {
-        noticeRows
-        if isLoadingSkeleton {
-          Section {
-            ForEach(0..<4, id: \.self) { _ in
-              PrRowCardSkeleton().adeFlatRow()
-            }
-          }
-        } else {
-          switch selectedRootSurface.wrappedValue {
-          case .github:
-            githubSurfaceRows
-          case .workflows:
-            workflowsSurfaceRows
-          }
-        }
-      }
-      .adeFlatList()
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .adeScrollDiagnosticsSurface(.prList, key: "pr-list-split")
-      .searchable(
-        text: $searchText,
-        isPresented: $searchPresented,
-        placement: .navigationBarDrawer(displayMode: .automatic),
-        prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflows"
-      )
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar { prsToolbar }
-      .adeToast($toast)
-      .refreshable { await refreshFromPullGesture() }
-    }
-  }
-
-  @ViewBuilder
-  var duoPrDetailColumn: some View {
-    if let prId = duoSelectedPrId {
-      NavigationStack {
-        duoPrDetail(prId)
-      }
-      .id(prId)
-    } else {
-      DuoSplitPlaceholder(
-        symbol: "arrow.triangle.pull",
-        title: "Select a pull request",
-        message: "Choose a pull request to read its description, review threads, files and checks."
-      )
-    }
-  }
-}
-
-// MARK: - Files
-
-extension FilesRootScreen {
-  /// The Files tab on the Duo's inner display: the folder list on the left and
-  /// the open file on the right. Folders browse in the list column; a file
-  /// opens in the viewer column and stays open while the list moves.
-  @ViewBuilder
-  var duoFilesSplitBody: some View {
-    DuoSplitScaffold { _ in
-      duoFilesListColumn
-    } detail: {
-      duoFilesDetailColumn
-    }
-  }
-
-  var duoFilesListColumn: some View {
-    let folderPath = duoFilesFolderPath
-    return ScrollView {
-      LazyVStack(alignment: .leading, spacing: 14) {
-        filesListPreamble
-
-        if let workspace = selectedWorkspace {
-          FilesWorkspaceHeader(
-            workspaces: workspaces,
-            lanes: lanes,
-            selectedWorkspaceId: selectedWorkspaceBinding,
-            selectedWorkspace: workspace,
-            isLive: canUseLiveFileActions
-          )
-
-          if !folderPath.isEmpty {
-            FilesBreadcrumbBar(
-              relativePath: folderPath,
-              includeCurrentFile: false,
-              onSelectDirectory: { path in
-                duoFolderPath = path
-              }
-            )
-            .padding(.horizontal, 2)
-          }
-
-          FilesDirectoryContentsView(
-            workspace: workspace,
-            parentPath: folderPath,
-            isLive: canUseLiveFileActions,
-            isTabActive: isTabActive,
-            openDirectory: { path in
-              selectedFileTransitionPath = nil
-              duoFolderPath = path
-            },
-            openFile: { path, line in
-              openFile(path, in: workspace, focusLine: line)
-            },
-            transitionNamespace: transitionNamespace,
-            selectedFilePath: selectedFileTransitionPath,
-            manualReloadToken: 0
-          )
-          .environmentObject(syncService)
-
-          if workspace.laneId != nil {
-            FilesProofSection(
-              artifacts: proofArtifacts,
-              errorMessage: proofErrorMessage,
-              onRefresh: { Task { await loadProofArtifacts() } },
-              onOpenArtifact: { artifact in
-                selectedProofArtifact = artifact
-              },
-              onCopyReference: { artifact in
-                UIPasteboard.general.string = artifact.uri
-              }
-            )
-          }
-        }
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 8)
-    }
-    .scrollDismissesKeyboard(.interactively)
-    .scrollBounceBehavior(.basedOnSize)
-    .contentMargins(.bottom, 24, for: .scrollContent)
-    .adeScreenBackground()
-    .refreshable { await refreshFromPullGesture() }
-    .safeAreaInset(edge: .top, spacing: 0) {
-      ADERootTopBar(title: "Files") {
-        filesTopBarActions
-      }
-    }
-  }
-
-  @ViewBuilder
-  var duoFilesDetailColumn: some View {
-    if let editor = duoFilesOpenEditor,
-      let workspace = workspaces.first(where: { $0.id == editor.workspaceId })
-    {
-      NavigationStack {
-        FilesDetailScreen(
-          workspace: workspace,
-          relativePath: editor.path,
-          focusLine: editor.focusLine,
-          transitionNamespace: nil,
-          navigateToDirectory: { path in
-            duoFolderPath = path
-          }
-        )
-        .environmentObject(syncService)
-      }
-      .id(editor.path)
-    } else {
-      DuoSplitPlaceholder(
-        symbol: "doc.text",
-        title: "Select a file",
-        message: "Pick a folder in the list, then a file to read it here."
-      )
-    }
-  }
-
-  /// The folder the split's list column shows. Until someone browses there in
-  /// the split, it follows the phone's stack so folding or unfolding the device
-  /// keeps the reader in the same folder.
-  var duoFilesFolderPath: String {
-    if let duoFolderPath { return duoFolderPath }
-    if case .directory(_, let path)? = navigationPath.last(where: { route in
-      if case .directory = route { return true }
-      return false
-    }) {
-      return path
-    }
-    if let editor = duoFilesOpenEditor {
-      return parentDirectory(of: editor.path)
-    }
-    return ""
-  }
-
-  /// The file the split's viewer column shows: the phone's last open file,
-  /// unless the split opened one itself.
-  var duoFilesOpenEditor: (workspaceId: String, path: String, focusLine: Int?)? {
-    for route in navigationPath.reversed() {
-      if case .editor(let workspaceId, let relativePath, let focusLine) = route {
-        return (workspaceId, relativePath, focusLine)
-      }
-    }
-    return nil
-  }
-}
-
 // MARK: - Fixtures
 
 #if DEBUG
@@ -426,14 +382,16 @@ extension FilesRootScreen {
 ///
 ///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-lanes
 ///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-prs
-///     xcrun simctl launch <udid> com.ade.ios -adePreviewScreen duo-files
 enum DuoSplitPreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
     switch name {
     case "duo-lanes": return AnyView(DuoLanesFixtureScreen())
+    case "duo-lane-diff": return AnyView(DuoLanesFixtureScreen(showsDiff: true))
     case "duo-prs": return AnyView(DuoPrsFixtureScreen())
-    case "duo-files": return AnyView(DuoFilesFixtureScreen())
+    case "duo-pr-files": return AnyView(DuoPrsFixtureScreen(initialTab: .files))
+    case "duo-pr-checks": return AnyView(DuoPrsFixtureScreen(initialTab: .checks))
+    case "duo-pr-merge": return AnyView(DuoPrsFixtureScreen(initialDock: .merge))
     default: return nil
     }
   }
@@ -441,67 +399,34 @@ enum DuoSplitPreviews {
 
 // MARK: Lanes fixture
 
+/// The Lanes split over fixture data: the real lane rows in the list
+/// column's own stack, and the real Duo lane detail (`LaneDuoDetailLayout`
+/// with `LaneDuoDashboard` and `LaneDetailGitActionsPane`) beside it.
 private struct DuoLanesFixtureScreen: View {
+  /// `duo-lane-diff`: a changed file's diff open in the git column.
+  var showsDiff = false
   @State private var selection = "s-sync"
   @State private var filter: LaneQuickFilter = .active
   @State private var search = ""
+  @State private var diffOpen = false
 
   private var selectedSnapshot: LaneListSnapshot? {
     DuoSplitFixtureData.lanes.first { $0.lane.id == selection }
   }
 
-  private var visibleLanes: [LaneListSnapshot] {
-    DuoSplitFixtureData.lanes
-      .filter(filter.matches)
-      .filter { snapshot in
-        search.isEmpty
-          || snapshot.lane.name.localizedCaseInsensitiveContains(search)
-          || snapshot.lane.branchRef.localizedCaseInsensitiveContains(search)
-      }
-  }
-
   var body: some View {
-    VStack(spacing: 0) {
-      ADERootTopBar(title: "Lanes", showsGlobalControls: false) {
-        LaneAddButton(enabled: true) {}
-      }
-      DuoSplitScaffold { _ in
+    DuoSplitScaffold(
+      preferredListWidth: 280,
+      minimumDetailWidth: 420,
+      adaptive: true,
+      detailTakesBothPages: true,
+      selection: selection,
+      wantsWholeDisplay: true
+    ) { _ in
+      NavigationStack {
         List {
           Section {
-            duoFixtureSearchField("Search lanes, branches, is:dirty", text: $search)
-              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 7) {
-                ForEach(LaneQuickFilter.allCases) { filter in
-                  LaneQuickFilterChip(
-                    title: filter.title,
-                    count: DuoSplitFixtureData.lanes.filter(filter.matches).count,
-                    tone: filter == .attention ? ADEColor.warning : nil,
-                    selected: self.filter == filter
-                  ) {
-                    self.filter = filter
-                  }
-                }
-              }
-              .padding(.horizontal, 16)
-              .padding(.vertical, 1)
-            }
-            .scrollClipDisabled()
-            .adeFlatRow(insets: EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 7) {
-                LaneMachineFilterChip(title: "All", symbol: "square.stack.3d.up", liveDot: nil, selected: false) {}
-                LaneMachineFilterChip(title: "Arul’s Mac Studio", symbol: "desktopcomputer", liveDot: true, selected: true) {}
-                LaneMachineFilterChip(title: "MacBook Pro (97)", symbol: "laptopcomputer", liveDot: true, selected: false) {}
-              }
-              .padding(.horizontal, 16)
-              .padding(.vertical, 1)
-            }
-            .scrollClipDisabled()
-            .adeFlatRow(insets: EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
-          }
-          Section {
-            ForEach(visibleLanes) { snapshot in
+            ForEach(DuoSplitFixtureData.lanes.filter(filter.matches)) { snapshot in
               LaneTreeRow(
                 snapshot: snapshot,
                 depth: snapshot.lane.laneType == "primary" ? 0 : 1,
@@ -519,114 +444,169 @@ private struct DuoLanesFixtureScreen: View {
               .adeFlatRow(insets: EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 6))
               .listRowBackground(selection == snapshot.lane.id ? ADEColor.accent.opacity(0.12) : Color.clear)
             }
-          } header: {
-            ADEFlatSectionHeader("Arul’s Mac Studio", detail: "\(visibleLanes.count)")
           }
         }
         .adeFlatList()
         .listSectionSpacing(.compact)
-        .contentMargins(.bottom, 24, for: .scrollContent)
-      } detail: {
-        if let snapshot = selectedSnapshot {
-          NavigationStack {
-            DuoLaneDetailFixture(snapshot: snapshot)
+        .environment(\.defaultMinListRowHeight, 0)
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search lanes, branches, is:dirty")
+        .navigationTitle("Lanes")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Menu {
+              Picker("Show", selection: $filter) {
+                ForEach(LaneQuickFilter.allCases) { filter in
+                  Text(filter.title).tag(filter)
+                }
+              }
+            } label: {
+              Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+            }
           }
-          .id(snapshot.lane.id)
-        } else {
-          DuoSplitPlaceholder(
-            symbol: "square.stack.3d.up",
-            title: "Select a lane",
-            message: "Pick a lane to see its branch, changes, commits and git actions."
-          )
+          ToolbarItem(placement: .topBarLeading) {
+            Menu {
+              Button("All machines", systemImage: "checkmark") {}
+              Button("MacBook Pro") {}
+            } label: {
+              Label("Machines", systemImage: "desktopcomputer")
+            }
+          }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button("Add lane", systemImage: "plus") {}
+          }
         }
       }
+    } detail: {
+      if let snapshot = selectedSnapshot {
+        NavigationStack {
+          DuoLaneDetailFixture(snapshot: snapshot, diffOpen: $diffOpen)
+        }
+        .id(snapshot.lane.id)
+      } else {
+        DuoSplitPlaceholder(
+          symbol: "square.stack.3d.up",
+          title: "Select a lane",
+          message: "Pick a lane to see its dashboard, changes, commits and git actions."
+        )
+      }
     }
-    .adeScreenBackground()
+    .onAppear { diffOpen = showsDiff }
   }
 }
 
-/// The real lane detail body over fixture data: header plus the git actions
-/// pane, with no service reads.
+/// The Duo lane detail over fixture data, with no service reads.
 private struct DuoLaneDetailFixture: View {
   let snapshot: LaneListSnapshot
+  @Binding var diffOpen: Bool
   @State private var commitMessage = ""
   @State private var amendCommit = false
   @State private var stashMessage = ""
 
   var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 7) {
-        WorkLaneLogoMark(
-          color: laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent,
-          laneIcon: snapshot.lane.icon,
-          emoji: snapshot.lane.emoji,
-          size: 14
-        )
-        Text(snapshot.lane.name)
-          .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        Spacer(minLength: 8)
-        Image(systemName: "ellipsis")
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 36, height: 32)
-      }
-      .padding(.horizontal, 16)
-      .frame(height: 44)
-      .background(ADEColor.pageBackground)
-
-      LaneDetailGitActionsPane(
+    let detail = DuoSplitFixtureData.laneDetail(snapshot)
+    LaneDuoDetailLayout(
+      snapshot: snapshot,
+      machineName: "Arul’s Mac Studio",
+      pullRequest: nil,
+      canCreatePullRequest: true,
+      onOpenPullRequest: { _ in },
+      onCreatePullRequest: {},
+      onRefresh: {},
+      onStackGraph: {},
+      onOpenFiles: {},
+      onManage: {},
+      onCopyLaneLink: {},
+      onCopyBranchLink: {}
+    ) {
+      LaneDuoDashboard(
         snapshot: snapshot,
-        detail: DuoSplitFixtureData.laneDetail(snapshot),
-        linkedPullRequests: [],
-        canRunLiveActions: true,
-        busyAction: nil,
-        commitMessage: $commitMessage,
-        amendCommit: $amendCommit,
-        stashMessage: $stashMessage,
-        onRefresh: {},
-        onCommit: {},
-        onPull: { _ in },
-        onPush: { _ in },
-        onFetch: {},
-        onStageFile: { _ in },
-        onUnstageFile: { _ in },
-        onDiscardFile: { _ in },
-        onRestoreStaged: { _ in },
-        onStageAll: {},
-        onUnstageAll: {},
-        onDiscardAllUnstaged: {},
-        onRestoreAllStaged: {},
-        onOpenDiff: { _, _ in },
-        onOpenFiles: { _ in },
-        onStashPush: { _ in },
-        onStashApply: { _ in },
-        onStashPop: { _ in },
-        onStashDrop: { _ in },
-        onOpenCommitDiff: { _ in },
-        onCopyCommitMessage: { _ in },
-        onRevertCommit: { _ in },
-        onCherryPickCommit: { _ in },
-        onSwitchBranch: {},
-        onRebaseLane: {},
-        onRebaseDescendants: {},
-        onRebaseAndPush: {},
-        onForcePush: {},
-        onOpenLinkedPullRequest: { _ in },
-        onCreateLaneFromChanges: {}
+        detail: detail,
+        machineName: "Arul’s Mac Studio",
+        pullRequests: [PrFlatPreviewData.pr(state: "open")],
+        canCreatePullRequest: true,
+        onOpenPullRequest: { _ in },
+        onCreatePullRequest: {},
+        onOpenChat: { _ in },
+        onOpenLane: { _ in },
+        onStackGraph: {}
       )
+    } git: {
+      if diffOpen {
+        LaneDiffScreen(
+          request: LaneDiffRequest(
+            laneId: snapshot.lane.id,
+            path: "apps/ios/ADE/Views/Duo/DuoSplitScreens.swift",
+            mode: "unstaged",
+            compareRef: nil,
+            compareTo: nil,
+            title: "DuoSplitScreens.swift"
+          ),
+          inline: true,
+          initialDiff: DuoSplitFixtureData.fileDiff
+        ) {
+          diffOpen = false
+        }
+      } else {
+        LaneDetailGitActionsPane(
+          snapshot: snapshot,
+          detail: detail,
+          linkedPullRequests: [],
+          canRunLiveActions: true,
+          busyAction: nil,
+          commitMessage: $commitMessage,
+          amendCommit: $amendCommit,
+          stashMessage: $stashMessage,
+          onRefresh: {},
+          onCommit: {},
+          onPull: { _ in },
+          onPush: { _ in },
+          onFetch: {},
+          onStageFile: { _ in },
+          onUnstageFile: { _ in },
+          onDiscardFile: { _ in },
+          onRestoreStaged: { _ in },
+          onStageAll: {},
+          onUnstageAll: {},
+          onDiscardAllUnstaged: {},
+          onRestoreAllStaged: {},
+          onOpenDiff: { _, _ in diffOpen = true },
+          onOpenFiles: { _ in },
+          onStashPush: { _ in },
+          onStashApply: { _ in },
+          onStashPop: { _ in },
+          onStashDrop: { _ in },
+          onOpenCommitDiff: { _ in },
+          onCopyCommitMessage: { _ in },
+          onRevertCommit: { _ in },
+          onCherryPickCommit: { _ in },
+          onSwitchBranch: {},
+          onRebaseLane: {},
+          onRebaseDescendants: {},
+          onRebaseAndPush: {},
+          onForcePush: {},
+          onOpenLinkedPullRequest: { _ in },
+          onCreateLaneFromChanges: {}
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+      }
     }
-    .adeScreenBackground()
   }
 }
 
 // MARK: PRs fixture
 
+/// The PRs split over fixture data: the real list rows in the list column's
+/// own stack, and the real Duo detail column (`PrDuoDetail`) beside it.
 private struct DuoPrsFixtureScreen: View {
+  var initialTab: PrDetailTab = .overview
+  var initialDock: PrDuoDock?
   @State private var selection = 1367
   @State private var category = PrGitHubCategory.open
   @State private var search = ""
+  @State private var tab: PrDetailTab = .overview
+  @State private var method: PrMergeMethodOption = .squash
 
   private var items: [GitHubPrListItem] {
     PrFlatPreviewData.mergedItems.filter { item in
@@ -634,33 +614,10 @@ private struct DuoPrsFixtureScreen: View {
     }
   }
 
-  private var selectedItem: GitHubPrListItem? {
-    items.first { $0.githubPrNumber == selection } ?? items.first
-  }
-
   var body: some View {
-    VStack(spacing: 0) {
-      ADERootTopBar(title: "PRs", showsGlobalControls: false) {
-        Button {} label: { ADEKitCircleIcon(systemImage: "magnifyingglass") }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Search pull requests")
-        Button {} label: { ADEKitCircleIcon(systemImage: "plus") }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Create pull request")
-      }
-      DuoSplitScaffold { _ in
+    DuoSplitScaffold(adaptive: true, selection: "\(selection)", wantsWholeDisplay: true) { _ in
+      NavigationStack {
         List {
-          Section {
-            Picker("Status", selection: $category) {
-              Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
-              Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
-              Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
-            }
-            .pickerStyle(.segmented)
-            .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-            duoFixtureSearchField("Search PRs, branches, authors", text: $search)
-              .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-          }
           Section {
             ForEach(items) { item in
               Button {
@@ -675,296 +632,75 @@ private struct DuoPrsFixtureScreen: View {
               .adeFlatRow(insets: EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16))
               .listRowBackground(selection == item.githubPrNumber ? ADEColor.accent.opacity(0.12) : Color.clear)
             }
-          } header: {
-            ADEFlatSectionHeader("Open", detail: "\(items.count)")
           }
         }
         .adeFlatList()
         .contentMargins(.bottom, 24, for: .scrollContent)
-      } detail: {
-        DuoPrDetailFixture(item: selectedItem)
-      }
-    }
-    .adeScreenBackground()
-  }
-}
-
-/// The flat PR detail over fixture data: header, the Overview/Files/Checks
-/// tabs, and the next-step bar.
-private struct DuoPrDetailFixture: View {
-  let item: GitHubPrListItem?
-  @State private var tab: PrDetailTab = .overview
-
-  var body: some View {
-    let pr = PrFlatPreviewData.pr(state: "open")
-    let snapshot = PrFlatPreviewData.snapshot()
-    let cleaned = prCleanBody(snapshot.detail?.body)
-    let inputs = prDigestInputs(
-      pr: pr,
-      snapshot: snapshot,
-      reviewThreads: PrFlatPreviewData.threads,
-      activity: PrFlatPreviewData.activity,
-      bodySections: cleaned.sections
-    )
-    let digest = buildPrConversationDigest(commits: inputs.commits, entries: inputs.entries, story: inputs.story)
-    let step = PrNextStep.resolve(PrNextStepInput(
-      state: "open",
-      mergeStateStatus: nil,
-      mergeConflicts: false,
-      behindBaseBy: nil,
-      mergeabilityComputing: false,
-      checksStatus: "failing",
-      failingChecks: 1,
-      pendingChecks: 1,
-      passingChecks: 4,
-      reviewDecision: nil,
-      approvalsCount: nil,
-      requiredApprovals: nil,
-      changesRequestedBy: [],
-      unresolvedThreads: 2,
-      canBypass: false,
-      autoMergeAllowed: nil,
-      autoMergeEnabled: false,
-      autoMergeMethod: nil,
-      baseBranch: "main"
-    ))
-    NavigationStack {
-      List {
-        Section {
-          PrFlatDetailHeader(
-            createdAt: item?.createdAt ?? pr.createdAt,
-            updatedAt: item?.updatedAt ?? pr.updatedAt,
-            title: item?.title ?? pr.title,
-            baseBranch: item?.baseBranch ?? pr.baseBranch,
-            headBranch: item?.headBranch ?? pr.headBranch,
-            laneName: item?.linkedLaneName ?? "cross-machine",
-            ghostLaneName: nil,
-            machineName: item?.linkedLaneId?.hasPrefix("fleet|") == true ? "MacBook Pro" : nil,
-            stackLabel: nil,
-            onOpenLane: {},
-            onOpenStack: nil,
-            canCreateLane: true,
-            canLinkLane: true,
-            onCreateLane: {},
-            onLinkLane: {}
-          )
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
-          Picker("Section", selection: $tab) {
-            Text("Overview").tag(PrDetailTab.overview)
-            Text("Files \(snapshot.files.count)").tag(PrDetailTab.files)
-            Text("Checks \(snapshot.checks.count)").tag(PrDetailTab.checks)
+        .safeAreaInset(edge: .top, spacing: 0) {
+          Picker("Status", selection: $category) {
+            Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
+            Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
+            Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
           }
           .pickerStyle(.segmented)
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-        }
-        switch tab {
-        case .overview, .activity:
-          PrOverviewSections(
-            description: cleaned.body,
-            digest: digest,
-            threadsById: Dictionary(uniqueKeysWithValues: PrFlatPreviewData.threads.map { ($0.id, $0) }),
-            canAct: true,
-            onReply: { _, _ in },
-            onResolve: { _, _ in }
-          )
-        case .files:
-          PrFilesSections(
-            files: snapshot.files,
-            isLoading: false,
-            canOpenFiles: true,
-            onOpenFile: { _ in },
-            onCopyPath: { _ in }
-          )
-        case .checks:
-          PrChecksSections(
-            checks: snapshot.checks,
-            overallChecksStatus: "failing",
-            checksReason: nil,
-            missingRequired: [],
-            actionRuns: PrFlatPreviewData.actionRuns,
-            deployments: [],
-            canRerun: true,
-            onRerun: {}
-          )
-        }
-      }
-      .adeFlatList()
-      .listSectionSpacing(.compact)
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .principal) {
-          PrFlatDetailNavTitle(
-            number: item?.githubPrNumber ?? 1367,
-            author: item?.author ?? "arul28",
-            authorIsBot: item?.isBot ?? false,
-            state: item?.state ?? "open"
-          )
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          Image(systemName: "ellipsis")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .frame(width: 36, height: 32)
-        }
-      }
-      .safeAreaInset(edge: .bottom) {
-        PrNextStepFlatBar(step: step, isBusy: false, busyLabel: nil, onTapText: {}) {
-          Button {} label: {
-            Text("Merge")
-              .font(.subheadline.weight(.semibold))
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.success)
-        }
-      }
-    }
-  }
-}
-
-// MARK: Files fixture
-
-private struct DuoFilesFixtureScreen: View {
-  @State private var selection = "apps/ios/ADE/Views/Duo/DuoSplitScreens.swift"
-
-  private var workspace: FilesWorkspace { DuoSplitFixtureData.workspace }
-
-  var body: some View {
-    VStack(spacing: 0) {
-      ADERootTopBar(title: "Files", showsGlobalControls: false) {
-        Button {} label: { ADEKitCircleIcon(systemImage: "magnifyingglass") }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Search files")
-        Button {} label: { ADEKitCircleIcon(systemImage: "arrow.clockwise") }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Refresh files")
-      }
-      DuoSplitScaffold { _ in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 14) {
-            FilesWorkspaceHeader(
-              workspaces: [workspace],
-              lanes: [],
-              selectedWorkspaceId: .constant(workspace.id),
-              selectedWorkspace: workspace,
-              isLive: true
-            )
-            FilesBreadcrumbBar(
-              relativePath: "apps/ios/ADE/Views/Duo",
-              includeCurrentFile: false,
-              onSelectDirectory: { _ in }
-            )
-            .padding(.horizontal, 2)
-            LazyVStack(spacing: 0) {
-              ForEach(Array(DuoSplitFixtureData.fileNodes.enumerated()), id: \.element.id) { index, node in
-                if index > 0 {
-                  Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 44)
-                }
-                FilesTreeNodeRow(
-                  workspaceId: workspace.id,
-                  node: node,
-                  transitionNamespace: nil,
-                  isSelectedTransitionSource: selection == node.path,
-                  onOpen: {
-                    if node.type == "file" { selection = node.path }
-                  },
-                  onCopyPath: {},
-                  onCopyRelativePath: {}
-                )
-                .background(selection == node.path ? ADEColor.accent.opacity(0.12) : Color.clear)
-              }
-            }
-            .adeKitCard(padding: nil)
-          }
           .padding(.horizontal, 16)
-          .padding(.vertical, 8)
+          .padding(.top, 4)
+          .padding(.bottom, 8)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .adeScreenBackground()
-      } detail: {
-        NavigationStack {
-          DuoFileViewerFixture(path: selection)
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search PRs, branches, authors")
+        .navigationTitle("PRs")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleMenu {
+          Picker("View", selection: .constant(PrRootSurface.github)) {
+            Label("GitHub", systemImage: "arrow.triangle.pull").tag(PrRootSurface.github)
+            Label("Workflows", systemImage: "point.3.filled.connected.trianglepath.dotted").tag(PrRootSurface.workflows)
+          }
         }
-        .id(selection)
+        .toolbar {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button("New pull request", systemImage: "plus") {}
+          }
+        }
       }
-    }
-    .adeScreenBackground()
-  }
-}
-
-/// The real file viewer's shape over fixture source: breadcrumb, language row,
-/// then the highlighted file.
-private struct DuoFileViewerFixture: View {
-  let path: String
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 6) {
-        FilesBreadcrumbBar(
-          relativePath: path,
-          includeCurrentFile: true,
-          onSelectDirectory: { _ in }
+    } detail: {
+      NavigationStack {
+        PrDuoDetail(
+          model: PrFlatPreviewData.duoModel(),
+          actions: .inert,
+          tab: $tab,
+          mergeMethod: $method,
+          initialDock: initialDock,
+          header: {
+            PrFlatDetailHeader(
+              createdAt: PrFlatPreviewData.iso(12 * PrFlatPreviewData.day),
+              updatedAt: PrFlatPreviewData.iso(3 * PrFlatPreviewData.hour),
+              title: "",
+              baseBranch: "main",
+              headBranch: "ade/cross-machine-to-phone",
+              laneName: "cross-machine",
+              ghostLaneName: nil,
+              machineName: "MacBook Pro",
+              stackLabel: nil,
+              onOpenLane: {},
+              onOpenStack: nil,
+              canCreateLane: false,
+              canLinkLane: false,
+              onCreateLane: {},
+              onLinkLane: {},
+              showsTitle: false
+            )
+          },
+          overflow: {
+            Button("Comment", systemImage: "text.bubble") {}
+            Button("Edit title", systemImage: "pencil") {}
+            Button("Copy link", systemImage: "link") {}
+          }
         )
-        HStack(spacing: 8) {
-          Text(FilesLanguage.detect(languageId: nil, filePath: path).displayName)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(ADEColor.textSecondary)
-          Text("\(DuoSplitFixtureData.swiftSource.count) bytes")
-            .font(.adeMono(11))
-            .foregroundStyle(ADEColor.textMuted)
-          Spacer(minLength: 8)
-          Image(systemName: "ellipsis.circle")
-            .font(.system(size: 15))
-            .foregroundStyle(ADEColor.textMuted)
-          Image(systemName: "info.circle")
-            .font(.system(size: 15))
-            .foregroundStyle(ADEColor.textMuted)
-        }
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 8)
-      .padding(.bottom, 8)
-
-      ScrollView {
-        SyntaxHighlightedCodeView(
-          text: DuoSplitFixtureData.swiftSource,
-          language: .swift,
-          focusLine: nil,
-          layoutMode: .wrap
-        )
-        .padding(.horizontal, 16)
-        .padding(.bottom, 24)
-      }
+      .id(selection)
     }
-    .adeScreenBackground()
+    .onAppear { tab = initialTab }
   }
-}
-
-/// The list's own search field, matching `LanesTabView.laneSearchField`.
-private func duoFixtureSearchField(_ prompt: String, text: Binding<String>) -> some View {
-  HStack(spacing: 8) {
-    Image(systemName: "magnifyingglass")
-      .font(.system(size: 14, weight: .medium))
-      .foregroundStyle(ADEColor.textMuted)
-    TextField(prompt, text: text)
-      .font(.system(size: 15))
-      .textInputAutocapitalization(.never)
-      .autocorrectionDisabled()
-    if !text.wrappedValue.isEmpty {
-      Button {
-        text.wrappedValue = ""
-      } label: {
-        Image(systemName: "xmark.circle.fill")
-          .font(.system(size: 15))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Clear search")
-    }
-  }
-  .padding(.horizontal, 12)
-  .frame(height: 38)
-  .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
 }
 
 // MARK: Fixture data
@@ -1044,7 +780,10 @@ private enum DuoSplitFixtureData {
     LaneDetailPayload(
       lane: snapshot.lane,
       runtime: snapshot.runtime,
-      stackChain: [],
+      stackChain: [
+        StackChainItem(laneId: "s-main", laneName: "Primary", branchRef: "main", depth: 0, parentLaneId: nil, status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)),
+        StackChainItem(laneId: snapshot.lane.id, laneName: snapshot.lane.name, branchRef: snapshot.lane.branchRef, depth: 1, parentLaneId: "s-main", status: snapshot.lane.status),
+      ],
       children: [],
       stateSnapshot: nil,
       rebaseSuggestion: nil,
@@ -1121,9 +860,39 @@ private enum DuoSplitFixtureData {
       ],
       envInitProgress: nil,
       sessions: [],
-      chatSessions: []
+      chatSessions: [
+        chat("chat-1", "Fix the reconnect loop on the lane roster", model: "claude-opus-5-5", status: "active", ago: 120),
+        chat("chat-2", "Write the Duo split fixtures", model: "gpt-5.3-codex", provider: "codex", status: "idle", ago: 3_600),
+        chat("chat-3", "Review the sync service change", model: "claude-sonnet-5", status: "ended", ago: 86_400),
+      ]
     )
   }
+
+  /// A chat summary as a host would send it.
+  static func chat(
+    _ id: String,
+    _ title: String,
+    model: String,
+    provider: String = "claude",
+    status: String,
+    ago: TimeInterval
+  ) -> AgentChatSessionSummary {
+    let payload: [String: Any] = [
+      "sessionId": id, "laneId": "s-sync", "provider": provider, "model": model, "status": status,
+      "startedAt": iso(ago + 600), "lastActivityAt": iso(ago), "title": title,
+    ]
+    let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    return (try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data))!
+  }
+
+  static let fileDiff = FileDiff(
+    path: "apps/ios/ADE/Views/Duo/DuoSplitScreens.swift",
+    mode: "unstaged",
+    original: DiffSide(exists: true, text: "struct DuoSplitScaffold: View {\n  var body: some View {\n    HStack { list; detail }\n  }\n}\n", size: 80),
+    modified: DiffSide(exists: true, text: "struct DuoSplitScaffold: View {\n  var adaptive = false\n  var body: some View {\n    HStack { list; DuoSeam(axis: .vertical); detail }\n  }\n}\n", size: 120),
+    isBinary: false,
+    language: "swift"
+  )
 
   static let workspace = FilesWorkspace(
     id: "s-sync",

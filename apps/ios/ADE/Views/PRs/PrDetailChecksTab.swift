@@ -124,6 +124,9 @@ struct PrChecksSections: View {
   let deployments: [PrDeployment]
   let canRerun: Bool
   let onRerun: () -> Void
+  /// The Duo's check list beside the check: a row selects its check instead
+  /// of pushing the check page.
+  var selection: Binding<String?>? = nil
 
   @State private var passedExpanded = false
 
@@ -172,7 +175,8 @@ struct PrChecksSections: View {
               .font(.subheadline.weight(.medium))
               .foregroundStyle(ADEColor.textPrimary)
             Spacer(minLength: 8)
-            if canRerun && headline.failing > 0 {
+            // The Duo's column has Re-run in its toolbar.
+            if canRerun && headline.failing > 0 && selection == nil {
               Button("Re-run", action: onRerun)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(ADEColor.accent)
@@ -252,13 +256,26 @@ struct PrChecksSections: View {
     return ("checkmark.circle.fill", isNotRun ? ADEColor.textMuted : ADEColor.success)
   }
 
+  @ViewBuilder
   private func row(_ check: PrCheck) -> some View {
-    NavigationLink {
-      PrCheckPage(check: check, match: prActionJob(for: check, in: actionRuns))
-    } label: {
-      PrCheckRow(check: check)
+    if let selection {
+      Button {
+        selection.wrappedValue = check.id
+      } label: {
+        PrCheckRow(check: check)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .adeFlatRow()
+      .listRowBackground(selection.wrappedValue == check.id ? ADEColor.accent.opacity(0.12) : Color.clear)
+    } else {
+      NavigationLink {
+        PrCheckPage(check: check, match: prActionJob(for: check, in: actionRuns))
+      } label: {
+        PrCheckRow(check: check)
+      }
+      .adeFlatRow()
     }
-    .adeFlatRow()
   }
 }
 
@@ -327,6 +344,21 @@ struct PrCheckPage: View {
   let check: PrCheck
   let match: (run: PrActionRun, job: PrActionJob)?
 
+  var body: some View {
+    List {
+      PrCheckDetailSections(check: check, match: match)
+    }
+    .adeFlatList()
+    .navigationTitle(check.name)
+    .navigationBarTitleDisplayMode(.inline)
+  }
+}
+
+/// One check's sections: status and timing, the Actions job's steps, the log.
+struct PrCheckDetailSections: View {
+  let check: PrCheck
+  let match: (run: PrActionRun, job: PrActionJob)?
+
   private var logURL: URL? {
     if let raw = check.detailsUrl, let url = URL(string: raw) { return url }
     if let match, let url = URL(string: match.run.htmlUrl) { return url }
@@ -334,7 +366,7 @@ struct PrCheckPage: View {
   }
 
   var body: some View {
-    List {
+    Group {
       Section {
         VStack(alignment: .leading, spacing: 6) {
           PrCheckRow(check: check)
@@ -384,8 +416,5 @@ struct PrCheckPage: View {
         }
       }
     }
-    .adeFlatList()
-    .navigationTitle(check.name)
-    .navigationBarTitleDisplayMode(.inline)
   }
 }

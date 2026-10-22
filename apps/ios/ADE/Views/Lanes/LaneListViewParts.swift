@@ -262,6 +262,7 @@ extension LanesTabView {
         allLaneSnapshots: laneSnapshots,
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
+        machineName: focusedMachineName,
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
@@ -273,6 +274,7 @@ extension LanesTabView {
         allLaneSnapshots: machine.snapshots,
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
+        machineName: machine.name,
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {

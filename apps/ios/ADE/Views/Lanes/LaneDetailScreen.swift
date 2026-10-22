@@ -4,6 +4,7 @@ import UIKit
 struct LaneDetailScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.duoLayout) private var duoLayout
   @EnvironmentObject var syncService: SyncService
 
   let laneId: String
@@ -16,6 +17,8 @@ struct LaneDetailScreen: View {
   /// Shown inside another surface (the Work tools pane) rather than as a
   /// screen of its own: it must not hide the root tab bar around it.
   let embedded: Bool
+  /// The machine the lane lives on, for the Duo's subtitle and dashboard.
+  let machineName: String?
   let onRefreshRoot: @MainActor () async -> Void
 
   @State private(set) var detail: LaneDetailPayload?
@@ -54,6 +57,8 @@ struct LaneDetailScreen: View {
   @State private var copiedLinkNotice: String?
   @State private var showRescueSheet = false
   @State private var rescueLaneName = ""
+  /// The Duo's git column shows this diff in place of the git list.
+  @State private var inlineDiffRequest: LaneDiffRequest?
 
   init(
     laneId: String,
@@ -63,6 +68,7 @@ struct LaneDetailScreen: View {
     initialSection: LaneDetailSection = .git,
     showsBackButton: Bool = true,
     embedded: Bool = false,
+    machineName: String? = nil,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
@@ -71,6 +77,7 @@ struct LaneDetailScreen: View {
     self.transitionNamespace = transitionNamespace
     self.showsBackButton = showsBackButton
     self.embedded = embedded
+    self.machineName = machineName
     self.onRefreshRoot = onRefreshRoot
   }
 
@@ -88,7 +95,42 @@ struct LaneDetailScreen: View {
     return allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot
   }
 
+  /// The Duo's inner display, as its own column (not inside the Work tools
+  /// pane): the dashboard beside git, controls in the toolbar.
+  private var usesDuoLayout: Bool { duoLayout.isWide && !embedded }
+
   var body: some View {
+    Group {
+      if usesDuoLayout {
+        duoBody
+      } else {
+        phoneBody
+      }
+    }
+    .adeAnalyticsScreen(.laneDetail)
+    .onAppear {
+      ScrollDiagnostics.shared.enter(.laneDetail)
+      openTiming.opened()
+    }
+    .onChange(of: detail != nil) { _, loaded in
+      if loaded { openTiming.mark("laneDetail.content") }
+    }
+    .task {
+      syncService.announceLaneOpen(laneId: laneId)
+      let openingKey = laneDetailProjectionReloadKey
+      await loadDetail(refreshRemote: canRunLiveActions)
+      openingLoadFinished = true
+      // A local bump landed during the host read: read the cache once more
+      // so the newest local state wins over an older host reply.
+      if laneDetailProjectionReloadKey != openingKey {
+        await loadDetail(refreshRemote: false)
+      }
+    }
+    .modifier(LaneDetailReloadAndPresentations(screen: self))
+  }
+
+  /// The phone screen: the lane's bar, banners, then the git pane.
+  private var phoneBody: some View {
     Group {
       if let detail {
         VStack(spacing: 10) {
@@ -119,29 +161,25 @@ struct LaneDetailScreen: View {
     .toolbar(.hidden, for: .navigationBar)
     .toolbar(embedded ? .automatic : .hidden, for: .tabBar)
     .adeRootTabBarHidden(!embedded)
-    .adeAnalyticsScreen(.laneDetail)
     .safeAreaInset(edge: .top, spacing: 0) {
       laneDetailTopBar
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
-    .onAppear {
-      ScrollDiagnostics.shared.enter(.laneDetail)
-      openTiming.opened()
+    .refreshable { await loadDetail(refreshRemote: true) }
+  }
+
+  /// The keyed reload and the sheets and alerts both layouts present. A
+  /// modifier so the body's type stays small enough to type-check quickly.
+  fileprivate struct LaneDetailReloadAndPresentations: ViewModifier {
+    let screen: LaneDetailScreen
+
+    func body(content: Content) -> some View {
+      screen.reloadAndPresentations(content)
     }
-    .onChange(of: detail != nil) { _, loaded in
-      if loaded { openTiming.mark("laneDetail.content") }
-    }
-    .task {
-      syncService.announceLaneOpen(laneId: laneId)
-      let openingKey = laneDetailProjectionReloadKey
-      await loadDetail(refreshRemote: canRunLiveActions)
-      openingLoadFinished = true
-      // A local bump landed during the host read: read the cache once more
-      // so the newest local state wins over an older host reply.
-      if laneDetailProjectionReloadKey != openingKey {
-        await loadDetail(refreshRemote: false)
-      }
-    }
+  }
+
+  fileprivate func reloadAndPresentations<Content: View>(_ content: Content) -> some View {
+    content
     .task(id: laneDetailProjectionReloadKey) {
       // The opening load owns the first read, and reads again itself if
       // this key moved while it ran.
@@ -163,7 +201,6 @@ struct LaneDetailScreen: View {
       lastLaneDetailLocalReload = Date()
       await loadDetail(refreshRemote: false)
     }
-    .refreshable { await loadDetail(refreshRemote: true) }
     .sheet(item: $selectedDiffRequest) { request in
       LaneDiffScreen(request: request)
     }
@@ -401,14 +438,14 @@ struct LaneDetailScreen: View {
         Task { await performConfirmedFileAction(.restoreAllStaged(files)) }
       },
       onOpenDiff: { file, staged in
-        selectedDiffRequest = LaneDiffRequest(
+        openDiff(LaneDiffRequest(
           laneId: laneId,
           path: file.path,
           mode: staged ? "staged" : "unstaged",
           compareRef: nil,
           compareTo: nil,
           title: (file.path as NSString).lastPathComponent
-        )
+        ))
       },
       onOpenFiles: { file in
         Task { await openFiles(path: file.path) }
@@ -459,17 +496,106 @@ struct LaneDetailScreen: View {
         ? { try await syncService.fetchBranchChanges(laneId: laneId) }
         : nil,
       onOpenBranchDiff: { file in
-        selectedDiffRequest = LaneDiffRequest(
+        openDiff(LaneDiffRequest(
           laneId: laneId,
           path: file.path,
           mode: "branch",
           compareRef: nil,
           compareTo: nil,
           title: (file.path as NSString).lastPathComponent
-        )
+        ))
       }
     )
     .padding(.horizontal, 16)
+  }
+
+  /// A file's diff: in place of the git list in the Duo's git column, as a
+  /// sheet on the phone.
+  private func openDiff(_ request: LaneDiffRequest) {
+    if usesDuoLayout {
+      withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { inlineDiffRequest = request }
+    } else {
+      selectedDiffRequest = request
+    }
+  }
+
+  // MARK: - Duo
+
+  private var duoPullRequest: PullRequestListItem? {
+    lanePullRequests.first { $0.state == "open" || $0.state == "draft" } ?? lanePullRequests.first
+  }
+
+  private var canCreateDuoPullRequest: Bool {
+    canRunLiveActions && currentSnapshot.lane.laneType != "primary" && currentSnapshot.lane.archivedAt == nil
+  }
+
+  /// `LaneDuoDetailLayout` over this screen's state: the dashboard, and the
+  /// git column (banners, then the git pane or a diff in its place).
+  private var duoBody: some View {
+    LaneDuoDetailLayout(
+      snapshot: currentSnapshot,
+      machineName: machineName,
+      pullRequest: duoPullRequest,
+      canCreatePullRequest: canCreateDuoPullRequest,
+      onOpenPullRequest: openPullRequest,
+      onCreatePullRequest: {
+        syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+      },
+      onRefresh: { Task { await loadDetail(refreshRemote: true) } },
+      onStackGraph: { showStackGraph = true },
+      onOpenFiles: { Task { await openFiles() } },
+      onManage: { managePresented = true },
+      onCopyLaneLink: copyLaneLink,
+      onCopyBranchLink: copyBranchLink
+    ) {
+      LaneDuoDashboard(
+        snapshot: currentSnapshot,
+        detail: detail,
+        machineName: machineName,
+        pullRequests: lanePullRequests,
+        canCreatePullRequest: canCreateDuoPullRequest,
+        onOpenPullRequest: openPullRequest,
+        onCreatePullRequest: {
+          syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+        },
+        onOpenChat: { chat in
+          syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: chat.sessionId, laneId: laneId)
+        },
+        onOpenLane: { id in syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: id) },
+        onStackGraph: { showStackGraph = true }
+      )
+      .refreshable { await loadDetail(refreshRemote: true) }
+    } git: {
+      if let inlineDiffRequest {
+        LaneDiffScreen(request: inlineDiffRequest, inline: true) {
+          withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { self.inlineDiffRequest = nil }
+        }
+        .id(inlineDiffRequest.id)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+      } else if let detail {
+        VStack(spacing: 10) {
+          detailBannerStack
+          if let conflictState = detail.conflictState, conflictState.inProgress {
+            conflictSection(conflictState: conflictState)
+              .padding(.horizontal, 16)
+          }
+          gitActionsPane(detail: detail)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .padding(.top, 8)
+      } else {
+        ScrollView {
+          VStack(spacing: 12) {
+            detailBannerStack
+            if let detailEmptyStatePresentation {
+              detailEmptyStateCard(detailEmptyStatePresentation)
+            }
+          }
+          .padding(EdgeInsets(top: 4, leading: 16, bottom: 16, trailing: 16))
+        }
+        .scrollBounceBehavior(.basedOnSize)
+      }
+    }
   }
 
   private var suggestedRescueLaneName: String {

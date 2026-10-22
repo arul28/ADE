@@ -287,6 +287,43 @@ func buildPrConversationDigest(
   return PrConversationDigest(openThreads: openThreads, items: items)
 }
 
+/// One tick of the Overview's push rail: a push and the conversation it drew
+/// before the next push (desktop `DigestPushTick`).
+struct PrDigestPushTick: Equatable, Identifiable {
+  let push: PrDigestPush
+  /// Reviews, threads and comments filed against this push.
+  var commentCount = 0
+  /// Of those, review threads still open.
+  var openCount = 0
+
+  var id: String { push.id }
+  /// The digest row the tick scrolls to.
+  var itemId: String { PrDigestItem.push(push).id }
+}
+
+/// The push rail's ticks, in thread order. Conversation before the first push
+/// belongs to no tick.
+func prDigestPushTicks(_ digest: PrConversationDigest) -> [PrDigestPushTick] {
+  var ticks: [PrDigestPushTick] = []
+  for item in digest.items {
+    switch item {
+    case .push(let push):
+      ticks.append(PrDigestPushTick(push: push))
+    case .bot(let group):
+      guard !ticks.isEmpty else { continue }
+      ticks[ticks.count - 1].commentCount += group.entries.count
+      ticks[ticks.count - 1].openCount += group.openThreadCount
+    case .entry(let entry, _):
+      guard !ticks.isEmpty else { continue }
+      ticks[ticks.count - 1].commentCount += 1
+      if entry.isOpenThread { ticks[ticks.count - 1].openCount += 1 }
+    case .story:
+      break
+    }
+  }
+  return ticks
+}
+
 /// "10 threads · all resolved · 2 comments", "3 threads · 1 open",
 /// "Comment posted" (desktop `describeBotGroup`).
 func prDescribeBotGroup(_ group: PrDigestBotGroup) -> String {

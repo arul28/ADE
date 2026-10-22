@@ -169,6 +169,74 @@ enum PrFlatPreviewData {
   }
 }
 
+extension PrFlatPreviewData {
+  /// The open, bot-heavy PR as the Duo's column sees it: one failing and one
+  /// running check, two open threads, reviewers, labels and an assignee.
+  static func duoModel(state: String = "open") -> PrDuoDetailModel {
+    let pr = pr(state: state)
+    var snapshot = snapshot()
+    snapshot.detail?.labels = [
+      PrLabel(name: "mobile", color: "0E8A16", description: nil),
+      PrLabel(name: "multi-machine", color: "5319E7", description: nil),
+    ]
+    snapshot.detail?.assignees = [PrUser(login: "arul28")]
+    snapshot.detail?.requestedReviewers = [PrUser(login: "octocat"), PrUser(login: "coderabbitai", isBot: true)]
+    let cleaned = prCleanBody(snapshot.detail?.body)
+    let inputs = prDigestInputs(pr: pr, snapshot: snapshot, reviewThreads: threads, activity: activity, bodySections: cleaned.sections)
+    let step = PrNextStep.resolve(PrNextStepInput(
+      state: state, mergeStateStatus: state == "open" ? .blocked : nil, mergeConflicts: false, behindBaseBy: 0,
+      mergeabilityComputing: false, checksStatus: "failing", failingChecks: 1, pendingChecks: 1, passingChecks: 4,
+      reviewDecision: .approved, approvalsCount: 1, requiredApprovals: 1, changesRequestedBy: [], unresolvedThreads: 2,
+      canBypass: true, autoMergeAllowed: true, autoMergeEnabled: false, autoMergeMethod: nil, baseBranch: "main"
+    ))
+    return PrDuoDetailModel(
+      title: pr.title,
+      number: pr.githubPrNumber,
+      state: state,
+      author: "arul28",
+      description: cleaned.body,
+      digest: buildPrConversationDigest(commits: inputs.commits, entries: inputs.entries, story: inputs.story),
+      threadsById: Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) }),
+      files: snapshot.files,
+      canOpenFiles: true,
+      checks: snapshot.checks,
+      overallChecksStatus: "failing",
+      actionRuns: actionRuns,
+      canRerun: true,
+      step: step,
+      canAct: true,
+      canComment: true,
+      canReview: state == "open",
+      canEditMetadata: true,
+      detail: snapshot.detail,
+      reviews: snapshot.reviews,
+      mergedSummary: state == "merged" ? "Merged into main by arul28 · 3h ago" : nil,
+      canArchiveLane: true,
+      canMergeAnyway: true,
+      canOpenGitHub: true
+    )
+  }
+}
+
+extension PrDuoDetailActions {
+  /// Actions that do nothing, for fixture screens.
+  static let inert = PrDuoDetailActions(
+    refresh: {}, retry: {}, reply: { _, _ in }, resolve: { _, _ in }, openFile: { _ in }, copyPath: { _ in },
+    rerun: {}, runStep: { _ in },
+    stepLabel: { action in
+      switch action {
+      case .fixChecks: return "Open checks"
+      case .rerunChecks: return "Re-run checks"
+      case .deleteBranch: return "Delete branch"
+      default: return "Continue"
+      }
+    },
+    stepAvailable: { _ in true },
+    merge: {}, mergeAnyway: {}, stackMerge: {}, archiveLane: {}, comment: { _ in }, review: { _, _ in },
+    requestReviewers: { _ in }, setLabels: { _ in }, openGitHub: {}
+  )
+}
+
 /// `-adePreviewScreen prs-list`: the Merged tab with date groups.
 struct PrsListPreviewHost: View {
   @State private var category = PrGitHubCategory.merged

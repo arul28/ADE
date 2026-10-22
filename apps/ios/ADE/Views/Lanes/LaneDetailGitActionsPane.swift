@@ -212,18 +212,21 @@ struct LaneDetailGitActionsPane: View {
             .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
         }
       }
-      HStack(spacing: 6) {
-        Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }
-          .buttonStyle(ADEKitButtonStyle(tone: amendCommit ? .warn : .neutral))
-          .disabled(!canRunLiveActions || busyAction != nil)
-        Button("Pull") { onPull(pullMode) }
-          .buttonStyle(ADEKitButtonStyle(tone: shouldPull ? .warn : .neutral))
-          .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
-          .accessibilityHint("Pulls with \(pullMode)")
-        Button(pushTitle) { onPush(false) }
-          .buttonStyle(ADEKitButtonStyle(tone: shouldPush ? .ok : .neutral))
-          .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
-        moreActionsMenu
+      HStack(alignment: .top, spacing: 6) {
+        // Wraps instead of squeezing in a narrow column (the Duo's git page).
+        LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
+          Button(amendCommit ? "Amend on" : "Amend") { amendCommit.toggle() }
+            .buttonStyle(ADEKitButtonStyle(tone: amendCommit ? .warn : .neutral))
+            .disabled(!canRunLiveActions || busyAction != nil)
+          Button("Pull") { onPull(pullMode) }
+            .buttonStyle(ADEKitButtonStyle(tone: shouldPull ? .warn : .neutral))
+            .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
+            .accessibilityHint("Pulls with \(pullMode)")
+          Button(pushTitle) { onPush(false) }
+            .buttonStyle(ADEKitButtonStyle(tone: shouldPush ? .ok : .neutral))
+            .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
+          moreActionsMenu
+        }
         Spacer(minLength: 0)
         Button(action: onRefresh) {
           Image(systemName: "arrow.clockwise")
