@@ -7252,11 +7252,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
           arguments: {
             domain: "chat",
             action: "messageSession",
-            args: {
+            args: mergeRemoteMcpTurnMetadata({
               sessionId: targetSession,
               text: prompt,
               kind: "auto",
-            },
+            }),
           },
         };
       },
@@ -9980,7 +9980,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     laneId,
     prompt,
     provider,
-    chat: { create, message: { text: prompt } },
+    chat: { create, message: mergeRemoteMcpTurnMetadata({ text: prompt }) },
   };
   maybePut(launchArgs, "laneName", laneName);
   maybePut(launchArgs, "baseBranch", baseBranch);

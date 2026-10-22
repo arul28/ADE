@@ -3618,17 +3618,18 @@ function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): b
 }
 
 /**
- * `chat.armWait` arguments without the caller's own provenance. An unbound
- * CLI keeps only the ADE MCP app label: it may already put any metadata on a
- * direct send, and the label is what makes a delayed send from a connected
- * app say which app sent it.
+ * `chat.armWait` arguments without the caller's own provenance. The `ade`
+ * CLI with no chat binding (read only runs as an unbound agent, full access as
+ * the chatless operator) keeps only the ADE MCP app label: it may already put
+ * any metadata on a direct send, and the label is what makes a delayed send
+ * from a connected app say which app sent it.
  */
 function armWaitArgsWithoutCallerProvenance(
   session: SessionState,
   chatArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const { sendMetadata: callerMetadata, ...waitArgs } = chatArgs;
-  if (!isUnboundAdeCliCaller(session)) return waitArgs;
+  if (!isUnboundAdeCliCaller(session) && !isTrustedChatlessAdeCliCaller(session)) return waitArgs;
   const remoteMcp = isRecord(callerMetadata) ? callerMetadata.remoteMcp : undefined;
   return isRecord(remoteMcp) ? { ...waitArgs, sendMetadata: { remoteMcp } } : waitArgs;
 }
@@ -5832,7 +5833,7 @@ async function runTool(args: {
       : domain === "chat" && action === "armWait"
         // A send wait's provenance is derived by the host (bound agents, in
         // the chat scoping below), not accepted from the caller; only the ADE
-        // MCP app label survives, and only from an unbound CLI.
+        // MCP app label survives, and only from the `ade` CLI with no chat binding.
         ? armWaitArgsWithoutCallerProvenance(session, safeObject(toolArgs.args))
         : safeObject(toolArgs.args);
     // `inputOrigin` names the desktop a person is talking from, and show
