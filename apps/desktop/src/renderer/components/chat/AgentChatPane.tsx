@@ -254,7 +254,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { pendingSettingsAfterBackgroundLabel } from "../../../shared/chatTurnStatus";
+import { pendingSettingsAfterBackgroundLabel, pendingSettingsAfterBackgroundShortLabel } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -17081,9 +17081,7 @@ export function AgentChatPane({
     <StatusChip
       tone="neutral"
       icon={<ClockCountdown size={10} weight="bold" />}
-      label={pendingSettingsAfterBackground.length > 1
-        ? "Settings pending"
-        : pendingSettingsAfterBackground[0] === "fastMode" ? "Fast mode pending" : "Effort pending"}
+      label={pendingSettingsAfterBackgroundShortLabel(pendingSettingsAfterBackground)}
       tooltip={`The ${pendingSettingsAfterBackgroundLabel(pendingSettingsAfterBackground)} finishes. Applying it now would restart the agent and stop that work.`}
       testId="chat-pending-settings-chip"
     />

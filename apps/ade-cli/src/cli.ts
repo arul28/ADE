@@ -174,11 +174,10 @@ import type {
   AgentChatDispatchSteerMode,
   PendingInputRequest,
 } from "../../desktop/src/shared/types/chat";
-import { buildAnswers, optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
 import {
   describePendingInputForAgent,
-  pendingInputIsAnswerable,
-  pendingInputItemId,
+  resolvePendingInputResponse,
+  type PendingInputResponse,
 } from "../../desktop/src/shared/pendingInputCommand";
 import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
 import {
@@ -2505,10 +2504,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     question id), --text "<answer>" for a free answer or a note on
                                                     the pick, --answers-json '{"<questionId>":"..."}' for the raw map.
                                                     Approval: --approve | --approve-session | --deny (--text is the
-                                                    reason). --deny/--cancel also decline a question. While a chat
-                                                    waits on input, 'chat message' and 'chat send' are refused
-                                                    (error -32011) until it is answered. A subagent's question is
-                                                    also sent to its parent chat with these commands filled in.
+                                                    reason). Approvals are the person's to answer unless you were
+                                                    told you may approve. --deny/--cancel also decline a question.
+                                                    While a chat waits on input, 'chat message' and 'chat send' are
+                                                    refused (error -32011) until it is answered. A subagent's question
+                                                    is also sent to its parent chat with these commands filled in.
     $ ade chat generate-names                       Regenerate chat title, lane name, and status line
     $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
                                                     Also: ade chat update --title, ade lanes rename.
@@ -10325,25 +10325,13 @@ function readHandoffTarget(args: string[], sub: string): {
   };
 }
 
-/** `--option 2`, `--option manual`, `--option "Manual"`: the option's value, or null. */
-function matchPendingInputOption(
-  raw: string,
-  options: readonly { label: string; value: string }[],
-): string | null {
-  const wanted = raw.trim().toLowerCase();
-  if (!wanted) return null;
-  const byIndex = /^\d+$/.test(wanted) ? options[Number(wanted) - 1] : undefined;
-  const match = byIndex
-    ?? options.find((option) => option.value.toLowerCase() === wanted)
-    ?? options.find((option) => option.label.trim().toLowerCase() === wanted);
-  return match?.value ?? null;
-}
-
 /**
  * `ade chat respond <session>`: answer the question or approval the chat is
  * blocked on. Reads the chat's pending inputs first so the caller needs no
  * item id when exactly one is open, and so `--option` / `--answer` can name an
- * option by number or label; then calls `chat.respondToInput`.
+ * option by number or label; then calls `chat.respondToInput`. The flag
+ * grammar lives in `resolvePendingInputResponse`, beside the formatter that
+ * prints these commands.
  */
 function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
   const requestedItemId = readValue(args, ["--item", "--item-id"]);
@@ -10372,11 +10360,33 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
       + `See the question with: ade chat pending ${sessionId} --text`,
     );
   }
-  const resolved: JsonObject = { sessionId };
+  // Pure: params and shapeResult both derive from the listed inputs, so the
+  // printed result never depends on which of them ran first.
+  const resolve = (values: JsonObject): PendingInputResponse => {
+    const pendingValue = values.pending;
+    const listed = !(isRecord(pendingValue) && pendingValue.ok === false);
+    const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
+    try {
+      return resolvePendingInputResponse(requests, listed, {
+        sessionId,
+        itemId: requestedItemId,
+        options: optionArgs,
+        answers: answerArgs,
+        ...(isRecord(answersJson) ? { answersJson: answersJson as Record<string, string | string[]> } : {}),
+        text,
+        decision: explicitDecision,
+      });
+    } catch (error) {
+      throw new CliUsageError(error instanceof Error ? error.message : String(error));
+    }
+  };
   return {
     kind: "execute",
     label: "chat respond",
-    shapeResult: (values) => ({ answered: true, ...resolved }),
+    shapeResult: (values) => {
+      const { itemId, decision, kind, title } = resolve(values);
+      return { answered: true, sessionId, itemId, decision, ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
+    },
     steps: [
       {
         ...actionStep("pending", "chat", "listPendingInputs", { sessionId }),
@@ -10388,103 +10398,7 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
         method: "ade/actions/call",
         unwrapToolResult: true,
         params: (values) => {
-          const pendingValue = values.pending;
-          const listedOk = !(isRecord(pendingValue) && pendingValue.ok === false);
-          const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
-          let request: PendingInputRequest | null = null;
-          if (requestedItemId) {
-            request = requests.find((entry) => pendingInputItemId(entry) === requestedItemId) ?? null;
-          } else if (requests.length === 0) {
-            throw new CliUsageError(`Chat ${sessionId} has no pending question or approval to answer.`);
-          } else if (requests.length > 1) {
-            throw new CliUsageError(
-              `Chat ${sessionId} has ${requests.length} pending inputs; pick one with --item <id>:\n`
-              + requests.map((entry) => `  ${pendingInputItemId(entry)}  ${entry.kind}  ${entry.title ?? entry.description ?? ""}`.trimEnd()).join("\n"),
-            );
-          } else {
-            request = requests[0] ?? null;
-          }
-          if (requestedItemId && !request && listedOk && requests.length > 0) {
-            throw new CliUsageError(
-              `Chat ${sessionId} has no pending input ${requestedItemId}. Pending: ${requests.map(pendingInputItemId).join(", ")}`,
-            );
-          }
-          const itemId = request ? pendingInputItemId(request) : requestedItemId!;
-          const answerable = request ? pendingInputIsAnswerable(request) : true;
-          const questions = request?.questions ?? [];
-          if ((optionArgs.length > 0 || answerArgs.length > 0) && !request) {
-            throw new CliUsageError(
-              `Could not read input ${itemId} on chat ${sessionId} to match --option/--answer; use --answers-json or --text.`,
-            );
-          }
-          if ((optionArgs.length > 0 || answerArgs.length > 0) && !answerable) {
-            throw new CliUsageError(`Input ${itemId} is an approval, not a question: use --approve, --approve-session, or --deny.`);
-          }
-          let decision: AgentChatApprovalDecision;
-          if (explicitDecision) {
-            decision = explicitDecision;
-          } else if (answerable) {
-            decision = "accept";
-          } else {
-            throw new CliUsageError(
-              `Input ${itemId} is an approval (${request?.title ?? request?.description ?? request?.kind}): add --approve, --approve-session, or --deny.`,
-            );
-          }
-
-          const picksById: Record<string, string[]> = Object.create(null);
-          const notesById: Record<string, string> = Object.create(null);
-          let selection: string[] = [];
-          const describeOptions = (options: readonly { label: string }[]): string =>
-            options.map((option, index) => `${index + 1}) ${option.label}`).join(", ");
-          const applyValue = (questionIndex: number, raw: string, mustMatch: boolean): void => {
-            const question = questions[questionIndex];
-            const options = question
-              ? optionsForQuestion(request, question, questionIndex)
-              : request?.options ?? [];
-            const matched = matchPendingInputOption(raw, options);
-            if (!question) {
-              if (!matched) {
-                throw new CliUsageError(`"${raw}" matches no option. Options: ${describeOptions(options) || "(none)"}`);
-              }
-              selection = [...selection, matched];
-              return;
-            }
-            if (matched) {
-              const picks = picksById[question.id] ?? [];
-              picksById[question.id] = question.multiSelect ? [...picks, matched] : [matched];
-              return;
-            }
-            if (mustMatch || question.allowsFreeform === false) {
-              throw new CliUsageError(
-                `"${raw}" matches no option of question ${questionIndex + 1}. Options: ${describeOptions(options) || "(none)"}`,
-              );
-            }
-            notesById[question.id] = notesById[question.id] ? `${notesById[question.id]}, ${raw.trim()}` : raw.trim();
-          };
-          for (const option of optionArgs) applyValue(0, option, true);
-          for (const spec of answerArgs) {
-            const separator = spec.indexOf("=");
-            if (separator <= 0) throw new CliUsageError(`--answer takes <question>=<value>, for example --answer 1=2. Got "${spec}".`);
-            const key = spec.slice(0, separator).trim();
-            const value = spec.slice(separator + 1);
-            const questionIndex = /^\d+$/.test(key)
-              ? Number(key) - 1
-              : questions.findIndex((question) => question.id === key);
-            if (questionIndex < 0 || questionIndex >= Math.max(questions.length, 1)) {
-              throw new CliUsageError(`--answer ${key}: input ${itemId} has ${questions.length} question(s); number them from 1 or use a question id.`);
-            }
-            applyValue(questionIndex, value, false);
-          }
-          const answers: Record<string, string | string[]> = {
-            ...buildAnswers(questions, picksById, notesById),
-            ...(selection.length ? { selection: selection.length === 1 ? selection[0]! : selection } : {}),
-            ...(isRecord(answersJson) ? answersJson as Record<string, string | string[]> : {}),
-          };
-          const trimmedText = text?.trim() ?? "";
-          resolved.itemId = itemId;
-          resolved.decision = decision;
-          if (request?.kind) resolved.kind = request.kind;
-          if (request?.title) resolved.title = request.title;
+          const { itemId, decision, answers, responseText } = resolve(values);
           return {
             name: "run_ade_action",
             arguments: {
@@ -10494,8 +10408,8 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
                 sessionId,
                 itemId,
                 decision,
-                ...(Object.keys(answers).length ? { answers } : {}),
-                ...(trimmedText ? { responseText: trimmedText } : {}),
+                ...(answers ? { answers } : {}),
+                ...(responseText ? { responseText } : {}),
               },
             },
           };
@@ -35863,7 +35777,7 @@ async function runCli(
 function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || path.resolve(shellRoot) === path.resolve(explicitRoot)) return () => {};
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
   const saved: Array<[string, string | undefined]> = [];
   for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
     if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;

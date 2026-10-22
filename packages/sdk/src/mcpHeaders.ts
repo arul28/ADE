@@ -67,27 +67,40 @@ function uniqueHeaderNames(names: Iterable<unknown>): string[] {
   return out;
 }
 
-/** A server's tool filter lists, copied; empty or malformed lists dropped. */
+/**
+ * A server's tool filter fields, passed through exactly as given whenever
+ * present. Never cleaned up here: an empty or malformed list dropped by the
+ * SDK would expose every tool of the server, and would skip the refusal on a
+ * runtime without tool filters. The runtime validates the values and refuses
+ * a bad one by name. Arrays are copied so the record never aliases the
+ * caller's object.
+ */
 function toolFilterOf(server: unknown): McpToolFilter {
   if (!server || typeof server !== "object") return {};
   const entry = server as Record<string, unknown>;
-  const list = (value: unknown): string[] | null =>
-    Array.isArray(value) && value.length > 0 && value.every((name) => typeof name === "string")
-      ? [...(value as string[])]
-      : null;
-  const allowedTools = list(entry.allowedTools);
-  const disallowedTools = list(entry.disallowedTools);
+  const copy = (value: unknown): string[] => (Array.isArray(value) ? [...value] : value) as string[];
+  // `null` means "no filter", as it does to the runtime's `readToolFilter`.
+  const present = (value: unknown): boolean => value !== undefined && value !== null;
   return {
-    ...(allowedTools ? { allowedTools } : {}),
-    ...(disallowedTools ? { disallowedTools } : {}),
+    ...(present(entry.allowedTools) ? { allowedTools: copy(entry.allowedTools) } : {}),
+    ...(present(entry.disallowedTools) ? { disallowedTools: copy(entry.disallowedTools) } : {}),
   };
 }
 
-/** Whether any server carries an `allowedTools` or `disallowedTools` list. */
+/**
+ * Whether any server carries a tool filter an older runtime would drop: any
+ * `allowedTools` field, well-formed or not, or a non-empty (or malformed)
+ * `disallowedTools`. An empty deny list hides nothing, so nothing is lost.
+ */
 export function hasMcpToolFilters(
   servers: Record<string, McpServerConfig | StoredMcpServerConfig> | undefined,
 ): boolean {
-  return Object.values(servers ?? {}).some((server) => Object.keys(toolFilterOf(server)).length > 0);
+  return Object.values(servers ?? {}).some((server) => {
+    const filter = toolFilterOf(server);
+    if (filter.allowedTools !== undefined) return true;
+    const deny: unknown = filter.disallowedTools;
+    return deny !== undefined && !(Array.isArray(deny) && deny.length === 0);
+  });
 }
 
 /**

@@ -50,7 +50,7 @@ export type ChatTurnStatusSnapshot = {
   queuedMessageCount: number;
   ask?: ChatTurnStatusAsk | null;
   subagents: ChatTurnStatusSubagent[];
-  /** Live background jobs the chat still owns; drives the `waiting` phase. */
+  /** Live background jobs the chat waits on (monitors excluded); drives the `waiting` phase. */
   backgroundWorkCount?: number;
   /** Setting changes held until that background work ends (see the session summary field). */
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
@@ -76,7 +76,7 @@ export type DeriveChatTurnStatusInput = {
   queuedMessageCount?: number;
   currentTool?: ChatTurnStatusTool | null;
   subagents?: ChatTurnStatusSubagent[];
-  /** Live background work (`activeBackgroundTaskCount` on the session summary). */
+  /** Live background work somebody waits on (the summary's working count; monitors excluded). */
   backgroundWorkCount?: number;
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
@@ -261,7 +261,16 @@ const PENDING_SETTING_LABEL: Record<AgentChatPendingSettingAfterBackground, stri
   fastMode: "fast mode",
 };
 
-/** "effort change applies after background work" — shared by the CLI and the desktop chip. */
+/** The desktop chip's short label: "Effort pending", "Fast mode pending", "Settings pending". */
+export function pendingSettingsAfterBackgroundShortLabel(
+  settings: readonly AgentChatPendingSettingAfterBackground[],
+): string {
+  if (settings.length !== 1) return "Settings pending";
+  const name = PENDING_SETTING_LABEL[settings[0]!] ?? "Setting";
+  return `${name.slice(0, 1).toUpperCase()}${name.slice(1)} pending`;
+}
+
+/** "effort change applies after background work" — shared by the CLI and the desktop chip tooltip. */
 export function pendingSettingsAfterBackgroundLabel(
   settings: readonly AgentChatPendingSettingAfterBackground[],
 ): string {

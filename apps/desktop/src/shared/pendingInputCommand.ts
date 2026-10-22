@@ -1,5 +1,5 @@
-import type { PendingInputRequest } from "./types/chat";
-import { isQuestionKind, optionsForQuestion } from "./pendingInputAnswers";
+import type { AgentChatApprovalDecision, PendingInputOption, PendingInputRequest } from "./types/chat";
+import { buildAnswers, isQuestionKind, optionsForQuestion } from "./pendingInputAnswers";
 
 /**
  * A pending question or approval written for an agent that answers it through
@@ -43,6 +43,7 @@ export function describePendingInputForAgent(sessionId: string, request: Pending
     if (description && clip(description, MAX_QUESTION_CHARS) !== heading) {
       lines.push(`  ${clip(description, MAX_QUESTION_CHARS)}`);
     }
+    lines.push("  (An approval is the person's to answer unless you were told you may approve.)");
     lines.push(`  Approve: ${base} --approve   (or --approve-session to allow it for the rest of the chat)`);
     lines.push(`  Deny:    ${base} --deny --text "<why>"`);
     return lines.join("\n");
@@ -76,10 +77,157 @@ export function describePendingInputForAgent(sessionId: string, request: Pending
     lines.push(`  Answer:  ${base} ${example}`);
   } else if (firstHasOptions) {
     lines.push(`  Answer:  ${base} --option <number or label>   (add --text "<note>" to qualify it)`);
-    lines.push(`           ${base} --text "<your own answer>"`);
+    if (questions[0]?.allowsFreeform !== false) lines.push(`           ${base} --text "<your own answer>"`);
   } else {
     lines.push(`  Answer:  ${base} --text "<your answer>"`);
   }
   lines.push(`  Decline: ${base} --deny`);
   return lines.join("\n");
+}
+
+/** What a caller said about a pending input: the `ade chat respond` flags. */
+export type PendingInputResponseFlags = {
+  /** The chat, named in error messages. */
+  sessionId: string;
+  /** `--item`: the input to answer. Without it the chat must have exactly one open. */
+  itemId?: string | null;
+  /** `--option`: picks for question 1 (number, value or label). */
+  options?: readonly string[];
+  /** `--answer <question>=<value>`: question by number from 1 or by id. */
+  answers?: readonly string[];
+  /** `--answers-json`: the raw answer map, merged last. */
+  answersJson?: Record<string, string | string[]>;
+  /** `--text`: a free answer, a note on the pick, or the reason for a decline. */
+  text?: string | null;
+  /** `--approve` / `--approve-session` / `--deny` / `--cancel`. */
+  decision?: AgentChatApprovalDecision | null;
+};
+
+/** The `chat.respondToInput` arguments, less the session id. */
+export type PendingInputResponse = {
+  itemId: string;
+  decision: AgentChatApprovalDecision;
+  answers?: Record<string, string | string[]>;
+  responseText?: string;
+  kind?: string;
+  title?: string;
+};
+
+/** `2`, `manual`, `Manual`: the option's value, or null. */
+function matchPendingInputOption(raw: string, options: readonly PendingInputOption[]): string | null {
+  const wanted = raw.trim().toLowerCase();
+  if (!wanted) return null;
+  const byIndex = /^\d+$/.test(wanted) ? options[Number(wanted) - 1] : undefined;
+  const match = byIndex
+    ?? options.find((option) => option.value.toLowerCase() === wanted)
+    ?? options.find((option) => option.label.trim().toLowerCase() === wanted);
+  return match?.value ?? null;
+}
+
+/**
+ * Turn `ade chat respond` flags into the `chat.respondToInput` arguments, the
+ * inverse of the commands {@link describePendingInputForAgent} prints.
+ *
+ * `requests` is what `chat.listPendingInputs` returned; `listed` is false when
+ * that read failed (an older brain), in which case an explicit item is answered
+ * as given. Throws an Error with a user-facing message on any bad input.
+ */
+export function resolvePendingInputResponse(
+  requests: readonly PendingInputRequest[],
+  listed: boolean,
+  flags: PendingInputResponseFlags,
+): PendingInputResponse {
+  const { sessionId } = flags;
+  const optionArgs = flags.options ?? [];
+  const answerArgs = flags.answers ?? [];
+  const requestedItemId = flags.itemId?.trim() || null;
+  let request: PendingInputRequest | null = null;
+  if (requestedItemId) {
+    request = requests.find((entry) => pendingInputItemId(entry) === requestedItemId) ?? null;
+  } else if (requests.length === 0) {
+    throw new Error(`Chat ${sessionId} has no pending question or approval to answer.`);
+  } else if (requests.length > 1) {
+    throw new Error(
+      `Chat ${sessionId} has ${requests.length} pending inputs; pick one with --item <id>:\n`
+      + requests.map((entry) => `  ${pendingInputItemId(entry)}  ${entry.kind}  ${entry.title ?? entry.description ?? ""}`.trimEnd()).join("\n"),
+    );
+  } else {
+    request = requests[0] ?? null;
+  }
+  if (requestedItemId && !request && listed && requests.length > 0) {
+    throw new Error(
+      `Chat ${sessionId} has no pending input ${requestedItemId}. Pending: ${requests.map(pendingInputItemId).join(", ")}`,
+    );
+  }
+  const itemId = request ? pendingInputItemId(request) : requestedItemId!;
+  const answerable = request ? pendingInputIsAnswerable(request) : true;
+  const questions = request?.questions ?? [];
+  const picksOrAnswers = optionArgs.length > 0 || answerArgs.length > 0;
+  if (picksOrAnswers && !request) {
+    throw new Error(`Could not read input ${itemId} on chat ${sessionId} to match --option/--answer; use --answers-json or --text.`);
+  }
+  if (picksOrAnswers && !answerable) {
+    throw new Error(`Input ${itemId} is an approval, not a question: use --approve, --approve-session, or --deny.`);
+  }
+  let decision: AgentChatApprovalDecision;
+  if (flags.decision) {
+    decision = flags.decision;
+  } else if (answerable) {
+    decision = "accept";
+  } else {
+    throw new Error(
+      `Input ${itemId} is an approval (${request?.title ?? request?.description ?? request?.kind}): add --approve, --approve-session, or --deny.`,
+    );
+  }
+
+  const picksById: Record<string, string[]> = Object.create(null);
+  const notesById: Record<string, string> = Object.create(null);
+  let selection: string[] = [];
+  const describeOptions = (options: readonly { label: string }[]): string =>
+    options.map((option, index) => `${index + 1}) ${option.label}`).join(", ");
+  const applyValue = (questionIndex: number, raw: string, mustMatch: boolean): void => {
+    const question = questions[questionIndex];
+    const options = question ? optionsForQuestion(request, question, questionIndex) : request?.options ?? [];
+    const matched = matchPendingInputOption(raw, options);
+    if (!question) {
+      if (!matched) throw new Error(`"${raw}" matches no option. Options: ${describeOptions(options) || "(none)"}`);
+      selection = [...selection, matched];
+      return;
+    }
+    if (matched) {
+      const picks = picksById[question.id] ?? [];
+      picksById[question.id] = question.multiSelect ? [...picks, matched] : [matched];
+      return;
+    }
+    if (mustMatch || question.allowsFreeform === false) {
+      throw new Error(`"${raw}" matches no option of question ${questionIndex + 1}. Options: ${describeOptions(options) || "(none)"}`);
+    }
+    notesById[question.id] = notesById[question.id] ? `${notesById[question.id]}, ${raw.trim()}` : raw.trim();
+  };
+  for (const option of optionArgs) applyValue(0, option, true);
+  for (const spec of answerArgs) {
+    const separator = spec.indexOf("=");
+    if (separator <= 0) throw new Error(`--answer takes <question>=<value>, for example --answer 1=2. Got "${spec}".`);
+    const key = spec.slice(0, separator).trim();
+    const value = spec.slice(separator + 1);
+    const questionIndex = /^\d+$/.test(key) ? Number(key) - 1 : questions.findIndex((question) => question.id === key);
+    if (questionIndex < 0 || questionIndex >= Math.max(questions.length, 1)) {
+      throw new Error(`--answer ${key}: input ${itemId} has ${questions.length} question(s); number them from 1 or use a question id.`);
+    }
+    applyValue(questionIndex, value, false);
+  }
+  const answers: Record<string, string | string[]> = {
+    ...buildAnswers(questions, picksById, notesById),
+    ...(selection.length ? { selection: selection.length === 1 ? selection[0]! : selection } : {}),
+    ...(flags.answersJson ?? {}),
+  };
+  const responseText = flags.text?.trim() ?? "";
+  return {
+    itemId,
+    decision,
+    ...(Object.keys(answers).length ? { answers } : {}),
+    ...(responseText ? { responseText } : {}),
+    ...(request?.kind ? { kind: request.kind } : {}),
+    ...(request?.title ? { title: request.title } : {}),
+  };
 }

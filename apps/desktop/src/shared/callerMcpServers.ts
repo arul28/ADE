@@ -58,7 +58,7 @@ export type CallerMcpSupport = {
    * embedder that hid a destructive tool and got it back anyway is worse off
    * than one told no. Absent means neither is supported.
    */
-  toolFilters?: { allow: boolean; deny: boolean; mechanism: string };
+  toolFilters?: { allowedTools: boolean; disallowedTools: boolean; mechanism: string };
 };
 
 /**
@@ -86,8 +86,8 @@ export const CALLER_MCP_SUPPORT = {
     // matching "only these" switch for one server: hiding every tool not
     // named needs the server's tool list, which ADE does not have at launch.
     toolFilters: {
-      allow: false,
-      deny: true,
+      allowedTools: false,
+      disallowedTools: true,
       mechanism: "Agent SDK option disallowedTools: mcp__<server>__<tool>",
     },
   },
@@ -105,8 +105,8 @@ export const CALLER_MCP_SUPPORT = {
     // SSE server would be dialed as HTTP.
     unsupportedTransports: ["sse"],
     toolFilters: {
-      allow: true,
-      deny: true,
+      allowedTools: true,
+      disallowedTools: true,
       mechanism: "thread config overlay: mcp_servers.<name>.enabled_tools / disabled_tools",
     },
   },
@@ -246,7 +246,7 @@ function callerMcpUnsupportedToolFilter(
 ): CallerMcpDeliveryProblem | null {
   const support = callerMcpSupport(provider)?.toolFilters;
   for (const filter of ["allowedTools", "disallowedTools"] as const) {
-    if (filter === "allowedTools" ? support?.allow : support?.deny) continue;
+    if (support?.[filter]) continue;
     const names = Object.entries(servers)
       .filter(([, config]) => (config[filter]?.length ?? 0) > 0)
       .map(([name]) => name);
@@ -256,23 +256,34 @@ function callerMcpUnsupportedToolFilter(
 }
 
 /**
- * The one sentence every refusal of a `toolFilter` problem uses, so create,
- * update and a model switch name the gap the same way.
+ * The one sentence for a delivery problem, so create, update and a model
+ * switch name the gap the same way. Each caller adds its own prefix and
+ * advice around it.
  */
-export function describeCallerMcpToolFilterProblem(
+export function describeCallerMcpDeliveryProblem(
   provider: AgentChatProvider | string,
-  problem: Extract<CallerMcpDeliveryProblem, { kind: "toolFilter" }>,
+  problem: CallerMcpDeliveryProblem,
 ): string {
-  const servers = problem.names.map((name) => `'${name}'`).join(", ");
-  const supported = CALLER_MCP_CAPABLE_PROVIDERS.filter((name) => {
-    const filters = callerMcpSupport(name)?.toolFilters;
-    return problem.filter === "allowedTools" ? filters?.allow : filters?.deny;
-  });
-  const hint = problem.filter === "allowedTools" && callerMcpSupport(provider)?.toolFilters?.deny
-    ? " List the tools to hide in disallowedTools instead."
-    : "";
-  return `provider '${provider}' cannot enforce ${problem.filter} on MCP ${problem.names.length > 1 ? "servers" : "server"} `
-    + `${servers}.${hint} Providers that can: ${supported.length ? supported.join(", ") : "none"}.`;
+  switch (problem.kind) {
+    case "provider":
+      return `provider '${provider}' cannot accept injected MCP servers: ${problem.mechanism ?? "no MCP support"}.`;
+    case "transport":
+      return `provider '${provider}' has no '${problem.transport}' MCP transport, so `
+        + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`;
+    case "toolFilter": {
+      const servers = problem.names.map((name) => `'${name}'`).join(", ");
+      const supported = CALLER_MCP_CAPABLE_PROVIDERS.filter((name) => callerMcpSupport(name)?.toolFilters?.[problem.filter]);
+      const hint = problem.filter === "allowedTools" && callerMcpSupport(provider)?.toolFilters?.disallowedTools
+        ? " List the tools to hide in disallowedTools instead."
+        : "";
+      return `provider '${provider}' cannot enforce ${problem.filter} on MCP ${problem.names.length > 1 ? "servers" : "server"} `
+        + `${servers}.${hint} Providers that can: ${supported.length ? supported.join(", ") : "none"}.`;
+    }
+    default: {
+      const unhandled: never = problem;
+      return String(unhandled);
+    }
+  }
 }
 
 /** Whether any server carries an `allowedTools` or `disallowedTools` filter. */

@@ -1462,8 +1462,10 @@ come):
   `waiting` phase (`◐ WAITING on N background jobs`; `phase: "waiting"` in
   `--json`) instead of `idle` while the turn is over but the work runs. It exits
   0 like `running`, so a caller polling until a chat is no longer running does
-  not stop early. Both read the session summary's
-  `activeBackgroundTaskCount`, so there is no extra polling. Claude and OpenCode
+  not stop early. Watch-only monitors do not count toward `waiting` (a chat
+  whose only live work is a monitor reads `idle` there and **Monitoring** on
+  its row). Both read the session summary's background-work counts
+  (`backgroundWork.workingCount` for `waiting`), so there is no extra polling. Claude and OpenCode
   wake their agent themselves when a background job finishes, so the action
   only says so there; Codex does not, so ADE re-reads the held terminals every
   15 s and wakes the agent with the commands that ended.
@@ -1499,16 +1501,22 @@ otherwise wait forever.
 **Spared first.** ADE does not end a Claude process for its own convenience
 while it still runs background work: the idle sweep, the warm-runtime budget
 and compact-first all skip it (until the 3 h silence backstop below), the
-compaction-settings refresh waits, and a reasoning-effort or fast-mode change
+compaction-settings refresh waits, a caller-MCP replacement queues
+(`callerMcpReplacementMustWait`), and a reasoning-effort or fast-mode change
 (from Settings, `updateSession`, or a send carrying a new effort) stays armed
-as `pendingSessionReset` (`claudeQueryResetMustWait`). It applies on the first
-turn after the background work is gone (the send path, or the end of a turn).
-Until then the old setting stays in force, and the session summary's
-`pendingSettingsAfterBackground` (`reasoningEffort` / `fastMode`) says so: the
-composer's effort and fast-mode chips show "applies after background work", and
-`ade chat status` prints a `pending` row (`pendingSettingsAfterBackground` in
-`--json`). Every query reset clears it, since the next query is built from the
-current settings.
+as `pendingSessionReset` (`claudeQueryResetMustWait`). Only work somebody waits
+on holds these (`claudeHasAwaitedBackgroundWorkload`: agents, workflows,
+shells); a watch-only monitor does not, and when a reset or replacement ends
+one, the chat gets the loss notice and next-turn note with no wake. A deferred
+reset (any kind, including a permission-mode one) applies on the first turn
+after the work is gone, at the send (`flushClaudePendingSessionReset`) or at
+the end of a turn. Until then the old setting stays in force, and the session
+summary's `pendingSettingsAfterBackground` (`reasoningEffort` / `fastMode`)
+says so: the composer's status strip shows a neutral "Effort pending" /
+"Fast mode pending" / "Settings pending" chip whose tooltip says the change
+applies after background work, and `ade chat status` prints a `pending` row
+(`pendingSettingsAfterBackground` in `--json`). Every query reset clears it,
+since the next query is built from the current settings.
 
 **Told when it is lost anyway.** For Claude, every path that ends the process —
 `teardownRuntime` (model switch, caller-MCP replacement, account move,
@@ -1529,7 +1537,9 @@ settled, and `reportLostBackgroundWork`:
   carries the note. One wake per chain (`backgroundLossWakeState`): while a wake
   is scheduled, or dispatched with no other turn prepared since, a further loss
   only merges into the note. A second restart does not stack a wake, and work
-  the wake turn itself started never earns another.
+  the wake turn itself started never earns another. A teardown on the send
+  path (a fallen-back launch route, a pending profile restart) reports the
+  loss without a wake: the send's own turn carries the note.
 - On shutdown or project close the wake is instead recorded
   (`backgroundLossWakePending`, persisted) for restart recovery.
 

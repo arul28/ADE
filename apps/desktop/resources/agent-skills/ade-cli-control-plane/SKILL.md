@@ -230,6 +230,7 @@ a chat you do not own:
   Add `--item <id>` when more than one input is open. Questions that need the
   person (money, credentials, a product call) are theirs: ask them, or leave
   the card for them. Approvals and secret questions are never relayed to you.
+  Approvals are the person's to answer unless you were told you may approve.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then

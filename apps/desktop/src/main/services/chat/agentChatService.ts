@@ -814,7 +814,7 @@ import {
   sanitizeAnswersForTranscript,
 } from "../../../shared/pendingInputAnswers";
 import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
-import { describePendingInputForAgent, pendingInputIsAnswerable } from "../../../shared/pendingInputCommand";
+import { describePendingInputForAgent, pendingInputIsAnswerable, pendingInputItemId as pendingInputRequestItemId } from "../../../shared/pendingInputCommand";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
@@ -1087,6 +1087,12 @@ import {
   buildBackgroundWorkLostNote,
   isAwaitedCancelledWork,
   mergePendingRestartNote,
+  BACKGROUND_LOSS_CAUSE_COPY,
+  backgroundLossCauseForQueryReset,
+  backgroundLossCauseForTeardown,
+  formatBackgroundLossNotice,
+  type BackgroundLossCause,
+  type BackgroundLossWake,
   type RestartCancelledWork,
 } from "../../../shared/chatAutoResume";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
@@ -1147,6 +1153,7 @@ import {
   type UserMessageChatEvent,
 } from "../../../shared/chatTranscript";
 import {
+  backgroundWorkFromSummary,
   classifyBackgroundWorkKind,
   SESSION_STALE_AFTER_MS,
   summarizeBackgroundWork,
@@ -1584,7 +1591,7 @@ import {
   callerMcpDeliveryProblem,
   callerMcpMissingHeadersNotice,
   callerMcpClaudeDisallowedTools,
-  describeCallerMcpToolFilterProblem,
+  describeCallerMcpDeliveryProblem,
   codexConfiguredMcpServerNames,
   codexDisabledMcpServerOverrides,
   normalizeCallerMcpCapability,
@@ -1592,6 +1599,7 @@ import {
   parseCallerMcpServers,
   redactCallerMcpText,
   withholdCallerMcpHeaderValues,
+  type CallerMcpDeliveryProblem,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
 import {
@@ -3188,6 +3196,28 @@ const CLAUDE_AGENT_TASK_TYPES: ReadonlySet<string> = new Set([
   "local_workflow",
 ]);
 
+/** A Claude task type that names an agent or workflow rather than a shell or monitor. */
+function isClaudeAgentBackgroundTaskType(value: unknown): boolean {
+  return typeof value === "string" && CLAUDE_AGENT_TASK_TYPES.has(value.trim().toLowerCase());
+}
+
+/**
+ * The kind a lost background task is reported as. `shell` is the
+ * `isBackgroundShellCommand` verdict when ADE tracked the task as a subagent
+ * entry; null when only the background level knew it.
+ */
+function lostWorkKind(args: {
+  levelTaskType: string;
+  shell: boolean | null;
+  subagentTaskType?: ClaudeActiveSubagent["taskType"];
+}): RestartCancelledWork["kind"] {
+  const { levelTaskType } = args;
+  const shell = args.shell ?? !isClaudeAgentBackgroundTaskType(levelTaskType);
+  if (shell) return levelTaskType.startsWith("monitor") ? "monitor" : "command";
+  if (args.shell === null) return levelTaskType.includes("workflow") ? "workflow" : "subagent";
+  return args.subagentTaskType === "local_workflow" ? "workflow" : "subagent";
+}
+
 /**
  * The background work a Claude agent process still runs, read just before ADE
  * ends that process: backgrounded subagents and workflows, and background
@@ -3210,9 +3240,7 @@ function collectClaudeLostBackgroundWork(runtime: ClaudeRuntime): RestartCancell
       command: subagent.command,
       description: subagent.description,
     });
-    const kind: RestartCancelledWork["kind"] = shell
-      ? taskType.startsWith("monitor") ? "monitor" : "command"
-      : subagent.taskType === "local_workflow" ? "workflow" : "subagent";
+    const kind = lostWorkKind({ levelTaskType: taskType, shell, subagentTaskType: subagent.taskType });
     const label = shell
       ? subagent.command?.trim() || subagent.description
       : subagent.description || subagent.workflowName || subagent.agentType || "subagent";
@@ -3223,9 +3251,7 @@ function collectClaudeLostBackgroundWork(runtime: ClaudeRuntime): RestartCancell
     const taskType = runtime.backgroundTaskTypeById.get(taskId)?.toLowerCase() ?? "";
     // Inert level entries (a plan document) hold no live work to lose.
     if (classifyBackgroundWorkKind(taskType) === "inert") continue;
-    const kind: RestartCancelledWork["kind"] = CLAUDE_AGENT_TASK_TYPES.has(taskType)
-      ? taskType.includes("workflow") ? "workflow" : "subagent"
-      : taskType.startsWith("monitor") ? "monitor" : "command";
+    const kind = lostWorkKind({ levelTaskType: taskType, shell: null });
     out.push({ kind, label: runtime.backgroundTaskTitleById.get(taskId) ?? "background work" });
   }
   return out;
@@ -4360,7 +4386,37 @@ function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
  * the end of a later turn once the background work is gone.
  */
 function claudeQueryResetMustWait(runtime: ClaudeRuntime): boolean {
-  return runtime.busy || claudeHasBackgroundWorkload(runtime);
+  return runtime.busy || claudeHasAwaitedBackgroundWorkload(runtime);
+}
+
+/**
+ * Background work somebody waits on: agents, workflows and shells, but not
+ * watch-only monitors (`classifyBackgroundWorkKind`). Monitors never hold a
+ * settings reset or an MCP replacement; when one ends with the process, the
+ * chat gets the loss notice and next-turn note, and no wake.
+ */
+function claudeHasAwaitedBackgroundWorkload(runtime: ClaudeRuntime): boolean {
+  if (claudeWorkloadClaimingSubagentCount(runtime) > 0) return true;
+  for (const taskId of runtime.liveBackgroundTaskIds) {
+    if (classifyBackgroundWorkKind(runtime.backgroundTaskTypeById.get(taskId) ?? null) === "working") return true;
+  }
+  return false;
+}
+
+/**
+ * Apply a reset a settings change deferred, once nothing holds it any more.
+ * Returns whether it ran.
+ */
+async function flushClaudePendingSessionReset(
+  runtime: ClaudeRuntime,
+  reset: (options: { clearSdkSessionId: boolean }) => Promise<void>,
+): Promise<boolean> {
+  if (!runtime.pendingSessionReset || claudeQueryResetMustWait(runtime)) return false;
+  const clearSdkSessionId = runtime.pendingSessionResetClearSdkSessionId === true;
+  runtime.pendingSessionReset = false;
+  runtime.pendingSessionResetClearSdkSessionId = false;
+  await reset({ clearSdkSessionId });
+  return true;
 }
 
 /** Arm the deferred query reset for a settings change, recording which setting waits. */
@@ -4368,8 +4424,10 @@ function deferClaudeQueryResetForSetting(
   runtime: ClaudeRuntime,
   setting: AgentChatPendingSettingAfterBackground,
 ): void {
+  // A reset already armed may need a fresh SDK session (a refused permission
+  // mode); a settings change joins that reset and must not drop the flag.
+  if (!runtime.pendingSessionReset) runtime.pendingSessionResetClearSdkSessionId = false;
   runtime.pendingSessionReset = true;
-  runtime.pendingSessionResetClearSdkSessionId = false;
   (runtime.pendingResetSettings ??= new Set()).add(setting);
 }
 
@@ -4382,7 +4440,7 @@ function claudePendingSettingsAfterBackground(
 ): AgentChatPendingSettingAfterBackground[] {
   if (runtime?.kind !== "claude" || !runtime.pendingSessionReset) return [];
   const settings = runtime.pendingResetSettings;
-  if (!settings?.size || !claudeHasBackgroundWorkload(runtime)) return [];
+  if (!settings?.size || !claudeHasAwaitedBackgroundWorkload(runtime)) return [];
   return (["reasoningEffort", "fastMode"] as const).filter((setting) => settings.has(setting));
 }
 
@@ -24671,15 +24729,6 @@ export function createAgentChatService(args: {
     syncClaudeBackgroundWorkAnchor(runtime);
   };
 
-  const isClaudeAgentBackgroundTaskType = (value: unknown): boolean => {
-    const taskType = compactString(value)?.toLowerCase();
-    return taskType === "subagent"
-      || taskType === "agent"
-      || taskType === "local_agent"
-      || taskType === "workflow"
-      || taskType === "local_workflow";
-  };
-
   const applyClaudeBackgroundTasksLevel = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -26791,52 +26840,6 @@ export function createAgentChatService(args: {
     "Cursor tool approval was cancelled because the session closed.";
 
   /**
-   * Why ADE ended an agent process that still ran background work. Decides the
-   * notice copy and whether the chat gets a turn to re-run the work:
-   *   • reconfigure / runtime_exit / explicit_restart — a chat that sat waiting
-   *     on the work is woken now (once per chain, see `backgroundLossWakeState`),
-   *   • shutdown — same, but the wake is armed for restart recovery,
-   *   • user_stop / closed / eviction — the agent is told on its next turn and
-   *     nothing starts on its own.
-   */
-  type BackgroundLossCause =
-    | "reconfigure"
-    | "runtime_exit"
-    | "shutdown"
-    | "explicit_restart"
-    | "user_stop"
-    | "closed"
-    | "eviction";
-
-  const BACKGROUND_LOSS_CAUSE_COPY: Record<BackgroundLossCause, string> = {
-    reconfigure: "ADE restarted it after the chat's model, MCP servers, account or settings changed",
-    runtime_exit: "it exited on its own",
-    shutdown: "ADE shut down",
-    explicit_restart: "the agent session was restarted",
-    user_stop: "the chat was stopped",
-    closed: "the chat was closed",
-    eviction: "it was silent for hours and ADE reclaimed it",
-  };
-
-  const backgroundLossCauseForTeardown = (reason: string): BackgroundLossCause => {
-    switch (reason) {
-      case "idle_ttl":
-      case "budget_eviction":
-        return "eviction";
-      case "pool_compaction":
-      case "model_switch":
-      case "restart":
-      case "paused_run":
-        return "reconfigure";
-      case "project_close":
-      case "shutdown":
-        return "shutdown";
-      default:
-        return "closed";
-    }
-  };
-
-  /**
    * Wake a chat whose awaited background work was just lost, on the next tick
    * so the reconfigure that caused it finishes first. Skipped when a turn has
    * started meanwhile: every turn carries the pending note, so it already told
@@ -26893,8 +26896,7 @@ export function createAgentChatService(args: {
     args: { cause: BackgroundLossCause; waiting: boolean },
   ): void => {
     if (lost.length === 0 || managed.deleted) return;
-    const causeCopy = BACKGROUND_LOSS_CAUSE_COPY[args.cause];
-    const note = buildBackgroundWorkLostNote({ cause: causeCopy, lost });
+    const note = buildBackgroundWorkLostNote({ cause: BACKGROUND_LOSS_CAUSE_COPY[args.cause], lost });
     if (!note) return;
     managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, note);
     const awaited = args.waiting && lost.some(isAwaitedCancelledWork);
@@ -26902,32 +26904,20 @@ export function createAgentChatService(args: {
       && (args.cause === "reconfigure" || args.cause === "runtime_exit" || args.cause === "explicit_restart");
     // Only a wake that has not fired yet still carries this loss; one already
     // dispatched leaves it to the next turn (no wake → restart → wake loop).
-    const wakeAlreadyPending = wakeEligible && managed.backgroundLossWakeState === "scheduled";
-    const wakeNow = wakeEligible && scheduleBackgroundLossWake(managed, note);
-    const wakeAfterRestart = awaited && args.cause === "shutdown";
-    if (wakeAfterRestart) managed.backgroundLossWakePending = true;
+    const wake: BackgroundLossWake = awaited && args.cause === "shutdown"
+      ? "after_restart"
+      : !wakeEligible
+        ? "none"
+        : managed.backgroundLossWakeState === "scheduled"
+          ? "already_pending"
+          : scheduleBackgroundLossWake(managed, note) ? "now" : "none";
+    if (wake === "after_restart") managed.backgroundLossWakePending = true;
     // An eviction already announced itself (`announceExpiredWorkloadExemption`).
     if (args.cause !== "eviction") {
-      const names = lost
-        .slice(0, 3)
-        .map((work) => {
-          const flat = work.label.replace(/\s+/g, " ").trim() || work.kind;
-          return flat.length > 60 ? `${flat.slice(0, 59).trimEnd()}…` : flat;
-        })
-        .join(", ");
-      const more = lost.length > 3 ? ` and ${lost.length - 3} more` : "";
-      const count = lost.length === 1 ? "1 background job" : `${lost.length} background jobs`;
-      const follow = wakeNow
-        ? "ADE asked the agent to re-run what it still needs."
-        : wakeAlreadyPending
-          ? "The agent's pending re-run turn is told about it too."
-          : wakeAfterRestart
-          ? "When ADE starts again, it asks the agent to re-run what it still needs."
-          : "The agent is told on its next turn.";
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "warning",
-        message: `${count} ended with the agent process (${causeCopy}): ${names}${more}. ${follow}`,
+        message: formatBackgroundLossNotice({ cause: args.cause, lost, wake }),
       });
     }
     persistChatState(managed);
@@ -26937,7 +26927,7 @@ export function createAgentChatService(args: {
       cause: args.cause,
       lostCount: lost.length,
       waiting: args.waiting,
-      wake: wakeNow ? "now" : wakeAlreadyPending ? "already_pending" : wakeAfterRestart ? "after_restart" : "none",
+      wake,
     });
   };
 
@@ -26977,6 +26967,11 @@ export function createAgentChatService(args: {
       cursorPermissionWaiterReason?: string;
       /** Overrides the cause derived from the reason when background work is lost. */
       backgroundLossCause?: BackgroundLossCause;
+      /**
+       * A send is about to run a turn, which carries the loss note: report the
+       * loss without scheduling a wake that would race that send.
+       */
+      backgroundLossTurnImminent?: boolean;
     },
   ): void => {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
@@ -27123,7 +27118,7 @@ export function createAgentChatService(args: {
       if (preserveProviderResumeState) persistChatState(managed);
       reportLostBackgroundWork(managed, lostBackgroundWork, {
         cause: options?.backgroundLossCause ?? backgroundLossCauseForTeardown(openCodeReason),
-        waiting: waitingOnBackgroundWork,
+        waiting: waitingOnBackgroundWork && options?.backgroundLossTurnImminent !== true,
       });
       cancelClaudeWarmup(managed, runtime, "teardown");
       try { runtime.query?.close(); } catch { /* ignore */ }
@@ -30456,15 +30451,18 @@ export function createAgentChatService(args: {
       if (state.turnId && runtime.activeTurnId === state.turnId) {
         await finishClaudeIdleTurn(managed, runtime, state, status);
       } else if (deliveredQueuedSteer) {
+        // Reported first: the queued message's turn is composed at once and
+        // must carry the note, so it needs no wake of its own.
+        reportLostBackgroundWork(managed, lostBackgroundWork, { cause: "runtime_exit", waiting: false });
         await deliverNextQueuedSteer(managed, runtime);
+        return;
       } else {
         persistChatState(managed);
       }
-      // A queued message already starts the next turn, and that turn carries
-      // the note; only a chat left at rest needs a turn of its own.
+      // After the turn settles, so a chat left at rest can get its wake turn.
       reportLostBackgroundWork(managed, lostBackgroundWork, {
         cause: "runtime_exit",
-        waiting: waitingOnBackgroundWork && !deliveredQueuedSteer,
+        waiting: waitingOnBackgroundWork,
       });
     };
 
@@ -32889,13 +32887,11 @@ export function createAgentChatService(args: {
         reportProviderRuntimeReady("claude");
       }
 
-      // Flush deferred session reset from mid-turn reasoning effort change
-      // Still held while background work runs (see `claudeQueryResetMustWait`).
-      if (runtimeStillCurrent && runtime.pendingSessionReset && !claudeHasBackgroundWorkload(runtime)) {
-        const clearSdkSessionId = runtime.pendingSessionResetClearSdkSessionId === true;
-        runtime.pendingSessionReset = false;
-        runtime.pendingSessionResetClearSdkSessionId = false;
-        await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId });
+      // Flush a reset deferred by a mid-turn settings change. Still held while
+      // awaited background work runs (see `claudeQueryResetMustWait`).
+      if (runtimeStillCurrent && runtime.pendingSessionReset) {
+        await flushClaudePendingSessionReset(runtime, (options) =>
+          resetClaudeQuerySession(managed, runtime, "session_reset", options));
       }
 
       // Quota reject: reap once so the next send starts a fresh query with the
@@ -44774,7 +44770,7 @@ export function createAgentChatService(args: {
       // send that is about to run one (which carries the note), a stop, or a
       // failed turn, where an automatic re-run would only repeat the failure.
       reportLostBackgroundWork(managed, lostBackgroundWork, {
-        cause: reason === "interrupt" ? "user_stop" : reason === "timeout" ? "runtime_exit" : "reconfigure",
+        cause: backgroundLossCauseForQueryReset(reason),
         waiting: false,
       });
     } else if (hadOpenBackgroundTasks) {
@@ -47011,7 +47007,7 @@ export function createAgentChatService(args: {
     if (request.blocking === false || !pendingInputIsAnswerable(request)) return;
     if (request.questions.some((question) => question.isSecret)) return;
     if (isUserOnlyConsentCard(request.providerMetadata ?? null)) return;
-    const itemId = event.itemId?.trim() || request.itemId?.trim() || request.requestId;
+    const itemId = event.itemId?.trim() || pendingInputRequestItemId(request);
     const key = `${child.session.id}:${itemId}`;
     if (relayedChildQuestionKeys.has(key)) return;
     if (!parentChatStillExists(parentSessionId)) return;
@@ -47629,25 +47625,15 @@ export function createAgentChatService(args: {
       // an SSE server handed to it connects over the wrong protocol and fails
       // at first use with a transport error nobody can trace back to here.
       const problem = callerMcpDeliveryProblem(candidate, callerMcpServers);
-      if (problem?.kind === "provider") {
-        throw new Error(
-          `Provider '${candidate}' cannot accept injected MCP servers: `
-          + `${problem.mechanism ?? "no MCP support"}. `
-          + "Create this chat without mcpServers, or pick a provider that supports "
-          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
-        );
-      }
-      if (problem?.kind === "transport") {
-        throw new Error(
-          `Provider '${candidate}' has no '${problem.transport}' MCP transport, so `
-          + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
-          + `Use a supported transport for ${problem.names.length > 1 ? "those servers" : "that server"}, `
-          + "or pick a provider that speaks it.",
-        );
-      }
-      if (problem?.kind === "toolFilter") {
-        throw new Error(`invalid_argument: ${describeCallerMcpToolFilterProblem(candidate, problem)}`);
-      }
+      if (!problem) return;
+      const sentence = describeCallerMcpDeliveryProblem(candidate, problem);
+      if (problem.kind === "toolFilter") throw new Error(`invalid_argument: ${sentence}`);
+      const advice = problem.kind === "provider"
+        ? "Create this chat without mcpServers, or pick a provider that supports "
+          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`
+        : `Use a supported transport for ${problem.names.length > 1 ? "those servers" : "that server"}, `
+          + "or pick a provider that speaks it.";
+      throw new Error(`${sentence.charAt(0).toUpperCase()}${sentence.slice(1)} ${advice}`);
     };
     requireProviderAcceptsCallerMcpServers(provider);
 
@@ -59067,18 +59053,13 @@ export function createAgentChatService(args: {
       } else {
         resetClaudeQuerySession(managed, managed.runtime, "session_reset");
       }
-    } else if (
-      managed.runtime?.kind === "claude"
-      && managed.runtime.pendingResetSettings?.size
-      && managed.runtime.pendingSessionReset
-      && !claudeQueryResetMustWait(managed.runtime)
-    ) {
-      // A setting change that waited on background work: that work is gone,
-      // so this turn is the first one that can carry it.
-      const clearSdkSessionId = managed.runtime.pendingSessionResetClearSdkSessionId === true;
-      managed.runtime.pendingSessionReset = false;
-      managed.runtime.pendingSessionResetClearSdkSessionId = false;
-      await resetClaudeQuerySession(managed, managed.runtime, "session_reset", { clearSdkSessionId });
+    } else if (managed.runtime?.kind === "claude" && managed.runtime.pendingSessionReset) {
+      // A reset that waited (on background work, or a turn that has ended):
+      // this turn is the first one that can carry it. Checked before the call
+      // so a send with nothing deferred adds no await (a warmup may be racing).
+      const runtime = managed.runtime;
+      await flushClaudePendingSessionReset(runtime, (options) =>
+        resetClaudeQuerySession(managed, runtime, "session_reset", options));
     }
 
     ensureClaudeSessionRuntime(managed);
@@ -59605,7 +59586,9 @@ export function createAgentChatService(args: {
         const blocked = launchRouteBlockReason(managed);
         // Whatever was built while the route could not be resolved carries the
         // harness's own sign-in; it never serves a turn.
-        if (managed.launchRouteFellBack && managed.runtime) teardownRuntime(managed, "restart");
+        if (managed.launchRouteFellBack && managed.runtime) {
+          teardownRuntime(managed, "restart", { backgroundLossTurnImminent: true });
+        }
         managed.launchRouteFellBack = false;
         if (blocked) {
           emitLaunchRouteSendFailure(managed, args, blocked);
@@ -59654,7 +59637,7 @@ export function createAgentChatService(args: {
     // profile; a fresh turn starts a new one (a steer above stays on it).
     if (managed.profileRestartPending && !runtimeMidTurn(managed) && managed.session.status !== "active") {
       managed.profileRestartPending = false;
-      if (managed.runtime) teardownRuntime(managed, "restart");
+      if (managed.runtime) teardownRuntime(managed, "restart", { backgroundLossTurnImminent: true });
     }
     // MCP servers queued mid-turn whose turn ended without a `done` (a
     // crashed or torn-down runtime) go in before this turn launches.
@@ -64340,7 +64323,8 @@ export function createAgentChatService(args: {
       pendingTitle: pending?.title ?? null,
       pendingDescription: pending?.description ?? null,
       queuedMessageCount,
-      backgroundWorkCount: summary.activeBackgroundTaskCount ?? 0,
+      // Watch-only monitors never make a chat "waiting": nobody waits on them.
+      backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
       pendingSettingsAfterBackground: summary.pendingSettingsAfterBackground ?? [],
       currentTool: runningWithTool?.lastToolName
         ? { name: runningWithTool.lastToolName }
@@ -68274,25 +68258,17 @@ export function createAgentChatService(args: {
     }
     const next = parseCallerMcpServers(requested);
     const problem = callerMcpReplacementProblem(provider, next);
-    if (problem) throw new Error(`invalid_argument: ${problem}`);
+    if (problem) throw new Error(`invalid_argument: ${problem.sentence}`);
     return next;
   };
 
-  /** Why `servers` cannot be delivered to `provider`, as one sentence, or null. */
+  /** Why `servers` cannot be delivered to `provider` (its kind and the one sentence), or null. */
   const callerMcpReplacementProblem = (
     provider: AgentChatProvider,
-    servers: CallerMcpServers | null,
-  ): string | null => {
+    servers: CallerMcpServers | null | undefined,
+  ): { kind: CallerMcpDeliveryProblem["kind"]; sentence: string } | null => {
     const problem = callerMcpDeliveryProblem(provider, servers);
-    if (problem?.kind === "provider") {
-      return `provider '${provider}' cannot accept injected MCP servers: ${problem.mechanism ?? "no MCP support"}.`;
-    }
-    if (problem?.kind === "transport") {
-      return `provider '${provider}' has no '${problem.transport}' MCP transport, so `
-        + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`;
-    }
-    if (problem?.kind === "toolFilter") return describeCallerMcpToolFilterProblem(provider, problem);
-    return null;
+    return problem ? { kind: problem.kind, sentence: describeCallerMcpDeliveryProblem(provider, problem) } : null;
   };
 
   /**
@@ -68304,7 +68280,13 @@ export function createAgentChatService(args: {
   const callerMcpReplacementMustWait = (managed: ManagedChatSession): boolean =>
     managed.session.status === "active"
     || runtimeMidTurn(managed)
-    || (managed.runtime?.kind === "claude" && claudeHasBackgroundWorkload(managed.runtime));
+    // A message queued behind the turn that just ended is delivered to THIS
+    // process after the `done` (Claude awaits a head-sha read first), and a
+    // replacement restarts the process, so it would never be delivered. Every
+    // runtime kind keeps its queue in `pendingSteers`; the replacement waits
+    // for the queued message's own turn to end.
+    || (managed.runtime?.pendingSteers.length ?? 0) > 0
+    || (managed.runtime?.kind === "claude" && claudeHasAwaitedBackgroundWorkload(managed.runtime));
 
   /**
    * Hold a replacement `prepareCallerMcpReplacement` accepted until the
@@ -68355,7 +68337,7 @@ export function createAgentChatService(args: {
         type: "system_notice",
         noticeKind: "warning",
         severity: "warning",
-        message: `The MCP servers queued during the last turn were not applied: ${problem} The chat keeps its previous servers.`,
+        message: `The MCP servers queued during the last turn were not applied: ${problem.sentence} The chat keeps its previous servers.`,
       });
       return;
     }
@@ -68631,28 +68613,18 @@ export function createAgentChatService(args: {
         managed.session.mcpServers,
         ...(managed.pendingCallerMcpReplacement ? [managed.pendingCallerMcpReplacement.servers] : []),
       ]) {
-        const problem = callerMcpDeliveryProblem(nextProvider, servers);
-        if (problem?.kind === "provider") {
-          throw new Error(
-            `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
-            + `${problem.mechanism ?? "that provider has no MCP support"}. `
-            + "Start a new chat on that provider instead.",
-          );
-        }
-        if (problem?.kind === "transport") {
-          throw new Error(
-            `Cannot switch this chat to '${nextProvider}': it has no '${problem.transport}' `
-            + `MCP transport for ${problem.names.map((name) => `'${name}'`).join(", ")}. `
-            + "Start a new chat on that provider instead.",
-          );
-        }
-        if (problem?.kind === "toolFilter") {
-          throw new Error(
-            `invalid_argument: Cannot switch this chat to '${nextProvider}': `
-            + `${describeCallerMcpToolFilterProblem(nextProvider, problem)} `
-            + "Send the servers without that filter in the same update, or start a new chat on that provider.",
-          );
-        }
+        const problem = callerMcpReplacementProblem(nextProvider, servers);
+        if (!problem) continue;
+        // Only the tool-filter refusal carries `invalid_argument:` (the SDK
+        // maps it to `invalid_option`); the other two keep the shape they have
+        // always had.
+        throw new Error(
+          `${problem.kind === "toolFilter" ? "invalid_argument: " : ""}`
+          + `Cannot switch this chat to '${nextProvider}': ${problem.sentence} `
+          + (problem.kind === "toolFilter"
+            ? "Send the servers without that filter in the same update, or start a new chat on that provider."
+            : "Start a new chat on that provider instead."),
+        );
       }
     }
 

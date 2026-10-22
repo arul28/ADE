@@ -425,6 +425,95 @@ export function buildBackgroundWorkLostNote(args: {
   return lines.join("\n");
 }
 
+/**
+ * Why ADE ended an agent process that still ran background work. Decides the
+ * notice copy and whether the chat gets a turn to re-run the work:
+ *   • reconfigure / runtime_exit / explicit_restart — a chat that sat waiting
+ *     on the work is woken now (once per chain),
+ *   • shutdown — same, but the wake is armed for restart recovery,
+ *   • user_stop / closed / eviction — the agent is told on its next turn and
+ *     nothing starts on its own.
+ */
+export type BackgroundLossCause =
+  | "reconfigure"
+  | "runtime_exit"
+  | "shutdown"
+  | "explicit_restart"
+  | "user_stop"
+  | "closed"
+  | "eviction";
+
+/** The parenthetical that says why the process ended, for the note and the notice. */
+export const BACKGROUND_LOSS_CAUSE_COPY: Record<BackgroundLossCause, string> = {
+  reconfigure: "ADE restarted it after the chat's model, MCP servers, account or settings changed",
+  runtime_exit: "it exited on its own",
+  shutdown: "ADE shut down",
+  explicit_restart: "the agent session was restarted",
+  user_stop: "the chat was stopped",
+  closed: "the chat was closed",
+  eviction: "it was silent for hours and ADE reclaimed it",
+};
+
+/** The cause a runtime teardown reason stands for. */
+export function backgroundLossCauseForTeardown(reason: string): BackgroundLossCause {
+  switch (reason) {
+    case "idle_ttl":
+    case "budget_eviction":
+      return "eviction";
+    case "pool_compaction":
+    case "model_switch":
+    case "restart":
+    case "paused_run":
+      return "reconfigure";
+    case "project_close":
+    case "shutdown":
+      return "shutdown";
+    default:
+      return "closed";
+  }
+}
+
+/** The cause a Claude query reset reason stands for. */
+export function backgroundLossCauseForQueryReset(reason: string): BackgroundLossCause {
+  if (reason === "interrupt") return "user_stop";
+  if (reason === "timeout") return "runtime_exit";
+  return "reconfigure";
+}
+
+/** What happens next for a loss: a turn now, one already pending, one after restart, or none. */
+export type BackgroundLossWake = "now" | "already_pending" | "after_restart" | "none";
+
+const BACKGROUND_LOSS_WAKE_COPY: Record<BackgroundLossWake, string> = {
+  now: "ADE asked the agent to re-run what it still needs.",
+  already_pending: "The agent's pending re-run turn is told about it too.",
+  after_restart: "When ADE starts again, it asks the agent to re-run what it still needs.",
+  none: "The agent is told on its next turn.",
+};
+
+const LOSS_NOTICE_NAMES = 3;
+const LOSS_NOTICE_NAME_CHARS = 60;
+
+/** The chat notice for background work lost with the agent process. */
+export function formatBackgroundLossNotice(args: {
+  cause: BackgroundLossCause;
+  lost: readonly RestartCancelledWork[];
+  wake: BackgroundLossWake;
+}): string {
+  const { lost } = args;
+  const names = lost
+    .slice(0, LOSS_NOTICE_NAMES)
+    .map((work) => {
+      const flat = work.label.replace(/\s+/g, " ").trim() || work.kind;
+      return flat.length > LOSS_NOTICE_NAME_CHARS
+        ? `${flat.slice(0, LOSS_NOTICE_NAME_CHARS - 1).trimEnd()}…`
+        : flat;
+    })
+    .join(", ");
+  const more = lost.length > LOSS_NOTICE_NAMES ? ` and ${lost.length - LOSS_NOTICE_NAMES} more` : "";
+  const count = lost.length === 1 ? "1 background job" : `${lost.length} background jobs`;
+  return `${count} ended with the agent process (${BACKGROUND_LOSS_CAUSE_COPY[args.cause]}): ${names}${more}. ${BACKGROUND_LOSS_WAKE_COPY[args.wake]}`;
+}
+
 /** Append a note to a pending one; a note already pending is not repeated. */
 export function mergePendingRestartNote(existing: string | null | undefined, next: string): string {
   const current = existing?.trim() ?? "";
