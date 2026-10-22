@@ -1,7 +1,11 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { ArrowLeft, ArrowRight, X } from "@phosphor-icons/react";
 import { Dialog } from "../ui/dialog";
 import { useAppStore } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppearanceStore } from "../../state/appearanceStore";
+import { resolveTheme, resolveThemeById } from "../../../shared/theme";
+import { useActiveScene } from "../../scene/useScene";
+import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
 import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import { ANNOUNCEMENT_PAGES, type AnnouncementPageDef } from "./announcementPages";
@@ -69,6 +73,31 @@ export function AnnouncementsHost() {
   return <AnnouncementsModal pages={pages} onClose={close} />;
 }
 
+/**
+ * The four colours the modal's glow floats in: the current background
+ * picture's ramp (the same one the window mesh paints), or the theme's own
+ * accents when there is no picture, as in Settings › Appearance's preview.
+ */
+function useGlowColors(): CSSProperties {
+  const scene = useActiveScene();
+  const mode = useAppStore((state) => state.theme);
+  const themeId = useAppearanceStore(selectEffectiveThemeId);
+  const customThemes = useAppearanceStore((state) => state.customThemes);
+  const scenePalette = scene.kind === "image" ? scene.palette : null;
+  return useMemo(() => {
+    let colors: string[];
+    if (scenePalette) {
+      colors = backdropThemeFromScene(scenePalette, mode).colors
+        .slice(1)
+        .map(([r, g, b]) => `rgb(${Math.round(r * 255)} ${Math.round(g * 255)} ${Math.round(b * 255)})`);
+    } else {
+      const palette = resolveTheme(resolveThemeById(themeId, customThemes)).palette;
+      colors = [palette.accentDeep, `color-mix(in srgb, ${palette.accentDeep} 50%, ${palette.info})`, palette.accent, palette.accentBright];
+    }
+    return Object.fromEntries(colors.map((color, index) => [`--wn-glow-${index + 1}`, color])) as CSSProperties;
+  }, [customThemes, mode, scenePalette, themeId]);
+}
+
 function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPageDef[]; onClose: () => void }) {
   const [index, setIndex] = useState(0);
   const page = pages[Math.min(index, pages.length - 1)]!;
@@ -79,6 +108,7 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
     markAnnouncementSeen(page);
   }, [page]);
 
+  const glowColors = useGlowColors();
   const Page = page.Page;
   return (
     <Dialog
@@ -93,6 +123,7 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
       maxHeight="min(90vh, 900px)"
       bodyPadding={false}
       panelClassName="ade-whats-new"
+      panelStyle={glowColors}
       testId="whats-new"
       footer={(
         <div className="ade-whats-new-foot">
@@ -133,6 +164,16 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
         </div>
       )}
     >
+      {/* Colour from the window's background, drifting; each page moves it somewhere new. */}
+      <div className="ade-whats-new-glow" data-page={index % 3} aria-hidden>
+        <span />
+        <span />
+        <span />
+      </div>
+      <p className="ade-whats-new-brand">
+        <img src="./logo.png" alt="" draggable={false} />
+        What's new in ADE
+      </p>
       <button type="button" className="kit-icon-btn ade-whats-new-close" aria-label="Close" onClick={onClose}>
         <X size={13} weight="bold" />
       </button>
