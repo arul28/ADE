@@ -441,13 +441,7 @@ export function appleOrientationIconDegrees(orientation: AppleDeviceOrientation)
 }
 
 /** Portrait and upside-down are one shape; the two landscapes are the other. */
-export function appleOrientationFamily(
-  orientation: AppleDeviceOrientation,
-): "portrait" | "landscape" {
-  return orientation === "landscape-left" || orientation === "landscape-right"
-    ? "landscape"
-    : "portrait";
-}
+export { appleOrientationFamily } from "../../../shared/appleOrientation";
 
 /**
  * Which way up the device ACTUALLY is, read from the accessibility tree.

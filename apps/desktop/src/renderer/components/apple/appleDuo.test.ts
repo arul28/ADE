@@ -5,8 +5,8 @@ import {
   APPLE_DUO_MIN_ANGLE,
   APPLE_DUO_NUDGE_DEGREES,
   APPLE_DUO_PANEL_V_RANGES,
-  APPLE_DUO_STANCES,
   appleDeviceSupportsDuo,
+  appleDuoStanceFor,
   appleDuoHingeAfterPinch,
   appleDuoPanelForInnerPoint,
   appleDuoPanelRotationsDeg,
@@ -14,7 +14,6 @@ import {
   appleDuoPoseForStance,
   clampAppleDuoAngle,
   createAppleDuoState,
-  nearestAppleDuoStance,
   reduceAppleDuoState,
 } from "./appleDuo";
 
@@ -70,17 +69,19 @@ describe("appleDuoPanelForInnerPoint", () => {
   });
 });
 
-describe("nearestAppleDuoStance", () => {
+describe("appleDuoStanceFor", () => {
+  // The posture the menu checks: the angle picks Closed, the 90° fold or Open,
+  // how the phone is held tells Laptop from Book, and Table Mode is Tent.
   it.each([
-    [180, "open"],
-    [170, "open"],
-    [105, "laptop"],
-    [95, "laptop"],
-    [70, "tent"],
-    [20, "closed"],
-    [0, "closed"],
-  ] as const)("maps %d° to %s", (angle, stance) => {
-    expect(nearestAppleDuoStance(angle)).toBe(stance);
+    [{ angle: 180, held: "portrait", tableMode: false }, "open"],
+    [{ angle: 150, held: "landscape", tableMode: false }, "open"],
+    [{ angle: 105, held: "landscape", tableMode: false }, "laptop"],
+    [{ angle: 105, held: "portrait", tableMode: false }, "book"],
+    [{ angle: 90, held: null, tableMode: false }, "laptop"],
+    [{ angle: 30, held: "portrait", tableMode: false }, "closed"],
+    [{ angle: 80, held: null, tableMode: true }, "tent"],
+  ] as const)("%o is %s", (input, stance) => {
+    expect(appleDuoStanceFor(input)).toBe(stance);
   });
 });
 
@@ -153,12 +154,5 @@ describe("reduceAppleDuoState", () => {
     expect(closed.pose.angle).toBe(0);
     const flat = reduceAppleDuoState(closed, { type: "angle", angle: 999 });
     expect(flat.pose.angle).toBe(180);
-  });
-});
-
-describe("APPLE_DUO_STANCES", () => {
-  it("lists the four postures in open-to-closed order", () => {
-    expect(APPLE_DUO_STANCES.map((stance) => stance.id)).toEqual(["open", "laptop", "tent", "closed"]);
-    expect(APPLE_DUO_STANCES.every((stance) => stance.angle >= 0 && stance.angle <= 180)).toBe(true);
   });
 });

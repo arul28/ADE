@@ -231,7 +231,16 @@ public actor SimHelperRuntime {
                 emit(.ok(id: id, payload: [:]))
 
             case let .orientation(_, udid, value):
-                let applied = try await session(for: udid).orientation(value)
+                // A foldable turns through CoreDevice; everything else keeps
+                // the GSEvent path.
+                let applied: Bool
+                // The session caches the answer, a "no" included.
+                if try await session(for: udid).isFoldable() {
+                    applied = await DevicePosture.setOrientation(udid: udid, value: value)
+                    if applied { await watchPostureIfStreaming(udid: udid) }
+                } else {
+                    applied = try await session(for: udid).orientation(value)
+                }
                 // Reported rather than thrown: the GSEvent path needs
                 // Simulator.app running, and "the device did not rotate" is a
                 // state ADE should show, not an error it should retry.

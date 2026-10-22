@@ -371,22 +371,59 @@ the service republishes the stream's pixel and point sizes on each switch, and
 a restarted capture re-applies the panel. Input on a Duo goes through
 CoreDevice's digitizer and keyboard services to touchscreen `0x100 + screenId`:
 the legacy Indigo inner target is disconnected and can abort `backboardd`.
-The flat view draws the inner panel a quarter turn on
-(`APPLE_DUO_INNER_ORIENTATION`).
+Both views draw the live panel the way the guest says its picture sits
+(the posture's `displayOrientation`, from CoreDevice's display list), so a
+panel turned by the phone or kept by an app is drawn upright either way;
+`APPLE_DUO_INNER_ORIENTATION` (a quarter turn on) is only the fallback.
+
+**Turning.** The legacy GSEvent rotation never reaches the Duo's inner panel,
+so on a hinged device the helper's `orientation` command sends CoreDevice's
+`orientation-picker-control` instead (leaving Tent's Table Mode first). Held
+`portrait` the inner picture is landscape; the inner display takes all four
+orientations, the cover's Home Screen only portrait. `rotate` on a Duo is
+verified from the guest's report of the live panel, not the framebuffer read
+the rigid path uses (that always names the cover, and the inner panel's
+framebuffer never changes shape); the answer carries the posture. The rail's
+orientation control shows how the phone is held (CoreDevice names the
+device's orientation, the control the interface's, so the landscapes swap).
+The posture watcher also reports a change of the live panel's turn.
 
 **3D.** Apple's own `V68.usdz` is read from the owning machine's Xcode
 (`getDuoModel`, never bundled) and parsed by serve-sim's vendored loader
 (`renderer/components/apple/vendor/serve-sim`). `appleV68DuoBody.ts` is a
 *physical* body: each panel maps its framebuffer itself, the live stream goes to
 the panel that is on, the closed phone turns its cover to the camera, landscape
-poses (laptop) turn the phone, and the camera refits on each fold. Taps send the
+poses (laptop) turn the phone, and the camera refits on each fold. It also
+stands the way the pose sits on a table (`appleDuoStandTilt`): held sideways
+and folded, the lower half lies flat and the screen stands, seen from a
+little above (fading in from flat to 120° so a hinge drag moves smoothly); a
+tent stands hinge up with the cover facing out, also from a little above.
+Picking a preset resets the view to that framing. Taps send the
 live panel's framebuffer point. The drawn body (`appleDuoScene.ts`) remains the
 fallback when the model is missing.
 
-**Controls.** The hinge bar under the device (`AppleDuoHingeBar`): a
-continuous slider that previews on drag and folds on release, with the
-simulator's reported angle and live panel beside it. The rail's Duo menu:
-presets, ±15° steps, and **App Store screenshots** (both
+**Controls.** The Duo's own dock (`AppleDuoDock`) is a band under the device,
+outside the rail and never over the picture, shown only for a foldable. Left,
+**Hinge** in 3D: a continuous slider that previews on drag and folds on
+release (detent labels hide in a narrow pane); in flat, where there is no
+body to fold, **Screen**: Cover folds the phone shut, Inner unfolds it flat,
+both by angle, keeping how it is held. Right, **Orientation**: the four ways
+to hold the phone, each drawn as the screen it gives (the inner panel runs
+wide with the phone upright), the pressed one being how the simulator says it
+is held. A quiet
+readout (angle, live screen, wide or tall) follows when the pane is wide. On a
+Duo the rail drops its Orientation menu; every other device keeps it. A turn
+the app on screen does not follow (`APPLE_ROTATE_NOT_ADOPTED`) is an info
+toast, not the error strip, on every device. The angle alone
+cannot tell Laptop from Book (both 90°); how the phone is held does, so the
+menu's checked posture comes from the angle, the held orientation and Table
+Mode (`appleDuoStanceFor`); a phone lying face down counts as Tent, since
+nothing else lays it down. A helper that did not set the pose itself reads
+how the phone is held from CoreDevice's device-state stream, always releases
+Table Mode before a turn, and stands a face-down phone up before a raw angle.
+The posture hook reads once more 1.5 s after a first read that does not know
+how the phone is held. The rail's Duo menu: presets (Open, Laptop, Book,
+Tent, Closed), ±15° steps, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
 app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
 within 4°; arrow keys stay exact. The 3D body eases into every pose (hinge,
@@ -482,7 +519,8 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
-| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoHingeBar.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the hinge bar under the device, and Apple's physical Duo body. |
+| `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
+| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
 | `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
@@ -596,7 +634,8 @@ own orientation), `APPLE_ROTATE_SEND_FAILED` (the helper never delivered the
 event) or `APPLE_ROTATE_UNMEASURABLE` (the screen could not be read, so nothing
 is claimed). `verification: already-on-axis` means the screen was already on
 that axis — a 180-degree turn inside one axis leaves the pixel geometry
-identical and is deliberately not claimed.
+identical and is deliberately not claimed. An iPhone Duo is
+verified from its posture instead (see Foldable mode).
 
 ### Auto-record contract
 

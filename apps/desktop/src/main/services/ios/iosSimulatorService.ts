@@ -171,6 +171,7 @@ import {
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
+import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 
@@ -222,21 +223,6 @@ const HELPER_ORIENTATION_VALUE: Record<AppleDeviceOrientation, number> = {
 
 function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonName {
   return (APPLE_HARDWARE_BUTTONS as readonly string[]).includes(value);
-}
-
-function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
-  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
-}
-
-/**
- * Portrait and upside-down are one axis; the two landscapes are the other.
- *
- * The axis is all the framebuffer can tell you, because a 180-degree turn
- * inside one axis produces exactly the same pixel geometry. Naming that limit
- * here keeps `rotate` from pretending otherwise.
- */
-function appleOrientationAxis(orientation: AppleDeviceOrientation): "portrait" | "landscape" {
-  return orientation === "landscape-left" || orientation === "landscape-right" ? "landscape" : "portrait";
 }
 
 function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
@@ -5934,8 +5920,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(rotateArgs);
     const deviceUdid = await resolveControlDeviceUdid(rotateArgs.deviceUdid, runtime);
     const value = HELPER_ORIENTATION_VALUE[rawOrientation];
-    const wantedAxis = appleOrientationAxis(rawOrientation);
+    const wantedAxis = appleOrientationFamily(rawOrientation);
     return enqueueControl("rotate", async () => {
+      const postureBefore = await duo.foldablePosture(deviceUdid, "apple.rotate_posture_unreadable");
+      if (postureBefore) return duo.rotate(deviceUdid, rawOrientation, value, postureBefore, APPLE_ROTATE_SETTLE_TIMEOUT_MS);
       const frameBefore = await readSimulatorFramebufferGeometry(deviceUdid);
       const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
