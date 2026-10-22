@@ -184,6 +184,10 @@ private extension View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .adeRootTabBarHidden()
+    case .column:
+      // A column chat keeps the root tabs and has no stack to push a title
+      // onto; the Work header already names it.
+      self
     case .embedded:
       self
     }

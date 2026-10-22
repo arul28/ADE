@@ -3,6 +3,7 @@ import UIKit
 
 struct PRsTabView: View, Equatable {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.duoLayout) private var duoLayout
   /// Deliberately not observed: what the body draws arrives in `inputs`.
   let syncService: SyncService
   let machineFleet: MachineFleet
@@ -16,6 +17,9 @@ struct PRsTabView: View, Equatable {
   }
 
   @State private var path = NavigationPath()
+  /// The PR the Duo's inner display shows in its detail column. A selection,
+  /// not a push: changing it replaces the detail instead of stacking.
+  @State var duoSelectedPrId: String?
   @State private var prs: [PullRequestListItem] = []
   @State private var lanes: [LaneSummary] = []
   @State private var laneSnapshots: [LaneListSnapshot] = []
@@ -54,9 +58,9 @@ struct PRsTabView: View, Equatable {
   @SceneStorage("ade.prs.githubCategory") private var githubCategoryRawValue = PrGitHubCategory.open.rawValue
   @SceneStorage("ade.prs.githubScopeFilter") private var githubScopeFilterRawValue = PrGitHubScopeFilter.all.rawValue
   @SceneStorage("ade.prs.githubSort") private var githubSortRawValue = PrGitHubSortOption.updated.rawValue
-  @State private var searchText = ""
-  @State private var searchPresented = false
-  @State private var toast: ADEToastMessage?
+  @State var searchText = ""
+  @State var searchPresented = false
+  @State var toast: ADEToastMessage?
 
   private var hasActiveFilters: Bool {
     // Status is now driven by the always-visible category tabs, so only the
@@ -75,12 +79,12 @@ struct PRsTabView: View, Equatable {
 
   /// Skeletons only stand in for rows the phone has never had: cached rows
   /// show (and refresh in place) while a sync runs.
-  private var isLoadingSkeleton: Bool {
+  var isLoadingSkeleton: Bool {
     (prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData)
       && prs.isEmpty && githubSnapshot == nil
   }
 
-  private var selectedRootSurface: Binding<PrRootSurface> {
+  var selectedRootSurface: Binding<PrRootSurface> {
     Binding(
       get: { PrRootSurface(rawValue: rootSurfaceRawValue) ?? .github },
       set: { rootSurfaceRawValue = $0.rawValue }
@@ -364,6 +368,132 @@ struct PRsTabView: View, Equatable {
 
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.prListBody)
+    Group {
+      // The Duo's inner display has room for the list beside a PR's detail;
+      // every other size keeps the phone's push navigation.
+      if duoLayout.isWide {
+        duoPrsSplitBody
+      } else {
+        prsPhoneBody
+      }
+    }
+    .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+    .task(id: prsProjectionReloadKey) {
+      guard let revision = prsProjectionReloadKey else { return }
+      guard lastHandledPrsProjectionRevision != revision || prs.isEmpty else { return }
+      let now = Date()
+      if !prs.isEmpty || githubSnapshot != nil || mobileSnapshot != nil {
+        let elapsed = now.timeIntervalSince(lastPrsLocalProjectionReload)
+        if elapsed < 0.35 {
+          try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+          guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
+        }
+      }
+      lastPrsLocalProjectionReload = Date()
+      await reload()
+      guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
+      lastHandledPrsProjectionRevision = revision
+    }
+    .task(id: prsRemoteReloadKey) {
+      guard let revision = prsRemoteReloadKey, revision > 0 else { return }
+      // Webhook bursts can contain several related deliveries. Coalesce them
+      // into one bounded snapshot read instead of turning each event into a
+      // GitHub request from the phone.
+      try? await Task.sleep(for: .milliseconds(300))
+      guard !Task.isCancelled, prsRemoteReloadKey == revision else { return }
+      await reloadGitHubProjection()
+    }
+    .task(id: prNavigationRequestKey) {
+      guard prNavigationRequestKey != nil else { return }
+      await handleRequestedPrNavigation()
+    }
+    .task(id: remotePrsPollKey) {
+      guard remotePrsPollKey != nil else { return }
+      while !Task.isCancelled {
+        await refreshRemotePrs()
+        try? await Task.sleep(nanoseconds: PrRemoteMachinesModel.refreshIntervalNanoseconds)
+      }
+    }
+    .onChange(of: syncService.activeProjectId) { _, _ in
+      // The tab stays mounted across a project switch: drop the previous
+      // project's rows so they never show (or hide the skeleton) while the
+      // new project loads.
+      remotePrs.reset()
+      prs = []
+      lanes = []
+      laneSnapshots = []
+      integrationProposals = []
+      mobileSnapshot = nil
+      githubSnapshot = nil
+      githubExternalHistoryLoaded = false
+      githubHistoryPageLimit = 2
+      laneContextLaneId = nil
+      duoSelectedPrId = nil
+      path = NavigationPath()
+    }
+    .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: githubCategoryRawValue) { _, _ in
+      guard selectedGitHubCategory.wrappedValue != .open else { return }
+      Task { await loadGitHubExternalHistoryIfNeeded() }
+    }
+    // Memoize the GitHub-list derivations: recompute only when the snapshot
+    // or a filter/search input actually changes, never inside a body pass.
+    .onChange(of: githubSnapshot) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: prs) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: searchText) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: githubCategoryRawValue) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: githubScopeFilterRawValue) { _, _ in recomputeGitHubDerived() }
+    .onChange(of: githubSortRawValue) { _, _ in recomputeGitHubDerived() }
+    .onAppear { recomputeGitHubDerived() }
+    .sheet(isPresented: $createPresented, onDismiss: {
+      createInitialLaneId = nil
+    }) {
+      createPrWizardSheet
+    }
+    .sheet(item: $stackPresentation) { presentation in
+      PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
+        .environmentObject(syncService)
+    }
+    .sheet(item: $laneLinkRequest) { request in
+      PrLaneLinkSheet(
+        item: request.item,
+        lanes: linkableLanes,
+        canLink: canLinkGitHubPullRequests,
+        machineContext: machineContext
+      ) { laneId in
+        runPrRootAction(
+          "Linking pull request",
+          operation: {
+            try await syncService.linkPullRequestToLane(
+              laneId: laneId,
+              prUrlOrNumber: request.item.githubUrl.isEmpty ? "\(request.item.githubPrNumber)" : request.item.githubUrl
+            )
+          },
+          onSuccess: {
+            laneLinkRequest = nil
+            // A link made on another machine shows once that machine is
+            // read again.
+            if isWorkRemoteLaneId(laneId) { Task { await refreshRemotePrs() } }
+          }
+        )
+      } onOpenGitHub: {
+        openGitHub(urlString: request.item.githubUrl)
+      }
+    }
+    .sheet(item: $autoMapRequest) { request in
+      PrAutoMapSheet(
+        item: request.item,
+        machines: machineContext.createMachines,
+        canCreate: canAutoMapGitHubPullRequests,
+        onCreate: { machine in confirmAutoMap(for: request.item, on: machine) },
+        onCancel: { autoMapRequest = nil }
+      )
+      .environmentObject(syncService)
+    }
+  }
+
+  /// The phone layout: the PR list, with each PR's detail pushed on top.
+  private var prsPhoneBody: some View {
     NavigationStack(path: $path) {
       List {
         noticeRows
@@ -395,145 +525,40 @@ struct PRsTabView: View, Equatable {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar { prsToolbar }
       .adeToast($toast)
-      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: prsProjectionReloadKey) {
-        guard let revision = prsProjectionReloadKey else { return }
-        guard lastHandledPrsProjectionRevision != revision || prs.isEmpty else { return }
-        let now = Date()
-        if !prs.isEmpty || githubSnapshot != nil || mobileSnapshot != nil {
-          let elapsed = now.timeIntervalSince(lastPrsLocalProjectionReload)
-          if elapsed < 0.35 {
-            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
-            guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
-          }
-        }
-        lastPrsLocalProjectionReload = Date()
-        await reload()
-        guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
-        lastHandledPrsProjectionRevision = revision
-      }
-      .task(id: prsRemoteReloadKey) {
-        guard let revision = prsRemoteReloadKey, revision > 0 else { return }
-        // Webhook bursts can contain several related deliveries. Coalesce them
-        // into one bounded snapshot read instead of turning each event into a
-        // GitHub request from the phone.
-        try? await Task.sleep(for: .milliseconds(300))
-        guard !Task.isCancelled, prsRemoteReloadKey == revision else { return }
-        await reloadGitHubProjection()
-      }
-      .task(id: prNavigationRequestKey) {
-        guard prNavigationRequestKey != nil else { return }
-        await handleRequestedPrNavigation()
-      }
-      .task(id: remotePrsPollKey) {
-        guard remotePrsPollKey != nil else { return }
-        while !Task.isCancelled {
-          await refreshRemotePrs()
-          try? await Task.sleep(nanoseconds: PrRemoteMachinesModel.refreshIntervalNanoseconds)
-        }
-      }
-      .onChange(of: syncService.activeProjectId) { _, _ in
-        // The tab stays mounted across a project switch: drop the previous
-        // project's rows so they never show (or hide the skeleton) while the
-        // new project loads.
-        remotePrs.reset()
-        prs = []
-        lanes = []
-        laneSnapshots = []
-        integrationProposals = []
-        mobileSnapshot = nil
-        githubSnapshot = nil
-        githubExternalHistoryLoaded = false
-        githubHistoryPageLimit = 2
-        laneContextLaneId = nil
-        path = NavigationPath()
-      }
-      .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: githubCategoryRawValue) { _, _ in
-        guard selectedGitHubCategory.wrappedValue != .open else { return }
-        Task { await loadGitHubExternalHistoryIfNeeded() }
-      }
-      // Memoize the GitHub-list derivations: recompute only when the snapshot
-      // or a filter/search input actually changes, never inside a body pass.
-      .onChange(of: githubSnapshot) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: prs) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: searchText) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: githubCategoryRawValue) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: githubScopeFilterRawValue) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: githubSortRawValue) { _, _ in recomputeGitHubDerived() }
-      .onAppear { recomputeGitHubDerived() }
       .refreshable {
         await refreshFromPullGesture()
       }
       // Root PR actions run at the service level (`runDurablePrAction`), so
       // switching tabs never aborts in-flight integration or link work.
       .navigationDestination(for: String.self) { prId in
-        let routeScope = prDetailRouteScopes[prId]
-        PrDetailView(
-          prId: prId,
-          transitionNamespace: nil,
-          requestedRepoOwner: routeScope?.repoOwner,
-          requestedRepoName: routeScope?.repoName,
-          availableLanes: linkableLanes,
-          initialTab: prDetailInitialTabs[prId] ?? .overview,
-          remoteLaneLink: remoteLaneLink(forRouteId: prId),
-          machineContext: machineContext,
-          onRemoteLinksChanged: { await refreshRemotePrs() }
-        )
-        .environmentObject(syncService)
-      }
-      .sheet(isPresented: $createPresented, onDismiss: {
-        createInitialLaneId = nil
-      }) {
-        createPrWizardSheet
-      }
-      .sheet(item: $stackPresentation) { presentation in
-        PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
-          .environmentObject(syncService)
-      }
-      .sheet(item: $laneLinkRequest) { request in
-        PrLaneLinkSheet(
-          item: request.item,
-          lanes: linkableLanes,
-          canLink: canLinkGitHubPullRequests,
-          machineContext: machineContext
-        ) { laneId in
-          runPrRootAction(
-            "Linking pull request",
-            operation: {
-              try await syncService.linkPullRequestToLane(
-                laneId: laneId,
-                prUrlOrNumber: request.item.githubUrl.isEmpty ? "\(request.item.githubPrNumber)" : request.item.githubUrl
-              )
-            },
-            onSuccess: {
-              laneLinkRequest = nil
-              // A link made on another machine shows once that machine is
-              // read again.
-              if isWorkRemoteLaneId(laneId) { Task { await refreshRemotePrs() } }
-            }
-          )
-        } onOpenGitHub: {
-          openGitHub(urlString: request.item.githubUrl)
-        }
-      }
-      .sheet(item: $autoMapRequest) { request in
-        PrAutoMapSheet(
-          item: request.item,
-          machines: machineContext.createMachines,
-          canCreate: canAutoMapGitHubPullRequests,
-          onCreate: { machine in confirmAutoMap(for: request.item, on: machine) },
-          onCancel: { autoMapRequest = nil }
-        )
-        .environmentObject(syncService)
+        duoPrDetail(prId)
       }
     }
+  }
+
+  /// One PR's detail with the route wiring both layouts use. The phone pushes
+  /// it; the Duo shows it in the split's detail column.
+  @ViewBuilder
+  func duoPrDetail(_ prId: String) -> some View {
+    let routeScope = prDetailRouteScopes[prId]
+    PrDetailView(
+      prId: prId,
+      transitionNamespace: nil,
+      requestedRepoOwner: routeScope?.repoOwner,
+      requestedRepoName: routeScope?.repoName,
+      availableLanes: linkableLanes,
+      initialTab: prDetailInitialTabs[prId] ?? .overview,
+      remoteLaneLink: remoteLaneLink(forRouteId: prId),
+      machineContext: machineContext,
+      onRemoteLinksChanged: { await refreshRemotePrs() }
+    )
+    .environmentObject(syncService)
   }
 
   // MARK: - Top bar
 
   @ToolbarContentBuilder
-  private var prsToolbar: some ToolbarContent {
+  var prsToolbar: some ToolbarContent {
     ToolbarItem(placement: .topBarLeading) {
       ADEHubBackButton()
     }
@@ -635,7 +660,7 @@ struct PRsTabView: View, Equatable {
   // MARK: - Notices
 
   @ViewBuilder
-  private var noticeRows: some View {
+  var noticeRows: some View {
     let hydrationNotice: SyncDomainFailureNotice? = (!syncService.connectionState.isHostUnreachable
       && !syncService.shouldSuppressDomainHydrationNotices)
       ? prsStatus.inlineHydrationFailureNotice(for: .prs) : nil
@@ -680,7 +705,7 @@ struct PRsTabView: View, Equatable {
   // MARK: - GitHub list
 
   @ViewBuilder
-  private var githubSurfaceRows: some View {
+  var githubSurfaceRows: some View {
     let counts = githubCategoryCounts
     Section {
       Picker("Status", selection: selectedGitHubCategory) {
@@ -786,10 +811,22 @@ struct PRsTabView: View, Equatable {
       if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
         prDetailRouteScopes[prId] = routeScope
       }
-      path.append(prId)
+      openPrDetail(prId)
     } else {
       openGitHubDetail(item)
     }
+  }
+
+  /// Shows a PR's detail: pushed on the phone, filled into the Duo's detail
+  /// column on its inner display.
+  private func openPrDetail(_ prId: String) {
+    // Kept in both layouts so folding or unfolding the device keeps the PR
+    // the reader was looking at.
+    duoSelectedPrId = prId
+    if duoLayout.isWide {
+      return
+    }
+    path.append(prId)
   }
 
   private func openLane(for item: GitHubPrListItem) {
@@ -866,11 +903,11 @@ struct PRsTabView: View, Equatable {
       ),
       for: routeId
     )
-    path.append(routeId)
+    openPrDetail(routeId)
   }
 
   @ViewBuilder
-  private var workflowsSurfaceRows: some View {
+  var workflowsSurfaceRows: some View {
     Section {
       Picker("Kind", selection: selectedWorkflowFilter) {
         ForEach(PrWorkflowKindFilter.allCases) { filter in
@@ -904,7 +941,7 @@ struct PRsTabView: View, Equatable {
     PrMobileWorkflowCardView(
       card: card,
       isLive: canRunWorkflowActions,
-      onOpenPr: { prId in path.append(prId) },
+      onOpenPr: { prId in openPrDetail(prId) },
       onCreateIntegrationLane: { proposalId in
         runPrRootAction("Creating integration lane") {
           _ = try await syncService.createIntegrationLaneForProposal(proposalId: proposalId)
@@ -984,7 +1021,7 @@ struct PRsTabView: View, Equatable {
   }
 
   @MainActor
-  private func refreshFromPullGesture() async {
+  func refreshFromPullGesture() async {
     // The other machines are read now, not on their 30-second beat.
     async let remote: Void = refreshRemotePrs()
     await reload(refreshRemote: true)
@@ -1173,6 +1210,7 @@ struct PRsTabView: View, Equatable {
       await reload(refreshRemote: false)
       rootSurfaceRawValue = PrRootSurface.github.rawValue
       path = NavigationPath()
+      duoSelectedPrId = nil
       laneContextLaneId = createLaneId
       createInitialLaneId = createLaneId
       createPresented = true
@@ -1197,6 +1235,7 @@ struct PRsTabView: View, Equatable {
 
     rootSurfaceRawValue = PrRootSurface.github.rawValue
     path = NavigationPath()
+    duoSelectedPrId = nil
     laneContextLaneId = nil
 
     let destinationResolved: Bool
@@ -1209,7 +1248,7 @@ struct PRsTabView: View, Equatable {
       } else {
         prDetailRouteScopes.removeValue(forKey: prId)
       }
-      path.append(prId)
+      openPrDetail(prId)
       destinationResolved = true
     case .github(let item):
       openGitHubDetail(item, initialTab: request.detailTab ?? .overview)
@@ -1414,7 +1453,7 @@ struct PRsTabView: View, Equatable {
         && $0.githubPrNumber == item.githubPrNumber
         && $0.linkedPrId != nil
     }), let prId = mapped.linkedPrId {
-      path.append(prId)
+      openPrDetail(prId)
     }
   }
 

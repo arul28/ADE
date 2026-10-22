@@ -721,6 +721,10 @@ struct WorkChatSessionView: View {
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
   /// Approve or deny a pending batch move projected onto this caller chat.
   var crossMachineBatchMoveApprovalActions: WorkCrossMachineBatchMoveApprovalActions? = nil
+  /// The wide display's tools column. When set, a lane tool chip opens the
+  /// chip's tool as a pane tab instead of a full-screen cover, and the chip's
+  /// own poll is the pane's only state source. Nil on every pushed chat.
+  var duoPane: DuoWorkPaneModel? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
@@ -1156,7 +1160,17 @@ struct WorkChatSessionView: View {
         ForEach(laneTools.chips) { chip in
           WorkLaneToolChipView(chip: chip) {
             ADEHaptics.light()
-            laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+            if let duoPane {
+              // Wide display: the tool opens beside the thread as a pane tab,
+              // seeded from the state this chip is already showing.
+              duoPane.open(
+                chip: chip,
+                tools: laneTools,
+                macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false
+              )
+            } else {
+              laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+            }
           }
         }
       }
@@ -2413,7 +2427,8 @@ struct WorkChatSessionView: View {
       model: laneTools,
       laneId: session.laneId,
       chatSessionId: session.id,
-      enabled: !isPersonalChat
+      enabled: !isPersonalChat,
+      duoPane: duoPane
     )
     #if DEBUG
     presenter.preview = previewLaneTools

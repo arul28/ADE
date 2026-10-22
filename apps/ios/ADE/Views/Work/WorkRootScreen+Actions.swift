@@ -769,6 +769,13 @@ extension WorkRootListScreen {
     // A pending-sync row has no synced session to open yet.
     guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
+    // Wide display: the chat opens in the column beside the list instead of
+    // over it. Selecting twice is harmless — the route id only changes when it
+    // is a different chat.
+    if duoLayout.isWide {
+      duoSelectSession(session)
+      return
+    }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
@@ -816,7 +823,11 @@ extension WorkRootListScreen {
     navigationMutationPending = false
     selectedSessionTransitionId = request.sessionId
     var fresh = NavigationPath()
-    fresh.append(WorkSessionRoute(sessionId: request.sessionId))
+    if duoLayout.isWide {
+      duoSelectedRoute = WorkSessionRoute(sessionId: request.sessionId)
+    } else {
+      fresh.append(WorkSessionRoute(sessionId: request.sessionId))
+    }
     path = fresh
     syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
     // The chat is open: clear the request now, which also stops the outside-tap

@@ -8,6 +8,7 @@ struct FilesProofArtifactsReloadKey: Hashable {
 
 struct FilesRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @Environment(\.duoLayout) var duoLayout
   @EnvironmentObject var syncService: SyncService
   @Namespace var fileTransitionNamespace
   var isTabActive = true
@@ -23,6 +24,10 @@ struct FilesRootScreen: View {
   @State var selectedProofArtifact: ComputerUseArtifactSummary?
   @State var errorMessage: String?
   @State var navigationPath: [FilesRoute] = []
+  /// The folder the Duo's split list column shows. Nil follows whatever the
+  /// phone's stack was last looking at, so folding or unfolding the device
+  /// keeps the same place; browsing in the split pins it.
+  @State var duoFolderPath: String?
   @State var refreshFeedbackToken = 0
   @State var selectedFileTransitionPath: String?
   @State var lastFilesLocalProjectionReload = Date.distantPast
@@ -45,61 +50,143 @@ struct FilesRootScreen: View {
       : nil
   }
 
+  /// The load notices, skeletons and empty state above the workspace browser.
+  /// Shared by the phone layout and the Duo's split list column.
+  @ViewBuilder
+  var filesListPreamble: some View {
+    // Suppress connection-caused load failure banners; the top-right
+    // gear dot is the single source of truth for host reachability.
+    if !syncService.connectionState.isHostUnreachable,
+      !syncService.shouldSuppressDomainHydrationNotices,
+      let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files)
+    {
+      ADEInstructionErrorCard(
+        notice: hydrationNotice,
+        retry: { Task { await reload(refreshRemote: true) } }
+      )
+      .transition(.opacity)
+    }
+    if let errorMessage,
+      filesStatus.phase == .ready,
+      !syncService.connectionState.isHostUnreachable
+    {
+      ADENoticeCard(
+        title: "Files view error",
+        message: errorMessage,
+        icon: "exclamationmark.triangle.fill",
+        tint: ADEColor.danger,
+        actionTitle: "Retry",
+        action: { Task { await reload(refreshRemote: true) } }
+      )
+      .transition(.opacity)
+    }
+
+    if isLoadingSkeleton {
+      ADECardSkeleton(rows: 3)
+      ADECardSkeleton(rows: 4)
+    }
+
+    if workspaces.isEmpty && !isLoadingSkeleton {
+      let isDisconnected = filesStatus.phase == .disconnected || syncService.activeHostProfile == nil
+      ADEEmptyStateView(
+        symbol: isDisconnected ? "wifi.slash" : "folder.badge.questionmark",
+        title: isDisconnected ? "Files unavailable" : "No workspaces available",
+        message: isDisconnected
+          ? "Files need a connected machine. Reconnect or pair a machine in Settings to browse workspaces."
+          : "This machine does not currently expose any lane-backed workspaces for the mobile Files browser."
+      ) {
+        Button(syncService.activeHostProfile == nil ? "Open Settings" : "Refresh Files") {
+          if syncService.activeHostProfile == nil {
+            syncService.settingsPresented = true
+          } else {
+            Task { await reload(refreshRemote: true) }
+          }
+        }
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
+      }
+    }
+  }
+
   var body: some View {
+    Group {
+      // The Duo's inner display has room for the file list beside the viewer;
+      // every other size keeps the phone's push navigation.
+      if duoLayout.isWide {
+        duoFilesSplitBody
+      } else {
+        filesPhoneBody
+      }
+    }
+    .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
+    .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+    .task(id: filesProjectionReloadKey) {
+      guard let revision = filesProjectionReloadKey else { return }
+      guard lastHandledFilesProjectionRevision != revision || workspaces.isEmpty else { return }
+      let now = Date()
+      if !workspaces.isEmpty {
+        let elapsed = now.timeIntervalSince(lastFilesLocalProjectionReload)
+        if elapsed < 0.35 {
+          try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+          guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
+        }
+      }
+      lastFilesLocalProjectionReload = Date()
+      await reload()
+      guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
+      lastHandledFilesProjectionRevision = revision
+    }
+    .task(id: filesNavigationRequestKey) {
+      guard filesNavigationRequestKey != nil else { return }
+      await handleRequestedNavigation()
+    }
+    .task(id: proofArtifactsReloadKey) {
+      guard let key = proofArtifactsReloadKey else { return }
+      guard lastHandledProofArtifactsReloadKey != key else { return }
+      await loadProofArtifacts()
+      guard !Task.isCancelled else { return }
+      lastHandledProofArtifactsReloadKey = key
+    }
+    .onChange(of: selectedWorkspaceId) { _, _ in
+      if suppressNextWorkspaceNavigationReset {
+        suppressNextWorkspaceNavigationReset = false
+        return
+      }
+      if !navigationPath.isEmpty {
+        navigationPath = []
+      }
+      duoFolderPath = nil
+    }
+    .sheet(item: $selectedProofArtifact) { artifact in
+      FilesProofArtifactSheet(artifact: artifact)
+        .environmentObject(syncService)
+    }
+    .fullScreenCover(isPresented: $isSearchPresented) {
+      if let workspace = selectedWorkspace {
+        FilesSearchScreen(
+          workspace: workspace,
+          isLive: canUseLiveFileActions,
+          needsRepairing: needsRepairing,
+          initialQuery: pendingSearchQuery,
+          onOpenFile: { path, line in
+            openFile(path, in: workspace, focusLine: line)
+          }
+        )
+        .environmentObject(syncService)
+        .onDisappear { pendingSearchQuery = "" }
+      } else {
+        // The workspace list emptied while search was open (e.g. a disconnect
+        // reload). Never strand the user on a blank cover with no way out.
+        Color.clear.onAppear { isSearchPresented = false }
+      }
+    }
+  }
+
+  /// The phone layout: the workspace browser, pushing folders and files.
+  private var filesPhoneBody: some View {
     NavigationStack(path: $navigationPath) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          // Suppress connection-caused load failure banners; the top-right
-          // gear dot is the single source of truth for host reachability.
-          if !syncService.connectionState.isHostUnreachable,
-            !syncService.shouldSuppressDomainHydrationNotices,
-            let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files)
-          {
-            ADEInstructionErrorCard(
-              notice: hydrationNotice,
-              retry: { Task { await reload(refreshRemote: true) } }
-            )
-            .transition(.opacity)
-          }
-          if let errorMessage,
-            filesStatus.phase == .ready,
-            !syncService.connectionState.isHostUnreachable
-          {
-            ADENoticeCard(
-              title: "Files view error",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
-            )
-            .transition(.opacity)
-          }
-
-          if isLoadingSkeleton {
-            ADECardSkeleton(rows: 3)
-            ADECardSkeleton(rows: 4)
-          }
-
-          if workspaces.isEmpty && !isLoadingSkeleton {
-            let isDisconnected = filesStatus.phase == .disconnected || syncService.activeHostProfile == nil
-            ADEEmptyStateView(
-              symbol: isDisconnected ? "wifi.slash" : "folder.badge.questionmark",
-              title: isDisconnected ? "Files unavailable" : "No workspaces available",
-              message: isDisconnected
-                ? "Files need a connected machine. Reconnect or pair a machine in Settings to browse workspaces."
-                : "This machine does not currently expose any lane-backed workspaces for the mobile Files browser."
-            ) {
-              Button(syncService.activeHostProfile == nil ? "Open Settings" : "Refresh Files") {
-                if syncService.activeHostProfile == nil {
-                  syncService.settingsPresented = true
-                } else {
-                  Task { await reload(refreshRemote: true) }
-                }
-              }
-              .buttonStyle(ADEKitButtonStyle(prominent: true))
-            }
-          }
+          filesListPreamble
 
           if let workspace = selectedWorkspace {
             FilesWorkspaceHeader(
@@ -206,93 +293,38 @@ struct FilesRootScreen: View {
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
         ADERootTopBar(title: "Files") {
-          if selectedWorkspace != nil {
-            Button {
-              // A manual open always starts from an empty field; only a chat
-              // file link seeds one.
-              pendingSearchQuery = ""
-              isSearchPresented = true
-            } label: {
-              ADEKitCircleIcon(systemImage: "magnifyingglass")
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Search files")
-            .disabled(!canUseLiveFileActions)
-          }
-          Button {
-            Task { await reload(refreshRemote: true) }
-          } label: {
-            ADEKitCircleIcon(systemImage: "arrow.clockwise")
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Refresh files")
-          .disabled(syncService.activeHostProfile == nil && workspaces.isEmpty)
+          filesTopBarActions
         }
       }
       .refreshable {
         await refreshFromPullGesture()
       }
-      .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
-      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: filesProjectionReloadKey) {
-        guard let revision = filesProjectionReloadKey else { return }
-        guard lastHandledFilesProjectionRevision != revision || workspaces.isEmpty else { return }
-        let now = Date()
-        if !workspaces.isEmpty {
-          let elapsed = now.timeIntervalSince(lastFilesLocalProjectionReload)
-          if elapsed < 0.35 {
-            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
-            guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
-          }
-        }
-        lastFilesLocalProjectionReload = Date()
-        await reload()
-        guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
-        lastHandledFilesProjectionRevision = revision
-      }
-      .task(id: filesNavigationRequestKey) {
-        guard filesNavigationRequestKey != nil else { return }
-        await handleRequestedNavigation()
-      }
-      .task(id: proofArtifactsReloadKey) {
-        guard let key = proofArtifactsReloadKey else { return }
-        guard lastHandledProofArtifactsReloadKey != key else { return }
-        await loadProofArtifacts()
-        guard !Task.isCancelled else { return }
-        lastHandledProofArtifactsReloadKey = key
-      }
-      .onChange(of: selectedWorkspaceId) { _, _ in
-        if suppressNextWorkspaceNavigationReset {
-          suppressNextWorkspaceNavigationReset = false
-          return
-        }
-        if !navigationPath.isEmpty {
-          navigationPath = []
-        }
-      }
-      .sheet(item: $selectedProofArtifact) { artifact in
-        FilesProofArtifactSheet(artifact: artifact)
-          .environmentObject(syncService)
-      }
-      .fullScreenCover(isPresented: $isSearchPresented) {
-        if let workspace = selectedWorkspace {
-          FilesSearchScreen(
-            workspace: workspace,
-            isLive: canUseLiveFileActions,
-            needsRepairing: needsRepairing,
-            initialQuery: pendingSearchQuery,
-            onOpenFile: { path, line in
-              openFile(path, in: workspace, focusLine: line)
-            }
-          )
-          .environmentObject(syncService)
-          .onDisappear { pendingSearchQuery = "" }
-        } else {
-          // The workspace list emptied while search was open (e.g. a disconnect
-          // reload). Never strand the user on a blank cover with no way out.
-          Color.clear.onAppear { isSearchPresented = false }
-        }
-      }
     }
+  }
+
+  /// Files' top-bar controls: search needs a workspace, refresh needs a host.
+  @ViewBuilder
+  var filesTopBarActions: some View {
+    if selectedWorkspace != nil {
+      Button {
+        // A manual open always starts from an empty field; only a chat
+        // file link seeds one.
+        pendingSearchQuery = ""
+        isSearchPresented = true
+      } label: {
+        ADEKitCircleIcon(systemImage: "magnifyingglass")
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Search files")
+      .disabled(!canUseLiveFileActions)
+    }
+    Button {
+      Task { await reload(refreshRemote: true) }
+    } label: {
+      ADEKitCircleIcon(systemImage: "arrow.clockwise")
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Refresh files")
+    .disabled(syncService.activeHostProfile == nil && workspaces.isEmpty)
   }
 }

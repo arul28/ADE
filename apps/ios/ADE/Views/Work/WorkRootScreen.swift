@@ -320,6 +320,10 @@ struct WorkRootScreen: View {
 
 struct WorkRootListScreen: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  /// Regular width (the Duo's inner display): the list and the chat sit side by
+  /// side instead of the chat being pushed over the list. Read here rather than
+  /// passed down so a fold or unfold needs no navigation-path rewrite.
+  @Environment(\.duoLayout) var duoLayout
   /// Deliberately NOT observed: every value the body draws from arrives in
   /// `inputs`. Imperative code (actions, reloads) reads it directly.
   let syncService: SyncService
@@ -456,6 +460,15 @@ struct WorkRootListScreen: View, Equatable {
   /// Both are transient: fetched when the item is tapped, cleared on dismiss.
   @State var manageLaneTarget: LaneListSnapshot?
   @State var manageLaneSnapshots: [LaneListSnapshot] = []
+
+  // Wide-only layout state. Every property here is inert on a phone-sized
+  // display, where the chat is pushed exactly as it always was.
+  /// The chat the wide detail column is showing. Nil means the empty column.
+  @State var duoSelectedRoute: WorkSessionRoute?
+  /// The chat's tool column: what is open, and whether the sessions rail has
+  /// been expanded back into the full list.
+  @StateObject var duoPane = DuoWorkPaneModel()
+  @State var duoRailExpanded = false
 
   var selectedStatus: WorkSessionStatusFilter {
     get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
@@ -743,6 +756,9 @@ struct WorkRootListScreen: View, Equatable {
       // Long-press menu actions fire mid-dismissal; pushing a route into that
       // animation is what the existing yield below is already guarding against.
       await Task.yield()
+      // The compose page covers the split; close the tools pane first so the
+      // list (which carries the push destinations) is mounted when it lands.
+      if duoLayout.isWide, duoPane.isOpen { duoPane.close() }
       path.append(WorkNewChatRoute(preferredLaneId: preferredLaneId))
       navigationMutationPending = false
     }
@@ -839,8 +855,22 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   var body: some View {
+    Group {
+      if duoLayout.isWide {
+        duoWideBody
+      } else {
+        duoCompactBody
+      }
+    }
+    .onChange(of: duoLayout.isWide, initial: true) { _, wide in
+      handleDuoWidthChange(wide)
+    }
+  }
+
+  /// Today's layout, unchanged: one column, the chat pushed over the list.
+  private var duoCompactBody: some View {
     let _ = ScrollDiagnostics.shared.count(.workListBody)
-    NavigationStack(path: $path) {
+    return NavigationStack(path: $path) {
       ScrollViewReader { proxy in
         workList(proxy: proxy)
           .onScrollPhaseChange { _, phase in
@@ -859,6 +889,277 @@ struct WorkRootListScreen: View, Equatable {
           }
       }
     }
+  }
+
+  /// Wide display: sessions | chat, and the chat's tools as a third column on
+  /// the trailing side. The list is one instance either way — while a tool is
+  /// open it is replaced by the rail and comes back as an overlay, so the rows
+  /// and their list-level work are not mounted twice.
+  private var duoWideBody: some View {
+    NavigationStack(path: $path) {
+      duoWideSplit
+    }
+    .task(id: duoPreviewSelectionKey) { applyDuoPreviewSelectionIfNeeded() }
+  }
+
+  private var duoWideSplit: some View {
+    GeometryReader { proxy in
+      let fold = DuoFoldReading.fold(in: proxy)
+      ZStack(alignment: .leading) {
+        HStack(spacing: 0) {
+          if duoPane.isOpen {
+            DuoWorkSessionsRail(
+              items: duoRailItems,
+              onSelect: duoSelectRailItem,
+              onExpand: {
+                withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+                  duoRailExpanded = true
+                }
+              }
+            )
+            .frame(width: DuoWorkMetrics.railWidth)
+          } else {
+            duoSessionsColumn
+              .frame(width: duoSessionsColumnWidth(total: proxy.size.width, fold: fold))
+              .overlay(alignment: .trailing) {
+                Rectangle()
+                  .fill(ADEColor.glassBorder)
+                  .frame(width: 0.5)
+                  .accessibilityHidden(true)
+              }
+          }
+          duoDetailColumn
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        if duoPane.isOpen && duoRailExpanded {
+          duoSessionsExpandedOverlay
+        }
+      }
+      .background(ADEColor.pageBackground)
+      .animation(ADEMotion.quick(reduceMotion: reduceMotion), value: duoPane.isOpen)
+    }
+  }
+
+  /// The sessions column, as the real list: filters, grouping, row menus and
+  /// every list-level task stay exactly as they are in the compact layout.
+  private var duoSessionsColumn: some View {
+    ScrollViewReader { proxy in
+      workList(proxy: proxy)
+    }
+    .background(ADEColor.pageBackground)
+  }
+
+  /// On a book fold the list takes the leading page and the chat the other, so
+  /// nothing (the composer included) sits on the fold. Flat and laptop postures
+  /// keep the familiar 300pt column.
+  private func duoSessionsColumnWidth(total: CGFloat, fold: DuoFold) -> CGFloat {
+    if case .sideBySide(let rect) = fold,
+       rect.minX > 260,
+       total - rect.minX > DuoWorkMetrics.minChatWidth {
+      // The column stops where the hinge band starts, so the page break is the
+      // fold itself.
+      return rect.minX
+    }
+    return min(DuoWorkMetrics.listWidth, max(240, total * 0.34))
+  }
+
+  @ViewBuilder
+  private var duoDetailColumn: some View {
+    if let route = duoSelectedRoute {
+      sessionDestinationView(route, inColumn: true)
+    } else {
+      DuoWorkEmptyDetail()
+    }
+  }
+
+  /// The list, brought back from the rail as an overlay over the detail column.
+  /// It is the same list, so picking a chat here closes the overlay by way of
+  /// `duoSelectRailItem`'s selection path.
+  private var duoSessionsExpandedOverlay: some View {
+    ZStack(alignment: .leading) {
+      Color.black.opacity(0.28)
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .accessibilityHidden(true)
+        .onTapGesture {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            duoRailExpanded = false
+          }
+        }
+      duoSessionsColumn
+        .frame(width: 320)
+        .background(ADEColor.pageBackground)
+        .shadow(color: .black.opacity(0.18), radius: 20, x: 8, y: 0)
+        .transition(.move(edge: .leading))
+    }
+  }
+
+  /// A width change is the one moment the two layouts disagree about where the
+  /// open chat lives. Carrying it over keeps unfolding from dumping the reader
+  /// back on the list.
+  private func handleDuoWidthChange(_ wide: Bool) {
+    guard wide else {
+      duoRailExpanded = false
+      // Folding back to the phone layout carries the open chat into the stack,
+      // so the reader does not land back on the list.
+      if path.isEmpty, let route = duoSelectedRoute {
+        path.append(route)
+      }
+      return
+    }
+    if duoSelectedRoute == nil,
+       let transition = selectedSessionTransitionId {
+      if let session = mergedSessions.first(where: { $0.id == transition }) {
+        duoSelectSession(session)
+      } else {
+        duoSelectedRoute = WorkSessionRoute(sessionId: transition)
+      }
+    }
+    // A chat pushed on the phone is a chat in the column here. The stack still
+    // exists for New Chat; a chat route left in it would draw twice.
+    if !path.isEmpty { path = NavigationPath() }
+  }
+
+  /// Re-selects the fixture chat on a `duo-*` screenshot, and nothing at all in
+  /// a real run.
+  private var duoPreviewSelectionKey: String {
+    #if DEBUG
+    "\(mergedSessions.count)|\(duoSelectedRoute?.sessionId ?? "-")"
+    #else
+    ""
+    #endif
+  }
+
+  private func applyDuoPreviewSelectionIfNeeded() {
+    #if DEBUG
+    guard duoLayout.isWide, duoSelectedRoute == nil else { return }
+    if let requested = DuoWorkPreviewState.sessionId,
+       let session = mergedSessions.first(where: { $0.id == requested }) {
+      duoSelectSession(session)
+      return
+    }
+    guard WorkRootPreviewFixture.active != nil,
+          let first = mergedSessions.first(where: { isChatSession($0) }) else { return }
+    duoSelectSession(first)
+    #endif
+  }
+
+  /// The chat awaits one constructor in both layouts; only the chrome and the
+  /// wide extras differ. Split out so a pushed chat and a column chat cannot
+  /// drift on the data they hand the destination.
+  @ViewBuilder
+  private func sessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
+    let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
+      ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
+      : nil
+    let initialSession = optimisticSessions[route.sessionId]
+      ?? mergedSessions.first(where: { $0.id == route.sessionId })
+      ?? syncService.chatLaunchEntry(sessionId: route.sessionId).map(workChatLaunchOptimisticSession)
+    // A chat still being launched into a new lane shows its setup first;
+    // the same session id then hands over to the ordinary destination.
+    WorkChatLaunchGate(sessionId: route.sessionId) {
+      WorkSessionDestinationView(
+        sessionId: route.sessionId,
+        initialOpeningPrompt: route.openingPrompt,
+        initialOpeningPromptDispatchHandled: route.openingPromptDispatchHandled,
+        initialOpeningDeliveryState: route.openingDeliveryState,
+        initialOpeningAttachments: route.openingAttachments,
+        initialSession: initialSession,
+        initialChatSummary: chatSummaries[route.sessionId]
+          ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
+        transitionNamespace: routeTransitionNamespace,
+        isLive: inputs.isLive,
+        navigationChrome: inColumn ? .column : .pushedDetail,
+        // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
+        // root, so `workOrderedLanes` stops refreshing there — fall back to the
+        // live `lanes` when the presentation-derived order isn't available.
+        lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
+        crossProjectContext: route.remoteChat,
+        duoPane: inColumn ? duoPane : nil,
+        duoPaneOpen: inColumn && duoPane.isOpen,
+        onDuoBack: inColumn ? { duoClearSelection() } : nil
+      )
+      .equatable()
+    }
+    .id(route.openId)
+    .environmentObject(syncService)
+    .environmentObject(dictationController)
+  }
+
+  @ViewBuilder
+  private func newChatDestination(_ route: WorkNewChatRoute) -> some View {
+    WorkNewChatScreen(
+      lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
+      preferredLaneId: route.preferredLaneId,
+      activeProjectId: inputs.activeProjectId,
+      activeProjectRootPath: inputs.activeProjectRootPath,
+      onStarted: { summary, opener, openerDispatchHandled, openerDeliveryState, openerAttachments in
+        let sessionId = summary.sessionId
+        let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
+        optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
+        chatSummaries[sessionId] = summary
+        syncService.cacheChatSummary(summary)
+        selectedSessionTransitionId = nil
+        // Replace the new-chat page with the live session view so hitting
+        // Back goes to the sidebar, not to an empty "Start a new chat"
+        // form.
+        await showNewChatRoute(WorkSessionRoute(
+          sessionId: sessionId,
+          openingPrompt: trimmed.isEmpty ? nil : trimmed,
+          openingPromptDispatchHandled: openerDispatchHandled,
+          openingDeliveryState: openerDeliveryState,
+          openingAttachments: openerAttachments
+        ))
+        Task { @MainActor in
+          await reload(refreshRemote: true)
+        }
+      },
+      onCliStarted: { session in
+        optimisticSessions[session.id] = session
+        selectedSessionTransitionId = nil
+        await showNewChatRoute(WorkSessionRoute(sessionId: session.id))
+        Task { @MainActor in
+          await reload(refreshRemote: true)
+        }
+      },
+      onChatImported: { summary in
+        let chatSessionId = summary.sessionId
+        optimisticSessions[chatSessionId] = makeOptimisticSession(for: summary)
+        chatSummaries[chatSessionId] = summary
+        syncService.cacheChatSummary(summary)
+        selectedSessionTransitionId = nil
+        await showNewChatRoute(WorkSessionRoute(sessionId: chatSessionId))
+        Task { @MainActor in
+          await reload(refreshRemote: true)
+        }
+      },
+      onRefreshLanes: { await reload(refreshRemote: true) },
+      onLaunchStarted: { snapshot in
+        // Open the chat now under the session id the host reserved. The
+        // gate on the route shows the lane setup until the agent starts.
+        let sessionId = snapshot.chatSessionId
+        selectedSessionTransitionId = nil
+        await showNewChatRoute(WorkSessionRoute(sessionId: sessionId))
+      }
+    )
+    .environmentObject(syncService)
+    .environmentObject(dictationController)
+  }
+
+  /// The new-chat screen's handover: a pushed chat on every phone, the detail
+  /// column's chat on a wide display.
+  private func showNewChatRoute(_ route: WorkSessionRoute) async {
+    await Task.yield()
+    if duoLayout.isWide {
+      // Pop the compose page; the chat opens in the column beside the list.
+      path = NavigationPath()
+      duoSelectedRoute = route
+    } else {
+      var fresh = NavigationPath()
+      fresh.append(route)
+      path = fresh
+    }
+    syncService.persistOpenWorkSessionRoute(sessionId: route.sessionId)
   }
 
   private func workList(proxy: ScrollViewProxy) -> some View {
@@ -1160,112 +1461,10 @@ struct WorkRootListScreen: View, Equatable {
         WorkThreadEntityDirectory.shared.record(lanes: lanes, sessions: sessions)
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
-        let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
-          ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
-          : nil
-        let initialSession = optimisticSessions[route.sessionId]
-          ?? mergedSessions.first(where: { $0.id == route.sessionId })
-          ?? syncService.chatLaunchEntry(sessionId: route.sessionId).map(workChatLaunchOptimisticSession)
-        // A chat still being launched into a new lane shows its setup first;
-        // the same session id then hands over to the ordinary destination.
-        WorkChatLaunchGate(sessionId: route.sessionId) {
-        WorkSessionDestinationView(
-          sessionId: route.sessionId,
-          initialOpeningPrompt: route.openingPrompt,
-          initialOpeningPromptDispatchHandled: route.openingPromptDispatchHandled,
-          initialOpeningDeliveryState: route.openingDeliveryState,
-          initialOpeningAttachments: route.openingAttachments,
-          initialSession: initialSession,
-          initialChatSummary: chatSummaries[route.sessionId]
-            ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
-          transitionNamespace: routeTransitionNamespace,
-          isLive: inputs.isLive,
-          navigationChrome: .pushedDetail,
-          // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
-          // root, so `workOrderedLanes` stops refreshing here — fall back to the
-          // live `lanes` when the presentation-derived order isn't available.
-          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
-          crossProjectContext: route.remoteChat
-        )
-        .equatable()
-        }
-        .id(route.openId)
-        .environmentObject(syncService)
-        .environmentObject(dictationController)
+        sessionDestinationView(route, inColumn: false)
       }
       .navigationDestination(for: WorkNewChatRoute.self) { route in
-        WorkNewChatScreen(
-          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
-          preferredLaneId: route.preferredLaneId,
-          activeProjectId: inputs.activeProjectId,
-          activeProjectRootPath: inputs.activeProjectRootPath,
-          onStarted: { summary, opener, openerDispatchHandled, openerDeliveryState, openerAttachments in
-            let sessionId = summary.sessionId
-            let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
-            optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
-            chatSummaries[sessionId] = summary
-            syncService.cacheChatSummary(summary)
-            selectedSessionTransitionId = nil
-            // Replace the new-chat page with the live session view so hitting
-            // Back goes to the sidebar, not to an empty "Start a new chat"
-            // form.
-            var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(
-              sessionId: sessionId,
-              openingPrompt: trimmed.isEmpty ? nil : trimmed,
-              openingPromptDispatchHandled: openerDispatchHandled,
-              openingDeliveryState: openerDeliveryState,
-              openingAttachments: openerAttachments
-            ))
-            await Task.yield()
-            path = fresh
-            syncService.persistOpenWorkSessionRoute(sessionId: sessionId)
-            Task { @MainActor in
-              await reload(refreshRemote: true)
-            }
-          },
-          onCliStarted: { session in
-            optimisticSessions[session.id] = session
-            selectedSessionTransitionId = nil
-            var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: session.id))
-            await Task.yield()
-            path = fresh
-            syncService.persistOpenWorkSessionRoute(sessionId: session.id)
-            Task { @MainActor in
-              await reload(refreshRemote: true)
-            }
-          },
-          onChatImported: { summary in
-            let chatSessionId = summary.sessionId
-            optimisticSessions[chatSessionId] = makeOptimisticSession(for: summary)
-            chatSummaries[chatSessionId] = summary
-            syncService.cacheChatSummary(summary)
-            selectedSessionTransitionId = nil
-            var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: chatSessionId))
-            await Task.yield()
-            path = fresh
-            syncService.persistOpenWorkSessionRoute(sessionId: chatSessionId)
-            Task { @MainActor in
-              await reload(refreshRemote: true)
-            }
-          },
-          onRefreshLanes: { await reload(refreshRemote: true) },
-          onLaunchStarted: { snapshot in
-            // Open the chat now under the session id the host reserved. The
-            // gate on the route shows the lane setup until the agent starts.
-            let sessionId = snapshot.chatSessionId
-            selectedSessionTransitionId = nil
-            var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: sessionId))
-            await Task.yield()
-            path = fresh
-            syncService.persistOpenWorkSessionRoute(sessionId: sessionId)
-          }
-        )
-        .environmentObject(syncService)
-        .environmentObject(dictationController)
+        newChatDestination(route)
       }
       .alert("Rename session", isPresented: renamePresentedBinding) {
         TextField("Title", text: $renameText)

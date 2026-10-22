@@ -164,6 +164,12 @@ extension FilesRootScreen {
     }
     selectedWorkspaceId = workspace.id
     selectedFileTransitionPath = nil
+    // The Duo's split browses folders in its list column and keeps the open
+    // file in the viewer column.
+    if duoLayout.isWide {
+      duoFolderPath = parentPath
+      return
+    }
     navigationPath = routesForDirectory(parentPath, workspace: workspace)
   }
 
@@ -173,6 +179,9 @@ extension FilesRootScreen {
     }
     selectedWorkspaceId = workspace.id
     selectedFileTransitionPath = relativePath
+    if duoLayout.isWide {
+      duoFolderPath = parentDirectory(of: relativePath)
+    }
     navigationPath = routesForFile(relativePath, workspace: workspace, focusLine: focusLine)
   }
 

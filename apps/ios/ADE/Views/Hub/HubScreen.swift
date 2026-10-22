@@ -69,6 +69,8 @@ struct HubScreen: View {
   @State private var requestedRosterLookupRequestId: String?
   @State private var rosterFilter: HubRosterFilter = .all
   @Environment(\.scenePhase) private var scenePhase
+  /// The inner display is wide enough for the two-page Home.
+  @Environment(\.duoLayout) private var duo
 
   private var isNoMachineBlankState: Bool {
     // A send switching machines keeps the hub (and its composer) up through
@@ -270,120 +272,7 @@ struct HubScreen: View {
   }
 
   private var connectedHub: some View {
-    VStack(spacing: 0) {
-      HubTopBar(
-        onAdd: { addProjectSheetPresented = true },
-        chatsAvailable: syncService.supportsPersonalChats,
-        chatsAttentionCount: chatsAttentionCount,
-        onOpenChats: { personalChatsPresented = true }
-      )
-      if (canShowProjects && !syncService.projects.isEmpty) || !fleetMerge.extraProjects.isEmpty {
-        HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
-          .padding(.horizontal, 16)
-          .padding(.bottom, 8)
-      }
-      ScrollView {
-        LazyVStack(spacing: 8) {
-          // Keep the project catalog mounted while a switch is in flight: only
-          // fall back to the connecting card when there's nothing to show yet.
-          // The switching row carries its own spinner and the others disable,
-          // so the list never blanks to a full-screen connecting swap (M12).
-          if !canShowProjects && hubProjectPresentations.isEmpty {
-            HubConnectingCard()
-          } else if syncService.projects.isEmpty && hubProjectPresentations.isEmpty {
-            HubEmptyProjectsCard()
-          } else if filteredHubProjectPresentations.isEmpty {
-            HubRosterFilterEmptyState(filter: rosterFilter)
-          } else {
-            ForEach(filteredHubProjectPresentations) { presentation in
-              let project = presentation.project
-              let honoursCollapse = rosterFilter == .all
-              HubProjectCard(
-                presentation: presentation,
-                isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
-                collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
-                collapsedLaneKeys: $collapsedLaneKeys,
-                allowsCollapse: honoursCollapse,
-                onToggleCollapse: {
-                  guard honoursCollapse else { return }
-                  withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
-                },
-                onOpenProject: { openHubProject(project) },
-                onOpenChat: { chat, lane in openHubChat(chat, lane: lane, project: project) },
-                onViewLaneInWork: { lane in
-                  Task { @MainActor in
-                    guard let laneId = await openLaneProject(lane, project: project) else { return }
-                    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
-                  }
-                },
-                onViewLaneInLanes: { lane in
-                  Task { @MainActor in
-                    guard let laneId = await openLaneProject(lane, project: project) else { return }
-                    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
-                  }
-                },
-                onArchiveChat: { chat in runRosterChatAction("chat.archive", chat: chat, project: project) },
-                onDeleteChat: { chat in runRosterChatAction("chat.delete", chat: chat, project: project) },
-                onForget: {
-                  // A project that lives only on another machine is forgotten there.
-                  guard fleetMerge.projectOwners[project.id] == nil else { return }
-                  syncService.forgetProject(project)
-                }
-              )
-              .equatable()
-              .draggable(project.id)
-              .dropDestination(for: String.self) { items, _ in
-                guard let draggedId = items.first else { return false }
-                moveProject(draggedId, onto: project.id)
-                return true
-              }
-              // While one project is switching in, the tapped row shows its own
-              // spinner and every other row is disabled + dimmed so the catalog
-              // stays visible but non-interactive (M12).
-              .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
-              .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
-            }
-          }
-        }
-        .frame(maxWidth: 640)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
-      }
-      .scrollIndicators(.hidden)
-      .scrollDismissesKeyboard(.interactively)
-      // While the composer is expanded, a dim scrim sits between the list and
-      // the composer: it swallows taps/drags (no accidental row opens) and any
-      // touch on it collapses the composer. Layered before safeAreaInset so
-      // the composer itself stays above and interactive.
-      .overlay {
-        if composerExpanded {
-          Color.black.opacity(0.38)
-            .ignoresSafeArea()
-            .onTapGesture { collapseComposer() }
-            .gesture(
-              DragGesture(minimumDistance: 12).onEnded { value in
-                if value.translation.height > 24 { collapseComposer() }
-              }
-            )
-            .transition(.opacity)
-        }
-      }
-      .safeAreaInset(edge: .bottom, spacing: 0) {
-        // Kept while a send switches machines: the primary is reconnecting,
-        // and the draft and any error belong to this composer.
-        if canShowProjects || composerSwitchingMachine {
-          // No band behind it: the glass composer floats over the list, which
-          // scrolls under it edge to edge.
-          HubInlineComposer(
-            expanded: $composerExpanded,
-            onCreated: handleCreated,
-            onMachineSwitch: { composerSwitchingMachine = $0 }
-          )
-        }
-      }
-    }
+    hubContent
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // Rebuild the active project's local roster whenever its sessions/lanes
     // change or the active project switches.
@@ -422,6 +311,177 @@ struct HubScreen: View {
     .onChange(of: collapsedLaneKeys) { _, _ in persistHubLayout() }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
+  }
+
+  /// The inner display gets the two-page Home; every other iPhone (and the
+  /// Duo's outer display) keeps today's single roster, unchanged.
+  @ViewBuilder
+  private var hubContent: some View {
+    if duo.isWide {
+      wideHome
+    } else {
+      phoneHub
+    }
+  }
+
+  private var wideHome: some View {
+    DuoHomeWide(
+      machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
+      needsYou: duoNeedsYouItems(from: hubProjectPresentations),
+      onOpenNeedsYou: { item in
+        openHubChat(item.row.chat, lane: item.lane, project: item.project)
+      },
+      onOpenActivity: { syncService.attentionDrawerPresented = true },
+      onOpenMachines: { syncService.settingsPresented = true },
+      projects: {
+        VStack(spacing: 0) {
+          hubTopBar
+          rosterFilterBar
+          rosterList
+        }
+      },
+      composer: { composerBar }
+    )
+  }
+
+  private var phoneHub: some View {
+    VStack(spacing: 0) {
+      hubTopBar
+      rosterFilterBar
+      rosterList
+        // While the composer is expanded, a dim scrim sits between the list and
+        // the composer: it swallows taps/drags (no accidental row opens) and any
+        // touch on it collapses the composer. Layered before safeAreaInset so
+        // the composer itself stays above and interactive.
+        .overlay {
+          if composerExpanded {
+            Color.black.opacity(0.38)
+              .ignoresSafeArea()
+              .onTapGesture { collapseComposer() }
+              .gesture(
+                DragGesture(minimumDistance: 12).onEnded { value in
+                  if value.translation.height > 24 { collapseComposer() }
+                }
+              )
+              .transition(.opacity)
+          }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+          composerBar
+        }
+    }
+  }
+
+  private var hubTopBar: some View {
+    HubTopBar(
+      onAdd: { addProjectSheetPresented = true },
+      chatsAvailable: syncService.supportsPersonalChats,
+      chatsAttentionCount: chatsAttentionCount,
+      onOpenChats: { personalChatsPresented = true }
+    )
+  }
+
+  @ViewBuilder
+  private var rosterFilterBar: some View {
+    if (canShowProjects && !syncService.projects.isEmpty) || !fleetMerge.extraProjects.isEmpty {
+      HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+  }
+
+  @ViewBuilder
+  private var composerBar: some View {
+    // Kept while a send switches machines: the primary is reconnecting, and the
+    // draft and any error belong to this composer.
+    if canShowProjects || composerSwitchingMachine {
+      // No band behind it: the glass composer floats over the list, which
+      // scrolls under it edge to edge.
+      HubInlineComposer(
+        expanded: $composerExpanded,
+        onCreated: handleCreated,
+        onMachineSwitch: { composerSwitchingMachine = $0 }
+      )
+    }
+  }
+
+  private var rosterList: some View {
+    ScrollView {
+      LazyVStack(spacing: 8) {
+        rosterRows
+      }
+      .frame(maxWidth: 640)
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
+      .padding(.bottom, 16)
+    }
+    .scrollIndicators(.hidden)
+    .scrollDismissesKeyboard(.interactively)
+  }
+
+  @ViewBuilder
+  private var rosterRows: some View {
+    // Keep the project catalog mounted while a switch is in flight: only fall
+    // back to the connecting card when there's nothing to show yet. The
+    // switching row carries its own spinner and the others disable, so the list
+    // never blanks to a full-screen connecting swap (M12).
+    if !canShowProjects && hubProjectPresentations.isEmpty {
+      HubConnectingCard()
+    } else if syncService.projects.isEmpty && hubProjectPresentations.isEmpty {
+      HubEmptyProjectsCard()
+    } else if filteredHubProjectPresentations.isEmpty {
+      HubRosterFilterEmptyState(filter: rosterFilter)
+    } else {
+      ForEach(filteredHubProjectPresentations) { presentation in
+        let project = presentation.project
+        let honoursCollapse = rosterFilter == .all
+        HubProjectCard(
+          presentation: presentation,
+          isCollapsed: honoursCollapse && collapsedProjectIds.contains(project.id),
+          collapsedLaneKeysSnapshot: honoursCollapse ? collapsedLaneKeys : [],
+          collapsedLaneKeys: $collapsedLaneKeys,
+          allowsCollapse: honoursCollapse,
+          onToggleCollapse: {
+            guard honoursCollapse else { return }
+            withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
+          },
+          onOpenProject: { openHubProject(project) },
+          onOpenChat: { chat, lane in openHubChat(chat, lane: lane, project: project) },
+          onViewLaneInWork: { lane in
+            Task { @MainActor in
+              guard let laneId = await openLaneProject(lane, project: project) else { return }
+              syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
+            }
+          },
+          onViewLaneInLanes: { lane in
+            Task { @MainActor in
+              guard let laneId = await openLaneProject(lane, project: project) else { return }
+              syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+            }
+          },
+          onArchiveChat: { chat in runRosterChatAction("chat.archive", chat: chat, project: project) },
+          onDeleteChat: { chat in runRosterChatAction("chat.delete", chat: chat, project: project) },
+          onForget: {
+            // A project that lives only on another machine is forgotten there.
+            guard fleetMerge.projectOwners[project.id] == nil else { return }
+            syncService.forgetProject(project)
+          }
+        )
+        .equatable()
+        .draggable(project.id)
+        .dropDestination(for: String.self) { items, _ in
+          guard let draggedId = items.first else { return false }
+          moveProject(draggedId, onto: project.id)
+          return true
+        }
+        // While one project is switching in, the tapped row shows its own
+        // spinner and every other row is disabled + dimmed so the catalog
+        // stays visible but non-interactive (M12).
+        .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
+        .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
+      }
+    }
   }
 
   // MARK: Other machines, folded in

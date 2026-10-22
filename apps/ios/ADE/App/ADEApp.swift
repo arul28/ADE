@@ -193,6 +193,11 @@ struct ADEApp: App {
           .id(request.userCode)
           .environmentObject(accountService)
         }
+        // Publishes `\.duoLayout` (the inner display's width and fold) to the
+        // whole app, the same way the Duo fixture branch above does. Without it
+        // every Duo-aware view would read the default (compact, no fold) and the
+        // app would never show its wide layouts.
+        .duoLayoutRoot()
   }
 }
 

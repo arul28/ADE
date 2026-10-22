@@ -356,6 +356,9 @@ struct WorkLaneToolsPresenter: ViewModifier {
   var chatSessionId: String?
   /// False for a personal chat, which has no lane.
   let enabled: Bool
+  /// The wide display's tools column. While the chips poll, it publishes which
+  /// tool tabs exist; the chip tap opens the pane instead of a cover.
+  var duoPane: DuoWorkPaneModel?
   #if DEBUG
   var preview: WorkLaneToolsPreview?
   #endif
@@ -372,6 +375,11 @@ struct WorkLaneToolsPresenter: ViewModifier {
         #endif
         guard enabled else { return }
         await model.run(laneId: laneId, syncService: syncService)
+      }
+      // Which tools exist is the same answer the chips give; the pane only
+      // needs the identities, and this fires only when the chip set changes.
+      .onChange(of: model.chips, initial: true) { _, chips in
+        duoPane?.setToolTabs(chips.map(\.duoToolTab))
       }
       .sheet(isPresented: model.isPresented(.toolSheet(.browser))) {
         toolSheet(.browser)

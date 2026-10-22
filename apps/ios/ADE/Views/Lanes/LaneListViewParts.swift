@@ -239,21 +239,29 @@ extension LanesTabView {
     }
   }
 
-  /// Pushes a lane's detail through the stack's path.
+  /// Pushes a lane's detail through the stack's path on the phone; fills the
+  /// detail column instead on the Duo's inner display.
   func openLane(_ laneId: String) {
+    // Kept in both layouts so folding or unfolding the device keeps the lane
+    // the reader was looking at.
+    duoSelectedLaneId = laneId
+    if duoLayout.isWide {
+      return
+    }
     lanePath.append(LaneRoute(laneId: laneId))
   }
 
   /// The detail screen for a pushed lane: this machine's row, or the row
   /// another machine holds for a namespaced id.
   @ViewBuilder
-  func laneDestination(_ route: LaneRoute) -> some View {
+  func laneDestination(_ route: LaneRoute, showsBackButton: Bool = true) -> some View {
     if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
       LaneDetailScreen(
         laneId: route.laneId,
         initialSnapshot: snapshot,
         allLaneSnapshots: laneSnapshots,
         transitionNamespace: transitionNamespace,
+        showsBackButton: showsBackButton,
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
@@ -264,6 +272,7 @@ extension LanesTabView {
         initialSnapshot: snapshot,
         allLaneSnapshots: machine.snapshots,
         transitionNamespace: transitionNamespace,
+        showsBackButton: showsBackButton,
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {
@@ -295,6 +304,7 @@ extension LanesTabView {
     // A machine with no live link shows its last roster dimmed and inert, so
     // its rows carry no swipe actions either.
     let actionable = machine?.isLive != false
+    let isDuoSelected = duoLayout.isWide && duoSelectedLaneId == laneId
     LaneTreeRow(
       snapshot: snapshot,
       depth: depth,
@@ -302,7 +312,7 @@ extension LanesTabView {
       isPinned: pinned,
       isOpen: openLaneIds.contains(laneId),
       transitionNamespace: transitionNamespace,
-      isSelectedTransitionSource: selectedLaneTransitionId == laneId,
+      isSelectedTransitionSource: isDuoSelected || selectedLaneTransitionId == laneId,
       onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
       onSelectLane: { selectedLaneTransitionId = $0 },
       onOpen: { openLane(laneId) },
@@ -310,6 +320,9 @@ extension LanesTabView {
       showsMachineChip: showsMachineChip
     )
     .adeFlatRow(insets: laneRowInsets)
+    // The Duo's list column marks its selected row the way a desktop sidebar
+    // does; the phone has no selection to show.
+    .listRowBackground(isDuoSelected ? ADEColor.accent.opacity(0.12) : Color.clear)
     .swipeActions(edge: .leading, allowsFullSwipe: true) {
       if actionable {
         Button {

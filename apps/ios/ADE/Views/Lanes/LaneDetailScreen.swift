@@ -10,6 +10,9 @@ struct LaneDetailScreen: View {
   let initialSnapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]
   let transitionNamespace: Namespace.ID?
+  /// False when the screen is a split column's detail: there is nothing to go
+  /// back to in that column.
+  let showsBackButton: Bool
   let onRefreshRoot: @MainActor () async -> Void
 
   @State private(set) var detail: LaneDetailPayload?
@@ -55,12 +58,14 @@ struct LaneDetailScreen: View {
     allLaneSnapshots: [LaneListSnapshot],
     transitionNamespace: Namespace.ID? = nil,
     initialSection: LaneDetailSection = .git,
+    showsBackButton: Bool = true,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
     self.initialSnapshot = initialSnapshot
     self.allLaneSnapshots = allLaneSnapshots
     self.transitionNamespace = transitionNamespace
+    self.showsBackButton = showsBackButton
     self.onRefreshRoot = onRefreshRoot
   }
 
@@ -239,16 +244,18 @@ struct LaneDetailScreen: View {
 
   private var laneDetailTopBar: some View {
     HStack(spacing: 0) {
-      Button {
-        dismiss()
-      } label: {
-        Image(systemName: "chevron.left")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 36, height: 32)
+      if showsBackButton {
+        Button {
+          dismiss()
+        } label: {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(width: 36, height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Back to lanes")
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Back to lanes")
 
       // The lane's name sits in the bar row (it was a separate large-title
       // row under an otherwise empty bar).

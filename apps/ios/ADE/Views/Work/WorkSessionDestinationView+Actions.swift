@@ -1259,7 +1259,13 @@ extension WorkSessionDestinationView {
         syncService.removePersonalChatFromCache(sessionId: sessionId)
       }
       errorMessage = nil
-      dismiss()
+      // A column chat has nothing to dismiss: hand the empty column back to the
+      // wide layout, which is what Back does.
+      if let onDuoBack {
+        onDuoBack()
+      } else {
+        dismiss()
+      }
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
