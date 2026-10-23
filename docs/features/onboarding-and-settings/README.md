@@ -2337,7 +2337,11 @@ The new-project screen has a **Settings** button. It sets the app-store flag
 screen and the top bar shows a "Settings" tab. Only settings that need no
 project are shown. The manifest's standalone resolver hides `account-repo` and
 `machine-repo` entries, and a tab whose sections all need a project binding is
-left out. Standalone mode ends on a new tab ("+"), Back, closing the Settings
+left out. A page that mixes this computer's settings with ones saved in a
+project (Chat, Notifications) reads `isStandaloneSettings()` and shows one
+"Open a project to change these." notice (`ProjectSettingsNotice`) in place of
+the project cards (prompt suggestions, Smart decisions, Claude mods, scheduled
+work), so no card asks for a project config that is not there. Standalone mode ends on a new tab ("+"), Back, closing the Settings
 tab, or opening a project. A project closed while on `/settings` falls back to
 the new-project screen.
 
@@ -2441,8 +2445,11 @@ one-click fix. The macOS fix writes system power settings and is labelled
 **Fix — needs your password**; the Windows fix edits the signed-in user's active
 scheme and needs no elevation.
 
-Reads and writes use the remote-capable `keep_awake` runtime action, pinned to
-the selected machine. The local desktop handles the macOS admin prompt because
+Reads and writes go to the selected machine: a pinned machine through the
+remote-capable `keep_awake` runtime action, this computer through the brain's
+machine method `keepAwake.call` (no project needed, cto role only). A brain
+that does not manage keep-awake answers `action_not_callable`; a brain from
+before the machine method is reached through any project it has. The local desktop handles the macOS admin prompt because
 the brain has no GUI. Fixing the local Mac's system sleep timer still uses that
 prompt; a remote Mac is directed to its own Settings, while Windows uses the
 selected brain action. The desktop starts its old in-process blocker only when

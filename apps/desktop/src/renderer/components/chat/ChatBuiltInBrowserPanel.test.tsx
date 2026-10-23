@@ -1178,12 +1178,21 @@ describe("ChatBuiltInBrowserPanel", () => {
 
   it("offers the booted simulator only when its device maps onto known metrics", async () => {
     installBrowserApi();
+    const simulatorStatus = (window as unknown as { ade: { iosSimulator: { getStatus: ReturnType<typeof vi.fn> } } })
+      .ade.iosSimulator.getStatus;
 
-    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
-
+    // No project open and no machine pinned: there is no runtime to ask.
+    const projectless = render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
     await openMenu("Browser device preset — Desktop");
+    expect(screen.queryByText("Booted simulator: iPhone 17 Pro")).toBeNull();
+    expect(simulatorStatus).not.toHaveBeenCalled();
+    projectless.unmount();
 
+    useAppStore.setState({ projectBinding: REMOTE_PIN } as never);
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    await openMenu("Browser device preset — Desktop");
     expect(await screen.findByText("Booted simulator: iPhone 17 Pro")).toBeTruthy();
+    expect(simulatorStatus).toHaveBeenCalled();
   });
 
   it("shows find counts from found-in-page events and stops the find on close", async () => {

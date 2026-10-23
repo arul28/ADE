@@ -57,7 +57,7 @@ describe("readAttachmentImageDataUrl", () => {
     expect(localRead).not.toHaveBeenCalled();
   });
 
-  it("reads a local pin once, through the runtime, unless an older brain refuses a path outside the project", async () => {
+  it("asks this computer's reader for a local pin only when the runtime gave no final answer about the file", async () => {
     // The runtime's answer is final: one read, no second refusal from this computer.
     await expect(readAttachmentImageDataUrl("/gone.png", localPin)).rejects.toThrow("Path does not exist.");
     expect(localRead).not.toHaveBeenCalled();
@@ -70,6 +70,17 @@ describe("readAttachmentImageDataUrl", () => {
     runtimeRead.mockRejectedValueOnce(new Error("Image path must be inside the project."));
     localRead.mockRejectedValueOnce(new Error("Path is outside allowed directories."));
     await expect(readAttachmentImageDataUrl("/outside.png", localPin)).rejects.toThrow("must be inside the project");
+
+    // A current brain does not know the OS's moved user folders (a Desktop in
+    // OneDrive); this computer's reader does.
+    runtimeRead.mockRejectedValueOnce(new Error("Image path is outside the folders ADE shows chat images from."));
+    await expect(readAttachmentImageDataUrl("C:\\Users\\me\\OneDrive\\Desktop\\shot.png", localPin))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
+    // A file the runtime found but cannot show is final everywhere.
+    localRead.mockClear();
+    runtimeRead.mockRejectedValueOnce(new Error("Path is not an image."));
+    await expect(readAttachmentImageDataUrl("/notes.png", localPin)).rejects.toThrow("not an image");
+    expect(localRead).not.toHaveBeenCalled();
   });
 
   // Successful reads are cached per owner and path for the life of the
