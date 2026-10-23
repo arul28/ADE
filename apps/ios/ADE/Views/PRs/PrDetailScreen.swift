@@ -1917,7 +1917,10 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   /// row instead of taking a bar of their own above it. (The Duo's closed
   /// display keeps them at the edge bar's top.)
   private var controlsInTitleRow: Bool {
-    context == .phone && verticalSizeClass == .compact && !duo.hasEdgeBar
+    // The PRs tab on a phone is the split folded to one column: a column
+    // context, with the same little height.
+    (context == .phone || (context == .column && !duo.isWide))
+      && verticalSizeClass == .compact && !duo.hasEdgeBar
   }
 
   private var page: some View {
@@ -1975,7 +1978,11 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     HStack(alignment: .top, spacing: 12) {
       if controlsInTitleRow {
         Button {
-          dismiss()
+          if context == .column, let split {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { split.toggleList() }
+          } else {
+            dismiss()
+          }
         } label: {
           Image(systemName: "chevron.left")
             .font(.system(size: 16, weight: .semibold))

@@ -173,7 +173,21 @@ private struct DuoAppNavigationRootModifier: ViewModifier {
   }
 
   private func publish() {
-    DuoAppNavigation.shared.setFamily(duo.family(for: size), hasEdgeBar: duo.hasEdgeBar)
+    let family = duo.family(for: size)
+    DuoAppNavigation.shared.setFamily(family, hasEdgeBar: duo.hasEdgeBar)
+    CrashReporting.setDisplayLayout(family: "\(family)", edgeBar: duo.hasEdgeBar, fold: foldName)
+  }
+
+  /// The posture, for crash reports: the outer display and other phones
+  /// have no fold; open, the inner display is flat, book-folded, or folded
+  /// across (laptop or tent).
+  private var foldName: String {
+    guard duo.hasFold else { return "none" }
+    switch duo.fold {
+    case .none: return "flat"
+    case .sideBySide: return duo.bend > 0.15 ? "book" : "flat"
+    case .stacked: return "laptop"
+    }
   }
 }
 

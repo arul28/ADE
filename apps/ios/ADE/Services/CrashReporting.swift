@@ -99,6 +99,25 @@ enum CrashReporting {
     SentrySDK.addBreadcrumb(crumb)
   }
 
+  private static var lastDisplayLayout: String?
+
+  /// The layout the window is in (phone, wide, the Duo's edge bar, its fold),
+  /// as tags on every later event plus one breadcrumb when it changes. It
+  /// sends nothing of its own, so a Duo crash names its posture at no cost
+  /// to the event budget. Geometry calls this often; only changes count.
+  static func setDisplayLayout(family: String, edgeBar: Bool, fold: String) {
+    guard didStart else { return }
+    let key = "\(family)|\(edgeBar)|\(fold)"
+    guard key != lastDisplayLayout else { return }
+    lastDisplayLayout = key
+    SentrySDK.configureScope { scope in
+      scope.setTag(value: family, key: "display.family")
+      scope.setTag(value: edgeBar ? "yes" : "no", key: "display.edge_bar")
+      scope.setTag(value: fold, key: "display.fold")
+    }
+    breadcrumb("layout", message: "\(family) fold=\(fold) edgeBar=\(edgeBar)")
+  }
+
   /// Sets the Sentry user. A non-empty `accountId` (the Clerk user id) is hashed
   /// the same way PostHog hashes it. `nil` falls back to the anonymous install
   /// id that PostHog already uses, so sign-out never keeps the old account.
