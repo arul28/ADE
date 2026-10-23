@@ -6628,25 +6628,31 @@ app.whenReady().then(async () => {
   let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
   /** Electron drops a click on a notification nothing references any more. */
   const liveDesktopAlertNotifications = new Set<Notification>();
+  let desktopAlertClickOwner: string | null | undefined;
   /**
    * Alerts a window was asked to toast, by item id. The toast's Open sends
    * back only the id, and main opens what it recorded, so a window cannot
    * name an arbitrary chat or item to open or mark seen.
    */
-  const toastedDesktopAlerts = new Map<string, DesktopAlert>();
+  const toastedDesktopAlerts = new Map<string, { alert: DesktopAlert; ownerId: string | null }>();
   const rememberToastedDesktopAlert = (alert: DesktopAlert): void => {
     toastedDesktopAlerts.delete(alert.itemId);
-    toastedDesktopAlerts.set(alert.itemId, alert);
+    toastedDesktopAlerts.set(alert.itemId, { alert, ownerId: readAccountOwnerId() });
     while (toastedDesktopAlerts.size > 32) {
       const oldest = toastedDesktopAlerts.keys().next();
       if (oldest.done) break;
       toastedDesktopAlerts.delete(oldest.value);
     }
   };
-  const openDesktopAlert = (alert: DesktopAlert): void => {
+  /**
+   * `ownerId` is the account signed in when the alert was shown. After a
+   * switch, opening an old alert still navigates but marks nothing seen: the
+   * same item id can exist under the new account.
+   */
+  const openDesktopAlert = (alert: DesktopAlert, ownerId: string | null): void => {
     // Opening it is seeing it: the phone, still waiting out desktop-first,
     // stays quiet. Best effort; a failure only means the phone gets it later.
-    void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
+    if (ownerId && ownerId === readAccountOwnerId()) void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
       logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -6677,12 +6683,20 @@ app.whenReady().then(async () => {
     },
     show: (alert, onClick) => {
       try {
+        const ownerId = readAccountOwnerId();
         const notification = new Notification({ title: alert.title, ...(alert.body ? { body: alert.body } : {}) });
         liveDesktopAlertNotifications.add(notification);
         const release = () => liveDesktopAlertNotifications.delete(notification);
         notification.on("click", () => {
           release();
-          onClick();
+          // `open` runs synchronously inside onClick and reads this, so the
+          // account the notification was shown under travels with the click.
+          desktopAlertClickOwner = ownerId;
+          try {
+            onClick();
+          } finally {
+            desktopAlertClickOwner = undefined;
+          }
         });
         notification.on("close", release);
         notification.show();
@@ -6701,7 +6715,10 @@ app.whenReady().then(async () => {
       rememberToastedDesktopAlert(alert);
       focused.webContents.send(IPC.attentionAlert, alert);
     },
-    open: openDesktopAlert,
+    open: (alert) => openDesktopAlert(
+      alert,
+      desktopAlertClickOwner !== undefined ? desktopAlertClickOwner : readAccountOwnerId(),
+    ),
   });
 
   let machineUsageEventRoot: string | null = null;
@@ -9899,9 +9916,9 @@ app.whenReady().then(async () => {
       };
     },
     openDesktopAlert: (itemId) => {
-      const alert = typeof itemId === "string" ? toastedDesktopAlerts.get(itemId) : undefined;
-      if (!alert) throw new Error("That notification is no longer available. Open the chat from Activity.");
-      openDesktopAlert(alert);
+      const record = typeof itemId === "string" ? toastedDesktopAlerts.get(itemId) : undefined;
+      if (!record) throw new Error("That notification is no longer available. Open the chat from Activity.");
+      openDesktopAlert(record.alert, record.ownerId);
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

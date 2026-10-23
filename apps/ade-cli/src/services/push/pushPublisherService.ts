@@ -1386,6 +1386,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     lastPublishedFingerprintById.clear();
     lastPublishedRevisionById.clear();
     lastOverflowRevisionById.clear();
+    lastAlertFingerprintById.clear();
     for (const item of items) {
       lastPublishedFingerprintById.set(item.id, activityPublishFingerprint(item));
       lastPublishedRevisionById.set(item.id, item.revision);
@@ -1482,6 +1483,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       for (const tombstone of pageTombstones) {
         lastPublishedFingerprintById.delete(tombstone.id);
+        lastAlertFingerprintById.delete(tombstone.id);
         lastPublishedRevisionById.delete(tombstone.id);
         const overflowItem = overflowById.get(tombstone.id);
         if (overflowItem) lastOverflowRevisionById.set(tombstone.id, overflowItem.revision);

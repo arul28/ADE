@@ -739,9 +739,10 @@ person's terminal name one.
   chat and 30 per machine in any rolling hour; the same title and body from
   one chat within ten minutes is a repeat and sends nothing), stores the message
   in the push registration file (so a restart neither drops it nor resets the
-  limits; it keeps up to 720, a full day at the machine cap), and publishes it.
-  The roster carries at most the newest 50 unread messages; a seen or dismissed
-  message leaves it. The chat gets a `system_notice` with status
+  limits), and publishes it. A machine keeps its newest 50 messages: an older
+  one leaves Activity for good once 50 newer ones exist, before its 24 hours if
+  need be, so a busy day cannot crowd chats out of the machine's roster. A seen
+  or dismissed message leaves the roster at once. The chat gets a `system_notice` with status
   `user_notified` ("Notified you: <title>", body in `detail`). Deleting the chat
   drops its messages.
 - **Item.** `kind: "message"`, `eventKind: "agent_message"` (outside the

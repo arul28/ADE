@@ -180,8 +180,12 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     // chat may be muted. Not remembered: a snapshot alert comes back with the
     // next poll, and a local one waits for `preferencesLoaded`.
     if (deps.isSignedIn?.() && !deps.getPreferences()) {
-      if (!alert.item && !waitingForPreferences.some((entry) => alertKey(entry) === key)) {
-        waitingForPreferences = [...waitingForPreferences, alert].slice(-MAX_WAITING_FOR_PREFERENCES);
+      if (!alert.item) {
+        // The newest alert for a key replaces an older one still waiting.
+        waitingForPreferences = [
+          ...waitingForPreferences.filter((entry) => alertKey(entry) !== key),
+          alert,
+        ].slice(-MAX_WAITING_FOR_PREFERENCES);
       }
       return;
     }
