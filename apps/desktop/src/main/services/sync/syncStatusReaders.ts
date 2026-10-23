@@ -129,7 +129,14 @@ export function createSyncStatusReaders(options: SyncStatusReadersOptions) {
     read: (params: SyncStatusParams) => Promise<SyncRoleSnapshot>,
   ): Promise<SyncRoleSnapshot> => {
     const params = syncStatusParams(arg);
-    const key = JSON.stringify([rootKey, params.includeTransferReadiness, params.forceTransferReadiness]);
+    // An omitted `includeTransferReadiness` is its own request: the in-process
+    // service reads it as "include", unlike an explicit false.
+    const key = JSON.stringify([
+      rootKey,
+      arg?.includeTransferReadiness === undefined,
+      params.includeTransferReadiness,
+      params.forceTransferReadiness,
+    ]);
     const existing = projectReads.get(key);
     if (existing) return await existing;
     const deadlineError = new Error(
