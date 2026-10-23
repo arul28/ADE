@@ -1447,6 +1447,10 @@ struct WorkRootListScreen: View, Equatable {
     }
     .padding(.horizontal, 16)
     .frame(minHeight: 52)
+    // On the bar's row, level with the chat's title capsule (and the tools
+    // pane's header) on the right: the column hides its bar, so it takes the
+    // bar's place itself.
+    .padding(.top, duoLayout.hasEdgeBar ? 20 : 0)
   }
 
   /// The sessions column's second header row, the phone's: search with the
