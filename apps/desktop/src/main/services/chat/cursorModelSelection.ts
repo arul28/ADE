@@ -332,18 +332,30 @@ function resolveCursorSdkModelSelectionFromRows(
 
 
 /**
- * Whether the selection names anything only the catalog can turn into params.
+ * Whether the caller chose a control a person would miss.
  *
- * `fastMode: false` asks for the standard tier, so it counts. Every Cursor chat
- * now passes it: a chat whose Fast is off has to say so, because Cursor's own
- * catalog default is not standard (Composer 2.5 defaults to Fast, at roughly
- * six times the price).
+ * A chat that merely has Fast off passes `fastMode: false` as its default, so
+ * that alone is NOT an explicit choice: a cloud create must not fail closed on
+ * it, and a cold catalog must not produce a "runs without the standard tier"
+ * notice on every send. An explicit fast ask, an explicit standard, an effort,
+ * a service tier or a config value is.
  */
 export function hasExplicitCursorSelection(input: CursorSdkModelSelectionInput): boolean {
   return Boolean(input.reasoningEffort?.trim())
-    || input.fastMode != null
+    || input.fastMode === true
+    || input.fastModeExplicit === true
     || input.serviceTier != null
     || hasCursorConfigValues(input.configValues);
+}
+
+/**
+ * Whether resolving this turn needs the catalog before it can send. A default
+ * standard tier does: Cursor's own catalog default is not standard (Composer
+ * 2.5 defaults to Fast), so the resolver loads once to ask for standard. This
+ * is the fetch rule, deliberately wider than "the person chose a control".
+ */
+export function needsCursorTierResolution(input: CursorSdkModelSelectionInput): boolean {
+  return hasExplicitCursorSelection(input) || input.fastMode === false;
 }
 
 type CursorSelectionSession = Pick<
@@ -365,7 +377,10 @@ export function cursorSdkSelectionInputForSession(
     // so "Fast off" in ADE was billing Fast. A model whose row declares no tier
     // parameter ignores the request without a notice.
     fastMode: session.fastMode === true,
-    serviceTier: session.cursorCloudServiceTier ?? null,
+    // A cloud service tier only rides with Fast on. A chat whose Fast is off
+    // must not keep a stored "fast" tier, or it would override the standard
+    // request above and bill the very tier the control says is off.
+    serviceTier: session.fastMode === true ? session.cursorCloudServiceTier ?? null : null,
     configValues: session.cursorConfigValues ?? null,
   };
 }
@@ -415,7 +430,7 @@ export async function resolveCursorSdkLocalSelection(
   input: CursorSdkModelSelectionInput,
 ): Promise<CursorSdkModelSelectionResult> {
   const cached = resolveCursorSdkModelSelectionFromCache(input);
-  if (cached.status !== "catalog-unavailable" || !hasExplicitCursorSelection(input)) return cached;
+  if (cached.status !== "catalog-unavailable" || !needsCursorTierResolution(input)) return cached;
   const catalog = await readCursorSdkCatalog(apiKey, { failFast: true });
   return catalog.status === "loaded"
     ? resolveCursorSdkModelSelectionFromRows(catalog.rows, input)
@@ -458,10 +473,23 @@ export async function verifyExplicitCursorModelSelection(
   apiKey: string | null | undefined,
   input: CursorSdkModelSelectionInput,
 ): Promise<CursorModelParameterValue[] | null> {
-  if (!hasExplicitCursorSelection(input)) return null;
+  const explicit = hasExplicitCursorSelection(input);
+  // A chat whose Fast is simply off passes `fastMode: false`. It is not an
+  // explicit choice, so an unavailable catalog must not fail its cloud create;
+  // but a catalog that positively says the model cannot run Standard is a real
+  // refusal: starting the run would bill the fast tier nobody asked for.
+  if (!explicit && input.fastMode !== false) return null;
   const selection = await resolveCursorSdkModelSelection(apiKey, input);
+  if (selection.status === "catalog-unavailable") {
+    if (explicit) throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));
+    return null;
+  }
   if (selection.status !== "ok") {
-    throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));
+    if (explicit) throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));
+    if (selection.status === "partial" && selection.unmet.length === 1 && selection.unmet[0] === "standard") {
+      throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));
+    }
+    return null;
   }
   return selection.params;
 }
@@ -505,19 +533,6 @@ function cursorSelectionChoiceLabels(input: CursorSdkModelSelectionInput): strin
 }
 
 /**
- * Whether the caller chose something a person would miss. A default standard
- * tier (Fast simply off) is not a choice, so a cold catalog stays quiet about
- * it; an explicit standard, a fast ask, an effort or a config value is.
- */
-function hasMeaningfulCursorChoice(input: CursorSdkModelSelectionInput): boolean {
-  return Boolean(input.reasoningEffort?.trim())
-    || input.fastMode === true
-    || input.fastModeExplicit === true
-    || input.serviceTier != null
-    || hasCursorConfigValues(input.configValues);
-}
-
-/**
  * The notice a best-effort send owes the user for what it could not apply, or
  * null when it applied everything the chat chose.
  */
@@ -527,12 +542,12 @@ export function describeUnappliedCursorSelection(
 ): string | null {
   const model = input.modelSdkId.trim() || "(unnamed)";
   if (selection.status === "catalog-unavailable") {
-    if (!hasExplicitCursorSelection(input) || !hasMeaningfulCursorChoice(input)) return null;
+    if (!hasExplicitCursorSelection(input)) return null;
     const chosen = cursorSelectionChoiceLabels(input);
     return `Cursor's model list could not be loaded (${selection.reason}), so ${model} runs without ${chosen.join(", ") || "the selected model settings"} until it loads.`;
   }
   if (selection.status === "partial") {
-    if (!hasMeaningfulCursorChoice(input)) return null;
+    if (!hasExplicitCursorSelection(input)) return null;
     const controls = selection.unmet.map((entry) => CURSOR_SDK_UNMET_CONTROL_LABELS[entry]).join(" and ");
     return `Cursor cannot apply the selected ${controls} to ${model}, so this run uses Cursor's default for ${selection.unmet.length > 1 ? "them" : "it"}.`;
   }

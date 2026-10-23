@@ -5019,6 +5019,8 @@ export function AgentChatPane({
   // window's copy, which is the same account row. Absent means an older host
   // that cannot enforce it, so the control stays usable.
   const accountFastModeEnabled = useFastModeEnabled();
+  // A chat carries its owning brain's answer; a draft uses this window's copy
+  // of the same account row. The brain refuses Fast either way.
   const fastModeAllowedForComposer = selectedSession
     ? (selectedSession.fastModeAllowed ?? true)
     : accountFastModeEnabled;
@@ -7004,9 +7006,12 @@ export function AgentChatPane({
       resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current),
       // Fast is a per-chat choice. A NEW chat starts Standard; a draft or a
       // failed launch restores the choice the user made for that same attempt
-      // (`preserveFast`). Carrying Fast into a new chat is what made one Fast
-      // turn start every later one Fast.
-      { reasoningEffort: config.reasoningEffort, fastMode: options?.preserveFast === true ? config.fastMode : false },
+      // (`preserveFast`) — unless the account has since forbidden Fast, in
+      // which case restoring it would send a request the brain refuses.
+      {
+        reasoningEffort: config.reasoningEffort,
+        fastMode: options?.preserveFast === true && fastModeAllowedForComposer ? config.fastMode : false,
+      },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
     setFastModeState(
@@ -7028,7 +7033,7 @@ export function AgentChatPane({
     setMusePermissionMode(config.controls.musePermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [setFastModeState]);
+  }, [fastModeAllowedForComposer, setFastModeState]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -7621,6 +7626,7 @@ export function AgentChatPane({
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
   }), [
+    fastModeAllowedForComposer,
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,

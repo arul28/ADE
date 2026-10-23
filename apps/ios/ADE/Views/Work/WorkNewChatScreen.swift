@@ -678,7 +678,7 @@ struct WorkNewChatScreen: View {
   @State private var codexFastMode: Bool = false
   /// The account's Fast permission, from the host's launch defaults. False
   /// leaves the picker's toggle disabled; this screen never edits the account.
-  @State private var fastModeAllowed: Bool = true
+  @State private var fastModeAllowed: Bool = false
   /// Copilot's context tier and Auto profile for the chat about to be created.
   @State private var copilotContextTier: String = "default"
   @State private var copilotAutoTier: String? = nil
@@ -790,6 +790,9 @@ struct WorkNewChatScreen: View {
   private func applyHostLaunchDefaults() async {
     guard !hostLaunchDefaultsChecked else { return }
     hostLaunchDefaultsChecked = true
+    // Permission is independent of whether the launch defaults apply to this
+    // composer (CLI mode, another machine, a preset, a changed selection).
+    fastModeAllowed = await syncService.getFastModeEnabled()
     guard let defaults = await syncService.fetchChatLaunchDefaults() else { return }
     guard sessionMode == .chat, selectedMachineKey == nil, composerSelection == openingSelection else { return }
     // A persisted Custom harness is the user's own last choice and outranks the
@@ -806,7 +809,7 @@ struct WorkNewChatScreen: View {
     // Fast is opt-in per chat. The host's launch defaults no longer carry it,
     // and an older host that still does must not seed it here.
     codexFastMode = false
-    fastModeAllowed = defaults.fastModeAllowed ?? true
+    fastModeAllowed = defaults.fastModeAllowed ?? fastModeAllowed
     let mode = workRuntimeMode(
       provider: defaults.provider,
       interactionMode: defaults.interactionMode,
@@ -1407,6 +1410,7 @@ struct WorkNewChatScreen: View {
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       codexFastMode: $codexFastMode,
+      fastModeAllowed: fastModeAllowed,
       composerFocused: $composerFocused,
       onOpenModelPicker: { modelPickerPresented = true },
       onSubmit: submit(openingMessage:attachments:)
@@ -1962,6 +1966,9 @@ private struct WorkNewChatComposerBar: View {
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
   @Binding var codexFastMode: Bool
+  /// The account's Fast permission; false draws the muted bolt and disables the
+  /// picker's switch without offering a dead toggle.
+  let fastModeAllowed: Bool
   /// Owned by the screen so the lane sheet can park and restore keyboard focus.
   @Binding var composerFocused: Bool
   let onOpenModelPicker: () -> Void
@@ -2064,6 +2071,7 @@ private struct WorkNewChatComposerBar: View {
             modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
             isCollapsed: isControlsCollapsed,
             fastModeEnabled: codexFastMode,
+            fastModeAllowed: fastModeAllowed,
             onOpenModelPicker: onOpenModelPicker,
             onSelectMode: { runtimeMode = $0 }
           )

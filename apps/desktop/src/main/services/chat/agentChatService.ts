@@ -27944,7 +27944,15 @@ export function createAgentChatService(args: {
     managed.lastTurnFailure = normalizeLastTurnFailure(persisted?.lastTurnFailure);
     managed.contextHealth = normalizeSessionContextHealth(persisted?.contextHealth);
 
+    // The account gate wins over a stored choice when a chat is loaded: an
+    // off-then-on toggle must not revive Fast nobody re-asked for.
+    const fastModeClampedOnLoad = managed.session.fastMode === true && !fastModeAllowed();
+    if (fastModeClampedOnLoad) {
+      delete managed.session.fastMode;
+      delete managed.session.fastTier;
+    }
     managedSessions.set(sessionId, managed);
+    if (fastModeClampedOnLoad) persistChatState(managed);
     // Deferred until the scheduler has read its durable rows back: before that,
     // "no armed row" is indistinguishable from "not loaded yet", and healing on
     // that would cancel a genuine resume every time the brain restarts.
@@ -70006,6 +70014,23 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Drop Fast from every live chat after the account turns it off.
+   *
+   * Called when a client writes the setting, and when a sync pull changes it.
+   * The send path clamps again, and a chat loaded later is clamped on load, so
+   * a re-enable cannot revive a choice nobody re-asked for.
+   */
+  const applyFastModePolicy = (): void => {
+    if (fastModeAllowed()) return;
+    for (const managed of managedSessions.values()) {
+      if (managed.session.fastMode !== true) continue;
+      delete managed.session.fastMode;
+      delete managed.session.fastTier;
+      persistChatState(managed);
+    }
+  };
+
+  /**
    * Explicitly pre-warm a provider query for an existing chat session.
    * Model selection itself stays local; callers opt into this only for flows
    * that intentionally prepare a runtime before the next message is sent.
@@ -73516,6 +73541,7 @@ export function createAgentChatService(args: {
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,
     getLaunchDefaults,
+    applyFastModePolicy,
     getPermissionCeiling: resolvePermissionCeiling,
     regenerateSessionMetadata,
     setSpawnKind,

@@ -2174,6 +2174,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case reasoningEffort
     case codexFastMode
     case fastMode
+    case fastModeAllowed
     case executionMode
     case permissionMode
     case interactionMode
@@ -2223,6 +2224,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
     codexFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
     fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
+    fastModeAllowed = try container.decodeIfPresent(Bool.self, forKey: .fastModeAllowed)
     executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
     permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
     interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)

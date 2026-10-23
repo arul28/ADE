@@ -24,6 +24,17 @@ import {
 let enabled = false;
 const listeners = new Set<() => void>();
 let hydrateInFlight: Promise<void> | null = null;
+/**
+ * Bumped by every write. A read that started before a write must not apply its
+ * stale answer over the optimistic value the person just chose.
+ */
+let writeGeneration = 0;
+/**
+ * True once the account API has answered (or a write landed through it). From
+ * then on the account is the authority and a session's stamp may only tighten
+ * it, never loosen it.
+ */
+let accountHydrated = false;
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -48,13 +59,19 @@ export function subscribeFastModeEnabled(listener: () => void): () => void {
 
 /** Re-read the account row. Best-effort: an unavailable brain keeps the last answer. */
 export async function refreshFastModeEnabled(): Promise<void> {
+  const generationAtStart = writeGeneration;
+  const apply = (next: boolean) => {
+    if (generationAtStart !== writeGeneration) return;
+    accountHydrated = true;
+    writeLocal(next);
+  };
   // The hosted web client has no account-settings bridge; its chat adapter
   // carries the one setting over the sync host instead. The desktop preload
   // leaves that namespace absent and uses the account store directly.
   const host = window.ade?.agentChat?.fastModePolicy;
   if (host) {
     try {
-      writeLocal(await host.get());
+      apply(await host.get());
     } catch {
       // Keep the fail-closed value.
     }
@@ -64,7 +81,7 @@ export async function refreshFastModeEnabled(): Promise<void> {
   if (!api) return;
   try {
     const result = await api.get({ scope: FAST_MODE_SETTING_SCOPE, key: FAST_MODE_SETTING_KEY });
-    if (result.ok) writeLocal(isFastModeEnabledSetting(result.value));
+    if (result.ok) apply(isFastModeEnabledSetting(result.value));
   } catch {
     // Keep the fail-closed value; the next focus or write retries.
   }
@@ -89,20 +106,25 @@ export function hydrateFastModeEnabled(): Promise<void> {
  */
 export async function setFastModeEnabled(next: boolean): Promise<boolean> {
   const previous = enabled;
+  const generation = ++writeGeneration;
   writeLocal(next);
+  const revert = () => {
+    if (generation === writeGeneration) writeLocal(previous);
+  };
   const host = window.ade?.agentChat?.fastModePolicy;
   if (host) {
     try {
       await host.set(next);
+      if (generation === writeGeneration) accountHydrated = true;
       return true;
     } catch {
-      writeLocal(previous);
+      revert();
       return false;
     }
   }
   const api = window.ade?.accountSettings;
   if (!api) {
-    writeLocal(previous);
+    revert();
     return false;
   }
   try {
@@ -111,11 +133,14 @@ export async function setFastModeEnabled(next: boolean): Promise<boolean> {
       key: FAST_MODE_SETTING_KEY,
       value: next,
     });
-    if (result.ok) return true;
+    if (result.ok) {
+      if (generation === writeGeneration) accountHydrated = true;
+      return true;
+    }
   } catch {
     // Fall through to the revert.
   }
-  writeLocal(previous);
+  revert();
   return false;
 }
 
@@ -131,5 +156,9 @@ export function useFastModeEnabled(): boolean {
  * the store from what the host sent instead of from a local account read.
  */
 export function noteFastModeAllowedFromHost(value: boolean | undefined): void {
+  // Once the account itself has answered, a session's stamp may only tighten
+  // the answer, never loosen it; the composer ANDs the two, so a stale "true"
+  // from a remote chat cannot unlock a locally forbidden account.
+  if (accountHydrated) return;
   if (typeof value === "boolean") writeLocal(value);
 }

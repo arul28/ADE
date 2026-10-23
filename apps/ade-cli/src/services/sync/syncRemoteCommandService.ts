@@ -5269,6 +5269,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     );
     const enabled = (payload as { enabled?: unknown } | null)?.enabled === true;
     store.set(FAST_MODE_SETTING_SCOPE, FAST_MODE_SETTING_KEY, enabled);
+    // Drop Fast from live chats now, not only at their next turn.
+    if (!enabled) args.agentChatService?.applyFastModePolicy();
     return { ok: true, enabled };
   });
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>

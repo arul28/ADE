@@ -500,6 +500,11 @@ export const ModelPicker = memo(function ModelPicker({
   const lockedFastSupported = fastModeSupported ?? modelSupportsFastMode(selectedModel);
   const serviceTierSupported = serviceTierMode
     && (modelSupportsServiceTier(selectedModel, "fast") || modelSupportsServiceTier(selectedModel, "standard"));
+  // A locked account shows Standard even if the chat's stored cloud tier is
+  // fast, and the callback below cannot send fast either.
+  const serviceTierForDisplay = fastModeAllowed
+    ? serviceTier
+    : serviceTier === "fast" ? "standard" : serviceTier;
 
   return (
     <div className={cn("inline-flex items-center gap-1.5", className)}>
@@ -528,7 +533,7 @@ export const ModelPicker = memo(function ModelPicker({
             fastMode={fastModeOn && !legacyFastChip}
             fastTier={fastTier ?? null}
             {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
-            {...(serviceTierMode ? { serviceTier, serviceTierSupported } : {})}
+            {...(serviceTierMode ? { serviceTier: serviceTierForDisplay, serviceTierSupported } : {})}
             className={triggerClassName}
           />
         </Popover.Trigger>
@@ -576,15 +581,16 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
-                  serviceTier,
+                  serviceTier: serviceTierForDisplay,
                   onServiceTierChange: (modelId: string, next: CursorCloudServiceTier | null) => {
+                    const nextTier = fastModeAllowed ? next : "standard";
                     const model = modelList.find((entry) => entry.id === modelId);
                     if (!model) return;
                     if (modelId === effectiveValue) {
-                      onServiceTierChange?.(next);
+                      onServiceTierChange?.(nextTier);
                       return;
                     }
-                    onChange(modelId, { fastMode: next === "fast", serviceTier: next });
+                    onChange(modelId, { fastMode: nextTier === "fast", serviceTier: nextTier });
                     setOpen(false);
                   },
                 } : {})}

@@ -3787,8 +3787,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   );
   // The account's Fast permission, from the machine's launch defaults. False
   // disables every local Fast toggle; the brain refuses the update anyway.
-  const [fastModeAllowed, setFastModeAllowed] = useState(true);
-  const fastModeAllowedRef = useRef(true);
+  const [fastModeAllowed, setFastModeAllowed] = useState(false);
+  const fastModeAllowedRef = useRef(false);
   fastModeAllowedRef.current = fastModeAllowed;
   // The model the TUI opened on; the machine's launch defaults replace it only
   // while it is still this one (see the connect path).
@@ -5478,6 +5478,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       newChatPreviewLaneIdRef.current = laneId;
       draftChatActiveRef.current = true;
       setDraftChatMode(true);
+      // Fast belongs to the chat it was chosen for; a new chat starts Standard.
+      setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
       setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
@@ -8053,6 +8055,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       paneBeforeDetailsRef.current = previousPane;
     }
     setDraftChatMode(true);
+    // Fast belongs to the chat it was chosen for; a new chat starts Standard.
+    setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
     // Creating a new chat leaves the grid (shown as a single draft chat) but
     // keeps the grid resumable — navigating back to a tile re-enters it.
     setGridView(false);
@@ -9102,6 +9106,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setActiveProjectRoot(entry.projectRoot);
     connectionLostRef.current = false;
     setConnectionLost(false);
+    // A different machine can carry a different account answer. Read it for the
+    // connection just adopted, and drop a response that lost the race to a
+    // later hop.
+    void getLaunchDefaults(entry.connection).then((defaults) => {
+      if (connectionRef.current !== entry.connection) return;
+      const allowed = defaults?.fastModeAllowed === true;
+      setFastModeAllowed(allowed);
+      if (!allowed) {
+        setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+      }
+    });
     if (sessionId) selectActiveSessionId(sessionId);
     await refreshStateRef.current();
   }, [selectActiveSessionId]);

@@ -30,6 +30,7 @@ import {
   describeCursorSdkModelSelectionFailure,
   describeUnappliedCursorSelection,
   hasExplicitCursorSelection,
+  needsCursorTierResolution,
   listCursorSdkModelConfigParameters,
   resolveCursorSdkFollowUpSelection,
   resolveCursorSdkLocalSelection,
@@ -473,8 +474,10 @@ describe("Cursor model options and a cold catalog", () => {
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", reasoningEffort: " " })).toBe(false);
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", reasoningEffort: "high" })).toBe(true);
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", fastMode: true })).toBe(true);
-    // `false` asks the resolver for the standard tier, so it needs the catalog.
-    expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", fastMode: false })).toBe(true);
+    // A default standard is not a choice, but it DOES need the catalog so the
+    // resolver can ask for standard instead of Cursor's fast catalog default.
+    expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", fastMode: false })).toBe(false);
+    expect(needsCursorTierResolution({ modelSdkId: "composer-2", fastMode: false })).toBe(true);
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", serviceTier: "standard" })).toBe(true);
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", configValues: { verbosity: "terse" } })).toBe(true);
   });
@@ -492,7 +495,8 @@ describe("Cursor model options and a cold catalog", () => {
       serviceTier: null,
       configValues: null,
     });
-    expect(hasExplicitCursorSelection(input)).toBe(true);
+    expect(hasExplicitCursorSelection(input)).toBe(false);
+    expect(needsCursorTierResolution(input)).toBe(true);
     expect(cursorSdkSelectionInputForSession({ fastMode: true, cursorCloudServiceTier: "standard" }, "composer-2"))
       .toMatchObject({ fastMode: true, serviceTier: "standard" });
   });
