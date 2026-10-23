@@ -742,7 +742,7 @@ Renderer — settings:
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
   window backdrop, configured under Settings → This computer → Appearance →
   **Background**. Modes are `plain` (the theme's flat background, no picture
-  and no mesh; the web client's default), `gradient` (the theme's animated
+  and no mesh; the default on every client), `gradient` (the theme's animated
   mesh), `image` (one picture), and `shuffle` (a picture from the library,
   changed on launch, wake, hourly, or daily). Pictures are bundled (`public/scenes/*.jpg` through
   `sceneLibrary.ts`) or the user's own — re-encoded to at most 3840 px JPEG and

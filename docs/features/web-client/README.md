@@ -1412,11 +1412,11 @@ scheme, motion, and scene preferences for both `App` and the lazily loaded
 `WebSignInScreen`. Signed-out boot loads the sign-in chunk without the workspace
 router; a failed chunk load reaches the shell's error phase with Retry.
 
-The web default scene is `plain`: the theme background without a picture or
-motion. An untouched shipped Shuffle preference also reads as Plain in web;
-a saved choice or tuned texture, dim, theme matching, or image visibility stays
-as chosen. `showImage` remains true in the web default so choosing Image shows
-its picture. Reset to Shuffle is an explicit choice. Desktop retains Shuffle.
+The default scene is `plain` on web and desktop alike: the theme background
+without a picture or motion. An untouched old Shuffle default also reads as
+Plain; a saved choice or tuned texture, dim, theme matching, or image visibility
+stays as chosen. `showImage` remains true in the default so choosing Image shows
+its picture. Reset is an explicit choice, so it is kept on reload.
 The command palette uses `Z_LAYERS.commandPalette` above the shared overlays.
 
 `lib/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
