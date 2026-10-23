@@ -413,7 +413,7 @@ function withAttemptBusyTimeout<T>(db: DatabaseSyncType, read: () => T): T {
 }
 
 /** A macrotask turn, so the peer can make progress while this process waits. */
-const waitForWalConversionRetry = (): Promise<void> =>
+const waitForPeerLockRetry = (): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, WAL_CONVERSION_RETRY_DELAY_MS); });
 
 /**
@@ -462,7 +462,7 @@ async function ensureWalJournalMode(db: DatabaseSyncType, logger?: Logger): Prom
           return;
         }
       }
-      await waitForWalConversionRetry();
+      await waitForPeerLockRetry();
     }
   } finally {
     runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
@@ -496,7 +496,7 @@ async function ensureCrrTablesYielding(db: DatabaseSyncType, logger?: Logger): P
     } catch (error) {
       if (!isSqliteBusyOrLockedError(error)) throw error;
     }
-    await waitForWalConversionRetry();
+    await waitForPeerLockRetry();
   }
   ensureCrrTables(db, logger);
 }

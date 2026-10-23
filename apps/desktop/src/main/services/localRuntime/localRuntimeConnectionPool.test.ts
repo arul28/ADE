@@ -2672,14 +2672,14 @@ describe("local runtime connection pool", () => {
     }
   });
 
-  describe("quit stops a desktop-owned brain cooperatively on Windows", () => {
-    // A stand-in for a brain on the runtime endpoint. It answers `runtime/info`
-    // with its own pid, as the real brain does, and prints one line per request,
-    // so a test waits on what the pool actually sent. `mode` decides what it does
-    // with `shutdown`.
-    const BRAIN_STUB_SOURCE = String.raw`
+  // A stand-in for a brain on the runtime endpoint. It answers `runtime/info`
+  // with its own pid, as the real brain does, and prints one line per request,
+  // so a test waits on what the pool actually sent. `mode` decides what it does
+  // with `shutdown`; a `version` (and `role`) makes it answer the
+  // `ade/initialize` handshake as a brain of that version.
+  const BRAIN_STUB_SOURCE = String.raw`
 const net = require("node:net");
-const [endpoint, mode] = process.argv.slice(2);
+const [endpoint, mode, version, role] = process.argv.slice(2);
 const reply = (socket, id, result) => socket.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 net.createServer((socket) => {
   let pending = "";
@@ -2688,7 +2688,10 @@ net.createServer((socket) => {
     for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
       const message = JSON.parse(pending.slice(0, end));
       pending = pending.slice(end + 1);
-      if (message.method === "runtime/info") {
+      if (message.method === "ade/initialize" && version) {
+        process.stdout.write("initialize\n");
+        reply(socket, message.id, { runtimeInfo: { version, pid: process.pid, defaultRole: role ?? "cto", buildHash: null } });
+      } else if (message.method === "runtime/info") {
         process.stdout.write("runtime-info\n");
         reply(socket, message.id, { pid: process.pid });
       } else if (message.method === "shutdown") {
@@ -2702,53 +2705,54 @@ net.createServer((socket) => {
 }).listen(endpoint, () => process.stdout.write("ready\n"));
 setInterval(() => {}, 1000);
 `;
-    type BrainMode = "ack-and-exit" | "ack-and-hang" | "never-answers";
-    let stubDir = "";
-    let stubPath = "";
+  type BrainMode = "ack-and-exit" | "ack-and-hang" | "never-answers";
+  let stubDir = "";
+  let stubPath = "";
 
-    beforeAll(() => {
-      stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-quit-brain-"));
-      stubPath = path.join(stubDir, "brain-stub.cjs");
-      fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
+  beforeAll(() => {
+    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-stub-"));
+    stubPath = path.join(stubDir, "brain-stub.cjs");
+    fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
+  });
+
+  afterAll(() => {
+    fs.rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  // Chosen with the real platform, before `asWindows` changes what the pool sees.
+  function runtimeEndpoint(): string {
+    const id = randomUUID().slice(0, 8);
+    return process.platform === "win32"
+      ? `\\\\.\\pipe\\ade-brain-${id}`
+      : path.join(os.tmpdir(), `ade-brain-${id}.sock`);
+  }
+
+  function startBrain(endpoint: string, mode: BrainMode, identity: string[] = []) {
+    const child = spawn(process.execPath, [stubPath, endpoint, mode, ...identity], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
-
-    afterAll(() => {
-      fs.rmSync(stubDir, { recursive: true, force: true });
+    spawnedDaemons.add(child);
+    child.once("exit", () => spawnedDaemons.delete(child));
+    let output = "";
+    const wake: Array<() => void> = [];
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      for (const resolve of wake.splice(0)) resolve();
     });
+    return {
+      child,
+      output: () => output,
+      // Resolves on the stub's own stdout, so no test waits on a wall-clock delay.
+      async saw(line: string): Promise<void> {
+        while (!output.split("\n").includes(line)) {
+          await new Promise<void>((resolve) => wake.push(resolve));
+        }
+      },
+    };
+  }
 
-    // Chosen with the real platform, before `asWindows` changes what the pool sees.
-    function runtimeEndpoint(): string {
-      const id = randomUUID().slice(0, 8);
-      return process.platform === "win32"
-        ? `\\\\.\\pipe\\ade-quit-${id}`
-        : path.join(os.tmpdir(), `ade-quit-${id}.sock`);
-    }
-
-    function startBrain(endpoint: string, mode: BrainMode) {
-      const child = spawn(process.execPath, [stubPath, endpoint, mode], {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      spawnedDaemons.add(child);
-      child.once("exit", () => spawnedDaemons.delete(child));
-      let output = "";
-      const wake: Array<() => void> = [];
-      child.stdout?.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf8");
-        for (const resolve of wake.splice(0)) resolve();
-      });
-      return {
-        child,
-        output: () => output,
-        // Resolves on the stub's own stdout, so no test waits on a wall-clock delay.
-        async saw(line: string): Promise<void> {
-          while (!output.split("\n").includes(line)) {
-            await new Promise<void>((resolve) => wake.push(resolve));
-          }
-        },
-      };
-    }
-
+  describe("quit stops a desktop-owned brain cooperatively on Windows", () => {
     function poolOwning(child: ChildProcess | null, socketPath: string): LocalRuntimeConnectionPool {
       const pool = new LocalRuntimeConnectionPool("1.2.3", {
         debug: vi.fn(),
@@ -2999,77 +3003,26 @@ setInterval(() => {}, 1000);
   // recovery now asks a strictly older brain to shut down cleanly, once, and
   // leaves every other brain alone.
   describe("isolated recovery retires an older brain on the machine socket", () => {
-    // A stand-in brain: answers the version handshake with the version it is
-    // given, `runtime/info` with its own pid, and prints each request it sees.
-    const OLD_BRAIN_STUB_SOURCE = String.raw`
-const net = require("node:net");
-const [endpoint, version, role] = process.argv.slice(2);
-const reply = (socket, id, result) => socket.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
-net.createServer((socket) => {
-  let pending = "";
-  socket.on("data", (chunk) => {
-    pending += chunk.toString("utf8");
-    for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
-      const message = JSON.parse(pending.slice(0, end));
-      pending = pending.slice(end + 1);
-      if (message.method === "ade/initialize") {
-        process.stdout.write("initialize\n");
-        reply(socket, message.id, { runtimeInfo: { version, pid: process.pid, defaultRole: role, buildHash: null } });
-      } else if (message.method === "runtime/info") {
-        process.stdout.write("runtime-info\n");
-        reply(socket, message.id, { pid: process.pid });
-      } else if (message.method === "shutdown") {
-        process.stdout.write("shutdown-requested\n");
-        reply(socket, message.id, {});
-        socket.end(() => process.exit(0));
-      }
-    }
-  });
-}).listen(endpoint, () => process.stdout.write("ready\n"));
-setInterval(() => {}, 1000);
-`;
-    let stubDir = "";
-    let stubPath = "";
     let originalHome: string | undefined;
+    let homeDir = "";
 
     beforeAll(() => {
-      stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-old-brain-"));
-      stubPath = path.join(stubDir, "old-brain-stub.cjs");
-      fs.writeFileSync(stubPath, OLD_BRAIN_STUB_SOURCE, "utf8");
       // The update-window check reads the machine layout: keep it off the real home.
+      homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-old-brain-home-"));
       originalHome = process.env.ADE_HOME;
-      process.env.ADE_HOME = path.join(stubDir, "home");
+      process.env.ADE_HOME = homeDir;
     });
 
     afterAll(() => {
       restoreEnvVar("ADE_HOME", originalHome);
-      fs.rmSync(stubDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
     });
 
     async function startOldBrain(version: string, role = "agent") {
-      const id = randomUUID().slice(0, 8);
-      const endpoint = process.platform === "win32"
-        ? `\\\\.\\pipe\\ade-old-brain-${id}`
-        : path.join(os.tmpdir(), `ade-old-brain-${id}.sock`);
-      const child = spawn(process.execPath, [stubPath, endpoint, version, role], {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      spawnedDaemons.add(child);
-      child.once("exit", () => spawnedDaemons.delete(child));
-      let output = "";
-      const wake: Array<() => void> = [];
-      child.stdout?.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf8");
-        for (const resolve of wake.splice(0)) resolve();
-      });
-      const saw = async (line: string): Promise<void> => {
-        while (!output.split("\n").includes(line)) {
-          await new Promise<void>((resolve) => wake.push(resolve));
-        }
-      };
-      await saw("ready");
-      return { child, endpoint, saw, output: () => output };
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, "ack-and-exit", [version, role]);
+      await brain.saw("ready");
+      return { ...brain, endpoint };
     }
 
     function isolatedPool(options: { preferServiceRepair: boolean; serviceInstalled: boolean }) {

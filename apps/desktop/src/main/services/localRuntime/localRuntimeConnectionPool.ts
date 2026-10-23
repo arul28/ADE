@@ -48,14 +48,12 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
-import {
-  ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME,
-  isCurrentProcessDescendantOfPid,
-} from "../../../../../ade-cli/src/serviceManager/common";
+import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { readProcessStartTimeMs } from "../processes/processStartTime";
+import { askOlderBrainToShutDown, decideOlderBrainRetirement } from "./olderBrainRetirement";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import {
   LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE,
@@ -3559,100 +3557,58 @@ export class LocalRuntimeConnectionPool {
 
   /**
    * Ask an older brain that holds the machine socket to shut down, so the
-   * installed service can start the current one.
-   *
-   * ADE-DESKTOP-8: a 1.2.91 brain that an old `ade` CLI had started on the
-   * machine socket (role `agent`, no idle exit) held it for days. The service's
-   * own brain failed every restart with `socket_owned_by_other`, the forced
-   * service restart could not reach a process it does not own, and this
-   * desktop ran on its isolated brain, without sync, until someone noticed.
-   *
-   * The request is the brain's own clean exit: the `shutdown` call (in every
-   * brain since 1.2.0) runs the same `finish()` as its SIGTERM handler, which
-   * saves each chat for restart recovery, exactly as an update does. Nothing is
-   * signalled or force-killed: a brain that does not leave stays, and this
-   * desktop keeps its isolated brain, as before.
-   *
-   * Every guard below must hold. A wrong "yes" stops someone's brain; a wrong
-   * "no" only keeps today's behavior.
-   * - A packaged desktop that repairs its service (`preferServiceRepair`), with
-   *   the service installed to start the replacement. Never a dev desktop.
-   * - Not during quit, and not inside an update window (the update owns that).
-   * - Only the machine socket this recovery watches, and only a brain whose
-   *   version parses and is strictly older than this desktop. A newer brain, a
-   *   build or role mismatch at the same version, or an unreadable version
-   *   is left alone.
-   * - Never this process, a brain this pool owns, or a brain this desktop runs
-   *   under (a desktop started from a chat's terminal).
-   * - Once per pid: a brain that comes back is not asked again in this session.
-   * - `requestAdeRuntimeShutdown` re-reads the brain's own pid at the moment
-   *   of the request and sends nothing when it differs (a recycled pid).
+   * installed service can start the current one. The guards and the reason
+   * live in `olderBrainRetirement.ts`; this reads the pool's state for them.
+   * Each brain is asked at most once per session.
    */
   private async retireOlderPrimaryBrain(primarySocketPath: string): Promise<void> {
     const mismatch = this.lastPrimaryProbeMismatch;
     this.lastPrimaryProbeMismatch = null;
     if (!mismatch || mismatch.socketPath !== primarySocketPath) return;
     const { error } = mismatch;
-    const pid = error.pid;
+    const logFields = {
+      socketPath: primarySocketPath,
+      runtimePid: error.pid,
+      runtimeVersion: error.runtimeVersion,
+      runtimeDefaultRole: error.runtimeDefaultRole,
+      appVersion: this.appVersion,
+    };
     const refuse = (reason: string): void => {
       // The recovery tick runs every 20 s; one line per brain and reason.
-      const logKey = `${pid ?? "none"}:${reason}`;
+      const logKey = `${error.pid ?? "none"}:${reason}`;
       if (this.loggedOlderBrainRefusals.has(logKey)) return;
       this.loggedOlderBrainRefusals.add(logKey);
-      this.logger.info("local_runtime.older_brain_left_running", {
-        socketPath: primarySocketPath,
-        runtimePid: pid,
-        runtimeVersion: error.runtimeVersion,
-        appVersion: this.appVersion,
-        reason,
-      });
+      this.logger.info("local_runtime.older_brain_left_running", { ...logFields, reason });
     };
-    if (error.skewState !== "runtime_older") return;
-    if (!this.options.preferServiceRepair) return refuse("not_packaged");
-    if (this.disposed || this.stopping) return refuse("quitting");
-    if (this.isUpdateWindowActive()) return refuse("update_in_progress");
-    if (this.serviceInstallStatus.state !== "installed") return refuse("service_not_installed");
-    const comparison = compareRuntimeVersionStrings(error.runtimeVersion, this.appVersion);
-    if (comparison == null || comparison >= 0) return refuse("version_not_older");
-    if (pid == null || !Number.isInteger(pid) || pid <= 0) return refuse("no_pid");
-    if (
-      pid === process.pid
-      || pid === this.ownedRuntimeChild?.pid
-      || pid === this.activeRuntimePid
-    ) {
-      return refuse("own_process");
-    }
-    if (this.retiredOlderBrainPids.has(pid)) return refuse("already_asked");
-    if (!isRuntimePidAlive(pid)) return refuse("not_running");
-    // Recorded before the ancestry lookup: that lookup is a blocking process
-    // query (slow on Windows), so it must not repeat on every recovery tick.
-    this.retiredOlderBrainPids.add(pid);
-    let runsUnderIt = true;
-    try {
-      runsUnderIt = isCurrentProcessDescendantOfPid({ targetPid: pid });
-    } catch {
-      // Unknown ancestry is treated as "yes": the safe answer.
-    }
-    if (runsUnderIt) return refuse("desktop_runs_under_it");
-    const result = await requestAdeRuntimeShutdown({
-      pid,
+    const quitOrUpdateRefusal = (): string | null => {
+      if (this.disposed || this.stopping) return "quitting";
+      return this.isUpdateWindowActive() ? "update_in_progress" : null;
+    };
+    const decision = decideOlderBrainRetirement({
+      skewState: error.skewState,
+      runtimeVersion: error.runtimeVersion,
+      appVersion: this.appVersion,
+      pid: error.pid,
+      preferServiceRepair: this.options.preferServiceRepair === true,
+      serviceInstalled: this.serviceInstallStatus.state === "installed",
+      quitting: this.disposed || this.stopping,
+      updateInProgress: this.isUpdateWindowActive(),
+      ownPids: [this.ownedRuntimeChild?.pid, this.activeRuntimePid],
+      alreadyAsked: (pid) => this.retiredOlderBrainPids.has(pid),
+      isAlive: isRuntimePidAlive,
+    }, compareRuntimeVersionStrings);
+    if (decision.action === "skip") return;
+    if (decision.action === "refuse") return refuse(decision.reason);
+    // Recorded before the ancestry lookup, which reads the whole process table
+    // (PowerShell on Windows): it must not repeat on every tick.
+    this.retiredOlderBrainPids.add(decision.pid);
+    const result = await askOlderBrainToShutDown({
+      pid: decision.pid,
       socketPath: primarySocketPath,
-      timeoutMs: 3_000,
-    }).catch((requestError: unknown) => ({
-      requested: false as const,
-      reason: requestError instanceof Error ? requestError.message : String(requestError),
-    }));
-    if (result.requested) {
-      this.logger.warn("local_runtime.older_brain_shutdown_requested", {
-        socketPath: primarySocketPath,
-        runtimePid: pid,
-        runtimeVersion: error.runtimeVersion,
-        runtimeDefaultRole: error.runtimeDefaultRole,
-        appVersion: this.appVersion,
-      });
-      return;
-    }
-    refuse(`request_refused: ${result.reason}`);
+      recheck: quitOrUpdateRefusal,
+    });
+    if (!result.requested) return refuse(result.reason);
+    this.logger.warn("local_runtime.older_brain_shutdown_requested", logFields);
   }
 
   private async retryServiceInstallForIsolatedRecovery(): Promise<void> {
