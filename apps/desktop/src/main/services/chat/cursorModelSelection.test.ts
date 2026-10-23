@@ -479,18 +479,20 @@ describe("Cursor model options and a cold catalog", () => {
     expect(hasExplicitCursorSelection({ modelSdkId: "composer-2", configValues: { verbosity: "terse" } })).toBe(true);
   });
 
-  it("reads a chat's stored \"not fast\" as no tier opinion", () => {
-    // A chat stores "not fast" as `false` or as no value. Neither asks for the
-    // standard tier, so the local path never needs the catalog for it.
+  it("asks Cursor for the standard tier when a chat's Fast is off", () => {
+    // A chat stores "not fast" as `false` or as no value. Both are a request
+    // for standard now, because Cursor's own catalog default is not standard
+    // (Composer 2.5 defaults to Fast). The default standard is not an explicit
+    // choice, so it never earns a "could not apply" notice on its own.
     const input = cursorSdkSelectionInputForSession({ fastMode: false }, "composer-2");
     expect(input).toEqual({
       modelSdkId: "composer-2",
       reasoningEffort: undefined,
-      fastMode: null,
+      fastMode: false,
       serviceTier: null,
       configValues: null,
     });
-    expect(hasExplicitCursorSelection(input)).toBe(false);
+    expect(hasExplicitCursorSelection(input)).toBe(true);
     expect(cursorSdkSelectionInputForSession({ fastMode: true, cursorCloudServiceTier: "standard" }, "composer-2"))
       .toMatchObject({ fastMode: true, serviceTier: "standard" });
   });

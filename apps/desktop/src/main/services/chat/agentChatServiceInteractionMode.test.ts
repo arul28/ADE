@@ -1431,7 +1431,7 @@ describe("createAgentChatService", () => {
       },
     );
 
-    it("omits Codex service tier when fast mode was never turned on", async () => {
+    it("asks Codex for the default tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
         thread: { id: "thread-default" },
         serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
@@ -1452,20 +1452,20 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
-      // Verified against a live app-server: omitting inherits the user's
-      // config.toml service_tier, while an explicit null forces "default".
-      // ADE has no service-tier UI, so it must not name the key at all.
+      // Omitting the key inherits the user's config.toml service_tier, which
+      // can say "fast". An explicit null reports "default", so the chat's
+      // Standard control cannot bill a tier nobody asked for.
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
+      expect(threadStartRequest?.params).toHaveProperty("serviceTier", null);
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
+      expect(turnStartRequest?.params).toHaveProperty("serviceTier", null);
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.fastMode).toBe(false);
       expect(summary?.codexServiceTier).toBeNull();
       expect(readPersistedChatState(session.id).codexServiceTier).toBeNull();
     });
 
-    it("preserves fast mode selection on unsupported Codex models without naming a tier", async () => {
+    it("keeps Fast selected on an unsupported Codex model but asks for the default tier", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -1484,9 +1484,9 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
+      expect(threadStartRequest?.params).toHaveProperty("serviceTier", null);
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
+      expect(turnStartRequest?.params).toHaveProperty("serviceTier", null);
       expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
   });
