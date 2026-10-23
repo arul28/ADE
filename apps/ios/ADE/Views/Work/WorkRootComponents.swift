@@ -1835,6 +1835,49 @@ struct WorkRootHeader: View {
   /// they are the edge bar's buttons instead.
   var showsTrailingActions = true
 
+  private var titleCluster: some View {
+    HStack(spacing: 6) {
+      WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
+      Text("Work")
+        .font(.system(size: 22, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityAddTraits(.isHeader)
+    }
+  }
+
+  private var searchField: some View {
+    WorkHeaderSearchField(
+      searchText: $searchText,
+      filterOpen: $filterOpen,
+      activeFilterCount: activeFilterCount
+    )
+  }
+
+  @ViewBuilder
+  private var trailingActions: some View {
+    if showsTrailingActions {
+      Button(action: actions.onNewChat) {
+        Image(systemName: "square.and.pencil")
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+          .frame(width: 32, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!isLive)
+      .accessibilityLabel("New chat")
+      .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
+      WorkHeaderOverflowMenu(
+        showsLinear: showsLinear,
+        showsCursorCloud: showsCursorCloud,
+        showsGitHubIssues: showsGitHubIssues,
+        actions: actions
+      )
+    }
+  }
+
   var body: some View {
     HStack(spacing: 8) {
       if let selectionCount {
@@ -1850,36 +1893,25 @@ struct WorkRootHeader: View {
           .frame(minHeight: 44)
           .accessibilityLabel("Cancel selection")
       } else {
-        WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
-        Text("Work")
-          .font(.system(size: 22, weight: .heavy, design: .rounded))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .fixedSize()
-          .accessibilityAddTraits(.isHeader)
-        WorkHeaderSearchField(
-          searchText: $searchText,
-          filterOpen: $filterOpen,
-          activeFilterCount: activeFilterCount
-        )
-        if showsTrailingActions {
-        Button(action: actions.onNewChat) {
-          Image(systemName: "square.and.pencil")
-            .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
-            .frame(width: 32, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isLive)
-        .accessibilityLabel("New chat")
-        .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
-        WorkHeaderOverflowMenu(
-          showsLinear: showsLinear,
-          showsCursorCloud: showsCursorCloud,
-          showsGitHubIssues: showsGitHubIssues,
-          actions: actions
-        )
+        // One row where the search keeps a usable width (iPhone landscape, a
+        // wide window); otherwise the sidebar's two rows: ‹ logo and "Work",
+        // then search, New chat and ⋯. On a portrait phone the one row had
+        // squeezed the field to ~110pt.
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            titleCluster
+            searchField.frame(minWidth: 240)
+            trailingActions
+          }
+          VStack(alignment: .leading, spacing: 4) {
+            titleCluster
+              .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+              searchField
+              trailingActions
+            }
+            .padding(.bottom, 6)
+          }
         }
       }
     }

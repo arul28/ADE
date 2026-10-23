@@ -163,6 +163,12 @@ struct FilesDuoEditorChrome {
 }
 
 extension FilesDetailScreen {
+  /// The Changes toggle stays in its slot (the edge bar does not restore a
+  /// removed item); greyed, its name says why.
+  var changesButtonTitle: String {
+    editorModes.count < 2 ? "No changes in this file" : "Changes"
+  }
+
   /// "apps/ios/ADE/Views · Swift · 8 KB"
   var viewerSubtitle: String {
     var parts: [String] = []
@@ -193,7 +199,7 @@ extension FilesDetailScreen {
                 .frame(width: 34, height: 34)
             }
             .disabled(editorModes.count < 2)
-            .accessibilityLabel("Changes")
+            .accessibilityLabel(changesButtonTitle)
             Menu {
               viewerMenuContent(duoChrome)
             } label: {
@@ -306,7 +312,7 @@ extension FilesDetailScreen {
       Button {
         mode = mode == .diff ? .preview : .diff
       } label: {
-        Label("Changes", systemImage: mode == .diff ? "plusminus.circle.fill" : "plusminus.circle")
+        Label(changesButtonTitle, systemImage: mode == .diff ? "plusminus.circle.fill" : "plusminus.circle")
       }
       .disabled(editorModes.count < 2)
       .accessibilityValue(mode == .diff ? "On" : "Off")

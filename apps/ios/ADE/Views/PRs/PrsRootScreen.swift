@@ -748,10 +748,15 @@ struct PRsTabView: View, Equatable {
       }
       .id(prId)
     } else {
+      // Workflows has no detail of its own: say what the list does there,
+      // not "Select a pull request" beside a list of rebase cards.
+      let workflows = selectedRootSurface.wrappedValue == .workflows
       DuoSplitPlaceholder(
-        symbol: "arrow.triangle.pull",
-        title: "Select a pull request",
-        message: "Choose a pull request to read its description, review threads, files and checks.",
+        symbol: workflows ? "point.3.filled.connected.trianglepath.dotted" : "arrow.triangle.pull",
+        title: workflows ? "Workflows" : "Select a pull request",
+        message: workflows
+          ? "Rebase, defer or dismiss from the list. Inspect drift shows what changed on the base."
+          : "Choose a pull request to read its description, review threads, files and checks.",
         includesUtilities: !duoLayout.hasEdgeBar
       )
     }

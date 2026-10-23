@@ -296,6 +296,15 @@ struct FilesDetailsSheet: View {
   }
 }
 
+/// The highlighter stamps every run with a body-size font, which beat the
+/// view's footnote size (code drew at 17pt, larger than the tree). The
+/// viewer keeps the highlighter's colours and one code size.
+func filesCodeAttributed(_ text: String, as language: FilesLanguage) -> AttributedString {
+  var attributed = SyntaxHighlighter.highlightedAttributedString(text, as: language)
+  attributed.font = .system(.footnote, design: .monospaced)
+  return attributed
+}
+
 struct SyntaxHighlightedCodeView: View {
   let text: String
   let language: FilesLanguage
@@ -359,13 +368,7 @@ struct SyntaxHighlightedCodeView: View {
             .foregroundStyle(ADEColor.textMuted.opacity(0.8))
             .frame(width: lineNumberWidth, alignment: .trailing)
             .accessibilityHidden(true)
-          Text(SyntaxHighlighter.highlightedAttributedString(line.isEmpty ? " " : line, as: language))
-            .font(.system(.footnote, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(nil)
-            .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
-            .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
-            .textSelection(.enabled)
+          codeLine(line)
         }
         .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
         .padding(.horizontal, 8)
@@ -377,6 +380,36 @@ struct SyntaxHighlightedCodeView: View {
     .padding(.vertical, 8)
     .padding(.horizontal, 4)
     .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+  }
+
+  /// One line of code. Wrapped, a long line's continuation keeps the line's
+  /// own indent (an editor's hanging indent) instead of falling back to the
+  /// text column's edge, where it read as a new line.
+  @ViewBuilder
+  private func codeLine(_ line: String) -> some View {
+    let indent = wrapsLines ? String(line.prefix { $0 == " " || $0 == "\t" }) : ""
+    if indent.isEmpty || indent.count == line.count || indent.count > 24 {
+      codeText(line.isEmpty ? " " : line)
+    } else {
+      HStack(alignment: .firstTextBaseline, spacing: 0) {
+        Text(verbatim: indent.replacingOccurrences(of: "\t", with: "    "))
+          .font(.system(.footnote, design: .monospaced))
+          .fixedSize()
+          .accessibilityHidden(true)
+        codeText(String(line.dropFirst(indent.count)))
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func codeText(_ text: String) -> some View {
+    Text(filesCodeAttributed(text, as: language))
+      .font(.system(.footnote, design: .monospaced))
+      .foregroundStyle(ADEColor.textPrimary)
+      .lineLimit(nil)
+      .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
+      .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+      .textSelection(.enabled)
   }
 }
 
@@ -437,7 +470,7 @@ struct FilesInlineDiffView: View {
         HStack(alignment: .top, spacing: wrapsLines ? 8 : 12) {
           diffLineNumber(line.originalLineNumber)
           diffLineNumber(line.modifiedLineNumber)
-          Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
+          Text(filesCodeAttributed(line.text.isEmpty ? " " : line.text, as: language))
             .font(.system(.footnote, design: .monospaced))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(nil)

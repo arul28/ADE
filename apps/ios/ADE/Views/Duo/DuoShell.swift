@@ -221,7 +221,10 @@ struct DuoAppTabsToolbar: ToolbarContent {
       // Exactly the five tabs, on every screen and in every state: the rail's
       // bottom never changes shape. Activity and Settings live in the
       // screen's own ⋯ (or the Hub's), never at the rail's bottom.
-      if !duo.edgeBarYielded {
+      // Never on the Hub (Activity's rail beside it): the tabs belong to a
+      // project. A Hub column's stack is its own and never enters a project,
+      // so its rail never has to take the group back.
+      if !duo.edgeBarYielded, navigation.selectedId != "home" {
         DuoAppDestinationsToolbarGroup(navigation: navigation)
       }
     } else if navigation.family != .compact {
@@ -373,6 +376,9 @@ private struct DuoAppTabsMenu: View {
       }
     }
     .badge(elsewhereCount)
+    // One tint on every tab: the screen's own accent (green on Files, none on
+    // CTO) must not recolour the way between tabs.
+    .tint(Color.primary)
     .accessibilityLabel(menuSpokenLabel)
     .accessibilityIdentifier("Duo.AppTabsMenu")
   }
@@ -382,16 +388,17 @@ private struct DuoAppTabsMenu: View {
     return elsewhereCount > 0 ? "\(current), \(elsewhereCount) waiting elsewhere" : current
   }
 
+  /// A toggle, so the current tab keeps its glyph and gets the menu's own
+  /// leading checkmark instead of a checkmark in place of its icon.
   private func menuButton(_ item: DuoAppTabItem, isSelected: Bool) -> some View {
-    Button {
-      ADEHaptics.light()
-      navigation.select(item.id)
-    } label: {
-      if isSelected {
-        Label(item.title, systemImage: "checkmark")
-      } else {
-        DuoAppTabGlyph(item: item)
+    Toggle(isOn: Binding(
+      get: { isSelected },
+      set: { _ in
+        ADEHaptics.light()
+        navigation.select(item.id)
       }
+    )) {
+      DuoAppTabGlyph(item: item)
       if item.badge > 0 {
         Text(duoAppTabBadgeText(item))
       }

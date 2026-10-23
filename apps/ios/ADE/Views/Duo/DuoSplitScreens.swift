@@ -101,14 +101,22 @@ struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
         if case .sideBySide = fold { return true }
         return false
       }()
+      // A compact width (a phone, a narrow window) has room for one column:
+      // the list folds behind the detail as it does held portrait.
       let collapsible = adaptive
-        && (family == .tall || model.detailWantsFullWidth || (detailTakesBothPages && bookFolded))
+        && (family != .wide || model.detailWantsFullWidth || (detailTakesBothPages && bookFolded))
       let arrangement = Arrangement(
         family: family,
         collapsible: collapsible,
         hidesShellSidebar: adaptive && wantsWholeDisplay && family == .wide
       )
-      let foldedListWidth = family == .tall ? min(preferredListWidth, size.width * 0.45) : metrics.listWidth
+      let foldedListWidth: CGFloat = {
+        switch family {
+        case .tall: return min(preferredListWidth, size.width * 0.45)
+        case .compact: return size.width
+        case .wide: return metrics.listWidth
+        }
+      }()
 
       HStack(spacing: 0) {
         // A folded list comes back beside the detail, pushing it over, the
@@ -124,6 +132,9 @@ struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
             axis: .vertical,
             foldRect: metrics.showsDividerRule ? nil : CGRect(x: 0, y: 0, width: metrics.gutterWidth, height: size.height)
           )
+          // The columns scroll to the screen's bottom edge; the rule between
+          // them runs there too instead of stopping at the home-indicator inset.
+          .ignoresSafeArea(.container, edges: .bottom)
         }
         detail()
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -135,7 +146,7 @@ struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
         if model.listCollapsible != next.collapsible {
           model.listCollapsible = next.collapsible
           // Held portrait with nothing open, the list is the screen.
-          model.listShown = next.collapsible && next.family == .tall && selection == nil
+          model.listShown = next.collapsible && next.family != .wide && selection == nil
         }
         if adaptive {
           DuoShellChrome.shared.setSidebarPreferredHidden(next.hidesShellSidebar)
@@ -431,7 +442,7 @@ extension LanesTabView {
 struct LaneHeaderSearchField<MenuContent: View>: View {
   @Binding var searchText: String
   /// The field's placeholder and the filter chip's name (the PRs tab reuses it).
-  var prompt = "Search lanes, branches"
+  var prompt = "Search lanes"
   var filterLabel = "Lane filters"
   @ViewBuilder var menuContent: () -> MenuContent
   var filterActive: () -> Bool

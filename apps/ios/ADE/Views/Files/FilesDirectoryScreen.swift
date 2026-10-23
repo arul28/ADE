@@ -43,7 +43,9 @@ struct FilesNoFileOpenView: View {
 
         if !changes.isEmpty {
           section("Changed in this lane", count: changes.count) {
-            ForEach(changes.prefix(8)) { change in
+            // The header counts every change, so list them (the page
+            // scrolls); it showed 8 under "17".
+            ForEach(changes.prefix(60)) { change in
               pathRow(change.path, badge: filesChangeBadge(change.kind))
             }
           }
@@ -324,6 +326,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
     HStack(spacing: 0) {
       tree(open, false)
         .frame(width: treeShown ? leadWidth : 0)
+        // The tree scrolls to the screen's bottom edge like every other
+        // list column; clipped at the safe area it ended in a hard cut.
+        .ignoresSafeArea(.container, edges: .bottom)
         .opacity(treeShown ? 1 : 0)
         .allowsHitTesting(treeShown)
         .accessibilityHidden(!treeShown)

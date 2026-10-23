@@ -180,9 +180,13 @@ struct CtoSettingsScreen: View {
               .foregroundStyle(ADEColor.textMuted)
           }
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
       }
       .disabled(homeMachineSaving || !canChooseHomeMachine)
+      // A card like Identity and Model below it; bare, it read as stray text.
+      .adeKitCard(padding: nil)
       if !canChooseHomeMachine {
         // A brain without the command cannot store the choice for the account.
         Text("Update ADE on \(options.first?.name ?? "the primary machine") to choose the CTO's home machine from the phone.")

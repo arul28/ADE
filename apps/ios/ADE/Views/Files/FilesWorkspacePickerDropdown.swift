@@ -63,6 +63,11 @@ struct FilesWorkspacePickerDropdown: View {
     let workspace = selectedWorkspace
     let lane = workspace.flatMap { filesWorkspaceLaneSummary($0, lanes: lanes) }
     var subtitle = workspace.map(filesWorkspaceSubtitle) ?? ""
+    // "Primary" over "primary" says one thing twice: the branch line only
+    // shows when it adds something.
+    if let workspace, subtitle.caseInsensitiveCompare(workspace.name) == .orderedSame {
+      subtitle = ""
+    }
     if workspace != nil, !isLive {
       subtitle = subtitle.isEmpty ? "Offline" : "\(subtitle) · Offline"
     }

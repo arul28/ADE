@@ -619,8 +619,10 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   var body: some View {
     withToolbar(
       VStack(spacing: 0) {
+        // 16pt sides, the git pane's and the dashboard's, so the header, the
+        // segmented control and the cards share one left and right edge.
         header
-          .padding(.horizontal, 20)
+          .padding(.horizontal, 16)
           .padding(.top, 6)
         Picker("Section", selection: $section) {
           ForEach(Section.allCases) { option in
@@ -628,7 +630,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
           }
         }
         .pickerStyle(.segmented)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 8)
         Group {
@@ -738,16 +740,13 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
     }
   }
 
+  /// PR, Files and Manage on the bar; Refresh (pull to refresh does it too)
+  /// and the stack graph in ⋯. Six glyphs crowded the bar, and the stack's
+  /// layers glyph was the Lanes tab's own.
   @ToolbarContentBuilder
   private var commonItems: some ToolbarContent {
     ToolbarItem(placement: .topBarTrailing) {
-      Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
-    }
-    ToolbarItem(placement: .topBarTrailing) {
       Button("Open in Files", systemImage: "folder", action: onOpenFiles)
-    }
-    ToolbarItem(placement: .topBarTrailing) {
-      Button("Stack", systemImage: "square.stack.3d.up", action: onStackGraph)
     }
     ToolbarItem(placement: .topBarTrailing) {
       Button("Manage lane", systemImage: "slider.horizontal.3", action: onManage)
@@ -756,6 +755,9 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
 
   @ViewBuilder
   private var overflowItems: some View {
+    Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+    Button("Stack graph", systemImage: "point.3.connected.trianglepath.dotted", action: onStackGraph)
+    Divider()
     Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
     Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)
   }
@@ -794,6 +796,9 @@ struct LaneDuoDashboard: View {
     // Right under the column's segmented control: no grouped-list gap above.
     .contentMargins(.top, 4, for: .scrollContent)
     .contentMargins(.bottom, 24, for: .scrollContent)
+    // The same 16pt sides as the header and the segmented control above:
+    // the grouped list's own margins ran its cards ~14pt further right.
+    .contentMargins(.horizontal, 16, for: .scrollContent)
   }
 
   // MARK: Identity
@@ -935,20 +940,25 @@ struct LaneDuoDashboard: View {
     let all = staged + unstaged
     let additions = all.reduce(0) { $0 + ($1.additions ?? 0) }
     let deletions = all.reduce(0) { $0 + ($1.deletions ?? 0) }
-    Section("Changes") {
-      if all.isEmpty {
-        Text("No uncommitted changes")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-      } else {
-        LabeledContent("Staged", value: fileCount(staged.count))
-        LabeledContent("Unstaged", value: fileCount(unstaged.count))
-        LabeledContent("Lines") {
-          PrDiffStat(additions: additions, deletions: deletions, size: 12)
+    Section {
+      // The font on the rows, not the section: on the section it shrank the
+      // "Changes" header below the other sections' headers.
+      Group {
+        if all.isEmpty {
+          Text("No uncommitted changes")
+            .foregroundStyle(ADEColor.textSecondary)
+        } else {
+          LabeledContent("Staged", value: fileCount(staged.count))
+          LabeledContent("Unstaged", value: fileCount(unstaged.count))
+          LabeledContent("Lines") {
+            PrDiffStat(additions: additions, deletions: deletions, size: 12)
+          }
         }
       }
+      .font(.subheadline)
+    } header: {
+      Text("Changes")
     }
-    .font(.subheadline)
   }
 
   private func fileCount(_ count: Int) -> String {

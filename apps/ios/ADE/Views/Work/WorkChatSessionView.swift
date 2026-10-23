@@ -1254,15 +1254,16 @@ struct WorkChatSessionView: View {
       ViewThatFits(in: .horizontal) {
         chips
         ScrollView(.horizontal, showsIndicators: false) {
-          chips.padding(.trailing, 24)
+          chips.padding(.trailing, 40)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         // More pills past the edge fade out rather than being cut mid-pill.
         .mask {
           HStack(spacing: 0) {
             Color.black
+            // Wide enough that the cut pill reads as fading, not clipped.
             LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-              .frame(width: 28)
+              .frame(width: 48)
           }
         }
       }
@@ -2112,6 +2113,29 @@ struct WorkChatSessionView: View {
         // In the Duo's wide column the header is the rail's glass title
         // capsule, and the thread scrolls under it the same way.
         .ignoresSafeArea(edges: [.top, .bottom])
+        // The top's soft scroll edge: the thread fades out under the floating
+        // header capsules instead of sliding under them at full strength, and
+        // is fully clear where the first message rests.
+        .mask {
+          VStack(spacing: 0) {
+            LinearGradient(
+              stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .clear, location: 0.45),
+                .init(color: .black, location: 1),
+              ],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+            .frame(height: transcriptTopInset)
+            Color.black
+          }
+          .ignoresSafeArea()
+        }
+        // A readable line length on a wide window (an iPad without a second
+        // column, CTO): the thread and its composer stay one centred column.
+        .frame(maxWidth: workChatReadableWidth)
+        .frame(maxWidth: .infinity)
         // The proxy reports the layout frame; the bands the transcript was
         // allowed to grow into (header + status bar above, home indicator or
         // keyboard below) come back as its safe-area insets.
@@ -2132,6 +2156,7 @@ struct WorkChatSessionView: View {
         }
 
       bottomChrome
+        .frame(maxWidth: workChatReadableWidth)
         .onGeometryChange(for: CGFloat.self) { proxy in
           proxy.frame(in: .named(workChatColumnCoordinateSpace)).minY
         } action: { minY in
@@ -2186,6 +2211,23 @@ struct WorkChatSessionView: View {
       .ignoresSafeArea(.container, edges: compactRailAligned ? .bottom : [])
       .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
       .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
+      // A soft scroll edge under the floating chrome: the thread fades out
+      // above the pills and is gone behind and below the prompt box, instead
+      // of reading through the glass (no slab, no hard line).
+      .background(alignment: .bottom) {
+        LinearGradient(
+          stops: [
+            .init(color: workChatCanvasBackground.opacity(0), location: 0),
+            .init(color: workChatCanvasBackground.opacity(0.82), location: 0.3),
+            .init(color: workChatCanvasBackground, location: 0.6),
+          ],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+        .padding(.top, -28)
+        .ignoresSafeArea(.container, edges: .bottom)
+        .allowsHitTesting(false)
+      }
   }
 
   private var compactRailAligned: Bool {
@@ -2290,7 +2332,11 @@ struct WorkChatSessionView: View {
   var transcriptTopInset: CGFloat {
     // The Duo column's thread starts under a native bar, whose scroll-edge
     // effect softens the first few points; the first message starts clear of it.
-    max(duoPane == nil ? 9 : 22, transcriptSafeInsets.top.rounded() + 6)
+    // A phone held landscape reports no top band, yet the header's capsules
+    // still float there: start the thread below them so the first message
+    // can scroll clear (it sat under the title).
+    let floatingHeader: CGFloat = duoPane == nil && transcriptSafeInsets.top < 30 ? 62 : 0
+    return max(duoPane == nil ? 9 : 22, transcriptSafeInsets.top.rounded() + 6, floatingHeader)
   }
 
   /// Band the composer stack (chips included) covers at the bottom: the
@@ -2775,6 +2821,10 @@ func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFlo
 /// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
 /// the agent prose — no card, no gradient. Light mode keeps the app's warm
 /// paper tone so the chat doesn't look out of place there.
+/// The widest the thread and composer get: past it, lines are too long to
+/// read (desktop caps its chat column the same way).
+let workChatReadableWidth: CGFloat = 860
+
 let workChatCanvasBackground = Color(uiColor: UIColor { traits in
   traits.userInterfaceStyle == .dark
     ? UIColor(red: 0x0f / 255.0, green: 0x0f / 255.0, blue: 0x11 / 255.0, alpha: 1)

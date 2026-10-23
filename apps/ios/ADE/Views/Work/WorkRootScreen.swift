@@ -984,15 +984,18 @@ struct WorkRootListScreen: View, Equatable {
       // Opening the tools pane cedes the sessions column, exactly like the
       // desktop sidebar; closing it hands the column back (held landscape
       // only: held portrait the list is an overlay that is already away).
-      .onChange(of: duoPane.isOpen) { _, open in
-        guard duoWorkFamily == .wide else { return }
-        withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
-          duoShowsSessionList = !open
-        }
-      }
+      // Set in the pane's own open/close, not in an onChange after it: the
+      // list then goes in the same transaction as the pane arrives, instead of
+      // a beat later with the pane pushed half off-screen meanwhile.
       .onAppear {
         duoWideFold = fold
         duoWideSize = proxy.size
+        duoPane.willChangeOpen = { [duoWorkFamilyBox = $duoWorkFamily, list = $duoShowsSessionList, reduceMotion] open in
+          guard duoWorkFamilyBox.wrappedValue == .wide else { return }
+          withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
+            list.wrappedValue = !open
+          }
+        }
       }
     }
     .background(ADEColor.pageBackground)
@@ -1113,23 +1116,11 @@ struct WorkRootListScreen: View, Equatable {
       duoComposeColumn(route)
     case .chat(let route):
       sessionDestinationView(route, inColumn: true)
-    case .board:
-      duoBoardColumn
-    case .empty:
-      duoEmptyColumn
-    }
-  }
-
-  /// Nothing picked: a quiet note in the middle of the column and a way to
-  /// start. The rail keeps New Chat and the app tabs.
-  private var duoEmptyColumn: some View {
-    NavigationStack {
-      DuoWorkEmptyDetail(canCreate: inputs.isLive, onNewChat: pushNewChatRoute)
-        .toolbar {
-          // Activity and Settings are in the sessions ⋯, not on the rail.
-          DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
-        }
-        .modifier(duoShowSessionsItem)
+    case .board, .empty:
+      // One case, so one NavigationStack across List ⇄ Board: a stack swapped
+      // in under the edge bar drops its rail-top item (New Chat) to an empty
+      // bubble at the bottom of the column.
+      duoBoardOrEmptyColumn(isBoard: { if case .board = duoDetail { return true } else { return false } }())
     }
   }
 
@@ -1155,8 +1146,41 @@ struct WorkRootListScreen: View, Equatable {
     .id(route.preferredLaneId ?? "-")
   }
 
-  /// The board in the detail column, beside the list.
-  private var duoBoardColumn: some View {
+  /// The board, or nothing picked (a quiet note in the middle of the column),
+  /// in the detail column. The rail keeps New Chat and the app tabs in both;
+  /// the board adds ‹ project logo, "Work" and the List | Board switch.
+  private func duoBoardOrEmptyColumn(isBoard: Bool) -> some View {
+    NavigationStack {
+      Group {
+        if isBoard {
+          duoBoardContent
+            .toolbar {
+              DuoHubBackToolbarItem()
+              duoBoardHeaderItem
+            }
+        } else {
+          DuoWorkEmptyDetail(
+            canCreate: inputs.isLive,
+            showsNewChatButton: !duoLayout.hasEdgeBar,
+            onNewChat: pushNewChatRoute
+          )
+          .modifier(duoShowSessionsItem)
+        }
+      }
+      .navigationTitle(isBoard ? "Board" : "")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar(removing: .title)
+      .toolbar {
+        if duoLayout.hasEdgeBar || isBoard {
+          ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
+        }
+        // Activity and Settings are in the sessions ⋯, not on the rail.
+        DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
+      }
+    }
+  }
+
+  private var duoBoardContent: some View {
     let topLevel = displaySessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }
     let board = duoWorkBoardColumns(
       sessions: topLevel,
@@ -1165,28 +1189,16 @@ struct WorkRootListScreen: View, Equatable {
       laneWaitingReasonByLaneId: workLaneWaitingReasonByLaneId(lanes: lanes, pullRequests: pullRequests),
       busySubagentParentIds: sessionPresentation.busySubagentParentIds
     )
-    return NavigationStack {
-      DuoWorkBoard(
-        columns: board.columns,
-        waitingReasons: board.waitingReasons,
-        laneColor: { session in
-          laneById[session.laneId].map { LaneColorPalette.displayColor(forHex: $0.color) }
-        },
-        card: { session in
-          sessionListRow(session, compact: false, showsLaneIdentity: true, transitionNamespace: nil, boardCard: true)
-        }
-      )
-      .navigationTitle("Board")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar(removing: .title)
-      .toolbar {
-        // ‹ project logo, "Work", and the List | Board switch back.
-        DuoHubBackToolbarItem()
-        duoBoardHeaderItem
-        ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
-        DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
+    return DuoWorkBoard(
+      columns: board.columns,
+      waitingReasons: board.waitingReasons,
+      laneColor: { session in
+        laneById[session.laneId].map { LaneColorPalette.displayColor(forHex: $0.color) }
+      },
+      card: { session in
+        sessionListRow(session, compact: false, showsLaneIdentity: true, transitionNamespace: nil, boardCard: true)
       }
-    }
+    )
   }
 
   @ToolbarContentBuilder
@@ -1233,9 +1245,9 @@ struct WorkRootListScreen: View, Equatable {
 
   /// New Chat as the rail's one filled circle.
   private var duoNewChatRailButton: some View {
+    // A plain toolbar button: the edge bar lifts a custom-styled item
+    // (.glassProminent) out of the rail as an empty floating capsule.
     Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
       .disabled(!inputs.isLive)
       .accessibilityIdentifier("Duo.Work.Rail.NewChat")
   }
@@ -1714,6 +1726,9 @@ struct WorkRootListScreen: View, Equatable {
       }
       .listStyle(.plain)
       .listSectionSpacing(.custom(Self.workGroupSectionSpacing))
+      // Rows size themselves; the 44pt default floor turned the one-line
+      // subagent/shell marks row into a 44pt band floating between chats.
+      .environment(\.defaultMinListRowHeight, 1)
       .scrollContentBackground(.hidden)
       .scrollDismissesKeyboard(.interactively)
       .contentMargins(.bottom, workRootBottomTabBarScrollMargin, for: .scrollContent)
@@ -2413,8 +2428,11 @@ struct WorkRootListScreen: View, Equatable {
       boardCard: boardCard,
       // The Duo's sessions column draws the wide row; nested drawer rows keep
       // their compact form.
-      duoRow: duoLayout.isWide && !boardCard && !compact && !nestedSubagent,
-      machineName: duoLayout.isWide ? workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions) : nil,
+      // One row design on every device: the sidebar's row (provider mark
+      // leading, status inline on the meta line) also on a phone, where the
+      // older row spent a whole line on the status above the title.
+      duoRow: !boardCard && !compact && !nestedSubagent,
+      machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

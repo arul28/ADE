@@ -20,6 +20,7 @@ struct ActivityDrawerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bucket: ActivityBucket = .sessions
+    @ObservedObject private var duoNavigation = DuoAppNavigation.shared
     /// The row currently waking its machine, so the wait is attached to the
     /// thing that caused it rather than to a modal over the whole sheet.
     @State private var connectingRowId: String?
@@ -96,9 +97,11 @@ struct ActivityDrawerSheet: View {
                     }
                     .accessibilityLabel("Activity actions")
                 }
-                if isInspector {
+                if isInspector, duoNavigation.hasEdgeBar {
                     // The column now has the curved edge, so its rail ends in
-                    // the five tabs, as every in-project rail does.
+                    // the five tabs, as every in-project rail does. Without an
+                    // edge bar (an iPad) the screen beside it keeps the tab
+                    // menu; a second one here read as another Home button.
                     DuoAppTabsToolbar()
                 }
             }

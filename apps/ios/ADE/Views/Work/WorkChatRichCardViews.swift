@@ -1667,7 +1667,7 @@ struct WorkEventCardView: View, Equatable {
       Image(systemName: card.icon)
         .font(.caption.weight(.semibold))
         .foregroundStyle(card.tint.color)
-        .frame(width: 18, height: 18)
+        .frame(width: 18, height: 18, alignment: .leading)
       Text(ribbonText)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
@@ -1677,7 +1677,9 @@ struct WorkEventCardView: View, Equatable {
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
     }
-    .padding(.horizontal, 10)
+    // No surface, so no leading inset: the glyph starts on the thread's own
+    // text edge (it sat ~10pt+ in from the messages around it).
+    .padding(.trailing, 10)
     .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
@@ -3460,7 +3462,9 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
-    running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active)"
+    // Every row the section lists (live plus the "Completed (n)" group): a
+    // bare active count read "0" above two completed subagents.
+    running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active + earlier)"
   }
 
   var body: some View {

@@ -1887,7 +1887,10 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   /// tall pane); a row along the bottom on a phone or a short pane.
   private var dockIsVertical: Bool {
     switch context {
-    case .column: return true
+    // Beside the Duo's edge bar the bubbles stand in a column off the rail;
+    // everywhere else (an iPad, the Duo upright) the same row along the
+    // bottom the phone has, so the PR reads the same on every device.
+    case .column: return duo.hasEdgeBar
     case .phone: return false
     case .pane: return overviewSize.height >= 440 && overviewSize.width >= 420
     }
@@ -1988,9 +1991,10 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      // The column has no bar of its own for ⋯ (held landscape the bar is
-      // the edge bar, whose top is the ticks): it sits beside the title.
-      if context == .column {
+      // Held landscape the column's bar is the edge bar, whose top is the
+      // ticks, so ⋯ sits beside the title; with a normal bar (an iPad, the
+      // Duo upright) it is the bar's trailing item, as on the phone.
+      if context == .column && duo.hasEdgeBar {
         Menu {
           overflow()
         } label: {
@@ -2023,7 +2027,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         .tag(PrDetailTab.checks)
     }
     .pickerStyle(.segmented)
-    .frame(maxWidth: 420, alignment: .leading)
+    // Across the column, like Lanes' Overview | Git: one style for a
+    // detail's sections.
+    .frame(maxWidth: .infinity)
   }
 
   @ViewBuilder
@@ -2088,6 +2094,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       .overlay(alignment: .bottom) {
         if isReady && !dockIsVertical {
           rowDock
+            // In a Work chat's pane the row sits on the composer's line: its
+            // capsules' bottom is the rail's bottom (8 = the row's own pad).
+            .modifier(PrPaneDockAlignment(active: context == .pane))
         }
       }
       .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
@@ -2118,7 +2127,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         }
       }
       .frame(width: showsDock ? 44 : 26)
-      .padding(.leading, 4)
+      // Clear of the rows' trailing chevrons and times, so the bubbles do
+      // not read as part of a row.
+      .padding(.leading, showsDock ? 16 : 4)
       .padding(.trailing, showsDock ? 14 : 6)
     }
   }
@@ -2187,17 +2198,19 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
     .padding(.horizontal, 12)
     .padding(.bottom, 8)
-    // The thread fades out under the row, so no line reads through the glass.
+    // The thread fades out under the row, so no line reads through the glass:
+    // solid by the capsules' top, a soft edge above them.
     .background(alignment: .bottom) {
       LinearGradient(
         stops: [
           .init(color: ADEColor.pageBackground.opacity(0), location: 0),
-          .init(color: ADEColor.pageBackground.opacity(0.92), location: 0.55),
+          .init(color: ADEColor.pageBackground.opacity(0.85), location: 0.3),
+          .init(color: ADEColor.pageBackground, location: 0.5),
         ],
         startPoint: .top,
         endPoint: .bottom
       )
-      .frame(height: 96)
+      .frame(height: 112)
       .ignoresSafeArea(edges: .bottom)
       .allowsHitTesting(false)
     }
@@ -2259,22 +2272,24 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       }
       .frame(width: size, height: size)
       .contentShape(Circle())
+      // The count is part of the label, so it draws above the bubble's
+      // glass; as a sibling overlay the merged glass covered half of it.
+      .overlay(alignment: .topTrailing) {
+        let count = badgeCount(item)
+        if count > 0 {
+          Text(verbatim: "\(count)")
+            .font(.system(size: 10, weight: .bold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(ADEColor.accent, in: Capsule())
+            .offset(x: 3, y: -3)
+            .allowsHitTesting(false)
+        }
+      }
     }
     .buttonStyle(.plain)
     .glassEffect(.regular.interactive(), in: Circle())
-    .overlay(alignment: .topTrailing) {
-      let count = badgeCount(item)
-      if count > 0 {
-        Text(verbatim: "\(count)")
-          .font(.system(size: 10, weight: .bold).monospacedDigit())
-          .foregroundStyle(.white)
-          .padding(.horizontal, 4)
-          .frame(minWidth: 16, minHeight: 16)
-          .background(ADEColor.accent, in: Capsule())
-          .offset(x: 3, y: -3)
-          .allowsHitTesting(false)
-      }
-    }
     .modifier(cardPopover(item))
     .accessibilityLabel(item == .merge ? "Merge: \(mergeHeadline)" : item.title)
     .accessibilityValue(badgeCount(item) > 0 ? "\(badgeCount(item))" : "")
@@ -2321,6 +2336,16 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       if !duo.hasEdgeBar {
         DuoSplitListToggle(split: split)
       }
+      if context == .column && !duo.hasEdgeBar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu {
+            overflow()
+          } label: {
+            Image(systemName: "ellipsis")
+              .accessibilityLabel("Pull request actions")
+          }
+        }
+      }
     }
   }
 
@@ -2352,6 +2377,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
           }
         }
       }
+      // The file list and the diff scroll to the screen's bottom edge, like
+      // the Overview; stopping at the home-indicator inset left a hard cut.
+      .ignoresSafeArea(.container, edges: .bottom)
       .onAppear { selectFirstFileIfNeeded() }
       .onChange(of: model.files.map(\.filename)) { _, _ in selectFirstFileIfNeeded() }
     } else {
@@ -2371,7 +2399,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       )
     }
     .adeFlatList()
-    .listSectionSpacing(.compact)
+    // Folder groups sit close together: the compact default left a gap
+    // taller than a row above each folder header.
+    .listSectionSpacing(4)
     .contentMargins(.bottom, 24, for: .scrollContent)
     .refreshable { await actions.refresh() }
   }
@@ -2421,6 +2451,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
           checksList(selecting: false)
         }
       }
+      .ignoresSafeArea(.container, edges: .bottom)
       .onAppear { selectFirstCheckIfNeeded() }
       .onChange(of: model.checks.map(\.id)) { _, _ in selectFirstCheckIfNeeded() }
     } else {
@@ -2593,5 +2624,20 @@ private struct PrDockCardPopover<Card: View>: ViewModifier {
 
   func body(content: Content) -> some View {
     content.popover(isPresented: $isPresented, arrowEdge: arrowEdge) { card() }
+  }
+}
+
+/// The PR pane's row of capsules, on a Duo held landscape: bottom-aligned
+/// with the edge bar's last capsule and the chat's prompt box beside it.
+private struct PrPaneDockAlignment: ViewModifier {
+  let active: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if active {
+      content.duoEdgeBarAlignedBottom(contentBottomPadding: 8)
+    } else {
+      content
+    }
   }
 }

@@ -63,7 +63,7 @@ struct PrFilesSections: View {
         } else {
           HStack(spacing: 6) {
             Text(verbatim: "\(files.count.formatted(.number)) file\(files.count == 1 ? "" : "s")")
-              .font(.adeMono(12, weight: .medium))
+              .font(.footnote.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
             Text("·").foregroundStyle(ADEColor.textMuted)
             PrDiffStat(

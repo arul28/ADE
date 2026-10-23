@@ -790,6 +790,9 @@ struct ADESettingsRow<Control: View>: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      // The text takes the row's room before the spacer does; otherwise a
+      // hint wrapped at half the row with empty space beside it.
+      .layoutPriority(1)
       Spacer(minLength: 8)
       control()
     }

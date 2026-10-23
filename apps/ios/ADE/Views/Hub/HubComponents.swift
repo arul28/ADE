@@ -399,14 +399,28 @@ struct HubConnectionMenu: View {
     Menu {
       HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
     } label: {
+      // A narrow phone gives the machine's name the room: the wordmark goes
+      // before the name truncates ("ADE • Arul…").
+      ViewThatFits(in: .horizontal) {
+        labelRow(showsBrand: true)
+        labelRow(showsBrand: false)
+      }
+    }
+    .accessibilityLabel(status.accessibilityLabel)
+    .accessibilityHint("Shows your machines and connection settings.")
+  }
+
+  private func labelRow(showsBrand: Bool) -> some View {
       HStack(spacing: 8) {
-        Image("BrandMark")
-          .resizable()
-          .renderingMode(.original)
-          .interpolation(.high)
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 38, height: 21)
-          .accessibilityHidden(true)
+        if showsBrand {
+          Image("BrandMark")
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 38, height: 21)
+            .accessibilityHidden(true)
+        }
         Group {
           if let switching = status.switchingProjectName {
             HStack(spacing: 6) {
@@ -429,9 +443,6 @@ struct HubConnectionMenu: View {
       }
       .padding(.horizontal, 6)
       .animation(.easeInOut(duration: 0.25), value: status.switchingProjectName)
-    }
-    .accessibilityLabel(status.accessibilityLabel)
-    .accessibilityHint("Shows your machines and connection settings.")
   }
 }
 
@@ -1040,6 +1051,8 @@ enum HubProjectGridMetrics {
   static let minTileWidth: CGFloat = 128
   static let spacing: CGFloat = 12
   static let tileHeight: CGFloat = 138
+  /// A short screen (a phone held landscape): icon and name on one line.
+  static let shortTileHeight: CGFloat = 96
 
   static var columns: [GridItem] {
     [GridItem(.adaptive(minimum: minTileWidth), spacing: spacing, alignment: .top)]
@@ -1071,7 +1084,10 @@ struct HubProjectTile: View, Equatable {
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+  private var isShort: Bool { verticalSizeClass == .compact }
+  private var tileHeight: CGFloat { isShort ? HubProjectGridMetrics.shortTileHeight : HubProjectGridMetrics.tileHeight }
   private var project: MobileProjectSummary { presentation.project }
   private var rootPath: String? {
     let path = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1081,20 +1097,36 @@ struct HubProjectTile: View, Equatable {
   var body: some View {
     Button(action: onOpenProject) {
       VStack(alignment: .leading, spacing: 0) {
-        HStack(alignment: .top, spacing: 6) {
-          HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
-          Spacer(minLength: 4)
-          if machineLabel != nil, machineCount > 0 {
-            HubProjectMachineChip(count: machineCount)
+        if isShort {
+          // A short screen (a phone held landscape): icon and name share the
+          // first line, so two rows of tiles fit above the composer.
+          HStack(alignment: .center, spacing: 8) {
+            HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 26)
+            Text(project.displayName)
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if machineLabel != nil, machineCount > 0 {
+              HubProjectMachineChip(count: machineCount)
+            }
           }
+        } else {
+          HStack(alignment: .top, spacing: 6) {
+            HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
+            Spacer(minLength: 4)
+            if machineLabel != nil, machineCount > 0 {
+              HubProjectMachineChip(count: machineCount)
+            }
+          }
+          Spacer(minLength: 8)
+          Text(project.displayName)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        Spacer(minLength: 8)
-        Text(project.displayName)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-          .multilineTextAlignment(.leading)
-          .frame(maxWidth: .infinity, alignment: .leading)
         Spacer(minLength: 6)
         // Bound to a local because `stateCounts` walks the whole lane tree.
         let stateCounts = presentation.stateCounts
@@ -1105,7 +1137,7 @@ struct HubProjectTile: View, Equatable {
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(ADEColor.textMuted)
             } else {
-              HubStateSummary(counts: stateCounts)
+              HubStateSummary(counts: stateCounts, fitsWidth: true)
             }
             Text(presentation.metaLine)
               .font(.system(size: 11))
@@ -1121,8 +1153,7 @@ struct HubProjectTile: View, Equatable {
         }
       }
       .padding(12)
-      .frame(maxWidth: .infinity, minHeight: HubProjectGridMetrics.tileHeight,
-             maxHeight: HubProjectGridMetrics.tileHeight, alignment: .topLeading)
+      .frame(maxWidth: .infinity, minHeight: tileHeight, maxHeight: tileHeight, alignment: .topLeading)
       .adeKitCard(padding: nil)
       .overlay {
         // The accent marks the one selected thing: the project open on the phone.

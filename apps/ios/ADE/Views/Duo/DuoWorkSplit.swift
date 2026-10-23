@@ -129,6 +129,8 @@ enum DuoWorkViewMode: String, CaseIterable, Identifiable {
 /// unavailable view, centered in the column, and one way to start.
 struct DuoWorkEmptyDetail: View {
   let canCreate: Bool
+  /// False held landscape, where New Chat sits at the rail's top instead.
+  var showsNewChatButton = true
   let onNewChat: () -> Void
 
   var body: some View {
@@ -137,10 +139,12 @@ struct DuoWorkEmptyDetail: View {
     } description: {
       Text("Pick a chat from the list, or start a new one.")
     } actions: {
-      Button("New Chat", action: onNewChat)
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
-        .disabled(!canCreate)
+      if showsNewChatButton {
+        Button("New Chat", action: onNewChat)
+          .buttonStyle(.glassProminent)
+          .tint(ADEColor.accent)
+          .disabled(!canCreate)
+      }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ADEColor.pageBackground.ignoresSafeArea())
@@ -585,8 +589,11 @@ struct DuoChatRail: ViewModifier {
     // leaves them their room, or the bar folds Tools into its overflow.
     if !duo.hasEdgeBar {
       // Measured upright on the Duo (669pt): at - 400 the bar folded Tools
-      // and ⋯ into its own "More".
-      return max(150, min(420, columnWidth - 470))
+      // and ⋯ into its own "More". An iPad has no status column beside the
+      // bar, so its title keeps more of the width (it cut to "Bump mob…"
+      // with 150pt free beside it).
+      let reserved: CGFloat = duo.hasFold ? 470 : (paneBesideChat ? 330 : 270)
+      return max(150, min(420, columnWidth - reserved))
     }
     let chat = paneBesideChat ? columnWidth / 2 : columnWidth
     let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 36 : 250
@@ -662,32 +669,29 @@ struct DuoChatRail: ViewModifier {
   @available(iOS 27.1, *)
   @ToolbarContentBuilder
   private func rail27(paneActions: DuoPaneHeaderActions?) -> some ToolbarContent {
+    // First, so without the edge bar (iPad, held upright) the tabs menu is the
+    // screen's top-left item on Work and CTO as on every other tab, ahead of
+    // the chat's title. On the edge bar it is the rail's bottom group.
+    DuoAppTabsToolbar(includesUtilities: !duo.hasEdgeBar)
     ToolbarItem(placement: .topBarLeading) { header(pane: paneHeader(paneActions)) }
       .sharedBackgroundVisibility(.hidden)
       .axisBehavior(.horizontalOnly)
-    // Without the edge bar the tabs menu also sits leading: a gap keeps it its
-    // own capsule instead of joining the chat's title.
-    ToolbarSpacer(.fixed, placement: .topBarLeading)
     ToolbarItemGroup(placement: .topBarTrailing) { closeSlot }
       .visibilityPriority(.high)
     ToolbarSpacer(.fixed, placement: .topBarTrailing)
     ToolbarItemGroup(placement: .topBarTrailing) { chatButtons }
       .visibilityPriority(.high)
-    // On the edge bar, Activity and Settings are in a ⋯ (the sessions
-    // column's), never on the rail; elsewhere the tabs menu.
-    DuoAppTabsToolbar(includesUtilities: !duo.hasEdgeBar)
   }
 
   /// iOS 26: the same toolbar without the 27.1 axis and priority APIs.
   @ToolbarContentBuilder
   private var rail26: some ToolbarContent {
+    DuoAppTabsToolbar()
     ToolbarItem(placement: .topBarLeading) { header(pane: nil) }
       .sharedBackgroundVisibility(.hidden)
-    ToolbarSpacer(.fixed, placement: .topBarLeading)
     ToolbarItemGroup(placement: .topBarTrailing) { closeSlot }
     ToolbarSpacer(.fixed, placement: .topBarTrailing)
     ToolbarItemGroup(placement: .topBarTrailing) { chatButtons }
-    DuoAppTabsToolbar()
   }
 
   /// The pane's Close, alone at the top while a pane is beside the chat.
@@ -739,10 +743,10 @@ struct DuoChatRail: ViewModifier {
 
   @ViewBuilder
   private var workChatButtons: some View {
-    if !(paneBesideChat && pane.tab == .chatInfo) {
-      chatInfoButton
-        .disabled(!model.isChat)
-    }
+    // Chat Info stays in its slot while it is the pane (tinted, a second tap
+    // puts it away), so the group keeps one shape whatever the pane shows.
+    chatInfoButton
+      .disabled(!model.isChat)
     toolsMenu
     if !paneBesideChat && model.isChat {
       actionsMenu
@@ -783,12 +787,14 @@ struct DuoChatRail: ViewModifier {
 
   /// Chat info: Agents, background work, proof and sources, beside the thread.
   private var chatInfoButton: some View {
-    Button {
+    let showing = paneBesideChat && pane.tab == .chatInfo
+    return Button {
       ADEHaptics.light()
-      actions.onChatInfo()
+      if showing { pane.close() } else { actions.onChatInfo() }
     } label: {
       Label("Chat Info", systemImage: DuoToolTab.chatInfo.symbolName)
     }
+    .tint(showing ? ADEColor.accent : nil)
     .badge(model.menu.chatInfoCount)
     .accessibilityIdentifier("Duo.Work.ChatInfo")
   }

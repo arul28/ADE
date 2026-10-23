@@ -428,9 +428,9 @@ struct WorkUsageActivityCarousel: View {
           }
         } else if loading {
           Text("Loading activity…")
-        } else {
-          Text("No activity yet")
         }
+        // Empty: the card's own message says it; a second "No activity yet"
+        // under it was one empty state told twice.
       }
       .font(ADEUsageType.microFont().monospacedDigit())
       .foregroundStyle(ADEColor.textMuted)
@@ -827,19 +827,10 @@ private struct WorkUsageTabEmptyHint: View {
 }
 
 private struct WorkUsageWarmEmpty: View {
-  private let fractions: [CGFloat] = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.66, 0.4, 0.54]
-
   var body: some View {
+    // Just the message: grey placeholder bars above it read as a chart that
+    // failed to load.
     VStack(spacing: 8) {
-      HStack(alignment: .bottom, spacing: 3) {
-        ForEach(Array(fractions.enumerated()), id: \.offset) { _, fraction in
-          RoundedRectangle(cornerRadius: 2, style: .continuous)
-            .fill(ADEColor.textMuted.opacity(0.12))
-            .frame(height: 34 * fraction)
-            .frame(maxWidth: .infinity)
-        }
-      }
-      .frame(height: 34)
       Text("Nothing here yet — your first Claude or Codex turn shows up within a minute.")
         .font(ADEUsageType.microFont())
         .foregroundStyle(ADEColor.textMuted)

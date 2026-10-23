@@ -122,6 +122,10 @@ final class DuoWorkPaneModel: ObservableObject {
   /// starts where a chip tap would have. Not published: it only seeds the
   /// next open.
   private var chipSeed = DuoToolSeed()
+  /// Runs just before the pane appears or goes, in the same transaction, so
+  /// the Work root can cede (or hand back) the sessions column without a
+  /// frame where list, chat and pane all claim their full widths.
+  var willChangeOpen: ((Bool) -> Void)?
 
   /// Opens a tab. The pane appears if it was closed, and switches if it was not.
   func open(_ tab: DuoToolTab, seed: DuoToolSeed? = nil, origin: UnitPoint = .topTrailing) {
@@ -129,7 +133,10 @@ final class DuoWorkPaneModel: ObservableObject {
     if self.seed != next { self.seed = next }
     if !isOpen, self.origin != origin { self.origin = origin }
     if self.tab != tab { self.tab = tab }
-    if !isOpen { isOpen = true }
+    if !isOpen {
+      willChangeOpen?(true)
+      isOpen = true
+    }
   }
 
   /// Opens the tool a lane tool chip stands for, seeded from the chip's poll.
@@ -162,7 +169,10 @@ final class DuoWorkPaneModel: ObservableObject {
   }
 
   func close() {
-    if isOpen { isOpen = false }
+    if isOpen {
+      willChangeOpen?(false)
+      isOpen = false
+    }
     if tab != nil { tab = nil }
     if seed != DuoToolSeed() { seed = DuoToolSeed() }
   }
@@ -643,9 +653,10 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
           // would be handed half the room, whatever the hinge says.
           .frame(width: isOpen ? split.chat : nil)
           .frame(maxWidth: isOpen ? nil : .infinity, maxHeight: .infinity)
-          // Alone across a book fold, the thread may span both pages but the
-          // composer keeps to the trailing one.
-          .environment(\.duoComposerLeadingInset, isOpen ? 0 : composerInset(fold: fold, width: size.width))
+          // Alone across a book fold the composer sits under the thread it
+          // writes to, the same width (it sat on the right page only, under
+          // a thread spanning both). Work and CTO lay out the same.
+          .environment(\.duoComposerLeadingInset, 0)
         if isOpen {
           DuoSeam(axis: .vertical, foldRect: split.fold)
           tools()
@@ -726,16 +737,6 @@ struct DuoToolTiles: View {
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .accessibilityIdentifier("Duo.Work.ToolTiles")
-  }
-}
-
-extension DuoWorkChatPaneSplit {
-  /// The fold's trailing edge, when a book fold runs through the chat.
-  fileprivate func composerInset(fold: DuoFold, width: CGFloat) -> CGFloat {
-    guard case .sideBySide(let rect) = fold,
-          rect.minX > 200,
-          width - rect.maxX > 280 else { return 0 }
-    return rect.maxX
   }
 }
 

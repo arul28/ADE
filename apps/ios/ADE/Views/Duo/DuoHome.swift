@@ -455,7 +455,6 @@ struct DuoPersonalChatsWindow: View {
 
   @State private var selection: Selection?
   @State private var listShown = true
-  @State private var newChatShown = false
   /// The chat column's tools pane and rail, the same model Work's chat column
   /// owns: handed to the chat, it builds the column's one stack itself, so its
   /// title sits on the top row and Chat Info, Tools and ⋯ go to the rail.
@@ -514,29 +513,25 @@ struct DuoPersonalChatsWindow: View {
         duoPaneOpen: pane.isOpen,
         duoShowsSidebar: listShown,
         onDuoToggleSidebar: { withAnimation(.snappy(duration: 0.25)) { listShown.toggle() } },
-        onDuoBack: { self.selection = nil }
+        onDuoBack: {
+          self.selection = nil
+          // Nothing picked and no list would leave no way to pick one.
+          listShown = true
+        }
       )
       .id(selection.id)
     } else {
       NavigationStack {
+        // New chat is the list's own compose button (one per screen), and
+        // the list already says what these chats are; this column only says
+        // what to do.
         ContentUnavailableView(
           "Pick a chat",
           systemImage: "bubble.left.and.bubble.right",
-          description: Text("Chats here aren’t tied to a project.")
+          description: Text("Choose one from the list.")
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ADEColor.pageBackground.ignoresSafeArea())
-        // The empty column's rail offers what Work's empty detail does: a
-        // new chat, at its top.
-        .toolbar {
-          ToolbarItem(placement: .topBarTrailing) {
-            Button { newChatShown = true } label: {
-              Label("New chat", systemImage: "square.and.pencil")
-            }
-            .accessibilityHint("Starts a conversation that is not linked to a project.")
-          }
-        }
-        .navigationDestination(isPresented: $newChatShown) { PersonalChatNewScreen() }
       }
     }
   }

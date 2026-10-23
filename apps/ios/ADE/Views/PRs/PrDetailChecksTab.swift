@@ -174,6 +174,9 @@ struct PrChecksSections: View {
             Text(missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text)
               .font(.subheadline.weight(.medium))
               .foregroundStyle(ADEColor.textPrimary)
+              // The tally takes the row before the spacer; it wrapped to
+              // three short lines beside Re-run in the Duo's check column.
+              .layoutPriority(1)
             Spacer(minLength: 8)
             if canRerun && headline.failing > 0 {
               Button("Re-run", action: onRerun)

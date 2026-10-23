@@ -372,21 +372,32 @@ struct PrDuoCard<Content: View>: View {
   var width: CGFloat = 340
   @ViewBuilder let content: () -> Content
 
+  private var card: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Label(dock.title, systemImage: dock.symbol)
+        .font(.headline)
+        .foregroundStyle(ADEColor.textPrimary)
+      content()
+    }
+    .padding(18)
+    .frame(width: width, alignment: .leading)
+  }
+
+  /// The card's measured height: the popover asks for exactly that (up to
+  /// 720) and the card scrolls past it, instead of a fixed size whose bottom
+  /// lines the popover cut off.
+  @State private var contentHeight: CGFloat = 320
+
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 14) {
-        Label(dock.title, systemImage: dock.symbol)
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-        content()
-      }
-      .padding(18)
-      .frame(width: width, alignment: .leading)
+      card
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+          contentHeight = height
+        }
     }
     .scrollBounceBehavior(.basedOnSize)
-    .frame(width: width)
-    .frame(maxHeight: 560)
-    .fixedSize(horizontal: false, vertical: true)
+    .frame(width: width, height: min(max(contentHeight, 1), 720))
     .presentationCompactAdaptation(.popover)
   }
 }
@@ -589,10 +600,13 @@ struct PrDuoMergeCard: View {
       .disabled(anyway.blocked || isBusy)
       if anyway.blocked, let reason = anyway.blockedReason {
         Text(reason).font(.caption).foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
       } else if !anyway.skips.isEmpty {
+        // Never squeezed: a short popover cut this line in half.
         Text("Skips \(anyway.skips.joined(separator: ", ")).")
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
     if primary == nil, !isOpen, step.kind == .closed {

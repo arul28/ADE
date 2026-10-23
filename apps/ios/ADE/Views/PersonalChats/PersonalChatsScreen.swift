@@ -115,20 +115,12 @@ struct PersonalChatsScreen: View {
       PersonalChatNewScreen()
     }
     .safeAreaInset(edge: .top, spacing: 0) {
+      // A small tinted capsule, not a full-width band: the band also tinted
+      // the bar above it into one beige slab.
       if syncService.connectionState.isHostUnreachable {
-        Label("Offline · showing saved chats", systemImage: "wifi.slash")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 7)
-          .background(ADEColor.warning.opacity(0.08))
+        offlineNotice(Label("Offline · showing saved chats", systemImage: "wifi.slash"))
       } else if !failedMachineNames.isEmpty && !visibleSessions.isEmpty {
-        Label(failedMachinesMessage, systemImage: "exclamationmark.triangle")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 7)
-          .background(ADEColor.warning.opacity(0.08))
+        offlineNotice(Label(failedMachinesMessage, systemImage: "exclamationmark.triangle"))
       }
     }
     .overlay(alignment: .bottom) {
@@ -153,6 +145,18 @@ struct PersonalChatsScreen: View {
         await refresh(quietly: true)
       }
     }
+  }
+
+  private func offlineNotice(_ label: some View) -> some View {
+    label
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(ADEColor.warning)
+      .lineLimit(2)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .background(ADEColor.warning.opacity(0.1), in: Capsule())
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 6)
   }
 
   private var chatList: some View {
