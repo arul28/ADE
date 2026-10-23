@@ -1893,26 +1893,11 @@ struct WorkRootHeader: View {
           .frame(minHeight: 44)
           .accessibilityLabel("Cancel selection")
       } else {
-        // One row where the search keeps a usable width (iPhone landscape, a
-        // wide window); otherwise the sidebar's two rows: ‹ logo and "Work",
-        // then search, New chat and ⋯. On a portrait phone the one row had
-        // squeezed the field to ~110pt.
-        ViewThatFits(in: .horizontal) {
-          HStack(spacing: 8) {
-            titleCluster
-            searchField.frame(minWidth: 240)
-            trailingActions
-          }
-          VStack(alignment: .leading, spacing: 4) {
-            titleCluster
-              .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 8) {
-              searchField
-              trailingActions
-            }
-            .padding(.bottom, 6)
-          }
-        }
+        // One row on every phone: project / back, title, search with the
+        // filter chip inside it, then new chat and the overflow menu.
+        titleCluster
+        searchField
+        trailingActions
       }
     }
     .padding(.horizontal, 16)
@@ -2073,7 +2058,9 @@ func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
   guard #available(iOS 27.1, *) else { return false }
   return proxy.reservedRegions(kind: .occlusion, options: .includeInactive).contains { region in
     let frame = region.frame
-    return frame.height > frame.width * 2 && frame.minX > proxy.size.width / 2
+    // A real column, not a sliver: an iPhone with Camera Control reports
+    // that button as a tall, thin occlusion on the same side.
+    return frame.width >= 30 && frame.height > frame.width * 2 && frame.minX > proxy.size.width / 2
   }
   #else
   return false

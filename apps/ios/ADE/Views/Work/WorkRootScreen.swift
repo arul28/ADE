@@ -2427,12 +2427,9 @@ struct WorkRootListScreen: View, Equatable {
       showsLaneIdentity: showsLaneIdentity,
       waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
       boardCard: boardCard,
-      // The Duo's sessions column draws the wide row; nested drawer rows keep
-      // their compact form.
-      // One row design on every device: the sidebar's row (provider mark
-      // leading, status inline on the meta line) also on a phone, where the
-      // older row spent a whole line on the status above the title.
-      duoRow: !boardCard && !compact && !nestedSubagent,
+      // The Duo's sessions column (and an iPad's) draws the wide row; a phone
+      // keeps its own full-width row, and nested drawer rows their compact form.
+      duoRow: duoLayout.isWide && !boardCard && !compact && !nestedSubagent,
       machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
