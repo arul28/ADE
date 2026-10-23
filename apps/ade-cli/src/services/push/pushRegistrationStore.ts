@@ -54,7 +54,13 @@ export type StoredUserMessage = {
   expiresAt: string;
 };
 
-const USER_MESSAGE_MAX = 200;
+/**
+ * A machine keeps its newest 50 messages; an older one leaves Activity for
+ * good once 50 newer ones exist (or after 24 hours). Bounded so a busy day of
+ * messages cannot crowd chats out of the machine's Activity roster. Mirrors
+ * `USER_MESSAGES_KEPT` in the publisher.
+ */
+const USER_MESSAGE_MAX = 50;
 
 function isStoredUserMessage(value: unknown): value is StoredUserMessage {
   if (!value || typeof value !== "object") return false;
@@ -62,7 +68,7 @@ function isStoredUserMessage(value: unknown): value is StoredUserMessage {
   const optionalString = (field: unknown) => field === null || typeof field === "string";
   return typeof message.id === "string" && message.id.trim().length > 0
     && typeof message.sessionId === "string" && message.sessionId.trim().length > 0
-    && typeof message.scopeKey === "string"
+    && typeof message.scopeKey === "string" && message.scopeKey.trim().length > 0
     && typeof message.title === "string" && message.title.trim().length > 0
     && optionalString(message.body)
     && optionalString(message.chatTitle)

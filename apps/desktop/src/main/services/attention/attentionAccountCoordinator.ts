@@ -48,6 +48,8 @@ type AttentionAccountCoordinatorOptions = {
   onAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
   /** The account preferences a window loaded, with the owner they belong to. */
   onPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  /** A mute the relay accepted; desktop notifications apply it at once. */
+  onSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
 };
 
 type AttentionSnapshotRequest = {
@@ -685,6 +687,9 @@ export class AttentionAccountCoordinator {
       normalizedSessionId,
       muted,
     );
+    // Desktop notifications read the last loaded preferences; apply the mute
+    // to them now so a message arriving right after it stays quiet.
+    this.options.onSessionMuted?.(accountOwnerId, normalizedSessionId, muted);
   }
 
   /**

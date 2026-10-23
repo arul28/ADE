@@ -6,7 +6,6 @@ import {
   type AttentionDesktopAlert,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
-import { parseAttentionItem } from "./attentionItemRouting";
 
 /** See `AttentionDesktopAlert`. */
 export type DesktopAlert = AttentionDesktopAlert;
@@ -24,6 +23,10 @@ export type DesktopAlertPresenterDeps = {
   open: (alert: DesktopAlert) => void;
   /** The last account preferences any window loaded; null when signed out or unknown. */
   getPreferences: () => AttentionPreferences | null;
+  /** True while signed in: then unknown preferences mean "wait", not "allow". */
+  isSignedIn?: () => boolean;
+  /** This desktop's device id, for its own scope in those preferences. */
+  getDeviceId?: () => string | null;
   now?: () => number;
 };
 
@@ -37,10 +40,17 @@ const MAX_ALERT_AGE_MS = 2 * 60_000;
  */
 const SAME_ENTRY_WINDOW_MS = 60_000;
 const MAX_REMEMBERED = 256;
+const MAX_WAITING_FOR_PREFERENCES = 16;
 
 const EVENT_BY_KIND: Record<"needs_you" | "failed", AttentionEventKind> = {
   needs_you: "agent_needs_you",
   failed: "agent_failed",
+};
+
+const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "message">, string> = {
+  needs_you: "Needs you",
+  failed: "Failed",
+  goal: "Goal update",
 };
 
 function alertKey(alert: Pick<DesktopAlert, "itemId" | "kind">): string {
@@ -75,6 +85,9 @@ export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
     body,
     at: item.statusSince ?? item.updatedAt,
     accountMachineKey: item.machine.accountMachineKey ?? null,
+    machineKey: item.machine.machineKey,
+    projectId: item.project.projectId,
+    alertFingerprint: item.alertFingerprint ?? null,
     item,
   };
 }
@@ -93,6 +106,12 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   const now = deps.now ?? (() => Date.now());
   /** item + kind -> when the last state entry we handled began. */
   const handledEntryAt = new Map<string, number>();
+  /**
+   * Local alerts that arrived signed in before any settings loaded. A local
+   * alert has no snapshot to bring it back (a goal outcome is not an Activity
+   * item), so it waits here and is re-checked once settings load.
+   */
+  let waitingForPreferences: DesktopAlert[] = [];
 
   const remember = (key: string, at: number): void => {
     handledEntryAt.delete(key);
@@ -104,13 +123,29 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     }
   };
 
+  /**
+   * The settings that apply to this alert on this desktop, layered the way the
+   * relay layers them for a phone: account, then project, then the owning
+   * machine (by its push identity, which is what "mute this machine" writes),
+   * then this device.
+   */
+  const resolvedScope = (
+    preferences: AttentionPreferences,
+    alert: DesktopAlert,
+  ): Partial<AttentionPreferences["account"]> => {
+    const deviceId = deps.getDeviceId?.() ?? null;
+    return {
+      ...preferences.account,
+      ...(alert.projectId ? preferences.projects?.[alert.projectId] : undefined),
+      ...(alert.machineKey ? preferences.machines?.[alert.machineKey] : undefined),
+      ...(deviceId ? preferences.devices?.[deviceId] : undefined),
+    };
+  };
+
   const allowedByPreferences = (alert: DesktopAlert): boolean => {
     const preferences = deps.getPreferences();
     if (!preferences) return true;
-    const machine = alert.accountMachineKey
-      ? preferences.machines?.[alert.accountMachineKey] ?? {}
-      : {};
-    const scope = { ...preferences.account, ...machine };
+    const scope = resolvedScope(preferences, alert);
     if (scope.notificationsEnabled === false) return false;
     if ((preferences.mutedSessionIds ?? []).includes(alert.sessionId)) return false;
     // A message and a goal outcome are things the user asked to hear about.
@@ -121,6 +156,19 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     return policy === "notify";
   };
 
+  /**
+   * With Hide details on, a system notification says only what kind of thing
+   * happened, like a phone's lock screen; a message keeps its title, which the
+   * agent wrote for exactly this. The in-app toast is not redacted: it shows
+   * inside ADE, where the chat itself is visible.
+   */
+  const redactedForSystemNotification = (alert: DesktopAlert): DesktopAlert => {
+    const preferences = deps.getPreferences();
+    if (!preferences || resolvedScope(preferences, alert).hideDetails !== true) return alert;
+    if (alert.kind === "message") return { ...alert, body: null };
+    return { ...alert, title: `Agent: ${HIDDEN_DETAIL_TITLE[alert.kind]}`, body: null };
+  };
+
   const present = (alert: DesktopAlert): void => {
     const nowMs = now();
     const at = Date.parse(alert.at);
@@ -128,6 +176,15 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     const key = alertKey(alert);
     const previous = handledEntryAt.get(key);
     if (previous !== undefined && Math.abs(at - previous) < SAME_ENTRY_WINDOW_MS) return;
+    // Signed in but no settings loaded yet (startup, relay backing off): the
+    // chat may be muted. Not remembered: a snapshot alert comes back with the
+    // next poll, and a local one waits for `preferencesLoaded`.
+    if (deps.isSignedIn?.() && !deps.getPreferences()) {
+      if (!alert.item && !waitingForPreferences.some((entry) => alertKey(entry) === key)) {
+        waitingForPreferences = [...waitingForPreferences, alert].slice(-MAX_WAITING_FOR_PREFERENCES);
+      }
+      return;
+    }
     // Remembered even when not shown, so the other source cannot show it a
     // moment later once a window loses focus.
     remember(key, at);
@@ -137,13 +194,19 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
       return;
     }
     if (!deps.isSupported()) return;
-    deps.show(alert, () => deps.open(alert));
+    deps.show(redactedForSystemNotification(alert), () => deps.open(alert));
   };
 
   return {
     /** An alert this computer's brain announced for one of its own chats. */
     presentLocal(alert: DesktopAlert): void {
       present(alert);
+    },
+    /** Settings just loaded: re-check local alerts that waited for them (age limit applies). */
+    preferencesLoaded(): void {
+      const waiting = waitingForPreferences;
+      waitingForPreferences = [];
+      for (const alert of waiting) present(alert);
     },
     /** Every account snapshot a window polled: other machines' chats arrive here. */
     observeSnapshot(snapshot: AttentionSnapshot): void {
@@ -162,24 +225,7 @@ export function readDesktopAlertEvent(payload: unknown): DesktopAlert | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
   if (record.type !== "attention_alert") return null;
-  return readDesktopAlert(record.alert);
-}
-
-/**
- * The alert a window's toast hands back when the user presses Open. It came
- * from main, but it crossed IPC, so it is read again; an attached Activity item
- * must pass the same validation every other opened item does.
- */
-export function parseDesktopAlertOpenRequest(input: unknown): DesktopAlert | null {
-  const alert = readDesktopAlert(input);
-  if (!alert) return null;
-  const rawItem = input && typeof input === "object" ? (input as Record<string, unknown>).item : undefined;
-  if (rawItem === undefined || rawItem === null) return alert;
-  const item = parseAttentionItem(rawItem);
-  return item ? { ...alert, item } : null;
-}
-
-function readDesktopAlert(alert: unknown): DesktopAlert | null {
+  const alert = record.alert;
   if (!alert || typeof alert !== "object") return null;
   const value = alert as Record<string, unknown>;
   const kind = value.kind;
@@ -199,6 +245,9 @@ function readDesktopAlert(alert: unknown): DesktopAlert | null {
     body: text(value.body),
     at,
     accountMachineKey: text(value.accountMachineKey),
+    machineKey: text(value.machineKey),
+    projectId: text(value.projectId),
+    alertFingerprint: text(value.alertFingerprint),
   };
 }
 

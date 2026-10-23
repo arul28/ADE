@@ -739,7 +739,9 @@ person's terminal name one.
   chat and 30 per machine in any rolling hour; the same title and body from
   one chat within ten minutes is a repeat and sends nothing), stores the message
   in the push registration file (so a restart neither drops it nor resets the
-  limits), and publishes it. The chat gets a `system_notice` with status
+  limits; it keeps up to 720, a full day at the machine cap), and publishes it.
+  The roster carries at most the newest 50 unread messages; a seen or dismissed
+  message leaves it. The chat gets a `system_notice` with status
   `user_notified` ("Notified you: <title>", body in `detail`). Deleting the chat
   drops its messages.
 - **Item.** `kind: "message"`, `eventKind: "agent_message"` (outside the
@@ -767,9 +769,13 @@ this computer's brain announces its own chats at once (`attention_alert`
 events on the machine event bridge, which works while every window is hidden),
 and the account snapshots the windows already poll carry other machines'
 chats, at no extra request. Each state entry notifies once, whichever source
-reports it first. It obeys the same account settings as a push (notifications
-on, chat and machine not muted, the event set to notify; messages and goals
-always count) and only fires while no ADE window is focused. In a focused
+reports it first. It obeys the same settings as a push, layered the same way
+(account, project, owning machine by its push key, then this desktop's device):
+notifications on, chat and machine not muted, the event set to notify (messages
+and goals always count), and Hide details, which cuts a system notification to
+"Agent: Needs you" or a message's title alone. It only fires while no ADE window
+is focused. Goal outcomes are not Activity items, so they pop up only on the
+computer that runs the chat. In a focused
 window a message becomes an in-app toast instead (`useAgentMessageToasts`);
 Needs you is already on the header badge. Clicking opens the chat, through
 Activity's cross-machine open for another machine's chat.

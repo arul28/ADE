@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ContextMenuSurface } from "../ui/ContextMenu";
 import {
   Alarm,
   ArrowBendUpRight,
@@ -553,21 +553,14 @@ function SessionContextMenuPanel({
   };
 
   return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
-
-      {/* Menu */}
-      <div
-        ref={menuRef}
-        className="ade-liquid-glass-menu fixed min-w-[180px] py-1"
-        style={{
-          ...menuPosition,
-          zIndex: Z_LAYERS.contextMenu,
-          visibility: clampedPosition ? "visible" : "hidden",
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
+    <ContextMenuSurface
+      menuRef={menuRef}
+      left={menuPosition.left}
+      top={menuPosition.top}
+      positioned={Boolean(clampedPosition)}
+      onClose={onClose}
+      className="min-w-[180px]"
+    >
         {/* ── Identity: what this row is called and where it sits. Unlabelled;
             it is the first block under the cursor and needs no signpost. ── */}
         {renaming && !showNameStatusSubmenu ? renameInput : null}
@@ -910,7 +903,6 @@ function SessionContextMenuPanel({
             {deletingLabel ?? "Delete session"}
           </button>
         ) : null}
-      </div>
-    </>
+    </ContextMenuSurface>
   );
 }

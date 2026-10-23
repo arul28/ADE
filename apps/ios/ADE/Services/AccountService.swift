@@ -800,6 +800,8 @@ func retryAccountAttentionAcknowledgmentsOnce<Output>(
 /// and loading of account machines from the directory Worker.
 @MainActor
 final class AccountService: ObservableObject {
+  /// Set once a snapshot cursor was earned by a request that asked for agent messages.
+  static let attentionCursorIncludesMessagesKey = "ade.attention.cursorIncludesMessages.v1"
   static let shared = AccountService()
 
   enum Phase: Equatable {
@@ -1459,12 +1461,18 @@ final class AccountService: ObservableObject {
               pendingAckOutcome.staleItemIds.isEmpty {
       attentionAckFailure = nil
     }
+    // A cursor saved by a build that did not ask for agent messages has
+    // already moved past the ones the relay held back, so the first fetch
+    // after upgrading starts over once.
+    let cursorIncludesMessages = ADESharedContainer.defaults.bool(
+      forKey: Self.attentionCursorIncludesMessagesKey
+    )
     do {
       let delta = try await attentionRelay.fetchSnapshot(
         baseURL: baseURL,
         token: initialSession.token,
-        since: existing?.revision ?? 0,
-        streamId: existing?.streamId,
+        since: cursorIncludesMessages ? (existing?.revision ?? 0) : 0,
+        streamId: cursorIncludesMessages ? existing?.streamId : nil,
         refreshToken: { [weak self] in
           guard let self,
                 self.isPairingCommitAuthorized(initialSession.authorization) else {
@@ -1488,6 +1496,9 @@ final class AccountService: ObservableObject {
         incoming: delta
       )
       guard ADESharedContainer.writeAttentionSnapshot(complete) else { return }
+      if !cursorIncludesMessages {
+        ADESharedContainer.defaults.set(true, forKey: Self.attentionCursorIncludesMessagesKey)
+      }
       attentionRefreshFailure = nil
       attentionSnapshotRevision &+= 1
       WidgetReloadBridge.reloadAllTimelines()

@@ -61,7 +61,6 @@ import {
 import { buildDeeplink } from "../shared/deeplinks";
 import {
   createDesktopAlertPresenter,
-  parseDesktopAlertOpenRequest,
   readDesktopAlertEvent,
   type DesktopAlert,
 } from "./services/attention/desktopAlertPresenter";
@@ -6629,10 +6628,25 @@ app.whenReady().then(async () => {
   let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
   /** Electron drops a click on a notification nothing references any more. */
   const liveDesktopAlertNotifications = new Set<Notification>();
+  /**
+   * Alerts a window was asked to toast, by item id. The toast's Open sends
+   * back only the id, and main opens what it recorded, so a window cannot
+   * name an arbitrary chat or item to open or mark seen.
+   */
+  const toastedDesktopAlerts = new Map<string, DesktopAlert>();
+  const rememberToastedDesktopAlert = (alert: DesktopAlert): void => {
+    toastedDesktopAlerts.delete(alert.itemId);
+    toastedDesktopAlerts.set(alert.itemId, alert);
+    while (toastedDesktopAlerts.size > 32) {
+      const oldest = toastedDesktopAlerts.keys().next();
+      if (oldest.done) break;
+      toastedDesktopAlerts.delete(oldest.value);
+    }
+  };
   const openDesktopAlert = (alert: DesktopAlert): void => {
     // Opening it is seeing it: the phone, still waiting out desktop-first,
     // stays quiet. Best effort; a failure only means the phone gets it later.
-    void ipcBridge?.markAttentionItemSeen(alert.itemId).catch((error: unknown) => {
+    void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
       logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -6653,6 +6667,8 @@ app.whenReady().then(async () => {
   const desktopAlertPresenter = createDesktopAlertPresenter({
     isSupported: () => Notification.isSupported(),
     isAppFocused: () => Boolean(BrowserWindow.getFocusedWindow()),
+    getDeviceId: () => ipcBridge?.getLocalMachineIdentity().deviceId ?? null,
+    isSignedIn: () => Boolean(readAccountOwnerId()),
     getPreferences: () => {
       const ownerId = readAccountOwnerId();
       return ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
@@ -6682,6 +6698,7 @@ app.whenReady().then(async () => {
     toastInFocusedWindow: (alert) => {
       const focused = BrowserWindow.getFocusedWindow();
       if (!focused || focused.isDestroyed()) return;
+      rememberToastedDesktopAlert(alert);
       focused.webContents.send(IPC.attentionAlert, alert);
     },
     open: openDesktopAlert,
@@ -9867,10 +9884,24 @@ app.whenReady().then(async () => {
     onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
     onAttentionPreferences: (ownerId, preferences) => {
       attentionPreferencesForAlerts = { ownerId, preferences };
+      desktopAlertPresenter.preferencesLoaded();
     },
-    openDesktopAlert: (input) => {
-      const alert = parseDesktopAlertOpenRequest(input);
-      if (alert) openDesktopAlert(alert);
+    onAttentionSessionMuted: (ownerId, sessionId, muted) => {
+      const cached = attentionPreferencesForAlerts;
+      if (!cached || cached.ownerId !== ownerId) return;
+      const others = cached.preferences.mutedSessionIds.filter((id) => id !== sessionId);
+      attentionPreferencesForAlerts = {
+        ownerId,
+        preferences: {
+          ...cached.preferences,
+          mutedSessionIds: muted ? [...others, sessionId] : others,
+        },
+      };
+    },
+    openDesktopAlert: (itemId) => {
+      const alert = typeof itemId === "string" ? toastedDesktopAlerts.get(itemId) : undefined;
+      if (!alert) throw new Error("That notification is no longer available. Open the chat from Activity.");
+      openDesktopAlert(alert);
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

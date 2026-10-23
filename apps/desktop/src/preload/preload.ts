@@ -6623,7 +6623,7 @@ const adeBridge = {
       return () => ipcRenderer.removeListener(IPC.attentionAlert, listener);
     },
     openAlert: async (alert: AttentionDesktopAlert): Promise<void> => {
-      await ipcRenderer.invoke(IPC.attentionOpenAlert, alert);
+      await ipcRenderer.invoke(IPC.attentionOpenAlert, alert.itemId);
     },
   },
   captureGesture: {

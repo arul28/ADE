@@ -1937,6 +1937,7 @@ export function registerIpc({
   openAttentionItem,
   onAttentionAccountSnapshot,
   onAttentionPreferences,
+  onAttentionSessionMuted,
   openDesktopAlert,
   getCurrentAccountOwnerId,
   accountAttentionClient,
@@ -2019,8 +2020,9 @@ export function registerIpc({
   /** Account Activity snapshots and preferences, for desktop notifications. */
   onAttentionAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
   onAttentionPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
-  /** Open what a desktop alert (toast) points at. */
-  openDesktopAlert?: (alert: unknown) => void;
+  onAttentionSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
+  /** Open what a toasted desktop alert points at, by its item id. */
+  openDesktopAlert?: (itemId: unknown) => void;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
     PushRelayClient,
@@ -2085,6 +2087,7 @@ export function registerIpc({
     getCurrentAccountOwnerId: resolveCurrentAttentionAccountOwnerId,
     onAccountSnapshot: onAttentionAccountSnapshot,
     onPreferences: onAttentionPreferences,
+    onSessionMuted: onAttentionSessionMuted,
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -3601,8 +3604,8 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.attentionOpenAlert, async (_event, input: unknown) => {
-    openDesktopAlert?.(input);
+  ipcMain.handle(IPC.attentionOpenAlert, async (_event, itemId: unknown) => {
+    openDesktopAlert?.(itemId);
   });
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
@@ -14213,9 +14216,12 @@ export function registerIpc({
      * The user opened this item from a desktop notification: mark it seen on
      * the account, so the phone (waiting out desktop-first) stays quiet.
      */
-    async markAttentionItemSeen(itemId: string): Promise<void> {
+    async markAttentionItemSeen(itemId: string, alertFingerprint?: string | null): Promise<void> {
       await attentionAccountCoordinator.acknowledge({
         itemIds: [itemId],
+        // Fenced to the alert the notification showed, so clicking an old one
+        // cannot mark a newer question on the same chat as seen.
+        ...(alertFingerprint ? { alertFingerprints: { [itemId]: alertFingerprint } } : {}),
         seenAt: new Date().toISOString(),
         expectedAccountOwnerId: resolveCurrentAttentionAccountOwnerId(),
       });

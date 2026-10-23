@@ -304,6 +304,15 @@ export type AttentionDesktopAlert = {
   at: string;
   /** The account-directory key of the machine that owns the chat, when known. */
   accountMachineKey: string | null;
+  /**
+   * The owning machine's push identity and its id for the project: the keys
+   * the account's per-machine and per-project notification settings use.
+   * Null from an older brain.
+   */
+  machineKey?: string | null;
+  projectId?: string | null;
+  /** The Activity alert identity, so marking it seen cannot clear a newer one. */
+  alertFingerprint?: string | null;
   /** Set for alerts read from an account snapshot: opening goes through Activity. */
   item?: AttentionItem;
 };

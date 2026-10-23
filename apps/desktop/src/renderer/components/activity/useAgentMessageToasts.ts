@@ -24,7 +24,13 @@ export function useAgentMessageToasts(): void {
         actions: [{
           label: "Open chat",
           onClick: () => {
-            void api.openAlert?.(alert);
+            void api.openAlert?.(alert).catch((error: unknown) => {
+              showToast({
+                tone: "error",
+                title: "Couldn't open that chat",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
           },
         }],
       });

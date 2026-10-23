@@ -2599,22 +2599,22 @@ export function createMultiProjectRpcRequestHandler(
       const notifyArgs = isRecord(params.args) ? params.args : {};
       const chatSessionId = callerChatSessionId()
         ?? (typeof notifyArgs.sessionId === "string" ? notifyArgs.sessionId.trim() : "");
-      if (chatSessionId) {
-        const chatMessage = await sendNotifyAsChatMessage({
-          publisher,
-          sessionId: chatSessionId,
-          args: notifyArgs,
-          callerScopeKey: runtime.projectId ?? null,
-          analytics: runtime.productAnalyticsService,
-        });
-        if (chatMessage) return chatMessage;
-      }
       const send = buildSendNotificationAction(
         runtime,
         (notification) => publisher.sendCustomNotification(notification),
         { projectRoot: registeredRoot },
       );
       try {
+        if (chatSessionId) {
+          const chatMessage = await sendNotifyAsChatMessage({
+            publisher,
+            sessionId: chatSessionId,
+            args: notifyArgs,
+            callerScopeKey: runtime.projectId ?? null,
+            analytics: runtime.productAnalyticsService,
+          });
+          if (chatMessage) return chatMessage;
+        }
         return await send(notifyArgs);
       } catch (error) {
         throw new JsonRpcError(
