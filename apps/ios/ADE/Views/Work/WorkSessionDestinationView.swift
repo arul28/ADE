@@ -3432,6 +3432,10 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   /// outer display). Hiding the tab bar there does not hide the rail; it left
   /// an empty glass capsule floating under the composer.
   @State private var displayHasEdgeRail = false
+  /// The display has a rail along its trailing edge in either orientation
+  /// (the Duo's outer display: upright, or held sideways with its camera
+  /// column on the right).
+  @State private var displayHasSideRail = false
 
   let mode: WorkSessionNavigationChrome
   let title: String
@@ -3450,7 +3454,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   let trailingControls: () -> TrailingControls
 
   /// The trailing controls live on the rail, not in the header.
-  private var controlsOnRail: Bool { displayHasEdgeRail && railControls != nil }
+  private var controlsOnRail: Bool { displayHasSideRail && railControls != nil }
 
   @ViewBuilder
   func body(content: Content) -> some View {
@@ -3470,6 +3474,11 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
           workDisplayHasEdgeRail(proxy)
         } action: { hasRail in
           if displayHasEdgeRail != hasRail { displayHasEdgeRail = hasRail }
+        }
+        .onGeometryChange(for: Bool.self) { proxy in
+          workDisplayHasSideRail(proxy)
+        } action: { hasRail in
+          if displayHasSideRail != hasRail { displayHasSideRail = hasRail }
         }
         // Keep the edge gesture pass-through: vertical scrolls and row gestures
         // still reach the chat, while the helper only dismisses true edge swipes.

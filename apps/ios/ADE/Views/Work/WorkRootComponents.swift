@@ -2080,6 +2080,16 @@ func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
   #endif
 }
 
+/// The Duo's outer display in either orientation: upright its rail is
+/// `workDisplayHasEdgeRail`; held sideways the camera column reserves the
+/// trailing side only, while every other iPhone held sideways reserves both
+/// sides alike.
+func workDisplayHasSideRail(_ proxy: GeometryProxy) -> Bool {
+  if workDisplayHasEdgeRail(proxy) { return true }
+  guard proxy.size.width > proxy.size.height else { return false }
+  return proxy.safeAreaInsets.trailing - proxy.safeAreaInsets.leading > 30
+}
+
 struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
