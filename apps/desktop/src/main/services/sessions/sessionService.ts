@@ -44,6 +44,7 @@ import {
 import { isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
+import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import {
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
@@ -2846,11 +2847,14 @@ export function createSessionService({
       options?: { raw?: boolean; alignToLineBoundary?: boolean }
     ): Promise<string> {
       if (!transcriptPath) return "";
-      const readablePath = fs.existsSync(transcriptPath)
-        ? transcriptPath
-        : fs.existsSync(`${transcriptPath}.gz`)
-          ? `${transcriptPath}.gz`
-          : transcriptPath;
+      // A chat row names its legacy `<id>.chat.jsonl`; the dedicated transcript
+      // holds every event (the legacy copy stopped at 8 MB and is no longer written).
+      const sourcePath = resolveChatTranscriptReadPath(transcriptPath);
+      const readablePath = fs.existsSync(sourcePath)
+        ? sourcePath
+        : fs.existsSync(`${sourcePath}.gz`)
+          ? `${sourcePath}.gz`
+          : sourcePath;
       if (readablePath.endsWith(".gz")) {
         try {
           const full = readHistoryFileSync(readablePath);

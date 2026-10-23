@@ -424,7 +424,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   storage: {
     read: [
-      "cleanupPreview", "getSnapshot",
+      "cleanupPreview", "deletedLaneChatsSummary", "getSnapshot",
     ],
     write: [
       "cleanup", "compressNow", "runMaintenanceNow",

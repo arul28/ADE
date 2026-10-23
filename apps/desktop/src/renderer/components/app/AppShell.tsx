@@ -65,6 +65,7 @@ import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
+import { STORAGE_SETTINGS_ROUTE, useDeletedChatsReminderBanner } from "./useDeletedChatsReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
 import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
@@ -345,6 +346,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     projectRoot: project?.rootPath ?? null,
     enabled: !showWelcome,
     onReview: openArchiveSettings,
+  });
+  const openStorageSettings = useCallback(() => navigate(STORAGE_SETTINGS_ROUTE), [navigate]);
+  useDeletedChatsReminderBanner({
+    projectRoot: project?.rootPath ?? null,
+    enabled: !showWelcome,
+    onReview: openStorageSettings,
   });
   useLaneDependencyBanners({
     projectRoot: project?.rootPath ?? null,

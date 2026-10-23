@@ -22,6 +22,7 @@ import type { Logger } from "../logging/logger";
 import {
   SEARCH_INDEX_SCHEMA_VERSION,
   clearSearchIndex,
+  compactSearchIndex,
   openSearchIndexDb,
   SearchIndexFts5UnavailableError,
   SEARCH_INDEX_DB_FILENAME,
@@ -1518,6 +1519,19 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   return {
     query,
+
+    /** Storage doctor step: give the index's free pages back to the disk. */
+    compactIndex(): { itemsAffected: number; bytesReclaimed: number; skippedReason: string | null } {
+      if (disposed || unavailable) return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" };
+      const result = compactSearchIndex(ensureDb());
+      if (result.itemsAffected > 0) {
+        logger?.info("search.index_compacted", {
+          freedPages: result.itemsAffected,
+          bytesReclaimed: result.bytesReclaimed,
+        });
+      }
+      return result;
+    },
 
     indexStatus(): SearchIndexStatus {
       if (unavailable) {

@@ -10,7 +10,7 @@ import { SessionLifecycleSection } from "../SessionLifecycleSection";
 import { ProjectSection } from "../ProjectSection";
 import { LaneBehaviorSection } from "../LaneBehaviorSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
-import { HealthSpace } from "../health/HealthSpace";
+import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanups } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
@@ -46,7 +46,7 @@ const LANES_VIEWS: readonly View[] = [
 ];
 
 const STORAGE_VIEWS: readonly View[] = [
-  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", "storage-cleanups"] },
+  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", "storage-chat-history", "storage-deleted-chats", "storage-provider-history", "storage-cleanups"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
     id: "cleanup-rules",
@@ -113,7 +113,14 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
   React.useEffect(() => {
     if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(views, hashAnchor) !== view) return;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(hashAnchor)?.scrollIntoView({ block: "start" });
+      const card = document.getElementById(hashAnchor);
+      if (!card) return;
+      card.scrollIntoView({ block: "start" });
+      // A row deep in the details reads like any other row; one flash points at it.
+      if (HEALTH_DETAIL_ANCHORS.has(hashAnchor)) {
+        card.classList.add("ade-settings-flash");
+        window.setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
+      }
     });
     return () => window.cancelAnimationFrame(frame);
   }, [hashAnchor, view, settled, views]);

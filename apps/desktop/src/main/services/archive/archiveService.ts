@@ -11,6 +11,7 @@ import {
 } from "../lanes/laneRuntimeLifecycle";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { readableHistoryBytes } from "../storage/historyCompression";
+import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import {
   ARCHIVE_ITEM_KINDS,
@@ -70,7 +71,7 @@ function sessionKind(toolType: string | null): ArchiveItemKind {
 
 async function transcriptBytes(filePath: string | null): Promise<number | null> {
   const trimmed = typeof filePath === "string" ? filePath.trim() : "";
-  return trimmed ? readableHistoryBytes(trimmed) : null;
+  return trimmed ? readableHistoryBytes(resolveChatTranscriptReadPath(trimmed)) : null;
 }
 
 async function pathExists(filePath: string | null | undefined): Promise<boolean> {

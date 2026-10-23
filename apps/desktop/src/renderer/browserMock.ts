@@ -332,7 +332,12 @@ function createMockStorageSnapshot(now: string) {
     { id: "lanes_worktrees" as const, items: lanes, safety: "review_first" as const },
     {
       id: "chats_history" as const,
-      items: [item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible")],
+      items: [
+        item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible"),
+        item("chats_history:deleted_lane_chats", "Chats from deleted lanes", `${root}/.ade/transcripts/chat`, 412 * MB, "review_first", {
+          detail: "813 chats whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:",
+        }),
+      ],
       safety: "compressible" as const,
       compressibleBytes: 410 * MB,
     },
@@ -412,6 +417,12 @@ function createMockStorageSnapshot(now: string) {
       maintenance: { lastRun: journal[0], journal },
       safeReclaimableBytes: 486 * MB,
       policyChips: {},
+      providerHistory: [
+        { provider: "claude", label: "Claude", paths: ["/Users/ada/.claude/projects"], bytes: 15_600 * MB, fileCount: 8_511, note: "Claude deletes its own sessions after 30 days unless its cleanupPeriodDays setting says otherwise." },
+        { provider: "codex", label: "Codex", paths: ["/Users/ada/.codex/sessions", "/Users/ada/.codex/archived_sessions"], bytes: 9_100 * MB, fileCount: 4_284, note: "Codex keeps every session until it is deleted." },
+        { provider: "opencode", label: "OpenCode", paths: ["/Users/ada/.local/share/opencode"], bytes: 2_600 * MB, fileCount: 34_769, note: "One database plus file snapshots, managed by OpenCode." },
+      ],
+      deletedLaneProviderCopies: { chatCount: 258, bytes: 3_900 * MB, chatSessionsDir: `${root}/.ade/cache/chat-sessions` },
     },
     lifecycle: {
       lastScanAt: daysAgo(0.1),
@@ -5923,6 +5934,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
+      deletedLaneChatsSummary: resolved({ chatCount: 813, bytes: 528 * 1024 * 1024, directory: `${MOCK_PROJECT.rootPath}/.ade/transcripts/chat` }),
       runMaintenanceNow: resolved({
         startedAt: now,
         finishedAt: now,

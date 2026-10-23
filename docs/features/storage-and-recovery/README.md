@@ -93,7 +93,11 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
 | `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
 | `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. |
-| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. |
+| `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
+| `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
+| `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session ADE started. Imported chats are skipped, and so are sessions a live chat also names. |
+| `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
+| `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
 | `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures: one `.kit-card` over the window's scene with the cause, live repair steps, the Fix it → Restart ADE → Reset ADE → Report ladder, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. This is the **local disk/brain** repair surface; the similarly named `ProjectHostRecoveryScreen.tsx` is the remote one a browser or phone sees when a reachable machine's project sync host is blocked (see [web client](../web-client/README.md#source-file-map)). |
 | `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`, for an open refused mid-update, or while `BrainDownNotice` owns a down background service. |
@@ -673,11 +677,38 @@ validation. Removing artifact bytes calls
 afterward, deleting matching canonical proof rows and links. This is an
 explicit `review_first` action; it is not part of automatic safe cleanup.
 
+### Chat transcripts: one copy
+
+Builds before this wrote every chat event twice: to the session row's
+`transcripts/<id>.chat.jsonl` (capped at 8 MB) and to the dedicated
+`transcripts/chat/<id>.jsonl`. Now only the dedicated file is written. The row
+still names the legacy path, because `terminal_sessions.transcript_path` syncs
+to peers and older builds. Readers that start from the row
+(`sessionService.readTranscriptTail`, `ctoStateService`, `archiveService`)
+resolve through `resolveChatTranscriptReadPath`, and every other history reader
+already preferred the dedicated file.
+
+The doctor removes old legacy copies. A copy is deleted only when every
+complete event line in it appears in the dedicated file at least as many times.
+Order is not compared, because the two files flushed independently. Only the cap
+notice and the one event the cap cut in half may be missing. The copy must also
+be idle for 10 minutes, not active, and unchanged while it was checked. Anything
+unproven is kept and logged as `storage.legacy_chat_transcript_kept`. On the
+reference machine this removed 1,434 copies (1.17 GB), and an independent check
+found every removed event in the dedicated files.
+
 ### History compression
 
 A compression candidate is an inactive regular `.jsonl`/`.log` file older than
-30 days, not already compressed/partial, and no larger than 256 MiB. Automatic
-sweeps consider at most 25 oldest files and only run under normal pressure.
+14 days, not already compressed/partial, and no larger than 256 MiB. Finished
+chats qualify sooner and are listed first:
+
+- an archived chat after 1 hour idle;
+- a chat settled for 3 days after 1 hour idle;
+- a transcript whose session row is gone (deleted chat or lane) after 1 day.
+
+The doctor's sweep takes up to 200 files per run, the manual button 25. Sweeps
+only run when disk pressure allows compression.
 Compression streams the source through SHA-256 and gzip, syncs the partial,
 gunzips it through a second SHA-256/byte count, and checks that the source size
 and modification time did not change. Only a byte-identical verified result is
@@ -703,14 +734,51 @@ sweep: generic files remain preview-confirmed, and archived lane worktrees must
 go through the lane-aware typed-confirmation path.
 
 1. Run the lane lifecycle safety scan.
-2. Compress inactive chat/terminal history (`fs.transcripts`).
-3. Record filesystem review candidates without deleting them.
-4. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
+2. Remove legacy chat transcript copies proven redundant (`fs.transcript_duplicates`).
+3. Compress inactive chat/terminal history (`fs.transcripts`).
+4. Record filesystem review candidates without deleting them.
+5. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
    `pull_request_snapshots`, `ai_usage_log`, and the
    retained event logs; compact cr-sqlite sync bookkeeping; and vacuum when the
    freelist is fragmented.
+6. Compact the search index (`cache.search_index`) through the search service,
+   which holds the file open. An index more than 25% free pages and at least
+   16 MB free is rebuilt once with `VACUUM`, which also turns on incremental
+   auto-vacuum. After that each run frees pages in bounded chunks. New indexes
+   are created incremental. The reference index went from 384 MB to 30 MB in
+   about 0.5 s.
 
-Step 4's hooks are awaited individually, so a hook may be `async` — the two
+**Provider history.** Settings › Storage › Details › *Provider history on this
+machine* shows each agent CLI's own session folders, for all projects, with who
+manages them (Claude prunes after 30 days by default; Codex never does). ADE
+reports these and does not touch them, with one exception: *Copies of chats from
+deleted lanes* (`deleted_lane_provider_sessions`). These are the Claude and
+Codex session files ADE started for chats from deleted lanes. A session is
+skipped when the chat was imported from the person's own CLI, or when a chat
+that still exists names the same session. Removal deletes only those files,
+never the providers' folders. The "Chats from deleted lanes" Remove includes
+them. It lists them first, because their ids are read from the chat records
+that the second target deletes. The measurement runs alongside the project
+scan, is cached for 10 minutes, and adds at most 2 s to a snapshot; a full pass
+took about 7 s on the reference machine. On the reference machine, the copies
+for deleted-lane chats came to 3.9 GB across 258 sessions.
+
+**Reminder.** When 25 or more chats from deleted lanes, or 100 MB of them,
+have built up, a docked banner says how many there are, that ADE no longer
+tracks them, and which folder holds them. *Review in Storage* opens this page.
+Every answer snoozes it for two weeks for that project. Nothing is deleted
+without the confirm dialog.
+
+**Chats from deleted lanes.** Deleting a lane deletes its chats' session rows
+but used to leave their transcripts. Settings › Storage › Details lists them
+as one review-first row with a count and size. Remove… previews and confirms
+like every other cleanup, then deletes those chats' files one by one
+(dedicated transcript, legacy copy, `cache/chat-sessions` records), never the
+directory. A chat is listed only when its row is gone, the lane named in its
+`session_init` header no longer exists, and all its files have been idle for
+7 days. An empty lane table lists nothing.
+
+Step 5's hooks are awaited individually, so a hook may be `async` — the two
 newest ones are, because they delete in paced batches. Each is invoked through
 method-level optional chaining (`maintenance?.pruneEventLogs?.bind(…)`), not
 just object-level: the handle is consumed optionally so the doctor can degrade

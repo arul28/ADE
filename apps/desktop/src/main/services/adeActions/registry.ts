@@ -4129,6 +4129,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
     getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
+    deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {

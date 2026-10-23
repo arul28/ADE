@@ -1124,6 +1124,7 @@ import type {
 } from "../shared/types/archive";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -1359,6 +1360,7 @@ declare global {
         getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
+        deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
