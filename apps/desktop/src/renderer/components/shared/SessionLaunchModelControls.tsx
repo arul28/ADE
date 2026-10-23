@@ -5,8 +5,6 @@ import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
 import { useFastModeEnabled } from "../../lib/fastModePolicy";
-import { useGoTo } from "../onboarding/spotlight/useGoTo";
-import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import {
   applyClaudePermissionSelection,
   applyCodexPresetToControls,
@@ -309,14 +307,6 @@ export function SessionLaunchModelControls({
     onChange({ nativeControls });
   }, [onChange]);
   const fastModeAllowed = useFastModeEnabled();
-  const goTo = useGoTo();
-  const openFastModeSetting = useCallback(() => {
-    goTo("/settings?tab=chat#fast-mode");
-    showSpotlight({
-      spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
-      waitMs: 5_000,
-    });
-  }, [goTo]);
   // A launch form restored from a time Fast was allowed starts Standard, so
   // the create never carries a choice the account would refuse.
   useEffect(() => {
@@ -358,7 +348,6 @@ export function SessionLaunchModelControls({
         onFastModeChange={(fastMode) => onChange({ fastMode })}
         fastModeSupported={batchLaunchSupportsFastMode(config.modelId)}
         fastModeAllowed={fastModeAllowed}
-        {...(!fastModeAllowed ? { onFastModeLocked: openFastModeSetting } : {})}
         disabled={disabled}
       />
       <ReasoningEffortPicker

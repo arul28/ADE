@@ -47,8 +47,6 @@ import {
 } from "../shared/PermissionModePicker";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { useFastModeEnabled } from "../../lib/fastModePolicy";
-import { useGoTo } from "../onboarding/spotlight/useGoTo";
-import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
   BlockedActionButton,
@@ -166,14 +164,6 @@ export function CrossMachineHandoffModal({
   preselectedMachine?: string | null;
 }) {
   const fastModeAllowed = useFastModeEnabled();
-  const goTo = useGoTo();
-  const openFastModeSetting = useCallback(() => {
-    goTo("/settings?tab=chat#fast-mode");
-    showSpotlight({
-      spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
-      waitMs: 5_000,
-    });
-  }, [goTo]);
   const [stage, setStage] = useState<ModalStage>("choose");
   const [loading, setLoading] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -611,7 +601,6 @@ export function CrossMachineHandoffModal({
           fastTier={fastTier}
           fastModeSupported={destinationFastModeSupported}
           fastModeAllowed={fastModeAllowed}
-          {...(!fastModeAllowed ? { onFastModeLocked: openFastModeSetting } : {})}
           {...(onFastModeChange ? { onFastModeChange } : {})}
         />
         {onReasoningEffortChange ? (

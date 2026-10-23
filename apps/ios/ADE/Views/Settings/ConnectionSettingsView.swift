@@ -205,34 +205,36 @@ struct ConnectionSettingsView: View {
             }
           }
         }
-        ADESettingsSection("Chat") {
-          ADESettingsRows {
-            Toggle(isOn: Binding(
-              get: { fastModeEnabled },
-              set: { next in
-                fastModeEnabled = next
-                Task {
-                  do {
-                    try await syncService.setFastModeEnabled(next)
-                  } catch {
-                    fastModeEnabled = !next
+        if syncService.supportsRemoteAction("chat.setFastModeEnabled") {
+          ADESettingsSection("Chat") {
+            ADESettingsRows {
+              Toggle(isOn: Binding(
+                get: { fastModeEnabled },
+                set: { next in
+                  fastModeEnabled = next
+                  Task {
+                    do {
+                      try await syncService.setFastModeEnabled(next)
+                    } catch {
+                      fastModeEnabled = !next
+                    }
                   }
                 }
+              )) {
+                VStack(alignment: .leading, spacing: 3) {
+                  Text("Allow Fast mode")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text("Roughly 2× standard, up to 8× for Ultrafast. Off until you turn it on here; every new chat still starts at Standard.")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
               }
-            )) {
-              VStack(alignment: .leading, spacing: 3) {
-                Text("Allow Fast mode")
-                  .font(.system(size: 16, weight: .medium))
-                  .foregroundStyle(ADEColor.textPrimary)
-                Text("Roughly 2× standard, up to 8× for Ultrafast. Off until you turn it on here; every new chat still starts at Standard.")
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
+              .toggleStyle(.switch)
+              .tint(ADEColor.warning)
+              .padding(ADEKit.inset)
             }
-            .toggleStyle(.switch)
-            .tint(ADEColor.warning)
-            .padding(ADEKit.inset)
           }
         }
         ADESettingsSection("About") {

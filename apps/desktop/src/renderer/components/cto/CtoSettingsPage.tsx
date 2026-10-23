@@ -27,8 +27,6 @@ import { CTO_SECTION_COLORS, CtoCard, FactRow, ctoButtonStyle, type CtoSectionKe
 import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { useFastModeEnabled } from "../../lib/fastModePolicy";
-import { useGoTo } from "../onboarding/spotlight/useGoTo";
-import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 
 /**
  * The CTO's settings, in the same visual language as the rest of Settings.
@@ -366,14 +364,6 @@ export function CtoSettingsPage({
   const [section, setSection] = useState<CtoSectionKey>("model");
   const hasProjectSidebar = useHasProjectSidebar();
   const fastModeAllowed = useFastModeEnabled();
-  const goTo = useGoTo();
-  const openFastModeSetting = React.useCallback(() => {
-    goTo("/settings?tab=chat#fast-mode");
-    showSpotlight({
-      spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
-      waitMs: 5_000,
-    });
-  }, [goTo]);
   const [name, setName] = useState(identity?.name ?? "");
   const [extra, setExtra] = useState(identity?.systemPromptExtension ?? "");
   const savedRef = useRef({ name: identity?.name ?? "", extra: identity?.systemPromptExtension ?? "" });
@@ -533,7 +523,6 @@ export function CtoSettingsPage({
             fastModeActive={fastModeAllowed ? currentFastMode : false}
             onFastModeToggle={fastModeAllowed ? onFastModeChange : undefined}
             fastModeAllowed={fastModeAllowed}
-            {...(!fastModeAllowed ? { onFastModeLocked: openFastModeSetting } : {})}
             onChange={(modelId) => onModelChange(modelId, currentReasoningEffort)}
             onOpenSignIn={onOpenProviderSettings}
           />

@@ -93,6 +93,13 @@ export type CursorSdkModelSelectionInput = {
   modelSdkId: string;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /**
+   * True only when the caller explicitly chose the standard tier. A chat that
+   * merely has Fast off passes `fastMode: false` as its default, and that must
+   * not make a cold catalog produce a "runs without the standard tier" notice
+   * on every send.
+   */
+  fastModeExplicit?: boolean;
   serviceTier?: "fast" | "standard" | null;
   /**
    * The chat's Cursor config values (`AgentChatSession.cursorConfigValues`),
@@ -490,11 +497,24 @@ function cursorSelectionChoiceLabels(input: CursorSdkModelSelectionInput): strin
   return [
     input.reasoningEffort?.trim() ? `${input.reasoningEffort.trim()} reasoning effort` : null,
     input.fastMode === true || input.serviceTier === "fast" ? "Fast" : null,
-    input.serviceTier === "standard" || (input.fastMode === false && input.serviceTier == null)
+    input.serviceTier === "standard" || (input.fastMode === false && input.fastModeExplicit === true && input.serviceTier == null)
       ? "the standard tier"
       : null,
     hasCursorConfigValues(input.configValues) ? "model options" : null,
   ].filter((entry): entry is string => Boolean(entry));
+}
+
+/**
+ * Whether the caller chose something a person would miss. A default standard
+ * tier (Fast simply off) is not a choice, so a cold catalog stays quiet about
+ * it; an explicit standard, a fast ask, an effort or a config value is.
+ */
+function hasMeaningfulCursorChoice(input: CursorSdkModelSelectionInput): boolean {
+  return Boolean(input.reasoningEffort?.trim())
+    || input.fastMode === true
+    || input.fastModeExplicit === true
+    || input.serviceTier != null
+    || hasCursorConfigValues(input.configValues);
 }
 
 /**
@@ -507,11 +527,12 @@ export function describeUnappliedCursorSelection(
 ): string | null {
   const model = input.modelSdkId.trim() || "(unnamed)";
   if (selection.status === "catalog-unavailable") {
-    if (!hasExplicitCursorSelection(input)) return null;
+    if (!hasExplicitCursorSelection(input) || !hasMeaningfulCursorChoice(input)) return null;
     const chosen = cursorSelectionChoiceLabels(input);
     return `Cursor's model list could not be loaded (${selection.reason}), so ${model} runs without ${chosen.join(", ") || "the selected model settings"} until it loads.`;
   }
   if (selection.status === "partial") {
+    if (!hasMeaningfulCursorChoice(input)) return null;
     const controls = selection.unmet.map((entry) => CURSOR_SDK_UNMET_CONTROL_LABELS[entry]).join(" and ");
     return `Cursor cannot apply the selected ${controls} to ${model}, so this run uses Cursor's default for ${selection.unmet.length > 1 ? "them" : "it"}.`;
   }
