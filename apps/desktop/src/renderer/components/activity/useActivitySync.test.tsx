@@ -235,7 +235,7 @@ describe("useActivitySync", () => {
     });
   });
 
-  it("uses relaxed hidden presence cadence and sends immediately when visible again", async () => {
+  it("uses relaxed hidden presence cadence and sends promptly when visible again", async () => {
     vi.useFakeTimers();
     setDocumentVisibility("visible");
     const signedInStatus = {
@@ -304,8 +304,85 @@ describe("useActivitySync", () => {
     act(() => {
       setDocumentVisibility("visible");
     });
-    await advancePresenceTimers(0);
+    await advancePresenceTimers(250);
     expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 4);
+  });
+
+  it("merges a focus/blur burst into one presence report and backs off while reports fail", async () => {
+    vi.useFakeTimers();
+    setDocumentVisibility("visible");
+    const signedInStatus = {
+      signedIn: true,
+      userId: "user-presence-burst",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    } satisfies Parameters<typeof publishAccountStatus>[0];
+    const reportPresence = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async (): Promise<AttentionSnapshot> => ({
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "account",
+            revision: 0,
+            generatedAt: "2026-07-28T14:01:00.000Z",
+            items: [],
+            tombstones: [],
+          })),
+          acknowledge: vi.fn(),
+          reportPresence,
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        account: {
+          ...(originalAde?.account ?? {}),
+          status: vi.fn(async () => signedInStatus),
+        },
+      },
+    });
+    publishAccountStatus(signedInStatus);
+    const advance = async (durationMs: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(durationMs);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      });
+    };
+    render(<Harness />);
+    await advance(0);
+    const afterMount = reportPresence.mock.calls.length;
+
+    // A window switch: the Sentry trace showed seven flips inside one second.
+    act(() => {
+      for (let i = 0; i < 7; i += 1) {
+        window.dispatchEvent(new Event(i % 2 === 0 ? "blur" : "focus"));
+      }
+    });
+    await advance(250);
+    expect(reportPresence).toHaveBeenCalledTimes(afterMount + 1);
+
+    // Failing reports stop following the 30s cadence and ignore new events.
+    reportPresence.mockRejectedValue(new Error("fetch failed"));
+    await advance(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(afterMount + 2);
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    await advance(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(afterMount + 2);
+
+    // Recovery returns to the normal cadence.
+    reportPresence.mockResolvedValue(undefined);
+    await advance(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(afterMount + 3);
+    await advance(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(afterMount + 4);
   });
 
   it("keeps an in-flight account A preference fetch out of account B's store", async () => {

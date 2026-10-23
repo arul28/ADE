@@ -6338,26 +6338,6 @@ export function registerIpc({
     return await ctx.cloudAgentsService.archive(arg);
   });
 
-  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const params = {
-      includeTransferReadiness: arg?.includeTransferReadiness === true,
-      forceTransferReadiness: arg?.forceTransferReadiness === true,
-    };
-    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
-      event,
-      "sync.getStatus",
-      params,
-      (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
-    );
-    if (runtimeStatus.handled) return runtimeStatus.result;
-    return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
-      service.getStatus({
-        includeTransferReadiness: arg?.includeTransferReadiness,
-        forceTransferReadiness: arg?.forceTransferReadiness,
-      }),
-    );
-  });
-
   // A degraded local runtime stays degraded for as long as it takes a human to
   // fix it, and every renderer read logs the same sentence. Report the edge into
   // a reason, then at most once a minute while it persists — same shape as the
@@ -6385,10 +6365,15 @@ export function registerIpc({
    * deadline abandoned is still in flight — is handled here rather than
    * surfacing as an unhandled one.
    */
-  const withDeadline = <T>(work: Promise<T>, timeoutMs: number): Promise<T> =>
+  const withDeadline = <T>(
+    work: Promise<T>,
+    timeoutMs: number,
+    timeoutError: () => Error = () =>
+      new Error(`The background service did not answer within ${timeoutMs}ms.`),
+  ): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`The background service did not answer within ${timeoutMs}ms.`)),
+        () => reject(timeoutError()),
         Math.max(1, timeoutMs),
       );
       timer.unref?.();
@@ -6476,6 +6461,70 @@ export function registerIpc({
     });
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
+  });
+
+  const readProjectSyncStatus = async (
+    event: { sender: Electron.WebContents },
+    arg?: SyncGetStatusArgs,
+  ): Promise<SyncRoleSnapshot> => {
+    const params = {
+      includeTransferReadiness: arg?.includeTransferReadiness === true,
+      forceTransferReadiness: arg?.forceTransferReadiness === true,
+    };
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.getStatus",
+      params,
+      (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
+    );
+    if (runtimeStatus.handled) return runtimeStatus.result;
+    return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
+      service.getStatus({
+        includeTransferReadiness: arg?.includeTransferReadiness,
+        forceTransferReadiness: arg?.forceTransferReadiness,
+      }),
+    );
+  };
+
+  // Concurrent reads of the same project's status share one runtime call.
+  // Connections re-reads every 5s and on every sync-status broadcast, so while
+  // a cold runtime is still registering the project those reads used to pile
+  // up, each holding its own wait.
+  const projectSyncStatusReads = new Map<string, Promise<SyncRoleSnapshot>>();
+
+  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const key = JSON.stringify([
+      localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null,
+      arg?.includeTransferReadiness === true,
+      arg?.forceTransferReadiness === true,
+    ]);
+    let read = projectSyncStatusReads.get(key);
+    if (!read) {
+      // Same contract as sync.getLocalStatus: the first launch on Windows can
+      // spend 30s just bringing the runtime up and registering the project,
+      // then the read had its own 30s, and the 30s IPC timer won every time.
+      // Past the cap the answer is the synthesized snapshot, whose
+      // `degradedReason` tells every reader "this is not a reading" — readers
+      // treat it as "couldn't read" and retry, instead of the opaque timeout.
+      // A real failure still rejects with its own reason; only running out of
+      // time is answered for.
+      const deadlineError = new Error(
+        "This project's background service did not answer in time. ADE will check again shortly.",
+      );
+      read = withDeadline(
+        readProjectSyncStatus(event, arg),
+        LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
+        () => deadlineError,
+      ).catch((error: unknown) => {
+        if (error !== deadlineError) throw error;
+        warnLocalStatusDegraded(deadlineError.message);
+        return buildMachineOnlySyncSnapshot(deadlineError);
+      }).finally(() => {
+        if (projectSyncStatusReads.get(key) === read) projectSyncStatusReads.delete(key);
+      });
+      projectSyncStatusReads.set(key, read);
+    }
+    return await read;
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {

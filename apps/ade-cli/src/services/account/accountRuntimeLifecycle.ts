@@ -44,7 +44,11 @@ export type AccountRuntimeLifecycleOptions = {
   receiptDir: string;
   logger: Logger;
   accountAuthService: Pick<AccountAuthService, "getStatus" | "onSignedIn" | "onSignedOut">;
-  getAccountAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
+  getAccountAccessToken: (options?: {
+    forceRefresh?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }) => Promise<string | null>;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   teardown: { push(release: () => void): void };
   relay?: AccountSettingsRelay & AccountVaultRelay;

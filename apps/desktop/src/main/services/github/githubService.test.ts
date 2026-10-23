@@ -1113,6 +1113,16 @@ describe("githubService issue-domain helpers", () => {
     expect(url).not.toContain("since=");
   });
 
+  it("names the network failure when GitHub never answers", async () => {
+    // undici's shape: the reason lives only in the cause chain, which the
+    // brain's JSON-RPC boundary drops. The message must carry it.
+    const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    mockFetch.mockRejectedValue(new TypeError("fetch failed", { cause: reset }));
+    const service = makeService();
+
+    await expect(service.getRepoIssueSummary("acme", "ade")).rejects.toThrow(/ECONNRESET/);
+  });
+
   it("listRepoIssues returns [] when the API returns a non-array payload", async () => {
     // Defensive: GitHub might return an error envelope we don't recognize.
     mockFetch.mockResolvedValueOnce(jsonResponse(200, { message: "huh" }));

@@ -18,7 +18,9 @@ import {
 } from "./pushRegistrationStore";
 import {
   createPushRelayClient,
+  PUSH_RELAY_REQUEST_DEADLINE_MS,
   PushRelayMachineRevokedError,
+  PushRelayUnreachableError,
 } from "./pushRelayClient";
 import {
   activityAlertFingerprint,
@@ -4034,11 +4036,70 @@ describe("createPushRelayClient", () => {
       streamId: "account-a",
     });
 
-    expect(getAccountAccessToken).toHaveBeenNthCalledWith(1, undefined);
-    expect(getAccountAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(
+      1,
+      expect.not.objectContaining({ forceRefresh: true }),
+    );
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ forceRefresh: true }),
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer cached-access-token");
     expect(fetchMock.mock.calls[1][1].headers.authorization).toBe("Bearer fresh-access-token");
+  });
+
+  it.each([
+    {
+      name: "a token wait that never ends",
+      // The brain's token broker had its own 30s budget and ignored ours.
+      token: (options?: { signal?: AbortSignal }) => new Promise<string | null>((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(null));
+      }),
+      fetch: undefined,
+      code: "timeout",
+    },
+    {
+      name: "a TLS handshake the network cut",
+      token: async () => "access-token",
+      fetch: async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(
+            new Error("Client network socket disconnected before secure TLS connection was established"),
+            { code: "ECONNRESET" },
+          ),
+        });
+      },
+      code: "ECONNRESET",
+    },
+  ])("reports $name as an unreachable relay inside one deadline", async ({ token, fetch, code }) => {
+    if (fetch) fetchMock.mockImplementation(fetch);
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: token,
+      getAccountUserId: () => "account-a",
+    });
+
+    const settled = vi.fn();
+    const report = client.reportAttentionPresence({
+      deviceId: "desktop-1",
+      deviceName: "Mac",
+      platform: "macOS",
+      appForeground: true,
+      ambientSurfaceVisible: false,
+      visibleItemIds: [],
+      observedAt: "2026-07-05T00:00:00.000Z",
+    });
+    void report.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(PUSH_RELAY_REQUEST_DEADLINE_MS);
+
+    expect(settled).toHaveBeenCalledTimes(1);
+    await expect(report).rejects.toBeInstanceOf(PushRelayUnreachableError);
+    await expect(report).rejects.toMatchObject({ code });
+    // Under the desktop's 30s IPC timer.
+    expect(PUSH_RELAY_REQUEST_DEADLINE_MS).toBeLessThan(30_000);
   });
 
   it("rejects an account snapshot response that resolves after the account changes", async () => {

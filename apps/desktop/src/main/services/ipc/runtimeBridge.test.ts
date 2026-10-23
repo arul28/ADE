@@ -2894,6 +2894,7 @@ describe("registerIpc sync bridge", () => {
     expect(accountAttentionClient.getAttentionSnapshot).toHaveBeenCalledWith(
       4,
       "account-stream",
+      expect.anything(),
     );
     expect(accountAttentionClient.acknowledgeAttention).toHaveBeenCalledWith({
       itemIds: ["attention-1"],
@@ -2960,7 +2961,7 @@ describe("registerIpc sync bridge", () => {
         recovery: "sign_in",
       },
     });
-    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {});
+    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {}, expect.anything());
   });
 
   it("sanitizes account auth failures and names the machine fallback", async () => {
@@ -3547,14 +3548,20 @@ describe("registerIpc sync bridge", () => {
     expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
   });
 
-  it("answers a local sync status read the runtime never answers with the degraded machine snapshot", async () => {
+  it.each([
+    // The machine-scope read behind the This-Machine card.
+    { channel: IPC.syncGetLocalStatus, project: false },
+    // The project-scope read: on a Windows cold start, registering the project
+    // alone could take 30s, then the read had 30s more (ADE-DESKTOP-39).
+    { channel: IPC.syncGetStatus, project: true },
+  ])("answers a $channel read the runtime never answers with the degraded machine snapshot", async ({ channel, project }) => {
     vi.useFakeTimers();
     try {
       // Accepted and never answered: the shape the measured backlog came from,
       // where each read sat until the 30s IPC timer replaced its reason.
       const localRuntimeConnectionPool = {
         callSync: vi.fn(() => new Promise(() => {})),
-        syncStatusForRoot: vi.fn(),
+        syncStatusForRoot: vi.fn(() => new Promise(() => {})),
       };
       registerIpc({
         getCtx: () => ({
@@ -3563,8 +3570,8 @@ describe("registerIpc sync bridge", () => {
         }) as any,
         getWindowSession: () => ({
           windowId: 7,
-          project: null,
-          binding: null,
+          project: project ? { rootPath: "/repo", displayName: "Repo" } as any : null,
+          binding: project ? localBinding("/repo") : null,
         }),
         localRuntimeConnectionPool: localRuntimeConnectionPool as any,
         switchProjectFromDialog: vi.fn(),
@@ -3573,10 +3580,12 @@ describe("registerIpc sync bridge", () => {
         globalStatePath: "/tmp/ade-state.json",
       });
 
-      const read = ipcHandlers.get(IPC.syncGetLocalStatus)?.(
+      const read = ipcHandlers.get(channel)?.(
         eventForSender(),
         {},
       ) as Promise<SyncRoleSnapshot>;
+      // Polls that arrive while it waits share the one runtime call.
+      const second = ipcHandlers.get(channel)?.(eventForSender(), {}) as Promise<SyncRoleSnapshot>;
       const settled = vi.fn();
       void read.then(settled, settled);
 
@@ -3593,8 +3602,14 @@ describe("registerIpc sync bridge", () => {
       // The invariant the 30s-vs-30s collision broke: the overall cap expires
       // before this channel's IPC timer, so the handler's reason wins.
       expect(LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS).toBeLessThan(
-        ipcInvokeTimeoutMs(IPC.syncGetLocalStatus),
+        ipcInvokeTimeoutMs(channel),
       );
+      if (project) {
+        await expect(second).resolves.toBe(snapshot);
+        expect(localRuntimeConnectionPool.syncStatusForRoot).toHaveBeenCalledTimes(1);
+      } else {
+        await second;
+      }
     } finally {
       vi.useRealTimers();
     }

@@ -18,9 +18,14 @@ const POLL_INTERVAL_MS = 15_000;
 const SNAPSHOT_POLL_MAX_INTERVAL_MS = 120_000;
 const PRESENCE_INTERVAL_MS = 30_000;
 const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
-// This backstop must clear a 15s relay request, one 401 retry, and the 30s
-// local-runtime fallback so legitimate host failures retain their real error.
-const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 75_000;
+// Focus, blur and visibility can flap several times inside one window switch;
+// changes inside this window go out as one report carrying the latest state.
+const PRESENCE_COALESCE_MS = 250;
+// A failed report waits this long, doubling per failure, before the next one.
+const PRESENCE_FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
+// The main process answers a snapshot inside its own 25s budget (account leg
+// plus local fallback); this backstop only catches a renderer-side hang.
+const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 35_000;
 const PREFERENCES_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
 type ActivityAccountScope = {
@@ -346,55 +351,129 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
     };
   }, [accountLoading, accountUserId]);
 
+  const requestPresenceRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     if (accountLoading || !accountUserId) return;
-    const send = () => {
-      void reportPresence(
-        ambientSurfaceVisibleRef.current,
-        visibleItemIdsRef.current,
-        foregroundRef.current,
-      ).catch(() => {});
-    };
+    let disposed = false;
+    let inFlight = false;
+    // A request arrived while one was in flight; send once more when it lands.
+    let pending = false;
+    let consecutiveFailures = 0;
     let timer: number | null = null;
-    const schedule = () => {
+    let coalesceTimer: number | null = null;
+
+    const clearTimer = () => {
       if (timer !== null) window.clearTimeout(timer);
-      const delay = document.visibilityState === "visible"
+      timer = null;
+    };
+    const nextDelayMs = () => {
+      const base = document.visibilityState === "visible"
         ? PRESENCE_INTERVAL_MS
         : HIDDEN_PRESENCE_INTERVAL_MS;
+      if (consecutiveFailures === 0) return base;
+      return Math.min(
+        PRESENCE_FAILURE_BACKOFF_MAX_MS,
+        base * 2 ** Math.min(consecutiveFailures, 8),
+      );
+    };
+    const schedule = () => {
+      clearTimer();
+      if (disposed) return;
       timer = window.setTimeout(() => {
         timer = null;
-        send();
-        schedule();
-      }, delay);
+        void send();
+      }, nextDelayMs());
     };
-    send();
-    schedule();
+    /** One report with the latest state; the heartbeat restarts from it. */
+    const send = async (): Promise<void> => {
+      if (disposed) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      pending = false;
+      clearTimer();
+      try {
+        await reportPresence(
+          ambientSurfaceVisibleRef.current,
+          visibleItemIdsRef.current,
+          foregroundRef.current,
+        );
+        consecutiveFailures = 0;
+      } catch {
+        // Nobody waits on presence. Back off rather than retry at the same
+        // cadence, and let the heartbeat carry the latest state when it fires.
+        consecutiveFailures += 1;
+        pending = false;
+      } finally {
+        inFlight = false;
+      }
+      if (pending && consecutiveFailures === 0) {
+        void send();
+        return;
+      }
+      schedule();
+    };
+    /**
+     * An event-driven report. Bursts merge into one, and while reports are
+     * failing an event does not jump the backoff: the scheduled heartbeat
+     * carries the latest state.
+     */
+    const request = () => {
+      if (disposed || consecutiveFailures > 0) return;
+      if (coalesceTimer !== null) return;
+      coalesceTimer = window.setTimeout(() => {
+        coalesceTimer = null;
+        void send();
+      }, PRESENCE_COALESCE_MS);
+    };
+    requestPresenceRef.current = request;
+
+    void send();
     const onVisibilityChange = () => {
-      // Coming back reports at once: presence is how other devices learn this
+      // Coming back reports promptly: presence is how other devices learn this
       // machine is being watched, and a 120s-stale "hidden" claim right as the
       // user returns is the one case that misleads. Going hidden waits — `blur`
-      // has already reported the foreground change.
-      if (document.visibilityState === "visible") send();
-      schedule();
+      // has already reported the foreground change — but moves the heartbeat
+      // to the hidden cadence.
+      if (document.visibilityState === "visible") request();
+      else if (!inFlight) schedule();
     };
     const onFocus = () => {
       foregroundRef.current = true;
-      send();
+      request();
     };
     const onBlur = () => {
       foregroundRef.current = false;
-      send();
+      request();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
     return () => {
-      if (timer !== null) window.clearTimeout(timer);
+      disposed = true;
+      if (requestPresenceRef.current === request) requestPresenceRef.current = null;
+      clearTimer();
+      if (coalesceTimer !== null) window.clearTimeout(coalesceTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
     };
-  }, [accountLoading, accountUserId, ambientSurfaceVisible, visibleItemIdsKey]);
+  }, [accountLoading, accountUserId]);
+
+  // What is on screen changed: report it through the same coalesced sender
+  // instead of restarting the heartbeat (and its listeners) on every change.
+  // Item ids only travel while an Activity surface is visible, so they only
+  // count as a change then.
+  const presenceStateKey = ambientSurfaceVisible ? `visible\u001e${visibleItemIdsKey}` : "hidden";
+  const lastPresenceStateKeyRef = useRef(presenceStateKey);
+  useEffect(() => {
+    if (lastPresenceStateKeyRef.current === presenceStateKey) return;
+    lastPresenceStateKeyRef.current = presenceStateKey;
+    requestPresenceRef.current?.();
+  }, [presenceStateKey]);
 
   useEffect(() => () => {
     if (accountUserId) void reportPresence(false, [], false).catch(() => {});

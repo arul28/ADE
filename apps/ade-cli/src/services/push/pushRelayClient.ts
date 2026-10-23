@@ -1,5 +1,6 @@
 import { recordAccountChangeMarks } from "../account/accountChangeMarks";
 import { createHash, createHmac } from "node:crypto";
+import { fetchTransportFailureCode } from "../../../../desktop/src/shared/fetchTransportFailure";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
   AttentionItem,
@@ -39,6 +40,20 @@ export {
 
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * The whole of one relay request: the account token, the fetch, and the one
+ * forced-refresh retry after a 401, together. Each used to carry its own budget
+ * (the token up to the brain's 30s, then 15s per fetch), so a single call could
+ * run past a minute and every desktop IPC handler in front of it hit its 30s
+ * timer first. Kept under that timer so the caller answers in words.
+ */
+export const PUSH_RELAY_REQUEST_DEADLINE_MS = 20_000;
+
+/** Per-call options the account Activity routes accept. */
+export type PushRelayCallOptions = {
+  /** Aborts the request early; the client's own deadline still applies. */
+  signal?: AbortSignal;
+};
 
 /** APNs alert-push item, matching the relay's `parseAlertItems`. */
 export type PushRelayAlertItem = {
@@ -159,6 +174,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The relay could not be reached: no HTTP answer at all (a reset, a TLS
+ * handshake cut short, DNS, no network) or the request ran out of time.
+ *
+ * Distinct from `PushRelayRequestError`, which is the relay ANSWERING with a
+ * failure. Callers on a background loop (presence, a preference refresh) treat
+ * this as "try again later"; everything else surfaces the message, which names
+ * the network code that the raw `fetch failed` keeps only in its cause chain.
+ */
+export class PushRelayUnreachableError extends Error {
+  constructor(
+    readonly action: string,
+    /** `ECONNRESET`, `ENOTFOUND`, …, `timeout`, or null when undici named nothing. */
+    readonly code: string | null,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      code === "timeout"
+        ? "ADE's account service did not answer in time."
+        : `ADE can't reach its account service${code ? ` (${code})` : ""}.`,
+      options,
+    );
+    this.name = "PushRelayUnreachableError";
+  }
+}
+
 export class PushRelayRequestError extends Error {
   constructor(
     readonly action: string,
@@ -227,7 +268,11 @@ export function createPushRelayClient(args: {
   store: PushRegistrationStore;
   logger: Logger;
   baseUrl?: string;
-  getAccountAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
+  getAccountAccessToken?: (options?: {
+    forceRefresh?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }) => Promise<string | null>;
   getAccountUserId?: () => string | null;
 }) {
   const baseUrl = (args.baseUrl ?? process.env.ADE_PUSH_RELAY_URL?.trim() ?? "").trim() || DEFAULT_RELAY_URL;
@@ -240,10 +285,35 @@ export function createPushRelayClient(args: {
       signed?: boolean;
       accountAuthorized?: boolean;
       expectedAccountUserId?: string;
+      signal?: AbortSignal;
     },
   ): Promise<RelayResponse> => {
     const url = new URL(`${baseUrl}${pathSuffix}`);
     const bodyString = options?.body === undefined ? "" : JSON.stringify(options.body);
+    const action = `${method} ${url.pathname}`;
+    // One budget for everything below. `deadline` aborts the token wait and the
+    // fetch alike; a caller's own signal shortens it, never lengthens it.
+    const deadlineAt = Date.now() + PUSH_RELAY_REQUEST_DEADLINE_MS;
+    const deadline = new AbortController();
+    const deadlineTimer = setTimeout(
+      () => deadline.abort(new PushRelayUnreachableError(action, "timeout")),
+      PUSH_RELAY_REQUEST_DEADLINE_MS,
+    );
+    deadlineTimer.unref?.();
+    const callerSignal = options?.signal;
+    const abortFromCaller = (): void => deadline.abort(callerSignal?.reason);
+    if (callerSignal?.aborted) abortFromCaller();
+    else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+    const remainingMs = (): number => Math.max(0, deadlineAt - Date.now());
+    /** The error to raise once `deadline` has fired, whoever fired it. */
+    const deadlineError = (): Error => {
+      const reason: unknown = deadline.signal.reason;
+      if (reason instanceof PushRelayUnreachableError) return reason;
+      // A caller's cancellation stays theirs; a caller's TIMEOUT is still the
+      // relay not answering in time.
+      if (reason instanceof Error && reason.name !== "TimeoutError") return reason;
+      return new PushRelayUnreachableError(action, "timeout", { cause: reason });
+    };
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResponse> => {
       const expectedAccountUserId = options?.expectedAccountUserId;
       const headers: Record<string, string> = {};
@@ -273,9 +343,14 @@ export function createPushRelayClient(args: {
             body: { error: "ADE account changed before the request was authorized" },
           };
         }
-        const token = await args.getAccountAccessToken?.(
-          forceRefresh ? { forceRefresh: true } : undefined,
-        );
+        const token = await args.getAccountAccessToken?.({
+          ...(forceRefresh ? { forceRefresh: true } : {}),
+          signal: deadline.signal,
+          timeoutMs: Math.max(1, remainingMs()),
+        });
+        // A token wait cut off by the deadline is not "signed out": the token
+        // helper swallows the abort into null, so ask the deadline directly.
+        if (deadline.signal.aborted) throw deadlineError();
         if (!token) {
           return {
             ok: false,
@@ -301,13 +376,26 @@ export function createPushRelayClient(args: {
       }
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const abortFetch = (): void => controller.abort(deadline.signal.reason);
+      if (deadline.signal.aborted) throw deadlineError();
+      deadline.signal.addEventListener("abort", abortFetch, { once: true });
+      let attemptTimedOut = false;
+      const timeout = setTimeout(() => {
+        attemptTimedOut = true;
+        controller.abort();
+      }, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remainingMs())));
       try {
         const response = await fetch(url.toString(), {
           method,
           headers,
           ...(options?.body !== undefined ? { body: bodyString } : {}),
           signal: controller.signal,
+        }).catch((error: unknown) => {
+          if (deadline.signal.aborted) throw deadlineError();
+          if (attemptTimedOut) throw new PushRelayUnreachableError(action, "timeout", { cause: error });
+          // No HTTP answer at all. Name the network code now: the cause chain
+          // that carries it does not survive IPC or JSON-RPC.
+          throw new PushRelayUnreachableError(action, fetchTransportFailureCode(error), { cause: error });
         }).finally(() => clearTimeout(timeout));
         let parsed: Record<string, unknown> | null = null;
         try {
@@ -316,6 +404,8 @@ export function createPushRelayClient(args: {
         } catch {
           parsed = null;
         }
+        // A body cut off by the deadline is not an empty answer.
+        if (deadline.signal.aborted) throw deadlineError();
         if (
           expectedAccountUserId
           && args.getAccountUserId?.() !== expectedAccountUserId
@@ -330,17 +420,26 @@ export function createPushRelayClient(args: {
       } catch (error) {
         clearTimeout(timeout);
         throw error instanceof Error ? error : new Error(String(error));
+      } finally {
+        deadline.signal.removeEventListener("abort", abortFetch);
       }
     };
 
-    const first = await requestOnce(false);
-    if (!options?.accountAuthorized || first.status !== 401) return first;
+    try {
+      const first = await requestOnce(false);
+      if (!options?.accountAuthorized || first.status !== 401) return first;
+      // No time left for a second round trip: the first answer is the answer.
+      if (remainingMs() <= 0) return first;
 
-    // A cached Clerk token can be revoked or rejected before its signed expiry.
-    // Retry the exact request once with a forced refresh. Account-owner fencing
-    // runs again before and after refresh, so an account switch can never send
-    // the replacement credential on behalf of the prior owner.
-    return await requestOnce(true);
+      // A cached Clerk token can be revoked or rejected before its signed expiry.
+      // Retry the exact request once with a forced refresh. Account-owner fencing
+      // runs again before and after refresh, so an account switch can never send
+      // the replacement credential on behalf of the prior owner.
+      return await requestOnce(true);
+    } finally {
+      clearTimeout(deadlineTimer);
+      callerSignal?.removeEventListener("abort", abortFromCaller);
+    }
   };
 
   const requireOk = (action: string, response: RelayResponse): Record<string, unknown> => {
@@ -627,6 +726,7 @@ export function createPushRelayClient(args: {
     async getAttentionSnapshot(
       since = 0,
       streamId?: string | null,
+      callOptions?: PushRelayCallOptions,
     ): Promise<AttentionSnapshot | null> {
       if (!args.getAccountAccessToken) return null;
       const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
@@ -638,7 +738,11 @@ export function createPushRelayClient(args: {
       const response = await request(
         "GET",
         `/attention/account/snapshot?${query.toString()}`,
-        { accountAuthorized: true, expectedAccountUserId },
+        {
+          accountAuthorized: true,
+          expectedAccountUserId,
+          ...(callOptions?.signal ? { signal: callOptions.signal } : {}),
+        },
       );
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;

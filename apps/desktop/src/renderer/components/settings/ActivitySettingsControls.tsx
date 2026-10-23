@@ -126,6 +126,12 @@ export function useActivitySettings() {
     void api.getPreferences(accountOwnerId)
       .then((next) => {
         if (cancelled || !mounted.current) return;
+        // Unreachable right now. Showing defaults here would invite saving
+        // them over the account's real settings.
+        if (!next) {
+          setError("ADE can’t reach its account service right now, so your Activity settings didn’t load. Try again in a moment.");
+          return;
+        }
         setPreferences(normalizeActivityPreferences(next));
         setError(null);
       })
