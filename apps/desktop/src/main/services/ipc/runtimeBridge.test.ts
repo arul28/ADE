@@ -3686,7 +3686,7 @@ describe("registerIpc sync bridge", () => {
       ),
     ).resolves.toBe(status);
 
-    expect(localRuntimeConnectionPool.syncStatusForRoot).toHaveBeenCalledWith("/repo", {});
+    expect(localRuntimeConnectionPool.syncStatusForRoot).toHaveBeenCalledWith("/repo", {}, expect.anything());
     expect(localRuntimeConnectionPool.callSync).toHaveBeenCalledWith(
       "sync.getStatus",
       {
