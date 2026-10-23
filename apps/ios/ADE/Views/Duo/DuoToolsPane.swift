@@ -242,13 +242,6 @@ struct DuoPaneRowOnly<Content: View>: View {
   }
 }
 
-extension DuoLayout {
-  /// The rule for who owns the edge bar's top: whatever is on the right of
-  /// the screen. With the pane open beside the chat on the Duo held
-  /// landscape, that is the pane, so its controls move onto the bar.
-  var paneControlsInBar: Bool { hasEdgeBar }
-}
-
 /// What the open tool adds to the pane header: its actions (Inspect, Rotate,
 /// Speed, Watch | Control…) and a one-line status ("iPhone 16 Pro · Watching").
 ///
@@ -267,28 +260,14 @@ struct DuoPaneHeaderActionsKey: PreferenceKey {
   }
 }
 
-private struct DuoPaneHeaderStatusKey: PreferenceKey {
+struct DuoPaneHeaderStatusKey: PreferenceKey {
   static var defaultValue: String?
   static func reduce(value: inout String?, nextValue: () -> String?) {
     value = value ?? nextValue()
   }
 }
 
-/// Menu items the open surface adds to the edge bar's ⋯ (the PR's actions),
-/// so the bar has one ⋯ rather than the surface's own beside the system's.
-struct DuoPaneOverflowKey: PreferenceKey {
-  static var defaultValue: DuoPaneHeaderActions?
-  static func reduce(value: inout DuoPaneHeaderActions?, nextValue: () -> DuoPaneHeaderActions?) {
-    value = value ?? nextValue()
-  }
-}
-
 extension View {
-  /// Menu items for the edge bar's ⋯ while this surface's controls are there.
-  func duoPaneOverflow<Items: View>(@ViewBuilder items: () -> Items) -> some View {
-    preference(key: DuoPaneOverflowKey.self, value: DuoPaneHeaderActions(content: AnyView(items())))
-  }
-
   /// Hands this tool's controls and status line to the tools pane header.
   /// Inert outside the pane: nothing else reads these preferences.
   func duoPaneHeader<Actions: View>(
@@ -386,10 +365,13 @@ struct DuoPaneActionMenu<Items: View>: View {
 ///
 /// Plain content inside the chat column's stack (never a stack of its own: a
 /// nested stack would take over the chat's title and rail). Its header is its
-/// own row, not toolbar items, for the same reason:
-/// - a tool: the lane's tools as a segmented control, the open tool's actions
-///   as glass buttons, then Close;
-/// - a page (Chat Info, Proof, Pull Request): the page title, then Close.
+/// own row, not toolbar items, for the same reason: the surface's name, its
+/// status line, and the open surface's own controls at the trailing end (a
+/// tool's rotate and Watch | Control, the PR's ⋯).
+///
+/// Beside the chat, Close is the chat's toolbar's (the top of the edge bar,
+/// or the top bar's trailing end), so the header has none. Stacked over the
+/// chat (laptop, tent) the pane is a half of its own and draws its Close.
 ///
 /// Content is supplied by the destination, which is where the chat's PR,
 /// proof artifacts and chat info live, so a page reuses those views with
@@ -401,16 +383,13 @@ struct DuoToolsPane<Content: View>: View {
   @Environment(\.duoWorkFamily) private var family
   @Environment(\.duoLayout) private var duo
 
-  /// The pane's controls (and Close) are on the edge bar: its own header is
-  /// just the name and status, one row.
-  private var controlsInBar: Bool { duo.paneControlsInBar && family != .tall }
+  /// Beside the chat: Close lives on the chat's toolbar.
+  private var besideChat: Bool { family != .tall }
 
-  /// Beside the thread the pane owns its column's full height: its header
-  /// sits on the chat title capsule's row, not a nav bar's height below it
-  /// (the bar's items are on the rail). Stacked, it sits under the top bar.
-  private var usesFullHeight: Bool { family != .tall }
-  /// Puts the header's centre on the title capsule's centre (the bar's row).
-  private var fullHeightTopInset: CGFloat { 20 }
+  /// On the edge bar the pane's header row is drawn by the chat's bar, on
+  /// the title capsule's row (`DuoChatRail`): a row drawn by the pane under
+  /// the bar's band could be seen but not tapped. The pane starts under it.
+  private var headerInBar: Bool { besideChat && duo.hasEdgeBar }
 
   private var headerHeight: CGFloat { 52 }
   private var statusHeight: CGFloat { 18 }
@@ -419,14 +398,15 @@ struct DuoToolsPane<Content: View>: View {
     let tab = model.tab
     VStack(spacing: 0) {
       Color.clear
-        .frame(height: (usesFullHeight ? fullHeightTopInset : 0) + headerHeight
-          + (status != nil && !controlsInBar ? statusHeight - 8 : 0))
+        .frame(height: headerInBar ? 0 : headerHeight
+          + (status != nil && !besideChat ? statusHeight - 8 : 0))
       Group {
         if let tab {
           content(tab, model.seed)
             // A fresh viewer per tool: two tools never share a stream.
             .id(tab)
-            .environment(\.duoPaneControlsInBar, controlsInBar)
+            // The surface's controls are drawn in this pane's header row.
+            .environment(\.duoPaneControlsInBar, false)
         } else {
           Color.clear
         }
@@ -434,61 +414,32 @@ struct DuoToolsPane<Content: View>: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .overlayPreferenceValue(DuoPaneHeaderActionsKey.self, alignment: .top) { actions in
-      header(tab: tab, actions: actions)
+      if !headerInBar {
+        header(tab: tab, actions: actions)
+      }
     }
     .onPreferenceChange(DuoPaneHeaderStatusKey.self) { next in
       if status != next { status = next }
     }
-    .ignoresSafeArea(.container, edges: usesFullHeight ? .top : [])
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .accessibilityIdentifier("Duo.Work.ToolsPane")
   }
 
-  /// One row: the surface's name (and its status line under it), the open
-  /// tool's own controls, then Close. No switcher: the pane shows one tool,
-  /// and the Tools button or a pill switches it.
   @ViewBuilder
   private func header(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
-    if controlsInBar {
-      barHeader(tab: tab, actions: actions)
+    if besideChat {
+      sideHeader(tab: tab, actions: actions)
     } else {
       rowHeader(tab: tab, actions: actions)
     }
   }
 
-  /// Name and status side by side on the top row, level with the chat's title
-  /// capsule; the controls are the edge bar's.
-  private func barHeader(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
-      if let tab {
-        Text(tab.title)
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-          .accessibilityAddTraits(.isHeader)
-          .layoutPriority(1)
-      }
-      if let status {
-        // Whole or not at all: a status cut to "iPh…ing" says nothing.
-        ViewThatFits(in: .horizontal) {
-          Text(status)
-          Color.clear.frame(width: 0, height: 0)
-        }
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-      }
-      Spacer(minLength: 8)
-      if let actions {
-        HStack(spacing: 6) { actions.content }
-          .environment(\.duoPaneControlsInBar, true)
-          .environment(\.duoPaneActionsRow, true)
-          .fixedSize()
-          .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }
-      }
-    }
-    .lineLimit(1)
-    .frame(height: headerHeight)
-    .padding(.top, fullHeightTopInset)
-    .padding(.horizontal, 16)
+  /// Beside the chat: one row, the name and its status side by side, then
+  /// the surface's own controls at the trailing end.
+  private func sideHeader(tab: DuoToolTab?, actions: DuoPaneHeaderActions?) -> some View {
+    DuoPaneHeaderRow(title: tab?.title, status: status, actions: actions)
+      .frame(height: headerHeight)
+      .padding(.horizontal, 16)
   }
 
   @ViewBuilder
@@ -510,7 +461,6 @@ struct DuoToolsPane<Content: View>: View {
         closeButton
       }
       .frame(height: headerHeight)
-      .padding(.top, usesFullHeight ? fullHeightTopInset : 0)
       // Tucked up under the name: the two read as one block.
       .padding(.bottom, status != nil ? -8 : 0)
       // The status gets the pane's whole width under the row, so a device
@@ -535,12 +485,54 @@ struct DuoToolsPane<Content: View>: View {
   }
 }
 
+/// The pane's header row beside the chat: the surface's name and its status
+/// side by side, then its own controls at the trailing end ("Pull Request
+/// #1852 · Merged … ⋯"). Drawn by the pane under a top bar, and by the chat's
+/// bar itself on the edge bar.
+struct DuoPaneHeaderRow: View {
+  let title: String?
+  let status: String?
+  let actions: DuoPaneHeaderActions?
+
+  var body: some View {
+    HStack(spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        if let title {
+          Text(title)
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+            .accessibilityAddTraits(.isHeader)
+            .layoutPriority(1)
+        }
+        if let status {
+          // Whole or not at all: a status cut to "iPh…ing" says nothing.
+          ViewThatFits(in: .horizontal) {
+            Text(status)
+            Color.clear.frame(width: 0, height: 0)
+          }
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+      Spacer(minLength: 8)
+      if let actions {
+        HStack(spacing: 6) { actions.content }
+          .fixedSize()
+          .environment(\.duoPaneControlsInBar, false)
+      }
+    }
+    .lineLimit(1)
+  }
+}
+
 /// The chat column and the tools pane, laid out around the fold.
 ///
 /// Side by side (every flat posture, held either way, and an iPad): the
-/// thread and the pane share the width half and half; on a book fold each
-/// takes one page, split exactly on the fold. The pane grows out of the pill
-/// or button that opened it.
+/// thread runs from the column's leading edge to the display's hinge and the
+/// pane from the hinge to the edge bar, flat or book-folded alike, so the
+/// hinge is always the divider (an iPad, or the open display held upright,
+/// splits on the window's middle). The pane grows out of the pill or button
+/// that opened it.
 ///
 /// Stacked (laptop and tent: hinge bent, fold across): the top half is always
 /// the tool area, the thread with its composer the bottom half. With nothing
@@ -548,6 +540,8 @@ struct DuoToolsPane<Content: View>: View {
 struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.duoWorkFamily) private var family
+  /// The window's right edge in global coordinates (past the edge bar).
+  @State private var windowMaxX: CGFloat = 0
   let isOpen: Bool
   let origin: UnitPoint
   let chat: () -> Chat
@@ -573,7 +567,21 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
     // within a family, so opening a tool beside the chat does not re-create
     // the transcript (which would drop the reader's place).
     GeometryReader { proxy in
-      layout(fold: DuoFoldReading.fold(in: proxy), size: proxy.size)
+      let global = proxy.frame(in: .global)
+      // The window's middle in this area's coordinates. The area stops at the
+      // edge bar (its trailing safe area), so the window's right edge is read
+      // by a reader that ignores it.
+      let hingeX = windowMaxX > 0 ? windowMaxX / 2 - global.minX : nil
+      layout(fold: DuoFoldReading.fold(in: proxy), hingeX: hingeX, size: proxy.size)
+    }
+    .background {
+      GeometryReader { full in
+        Color.clear
+          .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX.rounded() } action: { maxX in
+            if windowMaxX != maxX { windowMaxX = maxX }
+          }
+      }
+      .ignoresSafeArea()
     }
     .animation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion), value: isOpen)
   }
@@ -588,7 +596,7 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
   }
 
   @ViewBuilder
-  private func layout(fold: DuoFold, size: CGSize) -> some View {
+  private func layout(fold: DuoFold, hingeX: CGFloat?, size: CGSize) -> some View {
     if family == .tall {
       let split = DuoWorkMetrics.tallSplit(height: size.height, fold: fold)
       VStack(spacing: 0) {
@@ -608,19 +616,22 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     } else {
-      // `size` is already the room left of the edge bar (the bar is this
-      // area's trailing safe area).
-      let split = DuoWorkMetrics.wideSplit(width: size.width, fold: fold)
+      // `size` is the room left of the edge bar (the bar is this area's
+      // trailing safe area); the hinge is where the display folds.
+      let split = DuoWorkMetrics.wideSplit(width: size.width, fold: fold, hingeX: hingeX)
       HStack(spacing: 0) {
         chat()
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          // Exactly to the hinge: a flexible chat beside a flexible pane
+          // would be handed half the room, whatever the hinge says.
+          .frame(width: isOpen ? split.chat : nil)
+          .frame(maxWidth: isOpen ? nil : .infinity, maxHeight: .infinity)
           // Alone across a book fold, the thread may span both pages but the
           // composer keeps to the trailing one.
           .environment(\.duoComposerLeadingInset, isOpen ? 0 : composerInset(fold: fold, width: size.width))
         if isOpen {
           DuoSeam(axis: .vertical, foldRect: split.fold)
           tools()
-            .frame(width: split.trailing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(paneTransition)
         }
       }

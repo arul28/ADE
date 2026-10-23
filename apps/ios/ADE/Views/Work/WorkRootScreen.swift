@@ -917,6 +917,7 @@ struct WorkRootListScreen: View, Equatable {
           }
       }
     }
+    .environment(\.workCompactEdgeRail, workListHasEdgeRail)
     .onGeometryChange(for: Bool.self) { proxy in
       workDisplayHasEdgeRail(proxy)
     } action: { hasRail in
@@ -1133,25 +1134,23 @@ struct WorkRootListScreen: View, Equatable {
   }
 
   /// The phone's new-chat page, in the detail column beside the list, as
-  /// desktop opens a new chat. Cancel puts it away; starting the chat turns it
-  /// into that chat, in place.
+  /// desktop opens a new chat. Picking a chat in the list puts it away (no
+  /// Cancel of its own); starting the chat turns it into that chat, in place.
   private func duoComposeColumn(_ route: WorkNewChatRoute) -> some View {
     NavigationStack {
       newChatDestination(route)
         .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel", systemImage: "xmark") {
-              ADEHaptics.light()
-              withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
-                duoComposeRoute = nil
-              }
-            }
-            .accessibilityIdentifier("Duo.Work.NewChat.Cancel")
-          }
           // Activity and Settings are in the sessions ⋯, not on the rail.
           DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)
         }
         .modifier(duoShowSessionsItem)
+    }
+    // Import session (pushed from this page) takes the whole screen for its
+    // list | preview, as desktop's dialog does; the list comes back after.
+    .environment(\.workImportClaimsFullWidth) { claims in
+      withAnimation(DuoWorkMetrics.paneMotion(reduceMotion: reduceMotion)) {
+        duoShowsSessionList = claims ? false : duoWorkFamily == .wide
+      }
     }
     .id(route.preferredLaneId ?? "-")
   }
@@ -1267,8 +1266,9 @@ struct WorkRootListScreen: View, Equatable {
     guard total > 0 else { return DuoWorkMetrics.minChatWidth }
     let list = DuoWorkMetrics.sessionsColumn(total: total, fold: duoWideFold).width
     let detail = max(0, total - list - 1)
-    let pane = DuoWorkMetrics.wideSplit(width: detail, fold: .none).trailing
-    return detail - pane
+    // With the list beside them the hinge is too close for a split on it:
+    // the thread and the pane share what is left half and half.
+    return DuoWorkMetrics.wideSplit(width: detail, fold: .none, hingeX: nil).chat
   }
 
   /// Side by side on every open, flat display, held either way (an iPad too);

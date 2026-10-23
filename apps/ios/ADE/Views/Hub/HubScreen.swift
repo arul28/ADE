@@ -61,8 +61,6 @@ struct HubScreen: View {
   @Environment(\.scenePhase) private var scenePhase
   /// The inner display is wide enough for the two-page Home.
   @Environment(\.duoLayout) private var duo
-  /// The signed-in account, for the inner display's toolbar.
-  @ObservedObject private var account = AccountService.shared
 
   private var isNoMachineBlankState: Bool {
     // A send switching machines keeps the hub (and its composer) up through
@@ -153,6 +151,7 @@ struct HubScreen: View {
           PersonalChatsScreen()
         }
       }
+      .hubHeaderStaysOnTop()
     }
   }
 
@@ -340,10 +339,8 @@ struct HubScreen: View {
   /// `DuoHomeWide`); Chats pushes on the projects page.
   private var wideHome: some View {
     DuoHomeWide(
-      machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
       presentations: hubProjectPresentations,
       actions: hubToolbarActions,
-      account: account.identity,
       showsOverview: canShowProjects || !hubProjectPresentations.isEmpty,
       onOpenAgent: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
@@ -844,10 +841,9 @@ struct HubScreen: View {
 }
 
 /// The Hub on the phone, the Duo's outer display and every other iPhone: the
-/// roster filter row, the project list, and the composer under it as the
-/// screen's footer (the list ends above it). The controls are system toolbar
-/// items, so iOS places them: the top bar on a phone, the vertical bar on the
-/// outer display's curved edge.
+/// header row, the roster filter row, the project list, and the composer under
+/// it as the screen's footer (the list ends above it), at the screen's bottom
+/// the way a bottom bar sits.
 struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View>: View {
   @Binding var composerExpanded: Bool
   let actions: HubToolbarActions
@@ -858,9 +854,15 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
 
   var body: some View {
     VStack(spacing: 0) {
+      HubHeaderRow(actions: actions, title: title)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .hubHeaderClearsStatusBar()
       filterBar()
       roster()
         .frame(maxHeight: .infinity)
+        // The list ends at the composer's top, never behind it.
+        .clipped()
         // While the composer is expanded, a dim scrim covers the list: it
         // swallows taps and drags (no accidental row opens), and any touch on
         // it collapses the composer.
@@ -877,13 +879,13 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
               .transition(.opacity)
           }
         }
-      composer()
+      HubComposerClearsCorner(content: composer)
     }
+    .hubComposerAtScreenBottom()
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarLeading) { title() }
-      HubToolbar(form: .bar, actions: actions)
-    }
+    // The header is a row of its own (under the status bar, the full width),
+    // the same row every other form of the Hub shows.
+    .toolbar(.hidden, for: .navigationBar)
   }
 
   private func collapse() {

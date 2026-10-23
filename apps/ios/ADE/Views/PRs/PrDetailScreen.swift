@@ -5,7 +5,6 @@ struct PrDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.duoSplit) private var duoSplit
-  @Environment(\.duoPaneControlsInBar) private var paneControlsInBar
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
@@ -508,14 +507,11 @@ struct PrDetailView: View {
     detailList
       .duoPaneHeader(status: embeddedStatus) {
         if let embeddedHeaderAccessory { embeddedHeaderAccessory }
-        // On the edge bar the PR's actions are the bar's own ⋯ (below).
-        if !paneControlsInBar {
-          DuoPaneActionMenu(title: "Pull request actions", systemImage: "ellipsis") {
-            moreMenuItems
-          }
+        // The PR's actions, at the trailing end of the pane's header row.
+        DuoPaneActionMenu(title: "Pull request actions", systemImage: "ellipsis") {
+          moreMenuItems
         }
       }
-      .duoPaneOverflow { moreMenuItems }
   }
 
   /// "#1304 · Open · arul28", the pane header's line under its title.

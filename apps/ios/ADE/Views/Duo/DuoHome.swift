@@ -11,7 +11,7 @@ import SwiftUI
 // The pages are the components the phone draws — `HubProjectTile`,
 // `HubInlineComposer`, `HubToolbar` — so a project or a chat row means the
 // same thing in either posture. Nothing here fetches: the agent list reads
-// the presentations the Hub already built, and the rail's Machines menu the
+// the presentations the Hub already built, and the title's machines menu the
 // fleet the connection menu already shows.
 
 // MARK: - Needs you
@@ -217,24 +217,23 @@ private func duoMachineFleetStateTone(_ state: MachineFleet.MachineState) -> ADE
 /// you first, then the composer at the very bottom. The filters choose what
 /// the agent list shows; the project list always shows every project.
 ///
-/// - Held landscape the right page's toolbar is the edge bar: the account's
-///   picture, Activity and Chats at the top; Machines and Settings at the
-///   bottom, beside the composer, whose bottom lines up with the bar's. The
-///   projects page's header is the ADE mark and Add.
+/// The header is the Hub's one header (`HubToolbar`): the ADE mark with the
+/// machines top-left, then Activity, Chats, Settings and Add.
+/// - Held landscape the right page's toolbar is the edge bar: Activity and
+///   Chats head it (they open on that page) and nothing sits at its bottom.
+///   The projects page's header keeps the title, Settings and Add. Below the
+///   rail's capsule the agent list and the composer run to the screen's edge.
 /// - Held upright, or on an iPad, there is no edge bar: the projects page's
-///   top bar holds the connection title (its menu lists the machines),
-///   Activity, Chats and Add; the right page's bar holds the account.
+///   top bar holds the whole header.
 /// - Folded laptop or tent it is one stack: the projects on the top half, the
 ///   agents and the composer on the bottom half.
 ///
 /// The Hub is above every project: it never shows the app tabs. Nothing
 /// scrolls the right page (or the bottom half) but the agent list itself.
 struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination: View>: View {
-  let machines: [DuoHomeMachine]
   /// The Hub's project presentations, which the agent list files by status.
   let presentations: [HubProjectPresentation]
   let actions: HubToolbarActions
-  let account: AccountIdentity?
   /// Whether there is anything to list yet: the machine is attached, or the
   /// Hub still holds its last roster. Otherwise the page says it is
   /// connecting rather than "nothing needs you".
@@ -253,9 +252,9 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @Environment(\.duoLayout) private var duo
   @EnvironmentObject private var syncService: SyncService
   @State private var agentFilter: HubRosterFilter?
-  /// The projects page's width, so its title can make room for Activity,
-  /// Chats and Add where they share its bar.
-  @State private var projectsPageWidth: CGFloat = 0
+  /// The filter row's bottom edge in the window, so the agent list can start
+  /// below the rail's capsule where it runs under the rail's column.
+  @State private var filterBarBottom: CGFloat = 0
 
   private var filter: HubRosterFilter { agentFilter ?? initialAgentFilter }
 
@@ -293,7 +292,26 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
     .onDisappear { DuoShellChrome.shared.setHubHostsActivity(false) }
   }
 
+  /// Held landscape the header lives in the pages' bars (the right page's is
+  /// the edge bar). Held upright and on an iPad it is the phone's header row,
+  /// across the top of both pages, and the pages' own bars stay hidden.
   private var projectPages: some View {
+    VStack(spacing: 0) {
+      if !duo.hasEdgeBar {
+        headerRow
+      }
+      pages
+    }
+  }
+
+  private var headerRow: some View {
+    HubHeaderRow(actions: actions, title: title)
+      .padding(.horizontal, 16)
+      .padding(.bottom, 10)
+      .hubHeaderClearsStatusBar()
+  }
+
+  private var pages: some View {
     DuoTwoPages(flatShare: 0.54, sideBySideWhenUpright: true) {
       NavigationStack {
         projects()
@@ -302,24 +320,16 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
           // here is the edge bar's (and, folded, the hinge's), not this page's.
           .duoLeadingColumnContent()
           .background(ADEColor.pageBackground.ignoresSafeArea())
-          .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { projectsPageWidth = $0 }
           .navigationBarTitleDisplayMode(.inline)
           .toolbar {
             if duo.hasEdgeBar {
-              // The machines live in the rail now, so the header is just the
-              // brand: a mark, not a button.
-              ToolbarItem(placement: .topBarLeading) { brandMark }
-                .sharedBackgroundVisibility(.hidden)
-            } else {
-              ToolbarItem(placement: .topBarLeading) {
-                title()
-                  .environment(\.hubConnectionTitleCompact, projectsPageWidth < 440)
-              }
-              HubToolbar(form: .pageBar, actions: actions, account: account)
-              ToolbarSpacer(.fixed, placement: .topBarTrailing)
+              // The rail's top is the right page's (Activity and Chats); this
+              // header keeps the title, Settings and Add.
+              ToolbarItem(placement: .topBarLeading) { title() }
+              HubToolbar(form: .projectsPage, actions: actions)
             }
-            ToolbarItem(placement: .topBarTrailing) { addButton }
           }
+          .toolbar(duo.hasEdgeBar ? .automatic : .hidden, for: .navigationBar)
       }
     } second: {
       if syncService.attentionDrawerPresented {
@@ -334,30 +344,32 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   }
 
   private var agentsStack: some View {
-      NavigationStack {
-        agentsPage
-          .duoEdgeBarAlignedBottom(contentBottomPadding: HubInlineComposer.bottomPadding)
-          .background(ADEColor.pageBackground.ignoresSafeArea())
-          .toolbar {
-            if duo.hasEdgeBar {
-              HubToolbar(form: .rail, actions: actions, account: account, machines: machines)
-            } else if let account {
-              // Held upright this bar sits beside the status bar, with room
-              // for one item: the account. Activity and Chats are on the
-              // projects page's bar.
-              ToolbarItem(placement: .topBarTrailing) {
-                HubAccountButton(identity: account, action: actions.onOpenSettings)
-              }
-              .sharedBackgroundVisibility(.hidden)
-            }
-          }
+    NavigationStack {
+      Group {
+        if duo.hasEdgeBar {
+          agentsPage
+            .duoEdgeBarAlignedBottom(contentBottomPadding: HubInlineComposer.bottomPadding)
+        } else {
+          agentsPage
+            .hubComposerAtScreenBottom()
+        }
       }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .toolbar {
+          if duo.hasEdgeBar {
+            HubToolbar(form: .rail, actions: actions)
+          }
+        }
+        .toolbar(duo.hasEdgeBar ? .automatic : .hidden, for: .navigationBar)
+    }
   }
 
   // MARK: Laptop / tent
 
   private var stackedLayout: some View {
     NavigationStack {
+      VStack(spacing: 0) {
+      headerRow
       DuoLocalFoldReader { localFold, localSize in
         let top: CGFloat = {
           if case .stacked(let rect) = localFold { return max(0, min(rect.minY, localSize.height)) }
@@ -377,12 +389,10 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
             .frame(maxHeight: .infinity)
         }
       }
+      }
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) { title() }
-        HubToolbar(form: .bar, actions: actions, account: account)
-      }
+      .toolbar(.hidden, for: .navigationBar)
       .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
     }
   }
@@ -391,10 +401,16 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
 
   /// The filters over the agent list over the composer. The filter row is the
   /// page's first thing, level with the projects page's header row.
+  ///
+  /// Held landscape the filter row keeps clear of the rail's column (the
+  /// clock and the capsule with Activity and Chats sit there), while the agent
+  /// card and the composer run on under the rest of that column to the
+  /// screen's edge; the rows keep their text clear of the rail's buttons.
   private var agentsPage: some View {
     let counts = Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { option in
       (option, duoAgentItems(from: presentations, filter: option).count)
     })
+    let underRail = duo.hasEdgeBar
     return VStack(spacing: 0) {
       if showsOverview {
         HubRosterFilterBar(
@@ -404,43 +420,43 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
           accessibilityHintText: "Shows matching chats from every project in the list below."
         )
         .padding(.horizontal, 16)
-        DuoAgentList(
-          filter: filter,
-          items: duoAgentItems(from: presentations, filter: filter),
-          onOpen: onOpenAgent
-        )
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
-      } else {
-        HubConnectingCard()
-          .frame(maxHeight: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { filterBarBottom = $0 }
       }
-      composer()
+      VStack(spacing: 0) {
+        if showsOverview {
+          DuoAgentList(
+            filter: filter,
+            items: duoAgentItems(from: presentations, filter: filter),
+            onOpen: onOpenAgent,
+            avoidsRailCapsule: underRail
+          )
+          .padding(.leading, 16)
+          .padding(.trailing, underRail ? DuoEdgeBar.bottomInset : 16)
+          // Under the rail's column the card starts below the clock.
+          .padding(.top, underRail ? max(12, DuoHomeRail.statusBottom + 8 - filterBarBottom) : 12)
+          .padding(.bottom, 12)
+        } else {
+          HubConnectingCard()
+            .frame(maxHeight: .infinity)
+        }
+        composer()
+          .padding(.trailing, underRail ? DuoEdgeBar.bottomInset - 16 : 0)
+      }
+      .ignoresSafeArea(.container, edges: underRail ? .trailing : [])
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
+}
 
-  private var brandMark: some View {
-    Image("BrandMark")
-      .resizable()
-      .renderingMode(.original)
-      .interpolation(.high)
-      .aspectRatio(contentMode: .fit)
-      .frame(width: 44, height: 24)
-      .padding(.horizontal, 4)
-      .accessibilityLabel("ADE")
-      .accessibilityAddTraits(.isHeader)
-  }
-
-  /// Add relates to the project list, so it is that page's one action.
-  private var addButton: some View {
-    Button(action: actions.onAdd) {
-      Label("Add project", systemImage: "plus")
-    }
-    .tint(ADEColor.textPrimary)
-    .accessibilityHint("Adds a project from one of your machines.")
-  }
+/// The Hub's rail held landscape, as far as the right page has to keep clear
+/// of it: the clock and Wi-Fi at the top of its column, then its one capsule
+/// (Activity and Chats). Measured on the inner display, flat and book.
+enum DuoHomeRail {
+  /// From the window's top edge to the bottom of the status items (clock,
+  /// Wi-Fi) at the top of the rail's column.
+  static let statusBottom: CGFloat = 100
+  /// The column the rail stands in, from the window's trailing edge.
+  static let columnWidth: CGFloat = 74
 }
 
 // MARK: - Chats window
@@ -559,8 +575,14 @@ struct DuoAgentList: View {
   let filter: HubRosterFilter
   let items: [DuoNeedsYouItem]
   let onOpen: (DuoNeedsYouItem) -> Void
+  /// The card runs under the rail's column: every row keeps its trailing
+  /// text in by the column's width, so the timestamps stay one column and
+  /// none sits under Activity or Chats.
+  var avoidsRailCapsule = false
 
   var body: some View {
+    let trailing = avoidsRailCapsule ? DuoHomeRail.columnWidth - DuoEdgeBar.bottomInset : 0
+    return
     Group {
       if items.isEmpty {
         DuoHomeWidgetEmptyState(
@@ -573,9 +595,13 @@ struct DuoAgentList: View {
         DuoWidgetList {
           LazyVStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-              DuoWidgetChatRow(item: item) { onOpen(item) }
-              if index < items.count - 1 {
-                Divider().padding(.leading, DuoWidgetRowMetrics.textInset)
+              VStack(spacing: 0) {
+                DuoWidgetChatRow(item: item, extraTrailing: trailing) { onOpen(item) }
+                if index < items.count - 1 {
+                  Divider()
+                    .padding(.leading, DuoWidgetRowMetrics.textInset)
+                    .padding(.trailing, trailing)
+                }
               }
             }
           }
@@ -776,6 +802,8 @@ enum DuoWidgetRowMetrics {
 /// red triangle is a failure); the row speaks the word. Taps open the chat.
 struct DuoWidgetChatRow: View {
   let item: DuoNeedsYouItem
+  /// More room at the trailing end (beside the edge bar's capsule).
+  var extraTrailing: CGFloat = 0
   let action: () -> Void
 
   private var context: String {
@@ -811,7 +839,8 @@ struct DuoWidgetChatRow: View {
             .lineLimit(1)
         }
       }
-      .padding(.horizontal, 16)
+      .padding(.leading, 16)
+      .padding(.trailing, 16 + extraTrailing)
       .padding(.vertical, 6)
       .contentShape(Rectangle())
     }
@@ -1038,10 +1067,8 @@ private struct DuoHomeFixtureScreen: View {
     Group {
       if duo.isWide {
         DuoHomeWide(
-          machines: DuoHomeFixture.machines,
           presentations: presentations,
           actions: actions,
-          account: DuoHomeFixture.account,
           onOpenAgent: { _ in },
           chatsPresented: $chatsPresented,
           initialAgentFilter: initialFilter ?? .needsYou,
@@ -1066,6 +1093,7 @@ private struct DuoHomeFixtureScreen: View {
           )
           .background(ADEColor.pageBackground.ignoresSafeArea())
         }
+        .hubHeaderStaysOnTop()
       }
     }
     .onAppear {
@@ -1117,15 +1145,6 @@ private struct DuoHomeFixtureScreen: View {
 /// their lanes and chats (19 of them need the user), five machines.
 @MainActor
 private enum DuoHomeFixture {
-  static let account = AccountIdentity(
-    userId: "fixture-user",
-    displayName: "Arul Sharma",
-    email: "arul@example.com",
-    imageURL: nil,
-    providerLabel: "GitHub",
-    providerId: "github"
-  )
-
   static let machines: [DuoHomeMachine] = [
     DuoHomeMachine(id: "fixture-machine-studio", name: "Arul’s Mac Studio", statusWord: "Connected", tone: .ok,
                    isFocused: true, projectCount: 11, workingCount: 7, isLive: true),

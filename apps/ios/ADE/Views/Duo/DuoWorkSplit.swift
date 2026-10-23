@@ -20,24 +20,36 @@ enum DuoWorkMetrics {
   /// comfortable to read (the open display held upright).
   static let comfortableChatWidth: CGFloat = 430
 
+  /// Below this column width the chat's PR leaves the header for the pill
+  /// above the composer, so the title keeps a readable width.
+  static let headerPrMinColumnWidth: CGFloat = 520
+
   /// Column collapse and pane slides.
   static func paneMotion(reduceMotion: Bool) -> Animation? {
     reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
   }
 
-  /// Chat | pane side by side, `width` being the room left of the edge bar.
-  /// `trailing` is the pane's width. Flat: half and half. Book-folded:
-  /// exactly at the hinge, the chat on the left page and the pane on the
-  /// right one (`fold` is the band the seam covers, so the hinge is the
-  /// divider).
-  static func wideSplit(width: CGFloat, fold: DuoFold) -> (trailing: CGFloat, fold: CGRect?) {
+  /// Chat | pane side by side, `width` being the room left of the edge bar
+  /// and `hingeX` the display's hinge in the same coordinates. The chat runs
+  /// to the hinge and the pane from it, flat or folded: book-folded the fold
+  /// band itself is the divider (`fold`), flat a hairline on the hinge. When
+  /// the hinge would leave either side unreadable (the sessions column is
+  /// beside them), half and half.
+  static func wideSplit(width: CGFloat, fold: DuoFold, hingeX: CGFloat?) -> (chat: CGFloat, fold: CGRect?) {
     if case .sideBySide(let rect) = fold,
-       rect.minX > 240,
-       width - rect.maxX > 240 {
-      return (width - rect.maxX, rect)
+       rect.minX > minPaneWidth,
+       width - rect.maxX > minPaneWidth {
+      return (rect.minX, rect)
+    }
+    if let hingeX, hingeX > minPaneWidth, width - hingeX > minPaneWidth {
+      // The hairline is 1pt wide: centre it on the hinge.
+      return (max(0, (hingeX - 0.5).rounded()), nil)
     }
     return (floor(width / 2), nil)
   }
+
+  /// Either side of the chat | pane split is at least this wide.
+  static let minPaneWidth: CGFloat = 240
 
   /// Pane over chat: exactly the top half on a laptop or tent fold, a little
   /// under half flat, so the composer's half keeps the larger share.
@@ -513,17 +525,22 @@ struct DuoChatRailActions {
   var onDelete: () -> Void
 }
 
-/// The wide chat's toolbar: the chat's three buckets as three buttons, and
-/// nothing else.
-/// - **Chat info** (desktop's chat actions drawer) opens in the pane.
+/// The wide chat's toolbar: the chat's three buckets as buttons, and nothing
+/// else.
+/// - **Chat Info** (desktop's chat actions drawer) opens in the pane.
 /// - **Tools**: a menu of the running tools and the PR; one opens in the pane.
 /// - **⋯**: the chat's actions, the Work list row's own menu.
 ///
 /// The chat is the trailing column, so held landscape on the Duo these are the
 /// top of the vertical edge bar (the app tabs keep its bottom), and the chat's
-/// title is a glass capsule at the column's top-left. Held upright and on an
-/// iPad the same declarations are the top bar's trailing items, with the app
-/// tabs as one menu at the leading end.
+/// title is a glass capsule at the column's top-left, its PR a capsule of its
+/// own beside it. Held upright and on an iPad the same declarations are the
+/// top bar's trailing items, with the app tabs as one menu at the leading end.
+///
+/// With a pane beside the chat the top of the bar is the pane's Close, then
+/// the chat's buttons that still apply as their own capsule: Tools beside
+/// Chat Info, Chat Info and Tools beside a tool or the PR. No ⋯ while a pane
+/// is open (the PR's actions are in its own header).
 struct DuoChatRail: ViewModifier {
   @ObservedObject var pane: DuoWorkPaneModel
   let model: DuoChatRailModel
@@ -532,158 +549,182 @@ struct DuoChatRail: ViewModifier {
   let actions: DuoChatRailActions
   @Environment(\.duoLayout) private var duo
   @Environment(\.duoWorkFamily) private var family
-  /// The column's width, so the title capsule can span the chat's own top.
-  @State private var columnWidth: CGFloat = 0
+  /// The column's frame (global), so the title capsule can span the chat's
+  /// own top and the pane's header can start at the hinge.
+  /// Horizontal extent only, in whole points: a value that moved with the
+  /// bar's own layout would re-lay the bar out forever.
+  @State private var columnSpan = DuoColumnSpan()
+  /// The window's right edge (global), past the edge bar: its middle is the
+  /// hinge the chat | pane split sits on.
+  @State private var windowMaxX: CGFloat = 0
+  /// The open surface's status line ("#1852 · Merged · arul28").
+  @State private var paneStatus: String?
 
-  /// A pane (tool, Chat Info, PR) is open on the chat's right. The bar's top
-  /// belongs to whatever is on the right: while it is, the chat's buttons
-  /// step aside (they come back when the pane closes) and, on the edge bar,
-  /// the pane's controls and Close take their place.
+  private var columnWidth: CGFloat { columnSpan.maxX - columnSpan.minX }
+
+  /// A pane (tool, Chat Info, PR) is open on the chat's right.
   private var paneBesideChat: Bool { pane.isOpen && family != .tall }
 
   /// Held landscape with the chat alone on the right: the title capsule spans
-  /// the chat's top, and carries the chat's PR label at its trailing end.
+  /// the chat's top, and the chat's PR capsule sits at its trailing end.
   private var spansColumn: Bool { duo.hasEdgeBar && !paneBesideChat && family != .tall }
 
-  /// The title capsule's width: the chat's own top, leading to trailing
-  /// margin (the pane, when open, takes the right half), less the sidebar
-  /// button. Without the edge bar it also leaves the top bar its buttons.
-  private var titleWidth: CGFloat {
-    let sidebar: CGFloat = showsSidebarButton ? 56 : 0
+  /// The header's width (title capsule, and the PR capsule when it shows):
+  /// the chat's own top, leading to trailing margin. Without the edge bar it
+  /// also leaves the top bar its buttons.
+  private var headerWidth: CGFloat {
+    // A top bar (held upright, an iPad) also carries the tabs menu, the
+    // chat's buttons and, upright on the Duo, the status column: the title
+    // leaves them their room, or the bar folds Tools into its overflow.
+    if !duo.hasEdgeBar {
+      return max(150, min(420, columnWidth - 400))
+    }
     let chat = paneBesideChat ? columnWidth / 2 : columnWidth
     let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 36 : 250
-    let width = max(150, chat - trailing - sidebar)
+    let width = max(150, chat - trailing)
     // The bar drops a leading item wider than its slot (the column runs under
-    // the rail's inset), so the spanning capsule keeps clear of the bar's own
+    // the rail's inset), so the spanning header keeps clear of the bar's own
     // margins.
-    return spansColumn ? max(150, width - 48) : min(420, width)
+    return spansColumn ? max(150, width - 48) : min(480, width)
   }
 
   func body(content: Content) -> some View {
     let titled = content
-      .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-        if abs(columnWidth - width) > 1 { columnWidth = width }
+      .onGeometryChange(for: DuoColumnSpan.self) { proxy in
+        let frame = proxy.frame(in: .global)
+        return DuoColumnSpan(minX: frame.minX.rounded(), maxX: frame.maxX.rounded())
+      } action: { span in
+        if columnSpan != span { columnSpan = span }
+      }
+      .onPreferenceChange(DuoPaneHeaderStatusKey.self) { next in
+        if paneStatus != next { paneStatus = next }
+      }
+      .background {
+        GeometryReader { _ in
+          Color.clear
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX.rounded() } action: { maxX in
+              if windowMaxX != maxX { windowMaxX = maxX }
+            }
+        }
+        .ignoresSafeArea()
       }
       .navigationTitle(model.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(removing: .title)
+    // The pane's controls (the PR's ⋯, a tool's rotate…) arrive as a
+    // preference; on the edge bar the header row that shows them is the
+    // bar's.
     if #available(iOS 27.1, *) {
-      // ONE toolbar for the chat and its pane, declared where the pane's
-      // controls can be read: two toolbars that swapped items as the pane
-      // opened and closed could leave the bar without the chat's buttons.
-      titled
-        .backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
-          Color.clear.backgroundPreferenceValue(DuoPaneOverflowKey.self) { overflow in
-            Color.clear.toolbar { rail27(paneActions: paneActions, paneOverflow: overflow) }
-          }
-        }
+      titled.backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
+        Color.clear.toolbar { rail27(paneActions: paneActions) }
+      }
     } else {
       titled.toolbar { rail26 }
     }
   }
 
+  /// On the edge bar, the open pane's header row, laid from the hinge to the
+  /// pane's trailing margin.
+  private func paneHeader(_ actions: DuoPaneHeaderActions?) -> DuoChatHeaderCapsules.PaneHeader? {
+    guard paneBesideChat, duo.hasEdgeBar, windowMaxX > 0, columnWidth > 0 else { return nil }
+    // Book-folded the pane's page starts past the fold band (the root's
+    // fold is in window coordinates); flat, at the hinge line.
+    var chatMaxX = windowMaxX / 2
+    var paneMinX = chatMaxX
+    if case .sideBySide(let fold) = duo.fold {
+      chatMaxX = fold.minX
+      paneMinX = fold.maxX
+    }
+    return DuoChatHeaderCapsules.PaneHeader(
+      title: pane.tab?.title,
+      status: paneStatus,
+      actions: actions,
+      chatMaxX: chatMaxX - 16,
+      minX: paneMinX + 16,
+      maxX: columnSpan.maxX - 16,
+      columnMinX: columnSpan.minX
+    )
+  }
+
+  /// Every item is declared in every state, and only what an item shows
+  /// changes: the edge bar does not take back an item that was removed and
+  /// declared again (a pane closing left the rail without the chat's
+  /// buttons). The groups' contents may change; the groups never go away.
   @available(iOS 27.1, *)
   @ToolbarContentBuilder
-  private func rail27(paneActions: DuoPaneHeaderActions?, paneOverflow: DuoPaneHeaderActions?) -> some ToolbarContent {
-    let paneOnBar = paneBesideChat && duo.paneControlsInBar
-    if showsSidebarButton {
-      ToolbarItem(placement: .topBarLeading) { sidebarButton }
-        .axisBehavior(.horizontalOnly)
-    }
-    ToolbarItem(placement: .topBarLeading) { titleCapsule }
+  private func rail27(paneActions: DuoPaneHeaderActions?) -> some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) { header(pane: paneHeader(paneActions)) }
+      .sharedBackgroundVisibility(.hidden)
       .axisBehavior(.horizontalOnly)
     // Without the edge bar the tabs menu also sits leading: a gap keeps it its
     // own capsule instead of joining the chat's title.
-    if !duo.hasEdgeBar {
-      ToolbarSpacer(.fixed, placement: .topBarLeading)
-    }
-    // Two fixed slots, declared unconditionally: the edge bar did not take
-    // back items that were removed while a pane was open and declared again
-    // when it closed (the rail kept only the tabs). So the slots stay, and
-    // only what they show changes:
-    // - slot 1: Chat Info, or with a pane open on the edge bar, Close;
-    // - slot 2: Tools (switching what the pane shows stays useful).
-    ToolbarItem(placement: .topBarTrailing) {
-      if paneOnBar {
-        paneCloseButton
-      } else {
-        chatInfoButton
-          .disabled(!model.isChat)
-      }
-    }
-    .visibilityPriority(.high)
-    ToolbarItem(placement: .topBarTrailing) { toolsMenu }
+    ToolbarSpacer(.fixed, placement: .topBarLeading)
+    ToolbarItemGroup(placement: .topBarTrailing) { closeSlot }
       .visibilityPriority(.high)
-    // The pane's own controls (a tool's rotate, speed…), while it is open.
-    if paneOnBar {
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        if let paneActions {
-          paneActions.content
-            .environment(\.duoPaneControlsInBar, true)
-        }
-      }
-    }
-    // The bar's one ⋯: the chat's actions, or with a pane open the pane's
-    // own (the PR's actions) — none for a pane without any (Chat Info, a
-    // tool). Decided by what the pane is, not by its actions arriving: the
-    // bar did not take back a ⋯ dropped while the PR's actions loaded.
-    if !paneOnBar || pane.tab == .pr {
-    ToolbarOverflowMenu {
-      if paneOnBar {
-        if let paneOverflow {
-          paneOverflow.content
-        }
-      } else if !paneBesideChat, model.isChat {
-        WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
-          .equatable()
-      }
-    }
-    }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItemGroup(placement: .topBarTrailing) { chatButtons }
+      .visibilityPriority(.high)
     // On the edge bar, Activity and Settings are in a ⋯ (the sessions
-    // column's, or the bar's), never on the rail; elsewhere the tabs menu.
+    // column's), never on the rail; elsewhere the tabs menu.
     DuoAppTabsToolbar(includesUtilities: !duo.hasEdgeBar)
-  }
-
-  /// The chat's title. Held landscape with the chat alone on the right it
-  /// spans the column and ends in the chat's PR label.
-  private var titleCapsule: some View {
-    DuoChatTitleCapsule(model: model, width: titleWidth, fills: spansColumn) {
-      if spansColumn, let badge = model.prBadge {
-        DuoChatPrHeaderLabel(badge: badge) {
-          ADEHaptics.light()
-          actions.onOpenTool(.pr)
-        }
-      }
-    }
   }
 
   /// iOS 26: the same toolbar without the 27.1 axis and priority APIs.
   @ToolbarContentBuilder
   private var rail26: some ToolbarContent {
-    if showsSidebarButton {
-      ToolbarItem(placement: .topBarLeading) { sidebarButton }
-    }
-    ToolbarItem(placement: .topBarLeading) { titleCapsule }
+    ToolbarItem(placement: .topBarLeading) { header(pane: nil) }
+      .sharedBackgroundVisibility(.hidden)
     ToolbarSpacer(.fixed, placement: .topBarLeading)
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      if !paneBesideChat {
-        if model.isChat { chatInfoButton }
-        toolsMenu
-        if model.isChat { actionsMenu }
-      }
-    }
+    ToolbarItemGroup(placement: .topBarTrailing) { closeSlot }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItemGroup(placement: .topBarTrailing) { chatButtons }
     DuoAppTabsToolbar()
   }
 
-  private var sidebarButton: some View {
-    Button("Show chats", systemImage: "sidebar.left") {
-      ADEHaptics.light()
-      actions.onToggleSidebar?()
+  /// The pane's Close, alone at the top while a pane is beside the chat.
+  @ViewBuilder
+  private var closeSlot: some View {
+    if paneBesideChat {
+      paneCloseButton
     }
-    .accessibilityIdentifier("Duo.Work.SidebarToggle")
   }
 
-  private var chatInfoShown: Bool { pane.isOpen && pane.tab == .chatInfo }
+  /// The chat's buttons: Chat Info · Tools · ⋯ with nothing open; Tools
+  /// beside Chat Info; Chat Info · Tools beside a tool or the PR.
+  @ViewBuilder
+  private var chatButtons: some View {
+    if !(paneBesideChat && pane.tab == .chatInfo) {
+      chatInfoButton
+        .disabled(!model.isChat)
+    }
+    toolsMenu
+    if !paneBesideChat && model.isChat {
+      actionsMenu
+    }
+  }
+
+  /// The chat's title capsule (with the way back to the list at its leading
+  /// end while the list is away) and, held landscape with the room, the
+  /// chat's PR as a capsule of its own to its right. One item drawing its
+  /// own glass, so the bar never has a leading item to add or drop.
+  private func header(pane paneHeader: DuoChatHeaderCapsules.PaneHeader?) -> some View {
+    DuoChatHeaderCapsules(
+      model: model,
+      width: headerWidth,
+      fills: spansColumn,
+      pane: paneHeader,
+      showsSidebarButton: showsSidebarButton,
+      showsPrBadge: spansColumn,
+      onToggleSidebar: {
+        ADEHaptics.light()
+        actions.onToggleSidebar?()
+      },
+      onOpenPr: {
+        ADEHaptics.light()
+        actions.onOpenTool(.pr)
+      }
+    )
+  }
 
   private var paneCloseButton: some View {
     Button("Close \(pane.tab?.title ?? "pane")", systemImage: "xmark") {
@@ -697,10 +738,9 @@ struct DuoChatRail: ViewModifier {
   private var chatInfoButton: some View {
     Button {
       ADEHaptics.light()
-      if chatInfoShown { pane.close() } else { actions.onChatInfo() }
+      actions.onChatInfo()
     } label: {
-      Label(chatInfoShown ? "Hide Chat Info" : "Chat Info", systemImage: DuoToolTab.chatInfo.symbolName)
-        .symbolVariant(chatInfoShown ? .fill : .none)
+      Label("Chat Info", systemImage: DuoToolTab.chatInfo.symbolName)
     }
     .badge(model.menu.chatInfoCount)
     .accessibilityIdentifier("Duo.Work.ChatInfo")
@@ -726,8 +766,7 @@ struct DuoChatRail: ViewModifier {
     .accessibilityIdentifier("Duo.Work.Tools")
   }
 
-  /// ⋯ (iOS 26): the chat's actions, exactly the Work list row's menu
-  /// (Select aside).
+  /// ⋯: the chat's actions, exactly the Work list row's menu (Select aside).
   private var actionsMenu: some View {
     Menu {
       WorkChatRailActionsItems(model: model.menu, session: model.session, actions: actions)
@@ -739,8 +778,121 @@ struct DuoChatRail: ViewModifier {
   }
 }
 
+/// A column's horizontal extent in global coordinates.
+struct DuoColumnSpan: Equatable {
+  var minX: CGFloat = 0
+  var maxX: CGFloat = 0
+}
+
+/// The wide chat's header: the title capsule, and the PR capsule beside it.
+/// Each is its own glass capsule, the same height as the bar's.
+struct DuoChatHeaderCapsules: View {
+  /// The pane's header row, drawn on the bar's row from the hinge on.
+  struct PaneHeader {
+    var title: String?
+    var status: String?
+    var actions: DuoPaneHeaderActions?
+    /// Where the chat's title capsule must end, in global coordinates.
+    var chatMaxX: CGFloat
+    /// Where the row starts and ends, in global coordinates.
+    var minX: CGFloat
+    var maxX: CGFloat
+    /// The chat column's leading edge (global).
+    var columnMinX: CGFloat
+  }
+
+  let model: DuoChatRailModel
+  /// The whole header's width: its widest when compact, its exact width when
+  /// it `fills` the column's top.
+  let width: CGFloat
+  let fills: Bool
+  var pane: PaneHeader?
+  let showsSidebarButton: Bool
+  let showsPrBadge: Bool
+  let onToggleSidebar: () -> Void
+  let onOpenPr: () -> Void
+
+  /// Where the bar puts a leading item, from the column's leading edge
+  /// (measured on the inner display). Fixed rather than read back from the
+  /// item: an item sized from its own position re-laid the bar out forever.
+  static let barLeadingInset: CGFloat = 20
+
+  /// The system bar's capsule height, so the header reads as part of it.
+  static let height: CGFloat = 44
+
+  var body: some View {
+    if let pane {
+      withPaneHeader(pane)
+    } else {
+      capsules
+    }
+  }
+
+  /// The chat's capsule on the left page, the pane's header row on the right
+  /// one, as one item: the bar's row is the only place a control at this
+  /// height can be tapped.
+  private func withPaneHeader(_ pane: PaneHeader) -> some View {
+    let origin = pane.columnMinX + Self.barLeadingInset
+    let paneStart = max(0, pane.minX - origin)
+    let total = max(paneStart, pane.maxX - origin)
+    return HStack(spacing: 0) {
+      titleCapsule
+        .frame(maxWidth: max(120, pane.chatMaxX - origin), alignment: .leading)
+      Spacer(minLength: 0)
+      DuoPaneHeaderRow(title: pane.title, status: pane.status, actions: pane.actions)
+        .frame(width: max(0, total - paneStart), height: Self.height)
+    }
+    .frame(width: total, alignment: .leading)
+  }
+
+  private var capsules: some View {
+    GlassEffectContainer(spacing: 8) {
+      // The PR capsule sits right beside the title's, never pushed to the
+      // far end: the title gives way (truncates) first.
+      HStack(spacing: 8) {
+        titleCapsule
+          .frame(maxWidth: fills ? nil : width, alignment: .leading)
+        if showsPrBadge, let badge = model.prBadge {
+          DuoChatPrHeaderLabel(badge: badge, action: onOpenPr)
+            .layoutPriority(1)
+        }
+        if fills {
+          Spacer(minLength: 0)
+        }
+      }
+    }
+    // A toolbar item is laid out at its ideal size: without a definite width
+    // the system squeezes the title to nothing and keeps only the mark.
+    .frame(width: fills ? width : nil, alignment: .leading)
+    .fixedSize(horizontal: !fills, vertical: false)
+  }
+
+  private var titleCapsule: some View {
+    HStack(spacing: 0) {
+      if showsSidebarButton {
+        Button(action: onToggleSidebar) {
+          Image(systemName: "sidebar.left")
+            .font(.system(size: 17, weight: .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(width: 44, height: Self.height)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show chats")
+        .accessibilityIdentifier("Duo.Work.SidebarToggle")
+      }
+      DuoChatTitleBlock(model: model)
+        .padding(.leading, showsSidebarButton ? 0 : 12)
+        .padding(.trailing, 14)
+    }
+    .frame(height: Self.height)
+    .glassEffect(.regular, in: Capsule())
+  }
+}
+
 /// The chat's PR in its header (desktop's header PR tag): "#1871 Open" in
-/// the state's colour, with the checks glyph. Opens the PR beside the chat.
+/// the state's colour, with the checks glyph, as a glass capsule of its own
+/// beside the title capsule. Opens the PR beside the chat.
 struct DuoChatPrHeaderLabel: View {
   let badge: WorkChatPrBadgeModel
   let action: () -> Void
@@ -766,29 +918,30 @@ struct DuoChatPrHeaderLabel: View {
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 5) {
+      HStack(spacing: 6) {
         Image(systemName: "arrow.triangle.pull")
-          .font(.system(size: 11, weight: .semibold))
+          .font(.footnote.weight(.semibold))
         Text(number)
-          .font(.caption.weight(.semibold).monospacedDigit())
+          .font(.subheadline.weight(.semibold).monospacedDigit())
         Text(lanePrStateLabel(badge.state))
-          .font(.caption.weight(.medium))
+          .font(.subheadline.weight(.medium))
         if let checksGlyph {
           Image(systemName: checksGlyph.symbol)
-            .font(.system(size: 10, weight: .bold))
+            .font(.footnote.weight(.bold))
             .foregroundStyle(checksGlyph.color)
         }
       }
       .lineLimit(1)
       .foregroundStyle(tint)
-      .padding(.horizontal, 9)
-      .frame(height: 26)
-      .background(tint.opacity(0.13), in: Capsule(style: .continuous))
-      .contentShape(Capsule(style: .continuous))
+      .padding(.horizontal, 14)
+      .frame(height: DuoChatHeaderCapsules.height)
+      .contentShape(Capsule())
     }
     .buttonStyle(.plain)
+    .glassEffect(.regular.tint(tint.opacity(0.14)).interactive(), in: Capsule())
     .fixedSize()
     .accessibilityLabel("Pull request \(number), \(lanePrStateLabel(badge.state)). Opens it beside the chat.")
+    .accessibilityIdentifier("Duo.Work.HeaderPr")
   }
 }
 
@@ -841,30 +994,12 @@ private struct WorkChatRailActionsItems: View, Equatable {
   }
 }
 
-/// The chat's name in the rail: provider mark, title, and "lane · model ·
-/// machine" under it, as one glass capsule at the top-left of the column.
-struct DuoChatTitleCapsule<Trailing: View>: View {
+/// The chat's name in its header: provider mark, title, and "lane · model ·
+/// machine" under it.
+struct DuoChatTitleBlock: View {
   let model: DuoChatRailModel
-  /// The capsule's width: its widest when compact, its exact width when it
-  /// `fills` the column's top.
-  var width: CGFloat = 360
-  var fills = false
-  @ViewBuilder var trailing: () -> Trailing
 
   var body: some View {
-    HStack(spacing: 8) {
-      titleBlock
-        .frame(maxWidth: fills ? .infinity : width, alignment: .leading)
-      trailing()
-    }
-    .padding(.trailing, fills ? 6 : 0)
-    // A toolbar item is laid out at its ideal size: without a definite width
-    // the system squeezes the title to nothing and keeps only the mark.
-    .frame(width: fills ? width : nil, alignment: .leading)
-    .fixedSize(horizontal: !fills, vertical: false)
-  }
-
-  private var titleBlock: some View {
     HStack(spacing: 10) {
       WorkProviderBareLogo(
         provider: model.provider,
@@ -885,8 +1020,6 @@ struct DuoChatTitleCapsule<Trailing: View>: View {
         }
       }
     }
-    .padding(.leading, 6)
-    .padding(.trailing, 10)
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(.isHeader)
   }

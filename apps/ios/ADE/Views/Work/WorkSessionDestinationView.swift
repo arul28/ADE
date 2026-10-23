@@ -433,6 +433,9 @@ struct WorkSessionDestinationView: View {
   }
 
   @State var session: TerminalSessionSummary?
+  /// The wide chat column's width, in whole points: whether the chat's PR
+  /// fits beside its title in the header.
+  @State var duoColumnWidth: CGFloat = 0
   @State var chatSummary: AgentChatSessionSummary?
   @State var chatSummaryRefreshGeneration = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
@@ -1310,6 +1313,7 @@ struct WorkSessionDestinationView: View {
   /// it). Squeezed (pane open, upright, iPad, phone) it is the pill instead.
   private var duoPrLabelInHeader: Bool {
     duoPane != nil && duoLayout.hasEdgeBar && !duoPaneOpen && duoWorkFamily != .tall
+      && duoColumnWidth >= DuoWorkMetrics.headerPrMinColumnWidth
   }
 
   /// DEBUG screenshots only: opens the fixture's tool tab once the chat is up.
@@ -1551,6 +1555,9 @@ struct WorkSessionDestinationView: View {
           // The fold between thread and pane is empty space; it shows the
           // page, not the stack's default white.
           .background(ADEColor.pageBackground.ignoresSafeArea())
+          .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { width in
+            if duoColumnWidth != width { duoColumnWidth = width }
+          }
           .modifier(duoChatRail(duoPane))
         }
       } else {
@@ -1942,13 +1949,25 @@ struct WorkSessionDestinationView: View {
     return sessionDestinationRootContent
   }
 
+  /// In the Duo's detail column the terminal has no stack to pop: its
+  /// leading control brings the sessions list back, as a chat's does.
+  private var terminalLeadingControl: TerminalLeadingControl {
+    guard duoUsesPane else { return .back }
+    if duoShowsSidebar { return .none }
+    guard let onDuoToggleSidebar else { return .none }
+    return .showChats {
+      ADEHaptics.light()
+      onDuoToggleSidebar()
+    }
+  }
+
   @ViewBuilder
   private var sessionDestinationRootContent: some View {
     if let session {
       if isChatSession(session) {
         chatSessionDestinationRoot(for: session)
       } else {
-        TerminalSessionScreen(session: session)
+        TerminalSessionScreen(session: session, leading: terminalLeadingControl)
           .environmentObject(syncService)
       }
     } else {
@@ -3354,6 +3373,10 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   @Environment(\.dismiss) private var dismiss
   @Environment(\.layoutDirection) private var layoutDirection
   @State private var contentWidth: CGFloat = 0
+  /// The display carries the tabs on a vertical edge rail (the Duo's closed
+  /// outer display). Hiding the tab bar there does not hide the rail; it left
+  /// an empty glass capsule floating under the composer.
+  @State private var displayHasEdgeRail = false
 
   let mode: WorkSessionNavigationChrome
   let title: String
@@ -3382,6 +3405,11 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         .onPreferenceChange(WorkSessionNavigationChromeWidthPreferenceKey.self) { width in
           contentWidth = width
         }
+        .onGeometryChange(for: Bool.self) { proxy in
+          workDisplayHasEdgeRail(proxy)
+        } action: { hasRail in
+          if displayHasEdgeRail != hasRail { displayHasEdgeRail = hasRail }
+        }
         // Keep the edge gesture pass-through: vertical scrolls and row gestures
         // still reach the chat, while the helper only dismisses true edge swipes.
         .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
@@ -3404,7 +3432,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
           )
         }
         .navigationTitle("")
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(displayHasEdgeRail ? .automatic : .hidden, for: .tabBar)
         .toolbar(.hidden, for: .navigationBar)
         .adeRootTabBarHidden()
     case .column:

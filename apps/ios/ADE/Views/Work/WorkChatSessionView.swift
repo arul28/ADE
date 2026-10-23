@@ -14,6 +14,20 @@ let workChatComposerChipRowHeight: CGFloat = 32
 let workChatFloatingBadgeRowBottomPadding: CGFloat = 6
 /// Space between the composer card and the bottom safe-area edge.
 let workChatComposerBottomGap: CGFloat = 4
+
+private struct WorkCompactEdgeRailKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// The phone layout is on a display with a vertical edge rail (the Duo's
+  /// closed outer display, upright): the chat's composer lines up with the
+  /// rail's last capsule, as it does on the inner display.
+  var workCompactEdgeRail: Bool {
+    get { self[WorkCompactEdgeRailKey.self] }
+    set { self[WorkCompactEdgeRailKey.self] = newValue }
+  }
+}
 let workChatColumnCoordinateSpace = "work-chat-column"
 /// How much of the transcript's empty tail (tail row + row spacing) may sit
 /// under the bottom chrome.
@@ -746,6 +760,8 @@ struct WorkChatSessionView: View {
   var duoPane: DuoWorkPaneModel? = nil
   /// A book-folded Duo chat keeps its composer to the trailing page.
   @Environment(\.duoComposerLeadingInset) private var duoComposerLeadingInset
+  @Environment(\.workCompactEdgeRail) private var workCompactEdgeRail
+  @Environment(\.duoLayout) private var composerDuoLayout
   /// The tools pane is open beside this chat. Its tools are then in the pane's
   /// toolbar, so the composer drops its lane tool chips (never the chat's own).
   var duoPaneOpen = false
@@ -2178,8 +2194,16 @@ struct WorkChatSessionView: View {
     // Held landscape on the Duo, the prompt box's bottom lines up with the
     // bottom of the edge bar's last capsule.
     .duoEdgeBarAlignedBottom(contentBottomPadding: workChatComposerBottomGap)
+    // The closed outer display's rail: the same line, from the window's
+    // bottom edge rather than the home indicator's safe area.
+    .padding(.bottom, compactRailAligned ? DuoEdgeBar.bottomInset - workChatComposerBottomGap : 0)
+    .ignoresSafeArea(.container, edges: compactRailAligned ? .bottom : [])
     .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
     .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
+  }
+
+  private var compactRailAligned: Bool {
+    workCompactEdgeRail && !composerDuoLayout.hasEdgeBar
   }
 
   var jumpToLatestVisible: Bool {

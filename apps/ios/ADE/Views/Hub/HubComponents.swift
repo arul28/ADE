@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UIKit
 
 // Visual building blocks for the all-projects hub: the toolbar, project cards
 // (collapsible) with their lanes (collapsible) and chat rows, and the
@@ -19,93 +20,32 @@ struct HubToolbarActions {
   var onOpenSettings: () -> Void = {}
 }
 
-/// The Hub's controls in the system toolbar, so iOS places them: a top bar on
-/// a phone, the vertical bar on the curved edge of the Duo's displays.
+/// The Hub's header on the Duo's inner display held landscape, where the right
+/// page's bar is the edge bar: the same items, glyphs and grouping as
+/// `HubHeaderRow` (the header everywhere else), split between the pages.
 ///
-/// The Hub is above every project, so it never carries the app tabs (Work,
-/// Lanes, PRs, Files, CTO only exist inside a project).
-///
-/// - `.bar`: one stack's top bar (the phone, the outer display, the Duo's
-///   inner display folded laptop or tent). Activity and Chats, then the
-///   filter (when the layout has no filter row), Add and Settings, then the
-///   account.
-/// - `.rail`: the inner display's trailing page held landscape, whose bar is
-///   the edge bar. The account's picture heads it (it opens Settings), then
-///   Activity and Chats; at the bottom, Machines (the machine list, badged
-///   with how many are connected) and Settings. Add belongs to the projects
-///   list, so that page's header holds it.
-/// - `.pageBar`: Activity and Chats alone (Settings too without an account),
-///   for the projects page's top bar where there is no edge bar (the inner
-///   display held upright, an iPad). Held upright the overview page's bar
-///   beside the status bar has room for one item, the account, so the caller
-///   puts it there and adds Add after these.
+/// - `.rail`: the rail's top belongs to the right page, so Activity and Chats
+///   (which open there) head it; nothing sits at its bottom. The Hub is above
+///   every project, so it never carries the app tabs.
+/// - `.projectsPage`: the projects page's header keeps Settings and Add (the
+///   caller adds the title).
 struct HubToolbar: ToolbarContent {
-  enum Form { case bar, rail, pageBar }
+  enum Form { case rail, projectsPage }
 
   let form: Form
   let actions: HubToolbarActions
-  /// The roster filter, as a menu in the bar for a layout without the phone's
-  /// filter row.
-  var filter: Binding<HubRosterFilter>?
-  var filterCounts: [HubRosterFilter: Int] = [:]
-  /// The signed-in account, shown where there is room for it.
-  var account: AccountIdentity?
-  /// The machines the rail's Machines menu lists (the connection menu's).
-  var machines: [DuoHomeMachine] = []
 
   var body: some ToolbarContent {
     switch form {
     case .rail:
-      if let account {
-        // A system label, so it joins the edge bar; no glass behind it, so
-        // the picture itself is the circle.
-        ToolbarItem(placement: .topBarTrailing) {
-          HubRailAccountButton(identity: account, action: actions.onOpenSettings)
-        }
-        .sharedBackgroundVisibility(.hidden)
-        ToolbarSpacer(.fixed, placement: .topBarTrailing)
-      }
-      activityAndChats
-      ToolbarItemGroup(placement: .bottomBar) {
-        HubRailMachinesMenu(machines: machines, onOpenSettings: actions.onOpenSettings)
-        Button(action: actions.onOpenSettings) {
-          Label("Settings", systemImage: "gearshape")
-        }
-        .tint(ADEColor.textPrimary)
-      }
-    case .pageBar:
-      activityAndChats
-    case .bar:
       ToolbarItemGroup(placement: .topBarTrailing) {
         HubActivityToolbarButton(action: actions.onOpenActivity)
         chatsButton
       }
+    case .projectsPage:
+      ToolbarItem(placement: .topBarTrailing) { settingsButton }
       ToolbarSpacer(.fixed, placement: .topBarTrailing)
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        if let filter {
-          HubFilterMenu(filter: filter, counts: filterCounts)
-        }
-        addButton
-          .tint(ADEColor.textPrimary)
-        settingsButton
-      }
-      if let account {
-        ToolbarItem(placement: .topBarTrailing) {
-          HubAccountButton(identity: account, action: actions.onOpenSettings)
-        }
-        .sharedBackgroundVisibility(.hidden)
-      }
-    }
-  }
-
-  private var activityAndChats: some ToolbarContent {
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      HubActivityToolbarButton(action: actions.onOpenActivity)
-      chatsButton
-      // Without an account picture to stand for it, Settings joins them.
-      if account == nil && form != .rail {
-        settingsButton
-      }
+      ToolbarItem(placement: .topBarTrailing) { addButton }
     }
   }
 
@@ -113,6 +53,8 @@ struct HubToolbar: ToolbarContent {
     Button(action: actions.onAdd) {
       Label("Add project", systemImage: "plus")
     }
+    .tint(ADEColor.textPrimary)
+    .accessibilityHint("Adds a project from one of your machines.")
   }
 
   private var settingsButton: some View {
@@ -138,6 +80,201 @@ struct HubToolbar: ToolbarContent {
   }
 }
 
+extension View {
+  /// The Hub's single stack keeps its header across the top. The Duo's closed
+  /// outer display would otherwise turn the bar into a vertical rail along its
+  /// curved edge, which put the header's icons in a column of their own and
+  /// cost the grid, the filters and the composer that width.
+  @ViewBuilder
+  func hubHeaderStaysOnTop() -> some View {
+    if #available(iOS 27.1, *) {
+      toolbarVerticalBehavior(.disabled)
+    } else {
+      self
+    }
+  }
+}
+
+/// The Hub's header as a row of its own: the title (the ADE mark with the
+/// machines) on the left, then Activity, Chats and Settings in one glass group
+/// and Add on its own — the same items, glyphs and grouping as `HubToolbar`.
+/// Used wherever the Hub's header is not an edge-bar toolbar, so it can sit
+/// under the status bar and span the screen instead of sharing the status
+/// bar's row: the phone, the Duo's outer display, the inner display held
+/// upright, an iPad.
+struct HubHeaderRow<Title: View>: View {
+  let actions: HubToolbarActions
+  @ViewBuilder var title: () -> Title
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+
+  static var height: CGFloat { 48 }
+
+  var body: some View {
+    GlassEffectContainer(spacing: 12) {
+      HStack(spacing: 12) {
+        // On a narrow phone the machine's name truncates; the icons have
+        // fixed frames and keep theirs.
+        title()
+          .frame(height: Self.height)
+          .padding(.horizontal, 10)
+          .glassEffect(.regular.interactive(), in: .capsule)
+        Spacer(minLength: 0)
+        HStack(spacing: 0) {
+          icon("bell", badge: drawer.unreadCount, action: actions.onOpenActivity)
+            .accessibilityLabel(
+              drawer.unreadCount > 0
+                ? "Activity, \(drawer.unreadCount) \(drawer.unreadCount == 1 ? "item needs" : "items need") you"
+                : "Activity"
+            )
+            .accessibilityHint("Opens the Activity drawer.")
+          icon(
+            "bubble.left.and.bubble.right",
+            badge: actions.chatsAvailable ? actions.chatsAttentionCount : 0,
+            action: actions.onOpenChats
+          )
+          .disabled(!actions.chatsAvailable)
+          .accessibilityLabel(actions.chatsAttentionCount > 0
+            ? "Chats, \(actions.chatsAttentionCount) awaiting input"
+            : "Chats")
+          .accessibilityHint("Opens conversations that are not linked to a project.")
+          icon("gearshape", action: actions.onOpenSettings)
+            .accessibilityLabel("Settings")
+        }
+        .padding(.horizontal, 4)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        icon("plus", action: actions.onAdd)
+          .glassEffect(.regular.interactive(), in: .circle)
+          .accessibilityLabel("Add project")
+          .accessibilityHint("Adds a project from one of your machines.")
+      }
+    }
+    .frame(height: Self.height)
+  }
+
+  private func icon(_ symbol: String, badge: Int = 0, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 19, weight: .regular))
+        .frame(width: Self.height, height: Self.height)
+        .contentShape(Rectangle())
+        .overlay(alignment: .topTrailing) {
+          if badge > 0 {
+            Text(badge > 99 ? "99+" : "\(badge)")
+              .font(.caption2.weight(.semibold).monospacedDigit())
+              .foregroundStyle(.white)
+              .padding(.horizontal, 5)
+              .frame(minWidth: 18, minHeight: 18)
+              .background(Color.red, in: Capsule())
+              .offset(x: -2, y: 4)
+              .accessibilityHidden(true)
+          }
+        }
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(ADEColor.textPrimary)
+  }
+}
+
+extension View {
+  /// For the Hub's column whose last view is the composer: on a display with
+  /// a home indicator the composer's box sits as far above the bottom edge as
+  /// a bottom bar does (the edge bar's concentric inset) instead of on top of
+  /// the whole safe area, and the list above it runs down to meet it. The
+  /// keyboard still pushes the column up.
+  func hubComposerAtScreenBottom() -> some View {
+    modifier(HubComposerScreenBottom())
+  }
+
+  /// Keeps a header row out of the status bar, and off the screen's top edge
+  /// where there is no status bar. Some displays (the Duo's) draw the clock
+  /// beside the navigation bar's row, inside the top safe area's height; a
+  /// row of our own goes under it instead.
+  func hubHeaderClearsStatusBar() -> some View {
+    modifier(HubStatusBarClearance())
+  }
+}
+
+@MainActor
+private func hubKeyWindowScene() -> UIWindowScene? {
+  let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+  return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+}
+
+private struct HubComposerScreenBottom: ViewModifier {
+  /// What the display keeps at the bottom: a home indicator (the column runs
+  /// past it), and on the Duo's outer display held landscape the camera in
+  /// the bottom-trailing corner, which the composer's end keeps clear of.
+  private struct Bottom: Equatable {
+    var homeIndicator = false
+    var cornerCamera = false
+  }
+
+  @State private var bottom = Bottom()
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.bottom, bottom.homeIndicator ? max(0, DuoEdgeBar.bottomInset - HubInlineComposer.bottomPadding) : 0)
+      .environment(\.hubComposerCornerClearance, bottom.cornerCamera ? HubComposerScreenBottom.cameraClearance : 0)
+      .ignoresSafeArea(.container, edges: bottom.homeIndicator ? .bottom : [])
+      .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+        guard let window = hubKeyWindowScene()?.windows.first else { return }
+        let inset = window.safeAreaInsets.bottom
+        let landscape = window.bounds.width > window.bounds.height
+        // Held landscape an iPhone's home indicator takes ~21pt; a far deeper
+        // bottom inset is the outer display's camera, in its corner.
+        let next = Bottom(
+          homeIndicator: inset > DuoEdgeBar.bottomInset,
+          cornerCamera: landscape && inset > 60
+        )
+        if next != bottom { bottom = next }
+      }
+  }
+
+  /// From the screen's trailing edge to clear of the outer display's camera,
+  /// held landscape (measured: the camera spans ~32–68pt in from the edge).
+  static let cameraClearance: CGFloat = 64
+}
+
+private struct HubComposerCornerClearanceKey: EnvironmentKey {
+  static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+  /// How far the composer's trailing end stays in from its column's edge,
+  /// clear of a camera in the screen's bottom corner (`hubComposerAtScreenBottom`).
+  var hubComposerCornerClearance: CGFloat {
+    get { self[HubComposerCornerClearanceKey.self] }
+    set { self[HubComposerCornerClearanceKey.self] = newValue }
+  }
+}
+
+/// The composer, its trailing end kept clear of a camera in the screen's
+/// bottom corner.
+struct HubComposerClearsCorner<Content: View>: View {
+  @ViewBuilder var content: () -> Content
+  @Environment(\.hubComposerCornerClearance) private var clearance
+
+  var body: some View {
+    content().padding(.trailing, clearance)
+  }
+}
+
+private struct HubStatusBarClearance: ViewModifier {
+  @State private var clearance: CGFloat = 0
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.top, clearance)
+      .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+        let status = hubKeyWindowScene()?.statusBarManager?.statusBarFrame ?? .zero
+        let underStatus = status.isEmpty ? 0 : status.maxY - frame.minY
+        let offEdge = 8 - frame.minY
+        let next = max(0, underStatus, offEdge)
+        if abs(next - clearance) > 0.5 { clearance = next }
+      }
+  }
+}
+
 /// Activity, badged with what needs the user. Its own view so the badge
 /// follows the drawer without redrawing the screen that hosts it.
 struct HubActivityToolbarButton: View {
@@ -157,166 +294,6 @@ struct HubActivityToolbarButton: View {
         : "Activity"
     )
     .accessibilityHint("Opens the Activity drawer.")
-  }
-}
-
-/// The roster filter as a toolbar menu: All / Working / Needs you / Finished,
-/// with counts. The same filter the phone's chip row sets.
-struct HubFilterMenu: View {
-  @Binding var filter: HubRosterFilter
-  let counts: [HubRosterFilter: Int]
-
-  var body: some View {
-    Menu {
-      Picker("Show", selection: $filter) {
-        ForEach(HubRosterFilter.allCases) { option in
-          Text(option.title)
-            .badge(counts[option] ?? 0)
-            .tag(option)
-        }
-      }
-      .pickerStyle(.inline)
-    } label: {
-      Label(
-        filter == .all ? "Filter" : filter.title,
-        systemImage: filter == .all
-          ? "line.3.horizontal.decrease"
-          : "line.3.horizontal.decrease.circle.fill"
-      )
-    }
-    // Monochrome until a filter is on, then the accent says the list is
-    // narrowed.
-    .tint(filter == .all ? ADEColor.textPrimary : ADEColor.accent)
-    .accessibilityLabel("Show \(filter.title)")
-  }
-}
-
-/// The rail's Machines button: the machine list the connection menu has
-/// always shown, behind a desktop glyph with how many machines are connected
-/// under it.
-struct HubRailMachinesMenu: View {
-  let machines: [DuoHomeMachine]
-  let onOpenSettings: () -> Void
-
-  private var liveCount: Int { machines.filter(\.isLive).count }
-
-  var body: some View {
-    Menu {
-      HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
-    } label: {
-      Label {
-        Text("Machines")
-      } icon: {
-        HubRailCountGlyph(
-          symbol: liveCount == 0
-            ? "desktopcomputer.trianglebadge.exclamationmark"
-            : liveCount > 1 ? "desktopcomputer.and.macbook" : "desktopcomputer",
-          count: liveCount
-        )
-      }
-    }
-    .tint(ADEColor.textPrimary)
-    .accessibilityLabel("Machines, \(liveCount) connected")
-    .accessibilityHint("Shows your machines and connection settings.")
-  }
-}
-
-/// A glyph with a count under it, rendered once per change into a template
-/// image: the edge bar only keeps a system label in its capsules and draws a
-/// label's icon as one image, so the count rides inside it rather than as a
-/// red badge.
-struct HubRailCountGlyph: View {
-  let symbol: String
-  let count: Int
-  @Environment(\.displayScale) private var displayScale
-
-  var body: some View {
-    if let image = rendered {
-      Image(uiImage: image)
-    } else {
-      Image(systemName: symbol)
-    }
-  }
-
-  @MainActor
-  private var rendered: UIImage? {
-    let renderer = ImageRenderer(content:
-      VStack(spacing: 1) {
-        Image(systemName: symbol)
-          .font(.system(size: 16, weight: .medium))
-          .frame(height: 19)
-        Text(count > 99 ? "99+" : "\(count)")
-          .font(.system(size: 11, weight: .semibold))
-          .monospacedDigit()
-          .lineLimit(1)
-          .fixedSize()
-      }
-      .foregroundStyle(.black)
-      .frame(minWidth: 24)
-    )
-    renderer.scale = displayScale
-    return renderer.uiImage?.withRenderingMode(.alwaysTemplate)
-  }
-}
-
-/// The account's picture as the edge bar's first item, filling its circle the
-/// way an avatar does. The bar only takes a system label into its column and
-/// draws a label's icon as an image, so the picture is rendered into one: the
-/// photo once it has loaded (the same URL, from the same cache, the Settings
-/// avatar reads), the initials until then.
-struct HubRailAccountButton: View {
-  let identity: AccountIdentity
-  let action: () -> Void
-  @State private var photo: UIImage?
-  @Environment(\.displayScale) private var displayScale
-
-  var body: some View {
-    Button(action: action) {
-      Label {
-        Text("Account")
-      } icon: {
-        if let image = rendered {
-          Image(uiImage: image)
-        } else {
-          Image(systemName: "person.crop.circle.fill")
-        }
-      }
-    }
-    .accessibilityLabel("Account: \(identity.displayName)")
-    .accessibilityHint("Opens Settings.")
-    .task(id: identity.imageURL) {
-      guard let url = identity.imageURL,
-            let (data, _) = try? await URLSession.shared.data(from: url),
-            let image = UIImage(data: data) else { return }
-      photo = image
-    }
-  }
-
-  private var initials: String {
-    let letters = identity.displayName.split(separator: " ").prefix(2).compactMap(\.first)
-    let text = String(letters).uppercased()
-    return text.isEmpty ? "AD" : text
-  }
-
-  @MainActor
-  private var rendered: UIImage? {
-    let renderer = ImageRenderer(content:
-      ZStack {
-        Circle().fill(identity.accent.opacity(0.22))
-        if let photo {
-          Image(uiImage: photo).resizable().aspectRatio(contentMode: .fill)
-        } else {
-          Text(initials)
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundStyle(identity.accent)
-        }
-      }
-      .frame(width: 40, height: 40)
-      .clipShape(Circle())
-      .overlay(Circle().stroke(identity.accent.opacity(0.35), lineWidth: 1))
-    )
-    renderer.scale = displayScale
-    return renderer.uiImage?.withRenderingMode(.alwaysOriginal)
   }
 }
 
@@ -411,27 +388,12 @@ func hubConnectionStatus(
   )
 }
 
-private struct HubConnectionTitleCompactKey: EnvironmentKey {
-  static let defaultValue = false
-}
-
-extension EnvironmentValues {
-  /// The Hub's title drops the machine's name and keeps the brand and the
-  /// status dot: a narrow page whose bar also holds Activity, Chats and Add.
-  /// The name stays in the title's menu (and the Machines widget).
-  var hubConnectionTitleCompact: Bool {
-    get { self[HubConnectionTitleCompactKey.self] }
-    set { self[HubConnectionTitleCompactKey.self] = newValue }
-  }
-}
-
 /// The Hub's title: the brand, then the connection, as one toolbar item whose
 /// menu lists every machine and opens connection settings.
 struct HubConnectionMenu: View {
   let status: HubConnectionStatus
   let machines: [DuoHomeMachine]
   let onOpenSettings: () -> Void
-  @Environment(\.hubConnectionTitleCompact) private var compact
 
   var body: some View {
     Menu {
@@ -449,17 +411,13 @@ struct HubConnectionMenu: View {
           if let switching = status.switchingProjectName {
             HStack(spacing: 6) {
               ProgressView().controlSize(.mini)
-              if !compact {
-                Text("Opening \(switching)…")
-              }
+              Text("Opening \(switching)…")
             }
             .id("switching")
           } else {
             HStack(spacing: 6) {
               ADEKitDot(tone: status.tone, size: 7)
-              if !compact {
-                Text(status.label)
-              }
+              Text(status.label)
             }
             .id("machine")
           }
