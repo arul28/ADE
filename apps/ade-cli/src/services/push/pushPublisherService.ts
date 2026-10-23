@@ -511,6 +511,20 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastPublishedRevisionById = new Map<string, number>(
     Object.entries(persistedPublishedRevisions?.revisions ?? {}),
   );
+  /**
+   * The Activity ids of messages the relay already holds. A restart's first
+   * publish is a reconcile, and the relay treats a reconcile as authoritative:
+   * it tombstones every row the roster omits, and a tombstone blocks that id's
+   * revision for good (`message:` revisions are the send time, so they never
+   * clear it). `relayAcceptsMessages` only becomes true after the relay
+   * advertises the feature, so without this a restart would delete the
+   * messages it had already delivered. A message that was never published is
+   * absent here: it waits for the feature list instead.
+   */
+  const persistedMessageItemIds = new Set(
+    Object.keys(persistedPublishedRevisions?.revisions ?? {})
+      .filter((id) => id.startsWith("message:")),
+  );
   const lastOverflowRevisionById = new Map<string, number>();
   /**
    * The alert identity each item last went out with, so a desktop alert can
@@ -833,12 +847,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   /**
    * Project the publisher's live state into wire items. The projection itself
    * lives in `attentionItemBuilder.ts` — this seam only hands it the state it
-   * reads, so the rules are testable without booting a publisher.
+   * reads, so the rules are testable without booting a publisher. `messages`
+   * is what may go on the wire at all: the legacy feed and older readers get
+   * none, and a publish made before the relay negotiates `message` gets only
+   * the messages it already holds (see `messagesForPublish`).
    */
   const buildAttentionItems = async (
     nowMs: number,
     includeRoster: boolean,
-    includeMessages = relayAcceptsMessages,
+    messages: readonly StoredUserMessage[] = messagesForPublish(nowMs),
   ): Promise<AttentionItem[]> => {
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
     return await projectAttentionItems({
@@ -855,7 +872,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       loadRoster: () => loadActivityRoster(nowMs),
       canonicalProjectId,
       lastPublishedRevisionById,
-      userMessages: includeMessages ? liveUserMessages(nowMs) : [],
+      userMessages: messages,
       remoteAcknowledgedRevisionById: new Map(
         (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
           .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
@@ -920,6 +937,22 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       deps.store.setUserMessages?.(live);
     }
     return live;
+  };
+
+  /**
+   * The messages a publish may carry. Once the relay advertises `message` every
+   * live message goes out. Before that — a fresh process, whose first publish
+   * is the authoritative reconcile — only the messages the relay already holds
+   * are included, so that reconcile cannot tombstone them; a message it has
+   * never seen waits for the feature list instead of risking a rejected publish
+   * on a relay that does not know the kind.
+   */
+  const messagesForPublish = (nowMs: number): StoredUserMessage[] => {
+    const live = liveUserMessages(nowMs);
+    if (relayAcceptsMessages) return live;
+    const machineKey = deps.store.getOrCreateIdentity().machineKey;
+    return live.filter((message) =>
+      persistedMessageItemIds.has(userMessageItemId(machineKey, message.id)));
   };
 
   /** Seconds until the oldest of `sentAts` leaves the rolling hour. */
@@ -1307,7 +1340,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     force: boolean,
   ): Promise<"published" | "unchanged" | "unavailable" | "protocol2"> => {
     const items = mergeMachineAcknowledgments(
-      sortAttentionItems(await buildAttentionItems(nowMs, false))
+      sortAttentionItems(await buildAttentionItems(nowMs, false, []))
         .slice(0, LEGACY_ATTENTION_PUBLISH_MAX_ITEMS),
     );
     const fingerprint = JSON.stringify(
@@ -2723,7 +2756,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         await buildAttentionItems(
           nowMs,
           activityProtocol != null && activityProtocol >= 2,
-          options.includeMessages === true,
+          options.includeMessages === true ? liveUserMessages(nowMs) : [],
         ),
       );
       const items = selectActivityRoster(built).selected;

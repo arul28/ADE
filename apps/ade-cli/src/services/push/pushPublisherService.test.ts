@@ -15,6 +15,7 @@ import {
   type PushRegistrationStore,
   type StoredAttentionAcknowledgment,
   type StoredRemoteAttentionAcknowledgment,
+  type StoredUserMessage,
 } from "./pushRegistrationStore";
 import {
   createPushRelayClient,
@@ -167,6 +168,7 @@ describe("createPushPublisherService flush", () => {
       remoteAttentionAcknowledgments?: StoredRemoteAttentionAcknowledgment[];
       machineRevokedAt?: string | null;
       machineName?: string | (() => string);
+      userMessages?: StoredUserMessage[];
     } = {},
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
@@ -193,6 +195,7 @@ describe("createPushPublisherService flush", () => {
       itemId: string,
     ) => `${accountOwnerId ?? ""}\u0000${itemId}`;
     let machineRevokedAt: string | null = options.machineRevokedAt ?? null;
+    let userMessages = [...(options.userMessages ?? [])];
     const store = {
       hasRegisteredDevices: () => true,
       getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
@@ -333,6 +336,10 @@ describe("createPushPublisherService flush", () => {
           accountOwnerId: value.accountOwnerId,
           revisions: { ...value.revisions },
         };
+      },
+      listUserMessages: () => [...userMessages],
+      setUserMessages: (messages: StoredUserMessage[]) => {
+        userMessages = [...messages];
       },
     };
     const relayClient = {
@@ -1012,6 +1019,56 @@ describe("createPushPublisherService flush", () => {
     expect(
       payloads.every((payload) => Buffer.byteLength(JSON.stringify(payload), "utf8") < 256 * 1024),
     ).toBe(true);
+    publisher.dispose();
+  });
+
+  it("keeps the messages the relay already holds in a restart's first reconcile", async () => {
+    const machineKey = "a".repeat(40);
+    const sentAt = "2026-07-05T11:59:00.000Z";
+    const storedMessage = (id: string): StoredUserMessage => ({
+      id,
+      sessionId: "s-1",
+      scopeKey: "scope-1",
+      title: "Deploy finished",
+      body: "The deploy finished.",
+      chatTitle: "Deploy chat",
+      laneId: null,
+      laneName: null,
+      provider: "Codex",
+      model: "gpt-5",
+      sentAt,
+      expiresAt: "2026-07-06T12:00:00.000Z",
+    });
+    const published = storedMessage("published-message");
+    const unsent = storedMessage("never-published-message");
+    const { publisher, publishAttention } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot: vi.fn().mockResolvedValue([]) },
+      // The persisted revision proves the relay accepted this message before.
+      lastPublishedRevisionById: {
+        [`message:${machineKey}:${published.id}`]: Date.parse(published.sentAt),
+      },
+      userMessages: [published, unsent],
+    });
+    publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+      features: ["message"],
+    });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+
+    const [reconcile] = publishAttention.mock.calls[0];
+    expect(reconcile.mode).toBe("reconcile");
+    const ids = reconcile.items.map((item: { id: string }) => item.id);
+    // A reconcile is authoritative: dropping a held message here would let the
+    // relay tombstone it, and the message can never be republished.
+    expect(ids).toContain(`message:${machineKey}:${published.id}`);
+    // A message the relay never saw waits for the feature list instead.
+    expect(ids).not.toContain(`message:${machineKey}:${unsent.id}`);
     publisher.dispose();
   });
 

@@ -2272,14 +2272,27 @@ func accountAttentionSettledItemIds(
     (previous?.items ?? []).map { ($0.id, $0) },
     uniquingKeysWith: { first, _ in first }
   )
+  // A delta is a cursor replay, so one of its rows can be older than the
+  // completed snapshot. Clear a delivered alert only when that snapshot still
+  // says the item is settled: the same id can come back unread, and its alert
+  // must then stay in Notification Center.
+  func isSettledInComplete(_ id: String) -> Bool {
+    guard let item = complete.items.first(where: { $0.id == id }) else {
+      return true
+    }
+    return item.seenAt != nil || item.dismissedAt != nil
+  }
+
   var settled = Set<String>()
   for item in delta.items where item.seenAt != nil || item.dismissedAt != nil {
     if let prior = previousById[item.id], prior.seenAt != nil || prior.dismissedAt != nil {
       continue
     }
+    guard isSettledInComplete(item.id) else { continue }
     settled.insert(item.id)
   }
   for tombstone in delta.tombstones ?? [] {
+    guard isSettledInComplete(tombstone.id) else { continue }
     settled.insert(tombstone.id)
   }
   let remaining = Set(complete.items.map(\.id))

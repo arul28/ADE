@@ -6645,14 +6645,17 @@ app.whenReady().then(async () => {
     }
   };
   /**
-   * `ownerId` is the account signed in when the alert was shown. After a
-   * switch, opening an old alert still navigates but marks nothing seen: the
-   * same item id can exist under the new account.
+   * `ownerId` is the account signed in when the alert was shown. Opening an
+   * old alert after a switch does nothing: its chat and item ids belong to the
+   * account that showed it, so handing them to the new account's renderer
+   * would open the wrong thing (and the same item id can exist under the new
+   * account).
    */
   const openDesktopAlert = (alert: DesktopAlert, ownerId: string | null): void => {
+    if (ownerId !== readAccountOwnerId()) return;
     // Opening it is seeing it: the phone, still waiting out desktop-first,
     // stays quiet. Best effort; a failure only means the phone gets it later.
-    if (ownerId === readAccountOwnerId()) void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
+    void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
       logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
         error: error instanceof Error ? error.message : String(error),
       });

@@ -688,8 +688,16 @@ export class AttentionAccountCoordinator {
       muted,
     );
     // Desktop notifications read the last loaded preferences; apply the mute
-    // to them now so a message arriving right after it stays quiet.
-    this.options.onSessionMuted?.(accountOwnerId, normalizedSessionId, muted);
+    // to them now so a message arriving right after it stays quiet. A throw
+    // here must not fail a mute the relay already saved — the renderer would
+    // roll back and say it could not mute a chat that is muted.
+    try {
+      this.options.onSessionMuted?.(accountOwnerId, normalizedSessionId, muted);
+    } catch (error) {
+      this.options.getLogger().warn("attention.session_mute_observer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
