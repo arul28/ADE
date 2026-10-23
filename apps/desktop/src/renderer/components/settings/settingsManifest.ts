@@ -732,7 +732,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
     tab: "chat",
     anchor: "claude-mods",
-    scope: "account",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Claude mods",
@@ -1033,7 +1034,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["background work", "jobs", "cron", "wakeup", "loop", "schedule", "pause"],
     tab: "notifications",
     anchor: "scheduled-work",
-    scope: "account",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
     web: "hidden",
     group: "Scheduled work",
   },
@@ -1581,6 +1583,15 @@ let standaloneSettingsResolver: (() => boolean) | null = null;
 
 export function setStandaloneSettingsResolver(resolve: () => boolean): void {
   standaloneSettingsResolver = resolve;
+}
+
+/**
+ * Whether Settings is open with no project. A page that mixes this computer's
+ * settings with ones saved in a project reads this to leave the project cards
+ * out: with no project there is nothing to load them from or save them to.
+ */
+export function isStandaloneSettings(): boolean {
+  return standaloneSettingsResolver?.() ?? false;
 }
 
 /** Uninstall a standalone resolver, but only if it is still the installed one. */

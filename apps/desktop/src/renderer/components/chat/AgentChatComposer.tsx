@@ -7262,7 +7262,9 @@ function AgentChatComposerImpl({
     pin: modelRuntimePin,
     ownerBinding: composerMachineBinding,
     modelChosen: modelPickedByHandFor === handPickKey || chatHasMessages,
-    hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset),
+    // The hint reads Smart decisions and the project's settings, which a
+    // personal chat has none of (and with no project open, nothing to ask).
+    hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset) || !projectChatPane,
     effortPickedByHand,
     onModelChange,
     onReasoningEffortChange,
@@ -8330,6 +8332,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   // A parallel slot carries a model, not a preset, so a Custom
                   // pick here would be silently dropped at launch.
@@ -8382,6 +8385,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   listsHarnessPresets={listsHarnessPresets}
                   {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}

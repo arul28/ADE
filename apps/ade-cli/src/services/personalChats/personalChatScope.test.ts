@@ -930,6 +930,13 @@ describe("PersonalChatScope", () => {
     });
     await expect(scope.call("getImageDataUrl", { path: __filename }))
       .rejects.toThrow(/outside the attachment store/);
+    // A picture the agent saved in its own workspace is the chat's too.
+    const viewed = path.join(adeHome, "personal-chats", "workspaces", "chart.png");
+    fs.mkdirSync(path.dirname(viewed), { recursive: true });
+    fs.copyFileSync(savedPath, viewed);
+    await expect(scope.call("getImageDataUrl", { path: viewed })).resolves.toMatchObject({
+      result: { dataUrl: expect.stringMatching(/^data:image\/png;base64,/) },
+    });
 
     await expect(scope.call("saveTempAttachment", {
       filename: "fake.png",

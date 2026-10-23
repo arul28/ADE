@@ -76,7 +76,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { resolveWithinAllowedDirs } from "./allowedRendererPath";
+import { PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE, resolveWithinAllowedDirs } from "./allowedRendererPath";
 import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
@@ -1866,9 +1866,12 @@ function buildPrAiDisplayText(context: PrAiResolutionContext): string {
 }
 
 function getAllowedDirs(getCtx: () => AppContext): string[] {
-  const projectRoot = getCtx().project.rootPath;
+  // A window with no project open has a blank root. Leave it out: resolving ""
+  // gives the process's working directory, which is "/" on a Mac opened from
+  // Finder and would allow every path on the disk.
+  const projectRoot = getCtx().project?.rootPath?.trim() ?? "";
   return [
-    projectRoot,
+    ...(projectRoot ? [projectRoot] : []),
     app.getPath("downloads"),
     app.getPath("documents"),
     app.getPath("temp"),
@@ -3869,7 +3872,11 @@ export function registerIpc({
         inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
       }
     }
-    return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+    if (path.isAbsolute(inputPath)) return path.resolve(inputPath);
+    // A relative path names a file in the project. With no project open there
+    // is nothing to resolve it against (not the process's working directory).
+    if (!projectRoot?.trim()) throw new Error(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    return path.resolve(projectRoot, inputPath);
   };
 
   const resolveAllowedRendererPath = (rawPath: string): string => {

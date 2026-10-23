@@ -4,7 +4,8 @@ import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } fr
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
-import { useChatPaneScope } from "./agentChatApi";
+import { useChatImageReader } from "./agentChatApi";
+import { copyPictureToClipboard } from "../ui/MediaLightbox";
 import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
@@ -416,7 +417,7 @@ function ImageAttachmentPreview({
   machinePinRef.current = machinePin;
   // A personal chat's attachments live in its own store, which only its own
   // API can read; a project runtime would refuse the path.
-  const personalReader = useChatPaneScope()?.agentChat.getImageDataUrl ?? null;
+  const personalReader = useChatImageReader();
   const personalReaderRef = useRef(personalReader);
   personalReaderRef.current = personalReader;
   useEffect(() => {
@@ -429,9 +430,7 @@ function ImageAttachmentPreview({
       };
     }
     const reader = personalReaderRef.current;
-    readAttachmentImageDataUrl(attachment.path, machinePinRef.current, {
-      reader: reader ? (path) => reader(path) : null,
-    })
+    readAttachmentImageDataUrl(attachment.path, machinePinRef.current, { reader })
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })
@@ -452,7 +451,10 @@ function ImageAttachmentPreview({
   const copyImage = async (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     try {
-      await window.ade.app.writeClipboardImage(attachment.path);
+      // Copy the bytes already shown: the file may be on another machine or
+      // in a personal chat's store, where this computer's reader cannot go.
+      if (dataUrl) await copyPictureToClipboard(dataUrl);
+      else await window.ade.app.writeClipboardImage(attachment.path);
       setCopyState("copied");
     } catch {
       setCopyState("failed");

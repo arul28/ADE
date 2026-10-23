@@ -634,6 +634,9 @@ export function CommandPalette({
   // window's OS: a Windows desktop pinned to a Mac still offers the tool.
   const [supportsIosSimulator, setSupportsIosSimulator] = useState(true);
   useEffect(() => {
+    // The Apple tool works on a project's lanes; with no project open there is
+    // no runtime to ask (and no tool to offer).
+    if (!projectBinding) return undefined;
     let cancelled = false;
     void window.ade?.iosSimulator?.getStatus()?.then((status) => {
       if (!cancelled && typeof status.supported === "boolean") {
@@ -647,7 +650,8 @@ export function CommandPalette({
   // The lane-screen tool follows the HOST platform, from the same cached
   // support read the Work tools use: a Windows host offers Windows Desktop
   // only, a Mac host Mac Desktop only.
-  const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open });
+  // Lane tools need a project; with none open there is no runtime to ask.
+  const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open && projectBinding != null });
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
       supportsIosSimulator,

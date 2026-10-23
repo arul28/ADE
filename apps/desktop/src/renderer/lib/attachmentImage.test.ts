@@ -57,18 +57,36 @@ describe("readAttachmentImageDataUrl", () => {
     expect(localRead).not.toHaveBeenCalled();
   });
 
-  it("falls back to this computer's reader for a local pin", async () => {
+  it("asks this computer's reader for a local pin only when the runtime gave no final answer about the file", async () => {
+    // The runtime's answer is final: one read, no second refusal from this computer.
+    await expect(readAttachmentImageDataUrl("/gone.png", localPin)).rejects.toThrow("Path does not exist.");
+    expect(localRead).not.toHaveBeenCalled();
+
+    runtimeRead.mockRejectedValueOnce(new Error("Image path must be inside the project."));
     await expect(readAttachmentImageDataUrl("/local.png", localPin))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
     expect(localRead).toHaveBeenCalledWith("/local.png");
 
+    runtimeRead.mockRejectedValueOnce(new Error("Image path must be inside the project."));
     localRead.mockRejectedValueOnce(new Error("Path is outside allowed directories."));
-    await expect(readAttachmentImageDataUrl("/gone.png", localPin)).rejects.toThrow("Path does not exist.");
+    await expect(readAttachmentImageDataUrl("/outside.png", localPin)).rejects.toThrow("must be inside the project");
+
+    // A current brain does not know the OS's moved user folders (a Desktop in
+    // OneDrive); this computer's reader does.
+    runtimeRead.mockRejectedValueOnce(new Error("Image path is outside the folders ADE shows chat images from."));
+    await expect(readAttachmentImageDataUrl("C:\\Users\\me\\OneDrive\\Desktop\\shot.png", localPin))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
+    // A file the runtime found but cannot show is final everywhere.
+    localRead.mockClear();
+    runtimeRead.mockRejectedValueOnce(new Error("Path is not an image."));
+    await expect(readAttachmentImageDataUrl("/notes.png", localPin)).rejects.toThrow("not an image");
+    expect(localRead).not.toHaveBeenCalled();
   });
 
   // Successful reads are cached per owner and path for the life of the
   // renderer, so each case reads paths no other case has read.
   it("treats no pin as the window's machine: local falls back, remote does not", async () => {
+    runtimeRead.mockRejectedValue(new Error("Image path must be inside the project."));
     useAppStore.setState({ projectBinding: localPin });
     await expect(readAttachmentImageDataUrl("/no-pin-local.png", null))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
@@ -76,7 +94,7 @@ describe("readAttachmentImageDataUrl", () => {
 
     localRead.mockClear();
     useAppStore.setState({ projectBinding: remotePin });
-    await expect(readAttachmentImageDataUrl("/no-pin-remote.png", null)).rejects.toThrow("Path does not exist.");
+    await expect(readAttachmentImageDataUrl("/no-pin-remote.png", null)).rejects.toThrow("must be inside the project");
     expect(localRead).not.toHaveBeenCalled();
   });
 
@@ -107,8 +125,11 @@ describe("readAttachmentImageDataUrl", () => {
       .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
     expect(runtimeRead).toHaveBeenCalledTimes(2);
 
-    // A rewritable path (an image an agent viewed) is never served stale.
-    await expect(readAttachmentImageDataUrl("/cache-once.png", remotePin, { cache: false }))
+    // A rewritable path (an image an agent viewed) is read once per version:
+    // a new view reads the file again, a remount of the same view does not.
+    await expect(readAttachmentImageDataUrl("/cache-once.png", remotePin, { version: "view-2" }))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
+    await expect(readAttachmentImageDataUrl("/cache-once.png", remotePin, { version: "view-2" }))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
     expect(runtimeRead).toHaveBeenCalledTimes(3);
 
@@ -118,5 +139,18 @@ describe("readAttachmentImageDataUrl", () => {
     await expect(readAttachmentImageDataUrl("/cache-retry.png", remotePin))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
     expect(runtimeRead).toHaveBeenCalledTimes(5);
+  });
+
+  it("reads a personal chat's image only through its own reader, once per machine", async () => {
+    const reader = vi.fn().mockResolvedValue({ dataUrl: "data:image/png;base64,PERSONAL" });
+    await expect(readAttachmentImageDataUrl("/store/a.png", null, { reader }))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,PERSONAL" });
+    await expect(readAttachmentImageDataUrl("/store/a.png", null, { reader }))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,PERSONAL" });
+    // The same path on another machine is another file.
+    await readAttachmentImageDataUrl("/store/a.png", remotePin, { reader });
+    expect(reader).toHaveBeenCalledTimes(2);
+    expect(runtimeRead).not.toHaveBeenCalled();
+    expect(localRead).not.toHaveBeenCalled();
   });
 });

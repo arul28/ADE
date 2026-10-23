@@ -31,6 +31,8 @@ import {
   useActivitySettings,
 } from "./ActivitySettingsControls";
 import { AiFeaturesSection } from "./AiFeaturesSection";
+import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
+import { isStandaloneSettings } from "./settingsManifest";
 import "./NotificationsSection.css";
 
 /**
@@ -315,7 +317,15 @@ export function NotificationsSection() {
               )}
             />
             <ActivityPrivacySection model={model} />
-            <AiFeaturesSection />
+            {isStandaloneSettings() ? (
+              <ProjectSettingsNotice
+                group="Scheduled work"
+                title="Scheduled work"
+                detail="Scheduled work is saved in each project, with its jobs and its pause."
+              />
+            ) : (
+              <AiFeaturesSection />
+            )}
           </div>
         </div>
       </ModernPage>

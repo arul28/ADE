@@ -33,6 +33,8 @@ import { LaunchPromptSection } from "./LaunchPromptSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
+import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
+import { isStandaloneSettings } from "./settingsManifest";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
 import "./ChatSection.css";
 
@@ -50,6 +52,8 @@ import "./ChatSection.css";
  * anchor is unchanged, so deep links, ⌘K, and the manifest test keep landing.
  */
 export function ChatSection() {
+  // With no project open, the cards saved in a project have nothing to load.
+  const noProject = isStandaloneSettings();
   const theme = useAppStore((s) => s.theme);
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const setChatFontSizePx = useAppStore((s) => s.setChatFontSizePx);
@@ -167,12 +171,22 @@ export function ChatSection() {
 
             <LaunchPromptSection />
 
-            <PromptSuggestionsSection />
+            {noProject ? (
+              <ProjectSettingsNotice
+                group="Smart decisions"
+                title="Project chat settings"
+                detail="Next prompt suggestions, Smart decisions and Claude mods are saved in each project."
+              />
+            ) : (
+              <>
+                <PromptSuggestionsSection />
 
-            {/* Jev's calls about chats, and its model hint in the composer. */}
-            <SmartDecisionsSection />
+                {/* Jev's calls about chats, and its model hint in the composer. */}
+                <SmartDecisionsSection />
 
-            <ClaudeModsSection />
+                <ClaudeModsSection />
+              </>
+            )}
 
             {/* Voice input is chat dictation, so it lives with chat. */}
             <DictationSection />

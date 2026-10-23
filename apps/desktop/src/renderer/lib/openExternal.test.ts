@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   canOpenUrlOnThisMachine,
+  getLinkOpenMode,
   openLinkFromUi,
   openUrlInAdeBrowser,
   setLinkOpenMode,
@@ -181,6 +182,40 @@ describe("resolveLinkOpenTarget", () => {
   it("ignores modifiers that carry no meaning here", () => {
     expect(resolveLinkOpenTarget({ mode: "in-app", modifiers: {} })).toBe("in-app");
     expect(resolveLinkOpenTarget({ mode: "external", modifiers: null })).toBe("external");
+  });
+});
+
+describe("link-open preference", () => {
+  afterEach(() => {
+    setWindowRuntimeBinding(null);
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  // The preference is saved in the open project: none open reads nothing, and
+  // an answer for a project the window has left must not land on the next one.
+  it("follows the window's project and drops a late answer from the one it left", async () => {
+    const answers = new Map<string, (mode: string) => void>();
+    let asking = "";
+    const get = vi.fn(() => new Promise((resolve) => {
+      answers.set(asking, (mode) => resolve({ effective: { browser: { linkOpenMode: mode } } }));
+    }));
+    Object.defineProperty(window, "ade", { configurable: true, writable: true, value: { projectConfig: { get } } });
+
+    setWindowRuntimeBinding(null);
+    expect(get).not.toHaveBeenCalled();
+    expect(getLinkOpenMode()).toBe("in-app");
+
+    asking = "a";
+    setWindowRuntimeBinding({ kind: "local", key: "local:/a", rootPath: "/a" } as never);
+    asking = "b";
+    setWindowRuntimeBinding({ kind: "local", key: "local:/b", rootPath: "/b" } as never);
+    expect(get).toHaveBeenCalledTimes(2);
+
+    answers.get("b")!("external");
+    await vi.waitFor(() => expect(getLinkOpenMode()).toBe("external"));
+    answers.get("a")!("in-app");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getLinkOpenMode()).toBe("external");
   });
 });
 

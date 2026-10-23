@@ -181,7 +181,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -9622,10 +9622,29 @@ app.whenReady().then(async () => {
     }),
   });
 
+  // Keep-awake is machine-level in the brain, so Settings reaches it with no
+  // project open through the machine method. Two brains cannot answer it:
+  // - One that does not manage keep-awake (a dev brain on its own socket, an
+  //   embedded one). Its projects cannot either, so this app's own service
+  //   does the work (the IPC handler's fallback for a not-callable action).
+  // - One from before the method, which takes it for a project method and asks
+  //   for a project id. It answers through any project it has; with none,
+  //   this app's own service does the work.
   const keepAwakeAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
+    try {
+      return await localRuntimePool.callSync("keepAwake.call", { action, args: args ?? {} });
+    } catch (error) {
+      // A brain without the service answers "not callable", which sends the
+      // IPC handler to this app's own service.
+      if (isUnsupportedAdeActionError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/Method keepAwake\.call requires params\.projectId/.test(message)) throw error;
+    }
     const projects = await localRuntimePool.projects();
     const rootPath = projects[0]?.rootPath;
-    if (!rootPath) throw new Error("Keep-awake settings need a project connected to this machine's brain.");
+    if (!rootPath) {
+      throw codedError("This machine's brain can't manage keep-awake without a project.", ACTION_NOT_CALLABLE_CODE);
+    }
     const response = await localRuntimePool.callActionForRoot(rootPath, {
       domain: "keep_awake",
       action,
