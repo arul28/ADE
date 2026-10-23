@@ -45,7 +45,9 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
+  REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
   RemoteRuntimeConnectError,
+  type RemoteRuntimeReconnectBlock,
 } from "../../../shared/types";
 import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
 import {
@@ -55,6 +57,7 @@ import {
 } from "./attachmentUploadClient";
 import {
   isRemoteRuntimeConnectionError,
+  RemoteActionOutcomeUnknownError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -240,6 +243,13 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   // Another client took the connection. The machine answered; nothing here is
   // a failure to back off from.
   if (isPairedRuntimeSupersededError(error)) return false;
+  // The call's answer was lost, but the machine answered again right after.
+  if (error instanceof RemoteActionOutcomeUnknownError && error.reconnected) return false;
+  // Connect failures carry a structured kind; their text names the cause
+  // ("SSH authentication failed", "Nothing is accepting SSH connections"), not
+  // the connection, so the pattern below does not see them.
+  if (error instanceof RemoteRuntimeConnectError) return true;
+  if (error instanceof PairedRuntimeTransportUnavailableError) return true;
   if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
   return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
@@ -518,6 +528,10 @@ export class RemoteConnectionService {
       }
     }
     const target = this.registry.save(normalizedInput);
+    // An edit (a new user, key or port) may fix what failed, so the next call
+    // or automatic reconnect tries again instead of waiting out the backoff.
+    this.pool.clearConnectFailure?.(target.id);
+    this.clearAutomaticReconnectState(target.id);
     this.mergeStatus(target.id, { state: "idle", lastError: null });
     return target;
   }
@@ -732,6 +746,9 @@ export class RemoteConnectionService {
       fingerprint,
     );
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
+    this.pool.clearConnectFailure?.(targetId);
+    this.clearAutomaticReconnectState(targetId);
+    this.emit();
     return result;
   }
 
@@ -755,6 +772,7 @@ export class RemoteConnectionService {
           lastErrorInfo: status.lastErrorInfo ?? null,
           lastAttemptedAt: status.lastAttemptedAt ?? null,
           connectedAt: status.connectedAt ?? target.lastConnectedAt,
+          reconnectBlocked: this.reconnectBlock(target),
         };
       });
     return {
@@ -778,7 +796,7 @@ export class RemoteConnectionService {
     if (this.options.explicitConnectOnly) return;
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
-      if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
+      if (this.reconnectBlock(target)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       void this.connect(target.id).catch(() => {});
     }
@@ -872,12 +890,22 @@ export class RemoteConnectionService {
       if (error instanceof PairedRuntimeSshTrustRequiredError) {
         this.pairedFallbackSshTrustByTargetId.set(target.id, error.trustStatus);
       }
+      if (isConnectionBackoffThrottle(error)) {
+        // Nothing was dialed. The status keeps the failure that started the
+        // wait, with its structured kind, instead of this refusal.
+        const previous = this.statusById.get(target.id);
+        this.mergeStatus(target.id, {
+          state: "error",
+          ...(previous?.lastError ? {} : errorStatusPatch(error)),
+        });
+        throw error;
+      }
       const lastError = explicit
         ? errorMessage(error)
         : this.recordImplicitFailure(target.id, error);
       this.mergeStatus(target.id, {
         state: "error",
-        ...errorStatusPatch(error, lastError),
+        ...errorStatusPatch(error, this.withRetryNotice(target.id, lastError)),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -906,6 +934,9 @@ export class RemoteConnectionService {
     this.bumpDisconnectGeneration(targetId);
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
+    // Windows stop calling a machine they see as disconnected. The status may
+    // already have been idle, so say it even when no status field changed.
+    if (options.manual) this.emit();
     if (persistenceError) {
       throw persistenceError;
     }
@@ -1428,7 +1459,7 @@ export class RemoteConnectionService {
     await this.reconcileAuthorizedAccountOwnership();
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
-      if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
+      if (this.reconnectBlock(target)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
@@ -1539,10 +1570,43 @@ export class RemoteConnectionService {
       this.manuallyDisconnectedTargetIds.has(targetId) ||
       target?.manuallyDisconnectedAt != null
     ) {
-      throw new Error(
-        "Remote machine was manually disconnected. Connect again to use this remote project.",
-      );
+      throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
     }
+    // A live or opening connection serves the call. Without one, the call
+    // would dial, so it waits for the same backoff the automatic reconnect
+    // keeps; every poll of a window used to dial on its own.
+    if (this.pool.hasEntry?.(targetId)) return;
+    const status = this.statusById.get(targetId);
+    const lastError = status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine did not answer";
+    // Same "failed recently" prefix as the pool's own refusal: callers and
+    // Sentry read it as "not dialed", and it does not add to the backoff.
+    if (this.pool.isWaitingForUserAction?.(targetId)) {
+      throw new Error(`Remote ADE service connection failed recently (${lastError})`);
+    }
+    const retryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
+    if (retryAt == null || retryAt <= Date.now()) return;
+    const seconds = Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
+    throw new Error(
+      `Remote ADE service connection failed recently (${lastError}). Retrying in ${seconds}s.`,
+    );
+  }
+
+  /** Why ADE will not reconnect this target on its own, if it will not. */
+  private reconnectBlock(target: RemoteRuntimeTarget): RemoteRuntimeReconnectBlock | null {
+    if (
+      this.manuallyDisconnectedTargetIds.has(target.id)
+      || target.manuallyDisconnectedAt != null
+    ) return "disconnected";
+    if (!this.pool.hasEntry?.(target.id) && this.pool.isWaitingForUserAction?.(target.id)) {
+      return "needs_attention";
+    }
+    return null;
+  }
+
+  /** Says so in the status when ADE stopped retrying after this failure. */
+  private withRetryNotice(targetId: string, message: string): string {
+    if (!this.pool.isWaitingForUserAction?.(targetId)) return message;
+    return `${message} ADE won't retry on its own. Fix this, then press Try again.`;
   }
 
   private clearAutomaticReconnectState(targetId: string): void {
@@ -1570,19 +1634,27 @@ export class RemoteConnectionService {
    * backoff state; everything else is left to rethrow to the caller untouched.
    */
   private markCallFailure(targetId: string, error: unknown): void {
-    if (!isImplicitConnectionFailure(error)) return;
+    if (!this.isConnectionFailure(targetId, error)) return;
+    // A refusal to dial changes nothing; the status already holds the failure
+    // that started the wait, with its kind (SSH sign-in, unreachable).
+    if (isConnectionBackoffThrottle(error)) return;
     this.mergeStatus(targetId, {
       state: "error",
       ...errorStatusPatch(
         error,
-        this.recordImplicitFailure(targetId, error),
+        this.withRetryNotice(targetId, this.recordImplicitFailure(targetId, error)),
       ),
       lastAttemptedAt: Date.now(),
     });
   }
 
+  /** A failure of the connection, not an answer from the machine. */
+  private isConnectionFailure(targetId: string, error: unknown): boolean {
+    return isImplicitConnectionFailure(error) || this.pool.isLastConnectFailure?.(targetId, error) === true;
+  }
+
   private recordImplicitFailure(targetId: string, error: unknown): string {
-    if (!isImplicitConnectionFailure(error)) return errorMessage(error);
+    if (!this.isConnectionFailure(targetId, error)) return errorMessage(error);
     if (isConnectionBackoffThrottle(error)) return errorMessage(error);
     return this.noteAutomaticReconnectFailure(targetId, error);
   }
@@ -1591,6 +1663,10 @@ export class RemoteConnectionService {
     targetId: string,
     error: unknown,
   ): string {
+    // Calls that share one failed dial each report it. Count the dial once,
+    // or a burst of polls would jump the wait straight to its maximum.
+    const pendingRetryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
+    if (pendingRetryAt != null && pendingRetryAt > Date.now()) return errorMessage(error);
     const failureCount =
       (this.automaticReconnectFailuresByTargetId.get(targetId) ?? 0) + 1;
     this.automaticReconnectFailuresByTargetId.set(targetId, failureCount);

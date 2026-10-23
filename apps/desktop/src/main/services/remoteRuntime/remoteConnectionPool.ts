@@ -16,7 +16,10 @@ import type {
   RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
-import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import {
+  isRemoteRuntimeEventCategory,
+  RemoteRuntimeConnectError,
+} from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import {
@@ -124,6 +127,8 @@ type ConnectFailureBackoff = {
   error: Error;
   failureCount: number;
   retryAfterMs: number;
+  /** Retrying cannot fix it; only Try again or an edit to the machine can. */
+  needsUserAction: boolean;
 };
 
 type RemoteConnectionPoolConnectOptions = {
@@ -145,6 +150,38 @@ function assertRequiredActionRoute(
 }
 
 export { isRemoteRuntimeConnectionError };
+
+/**
+ * A connect failure that the same attempt repeated cannot fix: the SSH server
+ * refused every key, or its host key is not the trusted one. Retrying these on
+ * a timer only repeats the refusal (and can trip the server's lockout).
+ *
+ * Only for SSH targets. A paired machine reaches SSH as a fallback when its
+ * own route is down, and that route can come back without the person.
+ */
+function isUserActionConnectFailure(target: RemoteRuntimeTarget, error: unknown): boolean {
+  if (target.transport === "paired") return false;
+  return error instanceof RemoteRuntimeConnectError
+    && (error.info.kind === "ssh_auth" || error.info.kind === "host_key");
+}
+
+/**
+ * The connection dropped while a call that may not run twice was in flight, so
+ * ADE cannot say whether the machine ran it. `reconnected` says whether the
+ * machine answered again right after: then it is reachable, and only this one
+ * call's outcome is unknown.
+ */
+export class RemoteActionOutcomeUnknownError extends Error {
+  constructor(readonly reconnected: boolean) {
+    super(
+      "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
+        (reconnected
+          ? "ADE reconnected to the machine; retry the action if it is still needed."
+          : "ADE could not reconnect to the machine; check the destination before retrying the action."),
+    );
+    this.name = "RemoteActionOutcomeUnknownError";
+  }
+}
 
 function isRemoteRuntimeStreamFailure(error: unknown): boolean {
   return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
@@ -561,7 +598,7 @@ export class RemoteConnectionPool {
       this.pendingDisconnects.delete(target.id);
       this.resolvedEntryPromises.delete(entryPromise);
       this.relayAccountOwnerByTargetId.delete(target.id);
-      this.noteConnectFailure(target.id, error);
+      this.noteConnectFailure(target.id, error, isUserActionConnectFailure(target, error));
       throw error;
     }
   }
@@ -1338,18 +1375,12 @@ export class RemoteConnectionPool {
         nextEntry = await this.connectEntry(reconnectTarget);
       } catch (reconnectError) {
         if (options.retryOnConnectionError) throw reconnectError;
-        throw new Error(
-          "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-            "ADE could not reconnect to the machine; check the destination before retrying the action.",
-        );
+        throw new RemoteActionOutcomeUnknownError(false);
       }
       if (options.retryOnConnectionError) {
         return await operation(nextEntry);
       }
-      throw new Error(
-        "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-          "ADE reconnected to the machine; retry the action if it is still needed.",
-      );
+      throw new RemoteActionOutcomeUnknownError(true);
     }
   }
 
@@ -1393,9 +1424,40 @@ export class RemoteConnectionPool {
     entry.dispose = evict;
   }
 
+  /** True while a connection to this target is open or opening. */
+  hasEntry(targetId: string): boolean {
+    return this.entries.has(targetId);
+  }
+
+  /**
+   * True when the last connect failed in a way only the person can fix, so
+   * nothing but `bypassFailureBackoff` (Try again) or an edit opens it again.
+   */
+  isWaitingForUserAction(targetId: string): boolean {
+    return this.connectFailureBackoffByTargetId.get(targetId)?.needsUserAction === true;
+  }
+
+  /** True when `error` is the failure of this target's last connect attempt. */
+  isLastConnectFailure(targetId: string, error: unknown): boolean {
+    return error != null && this.connectFailureBackoffByTargetId.get(targetId)?.error === error;
+  }
+
+  /** The machine was edited: what failed before may work now. */
+  clearConnectFailure(targetId: string): void {
+    this.connectFailureBackoffByTargetId.delete(targetId);
+  }
+
   private assertConnectNotBackingOff(targetId: string): void {
     const backoff = this.connectFailureBackoffByTargetId.get(targetId);
     if (!backoff) return;
+    // The "failed recently" prefix is how callers (and Sentry) tell a refusal
+    // to dial from a real failure; keep it on both messages.
+    if (backoff.needsUserAction) {
+      throw new Error(
+        `Remote ADE service connection failed recently (${backoff.error.message}). ` +
+          "ADE won't retry on its own. Press Try again or edit the machine.",
+      );
+    }
     const remainingMs = backoff.retryAfterMs - Date.now();
     if (remainingMs <= 0) {
       this.connectFailureBackoffByTargetId.delete(targetId);
@@ -1407,7 +1469,7 @@ export class RemoteConnectionPool {
     );
   }
 
-  private noteConnectFailure(targetId: string, error: unknown): void {
+  private noteConnectFailure(targetId: string, error: unknown, needsUserAction: boolean): void {
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return;
     const normalizedError =
       error instanceof Error ? error : new Error(String(error));
@@ -1420,7 +1482,8 @@ export class RemoteConnectionPool {
     this.connectFailureBackoffByTargetId.set(targetId, {
       error: normalizedError,
       failureCount,
-      retryAfterMs: Date.now() + backoffMs,
+      retryAfterMs: needsUserAction ? Number.POSITIVE_INFINITY : Date.now() + backoffMs,
+      needsUserAction,
     });
   }
 

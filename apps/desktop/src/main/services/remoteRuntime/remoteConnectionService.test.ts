@@ -1337,51 +1337,63 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connectedCount).toBe(1);
   });
 
-  it("does not permanently disable implicit reconnect after repeated failures", async () => {
-    const previouslyConnected = target("previously-connected", 1_700_000_000);
-    const registry = {
-      list: vi.fn(() => [previouslyConnected]),
-      get: vi.fn((id: string) =>
-        id === previouslyConnected.id ? previouslyConnected : null,
-      ),
-    } as unknown as RemoteTargetRegistry;
-    let failConnect = true;
-    const pool = {
-      connect: vi.fn(async (target: RemoteRuntimeTarget) => {
-        if (failConnect) {
-          throw new Error("Remote ADE service connection failed.");
-        }
-        return connectResult(target);
-      }),
-      disconnect: vi.fn(),
-      callActionForTarget: vi.fn(),
-      onEntryConnected: vi.fn(() => () => {}),
-      onEntryEvicted: vi.fn(() => () => {}),
-    } as unknown as RemoteConnectionPool;
+  it.each([
+    ["a failed connection", "Remote ADE service connection failed."],
+    [
+      "a normalized SSH handshake failure",
+      "SSH server at studio.local:22 closed the connection before ADE could finish the SSH handshake.",
+    ],
+  ])("waits out the backoff after %s, then retries for good", async (_label, message) => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_800_000_000_000);
+      const previouslyConnected = target("previously-connected", 1_700_000_000);
+      const registry = {
+        list: vi.fn(() => [previouslyConnected]),
+        get: vi.fn((id: string) =>
+          id === previouslyConnected.id ? previouslyConnected : null,
+        ),
+      } as unknown as RemoteTargetRegistry;
+      let failConnect = true;
+      const pool = {
+        connect: vi.fn(async (target: RemoteRuntimeTarget) => {
+          if (failConnect) throw new Error(message);
+          return connectResult(target);
+        }),
+        disconnect: vi.fn(),
+        callActionForTarget: vi.fn(),
+        onEntryConnected: vi.fn(() => () => {}),
+        onEntryEvicted: vi.fn(() => () => {}),
+      } as unknown as RemoteConnectionPool;
 
-    const service = new RemoteConnectionService(registry, pool);
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-        /connection failed/i,
-      );
+      const service = new RemoteConnectionService(registry, pool);
+      for (let attempt = 1; attempt <= 10; attempt += 1) {
+        await expect(service.connect(previouslyConnected.id)).rejects.toThrow(message);
+        expect(pool.connect).toHaveBeenCalledTimes(attempt);
+        // Inside the wait an implicit attempt is refused without dialing, and
+        // the status keeps the real failure.
+        await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
+          /failed recently/i,
+        );
+        expect(pool.connect).toHaveBeenCalledTimes(attempt);
+        expect(service.snapshot().connections[0]?.lastError).toBe(message);
+        vi.setSystemTime(Date.now() + automaticReconnectBackoffMs(attempt));
+      }
+
+      // Explicit Connect never waits.
+      await expect(service.connect(previouslyConnected.id)).rejects.toThrow(message);
+      await expect(
+        service.connect(previouslyConnected.id, { explicit: true }),
+      ).rejects.toThrow(message);
+      expect(pool.connect).toHaveBeenCalledTimes(12);
+      failConnect = false;
+      await expect(
+        service.connect(previouslyConnected.id, { explicit: true }),
+      ).resolves.toMatchObject({ target: previouslyConnected });
+      expect(service.snapshot().connections[0]?.lastError).toBeNull();
+    } finally {
+      vi.useRealTimers();
     }
-
-    expect(pool.connect).toHaveBeenCalledTimes(10);
-    expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /connection failed/i,
-    );
-
-    await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-      /connection failed/i,
-    );
-    expect(pool.connect).toHaveBeenCalledTimes(11);
-
-    failConnect = false;
-    await expect(
-      service.connect(previouslyConnected.id, { explicit: true }),
-    ).resolves.toMatchObject({ target: previouslyConnected });
-    expect(pool.connect).toHaveBeenCalledTimes(12);
-    expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
   it("uses bounded exponential backoff for automatic reconnect attempts", () => {
@@ -1458,41 +1470,6 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).not.toMatch(
       /stopped automatic reconnecting/i,
     );
-  });
-
-  it("keeps retrying after normalized SSH handshake failures", async () => {
-    const previouslyConnected = target("previously-connected", 1_700_000_000);
-    const registry = {
-      list: vi.fn(() => [previouslyConnected]),
-      get: vi.fn((id: string) =>
-        id === previouslyConnected.id ? previouslyConnected : null,
-      ),
-    } as unknown as RemoteTargetRegistry;
-    const pool = {
-      connect: vi.fn(async () => {
-        throw new Error(
-          "SSH server at studio.local:22 closed the connection before ADE could finish the SSH handshake.",
-        );
-      }),
-      disconnect: vi.fn(),
-      onEntryConnected: vi.fn(() => () => {}),
-      onEntryEvicted: vi.fn(() => () => {}),
-    } as unknown as RemoteConnectionPool;
-
-    const service = new RemoteConnectionService(registry, pool);
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-        /SSH handshake/i,
-      );
-    }
-
-    expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /SSH handshake/i,
-    );
-    await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-      /SSH handshake/i,
-    );
-    expect(pool.connect).toHaveBeenCalledTimes(11);
   });
 
   it("keeps the connection healthy and leaves backoff state unchanged on ordinary remote action errors", async () => {

@@ -234,7 +234,10 @@ import type {
   HarnessRouteSource,
   HarnessRouteTestResult,
 } from "../shared/harnessRoutes";
-import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
+import {
+  isRemoteRuntimeEventCategory,
+  REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
+} from "../shared/types/remoteRuntime";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -1908,13 +1911,80 @@ async function callRemoteProjectActionIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding(guardBinding);
-  const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+  const response = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
   checkAfterInvoke();
   return { handled: true, result: response.result as T };
+}
+
+/**
+ * Machines this window must not call: the person disconnected them, or another
+ * ADE on this computer took the connection. Main refuses such a call anyway.
+ * Asking it anyway cost one IPC round trip and one Sentry report for every poll
+ * of every pane, for as long as the tab stayed open. Fed by the connection
+ * snapshot main pushes to every window.
+ */
+const disconnectedRemoteTargetIds = new Set<string>();
+let disconnectedRemoteTargetsUpdatedAt = 0;
+let disconnectedRemoteTargetsRead: Promise<void> | null = null;
+
+function applyRemoteCallBlocks(snapshot: RemoteRuntimeConnectionSnapshot | null | undefined): void {
+  if (!snapshot || !Array.isArray(snapshot.connections)) return;
+  // A push and the first read can cross; the newer snapshot wins.
+  if (snapshot.updatedAt < disconnectedRemoteTargetsUpdatedAt) return;
+  disconnectedRemoteTargetsUpdatedAt = snapshot.updatedAt;
+  const wasBlocked = new Set(disconnectedRemoteTargetIds);
+  disconnectedRemoteTargetIds.clear();
+  for (const connection of snapshot.connections) {
+    if (connection?.reconnectBlocked === "disconnected" && connection.target?.id) {
+      disconnectedRemoteTargetIds.add(connection.target.id);
+    }
+  }
+  const binding = currentProjectBinding;
+  if (
+    binding?.kind === "remote"
+    && wasBlocked.has(binding.targetId)
+    && !disconnectedRemoteTargetIds.has(binding.targetId)
+  ) {
+    // Connected again: the event pump parked while the machine was
+    // disconnected picks up where it stopped.
+    resumeRemoteRuntimeEventPollAfterReconnect();
+  }
+}
+
+ipcRenderer.on(IPC.remoteRuntimeConnectionSnapshotChanged, (_event, payload) => {
+  applyRemoteCallBlocks(payload as RemoteRuntimeConnectionSnapshot);
+});
+
+async function isRemoteTargetDisconnected(targetId: string): Promise<boolean> {
+  // One read per window covers a tab restored at launch for a machine that was
+  // already disconnected, before any push arrives.
+  disconnectedRemoteTargetsRead ??= (
+    ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot) as Promise<RemoteRuntimeConnectionSnapshot>
+  ).then(applyRemoteCallBlocks, () => {});
+  await disconnectedRemoteTargetsRead;
+  return disconnectedRemoteTargetIds.has(targetId);
+}
+
+/**
+ * Invoke a remote-runtime channel for `targetId` unless the person disconnected
+ * that machine. The refusal has the shape main's own refusal had, so callers
+ * read it as before.
+ */
+async function invokeRemoteTargetChannel(
+  channel: string,
+  targetId: string,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
+  if (await isRemoteTargetDisconnected(targetId)) {
+    throw new Error(
+      `Error invoking remote method '${channel}': Error: ${REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE}`,
+    );
+  }
+  return await ipcRenderer.invoke(channel, payload);
 }
 
 function isValidPreviewTargetPort(value: unknown): value is number {
@@ -2267,7 +2337,7 @@ async function callPinnedRuntimeAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<T> {
   if (pin.kind === "remote") {
-    const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+    const response = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
       request: { domain, action, ...request },
@@ -2793,7 +2863,7 @@ async function callRemoteProjectSyncIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding();
-  const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
+  const result = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallSync, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
@@ -3254,6 +3324,8 @@ const subscribeLocalCursorAuthStatusEvents =
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
+/** The pump stopped because the bound machine was disconnected by the person. */
+let remoteRuntimeEventPollParked = false;
 let remoteRuntimeEventCursor = 0;
 let remoteRuntimeEventBindingKey: string | null = null;
 // The binding the pump is currently subscribed to, kept alongside its key so a
@@ -3417,9 +3489,16 @@ function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
   }, delayMs);
 }
 
+function resumeRemoteRuntimeEventPollAfterReconnect(): void {
+  if (!remoteRuntimeEventPollParked) return;
+  remoteRuntimeEventPollParked = false;
+  scheduleRemoteRuntimeEventPoll(0);
+}
+
 async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
+  remoteRuntimeEventPollParked = false;
   let nextDelayMs: number | null = null;
   let pollingBindingKey: string | null = null;
   let pollingGeneration = projectBindingGeneration;
@@ -3456,6 +3535,12 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
     pollingBindingKey = binding.key;
     pollingGeneration = projectBindingGeneration;
+    if (binding.kind === "remote" && await isRemoteTargetDisconnected(binding.targetId)) {
+      // Parked, not failed: polling every 2s cannot reach a machine the person
+      // disconnected. A snapshot that shows it connected again resumes it.
+      remoteRuntimeEventPollParked = true;
+      return;
+    }
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
@@ -5371,21 +5456,21 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeActionRequest,
     ): Promise<RemoteRuntimeActionResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+      invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, id, {
         id,
         projectId,
         request,
-      }),
+      }) as Promise<RemoteRuntimeActionResult>,
     streamEvents: async (
       id: string,
       projectId: string,
       request: RemoteRuntimeStreamEventsRequest = {},
     ): Promise<RemoteRuntimeStreamEventsResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+      invokeRemoteTargetChannel(IPC.remoteRuntimeStreamEvents, id, {
         id,
         projectId,
         request,
-      }),
+      }) as Promise<RemoteRuntimeStreamEventsResult>,
     disconnect: async (
       id: string,
       options: { manual?: boolean } = {},
@@ -6506,10 +6591,10 @@ const adeBridge = {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
       const binding = await getRemoteProjectBinding({ fresh: true });
       if (binding) {
-        return ipcRenderer.invoke(IPC.remoteRuntimeListActionRegistry, {
+        return invokeRemoteTargetChannel(IPC.remoteRuntimeListActionRegistry, binding.targetId, {
           id: binding.targetId,
           projectId: binding.projectId,
-        });
+        }) as Promise<AdeActionRegistryEntry[]>;
       }
       const localBinding = await getLocalProjectBinding({ fresh: true });
       if (localBinding) {
