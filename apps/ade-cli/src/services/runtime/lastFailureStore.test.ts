@@ -33,7 +33,20 @@ describe("lastFailureStore", () => {
     expect(lastFailurePathForProject(projectRoot)).toBe(path.join(projectRoot, ".ade", "runtime", "last-failure.json"));
   });
 
-  it("increments identical signatures and keeps the first timestamp", () => {
+  // The socket rows: a record from before `socketPath` existed continues into
+  // the next count (an update must not drop a crash loop's backoff), and a
+  // failure on a different socket is a different incident.
+  it.each([
+    [undefined, undefined, 2, "2026-07-12T10:00:00.000Z"],
+    [undefined, "/home/.ade/sock/ade.sock", 2, "2026-07-12T10:00:00.000Z"],
+    ["/home/.ade/sock/ade.sock", "/home/.ade/sock/ade.sock", 2, "2026-07-12T10:00:00.000Z"],
+    ["/home/.ade/sock/ade.sock", "/home/.ade/sock/i-41d6ff7a.sock", 1, "2026-07-12T10:00:10.000Z"],
+  ])("counts a repeat of the same failure (first socket %s, second %s) as %i since %s", (
+    firstSocket,
+    secondSocket,
+    expectedCount,
+    expectedFirstAt,
+  ) => {
     const home = makeRoot("ade-last-failure-count-");
     const target = { kind: "machine" as const, env: { ADE_HOME: home } };
     recordLastFailure(target, {
@@ -42,6 +55,7 @@ describe("lastFailureStore", () => {
       projectRoot: "/project-a",
       message: "first",
       at: "2026-07-12T10:00:00.000Z",
+      ...(firstSocket ? { socketPath: firstSocket } : {}),
     });
     recordLastFailure(target, {
       code: "disk_full",
@@ -49,10 +63,11 @@ describe("lastFailureStore", () => {
       projectRoot: "/project-a",
       message: "second",
       at: "2026-07-12T10:00:10.000Z",
+      ...(secondSocket ? { socketPath: secondSocket } : {}),
     });
     expect(readLastFailure(target)).toMatchObject({
-      count: 2,
-      firstAt: "2026-07-12T10:00:00.000Z",
+      count: expectedCount,
+      firstAt: expectedFirstAt,
       at: "2026-07-12T10:00:10.000Z",
       message: "second",
     });

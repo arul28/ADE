@@ -90,7 +90,11 @@ function sameSignature(left: AdeLastFailureReport, right: LastFailureInput): boo
   return left.code === right.code
     && left.component === right.component
     && (left.projectRoot ?? "") === rightProjectRoot
-    && (left.socketPath ?? "") === (right.socketPath ?? "");
+    // A record written before `socketPath` existed carries none. It continues
+    // into the next write's count, so an update does not restart a crash
+    // loop's count (and drop its backoff) on the first failure that names a
+    // socket.
+    && (left.socketPath ?? right.socketPath ?? "") === (right.socketPath ?? "");
 }
 
 function reportWriteFailure(action: string, error: unknown): void {
