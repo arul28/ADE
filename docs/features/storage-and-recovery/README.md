@@ -746,7 +746,8 @@ go through the lane-aware typed-confirmation path.
    16 MB free is rebuilt once with `VACUUM`, which also turns on incremental
    auto-vacuum. After that each run frees pages in bounded chunks. New indexes
    are created incremental. The reference index went from 384 MB to 30 MB in
-   about 0.5 s.
+   about 0.5 s. That one-time `VACUUM` runs synchronously in the brain, so search
+   and other brain work pause for that moment, once per older index.
 
 **Provider history.** Settings › Storage › Details › *Provider history on this
 machine* shows each agent CLI's own session folders, for all projects, with who
@@ -756,9 +757,10 @@ deleted lanes* (`deleted_lane_provider_sessions`). These are the Claude and
 Codex session files ADE started for chats from deleted lanes. A session is
 skipped when the chat was imported from the person's own CLI, or when a chat
 that still exists names the same session. Removal deletes only those files,
-never the providers' folders. The "Chats from deleted lanes" Remove includes
-them. It lists them first, because their ids are read from the chat records
-that the second target deletes. The measurement runs alongside the project
+never the providers' folders. The "Chats from deleted lanes" removal includes
+them in the same previewed plan, because the chats' own records are the only
+place their session ids are kept. Removing the chats alone would leave the
+copies where nothing can find them. The measurement runs alongside the project
 scan, is cached for 10 minutes, and adds at most 2 s to a snapshot; a full pass
 took about 7 s on the reference machine. On the reference machine, the copies
 for deleted-lane chats came to 3.9 GB across 258 sessions.
@@ -772,9 +774,11 @@ without the confirm dialog.
 **Chats from deleted lanes.** Deleting a lane deletes its chats' session rows
 but used to leave their transcripts. Settings › Storage › Details lists them
 as one review-first row with a count and size. Remove… previews and confirms
-like every other cleanup, then deletes those chats' files one by one
-(dedicated transcript, legacy copy, `cache/chat-sessions` records), never the
-directory. A chat is listed only when its row is gone, the lane named in its
+like every other cleanup. It then deletes exactly the previewed files, one by
+one: the dedicated transcript, the legacy copy, the `cache/chat-sessions`
+records, and the chats' Claude/Codex copies. It never deletes the directory. A
+file that cannot be removed (Windows locks open files) is reported, and the
+rest still go. A chat is listed only when its row is gone, the lane named in its
 `session_init` header no longer exists, and all its files have been idle for
 7 days. An empty lane table lists nothing.
 

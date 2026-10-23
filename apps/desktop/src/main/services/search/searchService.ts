@@ -18,6 +18,7 @@ import type {
   SearchRebuildResult,
   SearchResultItem
 } from "../../../shared/types/search";
+import type { MaintenanceStepResult } from "../../../shared/types/storage";
 import type { Logger } from "../logging/logger";
 import {
   SEARCH_INDEX_SCHEMA_VERSION,
@@ -1521,7 +1522,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     query,
 
     /** Storage doctor step: give the index's free pages back to the disk. */
-    compactIndex(): { itemsAffected: number; bytesReclaimed: number; skippedReason: string | null } {
+    compactIndex(): MaintenanceStepResult {
       if (disposed || unavailable) return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" };
       const result = compactSearchIndex(ensureDb());
       if (result.itemsAffected > 0) {

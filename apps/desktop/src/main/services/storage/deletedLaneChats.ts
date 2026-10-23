@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { createGunzip } from "node:zlib";
+import type { StorageItem } from "../../../shared/types/storage";
+import { DELETED_LANE_CHATS_ITEM_ID } from "../../../shared/types/storage";
+import type { AdeDb } from "../state/kvDb";
 import { isEnoentError } from "../shared/utils";
-import type { ProviderSessionRef } from "./providerHistory";
+import { liveChatProviderRefsFromPersistedState } from "../externalSessions/liveChatProviderRefs";
+import { openHistoryReadStream } from "./historyCompression";
+import { legacyChatTranscriptPaths } from "./legacyChatTranscripts";
+import { listProviderCopiesOfChats, type ProviderCopy, type ProviderSessionRef } from "./providerHistory";
 
 /**
  * Deleting a lane deletes its chats' session rows (`laneService` removes
@@ -28,8 +33,7 @@ const INSPECT_CONCURRENCY = 16;
 
 /** The `laneId` of a transcript's `session_init` header, or null when it has none. */
 async function readSessionInitLaneId(filePath: string): Promise<string | null> {
-  const source = fs.createReadStream(filePath, filePath.endsWith(".gz") ? {} : { end: FIRST_LINE_MAX_BYTES - 1 });
-  const input = filePath.endsWith(".gz") ? source.pipe(createGunzip()) : source;
+  const input = openHistoryReadStream(filePath, { plainEnd: FIRST_LINE_MAX_BYTES - 1 });
   let text = "";
   try {
     for await (const chunk of input as AsyncIterable<Buffer>) {
@@ -37,9 +41,9 @@ async function readSessionInitLaneId(filePath: string): Promise<string | null> {
       if (text.includes("\n") || text.length >= FIRST_LINE_MAX_BYTES) break;
     }
   } catch {
+    // An unreadable header (a truncated .gz) leaves the chat unlisted, which is the safe answer.
     return null;
   } finally {
-    source.destroy();
     input.destroy();
   }
   const firstLine = text.split("\n", 1)[0] ?? "";
@@ -101,8 +105,7 @@ export async function listDeletedLaneChats(args: {
   const inspect = async (sessionId: string, transcriptPaths: string[]): Promise<DeletedLaneChat | null> => {
     const candidates = [
       ...transcriptPaths,
-      path.join(args.transcriptsDir, `${sessionId}.chat.jsonl`),
-      path.join(args.transcriptsDir, `${sessionId}.chat.jsonl.gz`),
+      ...legacyChatTranscriptPaths(args.transcriptsDir, sessionId),
       path.join(args.chatSessionsDir, `${sessionId}.json`),
       path.join(args.chatSessionsDir, `${sessionId}.json.lkg`),
     ];
@@ -168,8 +171,10 @@ function providerSessionRefOf(record: ChatSessionRecord | null): ProviderSession
 /**
  * Provider sessions that ADE started for these deleted-lane chats and that
  * nothing still needs. A chat imported from the person's own CLI is skipped
- * (that session was theirs before ADE saw it), and so is any session another
- * chat that still exists in this project also names.
+ * (that session was theirs before ADE saw it), and so is any session a chat
+ * that still exists in this project names in any pointer field, read with the
+ * same extractor the importer uses. Other projects cannot hold one of these:
+ * the Claude and Codex importers refuse ADE-originated sessions.
  */
 export async function providerSessionsOfDeletedLaneChats(args: {
   chats: readonly DeletedLaneChat[];
@@ -178,8 +183,10 @@ export async function providerSessionsOfDeletedLaneChats(args: {
 }): Promise<Array<ProviderSessionRef & { chatSessionId: string }>> {
   const inUse = new Set<string>();
   for (const sessionId of args.liveSessionIds) {
-    const ref = providerSessionRefOf(await readChatSessionRecord(args.chatSessionsDir, sessionId));
-    if (ref) inUse.add(`${ref.provider}:${ref.sessionId}`);
+    // mtime-cached per record, so a repeat scan re-parses only changed chats.
+    for (const ref of await liveChatProviderRefsFromPersistedState(args.chatSessionsDir, sessionId)) {
+      inUse.add(`${ref.provider}:${ref.externalId}`);
+    }
   }
   const refs: Array<ProviderSessionRef & { chatSessionId: string }> = [];
   const seen = new Set<string>();
@@ -195,3 +202,149 @@ export async function providerSessionsOfDeletedLaneChats(args: {
   }
   return refs;
 }
+
+/** Binds a provider-copy confirmation to the exact files the person previewed. */
+export function providerCopiesIdentity(copies: readonly ProviderCopy[]): string {
+  const hash = createHash("sha256");
+  for (const copy of copies) {
+    for (const file of copy.files) hash.update(`${file.path}\0${file.bytes}\n`);
+  }
+  return `${copies.length}:${hash.digest("hex")}`;
+}
+
+export type DeletedLaneTargetKind = "deleted_lane_chats" | "deleted_lane_provider_sessions";
+
+const plural = (count: number) => `${count} ${count === 1 ? "chat" : "chats"}`;
+
+/**
+ * Everything Storage does with a project's chats from deleted lanes: list
+ * them, summarize them for the reminder, describe them as a review-first
+ * row, and plan a removal. A plan is listed fresh when a removal is confirmed
+ * and must match the preview's identity, so a chat that came back (restored,
+ * reopened, synced in) since the preview fails the match instead of going.
+ */
+export function createDeletedLaneStorage(deps: {
+  db: AdeDb;
+  transcriptsDir: string;
+  chatTranscriptsDir: string;
+  chatSessionsDir: string;
+  isPathActive: (filePath: string) => boolean;
+  minIdleMs: number;
+}) {
+  const liveSessionIds = () => new Set(deps.db.all<{ id: string }>("select id from terminal_sessions").map((row) => row.id));
+
+  const listChats = () => listDeletedLaneChats({
+    transcriptsDir: deps.transcriptsDir,
+    chatTranscriptsDir: deps.chatTranscriptsDir,
+    chatSessionsDir: deps.chatSessionsDir,
+    sessionIds: liveSessionIds(),
+    laneIds: new Set(deps.db.all<{ id: string }>("select id from lanes").map((row) => row.id)),
+    isPathActive: deps.isPathActive,
+    minIdleMs: deps.minIdleMs,
+  });
+
+  /** The Claude and Codex files ADE started for these chats; lists the chats itself when not given them. */
+  const listProviderCopies = async (chats?: readonly DeletedLaneChat[]): Promise<ProviderCopy[]> => {
+    const listed = chats ?? await listChats();
+    if (listed.length === 0) return [];
+    return listProviderCopiesOfChats(await providerSessionsOfDeletedLaneChats({
+      chats: listed,
+      chatSessionsDir: deps.chatSessionsDir,
+      liveSessionIds: liveSessionIds(),
+    }));
+  };
+
+  const summary = async () => {
+    const chats = await listChats();
+    return {
+      chatCount: chats.length,
+      bytes: chats.reduce((sum, chat) => sum + chat.transcriptBytes, 0),
+      directory: deps.chatTranscriptsDir,
+    };
+  };
+
+  /** The review-first row for the chats & history category, or null when there are none. */
+  const snapshotItem = (chats: readonly DeletedLaneChat[]): StorageItem | null => {
+    if (chats.length === 0) return null;
+    return {
+      id: DELETED_LANE_CHATS_ITEM_ID,
+      label: "Chats from deleted lanes",
+      path: deps.chatTranscriptsDir,
+      bytes: chats.reduce((sum, chat) => sum + chat.transcriptBytes, 0),
+      fileCount: chats.reduce((sum, chat) => sum + chat.files.length, 0),
+      lastModifiedAt: new Date(Math.max(...chats.map((chat) => chat.lastModifiedMs))).toISOString(),
+      safety: "review_first",
+      detail: `${plural(chats.length)} whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:`,
+    };
+  };
+
+  /**
+   * What a removal of `kind` would take right now, or null when there is
+   * nothing to remove. `files` is exactly what the identity covers: a removal
+   * deletes these and nothing else, so it can never take a file the person
+   * did not preview.
+   */
+  const describeTarget = async (kind: DeletedLaneTargetKind): Promise<DeletedLaneTargetPlan | null> => {
+    if (kind === "deleted_lane_chats") {
+      const chats = await listChats();
+      if (chats.length === 0) return null;
+      // The chats' own records are the only place their Claude and Codex
+      // session ids are kept, so the copies go in the same plan: removing the
+      // chats alone would leave those copies where nothing can find them.
+      const copies = await listProviderCopies(chats);
+      const transcriptBytes = chats.reduce((sum, chat) => sum + chat.transcriptBytes, 0);
+      const copyBytes = copies.reduce((sum, copy) => sum + copy.bytes, 0);
+      return {
+        bytes: transcriptBytes + copyBytes,
+        label: copies.length > 0
+          ? `${plural(chats.length)} from deleted lanes, with Claude and Codex copies of ${copies.length}`
+          : `${plural(chats.length)} from deleted lanes`,
+        identity: `${deletedLaneChatsIdentity(chats)}+${providerCopiesIdentity(copies)}`,
+        files: [
+          ...copies.flatMap((copy) => copy.files),
+          ...chats.flatMap((chat) => chat.files.map((file) => ({ path: file.path, bytes: file.bytes, isDirectory: false }))),
+        ],
+      };
+    }
+    const copies = await listProviderCopies();
+    if (copies.length === 0) return null;
+    return {
+      bytes: copies.reduce((sum, copy) => sum + copy.bytes, 0),
+      label: `Claude and Codex copies of ${plural(copies.length)} from deleted lanes`,
+      identity: providerCopiesIdentity(copies),
+      files: copies.flatMap((copy) => copy.files),
+    };
+  };
+
+  return { listChats, listProviderCopies, summary, snapshotItem, describeTarget };
+}
+
+export type DeletedLaneTargetPlan = {
+  bytes: number;
+  label: string;
+  identity: string;
+  files: Array<{ path: string; bytes: number; isDirectory: boolean }>;
+};
+
+/**
+ * Delete a plan's files one by one. A file that cannot go (Windows keeps an
+ * open file locked) is reported and the rest still go; the folders that hold
+ * them always stay.
+ */
+export async function removeDeletedLanePlanFiles(
+  plan: DeletedLaneTargetPlan,
+): Promise<{ removedBytes: number; failed: Array<{ path: string; reason: string }> }> {
+  let removedBytes = 0;
+  const failed: Array<{ path: string; reason: string }> = [];
+  for (const file of plan.files) {
+    try {
+      await fs.promises.rm(file.path, { recursive: file.isDirectory, force: true });
+      removedBytes += file.bytes;
+    } catch (error) {
+      if (isEnoentError(error)) continue;
+      failed.push({ path: file.path, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { removedBytes, failed };
+}
+

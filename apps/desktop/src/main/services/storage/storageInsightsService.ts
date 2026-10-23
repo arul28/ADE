@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { DELETED_LANE_CHATS_ITEM_ID } from "../../../shared/types/storage";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import type {
@@ -23,7 +21,7 @@ import type {
   StorageSnapshot,
   StorageSnapshotExtras,
   DeletedLaneChatsSummary,
-  ProviderHistoryEntry,
+  MaintenanceStepResult,
 } from "../../../shared/types/storage";
 import type {
   ProductAnalyticsCapture,
@@ -40,12 +38,17 @@ import type { DiskPressureMonitor } from "./diskPressure";
 import {
   COMPRESSION_MIN_AGE_MS,
   createHistoryCompressor,
-  type CompressionCandidate,
   type CompressionRoots,
   type CompressionSweepSummary,
 } from "./historyCompression";
-import { deletedLaneChatsIdentity, listDeletedLaneChats, providerSessionsOfDeletedLaneChats } from "./deletedLaneChats";
-import { listProviderCopiesOfChats, measureProviderHistory } from "./providerHistory";
+import {
+  createDeletedLaneStorage,
+  removeDeletedLanePlanFiles,
+  type DeletedLaneChat,
+  type DeletedLaneTargetPlan,
+} from "./deletedLaneChats";
+import { createFinishedChatAgePolicy } from "./finishedChatAge";
+import { createProviderHistoryCache, type ProviderCopy } from "./providerHistory";
 import { removeDuplicateLegacyChatTranscripts } from "./legacyChatTranscripts";
 import { deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
 import { appendMaintenanceJournal, readMaintenanceJournal } from "./storageMaintenanceJournal";
@@ -82,13 +85,6 @@ const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/
 const HISTORY_SWEEP_START_DELAY_MS = 10 * 60_000;
 const HISTORY_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
 const MAINTENANCE_JOURNAL_FILENAME = "storage-doctor-journal.json";
-// Finished chats are compressed sooner than the default idle age: an archived
-// chat once it has been quiet an hour, a chat settled for three days, and a
-// transcript whose session row is gone (its chat or lane was deleted) after a day.
-const FINISHED_CHAT_IDLE_MS = 60 * 60_000;
-const SETTLED_CHAT_COMPRESS_AFTER_MS = 3 * 24 * 60 * 60_000;
-const ROWLESS_CHAT_IDLE_MS = 24 * 60 * 60_000;
-const CHAT_STATE_SNAPSHOT_TTL_MS = 60_000;
 // Files the doctor's sweep may compress per run (the manual button keeps the
 // compressor's own smaller default). Gzip runs on libuv's pool, paced per file.
 const DOCTOR_COMPRESSION_MAX_FILES = 200;
@@ -164,6 +160,8 @@ type ValidatedTarget = {
   bytes: number;
   label: string;
   identity: string;
+  /** For deleted-lane targets: the exact files the identity covers, and all a removal may delete. */
+  plan?: DeletedLaneTargetPlan;
 };
 
 export type StorageInsightsServiceOptions = {
@@ -203,7 +201,6 @@ export type StorageInsightsServiceOptions = {
   compactSearchIndex?: (() => Promise<MaintenanceStepResult> | MaintenanceStepResult) | null;
 };
 
-type MaintenanceStepResult = { itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null };
 
 export function isObsoleteRecoveryBackup(
   backupPath: string,
@@ -401,59 +398,26 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     // independent writers and are deliberately excluded from automatic work.
     { path: layout.transcriptsDir, kind: "terminal_log", recursive: false },
   ];
-  // One read of the session table per listing, not one query per file.
-  let chatStateSnapshot: {
-    takenAt: number;
-    rows: Map<string, { archivedAt: string | null; settledAt: string | null }>;
-  } | null = null;
-  const chatStates = () => {
-    if (chatStateSnapshot && Date.now() - chatStateSnapshot.takenAt < CHAT_STATE_SNAPSHOT_TTL_MS) {
-      return chatStateSnapshot.rows;
-    }
-    const rows = new Map<string, { archivedAt: string | null; settledAt: string | null }>();
-    for (const row of options.db.all<{ id: string; archived_at: string | null; settled_at: string | null }>(
-      "select id, archived_at, settled_at from terminal_sessions",
-    )) {
-      rows.set(row.id, { archivedAt: row.archived_at, settledAt: row.settled_at });
-    }
-    chatStateSnapshot = { takenAt: Date.now(), rows };
-    return rows;
-  };
-  const chatSessionIdForTranscript = (filePath: string, kind: CompressionCandidate["kind"]): string | null => {
-    const base = path.basename(filePath);
-    if (kind === "chat_transcript" && path.dirname(filePath) === path.resolve(layout.chatTranscriptsDir)) {
-      return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) || null : null;
-    }
-    if (path.dirname(filePath) === path.resolve(layout.transcriptsDir) && base.endsWith(".chat.jsonl")) {
-      return base.slice(0, -".chat.jsonl".length) || null;
-    }
-    return null;
-  };
-  const finishedChatMinAgeMs = (filePath: string, kind: CompressionCandidate["kind"]): number | null => {
-    const sessionId = chatSessionIdForTranscript(filePath, kind);
-    if (!sessionId) return null;
-    let state: { archivedAt: string | null; settledAt: string | null } | undefined;
-    try {
-      const rows = chatStates();
-      state = rows.get(sessionId);
-      if (!state) return rows.size > 0 ? ROWLESS_CHAT_IDLE_MS : null;
-    } catch {
-      return null;
-    }
-    if (state.archivedAt) return FINISHED_CHAT_IDLE_MS;
-    const settledAt = state.settledAt ? Date.parse(state.settledAt) : Number.NaN;
-    if (Number.isFinite(settledAt) && Date.now() - settledAt >= SETTLED_CHAT_COMPRESS_AFTER_MS) {
-      return FINISHED_CHAT_IDLE_MS;
-    }
-    return null;
-  };
   const compressor = createHistoryCompressor({
     logger: options.logger,
     diskPressure: options.diskPressure,
     // Without the runtime's in-memory ownership signal, compression is unsafe.
     isPathActive,
-    minAgeMsFor: finishedChatMinAgeMs,
+    minAgeMsFor: createFinishedChatAgePolicy({
+      db: options.db,
+      transcriptsDir: layout.transcriptsDir,
+      chatTranscriptsDir: layout.chatTranscriptsDir,
+    }),
   });
+  const deletedLanes = createDeletedLaneStorage({
+    db: options.db,
+    transcriptsDir: layout.transcriptsDir,
+    chatTranscriptsDir: layout.chatTranscriptsDir,
+    chatSessionsDir: layout.chatSessionsDir,
+    isPathActive,
+    minIdleMs: STALE_AGE_MS,
+  });
+  const providerHistory = createProviderHistoryCache(PROVIDER_HISTORY_CACHE_MS);
   // `.ade/tmp` is a project-relative release-staging root (distinct from the
   // `.ade/cache/tmp` layout dir) written by the /release skill and never cleaned
   // by app code. `stagingTmpRoot` holds the `ade-*` system-temp staging dirs.
@@ -1013,28 +977,27 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         compressedBytes += entry.compressedBytes;
       }
     }
+    let deletedLaneChats: DeletedLaneChat[] = [];
+    let providerCopiesRead: Promise<ProviderCopy[] | null> = Promise.resolve(null);
     try {
-      const deletedLaneChats = await collectDeletedLaneChats();
-      if (deletedLaneChats.length > 0) {
-        const bytes = deletedLaneChats.reduce((sum, chat) => sum + chat.transcriptBytes, 0);
-        const fileCount = deletedLaneChats.reduce((sum, chat) => sum + chat.files.length, 0);
+      deletedLaneChats = await deletedLanes.listChats();
+      providerCopiesRead = deletedLanes.listProviderCopies(deletedLaneChats).catch((error) => {
+        options.logger.warn("storage.deleted_lane_provider_copies_scan_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+      const item = deletedLanes.snapshotItem(deletedLaneChats);
+      if (item) {
         // These files were measured inside the history item above; move them
         // to their own row so the category total does not count them twice.
-        const historyItem = categoryItems.get("chats_history")?.find((item) => item.path === layout.transcriptsDir);
+        const historyItem = categoryItems.get("chats_history")?.find((entry) => entry.path === layout.transcriptsDir);
         if (historyItem) {
-          historyItem.bytes = Math.max(0, historyItem.bytes - bytes);
-          historyItem.fileCount = Math.max(0, historyItem.fileCount - fileCount);
+          historyItem.bytes = Math.max(0, historyItem.bytes - item.bytes);
+          historyItem.fileCount = Math.max(0, historyItem.fileCount - item.fileCount);
         }
-        add("chats_history", {
-          id: DELETED_LANE_CHATS_ITEM_ID,
-          label: "Chats from deleted lanes",
-          path: layout.chatTranscriptsDir,
-          bytes,
-          fileCount,
-          lastModifiedAt: new Date(Math.max(...deletedLaneChats.map((chat) => chat.lastModifiedMs))).toISOString(),
-          safety: "review_first",
-          detail: `${deletedLaneChats.length} ${deletedLaneChats.length === 1 ? "chat" : "chats"} whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:`,
-        });
+        add("chats_history", item);
       }
     } catch (error) {
       options.logger.warn("storage.deleted_lane_chats_scan_failed", {
@@ -1183,28 +1146,25 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       safeReclaimableBytes,
       policyChips: deriveCategoryPolicyChips(),
     };
-    try {
-      const history = await Promise.race([
-        providerHistoryRead,
-        new Promise<null>((resolve) => {
-          const timer = setTimeout(() => resolve(null), PROVIDER_HISTORY_EXTRA_WAIT_MS);
-          timer.unref?.();
-        }),
-      ]);
-      if (history) extras.providerHistory = history;
-      const copies = await collectDeletedLaneProviderCopies();
-      if (copies.length > 0) {
-        extras.deletedLaneProviderCopies = {
-          chatCount: copies.length,
-          bytes: copies.reduce((sum, copy) => sum + copy.bytes, 0),
-          chatSessionsDir: layout.chatSessionsDir,
-        };
-      }
-    } catch (error) {
-      options.logger.warn("storage.provider_history_scan_failed", {
-        projectRoot,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // Both provider reads started early and ran beside the project scan; the
+    // snapshot waits a bounded extra moment for them and ships without what
+    // has not finished (the next snapshot picks it up).
+    const withinExtraWait = <T,>(read: Promise<T>): Promise<T | null> => Promise.race([
+      read,
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), PROVIDER_HISTORY_EXTRA_WAIT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    const history = await withinExtraWait(providerHistoryRead);
+    if (history) extras.providerHistory = history;
+    const copies = await withinExtraWait(providerCopiesRead);
+    if (copies && copies.length > 0) {
+      extras.deletedLaneProviderCopies = {
+        chatCount: copies.length,
+        bytes: copies.reduce((sum, copy) => sum + copy.bytes, 0),
+        chatSessionsDir: layout.chatSessionsDir,
+      };
     }
     const snapshot: StorageSnapshot = {
       generatedAt: new Date().toISOString(),
@@ -1353,8 +1313,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         return { valid: null, reason: "This path is not proof or attachment storage." };
       }
       label = "Proof and recordings";
-    } else if (target.kind === "deleted_lane_chats") {
-      if (targetPath !== path.resolve(layout.chatTranscriptsDir) || !stat.isDirectory()) {
+    } else if (target.kind === "deleted_lane_chats" || target.kind === "deleted_lane_provider_sessions") {
+      const expected = target.kind === "deleted_lane_chats" ? layout.chatTranscriptsDir : layout.chatSessionsDir;
+      if (targetPath !== path.resolve(expected) || !stat.isDirectory()) {
         return { valid: null, reason: "This path is not the project's chat history." };
       }
       if (await hasSymlinkAncestor(projectRoot, targetPath)) {
@@ -1362,36 +1323,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }
       // Measured from the qualifying files, never by walking the directory:
       // only those files are removed.
-      const chats = await collectDeletedLaneChats();
-      if (chats.length === 0) return { valid: null, reason: "No chats from deleted lanes are left." };
-      return {
-        valid: {
-          target,
-          path: targetPath,
-          bytes: chats.reduce((sum, chat) => sum + chat.transcriptBytes, 0),
-          label: `${chats.length} ${chats.length === 1 ? "chat" : "chats"} from deleted lanes`,
-          identity: deletedLaneChatsIdentity(chats),
-        },
-      };
-    } else if (target.kind === "deleted_lane_provider_sessions") {
-      if (targetPath !== path.resolve(layout.chatSessionsDir) || !stat.isDirectory()) {
-        return { valid: null, reason: "This path is not the project's chat records." };
-      }
-      const copies = await collectDeletedLaneProviderCopies();
-      if (copies.length === 0) return { valid: null, reason: "No provider copies of deleted chats are left." };
-      const identity = createHash("sha256");
-      for (const copy of copies) {
-        for (const file of copy.files) identity.update(`${file.path}\0${file.bytes}\n`);
-      }
-      return {
-        valid: {
-          target,
-          path: targetPath,
-          bytes: copies.reduce((sum, copy) => sum + copy.bytes, 0),
-          label: `Claude and Codex copies of ${copies.length} ${copies.length === 1 ? "chat" : "chats"} from deleted lanes`,
-          identity: `${copies.length}:${identity.digest("hex")}`,
-        },
-      };
+      const plan = await deletedLanes.describeTarget(target.kind);
+      if (!plan) return { valid: null, reason: "Nothing from deleted lanes is left to remove." };
+      return { valid: { target, path: targetPath, bytes: plan.bytes, label: plan.label, identity: plan.identity, plan } };
     } else {
       return { valid: null, reason: "This cleanup target is not supported." };
     }
@@ -1530,22 +1464,25 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         continue;
       }
       seen.add(normalized);
+      const reject = (reason: string) => {
+        failed.push({ path: rawPath, reason });
+      };
       const previewItem = path.isAbsolute(rawPath) ? previewByPath.get(path.resolve(rawPath)) : undefined;
       if (!previewItem) {
-        failed.push({ path: rawPath, reason: "This item was not included in the confirmed preview." });
+        reject("This item was not included in the confirmed preview.");
         continue;
       }
       const checked = await validateTarget(target);
       if (!checked.valid) {
-        failed.push({ path: rawPath, reason: checked.reason ?? "This item cannot be removed." });
+        reject(checked.reason ?? "This item cannot be removed.");
         continue;
       }
       if (checked.valid.bytes !== previewItem.bytes) {
-        failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
+        reject("This item changed after the preview. Preview it again before removing it.");
         continue;
       }
       if (!previewItem.identity || previewItem.identity !== checked.valid.identity) {
-        failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
+        reject("This item changed after the preview. Preview it again before removing it.");
         continue;
       }
       if (
@@ -1557,30 +1494,29 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           (await walkPath(iosDerivedDataDir, null)).lastModifiedMs,
         );
         if (blockedReason) {
-          failed.push({ path: rawPath, reason: blockedReason });
+          reject(blockedReason);
           continue;
         }
       }
       try {
         if (target.kind === "orphaned_worktree" || target.kind === "archived_lane_worktree") {
           await removeWorktree(checked.valid.path);
-        } else if (target.kind === "deleted_lane_provider_sessions") {
-          // Re-listed now: only sessions ADE started, for chats still gone, that
-          // no live chat names. The providers' folders themselves stay.
-          for (const copy of await collectDeletedLaneProviderCopies()) {
-            for (const file of copy.files) {
-              await fs.promises.rm(file.path, { recursive: file.isDirectory, force: true });
+        } else if (checked.valid.plan) {
+          const outcome = await removeDeletedLanePlanFiles(checked.valid.plan);
+          if (outcome.failed.length > 0) {
+            options.logger.warn("storage.cleanup_files_kept", {
+              kind: target.kind,
+              failedCount: outcome.failed.length,
+              firstError: outcome.failed[0]!.reason,
+            });
+            const reason = `${outcome.failed.length} ${outcome.failed.length === 1 ? "file is" : "files are"} in use and stayed. Try again later.`;
+            reject(reason);
+            noteLedger(cleanupLedgerId(target, checked.valid.path), { error: reason });
+            if (outcome.removedBytes > 0) {
+              removed.push({ path: checked.valid.path, bytes: outcome.removedBytes });
+              noteLedger(cleanupLedgerId(target, checked.valid.path), { bytes: outcome.removedBytes });
             }
-          }
-        } else if (target.kind === "deleted_lane_chats") {
-          // File by file, re-listed just now: a chat restored or reopened since
-          // the preview no longer qualifies and is left alone. Never the directory.
-          for (const chat of await collectDeletedLaneChats()) {
-            for (const file of chat.files) {
-              await fs.promises.unlink(file.path).catch((error) => {
-                if (!isEnoentError(error)) throw error;
-              });
-            }
+            continue;
           }
         } else {
           await fs.promises.rm(checked.valid.path, { recursive: true, force: false });
@@ -1601,7 +1537,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         noteLedger(cleanupLedgerId(target, checked.valid.path), { bytes: checked.valid.bytes });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        failed.push({ path: rawPath, reason });
+        reject(reason);
         noteLedger(cleanupLedgerId(target, checked.valid.path), { error: reason });
       }
     }
@@ -1712,56 +1648,8 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return targets;
   };
 
-  const collectDeletedLaneChats = () => listDeletedLaneChats({
-    transcriptsDir: layout.transcriptsDir,
-    chatTranscriptsDir: layout.chatTranscriptsDir,
-    chatSessionsDir: layout.chatSessionsDir,
-    sessionIds: liveSessionIds(),
-    laneIds: new Set(options.db.all<{ id: string }>("select id from lanes").map((row) => row.id)),
-    isPathActive,
-    minIdleMs: STALE_AGE_MS,
-  });
-
-  const liveSessionIds = () =>
-    new Set(options.db.all<{ id: string }>("select id from terminal_sessions").map((row) => row.id));
-
-  const collectDeletedLaneProviderCopies = async () => {
-    const chats = await collectDeletedLaneChats();
-    if (chats.length === 0) return [];
-    const refs = await providerSessionsOfDeletedLaneChats({
-      chats,
-      chatSessionsDir: layout.chatSessionsDir,
-      liveSessionIds: liveSessionIds(),
-    });
-    return listProviderCopiesOfChats(refs);
-  };
-
-  let providerHistoryCache: { at: number; value: ProviderHistoryEntry[] } | null = null;
-  let providerHistoryFlight: Promise<ProviderHistoryEntry[]> | null = null;
-  const providerHistory = (): Promise<ProviderHistoryEntry[]> => {
-    if (providerHistoryCache && Date.now() - providerHistoryCache.at < PROVIDER_HISTORY_CACHE_MS) {
-      return Promise.resolve(providerHistoryCache.value);
-    }
-    providerHistoryFlight ??= measureProviderHistory()
-      .then((value) => {
-        providerHistoryCache = { at: Date.now(), value };
-        return value;
-      })
-      .finally(() => {
-        providerHistoryFlight = null;
-      });
-    return providerHistoryFlight;
-  };
-
   /** For the deleted-chats reminder: one directory listing and a few header reads, no full scan. */
-  const deletedLaneChatsSummary = async (): Promise<DeletedLaneChatsSummary> => {
-    const chats = await collectDeletedLaneChats();
-    return {
-      chatCount: chats.length,
-      bytes: chats.reduce((sum, chat) => sum + chat.transcriptBytes, 0),
-      directory: layout.chatTranscriptsDir,
-    };
-  };
+  const deletedLaneChatsSummary = (): Promise<DeletedLaneChatsSummary> => deletedLanes.summary();
 
   const collectIosDerivedData = async (): Promise<StorageCleanupTarget[]> => {
     const stat = await lstatOrNull(iosDerivedDataDir);
@@ -1774,7 +1662,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     actions: MaintenanceAction[],
     ledgerId: string,
     kind: MaintenanceActionKind,
-    fn: () => Promise<{ itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null }>,
+    fn: () => Promise<MaintenanceStepResult>,
   ): Promise<void> => {
     const start = Date.now();
     try {
@@ -1811,9 +1699,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
       // a. Drop second copies of chat transcripts whose every event is proven
       // to be in the dedicated transcript, so they are removed, not compressed.
+      // Not gated on disk pressure: it only reads and deletes, so it frees space
+      // exactly when space is short.
       await runStep(actions, "fs.transcript_duplicates", "delete", async () => {
-        const pressure = options.diskPressure?.canPerform("compression");
-        if (pressure && !pressure.allowed) return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "disk_pressure" };
         const summary = await removeDuplicateLegacyChatTranscripts({
           transcriptsDir: layout.transcriptsDir,
           logger: options.logger,
@@ -1852,8 +1740,8 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         ledgerId: string,
         kind: MaintenanceActionKind,
         fn: (() =>
-          | { itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null }
-          | Promise<{ itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null }>
+          | MaintenanceStepResult
+          | Promise<MaintenanceStepResult>
         ) | undefined,
       ): Promise<void> =>
         runStep(actions, ledgerId, kind, async () => {

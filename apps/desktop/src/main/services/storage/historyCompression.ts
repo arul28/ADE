@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Transform, Writable, type TransformCallback } from "node:stream";
+import { Transform, Writable, type Readable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip, gunzipSync, type ZlibOptions } from "node:zlib";
 import type { Logger } from "../logging/logger";
@@ -118,6 +118,24 @@ export function readHistoryFileSync(filePath: string): Buffer {
   return filePath.endsWith(".gz")
     ? readCompressedHistoryFileSync(filePath)
     : fs.readFileSync(filePath);
+}
+
+/**
+ * A stream of a history file's logical (decompressed) bytes, for line-by-line
+ * readers. `plainEnd` bounds a plain file's read (inclusive byte offset); a
+ * `.gz` is read through gunzip and the caller stops early by destroying the
+ * returned stream, which also closes the file. A source read error surfaces on
+ * the returned stream.
+ */
+export function openHistoryReadStream(filePath: string, options: { plainEnd?: number } = {}): Readable {
+  if (!filePath.endsWith(".gz")) {
+    return fs.createReadStream(filePath, options.plainEnd == null ? {} : { end: options.plainEnd });
+  }
+  const source = fs.createReadStream(filePath);
+  const gunzip = createGunzip();
+  source.on("error", (error) => gunzip.destroy(error));
+  gunzip.on("close", () => source.destroy());
+  return source.pipe(gunzip);
 }
 
 /** Prefer the plain append target, then its transparent gzip replacement. */

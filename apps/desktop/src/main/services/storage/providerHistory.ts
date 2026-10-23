@@ -62,12 +62,16 @@ async function directoryBytes(root: string, walk: SizeWalk): Promise<{ bytes: nu
 
 const uniquePaths = (paths: string[]): string[] => [...new Set(paths.map((entry) => path.resolve(entry)))];
 
-function claudeHomes(): string[] {
-  return uniquePaths([claudeConfigHome(), ...machineProviderUsageHomes().claude]);
+/** Every config home on this machine for Claude or Codex: the default plus each account home ADE knows. */
+function homes(provider: "claude" | "codex"): string[] {
+  const defaultHome = provider === "claude" ? claudeConfigHome() : codexConfigHome();
+  return uniquePaths([defaultHome, ...machineProviderUsageHomes()[provider]]);
 }
 
-function codexHomes(): string[] {
-  return uniquePaths([codexConfigHome(), ...machineProviderUsageHomes().codex]);
+function addTo<V>(map: Map<string, V[]>, key: string, value: V): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
 }
 
 type ProviderHistorySource = Omit<ProviderHistoryEntry, "bytes" | "fileCount" | "partial">;
@@ -78,13 +82,13 @@ function providerHistorySources(): ProviderHistorySource[] {
     {
       provider: "claude",
       label: "Claude",
-      paths: claudeHomes().map((dir) => path.join(dir, "projects")),
+      paths: homes("claude").map((dir) => path.join(dir, "projects")),
       note: "Claude deletes its own sessions after 30 days unless its cleanupPeriodDays setting says otherwise.",
     },
     {
       provider: "codex",
       label: "Codex",
-      paths: codexHomes().flatMap((dir) => [path.join(dir, "sessions"), path.join(dir, "archived_sessions")]),
+      paths: homes("codex").flatMap((dir) => [path.join(dir, "sessions"), path.join(dir, "archived_sessions")]),
       note: "Codex keeps every session until it is deleted.",
     },
     { provider: "opencode", label: "OpenCode", paths: openCodeDataDirs(), note: "One database plus file snapshots, managed by OpenCode." },
@@ -94,6 +98,27 @@ function providerHistorySources(): ProviderHistorySource[] {
     { provider: "pi", label: "Pi", paths: [path.join(home, ".pi", "agent", "sessions")], note: "Managed by Pi." },
     { provider: "grok", label: "Grok", paths: [grokSessionsDir()], note: "Managed by Grok." },
   ];
+}
+
+/**
+ * `measureProviderHistory` behind a time-limited cache; concurrent callers
+ * share one measurement. A full pass walks tens of thousands of files.
+ */
+export function createProviderHistoryCache(ttlMs: number): () => Promise<ProviderHistoryEntry[]> {
+  let cached: { at: number; value: ProviderHistoryEntry[] } | null = null;
+  let inFlight: Promise<ProviderHistoryEntry[]> | null = null;
+  return () => {
+    if (cached && Date.now() - cached.at < ttlMs) return Promise.resolve(cached.value);
+    inFlight ??= measureProviderHistory()
+      .then((value) => {
+        cached = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
 }
 
 /** Sizes of each provider's own session history on this machine; providers with nothing on disk are left out. */
@@ -147,7 +172,7 @@ async function lstatOrNull(target: string): Promise<fs.Stats | null> {
 /** Claude session id → its `projects/<cwd>/<id>.jsonl` file(s) and `<id>/` side folder(s), across every Claude home. */
 async function indexClaudeSessions(wanted: ReadonlySet<string>): Promise<Map<string, ProviderCopyFile[]>> {
   const found = new Map<string, ProviderCopyFile[]>();
-  for (const home of claudeHomes()) {
+  for (const home of homes("claude")) {
     const projectsDir = path.join(home, "projects");
     for (const projectEntry of await readdirOrEmpty(projectsDir)) {
       if (!projectEntry.isDirectory()) continue;
@@ -159,9 +184,7 @@ async function indexClaudeSessions(wanted: ReadonlySet<string>): Promise<Map<str
         const bytes = entry.isDirectory()
           ? (await directoryBytes(entryPath, { entries: 0, deadline: Date.now() + DIRECTORY_SCAN_BUDGET_MS, partial: false })).bytes
           : (await lstatOrNull(entryPath))?.size ?? 0;
-        const list = found.get(id) ?? [];
-        list.push({ path: entryPath, bytes, isDirectory: entry.isDirectory() });
-        found.set(id, list);
+        addTo(found, id, { path: entryPath, bytes, isDirectory: entry.isDirectory() });
       }
     }
   }
@@ -178,11 +201,9 @@ async function indexCodexRollouts(wanted: ReadonlySet<string>): Promise<Map<stri
     if (!id || !wanted.has(id)) return;
     const stat = await lstatOrNull(filePath);
     if (!stat?.isFile()) return;
-    const list = found.get(id) ?? [];
-    list.push({ path: filePath, bytes: stat.size, isDirectory: false });
-    found.set(id, list);
+    addTo(found, id, { path: filePath, bytes: stat.size, isDirectory: false });
   };
-  for (const home of codexHomes()) {
+  for (const home of homes("codex")) {
     const pending = [path.join(home, "sessions")];
     while (pending.length > 0) {
       const dir = pending.pop()!;

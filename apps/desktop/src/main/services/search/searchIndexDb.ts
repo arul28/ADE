@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import type { MaintenanceStepResult } from "../../../shared/types/storage";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 
 // Anchor createRequire to a synthetic CJS file so builtin resolution follows
@@ -293,11 +294,7 @@ function indexFileBytes(dbPath: string): number {
  * incremental auto-vacuum); after that each call frees a bounded number of
  * pages, so the blocking rebuild never runs again.
  */
-export function compactSearchIndex(index: SearchIndexDb): {
-  itemsAffected: number;
-  bytesReclaimed: number;
-  skippedReason: string | null;
-} {
+export function compactSearchIndex(index: SearchIndexDb): MaintenanceStepResult {
   const pragma = (name: string): number => {
     const row = index.db.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined;
     return Number(row ? Object.values(row)[0] : 0) || 0;

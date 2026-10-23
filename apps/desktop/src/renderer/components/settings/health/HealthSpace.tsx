@@ -369,7 +369,6 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 compressing={compressing}
                 onCompress={compressNow ? () => void runCompress() : null}
                 laneIdByKey={laneIdByKey}
-                providerCopies={snapshot.extras?.deletedLaneProviderCopies ?? null}
                 onRequestCleanup={setCleanup}
               />
               <ProviderHistoryDetails
@@ -679,14 +678,12 @@ function HistoryDetails({
   compressing,
   onCompress,
   laneIdByKey,
-  providerCopies,
   onRequestCleanup,
 }: {
   category: StorageCategorySnapshot | undefined;
   compressing: boolean;
   onCompress: (() => void) | null;
   laneIdByKey: Map<string, string>;
-  providerCopies: DeletedLaneProviderCopies | null;
   onRequestCleanup: (request: CleanupRequest) => void;
 }) {
   if (!category || (category.bytes <= 0 && !category.partial)) return null;
@@ -716,11 +713,8 @@ function HistoryDetails({
                 icon={<Archive size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Remove chats from deleted lanes",
-                  intro: `These chats belonged to lanes that were deleted. ADE no longer tracks or shows them, but their transcripts are still on this machine in ${item.path}, and you can open those .jsonl files yourself if you want them. Removing deletes them for good${providerCopies ? ", together with the Claude and Codex session files ADE started for them" : ""}. Chats in existing or archived lanes are not affected.`,
-                  // Provider copies first: their session ids are read from the chat records the second target removes.
-                  targets: providerCopies
-                    ? [{ kind: "deleted_lane_provider_sessions", path: providerCopies.chatSessionsDir }, target]
-                    : [target],
+                  intro: `These chats belonged to lanes that were deleted. ADE no longer tracks or shows them, but their transcripts are still on this machine in ${item.path}, and you can open those .jsonl files yourself if you want them. Removing deletes them for good, together with any Claude and Codex session files ADE started for them. Chats in existing or archived lanes are not affected.`,
+                  targets: [target],
                 })}
               />
             ) : undefined}

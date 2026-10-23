@@ -19783,7 +19783,6 @@ export function createAgentChatService(args: {
       });
     }
     if (pointerChanged) {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
       flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     }
 
@@ -25748,10 +25747,7 @@ export function createAgentChatService(args: {
       // One append syscall per file per chunk (instead of one forced flush per
       // seeded user message) bounds queued-write memory without the sync-write
       // storm that stalled the runtime.
-      await Promise.all([
-        flushQueuedTranscriptWrite(chatTranscriptFile),
-        flushQueuedTranscriptWrite(managed.transcriptPath),
-      ]);
+      await flushQueuedTranscriptWrite(chatTranscriptFile);
       if (start + IMPORTED_CHAT_EVENT_CHUNK_SIZE < envelopes.length) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -27525,10 +27521,7 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });
     }
@@ -48614,10 +48607,7 @@ export function createAgentChatService(args: {
     persistChatState(managed);
     // The handoff gate re-reads the transcript from disk; flush the queued
     // settlement events so the just-terminalized turn is visible to it.
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
   };
 
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -50114,10 +50104,7 @@ export function createAgentChatService(args: {
       }
     }
     const preparedAt = Date.parse(args.capsule.createdAt);
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
     const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
       const timestamp = Date.parse(entry.timestamp);
       if (!Number.isFinite(timestamp) || timestamp <= preparedAt) return false;
@@ -65421,7 +65408,6 @@ export function createAgentChatService(args: {
     managed.ctoSessionStartedAt = null;
     teardownRuntime(managed, "ended_session");
     managed.deleted = true;
-    flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
     projectNotesBySession.delete(sessionId);
@@ -67997,10 +67983,7 @@ export function createAgentChatService(args: {
       managed.endedNotified = true;
       managed.ctoSessionStartedAt = null;
       clearSubagentSnapshots(trimmedSessionId);
-      await Promise.all([
-        flushQueuedTranscriptWrite(managed.transcriptPath),
-        flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`)),
-      ]);
+      await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`));
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
       clearAcceptedStartWatch(trimmedSessionId);
@@ -68272,7 +68255,6 @@ export function createAgentChatService(args: {
       if (managed?.session.status === "active") continue;
       // After a failed append, the ring is the only copy of those events.
       if (!transcriptWritesSettled(path.join(chatTranscriptsDir, `${sessionId}.jsonl`))) continue;
-      if (managed && !transcriptWritesSettled(managed.transcriptPath)) continue;
       eventHistoryBySession.delete(sessionId);
       eventHistoryTouchedAt.delete(sessionId);
     }

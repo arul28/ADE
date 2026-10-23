@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { createGunzip } from "node:zlib";
 import type { Logger } from "../logging/logger";
 import { isEnoentError } from "../shared/utils";
-import { resolveReadableHistoryPath } from "./historyCompression";
+import { openHistoryReadStream, resolveReadableHistoryPath } from "./historyCompression";
 
 /**
  * Chats used to write every event twice: once to the session row's
@@ -16,6 +15,32 @@ import { resolveReadableHistoryPath } from "./historyCompression";
  * that start from the row resolve through here to the dedicated file.
  */
 const LEGACY_CHAT_SUFFIX = ".chat.jsonl";
+
+/** Both forms a chat's legacy copy may have under the transcripts directory. */
+export function legacyChatTranscriptPaths(transcriptsDir: string, sessionId: string): [plain: string, gzip: string] {
+  const plain = path.join(transcriptsDir, `${sessionId}${LEGACY_CHAT_SUFFIX}`);
+  return [plain, `${plain}.gz`];
+}
+
+/**
+ * The chat session a transcript file belongs to: `<chatTranscriptsDir>/<id>.jsonl`
+ * or `<transcriptsDir>/<id>.chat.jsonl` (either may end in `.gz`). Null for any
+ * other file, including terminal logs.
+ */
+export function chatSessionIdOfTranscript(
+  filePath: string,
+  dirs: { transcriptsDir: string; chatTranscriptsDir: string },
+): string | null {
+  const resolved = path.resolve(filePath);
+  const plain = resolved.endsWith(".gz") ? resolved.slice(0, -3) : resolved;
+  const dir = path.dirname(plain);
+  const base = path.basename(plain);
+  const suffix = dir === path.resolve(dirs.chatTranscriptsDir)
+    ? ".jsonl"
+    : dir === path.resolve(dirs.transcriptsDir) ? LEGACY_CHAT_SUFFIX : null;
+  if (!suffix || !base.endsWith(suffix)) return null;
+  return base.slice(0, -suffix.length) || null;
+}
 
 /** The dedicated transcript a legacy `<id>.chat.jsonl[.gz]` path stands for, or null for any other path. */
 export function dedicatedChatTranscriptPathFor(legacyPath: string): string | null {
@@ -58,15 +83,13 @@ function delay(ms: number): Promise<void> {
 }
 
 async function* readLines(filePath: string): AsyncGenerator<string> {
-  const source = fs.createReadStream(filePath);
-  const input = filePath.endsWith(".gz") ? source.pipe(createGunzip()) : source;
-  source.on("error", (error) => input.destroy(error));
+  const input = openHistoryReadStream(filePath);
   const lines = readline.createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) yield line;
   } finally {
     lines.close();
-    source.destroy();
+    input.destroy();
   }
 }
 
@@ -151,7 +174,8 @@ export async function removeDuplicateLegacyChatTranscripts(args: {
       const before = await fs.promises.lstat(legacyPath);
       if (!before.isFile() || now() - before.mtimeMs < LEGACY_DEDUPE_MIN_IDLE_MS) continue;
       if (args.isPathActive(legacyPath)) continue;
-      bytesRead += before.size;
+      // Each check streams the whole dedicated transcript too, so it counts.
+      bytesRead += before.size + ((await fs.promises.stat(dedicatedPath).catch(() => null))?.size ?? 0);
       if (!(await legacyLinesContainedIn(legacyPath, dedicatedPath))) {
         summary.filesKept += 1;
         args.logger.info("storage.legacy_chat_transcript_kept", { path: legacyPath, reason: "content_not_in_dedicated" });

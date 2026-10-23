@@ -1119,7 +1119,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "storage.provider-history",
     label: "Provider history on this machine",
-    keywords: ["claude sessions", "codex sessions", ".claude", ".codex", "opencode", "droid", "cursor", "copilot", "pi", "grok", "session files", "cleanupPeriodDays", "provider storage", "agent history size"],
+    keywords: ["claude sessions", "codex sessions", ".claude", ".codex", "opencode", "droid", "cursor", "copilot", "grok", "session files", "cleanupPeriodDays", "provider storage", "agent history size"],
     tab: "storage",
     anchor: "storage-provider-history",
     scope: "machine-repo",

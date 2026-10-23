@@ -168,6 +168,13 @@ export type StorageLedgerEntry = {
   enforcement: "write_time" | "doctor" | "both" | "manual";
 };
 
+/** What one storage-doctor step did. */
+export type MaintenanceStepResult = {
+  itemsAffected: number;
+  bytesReclaimed: number;
+  skippedReason?: string | null;
+};
+
 export type MaintenanceActionKind =
   | "prune"
   | "compress"

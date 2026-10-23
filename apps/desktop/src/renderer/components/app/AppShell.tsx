@@ -11,7 +11,7 @@ import { TopBar } from "./TopBar";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
 import { isSettingsRoute } from "./projectSidebar/settingsReturnRoute";
-import { isMachineScopedSettingsRoute } from "../settings/settingsManifest";
+import { isMachineScopedSettingsRoute, settingsRouteFor } from "../settings/settingsManifest";
 import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
@@ -65,7 +65,7 @@ import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
-import { STORAGE_SETTINGS_ROUTE, useDeletedChatsReminderBanner } from "./useDeletedChatsReminderBanner";
+import { useDeletedChatsReminderBanner } from "./useDeletedChatsReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
 import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
@@ -347,7 +347,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     enabled: !showWelcome,
     onReview: openArchiveSettings,
   });
-  const openStorageSettings = useCallback(() => navigate(STORAGE_SETTINGS_ROUTE), [navigate]);
+  const openStorageSettings = useCallback(() => navigate(settingsRouteFor("storage.deleted-lane-chats")), [navigate]);
   useDeletedChatsReminderBanner({
     projectRoot: project?.rootPath ?? null,
     enabled: !showWelcome,
