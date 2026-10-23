@@ -6652,7 +6652,7 @@ app.whenReady().then(async () => {
   const openDesktopAlert = (alert: DesktopAlert, ownerId: string | null): void => {
     // Opening it is seeing it: the phone, still waiting out desktop-first,
     // stays quiet. Best effort; a failure only means the phone gets it later.
-    if (ownerId && ownerId === readAccountOwnerId()) void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
+    if (ownerId === readAccountOwnerId()) void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
       logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -6674,7 +6674,7 @@ app.whenReady().then(async () => {
     isSupported: () => Notification.isSupported(),
     isAppFocused: () => Boolean(BrowserWindow.getFocusedWindow()),
     getDeviceId: () => ipcBridge?.getLocalMachineIdentity().deviceId ?? null,
-    isSignedIn: () => Boolean(readAccountOwnerId()),
+    getAccountOwnerId: () => readAccountOwnerId(),
     getPreferences: () => {
       const ownerId = readAccountOwnerId();
       return ownerId && attentionPreferencesForAlerts?.ownerId === ownerId

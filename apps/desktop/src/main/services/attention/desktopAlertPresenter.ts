@@ -23,8 +23,11 @@ export type DesktopAlertPresenterDeps = {
   open: (alert: DesktopAlert) => void;
   /** The last account preferences any window loaded; null when signed out or unknown. */
   getPreferences: () => AttentionPreferences | null;
-  /** True while signed in: then unknown preferences mean "wait", not "allow". */
-  isSignedIn?: () => boolean;
+  /**
+   * The signed-in account, or null. Signed in, unknown preferences mean
+   * "wait", not "allow"; a waiting alert is only replayed for its account.
+   */
+  getAccountOwnerId?: () => string | null;
   /** This desktop's device id, for its own scope in those preferences. */
   getDeviceId?: () => string | null;
   now?: () => number;
@@ -40,6 +43,10 @@ const MAX_ALERT_AGE_MS = 2 * 60_000;
  */
 const SAME_ENTRY_WINDOW_MS = 60_000;
 const MAX_REMEMBERED = 256;
+/**
+ * Alerts held while settings load. A startup burst past this is noise as
+ * system notifications; the dropped ones are still in Activity's Inbox.
+ */
 const MAX_WAITING_FOR_PREFERENCES = 16;
 
 const EVENT_BY_KIND: Record<"needs_you" | "failed", AttentionEventKind> = {
@@ -110,7 +117,7 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
    * Alerts that arrived signed in before any settings loaded, re-checked once
    * settings load (the age limit still applies).
    */
-  let waitingForPreferences: DesktopAlert[] = [];
+  let waitingForPreferences: Array<{ alert: DesktopAlert; ownerId: string }> = [];
 
   const remember = (key: string, at: number): void => {
     handledEntryAt.delete(key);
@@ -179,11 +186,12 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     // chat may be muted. Not remembered; it waits for `preferencesLoaded`.
     // Snapshot alerts wait too: snapshots are deltas, so the next poll does
     // not bring the item back.
-    if (deps.isSignedIn?.() && !deps.getPreferences()) {
+    const ownerId = deps.getAccountOwnerId?.() ?? null;
+    if (ownerId && !deps.getPreferences()) {
       // The newest alert for a key replaces an older one still waiting.
       waitingForPreferences = [
-        ...waitingForPreferences.filter((entry) => alertKey(entry) !== key),
-        alert,
+        ...waitingForPreferences.filter((entry) => alertKey(entry.alert) !== key),
+        { alert, ownerId },
       ].slice(-MAX_WAITING_FOR_PREFERENCES);
       return;
     }
@@ -208,10 +216,21 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     preferencesLoaded(): void {
       const waiting = waitingForPreferences;
       waitingForPreferences = [];
-      for (const alert of waiting) present(alert);
+      // An alert that waited under another account is that account's, not this one's.
+      const ownerId = deps.getAccountOwnerId?.() ?? null;
+      for (const entry of waiting) {
+        if (entry.ownerId === ownerId) present(entry.alert);
+      }
     },
     /** Every account snapshot a window polled: other machines' chats arrive here. */
     observeSnapshot(snapshot: AttentionSnapshot): void {
+      // A snapshot that finished after an account switch belongs to the old one.
+      if (
+        snapshot.accountOwnerId !== undefined
+        && snapshot.accountOwnerId !== (deps.getAccountOwnerId?.() ?? null)
+      ) {
+        return;
+      }
       for (const item of snapshot.items) {
         const alert = desktopAlertFromItem(item);
         if (alert) present(alert);
