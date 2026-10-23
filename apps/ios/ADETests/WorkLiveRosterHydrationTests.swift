@@ -1074,6 +1074,9 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
   private func awaitCapturedCommand(_ service: SyncService, index: Int) async throws -> String {
     var ids: [String] = []
     for _ in 0..<200 where ids.count <= index {
+      // Hydration writes run on the service's serial off-main database queue;
+      // a job queued behind them returns once they have finished.
+      _ = await service.readDatabaseOffMain { _ in 0 }
       await Task.yield()
       ids = service.capturedOutboundRequestIdsForTesting(type: "command")
     }
