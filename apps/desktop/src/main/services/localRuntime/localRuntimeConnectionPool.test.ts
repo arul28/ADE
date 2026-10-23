@@ -2994,6 +2994,149 @@ setInterval(() => {}, 1000);
     });
   });
 
+  // ADE-DESKTOP-8: an old CLI-started brain held the machine socket for days,
+  // so this desktop stayed on its isolated brain without sync. Isolated
+  // recovery now asks a strictly older brain to shut down cleanly, once, and
+  // leaves every other brain alone.
+  describe("isolated recovery retires an older brain on the machine socket", () => {
+    // A stand-in brain: answers the version handshake with the version it is
+    // given, `runtime/info` with its own pid, and prints each request it sees.
+    const OLD_BRAIN_STUB_SOURCE = String.raw`
+const net = require("node:net");
+const [endpoint, version, role] = process.argv.slice(2);
+const reply = (socket, id, result) => socket.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+net.createServer((socket) => {
+  let pending = "";
+  socket.on("data", (chunk) => {
+    pending += chunk.toString("utf8");
+    for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+      const message = JSON.parse(pending.slice(0, end));
+      pending = pending.slice(end + 1);
+      if (message.method === "ade/initialize") {
+        process.stdout.write("initialize\n");
+        reply(socket, message.id, { runtimeInfo: { version, pid: process.pid, defaultRole: role, buildHash: null } });
+      } else if (message.method === "runtime/info") {
+        process.stdout.write("runtime-info\n");
+        reply(socket, message.id, { pid: process.pid });
+      } else if (message.method === "shutdown") {
+        process.stdout.write("shutdown-requested\n");
+        reply(socket, message.id, {});
+        socket.end(() => process.exit(0));
+      }
+    }
+  });
+}).listen(endpoint, () => process.stdout.write("ready\n"));
+setInterval(() => {}, 1000);
+`;
+    let stubDir = "";
+    let stubPath = "";
+    let originalHome: string | undefined;
+
+    beforeAll(() => {
+      stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-old-brain-"));
+      stubPath = path.join(stubDir, "old-brain-stub.cjs");
+      fs.writeFileSync(stubPath, OLD_BRAIN_STUB_SOURCE, "utf8");
+      // The update-window check reads the machine layout: keep it off the real home.
+      originalHome = process.env.ADE_HOME;
+      process.env.ADE_HOME = path.join(stubDir, "home");
+    });
+
+    afterAll(() => {
+      restoreEnvVar("ADE_HOME", originalHome);
+      fs.rmSync(stubDir, { recursive: true, force: true });
+    });
+
+    async function startOldBrain(version: string, role = "agent") {
+      const id = randomUUID().slice(0, 8);
+      const endpoint = process.platform === "win32"
+        ? `\\\\.\\pipe\\ade-old-brain-${id}`
+        : path.join(os.tmpdir(), `ade-old-brain-${id}.sock`);
+      const child = spawn(process.execPath, [stubPath, endpoint, version, role], {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      spawnedDaemons.add(child);
+      child.once("exit", () => spawnedDaemons.delete(child));
+      let output = "";
+      const wake: Array<() => void> = [];
+      child.stdout?.on("data", (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+        for (const resolve of wake.splice(0)) resolve();
+      });
+      const saw = async (line: string): Promise<void> => {
+        while (!output.split("\n").includes(line)) {
+          await new Promise<void>((resolve) => wake.push(resolve));
+        }
+      };
+      await saw("ready");
+      return { child, endpoint, saw, output: () => output };
+    }
+
+    function isolatedPool(options: { preferServiceRepair: boolean; serviceInstalled: boolean }) {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+        preferServiceRepair: options.preferServiceRepair,
+      });
+      const internals = pool as unknown as {
+        activeConnection: { client: unknown; child: null; socketPath: string } | null;
+        serviceInstallStatus: { state: string };
+        installServiceBestEffort: () => Promise<void>;
+        lastIsolatedServiceRepairMs: number;
+        tryRecoverFromIsolatedRuntime: (primarySocketPath: string) => Promise<void>;
+      };
+      // Never the real installer: this test must not touch the machine's service.
+      internals.installServiceBestEffort = vi.fn(async () => {});
+      internals.lastIsolatedServiceRepairMs = Date.now();
+      internals.serviceInstallStatus = { ...internals.serviceInstallStatus, state: options.serviceInstalled ? "installed" : "failed" };
+      internals.activeConnection = { client: { close: vi.fn() }, child: null, socketPath: "/tmp/ade-isolated-test.sock" };
+      return { pool, logger, internals };
+    }
+
+    it("asks a strictly older brain to shut down, once", async () => {
+      const brain = await startOldBrain("1.2.0");
+      const { pool, logger, internals } = isolatedPool({ preferServiceRepair: true, serviceInstalled: true });
+      try {
+        await internals.tryRecoverFromIsolatedRuntime(brain.endpoint);
+        await brain.saw("shutdown-requested");
+        if (brain.child.exitCode == null) await once(brain.child, "exit");
+        expect(logger.warn).toHaveBeenCalledWith(
+          "local_runtime.older_brain_shutdown_requested",
+          expect.objectContaining({ runtimePid: brain.child.pid, runtimeVersion: "1.2.0" }),
+        );
+        // The same pid is never asked twice, even if it were still answering.
+        const internalsWithPids = pool as unknown as { retiredOlderBrainPids: Set<number> };
+        expect(internalsWithPids.retiredOlderBrainPids.has(brain.child.pid!)).toBe(true);
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it.each([
+      ["a newer brain", "1.3.0", true, true, null],
+      ["a brain on the same version (build or role mismatch)", "1.2.3", true, true, null],
+      ["a dev desktop that does not repair its service", "1.2.0", false, true, "not_packaged"],
+      ["no installed service to start the replacement", "1.2.0", true, false, "service_not_installed"],
+    ])("leaves %s running", async (_label, version, preferServiceRepair, serviceInstalled, refusal) => {
+      const brain = await startOldBrain(version);
+      const { pool, logger, internals } = isolatedPool({ preferServiceRepair, serviceInstalled });
+      try {
+        await internals.tryRecoverFromIsolatedRuntime(brain.endpoint);
+        await brain.saw("initialize");
+        expect(logger.warn).not.toHaveBeenCalledWith("local_runtime.older_brain_shutdown_requested", expect.anything());
+        if (refusal) {
+          expect(logger.info).toHaveBeenCalledWith(
+            "local_runtime.older_brain_left_running",
+            expect.objectContaining({ reason: refusal }),
+          );
+        }
+        expect(brain.output()).not.toContain("runtime-info");
+        expect(brain.child.exitCode).toBeNull();
+      } finally {
+        pool.dispose();
+      }
+    });
+  });
+
   it("reattaches to an externally managed machine daemon after the desktop-side client disconnects", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");

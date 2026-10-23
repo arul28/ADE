@@ -48,7 +48,10 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
-import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
+import {
+  ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME,
+  isCurrentProcessDescendantOfPid,
+} from "../../../../../ade-cli/src/serviceManager/common";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
@@ -1179,6 +1182,11 @@ export class LocalRuntimeConnectionPool {
   private appFallbackStoppedForInstall: AppFallbackReason | null = null;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
+  /** The last incompatible brain the primary-socket probe met; see `retireOlderPrimaryBrain`. */
+  private lastPrimaryProbeMismatch: { socketPath: string; error: LocalRuntimeCompatibilityError } | null = null;
+  /** Pids this desktop already asked to shut down. Each brain is asked once. */
+  private readonly retiredOlderBrainPids = new Set<number>();
+  private readonly loggedOlderBrainRefusals = new Set<string>();
   private lastIsolatedServiceRepairMs = 0;
   // How many opportunistic service repairs have run since the machine service
   // last answered compatibly, and when the last one started. Together they are
@@ -3511,7 +3519,9 @@ export class LocalRuntimeConnectionPool {
       this.markIsolatedMode(false, { notify: entry != null });
       return;
     }
+    this.lastPrimaryProbeMismatch = null;
     if (!(await this.probeCompatibleRuntime(primarySocketPath))) {
+      await this.retireOlderPrimaryBrain(primarySocketPath);
       if (this.versionSkewStatus.state === "runtime_newer") {
         this.logger.info("local_runtime.isolated_recovery_waiting_for_desktop_update", {
           primarySocketPath,
@@ -3545,6 +3555,104 @@ export class LocalRuntimeConnectionPool {
       this.ownedRuntimeSocketPath = null;
     }
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  /**
+   * Ask an older brain that holds the machine socket to shut down, so the
+   * installed service can start the current one.
+   *
+   * ADE-DESKTOP-8: a 1.2.91 brain that an old `ade` CLI had started on the
+   * machine socket (role `agent`, no idle exit) held it for days. The service's
+   * own brain failed every restart with `socket_owned_by_other`, the forced
+   * service restart could not reach a process it does not own, and this
+   * desktop ran on its isolated brain, without sync, until someone noticed.
+   *
+   * The request is the brain's own clean exit: the `shutdown` call (in every
+   * brain since 1.2.0) runs the same `finish()` as its SIGTERM handler, which
+   * saves each chat for restart recovery, exactly as an update does. Nothing is
+   * signalled or force-killed: a brain that does not leave stays, and this
+   * desktop keeps its isolated brain, as before.
+   *
+   * Every guard below must hold. A wrong "yes" stops someone's brain; a wrong
+   * "no" only keeps today's behavior.
+   * - A packaged desktop that repairs its service (`preferServiceRepair`), with
+   *   the service installed to start the replacement. Never a dev desktop.
+   * - Not during quit, and not inside an update window (the update owns that).
+   * - Only the machine socket this recovery watches, and only a brain whose
+   *   version parses and is strictly older than this desktop. A newer brain, a
+   *   build or role mismatch at the same version, or an unreadable version
+   *   is left alone.
+   * - Never this process, a brain this pool owns, or a brain this desktop runs
+   *   under (a desktop started from a chat's terminal).
+   * - Once per pid: a brain that comes back is not asked again in this session.
+   * - `requestAdeRuntimeShutdown` re-reads the brain's own pid at the moment
+   *   of the request and sends nothing when it differs (a recycled pid).
+   */
+  private async retireOlderPrimaryBrain(primarySocketPath: string): Promise<void> {
+    const mismatch = this.lastPrimaryProbeMismatch;
+    this.lastPrimaryProbeMismatch = null;
+    if (!mismatch || mismatch.socketPath !== primarySocketPath) return;
+    const { error } = mismatch;
+    const pid = error.pid;
+    const refuse = (reason: string): void => {
+      // The recovery tick runs every 20 s; one line per brain and reason.
+      const logKey = `${pid ?? "none"}:${reason}`;
+      if (this.loggedOlderBrainRefusals.has(logKey)) return;
+      this.loggedOlderBrainRefusals.add(logKey);
+      this.logger.info("local_runtime.older_brain_left_running", {
+        socketPath: primarySocketPath,
+        runtimePid: pid,
+        runtimeVersion: error.runtimeVersion,
+        appVersion: this.appVersion,
+        reason,
+      });
+    };
+    if (error.skewState !== "runtime_older") return;
+    if (!this.options.preferServiceRepair) return refuse("not_packaged");
+    if (this.disposed || this.stopping) return refuse("quitting");
+    if (this.isUpdateWindowActive()) return refuse("update_in_progress");
+    if (this.serviceInstallStatus.state !== "installed") return refuse("service_not_installed");
+    const comparison = compareRuntimeVersionStrings(error.runtimeVersion, this.appVersion);
+    if (comparison == null || comparison >= 0) return refuse("version_not_older");
+    if (pid == null || !Number.isInteger(pid) || pid <= 0) return refuse("no_pid");
+    if (
+      pid === process.pid
+      || pid === this.ownedRuntimeChild?.pid
+      || pid === this.activeRuntimePid
+    ) {
+      return refuse("own_process");
+    }
+    if (this.retiredOlderBrainPids.has(pid)) return refuse("already_asked");
+    if (!isRuntimePidAlive(pid)) return refuse("not_running");
+    // Recorded before the ancestry lookup: that lookup is a blocking process
+    // query (slow on Windows), so it must not repeat on every recovery tick.
+    this.retiredOlderBrainPids.add(pid);
+    let runsUnderIt = true;
+    try {
+      runsUnderIt = isCurrentProcessDescendantOfPid({ targetPid: pid });
+    } catch {
+      // Unknown ancestry is treated as "yes": the safe answer.
+    }
+    if (runsUnderIt) return refuse("desktop_runs_under_it");
+    const result = await requestAdeRuntimeShutdown({
+      pid,
+      socketPath: primarySocketPath,
+      timeoutMs: 3_000,
+    }).catch((requestError: unknown) => ({
+      requested: false as const,
+      reason: requestError instanceof Error ? requestError.message : String(requestError),
+    }));
+    if (result.requested) {
+      this.logger.warn("local_runtime.older_brain_shutdown_requested", {
+        socketPath: primarySocketPath,
+        runtimePid: pid,
+        runtimeVersion: error.runtimeVersion,
+        runtimeDefaultRole: error.runtimeDefaultRole,
+        appVersion: this.appVersion,
+      });
+      return;
+    }
+    refuse(`request_refused: ${result.reason}`);
   }
 
   private async retryServiceInstallForIsolatedRecovery(): Promise<void> {
@@ -3581,8 +3689,11 @@ export class LocalRuntimeConnectionPool {
       client = new RuntimeRpcClient(transport);
       const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.localProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
-      return this.runtimeCompatibilityError(socketPath, runtimeInfo) == null;
+      const error = this.runtimeCompatibilityError(socketPath, runtimeInfo);
+      this.lastPrimaryProbeMismatch = error ? { socketPath, error } : null;
+      return error == null;
     } catch {
+      this.lastPrimaryProbeMismatch = null;
       return false;
     } finally {
       if (client) closeRuntimeClient(client);
