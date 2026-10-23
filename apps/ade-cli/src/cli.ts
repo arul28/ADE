@@ -25978,8 +25978,18 @@ async function runServe(
   if (process.platform === "darwin") {
     boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
   }
+  // Resolved before the backoff: the crash-loop record counts only failures
+  // on this brain's own endpoint.
+  const rawSocketPath =
+    readValue(args, ["--socket"]) ??
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
+    resolveMachineAdeLayout().socketPath;
+  const serveSocketPath = normalizeRuntimeSocketPath(rawSocketPath);
   const previousFailure = readLastFailure({ kind: "machine" });
-  const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
+  const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now(), {
+    socketPath: serveSocketPath,
+    primarySocketPath: normalizeRuntimeSocketPath(resolveMachineAdeLayout().socketPath),
+  });
   if (startupBackoffMs > 0 && previousFailure) {
     // The bare `code` alone printed "unknown" for every failure the classifier
     // had no pattern for — which is exactly the class you need the reason for.
@@ -26066,13 +26076,7 @@ async function runServe(
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
   });
-  const rawSocketPath =
-    readValue(args, ["--socket"]) ??
-    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
-    layout.socketPath;
-  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
-    ? rawSocketPath
-    : path.resolve(rawSocketPath);
+  const socketPath = serveSocketPath;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
@@ -27438,6 +27442,7 @@ async function runServe(
             code: fault.code,
             message: fault.message,
             detail,
+            socketPath,
             component: "sync_host",
           });
         },
@@ -28176,6 +28181,7 @@ async function runServe(
         code,
         message: "ADE's background service could not start.",
         detail: details,
+        socketPath: serveSocketPath,
         component: /sync host|mobile sync/i.test(details) ? "sync_host" : "brain_startup",
       });
     }

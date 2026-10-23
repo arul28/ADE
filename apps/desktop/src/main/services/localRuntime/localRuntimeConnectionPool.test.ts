@@ -2091,6 +2091,51 @@ describe("local runtime connection pool", () => {
     expect(deliveredInput).toEqual(["first", "second", "third"]);
   });
 
+  // ADE-DESKTOP-2P/1D/2Z: quit closed the brain connection under a status
+  // poll, the poll retried, and the retry hit the disposed pool. During quit
+  // the dropped connection is the answer, not a reason to retry.
+  it("does not retry a call whose connection quit closed", async () => {
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    let dropInFlight: () => void = () => undefined;
+    const call = vi.fn((method: string) => {
+      if (method === "projects.add") return Promise.resolve(project);
+      if (method === "ade/actions/call") {
+        return new Promise((_resolve, reject) => {
+          dropInFlight = () => reject(new Error("Remote ADE service connection closed."));
+        });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    // Like the real client: closing it drops what is in flight.
+    const client = { call, close: vi.fn(() => dropInFlight()), isClosed: vi.fn(() => false) };
+    const createConnection = vi.fn(async () => ({ client, child: null, socketPath: "/tmp/ade.sock" }));
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    const poll = pool.callActionForRoot(rootPath, { domain: "session", action: "list", args: {} });
+    while (!call.mock.calls.some(([method]) => method === "ade/actions/call")) {
+      await Promise.resolve();
+    }
+    pool.dispose();
+
+    await expect(poll).rejects.toThrow("Remote ADE service connection closed.");
+    expect(createConnection).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.action_connection_dropped",
+      expect.objectContaining({ willRetry: false }),
+    );
+  });
+
   it("makes disposal terminal while project registration is in flight", async () => {
     let resolveRegistration!: (value: unknown) => void;
     const registration = new Promise<unknown>((resolve) => {
@@ -2139,7 +2184,13 @@ describe("local runtime connection pool", () => {
     pool.dispose();
     resolveRegistration(project);
 
-    await expect(pendingWrite).rejects.toThrow("Local runtime connection pool is disposed.");
+    // Admitted before the quit: it ends with the connection the quit closed,
+    // an answer and not the pool's invariant. A call made after it still
+    // trips the invariant.
+    await expect(pendingWrite).rejects.toThrow("Remote ADE service connection closed because ADE is quitting.");
+    await expect(pool.callActionForRoot(rootPath, { domain: "pty", action: "write", args: {} })).rejects.toThrow(
+      "Local runtime connection pool is disposed.",
+    );
     await expect(pool.ensureProject(rootPath)).rejects.toThrow(
       "Local runtime connection pool is disposed.",
     );
@@ -2621,14 +2672,14 @@ describe("local runtime connection pool", () => {
     }
   });
 
-  describe("quit stops a desktop-owned brain cooperatively on Windows", () => {
-    // A stand-in for a brain on the runtime endpoint. It answers `runtime/info`
-    // with its own pid, as the real brain does, and prints one line per request,
-    // so a test waits on what the pool actually sent. `mode` decides what it does
-    // with `shutdown`.
-    const BRAIN_STUB_SOURCE = String.raw`
+  // A stand-in for a brain on the runtime endpoint. It answers `runtime/info`
+  // with its own pid, as the real brain does, and prints one line per request,
+  // so a test waits on what the pool actually sent. `mode` decides what it does
+  // with `shutdown`; a `version` (and `role`) makes it answer the
+  // `ade/initialize` handshake as a brain of that version.
+  const BRAIN_STUB_SOURCE = String.raw`
 const net = require("node:net");
-const [endpoint, mode] = process.argv.slice(2);
+const [endpoint, mode, version, role] = process.argv.slice(2);
 const reply = (socket, id, result) => socket.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 net.createServer((socket) => {
   let pending = "";
@@ -2637,7 +2688,10 @@ net.createServer((socket) => {
     for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
       const message = JSON.parse(pending.slice(0, end));
       pending = pending.slice(end + 1);
-      if (message.method === "runtime/info") {
+      if (message.method === "ade/initialize" && version) {
+        process.stdout.write("initialize\n");
+        reply(socket, message.id, { runtimeInfo: { version, pid: process.pid, defaultRole: role ?? "cto", buildHash: null } });
+      } else if (message.method === "runtime/info") {
         process.stdout.write("runtime-info\n");
         reply(socket, message.id, { pid: process.pid });
       } else if (message.method === "shutdown") {
@@ -2651,53 +2705,54 @@ net.createServer((socket) => {
 }).listen(endpoint, () => process.stdout.write("ready\n"));
 setInterval(() => {}, 1000);
 `;
-    type BrainMode = "ack-and-exit" | "ack-and-hang" | "never-answers";
-    let stubDir = "";
-    let stubPath = "";
+  type BrainMode = "ack-and-exit" | "ack-and-hang" | "never-answers";
+  let stubDir = "";
+  let stubPath = "";
 
-    beforeAll(() => {
-      stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-quit-brain-"));
-      stubPath = path.join(stubDir, "brain-stub.cjs");
-      fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
+  beforeAll(() => {
+    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-stub-"));
+    stubPath = path.join(stubDir, "brain-stub.cjs");
+    fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
+  });
+
+  afterAll(() => {
+    fs.rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  // Chosen with the real platform, before `asWindows` changes what the pool sees.
+  function runtimeEndpoint(): string {
+    const id = randomUUID().slice(0, 8);
+    return process.platform === "win32"
+      ? `\\\\.\\pipe\\ade-brain-${id}`
+      : path.join(os.tmpdir(), `ade-brain-${id}.sock`);
+  }
+
+  function startBrain(endpoint: string, mode: BrainMode, identity: string[] = []) {
+    const child = spawn(process.execPath, [stubPath, endpoint, mode, ...identity], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
-
-    afterAll(() => {
-      fs.rmSync(stubDir, { recursive: true, force: true });
+    spawnedDaemons.add(child);
+    child.once("exit", () => spawnedDaemons.delete(child));
+    let output = "";
+    const wake: Array<() => void> = [];
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      for (const resolve of wake.splice(0)) resolve();
     });
+    return {
+      child,
+      output: () => output,
+      // Resolves on the stub's own stdout, so no test waits on a wall-clock delay.
+      async saw(line: string): Promise<void> {
+        while (!output.split("\n").includes(line)) {
+          await new Promise<void>((resolve) => wake.push(resolve));
+        }
+      },
+    };
+  }
 
-    // Chosen with the real platform, before `asWindows` changes what the pool sees.
-    function runtimeEndpoint(): string {
-      const id = randomUUID().slice(0, 8);
-      return process.platform === "win32"
-        ? `\\\\.\\pipe\\ade-quit-${id}`
-        : path.join(os.tmpdir(), `ade-quit-${id}.sock`);
-    }
-
-    function startBrain(endpoint: string, mode: BrainMode) {
-      const child = spawn(process.execPath, [stubPath, endpoint, mode], {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      spawnedDaemons.add(child);
-      child.once("exit", () => spawnedDaemons.delete(child));
-      let output = "";
-      const wake: Array<() => void> = [];
-      child.stdout?.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf8");
-        for (const resolve of wake.splice(0)) resolve();
-      });
-      return {
-        child,
-        output: () => output,
-        // Resolves on the stub's own stdout, so no test waits on a wall-clock delay.
-        async saw(line: string): Promise<void> {
-          while (!output.split("\n").includes(line)) {
-            await new Promise<void>((resolve) => wake.push(resolve));
-          }
-        },
-      };
-    }
-
+  describe("quit stops a desktop-owned brain cooperatively on Windows", () => {
     function poolOwning(child: ChildProcess | null, socketPath: string): LocalRuntimeConnectionPool {
       const pool = new LocalRuntimeConnectionPool("1.2.3", {
         debug: vi.fn(),
@@ -2938,6 +2993,98 @@ setInterval(() => {}, 1000);
         expect(kill).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
+        pool.dispose();
+      }
+    });
+  });
+
+  // ADE-DESKTOP-8: an old CLI-started brain held the machine socket for days,
+  // so this desktop stayed on its isolated brain without sync. Isolated
+  // recovery now asks a strictly older brain to shut down cleanly, once, and
+  // leaves every other brain alone.
+  describe("isolated recovery retires an older brain on the machine socket", () => {
+    let originalHome: string | undefined;
+    let homeDir = "";
+
+    beforeAll(() => {
+      // The update-window check reads the machine layout: keep it off the real home.
+      homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-old-brain-home-"));
+      originalHome = process.env.ADE_HOME;
+      process.env.ADE_HOME = homeDir;
+    });
+
+    afterAll(() => {
+      restoreEnvVar("ADE_HOME", originalHome);
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    });
+
+    async function startOldBrain(version: string, role = "agent") {
+      const endpoint = runtimeEndpoint();
+      const brain = startBrain(endpoint, "ack-and-exit", [version, role]);
+      await brain.saw("ready");
+      return { ...brain, endpoint };
+    }
+
+    function isolatedPool(options: { preferServiceRepair: boolean; serviceInstalled: boolean }) {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+        preferServiceRepair: options.preferServiceRepair,
+      });
+      const internals = pool as unknown as {
+        activeConnection: { client: unknown; child: null; socketPath: string } | null;
+        serviceInstallStatus: { state: string };
+        installServiceBestEffort: () => Promise<void>;
+        lastIsolatedServiceRepairMs: number;
+        tryRecoverFromIsolatedRuntime: (primarySocketPath: string) => Promise<void>;
+      };
+      // Never the real installer: this test must not touch the machine's service.
+      internals.installServiceBestEffort = vi.fn(async () => {});
+      internals.lastIsolatedServiceRepairMs = Date.now();
+      internals.serviceInstallStatus = { ...internals.serviceInstallStatus, state: options.serviceInstalled ? "installed" : "failed" };
+      internals.activeConnection = { client: { close: vi.fn() }, child: null, socketPath: "/tmp/ade-isolated-test.sock" };
+      return { pool, logger, internals };
+    }
+
+    it("asks a strictly older brain to shut down, once", async () => {
+      const brain = await startOldBrain("1.2.0");
+      const { pool, logger, internals } = isolatedPool({ preferServiceRepair: true, serviceInstalled: true });
+      try {
+        await internals.tryRecoverFromIsolatedRuntime(brain.endpoint);
+        await brain.saw("shutdown-requested");
+        if (brain.child.exitCode == null) await once(brain.child, "exit");
+        expect(logger.warn).toHaveBeenCalledWith(
+          "local_runtime.older_brain_shutdown_requested",
+          expect.objectContaining({ runtimePid: brain.child.pid, runtimeVersion: "1.2.0" }),
+        );
+        // The same pid is never asked twice, even if it were still answering.
+        const internalsWithPids = pool as unknown as { retiredOlderBrainPids: Set<number> };
+        expect(internalsWithPids.retiredOlderBrainPids.has(brain.child.pid!)).toBe(true);
+      } finally {
+        pool.dispose();
+      }
+    });
+
+    it.each([
+      ["a newer brain", "1.3.0", true, true, null],
+      ["a brain on the same version (build or role mismatch)", "1.2.3", true, true, null],
+      ["a dev desktop that does not repair its service", "1.2.0", false, true, "not_packaged"],
+      ["no installed service to start the replacement", "1.2.0", true, false, "service_not_installed"],
+    ])("leaves %s running", async (_label, version, preferServiceRepair, serviceInstalled, refusal) => {
+      const brain = await startOldBrain(version);
+      const { pool, logger, internals } = isolatedPool({ preferServiceRepair, serviceInstalled });
+      try {
+        await internals.tryRecoverFromIsolatedRuntime(brain.endpoint);
+        await brain.saw("initialize");
+        expect(logger.warn).not.toHaveBeenCalledWith("local_runtime.older_brain_shutdown_requested", expect.anything());
+        if (refusal) {
+          expect(logger.info).toHaveBeenCalledWith(
+            "local_runtime.older_brain_left_running",
+            expect.objectContaining({ reason: refusal }),
+          );
+        }
+        expect(brain.output()).not.toContain("runtime-info");
+        expect(brain.child.exitCode).toBeNull();
+      } finally {
         pool.dispose();
       }
     });

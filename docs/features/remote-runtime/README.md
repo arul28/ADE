@@ -273,7 +273,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   a fresh Alpha/Beta app then staleness-locks onto a brain left by an earlier
   build. Repairing a *missing* endpoint stays a plain install (nothing to
   replace), and isolated recovery also forces, since it only runs after the
-  primary endpoint failed to probe compatible.
+  primary endpoint failed to probe compatible. A forced install cannot replace
+  a brain the service manager does not own, such as one an old `ade` CLI
+  started on the machine socket. So isolated recovery
+  (`olderBrainRetirement.ts`) asks a strictly older brain on the primary socket
+  to shut down through its own `shutdown` call, the clean exit that saves chats
+  for restart recovery. It never signals or force-kills, and it acts only in a
+  packaged desktop with the service installed, outside quit and update windows,
+  once per pid, and never for this process, a pool-owned brain or a brain the
+  desktop runs under. During quit, a call whose connection drops is not
+  retried: it ends as "connection closed", and `drain()` waits for every action
+  call, not only coalesced ones.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
   project/machine failure reports used when the background service exits before
   desktop IPC can obtain a normal runtime error.

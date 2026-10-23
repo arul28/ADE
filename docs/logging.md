@@ -158,6 +158,26 @@ was held back during an update transaction and carry no paths or versions
 beyond the bounded fields already in `local-runtime.jsonl`; none is a PostHog
 event.
 
+When isolated recovery finds a strictly older brain on the machine socket
+(`olderBrainRetirement.ts`), the pool writes
+`local_runtime.older_brain_shutdown_requested` (warn) after it asks that brain
+to shut down, or `local_runtime.older_brain_left_running` (info, once per pid
+and reason) with the coarse `reason` it left the brain alone. Both carry the
+socket path, the brain's pid, version and role, and the app version. A
+connection that quit drops logs `local_runtime.action_connection_dropped` with
+`willRetry: false`. None is a PostHog event: these are background lifecycle
+mechanics with no user action behind them.
+
+Shutdown and startup races write local lines only. The sync service logs
+`sync.role_refresh_failed` (warn) for a role refresh nobody awaited, and logs
+nothing when a dispose closed the database under a status snapshot or a role
+refresh. The PR watch logs `prs.watch_evaluate_failed` (warn) for a background
+pass that failed outside a single watch. A runtime teardown step that fails,
+including an async `dispose` that rejects after the drain, is
+`runtime.teardown_step_failed` (warn). A project open that waited for a sibling
+process's write lock during the CRR conversion logs `db.crr_conversion_settled`
+(info, `attempt`). None is a PostHog event.
+
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
 (`natural`, `ade_fallback`, or `recovery`), and `occupancyPctAtTrigger`. Record

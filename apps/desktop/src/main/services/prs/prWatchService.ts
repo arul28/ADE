@@ -323,7 +323,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     if (disposed) return;
     // GitHub rate-limited ADE's background reads: wait it out like the poller.
     const pauseUntil = (await deps.getGithubBackgroundPauseUntilMs?.()) ?? 0;
-    if (pauseUntil > now()) return;
+    // A dispose during that await closes the store this pass reads next.
+    if (disposed || pauseUntil > now()) return;
     const records = store.list({ activeOnly: true })
       .filter((record) => !options.prIds || options.prIds.includes(record.prId));
     if (records.length === 0) return;
@@ -341,29 +342,41 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       } finally {
         inFlight.delete(record.id);
       }
-      if (rerun.delete(record.id)) void evaluate({ prIds: [record.prId], force: true });
+      if (rerun.delete(record.id)) evaluateInBackground({ prIds: [record.prId], force: true });
     }));
+  };
+
+  /**
+   * A pass nobody awaits (a tick or an event). Its own per-watch failures are
+   * already logged; this catches the store reads around them, which throw once
+   * a dispose has closed the database.
+   */
+  const evaluateInBackground = (options?: { prIds?: readonly string[]; force?: boolean }): void => {
+    evaluate(options).catch((error: unknown) => {
+      if (disposed) return;
+      logger.warn("prs.watch_evaluate_failed", { error: getErrorMessage(error) });
+    });
   };
 
   return {
     start(): void {
       if (timer || disposed) return;
       timer = setInterval(() => {
-        void evaluate();
+        evaluateInBackground();
       }, deps.tickMs ?? PR_WATCH_TICK_MS);
       timer.unref?.();
-      void evaluate();
+      evaluateInBackground();
     },
     /** A watch just armed takes its first look now, not on the next tick. */
     onPrEvent(event: PrEventPayload): void {
       if (event.type === "pr-chat-watch-changed" && event.watch?.status === "active") {
-        void evaluate({ prIds: [event.prId], force: true });
+        evaluateInBackground({ prIds: [event.prId], force: true });
       }
     },
     /** The PR poller saw these PRs change: re-read their watches now. */
     onPullRequestsChanged(prIds: readonly string[]): void {
       if (prIds.length === 0) return;
-      void evaluate({ prIds, force: true });
+      evaluateInBackground({ prIds, force: true });
     },
     evaluate,
     dispose(): void {

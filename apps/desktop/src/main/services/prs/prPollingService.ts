@@ -266,6 +266,9 @@ export function createPrPollingService({
 
   const schedule = (delayMs: number) => {
     if (timer) clearTimeout(timer);
+    timer = null;
+    // A tick that was in flight at dispose ends after it; it must not re-arm.
+    if (stopped) return;
     timer = setTimeout(() => void tick(), delayMs);
   };
 
@@ -538,6 +541,8 @@ export function createPrPollingService({
 
       consecutiveFailures = 0;
     } catch (error) {
+      // A dispose closes the project database under a running tick.
+      if (stopped) return;
       consecutiveFailures += 1;
       logger.warn("prs.poll_failed", { error: error instanceof Error ? error.message : String(error) });
 
@@ -551,7 +556,9 @@ export function createPrPollingService({
       }
     } finally {
       running = false;
-      if (pendingTargetedPrIds.size > 0 && rateLimitResumeAtMs <= Date.now()) {
+      if (stopped) {
+        // Nothing to schedule, and the store may already be closed.
+      } else if (pendingTargetedPrIds.size > 0 && rateLimitResumeAtMs <= Date.now()) {
         schedule(0);
       } else {
         const relayHealthy = isGithubRelayHealthy?.() === true;

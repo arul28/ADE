@@ -485,6 +485,49 @@ describe("createSyncService", () => {
     }
   });
 
+  // ADE-BRAIN-1V/3H: a status snapshot was still enumerating sessions when the
+  // runtime closed the project database under it. The read then threw
+  // "database is not open" as an unhandled rejection and a false warning.
+  it("drops a status snapshot that a dispose overtakes, quietly", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-dispose-emit-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => false;
+    let releaseEnumeration: () => void = () => undefined;
+    const enumeration = new Promise<unknown[]>((resolve) => {
+      releaseEnumeration = () => resolve([]);
+    });
+    const logger = createLogger();
+    const onStatusChanged = vi.fn();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const service = createService(db, projectRoot, {
+      logger: logger as any,
+      sessionService: {
+        // A real read of the project database, like the session service's.
+        list: vi.fn(() => db.all("select 1 as one")),
+        get: vi.fn(() => null),
+        readTranscriptTail: vi.fn(async () => ""),
+      } as any,
+      agentChatService: { listSessions: vi.fn(() => enumeration) } as any,
+      onStatusChanged,
+    });
+    try {
+      service.notifyRouteStateChanged();
+      await service.dispose();
+      db.close();
+      releaseEnumeration();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(onStatusChanged).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith("sync.status_emit_failed", expect.anything());
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("persists peer app provenance in device metadata", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-device-provenance-");
     cleanupRoots.push(projectRoot);
