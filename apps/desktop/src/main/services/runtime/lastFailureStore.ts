@@ -21,6 +21,8 @@ export type LastFailureInput = {
   message: string;
   detail?: string;
   projectRoot?: string;
+  /** The failing brain's endpoint, already normalized by the caller. */
+  socketPath?: string;
   component: AdeLastFailureReport["component"];
   at?: string;
 };
@@ -75,7 +77,8 @@ function isLastFailureReport(value: unknown): value is AdeLastFailureReport {
       typeof report.detail === "string"
       && Buffer.byteLength(report.detail, "utf8") <= DETAIL_MAX_BYTES
     ))
-    && (report.projectRoot === undefined || typeof report.projectRoot === "string");
+    && (report.projectRoot === undefined || typeof report.projectRoot === "string")
+    && (report.socketPath === undefined || typeof report.socketPath === "string");
 }
 
 function readReportPath(filePath: string): AdeLastFailureReport | null {
@@ -86,7 +89,8 @@ function sameSignature(left: AdeLastFailureReport, right: LastFailureInput): boo
   const rightProjectRoot = right.projectRoot ? path.resolve(right.projectRoot) : "";
   return left.code === right.code
     && left.component === right.component
-    && (left.projectRoot ?? "") === rightProjectRoot;
+    && (left.projectRoot ?? "") === rightProjectRoot
+    && (left.socketPath ?? "") === (right.socketPath ?? "");
 }
 
 function reportWriteFailure(action: string, error: unknown): void {
@@ -127,6 +131,7 @@ export function recordLastFailure(
       ...(input.detail ? { detail: boundUtf8(input.detail, DETAIL_MAX_BYTES) } : {}),
       at,
       ...(input.projectRoot ? { projectRoot: path.resolve(input.projectRoot) } : {}),
+      ...(input.socketPath ? { socketPath: input.socketPath } : {}),
       component: input.component,
       count: repeated ? existing.count + 1 : 1,
       firstAt: repeated ? existing.firstAt : at,
@@ -153,11 +158,24 @@ export function clearLastFailure(target: LastFailureTarget): void {
   }
 }
 
+/**
+ * How long a brain waits before it starts, after repeated failures.
+ *
+ * The record is machine-wide, but a crash loop belongs to one endpoint: the
+ * service manager restarting the brain on its socket. With `scope`, only a
+ * failure on the starting brain's own socket counts. A record without a socket
+ * predates the field and is read as the primary socket's, which is where the
+ * service brain runs. Without this, a desktop's isolated brain on its own
+ * socket slept up to 60 s for the installed service's socket fight, past the
+ * desktop's connect budget (ADE-DESKTOP-8).
+ */
 export function computeStartupBackoffMs(
   report: AdeLastFailureReport | null,
   now: number | Date = Date.now(),
+  scope?: { socketPath: string; primarySocketPath: string },
 ): number {
   if (!report || report.count < 3) return 0;
+  if (scope && (report.socketPath ?? scope.primarySocketPath) !== scope.socketPath) return 0;
   const nowMs = now instanceof Date ? now.getTime() : now;
   const firstAtMs = Date.parse(report.firstAt);
   if (!Number.isFinite(firstAtMs) || nowMs - firstAtMs < 0 || nowMs - firstAtMs > LAST_FAILURE_CRASH_LOOP_WINDOW_MS) {

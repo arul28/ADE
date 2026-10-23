@@ -91,23 +91,40 @@ describe("lastFailureStore", () => {
     expect(readLastFailure(target)?.message).toBe("first");
   });
 
+  const primarySocket = "/home/.ade/sock/ade.sock";
+  const isolatedSocket = "/home/.ade/sock/i-41d6ff7a.sock";
+  // The socket columns: where the recorded failure happened, and the socket of
+  // the brain that is starting (undefined = no scope given). A desktop's
+  // isolated brain slept 60 s for the service's socket fight (ADE-DESKTOP-8).
   it.each([
-    [2, "2026-07-12T10:00:00.000Z", 0],
-    [3, "2026-07-12T10:00:00.000Z", 10_000],
-    [4, "2026-07-12T10:00:00.000Z", 20_000],
-    [8, "2026-07-12T10:00:00.000Z", 60_000],
-    [20, "2026-07-12T09:54:59.999Z", 0],
-  ])("computes bounded startup backoff for count %i", (count, firstAt, expected) => {
+    [2, "2026-07-12T10:00:00.000Z", 0, undefined, undefined],
+    [3, "2026-07-12T10:00:00.000Z", 10_000, undefined, undefined],
+    [4, "2026-07-12T10:00:00.000Z", 20_000, undefined, undefined],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, undefined, undefined],
+    [20, "2026-07-12T09:54:59.999Z", 0, undefined, undefined],
+    [8, "2026-07-12T10:00:00.000Z", 0, primarySocket, isolatedSocket],
+    [8, "2026-07-12T10:00:00.000Z", 0, undefined, isolatedSocket],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, undefined, primarySocket],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, isolatedSocket, isolatedSocket],
+  ])("computes bounded startup backoff for count %i (window from %s) as %i ms, failure on %s, starting on %s", (
+    count,
+    firstAt,
+    expected,
+    recordedSocket,
+    startingSocket,
+  ) => {
     const report: AdeLastFailureReport = {
       version: 1,
-      code: "disk_full",
+      code: "socket_owned_by_other",
       message: "failure",
       at: "2026-07-12T10:00:00.000Z",
       component: "brain_startup",
       count,
       firstAt,
+      ...(recordedSocket ? { socketPath: recordedSocket } : {}),
     };
-    expect(computeStartupBackoffMs(report, Date.parse("2026-07-12T10:00:00.000Z"))).toBe(expected);
+    const scope = startingSocket ? { socketPath: startingSocket, primarySocketPath: primarySocket } : undefined;
+    expect(computeStartupBackoffMs(report, Date.parse("2026-07-12T10:00:00.000Z"), scope)).toBe(expected);
   });
 
   it("moves the current incident to previous when cleared", () => {

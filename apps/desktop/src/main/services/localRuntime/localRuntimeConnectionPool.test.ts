@@ -2091,6 +2091,51 @@ describe("local runtime connection pool", () => {
     expect(deliveredInput).toEqual(["first", "second", "third"]);
   });
 
+  // ADE-DESKTOP-2P/1D/2Z: quit closed the brain connection under a status
+  // poll, the poll retried, and the retry hit the disposed pool. During quit
+  // the dropped connection is the answer, not a reason to retry.
+  it("does not retry a call whose connection quit closed", async () => {
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    let dropInFlight: () => void = () => undefined;
+    const call = vi.fn((method: string) => {
+      if (method === "projects.add") return Promise.resolve(project);
+      if (method === "ade/actions/call") {
+        return new Promise((_resolve, reject) => {
+          dropInFlight = () => reject(new Error("Remote ADE service connection closed."));
+        });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    // Like the real client: closing it drops what is in flight.
+    const client = { call, close: vi.fn(() => dropInFlight()), isClosed: vi.fn(() => false) };
+    const createConnection = vi.fn(async () => ({ client, child: null, socketPath: "/tmp/ade.sock" }));
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    const poll = pool.callActionForRoot(rootPath, { domain: "session", action: "list", args: {} });
+    while (!call.mock.calls.some(([method]) => method === "ade/actions/call")) {
+      await Promise.resolve();
+    }
+    pool.dispose();
+
+    await expect(poll).rejects.toThrow("Remote ADE service connection closed.");
+    expect(createConnection).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.action_connection_dropped",
+      expect.objectContaining({ willRetry: false }),
+    );
+  });
+
   it("makes disposal terminal while project registration is in flight", async () => {
     let resolveRegistration!: (value: unknown) => void;
     const registration = new Promise<unknown>((resolve) => {
@@ -2139,7 +2184,13 @@ describe("local runtime connection pool", () => {
     pool.dispose();
     resolveRegistration(project);
 
-    await expect(pendingWrite).rejects.toThrow("Local runtime connection pool is disposed.");
+    // Admitted before the quit: it ends with the connection the quit closed,
+    // an answer and not the pool's invariant. A call made after it still
+    // trips the invariant.
+    await expect(pendingWrite).rejects.toThrow("Remote ADE service connection closed because ADE is quitting.");
+    await expect(pool.callActionForRoot(rootPath, { domain: "pty", action: "write", args: {} })).rejects.toThrow(
+      "Local runtime connection pool is disposed.",
+    );
     await expect(pool.ensureProject(rootPath)).rejects.toThrow(
       "Local runtime connection pool is disposed.",
     );

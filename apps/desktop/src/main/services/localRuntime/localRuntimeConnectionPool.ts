@@ -176,6 +176,12 @@ const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WA
  * exactly as it did before — so a wedged runtime still costs a bounded delay.
  */
 const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
+
+/**
+ * The pool's own "used after quit started" invariant (disposed, or admission
+ * closed), told apart from errors the runtime returns.
+ */
+class LocalRuntimePoolClosedError extends Error {}
 /**
  * How long quit gives this desktop's own brain to exit after it is asked to
  * shut down, on Windows, before the brain is force-killed. The request and the
@@ -1200,6 +1206,8 @@ export class LocalRuntimeConnectionPool {
   /** Logs a brain update's window once, not on every connect attempt inside it. */
   private loggedBrainUpdateWindow = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
+  /** Every action call still running, coalesced or not, for `drain()`. */
+  private readonly inFlightActionCalls = new Set<Promise<unknown>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private readonly projectRegistrationsByRoot = new Map<string, {
     acceptsMatchingWaiters: boolean;
@@ -1987,12 +1995,12 @@ export class LocalRuntimeConnectionPool {
           rootPath: normalizedRoot,
           socketPath: entry.socketPath,
           attempt,
-          willRetry: attempt < 2,
+          willRetry: attempt < 2 && !this.isShuttingDown(),
           error: error.message,
         });
         this.resetActiveConnection(entry);
         lastError = error;
-        if (attempt < 2) continue;
+        if (attempt < 2 && !this.isShuttingDown()) continue;
         throw error;
       }
 
@@ -2016,12 +2024,12 @@ export class LocalRuntimeConnectionPool {
           rootPath: normalizedRoot,
           socketPath: entry.socketPath,
           attempt,
-          willRetry: attempt < 2,
+          willRetry: attempt < 2 && !this.isShuttingDown(),
           error: projectError.message,
         });
         this.resetActiveConnection(entry);
         lastError = projectError;
-        if (attempt < 2) continue;
+        if (attempt < 2 && !this.isShuttingDown()) continue;
         throw projectError;
       }
     }
@@ -2179,13 +2187,31 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
+    // A call that arrives after quit starts is a caller bug and keeps the
+    // invariant error. A call admitted before that ends with the connection
+    // the quit closed under it, which is what really happened to it.
+    this.assertNotDisposed();
+    try {
+      return await this.callActionForRootAdmitted(rootPath, request);
+    } catch (error) {
+      if (error instanceof LocalRuntimePoolClosedError) {
+        throw new Error("Remote ADE service connection closed because ADE is quitting.");
+      }
+      throw error;
+    }
+  }
+
+  private async callActionForRootAdmitted(
+    rootPath: string,
+    request: RemoteRuntimeActionRequest,
+  ): Promise<RemoteRuntimeActionResult> {
     const coalescedKey = coalescedLocalRuntimeActionKey(rootPath, request);
-    if (!coalescedKey) return await this.callActionForRootUncoalesced(rootPath, request);
+    if (!coalescedKey) return await this.trackInFlightAction(this.callActionForRootUncoalesced(rootPath, request));
 
     const existing = this.coalescedActionCalls.get(coalescedKey);
     if (existing) return await existing;
 
-    const actionCall = this.callActionForRootUncoalesced(rootPath, request)
+    const actionCall = this.trackInFlightAction(this.callActionForRootUncoalesced(rootPath, request))
       .finally(() => {
         if (this.coalescedActionCalls.get(coalescedKey) === actionCall) {
           this.coalescedActionCalls.delete(coalescedKey);
@@ -2193,6 +2219,24 @@ export class LocalRuntimeConnectionPool {
       });
     this.coalescedActionCalls.set(coalescedKey, actionCall);
     return await actionCall;
+  }
+
+  private trackInFlightAction<T>(call: Promise<T>): Promise<T> {
+    this.inFlightActionCalls.add(call);
+    const forget = (): void => {
+      this.inFlightActionCalls.delete(call);
+    };
+    call.then(forget, forget);
+    return call;
+  }
+
+  /**
+   * Quit has started: admission is closed or the pool is gone. A connection
+   * that drops now drops because of the quit, so a retry could only reach a
+   * pool that refuses it.
+   */
+  private isShuttingDown(): boolean {
+    return this.disposed || this.stopping;
   }
 
   private async callActionForRootUncoalesced(
@@ -2276,16 +2320,20 @@ export class LocalRuntimeConnectionPool {
             socketPath: entry.socketPath,
             totalMs,
             attempt,
-            willRetry: attempt < maxAttempts,
+            willRetry: attempt < maxAttempts && !this.isShuttingDown(),
           });
           this.resetActiveConnection(entry);
         }
       }
 
       if (callError) {
+        // During quit the dropped connection is the answer: it reaches the
+        // caller as "connection closed", not as the disposed pool a retry
+        // would run into (ADE-DESKTOP-2P/1D/2Z).
         if (
           isLocalRuntimeConnectionDropped(callError) &&
-          attempt < maxAttempts
+          attempt < maxAttempts &&
+          !this.isShuttingDown()
         ) {
           lastError = callError;
           continue;
@@ -2490,7 +2538,10 @@ export class LocalRuntimeConnectionPool {
     for (const registration of this.projectRegistrationsByRoot.values()) {
       inFlight.push(registration.promise);
     }
-    for (const call of this.coalescedActionCalls.values()) {
+    // Uncoalesced calls too: a status poll the renderer sent just before its
+    // window closed is still in flight, and settling it here is what keeps
+    // it from meeting the teardown.
+    for (const call of this.inFlightActionCalls) {
       inFlight.push(call);
     }
     if (inFlight.length === 0) return;
@@ -2639,10 +2690,10 @@ export class LocalRuntimeConnectionPool {
 
   private assertNotDisposed(): void {
     if (this.disposed) {
-      throw new Error("Local runtime connection pool is disposed.");
+      throw new LocalRuntimePoolClosedError("Local runtime connection pool is disposed.");
     }
     if (this.stopping) {
-      throw new Error("Local runtime connection pool is stopping.");
+      throw new LocalRuntimePoolClosedError("Local runtime connection pool is stopping.");
     }
   }
 
