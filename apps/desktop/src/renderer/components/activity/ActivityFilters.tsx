@@ -74,6 +74,7 @@ type FilterOption = { value: string; label: string };
 const KIND_LABEL: Record<AttentionItem["kind"], string> = {
   agent: "Agents",
   pull_request: "Pull requests",
+  message: "Messages",
 };
 
 function optionsFrom(

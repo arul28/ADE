@@ -100,6 +100,11 @@ function errorMessage(error: unknown): string {
   return "ADE couldn’t refresh account Activity.";
 }
 
+/** The account the Activity store currently belongs to (null when signed out). */
+export function currentActivityAccountOwnerId(): string | null {
+  return activityAccountOwnerId;
+}
+
 export async function refreshActivitySnapshot(): Promise<void> {
   const generation = activityAccountGeneration;
   const ownerId = activityAccountOwnerId;

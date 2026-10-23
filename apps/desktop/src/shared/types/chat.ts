@@ -516,6 +516,13 @@ export type SpawnCompletedNotice = {
 };
 
 /**
+ * `system_notice.status` of the line a chat shows when its agent sent the user
+ * a message (`ade notify` from that chat). `message` is "Notified you: <title>",
+ * `detail` the body.
+ */
+export const USER_NOTIFIED_NOTICE_STATUS = "user_notified";
+
+/**
  * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
  * completion, in EITHER wording: the current sentence, and the pre-rename
  * `Peer "<title>" turn finished` that persisted transcripts still hold and are

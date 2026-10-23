@@ -805,7 +805,7 @@ struct WorkSessionListRow: View {
   /// Mute only applies to chat sessions.
   private var isMuted: Bool {
     isChatSession(session)
-      && pushNotificationService.prefs.mutedSessionIds.contains(session.id)
+      && pushNotificationService.isSessionMuted(session.id)
   }
 
   private var canonicalPhase: CanonicalSessionPhase {

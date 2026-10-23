@@ -77,6 +77,7 @@ import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { ActivityPane } from "../activity/ActivityPane";
 import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
+import { useAgentMessageToasts } from "../activity/useAgentMessageToasts";
 import { isActivityRoute } from "../../lib/legacyRoutes";
 import {
   BROWSER_TAB_KEYBINDING,
@@ -387,6 +388,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useAppWideSessionAttention();
   useCtoAttention();
   useActivitySync(activityPaneOpen);
+  useAgentMessageToasts();
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;

@@ -800,6 +800,8 @@ func retryAccountAttentionAcknowledgmentsOnce<Output>(
 /// and loading of account machines from the directory Worker.
 @MainActor
 final class AccountService: ObservableObject {
+  /// Set once a snapshot cursor was earned by a request that asked for agent messages.
+  static let attentionCursorIncludesMessagesKey = "ade.attention.cursorIncludesMessages.v1"
   static let shared = AccountService()
 
   enum Phase: Equatable {
@@ -1459,12 +1461,18 @@ final class AccountService: ObservableObject {
               pendingAckOutcome.staleItemIds.isEmpty {
       attentionAckFailure = nil
     }
+    // A cursor saved by a build that did not ask for agent messages has
+    // already moved past the ones the relay held back, so the first fetch
+    // after upgrading starts over once.
+    let cursorIncludesMessages = ADESharedContainer.defaults.bool(
+      forKey: Self.attentionCursorIncludesMessagesKey
+    )
     do {
       let delta = try await attentionRelay.fetchSnapshot(
         baseURL: baseURL,
         token: initialSession.token,
-        since: existing?.revision ?? 0,
-        streamId: existing?.streamId,
+        since: cursorIncludesMessages ? (existing?.revision ?? 0) : 0,
+        streamId: cursorIncludesMessages ? existing?.streamId : nil,
         refreshToken: { [weak self] in
           guard let self,
                 self.isPairingCommitAuthorized(initialSession.authorization) else {
@@ -1482,14 +1490,28 @@ final class AccountService: ObservableObject {
       // Another writer may have committed a newer response while this request
       // was suspended. Always merge against the latest durable snapshot, never
       // the stale preflight read used to construct `since`.
+      let current = ADESharedContainer.readAttentionSnapshot()
       let complete = accountAttentionSnapshotForCommit(
-        current: ADESharedContainer.readAttentionSnapshot(),
+        current: current,
         incoming: delta
       )
       guard ADESharedContainer.writeAttentionSnapshot(complete) else { return }
+      if !cursorIncludesMessages {
+        ADESharedContainer.defaults.set(true, forKey: Self.attentionCursorIncludesMessagesKey)
+      }
       attentionRefreshFailure = nil
       attentionSnapshotRevision &+= 1
       WidgetReloadBridge.reloadAllTimelines()
+      // An alert for something already looked at on another device (or gone)
+      // should not sit in Notification Center waiting to be looked at again.
+      let settledIds = accountAttentionSettledItemIds(
+        previous: current,
+        delta: delta,
+        complete: complete
+      )
+      if !settledIds.isEmpty {
+        Task { await PushNotificationService.shared.removeDeliveredNotifications(attentionItemIds: settledIds) }
+      }
 
       // A stale fence needs one fresh snapshot before retrying. Items queued
       // before their account row existed get the same single post-refresh
@@ -1809,6 +1831,70 @@ final class AccountService: ObservableObject {
       guard let self else { return false }
       return await self.performAttentionDevicePreferencesUpdate(request)
     }
+  }
+
+  /// The account-wide per-chat mute list, or nil when it could not be read
+  /// for the account that is signed in now.
+  func fetchAttentionMutedSessionIds() async -> [String]? {
+    await performAttentionMuteRequest { client, baseURL, token, refreshToken in
+      try await client.fetchMutedSessionIds(
+        baseURL: baseURL,
+        token: token,
+        refreshToken: refreshToken
+      )
+    }
+  }
+
+  /// Mute or unmute one chat on every device signed in to this account.
+  /// Returns the account list after the change, or nil when the change did not
+  /// land for the account that is signed in now.
+  func setAttentionSessionMuted(sessionId: String, muted: Bool) async -> [String]? {
+    await performAttentionMuteRequest { client, baseURL, token, refreshToken in
+      try await client.setSessionMuted(
+        baseURL: baseURL,
+        token: token,
+        sessionId: sessionId,
+        muted: muted,
+        refreshToken: refreshToken
+      )
+    }
+  }
+
+  /// Shared fencing for the mute routes: the result only counts when the
+  /// account that asked is still the one signed in when it returns.
+  private func performAttentionMuteRequest(
+    _ operation: (
+      AccountAttentionRelayClient,
+      URL,
+      String,
+      @escaping () async -> String?
+    ) async throws -> [String]
+  ) async -> [String]? {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.attentionRelayBaseURL,
+          let authorization = currentPairingAuthorization,
+          authorization.ownerId == requestedOwnerId,
+          let initialSession = try? await freshRelaySession(
+            expectedAuthorization: authorization
+          ) else {
+      return nil
+    }
+    let refreshToken: () async -> String? = { [weak self] in
+      guard let self, self.isPairingCommitAuthorized(authorization) else { return nil }
+      return try? await self.freshRelaySession(expectedAuthorization: authorization).token
+    }
+    guard let result = try? await operation(
+      attentionRelay,
+      baseURL,
+      initialSession.token,
+      refreshToken
+    ),
+      isPairingCommitAuthorized(authorization),
+      identity?.userId == requestedOwnerId else {
+      return nil
+    }
+    return result
   }
 
   private func performAttentionDevicePreferencesUpdate(
@@ -2172,4 +2258,46 @@ enum AccountError: LocalizedError {
     case .message(let text): return text
     }
   }
+}
+
+/// Item ids this refresh newly settled: seen or dismissed in the delta when
+/// they were not before, tombstoned, or dropped from the stream. These are the
+/// alerts Notification Center should stop holding.
+func accountAttentionSettledItemIds(
+  previous: AccountAttentionSnapshot?,
+  delta: AccountAttentionSnapshot,
+  complete: AccountAttentionSnapshot
+) -> Set<String> {
+  let previousById = Dictionary(
+    (previous?.items ?? []).map { ($0.id, $0) },
+    uniquingKeysWith: { first, _ in first }
+  )
+  // A delta is a cursor replay, so one of its rows can be older than the
+  // completed snapshot. Clear a delivered alert only when that snapshot still
+  // says the item is settled: the same id can come back unread, and its alert
+  // must then stay in Notification Center.
+  func isSettledInComplete(_ id: String) -> Bool {
+    guard let item = complete.items.first(where: { $0.id == id }) else {
+      return true
+    }
+    return item.seenAt != nil || item.dismissedAt != nil
+  }
+
+  var settled = Set<String>()
+  for item in delta.items where item.seenAt != nil || item.dismissedAt != nil {
+    if let prior = previousById[item.id], prior.seenAt != nil || prior.dismissedAt != nil {
+      continue
+    }
+    guard isSettledInComplete(item.id) else { continue }
+    settled.insert(item.id)
+  }
+  for tombstone in delta.tombstones ?? [] {
+    guard isSettledInComplete(tombstone.id) else { continue }
+    settled.insert(tombstone.id)
+  }
+  let remaining = Set(complete.items.map(\.id))
+  for id in previousById.keys where !remaining.contains(id) {
+    settled.insert(id)
+  }
+  return settled
 }

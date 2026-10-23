@@ -92,6 +92,7 @@ import {
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
+  type AttentionDesktopAlert,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
@@ -6607,8 +6608,26 @@ const adeBridge = {
         machineKey,
         preferences,
       }),
+    setSessionMuted: async (
+      accountOwnerId: string,
+      sessionId: string,
+      muted: boolean,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionSetSessionMuted, {
+        accountOwnerId,
+        sessionId,
+        muted,
+      }),
     openItem: async (item: AttentionItem): Promise<void> => {
       await ipcRenderer.invoke(IPC.attentionOpenItem, item);
+    },
+    onAlert: (cb: (alert: AttentionDesktopAlert) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AttentionDesktopAlert) => cb(payload);
+      ipcRenderer.on(IPC.attentionAlert, listener);
+      return () => ipcRenderer.removeListener(IPC.attentionAlert, listener);
+    },
+    openAlert: async (alert: AttentionDesktopAlert): Promise<void> => {
+      await ipcRenderer.invoke(IPC.attentionOpenAlert, alert.itemId);
     },
   },
   captureGesture: {

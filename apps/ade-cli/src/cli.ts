@@ -1570,6 +1570,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   from a terminal, from an agent ("tell me when the deploy is done"), or from
   an automation. The text arrives exactly as written; nothing is added.
 
+  Run by an agent inside an ADE chat, it is that chat's message: the chat shows
+  "Notified you", Activity's Inbox lists it on every device, a tap opens the
+  chat, and the phone stays quiet while you are at your computer or if you
+  muted the chat. A chat can send 6 an hour; the same words twice within ten
+  minutes go out once.
+
     $ ade notify --title "Deploy finished"
     $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
     $ ade notify --title "Review ready" --open "ade://pr/1514"
@@ -1588,6 +1594,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     Phones that turned notifications off, are in quiet hours, or muted this
     machine stay quiet. An account can send 60 an hour; past that the command
     exits non-zero and says when to try again.
+    --session <chat id> sends as that chat from a terminal; an agent always
+    sends as its own chat.
 `,
   auth: `${ADE_BANNER}
   ADE Account
@@ -21363,6 +21371,7 @@ function buildCliPlan(
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
     const body = readValue(args, ["--body", "-b"]);
     const open = readValue(args, ["--open", "--link"]);
+    const session = readValue(args, ["--session"]);
     const problem = customNotificationProblem({ title, body, open });
     if (problem) {
       throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
@@ -21383,6 +21392,7 @@ function buildCliPlan(
             title: title.trim(),
             ...(body?.trim() ? { body: body.trim() } : {}),
             ...(open?.trim() ? { open: open.trim() } : {}),
+            ...(session?.trim() ? { sessionId: session.trim() } : {}),
           },
           projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
         },

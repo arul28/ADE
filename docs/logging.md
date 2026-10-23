@@ -1475,6 +1475,17 @@ events per installation per UTC day, inside the existing `ade_feature_used`
 140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
 was raised. The dashboard spec is deliberately untouched: no card asks this yet.
 
+`ade notify` run inside a chat takes that chat's own route
+(`sendNotifyAsChatMessage` in `apps/ade-cli/src/services/push/chatMessageNotify.ts`)
+and records the same event, `feature: "attention"`,
+`action: "notification_sent"`, `surface: "api"`, `outcome: "completed"`, once the
+message is stored as this machine's Activity message; the phone receives it only
+when the machine is signed in to an account. A repeat of the same words inside
+the ten-minute window, and the per-chat or per-machine hourly limit, send
+nothing and emit nothing. The title, body, chat title, ids and counts never
+cross the boundary, and the existing per-outcome deduplication and ceilings
+apply unchanged.
+
 ### The capture gesture
 
 The capture gesture records one `ade_feature_used` event from the main-process handler that

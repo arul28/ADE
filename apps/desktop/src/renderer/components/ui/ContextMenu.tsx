@@ -216,6 +216,57 @@ export function ContextMenu({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menu, onClose]);
   if (!menu) return null;
+  return (
+    <ContextMenuSurface
+      menuRef={ref}
+      left={position?.left ?? menu.x}
+      top={position?.top ?? menu.y}
+      positioned={Boolean(position)}
+      onClose={onClose}
+      label={label}
+      testId={testId}
+      portal={portal}
+      role="menu"
+      className="min-w-[200px]"
+    >
+      <EntryRows entries={entries} onClose={onClose} />
+    </ContextMenuSurface>
+  );
+}
+
+/**
+ * The context-menu overlay itself: a click-away backdrop and the glass panel
+ * at a clamped position, on the context-menu layer. `ContextMenu` builds its
+ * rows from entries; a menu with bespoke content (inline rename, tag input)
+ * passes children instead and still gets the shared layer.
+ */
+export function ContextMenuSurface({
+  menuRef,
+  left,
+  top,
+  positioned,
+  onClose,
+  label,
+  testId,
+  portal = false,
+  role,
+  className,
+  children,
+}: {
+  menuRef: React.Ref<HTMLDivElement>;
+  /** `menu` when the rows are menu items (entry-built menus); omit otherwise. */
+  role?: "menu";
+  left: number;
+  top: number;
+  /** False until the clamp has measured the panel; it stays hidden until then. */
+  positioned: boolean;
+  onClose: () => void;
+  label?: string;
+  testId?: string;
+  portal?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
   // The overlay host is click-through; the menu's own layers opt back in.
   const pointerEvents = portal ? ("auto" as const) : undefined;
   const content = (
@@ -234,22 +285,22 @@ export function ContextMenu({
         }}
       />
       <div
-        ref={ref}
-        role="menu"
+        ref={menuRef}
+        role={role}
         aria-label={label}
         data-testid={testId}
-        className="ade-liquid-glass-menu fixed min-w-[200px] py-1"
+        className={`ade-liquid-glass-menu fixed py-1 ${className ?? ""}`}
         style={{
           zIndex: Z_LAYERS.contextMenu,
-          left: position?.left ?? menu.x,
-          top: position?.top ?? menu.y,
-          visibility: position ? "visible" : "hidden",
+          left,
+          top,
+          visibility: positioned ? "visible" : "hidden",
           WebkitAppRegion: "no-drag",
           pointerEvents,
         } as React.CSSProperties}
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <EntryRows entries={entries} onClose={onClose} />
+        {children}
       </div>
     </>
   );

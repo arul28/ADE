@@ -1,7 +1,9 @@
 import {
   ATTENTION_CONTRACT_VERSION,
   ATTENTION_EVENT_KINDS,
+  ATTENTION_MESSAGE_EVENT_KIND,
   ATTENTION_PHASES,
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
   runAcknowledgmentChunks,
@@ -216,8 +218,12 @@ function parseAttentionItem(value: unknown): AttentionItem | null {
     || typeof candidate.id !== "string"
     || !Number.isInteger(candidate.revision)
     || typeof candidate.fingerprint !== "string"
-    || !["agent", "pull_request"].includes(String(candidate.kind))
-    || !ATTENTION_EVENT_KINDS.includes(candidate.eventKind as AttentionEventKind)
+    || !["agent", "pull_request", "message"].includes(String(candidate.kind))
+    || !(
+      candidate.kind === "message"
+        ? candidate.eventKind === ATTENTION_MESSAGE_EVENT_KIND
+        : ATTENTION_EVENT_KINDS.includes(candidate.eventKind as AttentionEventKind)
+    )
     || !ATTENTION_PHASES.includes(candidate.phase as AttentionPhase)
     || (
       candidate.activityTier !== undefined
@@ -597,6 +603,8 @@ export function createAttentionNamespace(
         since: String(Math.max(0, Math.trunc(since))),
       });
       if (streamId?.trim()) query.set("streamId", streamId.trim());
+      // This reader understands message items; older ones never receive them.
+      query.set("include", ATTENTION_SNAPSHOT_INCLUDE_MESSAGES);
       const snapshot = parseAttentionSnapshot(await request(
         "snapshot",
         "GET",
@@ -781,6 +789,23 @@ export function createAttentionNamespace(
         "PATCH",
         `/attention/account/preferences/machines/${encodeURIComponent(key)}`,
         preferences,
+        { userInitiated: true },
+      );
+    },
+
+    /** One chat's mute, on every device (its own atomic relay route). */
+    async setSessionMuted(accountOwnerId: string, sessionId: string, muted: boolean) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const id = sessionId.trim();
+      if (!id) throw new Error("A chat is required to change its notifications.");
+      await request(
+        "chat mute update",
+        "PATCH",
+        `/attention/account/preferences/sessions/${encodeURIComponent(id)}`,
+        { muted },
         { userInitiated: true },
       );
     },

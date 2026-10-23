@@ -83,7 +83,10 @@ export type ParsedAttentionItem = Record<string, unknown> & {
   // then derive a column from the phase (`activityBoardColumn`).
   boardColumn?: ActivityBoardColumn;
   waitingReason?: ActivityWaitingReason;
-  kind: "agent" | "pull_request";
+  // `message` is a note an agent sent because the user asked to be told
+  // (`ade notify` from a chat). Only clients that ask for it receive it; see
+  // `snapshotIncludesMessages`.
+  kind: "agent" | "pull_request" | "message";
   eventKind: string;
   phase: string;
   title: string;
