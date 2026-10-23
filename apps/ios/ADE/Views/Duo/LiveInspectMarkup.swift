@@ -387,6 +387,12 @@ final class LiveInspectMarkupModel: ObservableObject {
   }
 
   private func fail(_ error: Error) {
+    // A reply this phone cannot read means the host and the app disagree on
+    // the format: a bug, not a machine that is away. The rest (offline,
+    // timeouts, an older host) are states the user sees and can fix.
+    if error is DecodingError {
+      CrashReporting.capture(error, context: ["area": "live_inspect", "surface": surface.rawValue])
+    }
     phase = .failed(LiveInspectFailure.visibleMessage(for: error))
   }
 
