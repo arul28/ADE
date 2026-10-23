@@ -1554,70 +1554,6 @@ struct HubCenteredPage<Content: View>: View {
   }
 }
 
-/// A landing page in two parts, the hero (brand, headline) and the actions,
-/// laid out so neither sits on the Duo's fold: book-folded the hero is the
-/// left page and the actions the right one, laptop-folded the hero is the top
-/// half and the actions the bottom half, each centered in its page. Flat (and
-/// on every other iPhone) it is one column centered on the whole screen, the
-/// actions toward the bottom.
-struct HubFoldAwarePage<Hero: View, Actions: View>: View {
-  var maxWidth: CGFloat = 480
-  @ViewBuilder var hero: () -> Hero
-  @ViewBuilder var actions: () -> Actions
-
-  var body: some View {
-    DuoLocalFoldReader { fold, size in
-      switch fold {
-      case .sideBySide(let rect):
-        let lead = max(0, min(rect.minX, size.width))
-        HStack(spacing: 0) {
-          page { hero() }
-            .frame(width: lead)
-          Color.clear
-            .frame(width: min(rect.width, max(0, size.width - lead)))
-          page { actions() }
-            .frame(maxWidth: .infinity)
-        }
-      case .stacked(let rect):
-        let top = max(0, min(rect.minY, size.height))
-        VStack(spacing: 0) {
-          page { hero() }
-            .frame(height: top)
-          Color.clear
-            .frame(height: min(rect.height, max(0, size.height - top)))
-          page { actions() }
-            .frame(maxHeight: .infinity)
-        }
-      case .none:
-        HubCenteredPage(maxWidth: maxWidth) {
-          VStack(spacing: 0) {
-            Spacer(minLength: 24)
-            hero()
-            Spacer(minLength: 32)
-            actions()
-              .padding(.bottom, 40)
-          }
-        }
-      }
-    }
-  }
-
-  /// One page of a folded layout: its part centered in it, scrolling when it
-  /// does not fit.
-  private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-    let content = content()
-    return GeometryReader { geometry in
-      ScrollView {
-        content
-          .frame(maxWidth: min(maxWidth, 400))
-          .padding(.horizontal, 24)
-          .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-      }
-      .scrollIndicators(.hidden)
-      .scrollBounceBehavior(.basedOnSize)
-    }
-  }
-}
 
 // MARK: - No-machine state (preserves the old project hub landing)
 
@@ -1627,7 +1563,11 @@ struct HubNoMachineState: View {
   var onConnectSuccess: () -> Void = {}
 
   var body: some View {
-    HubFoldAwarePage {
+    // One column, centered on the whole screen on every display (the
+    // Duo's fold included), as the sign-in page is.
+    HubCenteredPage {
+      VStack(spacing: 0) {
+        Spacer(minLength: 24)
       VStack(spacing: 0) {
         Image("BrandMark")
           .resizable()
@@ -1657,7 +1597,7 @@ struct HubNoMachineState: View {
             .padding(.top, 22)
         }
       }
-    } actions: {
+        .padding(.bottom, 32)
       VStack(spacing: 24) {
         // One-tap cards for machines that are online right now — on your
         // account or previously paired — so a phone can jump back in
@@ -1689,6 +1629,8 @@ struct HubNoMachineState: View {
           }
         }
         .frame(maxWidth: 360)
+      }
+        Spacer(minLength: 24)
       }
     }
     .toolbar {

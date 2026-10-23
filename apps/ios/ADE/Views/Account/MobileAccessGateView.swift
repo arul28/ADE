@@ -19,9 +19,11 @@ struct MobileAccessGateView: View {
 
   var body: some View {
     NavigationStack {
-      // Hero and actions on separate pages when the Duo is folded, so
-      // neither sits on the fold; one centered column otherwise.
-      HubFoldAwarePage(maxWidth: 420) {
+      // One column, centered on the whole screen on every display (the
+      // Duo's fold included): the mark, its line, then the actions.
+      HubCenteredPage(maxWidth: 420) {
+        VStack(spacing: 0) {
+          Spacer(minLength: 24)
         VStack(spacing: 0) {
           // Hero: the real ADE wordmark, big and centered, over a single line of
           // device-neutral copy. No explanatory paragraphs (M1).
@@ -41,7 +43,7 @@ struct MobileAccessGateView: View {
             .foregroundStyle(ADEColor.textSecondary)
             .multilineTextAlignment(.center)
         }
-      } actions: {
+          .padding(.bottom, 40)
         VStack(spacing: 14) {
           Button {
             accountConnectionError = nil
@@ -145,6 +147,8 @@ struct MobileAccessGateView: View {
           }
         }
         .frame(maxWidth: 360)
+          Spacer(minLength: 24)
+        }
       }
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("")
