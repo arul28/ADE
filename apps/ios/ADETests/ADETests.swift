@@ -13915,10 +13915,17 @@ final class ADETests: XCTestCase {
       modelId: "gpt-5-codex",
       runtimeMode: "auto",
       reasoningEffort: "high",
-      codexFastMode: true
+      codexFastMode: false
     )
     WorkComposerPreferences.save(selection)
     XCTAssertEqual(WorkComposerPreferences.load(), selection)
+
+    // Fast is per chat and is never remembered. A composer that asks to save
+    // it round-trips every other field but comes back at Standard.
+    var fastSelection = selection
+    fastSelection.codexFastMode = true
+    WorkComposerPreferences.save(fastSelection)
+    XCTAssertFalse(WorkComposerPreferences.load()?.codexFastMode ?? true)
 
     // A half-initialized composer (blank provider/model) must never clobber a
     // good record.
