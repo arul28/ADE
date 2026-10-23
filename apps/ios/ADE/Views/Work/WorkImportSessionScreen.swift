@@ -1122,6 +1122,7 @@ private struct WorkImportBackItem: ViewModifier {
   let action: () -> Void
 
   func body(content: Content) -> some View {
+    #if compiler(>=6.4)
     if #available(iOS 27.1, *) {
       content.toolbar {
         ToolbarItem(placement: .topBarLeading) { button }
@@ -1132,6 +1133,11 @@ private struct WorkImportBackItem: ViewModifier {
         ToolbarItem(placement: .topBarLeading) { button }
       }
     }
+    #else
+    content.toolbar {
+      ToolbarItem(placement: .topBarLeading) { button }
+    }
+    #endif
   }
 
   private var button: some View {

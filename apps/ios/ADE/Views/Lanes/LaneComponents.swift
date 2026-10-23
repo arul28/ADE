@@ -742,15 +742,28 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
               .accessibilityLabel("Back to lanes")
           }
         }
-    } else if #available(iOS 27.0, *) {
-      content.toolbar {
-        DuoSplitListToggle(split: split)
-        ToolbarItem(placement: .topBarPinnedTrailing) { pullRequestButton }
-          .visibilityPriority(.high)
-        commonItems
-        ToolbarOverflowMenu { overflowItems }
-      }
     } else {
+      #if compiler(>=6.4)
+      if #available(iOS 27.0, *) {
+        content.toolbar {
+          DuoSplitListToggle(split: split)
+          ToolbarItem(placement: .topBarPinnedTrailing) { pullRequestButton }
+            .visibilityPriority(.high)
+          commonItems
+          ToolbarOverflowMenu { overflowItems }
+        }
+      } else {
+        content.toolbar {
+          DuoSplitListToggle(split: split)
+          ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
+          commonItems
+          ToolbarItem(placement: .topBarTrailing) {
+            Menu { overflowItems } label: { Image(systemName: "ellipsis") }
+              .accessibilityLabel("Lane options")
+          }
+        }
+      }
+      #else
       content.toolbar {
         DuoSplitListToggle(split: split)
         ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
@@ -760,6 +773,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
             .accessibilityLabel("Lane options")
         }
       }
+      #endif
     }
   }
 

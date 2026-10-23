@@ -90,6 +90,7 @@ enum DuoEdgeBarExperiments {
     switch name {
     case "duo-exp-a":
       // Sibling stacks, pane's vertical bar disabled.
+      #if compiler(>=6.4)
       guard #available(iOS 27.1, *) else { return nil }
       return AnyView(HStack(spacing: 0) {
         NavigationStack { chat("chat A").navigationTitle("Chat").toolbar { railItems } }
@@ -99,6 +100,9 @@ enum DuoEdgeBarExperiments {
         }
         .toolbarVerticalBehavior(.disabled)
       })
+      #else
+      return nil
+      #endif
     case "duo-exp-b":
       // One outer stack; pane is a nested stack with its bar hidden.
       return AnyView(NavigationStack {

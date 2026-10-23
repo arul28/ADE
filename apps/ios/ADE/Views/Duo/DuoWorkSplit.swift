@@ -168,15 +168,23 @@ struct DuoShowSessionsItem: ViewModifier {
   func body(content: Content) -> some View {
     if !shown {
       content
-    } else if #available(iOS 27.1, *) {
-      content.toolbar {
-        ToolbarItem(placement: .topBarLeading) { button }
-          .axisBehavior(.horizontalOnly)
-      }
     } else {
+      #if compiler(>=6.4)
+      if #available(iOS 27.1, *) {
+        content.toolbar {
+          ToolbarItem(placement: .topBarLeading) { button }
+            .axisBehavior(.horizontalOnly)
+        }
+      } else {
+        content.toolbar {
+          ToolbarItem(placement: .topBarLeading) { button }
+        }
+      }
+      #else
       content.toolbar {
         ToolbarItem(placement: .topBarLeading) { button }
       }
+      #endif
     }
   }
 

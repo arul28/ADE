@@ -383,6 +383,7 @@ struct DuoLinearLaunchToolbar: ToolbarContent {
   let issue: NormalizedLinearIssue
 
   var body: some ToolbarContent {
+    #if compiler(>=6.4)
     if #available(iOS 27.0, *) {
       ToolbarItem(placement: .topBarPinnedTrailing) {
         launchAgent
@@ -392,6 +393,11 @@ struct DuoLinearLaunchToolbar: ToolbarContent {
         launchAgent
       }
     }
+    #else
+    ToolbarItem(placement: .primaryAction) {
+      launchAgent
+    }
+    #endif
     ToolbarItem(placement: .primaryAction) {
       NavigationLink(value: LinearRoute.launch(issue: issue, laneOnly: true)) {
         Label("New lane", systemImage: "link")

@@ -102,18 +102,26 @@ private struct DuoLayoutRootModifier: ViewModifier {
 /// panes that need the fold in their own coordinate space.
 enum DuoFoldReading {
   static func fold(in proxy: GeometryProxy) -> DuoFold {
+    #if compiler(>=6.4)
     guard #available(iOS 27.1, *) else { return .none }
     let regions = proxy.reservedRegions(kind: .division)
     guard let region = regions.first(where: { $0.isActive }) else { return .none }
     let frame = region.frame
     return frame.width >= frame.height ? .stacked(frame) : .sideBySide(frame)
+    #else
+    return .none
+    #endif
   }
 
   /// Whether the display has a fold, active or not: the Duo's inner display
   /// reports its (inactive) division even while flat.
   static func hasFold(in proxy: GeometryProxy) -> Bool {
+    #if compiler(>=6.4)
     guard #available(iOS 27.1, *) else { return false }
     return !proxy.reservedRegions(kind: .division, options: .includeInactive).isEmpty
+    #else
+    return false
+    #endif
   }
 }
 
@@ -167,6 +175,7 @@ private struct DuoHingeObserver: ViewModifier {
   @Binding var angle: Double?
 
   func body(content: Content) -> some View {
+    #if compiler(>=6.4)
     if #available(iOS 27.1, *) {
       content.onHingeChange { _, context in
         angle = context.hinge?.angle.degrees
@@ -174,6 +183,9 @@ private struct DuoHingeObserver: ViewModifier {
     } else {
       content
     }
+    #else
+    content
+    #endif
   }
 }
 

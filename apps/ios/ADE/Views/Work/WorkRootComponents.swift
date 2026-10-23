@@ -2069,11 +2069,15 @@ func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
   guard proxy.size.height > proxy.size.width else { return false }
   // Upright, only that display reserves a column on the trailing side.
   if proxy.safeAreaInsets.trailing > 40 { return true }
+  #if compiler(>=6.4)
   guard #available(iOS 27.1, *) else { return false }
   return proxy.reservedRegions(kind: .occlusion, options: .includeInactive).contains { region in
     let frame = region.frame
     return frame.height > frame.width * 2 && frame.minX > proxy.size.width / 2
   }
+  #else
+  return false
+  #endif
 }
 
 struct WorkHeaderOverflowMenu: View {

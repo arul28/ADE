@@ -144,12 +144,18 @@ struct DuoChatRail: ViewModifier {
     // bar's.
     if retired {
       titled
-    } else if #available(iOS 27.1, *) {
-      titled.backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
-        Color.clear.toolbar { rail27(paneActions: paneActions) }
-      }
     } else {
+      #if compiler(>=6.4)
+      if #available(iOS 27.1, *) {
+        titled.backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
+          Color.clear.toolbar { rail27(paneActions: paneActions) }
+        }
+      } else {
+        titled.toolbar { rail26 }
+      }
+      #else
       titled.toolbar { rail26 }
+      #endif
     }
   }
 
@@ -180,6 +186,7 @@ struct DuoChatRail: ViewModifier {
   /// changes: the edge bar does not take back an item that was removed and
   /// declared again (a pane closing left the rail without the chat's
   /// buttons). The groups' contents may change; the groups never go away.
+  #if compiler(>=6.4)
   @available(iOS 27.1, *)
   @ToolbarContentBuilder
   private func rail27(paneActions: DuoPaneHeaderActions?) -> some ToolbarContent {
@@ -196,6 +203,7 @@ struct DuoChatRail: ViewModifier {
     ToolbarItemGroup(placement: .topBarTrailing) { chatButtons }
       .visibilityPriority(.high)
   }
+  #endif
 
   /// iOS 26: the same toolbar without the 27.1 axis and priority APIs.
   @ToolbarContentBuilder

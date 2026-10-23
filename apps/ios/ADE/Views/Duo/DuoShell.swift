@@ -327,11 +327,15 @@ private struct DuoAppTabsMenuItem: ToolbarContent {
     // (its pinned action, its overflow menu) always sort last on the trailing
     // side, so there they would share this item's capsule. The spacer keeps it
     // apart from a leading sidebar toggle or title.
+    #if compiler(>=6.4)
     if #available(iOS 27.0, *) {
       item.visibilityPriority(.high)
     } else {
       item
     }
+    #else
+    item
+    #endif
     ToolbarSpacer(.fixed, placement: .topBarLeading)
   }
 
@@ -354,6 +358,7 @@ private struct DuoAppTabsMenuItem: ToolbarContent {
 /// toolbar buttons beside it.
 struct DuoHubBackToolbarItem: ToolbarContent {
   var body: some ToolbarContent {
+    #if compiler(>=6.4)
     if #available(iOS 27.1, *) {
       ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
         .sharedBackgroundVisibility(.hidden)
@@ -362,6 +367,10 @@ struct DuoHubBackToolbarItem: ToolbarContent {
       ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
         .sharedBackgroundVisibility(.hidden)
     }
+    #else
+    ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
+      .sharedBackgroundVisibility(.hidden)
+    #endif
   }
 }
 
@@ -380,11 +389,15 @@ private struct DuoAppDestinationsToolbarGroup: ToolbarContent {
   @ObservedObject var navigation: DuoAppNavigation
 
   var body: some ToolbarContent {
+    #if compiler(>=6.4)
     if #available(iOS 27.0, *) {
       group.visibilityPriority(.high)
     } else {
       group
     }
+    #else
+    group
+    #endif
   }
 
   private var group: some ToolbarContent {
