@@ -3,7 +3,9 @@
 #
 #   bash scripts/release-tools/ios-testflight.sh <marketing-version> <build-number> <release-sha>
 #
-# Run from the repo root with <release-sha> checked out, on macOS. Safe to rerun:
+# Run from the repo root with <release-sha> checked out, on macOS. Uploads the
+# archive's dSYMs to Sentry (upload-ios-dsyms.sh says where the token comes
+# from). Safe to rerun:
 # an IPA already exported for this build is reused, and a build already in App
 # Store Connect is not uploaded again. App Store Connect often answers with 5xx
 # errors and timeouts; every ASC call is retried, so do not wrap this in
@@ -82,6 +84,9 @@ if [ -z "$existing" ]; then
   log "uploading"
   retry 8 asc builds upload --app "$APP" --ipa "$OUT/ADE.ipa" | tail -2
 fi
+
+# Every rerun uploads again: that is how a failed upload is retried.
+bash scripts/release-tools/upload-ios-dsyms.sh "$OUT/ADE.xcarchive"
 
 log "waiting for processing"
 for i in $(seq 1 60); do

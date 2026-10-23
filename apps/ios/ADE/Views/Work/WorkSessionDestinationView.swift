@@ -898,130 +898,13 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// Type-erased in two places on purpose. Written as one chain, these ~40
+  /// modifiers over the chat view are a single nested generic type, and the
+  /// Swift runtime builds its metadata on the main thread the first time a
+  /// chat opens: seconds on a phone (Sentry ADE-IOS-R/S). `AnyView` breaks
+  /// the chain into small types; the identity of each piece is stable.
   var body: some View {
-    sessionDestinationRoot
-      .workSessionNavigationChrome(
-        mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
-        title: sessionDestinationNavigationTitle,
-        subtitle: sessionDestinationNavigationSubtitle,
-        trailingControls: { sessionHeaderTrailingControls }
-      )
-      // No zoom navigation transition here: a zoom-pushed screen closes on a
-      // downward swipe, so pulling down at the top of the thread (to load
-      // older messages) closed the chat. Back is the button or the edge swipe.
-      .adeAnalyticsScreen(.workSession)
-      .sheet(item: $fullscreenImage) { image in
-        WorkFullscreenImageView(image: image)
-      }
-      .sheet(isPresented: $chatInfoPresented) {
-        // Folded off the main actor by the thread engine, like the timeline.
-        let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
-        WorkChatInfoDetailsSheet(
-          sessionId: sessionId,
-          subagentSnapshots: subagentSnapshots,
-          scheduledWorkSnapshots: scheduledWorkSnapshots,
-          scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
-          nextWakeAt: composerChatSummary?.nextWakeAt,
-          provider: subagentProvider,
-          expandedTaskIds: $expandedSubagentDetailIds,
-          sessionModel: composerChatSummary?.model,
-          sourceRefs: threadSnapshot.sourceRefs,
-          omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
-          taskList: threadSnapshot.taskList,
-          onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
-          onSelect: handleSubagentSelection,
-          onCancelScheduledWork: scheduledWorkCancelAction,
-          onSetScheduledWorkPaused: scheduledWorkPauseAction,
-          onStopTask: stopTaskAction
-        )
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .task {
-          await refreshRemoteSubagentSnapshots()
-        }
-      }
-      .sheet(isPresented: $createPrPresented) {
-        chatCreatePrWizardSheet
-      }
-      .sheet(isPresented: $prDetailsPresented, onDismiss: {
-        if createPrAfterDetailsDismiss {
-          createPrAfterDetailsDismiss = false
-          createPrPresented = true
-        }
-      }) {
-        WorkChatPrDetailsSheet(
-          tag: chatDisplayPrTag,
-          pr: chatDisplayPr,
-          summary: chatDisplayPrSummary,
-          snapshot: prDetailsSnapshot,
-          laneColor: headerMenuLaneColor,
-          canCreate: canCreatePullRequestForHeaderLane,
-          createBlockedReason: createPullRequestBlockedReason,
-          isRefreshing: prDetailsRefreshing,
-          errorMessage: prDetailsError,
-          onRefresh: {
-            Task { await refreshChatPrDetails(force: true) }
-          },
-          onCreate: {
-            presentCreateLanePr()
-          },
-          onOpenPrsTab: {
-            // The DISPLAYED PR decides, not the lane's resolved one: a PR this
-            // chat linked from another lane shows in the switcher while
-            // `lanePrTag` stays nil, and branching on the lane tag sent the
-            // user to the creation flow instead of to the PR they picked.
-            if chatDisplayPrTag == nil {
-              openPrCreationInPrsTab()
-            } else {
-              openLaneOpenPr()
-            }
-          },
-          onOpenGitHub: openLanePrOnGitHub,
-          linkedPrs: laneChatPrs,
-          selectedPrId: chatDisplayPr?.id,
-          onSelectPr: { selectChatPr($0) },
-          stackOffer: visibleChatStackOffer,
-          linkablePrs: chatPrLinkableCatalog,
-          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          linkBusy: chatPrLinkBusy,
-          onLinkStack: { Task { await linkChatStackOffer() } },
-          onDismissStackOffer: {
-            if let offer = visibleChatStackOffer {
-              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
-            }
-          },
-          onLinkPr: { prId, allowCrossLane in
-            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
-          },
-          onUnlink: { Task { await unlinkCurrentChatPr() } }
-        )
-        .presentationDetents([.height(500), .large])
-        .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-      }
-      .task(id: prChatWatchTaskKey) {
-        await refreshPrChatWatch()
-      }
-      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
-        Button("Cancel", role: .cancel) {}
-        Button("Stop and restart", role: .destructive) {
-          Task { await restartAgentSession(stopFirst: true) }
-        }
-      } message: {
-        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
-      }
-      .alert("Rename session", isPresented: $sessionActionRenamePresented) {
-        TextField("Title", text: $sessionActionRenameText)
-        Button("Cancel", role: .cancel) {
-          sessionActionRenameText = ""
-        }
-        Button("Save") {
-          let title = sessionActionRenameText
-          Task { await submitCurrentSessionRename(title) }
-        }
-      } message: {
-        Text("Give this session a clearer title for search, pinning, and activity tracking.")
-      }
+    AnyView(sessionDestinationPresentations)
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
@@ -1226,6 +1109,132 @@ struct WorkSessionDestinationView: View {
                   isChatSession(currentSession) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
+      }
+  }
+
+  private var sessionDestinationPresentations: some View {
+    AnyView(sessionDestinationRoot)
+      .workSessionNavigationChrome(
+        mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
+        title: sessionDestinationNavigationTitle,
+        subtitle: sessionDestinationNavigationSubtitle,
+        trailingControls: { sessionHeaderTrailingControls }
+      )
+      // No zoom navigation transition here: a zoom-pushed screen closes on a
+      // downward swipe, so pulling down at the top of the thread (to load
+      // older messages) closed the chat. Back is the button or the edge swipe.
+      .adeAnalyticsScreen(.workSession)
+      .sheet(item: $fullscreenImage) { image in
+        WorkFullscreenImageView(image: image)
+      }
+      .sheet(isPresented: $chatInfoPresented) {
+        // Folded off the main actor by the thread engine, like the timeline.
+        let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
+        WorkChatInfoDetailsSheet(
+          sessionId: sessionId,
+          subagentSnapshots: subagentSnapshots,
+          scheduledWorkSnapshots: scheduledWorkSnapshots,
+          scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
+          nextWakeAt: composerChatSummary?.nextWakeAt,
+          provider: subagentProvider,
+          expandedTaskIds: $expandedSubagentDetailIds,
+          sessionModel: composerChatSummary?.model,
+          sourceRefs: threadSnapshot.sourceRefs,
+          omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
+          taskList: threadSnapshot.taskList,
+          onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
+          onSelect: handleSubagentSelection,
+          onCancelScheduledWork: scheduledWorkCancelAction,
+          onSetScheduledWorkPaused: scheduledWorkPauseAction,
+          onStopTask: stopTaskAction
+        )
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .task {
+          await refreshRemoteSubagentSnapshots()
+        }
+      }
+      .sheet(isPresented: $createPrPresented) {
+        chatCreatePrWizardSheet
+      }
+      .sheet(isPresented: $prDetailsPresented, onDismiss: {
+        if createPrAfterDetailsDismiss {
+          createPrAfterDetailsDismiss = false
+          createPrPresented = true
+        }
+      }) {
+        WorkChatPrDetailsSheet(
+          tag: chatDisplayPrTag,
+          pr: chatDisplayPr,
+          summary: chatDisplayPrSummary,
+          snapshot: prDetailsSnapshot,
+          laneColor: headerMenuLaneColor,
+          canCreate: canCreatePullRequestForHeaderLane,
+          createBlockedReason: createPullRequestBlockedReason,
+          isRefreshing: prDetailsRefreshing,
+          errorMessage: prDetailsError,
+          onRefresh: {
+            Task { await refreshChatPrDetails(force: true) }
+          },
+          onCreate: {
+            presentCreateLanePr()
+          },
+          onOpenPrsTab: {
+            // The DISPLAYED PR decides, not the lane's resolved one: a PR this
+            // chat linked from another lane shows in the switcher while
+            // `lanePrTag` stays nil, and branching on the lane tag sent the
+            // user to the creation flow instead of to the PR they picked.
+            if chatDisplayPrTag == nil {
+              openPrCreationInPrsTab()
+            } else {
+              openLaneOpenPr()
+            }
+          },
+          onOpenGitHub: openLanePrOnGitHub,
+          linkedPrs: laneChatPrs,
+          selectedPrId: chatDisplayPr?.id,
+          onSelectPr: { selectChatPr($0) },
+          stackOffer: visibleChatStackOffer,
+          linkablePrs: chatPrLinkableCatalog,
+          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          linkBusy: chatPrLinkBusy,
+          onLinkStack: { Task { await linkChatStackOffer() } },
+          onDismissStackOffer: {
+            if let offer = visibleChatStackOffer {
+              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+            }
+          },
+          onLinkPr: { prId, allowCrossLane in
+            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+          },
+          onUnlink: { Task { await unlinkCurrentChatPr() } }
+        )
+        .presentationDetents([.height(500), .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+      }
+      .task(id: prChatWatchTaskKey) {
+        await refreshPrChatWatch()
+      }
+      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
+        Button("Cancel", role: .cancel) {}
+        Button("Stop and restart", role: .destructive) {
+          Task { await restartAgentSession(stopFirst: true) }
+        }
+      } message: {
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
+      }
+      .alert("Rename session", isPresented: $sessionActionRenamePresented) {
+        TextField("Title", text: $sessionActionRenameText)
+        Button("Cancel", role: .cancel) {
+          sessionActionRenameText = ""
+        }
+        Button("Save") {
+          let title = sessionActionRenameText
+          Task { await submitCurrentSessionRename(title) }
+        }
+      } message: {
+        Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
   }
 

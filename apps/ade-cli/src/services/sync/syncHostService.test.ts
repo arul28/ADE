@@ -1093,6 +1093,56 @@ describe("brain project actions fallback handler", () => {
     }
   });
 
+  it("answers a sealed account challenge with a readable error instead of invalid_hello", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const credentials = new EncryptedFileCredentialStore({ secretsDir, keyMaterial: { read: () => null } });
+    credentials.setSync("test.bootstrap", "bootstrap-token");
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: { listProjects: vi.fn(async () => ({ projects: [] })), prepareProjectConnection: vi.fn() },
+      bootstrapCredentialStore: credentials,
+      bootstrapTokenKey: "test.bootstrap",
+      secretsDir,
+      localDeviceIdPath: path.join(secretsDir, "device-id"),
+      localSiteIdPath: path.join(secretsDir, "site-id"),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      // The phone's first frame when it adopts a machine over sealed credentials.
+      client.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "adopt-challenge",
+        payload: { v: 1, nonce: "bm9uY2U=", clientEphemeralPublicKey: "a2V5", supportedAeads: ["chacha20-poly1305"] },
+      }));
+      const answer = await waitForEnvelope(envelopes, "account_challenge_error", "adopt-challenge");
+      expect((answer.payload as { message?: string }).message).toMatch(/open a project/i);
+      expect(envelopes.some((entry) => entry.type === "hello_error")).toBe(false);
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("closes a fallback Relay peer when its account proof expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");

@@ -773,20 +773,20 @@ final class WorkChatTranscriptController: UIViewController {
     var snapshot = NSDiffableDataSourceSnapshot<Section, String>()
     snapshot.appendSections([.main])
     snapshot.appendItems(nextIds, toSection: .main)
-    var reconfigure = revisionChanged ? nextIds : changedRowIds
-    if !revisionChanged, !unresolved.isEmpty {
+    var reconfigure = changedRowIds
+    if !unresolved.isEmpty {
       reconfigure.append(contentsOf: unresolved.subtracting(changedRowIds))
     }
-    if !revisionChanged, interactionChanged {
-      // Visible cells only: an off-screen cell configures fresh when it scrolls
-      // in, and its height key is unchanged, so its cached height still holds.
+    if revisionChanged || interactionChanged {
+      // Rows on screen (and the few UIKit may have prepared next to them)
+      // only: an off-screen row has no cell, configures fresh when it scrolls
+      // in, and its height key carries the content revision, so it measures
+      // anew. Reconfiguring every row of a long transcript on an artifact or
+      // width change made UIKit diff all of them on the main thread, long
+      // enough for the watchdog to kill the app.
       let alreadyReconfigured = Set(reconfigure)
-      let liveIds = Set(nextIds)
-      let visibleIds = collectionView.indexPathsForVisibleItems.compactMap { indexPath in
-        dataSource.itemIdentifier(for: indexPath)
-      }
-      reconfigure.append(contentsOf: visibleIds.filter {
-        liveIds.contains($0) && !alreadyReconfigured.contains($0)
+      reconfigure.append(contentsOf: preparedRowIds(in: nextIds).filter {
+        !alreadyReconfigured.contains($0)
       })
     }
     unresolvedRowIds.removeAll()
@@ -844,6 +844,25 @@ final class WorkChatTranscriptController: UIViewController {
     lastChangedRowIds = Set(changedRowIds)
     schedulePremeasure()
     onRowsApplied?(nextIds.count)
+  }
+
+  /// Margin of rows past each visible edge that may hold a prefetched cell.
+  let preparedRowMargin = 12
+
+  /// Ids of the rows on screen plus `preparedRowMargin` on each side, in the
+  /// next row order. Visible index paths still refer to the order on screen,
+  /// so the range is resolved by id.
+  func preparedRowIds(in nextIds: [String]) -> [String] {
+    let visibleIds = collectionView.indexPathsForVisibleItems.compactMap { indexPath in
+      dataSource.itemIdentifier(for: indexPath)
+    }
+    guard !visibleIds.isEmpty, !nextIds.isEmpty else { return [] }
+    let visible = Set(visibleIds)
+    guard let first = nextIds.firstIndex(where: visible.contains),
+          let last = nextIds.lastIndex(where: visible.contains) else { return [] }
+    let lower = max(0, first - preparedRowMargin)
+    let upper = min(nextIds.count - 1, last + preparedRowMargin)
+    return Array(nextIds[lower...upper])
   }
 
   var jumpProbe: JumpProbe?

@@ -741,25 +741,18 @@ extension ActivityDrawerModel {
             self.clearAll()
         }
 
-        syncService.$activeSessions
-            .receive(on: DispatchQueue.main)
-            .sink { _ in refresh() }
-            .store(in: &bag)
-
-        syncService.$localStateRevision
-            .receive(on: DispatchQueue.main)
-            .sink { _ in refresh() }
-            .store(in: &bag)
-
-        syncService.$workspaceSnapshotRevision
-            .receive(on: DispatchQueue.main)
-            .sink { _ in refresh() }
-            .store(in: &bag)
-
-        AccountService.shared.$attentionSnapshotRevision
-            .receive(on: DispatchQueue.main)
-            .sink { _ in refresh() }
-            .store(in: &bag)
+        // One rebuild per burst: `activeSessions` publishes on every session
+        // change, often together with the other three, and each rebuild reads
+        // both snapshots on the main thread.
+        Publishers.Merge4(
+            syncService.$activeSessions.dropFirst().map { _ in () },
+            syncService.$localStateRevision.dropFirst().map { _ in () },
+            syncService.$workspaceSnapshotRevision.dropFirst().map { _ in () },
+            AccountService.shared.$attentionSnapshotRevision.dropFirst().map { _ in () }
+        )
+        .debounce(for: .milliseconds(120), scheduler: DispatchQueue.main)
+        .sink { _ in refresh() }
+        .store(in: &bag)
 
         refresh()
         return bag

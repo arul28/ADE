@@ -4050,7 +4050,7 @@ struct WorkComposerTextView: UIViewRepresentable {
 
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.parent = self
-    textView.isEditable = canCompose
+    context.coordinator.applyEditable(canCompose, to: textView)
     context.coordinator.applyHooks(to: textView)
     context.coordinator.applyPlaceholder(placeholder)
 
@@ -4176,6 +4176,32 @@ struct WorkComposerTextView: UIViewRepresentable {
     @discardableResult
     func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) -> Task<Void, Never>? {
       focusScheduler.apply(isFocused, to: textView)
+    }
+
+    /// Turning editing off on a focused text view makes UIKit resign it, and
+    /// resigning from inside a SwiftUI update re-enters the view graph: an
+    /// AttributeGraph cycle that blocked the main thread until the watchdog
+    /// killed the app. Off-while-focused waits for the update to finish.
+    /// Writing the same value is skipped too: it is not free.
+    private var editableUpdateScheduled = false
+
+    func applyEditable(_ editable: Bool, to textView: UITextView) {
+      guard textView.isEditable != editable else { return }
+      guard !editable, textView.isFirstResponder else {
+        textView.isEditable = editable
+        return
+      }
+      guard !editableUpdateScheduled else { return }
+      editableUpdateScheduled = true
+      DispatchQueue.main.async { [weak self, weak textView] in
+        guard let self else { return }
+        self.editableUpdateScheduled = false
+        guard let textView else { return }
+        let wanted = self.parent.canCompose
+        if textView.isEditable != wanted {
+          textView.isEditable = wanted
+        }
+      }
     }
 
     private func applyPromptInputTraits(protectingTrigger: Bool) {

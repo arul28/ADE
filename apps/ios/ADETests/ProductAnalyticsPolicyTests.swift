@@ -639,6 +639,40 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       JSONSerialization.jsonObject(with: body) as? [String: Any]
     )
   }
+
+  /// Sentry drops an app hang whose main thread sat idle in its run loop. Each
+  /// row is a stack shape seen in TestFlight reports (outermost frame first);
+  /// a wrong "drop" silently loses a real hang report.
+  func testOnlyAnIdleMainRunLoopHangIsDropped() {
+    func frame(_ library: String, inApp: Bool = false) -> ADEAppHangStack.Frame {
+      ADEAppHangStack.Frame(package: "/System/Library/Frameworks/\(library)", inApp: inApp)
+    }
+    let entry = [
+      frame("dyld"), frame("ADE", inApp: true), frame("SwiftUI"), frame("UIKitCore"),
+      frame("GraphicsServices"),
+    ]
+    let idleLoop = [
+      frame("CoreFoundation"), frame("CoreFoundation"),
+      frame("libsystem_kernel.dylib"), frame("libsystem_kernel.dylib"),
+    ]
+    let cases: [(String, [ADEAppHangStack.Frame], Bool)] = [
+      ("idle run loop (suspended app)", entry + idleLoop, true),
+      ("main thread waiting on the keychain (ADE-IOS-Z)",
+       entry + [frame("CoreFoundation"), frame("libdispatch.dylib"), frame("ADE", inApp: true),
+                frame("Security"), frame("libsystem_kernel.dylib")], false),
+      ("ADE code between two run-loop entries",
+       entry + [frame("ADE", inApp: true), frame("GraphicsServices")] + idleLoop, false),
+      ("SwiftUI layout work (no kernel wait)",
+       entry + [frame("CoreFoundation"), frame("SwiftUICore"), frame("AttributeGraph")], false),
+      ("no run loop on the stack", [frame("ADE", inApp: true), frame("libsystem_kernel.dylib")], false),
+      ("run loop frame with no image name",
+       entry + [ADEAppHangStack.Frame(package: nil, inApp: false), frame("libsystem_kernel.dylib")], false),
+      ("empty stack", [], false),
+    ]
+    for (name, frames, dropped) in cases {
+      XCTAssertEqual(ADEAppHangStack.isIdleRunLoop(frames), dropped, name)
+    }
+  }
 }
 
 private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
