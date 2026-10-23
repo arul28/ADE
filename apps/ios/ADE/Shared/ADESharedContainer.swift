@@ -175,7 +175,7 @@ public enum ADESharedContainer {
     /// One shared decoder with value-type parse styles: the app re-reads these
     /// snapshots on the main thread whenever sessions change, and building two
     /// ICU-backed `ISO8601DateFormatter`s per date there hung the app.
-    /// `JSONDecoder.decode` is safe to call from several threads at once.
+    /// `JSONDecoder` is `Sendable`, so callers on any thread may share it.
     private static let attentionJSONDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in

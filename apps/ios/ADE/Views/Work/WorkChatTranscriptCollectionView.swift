@@ -858,8 +858,8 @@ final class WorkChatTranscriptController: UIViewController {
     }
     guard !visibleIds.isEmpty, !nextIds.isEmpty else { return [] }
     let visible = Set(visibleIds)
-    let positions = nextIds.indices.filter { visible.contains(nextIds[$0]) }
-    guard let first = positions.first, let last = positions.last else { return [] }
+    guard let first = nextIds.firstIndex(where: visible.contains),
+          let last = nextIds.lastIndex(where: visible.contains) else { return [] }
     let lower = max(0, first - preparedRowMargin)
     let upper = min(nextIds.count - 1, last + preparedRowMargin)
     return Array(nextIds[lower...upper])

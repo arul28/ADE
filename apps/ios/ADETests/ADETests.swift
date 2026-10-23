@@ -9353,7 +9353,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceDoesNotAdvertiseUnackedPhoneChangesAsRemoteDbVersion() throws {
+  func testSyncServiceDoesNotAdvertiseUnackedPhoneChangesAsRemoteDbVersion() async throws {
     let outboundCursorKey = "ade.sync.outboundSyncCursors"
     let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
     let activeProjectIdKey = "ade.sync.activeProjectId"
@@ -9393,7 +9393,7 @@ final class ADETests: XCTestCase {
       )
     """)
 
-    let pending = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    let pending = try XCTUnwrap(await service.stageNextOutboundChangesetForTesting())
     XCTAssertGreaterThan(pending.toDbVersion, initialCursor)
     XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
     XCTAssertEqual(service.latestRemoteDbVersionForTesting(), 0)
@@ -9403,7 +9403,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceRewindowsUnacknowledgedPhoneChangesWithoutDroppingSocketOrCursor() throws {
+  func testSyncServiceRewindowsUnacknowledgedPhoneChangesWithoutDroppingSocketOrCursor() async throws {
     let outboundCursorKey = "ade.sync.outboundSyncCursors"
     let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
     let activeProjectIdKey = "ade.sync.activeProjectId"
@@ -9450,7 +9450,7 @@ final class ADETests: XCTestCase {
       )
     """)
 
-    let original = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    let original = try XCTUnwrap(await service.stageNextOutboundChangesetForTesting())
     service.scheduleOutboundChangesetRecoveryForTesting(now: 100)
 
     let window = service.outboundChangesetRecoveryWindowForTesting()
@@ -9463,7 +9463,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.connectionGenerationForTesting(), generation)
     XCTAssertEqual(service.connectionState, .connected)
 
-    let rebuilt = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    let rebuilt = try XCTUnwrap(await service.stageNextOutboundChangesetForTesting())
     XCTAssertNotEqual(rebuilt.batchId, original.batchId)
     XCTAssertEqual(rebuilt.fromDbVersion, original.fromDbVersion)
     XCTAssertLessThanOrEqual(rebuilt.toDbVersion, original.toDbVersion)

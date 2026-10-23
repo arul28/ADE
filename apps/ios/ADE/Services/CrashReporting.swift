@@ -69,7 +69,7 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        if isSuspendedAppHang(event) { return nil }
+        if isIdleRunLoopAppHang(event) { return nil }
         return ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
           ? ADECrashScrubber.scrub(event)
           : nil
@@ -127,7 +127,7 @@ enum CrashReporting {
   /// suspended (or the detector misfired) while nothing ran. Decided on
   /// library names and in-app flags, because Sentry fills in no function
   /// names on device; a hang with real work on the stack is always kept.
-  private static func isSuspendedAppHang(_ event: Sentry.Event) -> Bool {
+  private static func isIdleRunLoopAppHang(_ event: Sentry.Event) -> Bool {
     guard let exception = event.exceptions?.last,
           exception.type?.contains("App Hang") == true else { return false }
     let stacktrace = exception.stacktrace
@@ -189,7 +189,7 @@ enum ADEAppHangStack {
   /// point outside the run loop.
   static func isIdleRunLoop(_ frames: [Frame]) -> Bool {
     guard let innermost = frames.last, library(innermost) == "libsystem_kernel.dylib",
-          let runLoopEntry = frames.lastIndex(where: { library($0) == "GraphicsServices" }) else {
+          let runLoopEntry = frames.firstIndex(where: { library($0) == "GraphicsServices" }) else {
       return false
     }
     let insideRunLoop = frames[frames.index(after: runLoopEntry)...]

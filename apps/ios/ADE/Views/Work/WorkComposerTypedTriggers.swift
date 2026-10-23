@@ -4194,8 +4194,9 @@ struct WorkComposerTextView: UIViewRepresentable {
       guard !editableUpdateScheduled else { return }
       editableUpdateScheduled = true
       DispatchQueue.main.async { [weak self, weak textView] in
-        guard let self, let textView else { return }
+        guard let self else { return }
         self.editableUpdateScheduled = false
+        guard let textView else { return }
         let wanted = self.parent.canCompose
         if textView.isEditable != wanted {
           textView.isEditable = wanted

@@ -18,7 +18,8 @@ final class KeychainService {
   private static func invalidate(_ cacheKey: String?) {
     cache.withLock { state in
       state.generation &+= 1
-      if let cacheKey { state.values[cacheKey] = nil } else { state.values.removeAll() }
+      // Forget the key (unknown), unlike `.some(nil)`, which means "known absent".
+      if let cacheKey { state.values.removeValue(forKey: cacheKey) } else { state.values.removeAll() }
     }
   }
 
