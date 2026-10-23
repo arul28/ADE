@@ -254,7 +254,6 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @State private var agentFilter: HubRosterFilter?
   /// The filter row's bottom edge in the window, so the agent list can start
   /// below the rail's capsule where it runs under the rail's column.
-  @State private var filterBarBottom: CGFloat = 0
 
   private var filter: HubRosterFilter { agentFilter ?? initialAgentFilter }
 
@@ -402,15 +401,10 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   /// The filters over the agent list over the composer. The filter row is the
   /// page's first thing, level with the projects page's header row.
   ///
-  /// Held landscape the filter row keeps clear of the rail's column (the
-  /// clock and the capsule with Activity and Chats sit there), while the agent
-  /// card and the composer run on under the rest of that column to the
-  /// screen's edge; the rows keep their text clear of the rail's buttons.
   private var agentsPage: some View {
     let counts = Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { option in
       (option, duoAgentItems(from: presentations, filter: option).count)
     })
-    let underRail = duo.hasEdgeBar
     return VStack(spacing: 0) {
       if showsOverview {
         HubRosterFilterBar(
@@ -420,43 +414,26 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
           accessibilityHintText: "Shows matching chats from every project in the list below."
         )
         .padding(.horizontal, 16)
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { filterBarBottom = $0 }
       }
       VStack(spacing: 0) {
         if showsOverview {
           DuoAgentList(
             filter: filter,
             items: duoAgentItems(from: presentations, filter: filter),
-            onOpen: onOpenAgent,
-            avoidsRailCapsule: underRail
+            onOpen: onOpenAgent
           )
-          .padding(.leading, 16)
-          .padding(.trailing, underRail ? DuoEdgeBar.bottomInset : 16)
-          // Under the rail's column the card starts below the clock.
-          .padding(.top, underRail ? max(12, DuoHomeRail.statusBottom + 8 - filterBarBottom) : 12)
+          .padding(.horizontal, 16)
+          .padding(.top, 12)
           .padding(.bottom, 12)
         } else {
           HubConnectingCard()
             .frame(maxHeight: .infinity)
         }
         composer()
-          .padding(.trailing, underRail ? DuoEdgeBar.bottomInset - 16 : 0)
       }
-      .ignoresSafeArea(.container, edges: underRail ? .trailing : [])
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
-}
-
-/// The Hub's rail held landscape, as far as the right page has to keep clear
-/// of it: the clock and Wi-Fi at the top of its column, then its one capsule
-/// (Activity and Chats). Measured on the inner display, flat and book.
-enum DuoHomeRail {
-  /// From the window's top edge to the bottom of the status items (clock,
-  /// Wi-Fi) at the top of the rail's column.
-  static let statusBottom: CGFloat = 100
-  /// The column the rail stands in, from the window's trailing edge.
-  static let columnWidth: CGFloat = 74
 }
 
 // MARK: - Chats window
@@ -575,13 +552,8 @@ struct DuoAgentList: View {
   let filter: HubRosterFilter
   let items: [DuoNeedsYouItem]
   let onOpen: (DuoNeedsYouItem) -> Void
-  /// The card runs under the rail's column: every row keeps its trailing
-  /// text in by the column's width, so the timestamps stay one column and
-  /// none sits under Activity or Chats.
-  var avoidsRailCapsule = false
 
   var body: some View {
-    let trailing = avoidsRailCapsule ? DuoHomeRail.columnWidth - DuoEdgeBar.bottomInset : 0
     return
     Group {
       if items.isEmpty {
@@ -596,11 +568,10 @@ struct DuoAgentList: View {
           LazyVStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
               VStack(spacing: 0) {
-                DuoWidgetChatRow(item: item, extraTrailing: trailing) { onOpen(item) }
+                DuoWidgetChatRow(item: item) { onOpen(item) }
                 if index < items.count - 1 {
                   Divider()
                     .padding(.leading, DuoWidgetRowMetrics.textInset)
-                    .padding(.trailing, trailing)
                 }
               }
             }
@@ -802,8 +773,6 @@ enum DuoWidgetRowMetrics {
 /// red triangle is a failure); the row speaks the word. Taps open the chat.
 struct DuoWidgetChatRow: View {
   let item: DuoNeedsYouItem
-  /// More room at the trailing end (beside the edge bar's capsule).
-  var extraTrailing: CGFloat = 0
   let action: () -> Void
 
   private var context: String {
@@ -840,7 +809,7 @@ struct DuoWidgetChatRow: View {
         }
       }
       .padding(.leading, 16)
-      .padding(.trailing, 16 + extraTrailing)
+      .padding(.trailing, 16)
       .padding(.vertical, 6)
       .contentShape(Rectangle())
     }
