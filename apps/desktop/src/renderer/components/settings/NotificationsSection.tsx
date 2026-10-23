@@ -33,6 +33,7 @@ import {
 import { AiFeaturesSection } from "./AiFeaturesSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
+import { Button } from "../ui/Button";
 import "./NotificationsSection.css";
 
 /**
@@ -93,8 +94,7 @@ function timeValueToMinutes(value: string, fallback: number): number {
 
 export function NotificationsSection() {
   const model = useActivitySettings();
-  const { account, loading, signedOut, updateAccount } = model;
-  const busy = loading || signedOut;
+  const { account, busy, signedOut, updateAccount } = model;
 
   const setEventPolicy = (kind: AttentionEventKind, policy: AttentionDeliveryPolicy) => {
     updateAccount({ eventPolicies: { ...account.eventPolicies, [kind]: policy } });
@@ -173,6 +173,11 @@ export function NotificationsSection() {
               <div role="alert" className="ade-nt-note" data-tone="error">
                 <Info size={15} />
                 {model.error}
+                {model.loadFailed ? (
+                  <Button variant="ghost" size="sm" onClick={model.retryLoad}>
+                    Try again
+                  </Button>
+                ) : null}
               </div>
             ) : null}
           </div>

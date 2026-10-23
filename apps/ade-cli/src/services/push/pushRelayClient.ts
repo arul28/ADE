@@ -1,4 +1,5 @@
 import { recordAccountChangeMarks } from "../account/accountChangeMarks";
+import type { AccountAccessTokenOptions } from "../account/accountAuthService";
 import { createHash, createHmac } from "node:crypto";
 import { fetchTransportFailureCode } from "../../../../desktop/src/shared/fetchTransportFailure";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -42,14 +43,19 @@ const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
  * The whole of one relay request: the account token, the fetch, and the one
- * forced-refresh retry after a 401, together. Each used to carry its own budget
- * (the token up to the brain's 30s, then 15s per fetch), so a single call could
- * run past a minute and every desktop IPC handler in front of it hit its 30s
- * timer first. Kept under that timer so the caller answers in words.
+ * forced-refresh retry after a 401, together. The default keeps the old worst
+ * case (a 30s shared token refresh, then two 15s fetches) for the brain's
+ * background loops, which have no caller waiting on them.
+ */
+const DEFAULT_REQUEST_DEADLINE_MS = 60_000;
+/**
+ * The same, for the account Activity routes the desktop calls behind its 30s
+ * IPC timer. Each of those used to stack its own budgets past a minute, so the
+ * timer always answered first; this keeps the answer, in words, under it.
  */
 export const PUSH_RELAY_REQUEST_DEADLINE_MS = 20_000;
 
-/** Per-call options the account Activity routes accept. */
+/** Per-call options `getAttentionSnapshot` accepts. */
 export type PushRelayCallOptions = {
   /** Aborts the request early; the client's own deadline still applies. */
   signal?: AbortSignal;
@@ -185,7 +191,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export class PushRelayUnreachableError extends Error {
   constructor(
-    readonly action: string,
     /** `ECONNRESET`, `ENOTFOUND`, …, `timeout`, or null when undici named nothing. */
     readonly code: string | null,
     options?: { cause?: unknown },
@@ -268,11 +273,7 @@ export function createPushRelayClient(args: {
   store: PushRegistrationStore;
   logger: Logger;
   baseUrl?: string;
-  getAccountAccessToken?: (options?: {
-    forceRefresh?: boolean;
-    signal?: AbortSignal;
-    timeoutMs?: number;
-  }) => Promise<string | null>;
+  getAccountAccessToken?: (options?: AccountAccessTokenOptions) => Promise<string | null>;
   getAccountUserId?: () => string | null;
 }) {
   const baseUrl = (args.baseUrl ?? process.env.ADE_PUSH_RELAY_URL?.trim() ?? "").trim() || DEFAULT_RELAY_URL;
@@ -286,18 +287,19 @@ export function createPushRelayClient(args: {
       accountAuthorized?: boolean;
       expectedAccountUserId?: string;
       signal?: AbortSignal;
+      deadlineMs?: number;
     },
   ): Promise<RelayResponse> => {
     const url = new URL(`${baseUrl}${pathSuffix}`);
     const bodyString = options?.body === undefined ? "" : JSON.stringify(options.body);
-    const action = `${method} ${url.pathname}`;
     // One budget for everything below. `deadline` aborts the token wait and the
     // fetch alike; a caller's own signal shortens it, never lengthens it.
-    const deadlineAt = Date.now() + PUSH_RELAY_REQUEST_DEADLINE_MS;
+    const deadlineMs = options?.deadlineMs ?? DEFAULT_REQUEST_DEADLINE_MS;
+    const deadlineAt = Date.now() + deadlineMs;
     const deadline = new AbortController();
     const deadlineTimer = setTimeout(
-      () => deadline.abort(new PushRelayUnreachableError(action, "timeout")),
-      PUSH_RELAY_REQUEST_DEADLINE_MS,
+      () => deadline.abort(new PushRelayUnreachableError("timeout")),
+      deadlineMs,
     );
     deadlineTimer.unref?.();
     const callerSignal = options?.signal;
@@ -312,7 +314,7 @@ export function createPushRelayClient(args: {
       // A caller's cancellation stays theirs; a caller's TIMEOUT is still the
       // relay not answering in time.
       if (reason instanceof Error && reason.name !== "TimeoutError") return reason;
-      return new PushRelayUnreachableError(action, "timeout", { cause: reason });
+      return new PushRelayUnreachableError("timeout", { cause: reason });
     };
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResponse> => {
       const expectedAccountUserId = options?.expectedAccountUserId;
@@ -392,10 +394,10 @@ export function createPushRelayClient(args: {
           signal: controller.signal,
         }).catch((error: unknown) => {
           if (deadline.signal.aborted) throw deadlineError();
-          if (attemptTimedOut) throw new PushRelayUnreachableError(action, "timeout", { cause: error });
+          if (attemptTimedOut) throw new PushRelayUnreachableError("timeout", { cause: error });
           // No HTTP answer at all. Name the network code now: the cause chain
           // that carries it does not survive IPC or JSON-RPC.
-          throw new PushRelayUnreachableError(action, fetchTransportFailureCode(error), { cause: error });
+          throw new PushRelayUnreachableError(fetchTransportFailureCode(error), { cause: error });
         }).finally(() => clearTimeout(timeout));
         let parsed: Record<string, unknown> | null = null;
         try {
@@ -741,6 +743,7 @@ export function createPushRelayClient(args: {
         {
           accountAuthorized: true,
           expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
           ...(callOptions?.signal ? { signal: callOptions.signal } : {}),
         },
       );
@@ -778,6 +781,7 @@ export function createPushRelayClient(args: {
       const response = await request("POST", "/attention/account/ack", {
         body: acknowledgment,
         accountAuthorized: true,
+        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
         expectedAccountUserId: expectedAccountUserId ?? undefined,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
@@ -808,6 +812,7 @@ export function createPushRelayClient(args: {
       const response = await request("POST", "/attention/account/presence", {
         body: presence,
         accountAuthorized: true,
+        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
@@ -864,6 +869,7 @@ export function createPushRelayClient(args: {
     ): Promise<AttentionPreferences | null> {
       const response = await request("GET", "/attention/account/preferences", {
         accountAuthorized: true,
+        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
@@ -887,6 +893,7 @@ export function createPushRelayClient(args: {
       const response = await request("PUT", "/attention/account/preferences", {
         body: accountPreferences,
         accountAuthorized: true,
+        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;

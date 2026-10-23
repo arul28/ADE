@@ -17,7 +17,7 @@ import {
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
-import { isDegradedLocalSyncSnapshot } from "../../../lib/localSyncStatusReader";
+import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
 
 /**
  * Settings → Overview's "Needs attention": every problem ADE can see, from
@@ -492,7 +492,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       quiet(ade.sync?.getStatus ? async () => {
         const snapshot = await ade.sync.getStatus({ includeTransferReadiness: false });
         // A synthesized snapshot is a read that did not finish, not a healthy one.
-        if (isDegradedLocalSyncSnapshot(snapshot)) throw new Error(snapshot.degradedReason);
+        if (isDegradedSyncSnapshot(snapshot)) throw new Error(snapshot.degradedReason);
         return snapshot;
       } : null, failed, "sync"),
       hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),

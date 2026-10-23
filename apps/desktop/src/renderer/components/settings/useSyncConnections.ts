@@ -4,7 +4,7 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
-import { isDegradedLocalSyncSnapshot, readLocalSyncStatus } from "../../lib/localSyncStatusReader";
+import { isDegradedSyncSnapshot, readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 
 export type SyncConnections = ReturnType<typeof useSyncConnections>;
 
@@ -56,7 +56,7 @@ export function useSyncConnections() {
     const [routedResult, localResult, devicesResult] = await Promise.all([
       window.ade.sync.getStatus().then(
         // A synthesized snapshot is not a reading of the routed machine.
-        (routed) => ({ status: isDegradedLocalSyncSnapshot(routed) ? null : routed }),
+        (routed) => ({ status: isDegradedSyncSnapshot(routed) ? null : routed }),
         () => ({ status: null }),
       ),
       // Shared reader: coalesces with every other subscriber's read of the

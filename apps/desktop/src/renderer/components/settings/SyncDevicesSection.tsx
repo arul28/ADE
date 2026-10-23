@@ -57,7 +57,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import type { SyncConnections } from "./useSyncConnections";
 import { isAdeAvailable } from "../../lib/adeAvailability";
-import { isDegradedLocalSyncSnapshot } from "../../lib/localSyncStatusReader";
+import { isDegradedSyncSnapshot } from "../../lib/localSyncStatusReader";
 
 export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
@@ -350,7 +350,7 @@ export function ThisMacCard({
         (snapshot) => {
           // A synthesized snapshot (the read ran out of time) is not this
           // project's sync state; acting on it would be acting on a guess.
-          if (!isDegradedLocalSyncSnapshot(snapshot)) return snapshot;
+          if (!isDegradedSyncSnapshot(snapshot)) return snapshot;
           readError = snapshot.degradedReason ?? "the read did not finish";
           return null;
         },

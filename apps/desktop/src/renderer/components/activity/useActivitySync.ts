@@ -10,6 +10,7 @@ import {
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { createPresenceReporter, type PresenceReporter } from "../../lib/presenceReporter";
 
 const POLL_INTERVAL_MS = 15_000;
 // The snapshot is incremental: an unchanged revision costs a relay round trip
@@ -21,7 +22,9 @@ const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
 // Focus, blur and visibility can flap several times inside one window switch;
 // changes inside this window go out as one report carrying the latest state.
 const PRESENCE_COALESCE_MS = 250;
-// A failed report waits this long, doubling per failure, before the next one.
+// A failed report doubles the heartbeat interval per failure, up to this. The
+// main process already drops reports while the relay is unreachable; this
+// covers reports that do fail (a relay refusal, the local brain path).
 const PRESENCE_FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
 // The main process answers a snapshot inside its own 25s budget (account leg
 // plus local fallback); this backstop only catches a renderer-side hang.
@@ -179,11 +182,10 @@ async function refreshActivityPreferences(
   const promise = Promise.resolve()
     .then(() => attentionApi.getPreferences(ownerId))
     .then((preferences) => {
+      // `null`: the account service is unreachable. Keep what is loaded, and
+      // do not start the throttle, so the next snapshot tries again.
       if (!isCurrentAccountScope(scope) || !preferences) return;
       activityStore.getState().setPreferences(preferences);
-    })
-    .then(() => {
-      if (!isCurrentAccountScope(scope)) return;
       preferencesRefreshed = { scope, at: Date.now() };
     })
     .catch(() => {
@@ -351,112 +353,46 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
     };
   }, [accountLoading, accountUserId]);
 
-  const requestPresenceRef = useRef<(() => void) | null>(null);
+  const presenceReporterRef = useRef<PresenceReporter | null>(null);
 
   useEffect(() => {
     if (accountLoading || !accountUserId) return;
-    let disposed = false;
-    let inFlight = false;
-    // A request arrived while one was in flight; send once more when it lands.
-    let pending = false;
-    let consecutiveFailures = 0;
-    let timer: number | null = null;
-    let coalesceTimer: number | null = null;
-
-    const clearTimer = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-    };
-    const nextDelayMs = () => {
-      const base = document.visibilityState === "visible"
-        ? PRESENCE_INTERVAL_MS
-        : HIDDEN_PRESENCE_INTERVAL_MS;
-      if (consecutiveFailures === 0) return base;
-      return Math.min(
-        PRESENCE_FAILURE_BACKOFF_MAX_MS,
-        base * 2 ** Math.min(consecutiveFailures, 8),
-      );
-    };
-    const schedule = () => {
-      clearTimer();
-      if (disposed) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        void send();
-      }, nextDelayMs());
-    };
-    /** One report with the latest state; the heartbeat restarts from it. */
-    const send = async (): Promise<void> => {
-      if (disposed) return;
-      if (inFlight) {
-        pending = true;
-        return;
-      }
-      inFlight = true;
-      pending = false;
-      clearTimer();
-      try {
-        await reportPresence(
-          ambientSurfaceVisibleRef.current,
-          visibleItemIdsRef.current,
-          foregroundRef.current,
-        );
-        consecutiveFailures = 0;
-      } catch {
-        // Nobody waits on presence. Back off rather than retry at the same
-        // cadence, and let the heartbeat carry the latest state when it fires.
-        consecutiveFailures += 1;
-        pending = false;
-      } finally {
-        inFlight = false;
-      }
-      if (pending && consecutiveFailures === 0) {
-        void send();
-        return;
-      }
-      schedule();
-    };
-    /**
-     * An event-driven report. Bursts merge into one, and while reports are
-     * failing an event does not jump the backoff: the scheduled heartbeat
-     * carries the latest state.
-     */
-    const request = () => {
-      if (disposed || consecutiveFailures > 0) return;
-      if (coalesceTimer !== null) return;
-      coalesceTimer = window.setTimeout(() => {
-        coalesceTimer = null;
-        void send();
-      }, PRESENCE_COALESCE_MS);
-    };
-    requestPresenceRef.current = request;
-
-    void send();
+    const reporter = createPresenceReporter({
+      send: () => reportPresence(
+        ambientSurfaceVisibleRef.current,
+        visibleItemIdsRef.current,
+        foregroundRef.current,
+      ),
+      isVisible: () => document.visibilityState === "visible",
+      visibleIntervalMs: PRESENCE_INTERVAL_MS,
+      hiddenIntervalMs: HIDDEN_PRESENCE_INTERVAL_MS,
+      maxBackoffMs: PRESENCE_FAILURE_BACKOFF_MAX_MS,
+      coalesceMs: PRESENCE_COALESCE_MS,
+    });
+    presenceReporterRef.current = reporter;
+    reporter.start();
     const onVisibilityChange = () => {
-      // Coming back reports promptly: presence is how other devices learn this
-      // machine is being watched, and a 120s-stale "hidden" claim right as the
+      // Coming back reports promptly: a 120s-stale "hidden" claim right as the
       // user returns is the one case that misleads. Going hidden waits — `blur`
       // has already reported the foreground change — but moves the heartbeat
       // to the hidden cadence.
-      if (document.visibilityState === "visible") request();
-      else if (!inFlight) schedule();
+      if (document.visibilityState === "visible") reporter.request();
+      else reporter.reschedule();
     };
     const onFocus = () => {
       foregroundRef.current = true;
-      request();
+      reporter.request();
     };
     const onBlur = () => {
       foregroundRef.current = false;
-      request();
+      reporter.request();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
     return () => {
-      disposed = true;
-      if (requestPresenceRef.current === request) requestPresenceRef.current = null;
-      clearTimer();
-      if (coalesceTimer !== null) window.clearTimeout(coalesceTimer);
+      reporter.stop();
+      if (presenceReporterRef.current === reporter) presenceReporterRef.current = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
@@ -472,7 +408,7 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
   useEffect(() => {
     if (lastPresenceStateKeyRef.current === presenceStateKey) return;
     lastPresenceStateKeyRef.current = presenceStateKey;
-    requestPresenceRef.current?.();
+    presenceReporterRef.current?.request();
   }, [presenceStateKey]);
 
   useEffect(() => () => {

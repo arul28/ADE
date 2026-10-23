@@ -102,6 +102,10 @@ export function useActivitySettings() {
     DEFAULT_ATTENTION_PREFERENCES,
   );
   const [loading, setLoading] = useState(true);
+  // The account's real preferences never arrived. Every control is locked:
+  // saving now would write the defaults above over them.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const mounted = useRef(true);
@@ -126,17 +130,19 @@ export function useActivitySettings() {
     void api.getPreferences(accountOwnerId)
       .then((next) => {
         if (cancelled || !mounted.current) return;
-        // Unreachable right now. Showing defaults here would invite saving
-        // them over the account's real settings.
+        // `null`: the account service is unreachable right now.
         if (!next) {
-          setError("ADE can’t reach its account service right now, so your Activity settings didn’t load. Try again in a moment.");
+          setLoadFailed(true);
+          setError("ADE can’t reach its account service right now, so your Activity settings didn’t load.");
           return;
         }
         setPreferences(normalizeActivityPreferences(next));
+        setLoadFailed(false);
         setError(null);
       })
       .catch((loadError: unknown) => {
         if (cancelled || !mounted.current) return;
+        setLoadFailed(true);
         setError(loadError instanceof Error && loadError.message.trim()
           ? loadError.message
           : "ADE couldn’t load your Activity settings.");
@@ -145,7 +151,9 @@ export function useActivitySettings() {
         if (!cancelled && mounted.current) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [accountOwnerId]);
+  }, [accountOwnerId, loadAttempt]);
+
+  const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
 
   const flashSaved = useCallback(() => {
     setSaved(true);
@@ -166,6 +174,7 @@ export function useActivitySettings() {
       setError("Sign in to ADE to change Activity settings.");
       return;
     }
+    if (loadFailed) return;
     try {
       await api.putPreferences(accountOwnerId, next);
       if (!mounted.current) return;
@@ -177,7 +186,7 @@ export function useActivitySettings() {
         ? saveError.message
         : "ADE couldn’t save your Activity settings.");
     }
-  }, [accountOwnerId, flashSaved]);
+  }, [accountOwnerId, flashSaved, loadFailed]);
 
   const updateAccount = useCallback((patch: Partial<AttentionPreferences["account"]>) => {
     const next: AttentionPreferences = {
@@ -246,6 +255,10 @@ export function useActivitySettings() {
     accountOwnerId,
     signedOut: !accountOwnerId,
     loading,
+    loadFailed,
+    retryLoad,
+    /** Controls are read-only: loading, signed out, or the real values never arrived. */
+    busy: loading || !accountOwnerId || loadFailed,
     error,
     saved,
     preferences,
@@ -329,14 +342,13 @@ export function ActivitySettingsControls({
 }) {
   const {
     account,
-    loading,
+    busy,
     signedOut,
     machines,
     updateAccount,
     setMachineMuted,
     machineMuted,
   } = model;
-  const busy = loading || signedOut;
 
   if (variant === "popover") {
     return (
@@ -504,8 +516,7 @@ function SegmentedChoice<T extends string>({
 
 /** What Activity reveals, and what the Dock badge counts. */
 export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel }) {
-  const { account, loading, signedOut, updateAccount } = model;
-  const busy = loading || signedOut;
+  const { account, busy, updateAccount } = model;
   return (
     <ModernSection group="Privacy" title="Privacy and badges" hint="What ambient surfaces reveal, and what the badge counts.">
       <ModernRows>

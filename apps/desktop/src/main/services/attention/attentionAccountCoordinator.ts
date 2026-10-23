@@ -15,6 +15,7 @@ import {
 } from "../../../shared/types/attention";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
+import { withDeadline } from "../shared/withTimeout";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -38,7 +39,7 @@ type AccountAttentionClient = Pick<
 };
 
 type AttentionAccountCoordinatorOptions = {
-  getLogger: () => Pick<Logger, "warn"> & Partial<Pick<Logger, "info">>;
+  getLogger: () => Pick<Logger, "warn" | "info">;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   accountAttentionClient?: AccountAttentionClient | null;
   getCurrentAccountOwnerId: () => string | null;
@@ -96,20 +97,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Everything one Activity IPC call may spend, end to end. The renderer's IPC
- * timer for these channels is the 30s default; answering inside it means the
- * renderer gets a real answer (or a legible failure) instead of the opaque
- * "IPC handler timed out" — which also kept a relay hiccup from reading as an
- * ADE defect.
+ * What the polled Activity reads (snapshot, presence, preferences) may spend,
+ * end to end. Their renderer IPC timer is the 30s default; answering inside it
+ * means the renderer gets a real answer (or a legible failure) instead of the
+ * opaque "IPC handler timed out". User-initiated writes (acknowledge, saving
+ * preferences) are bounded per relay request instead.
  */
 export const ATTENTION_IPC_BUDGET_MS = 25_000;
 
 /**
  * The account leg of a snapshot when this computer can answer for itself.
- * Leaves the local fallback at least the rest of the budget, so a relay that
- * hangs degrades to "this computer only" instead of to nothing.
+ * Long enough for a slow but working relay (one 15s fetch plus a token wait);
+ * the local fallback, a read from the brain's memory, gets the rest.
  */
-export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 12_000;
+export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
 
 /** First pause after the relay could not be reached; doubles to the max. */
 const RELAY_BACKOFF_BASE_MS = 5_000;
@@ -125,19 +126,6 @@ function isRelayUnavailable(error: unknown): boolean {
   if (error instanceof PushRelayUnreachableError) return true;
   return error instanceof PushRelayRequestError
     && (error.status === 429 || error.status >= 500);
-}
-
-/**
- * `work`'s value, or `onTimeout()`'s rejection once `timeoutMs` pass. The timer
- * never holds the process open, and a late rejection from the abandoned work is
- * absorbed here instead of surfacing as unhandled.
- */
-function withDeadline<T>(work: Promise<T>, timeoutMs: number, onTimeout: () => Error): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(onTimeout()), Math.max(1, timeoutMs));
-    timer.unref?.();
-    work.then(resolve, reject).finally(() => clearTimeout(timer));
-  });
 }
 
 /** Cap on the remembered-revision cache; an account snapshot tops out well below. */
@@ -204,7 +192,7 @@ export class AttentionAccountCoordinator {
    * Every window reports presence on a timer and on each focus, blur and
    * visibility change, so an offline laptop or a flaky network used to send a
    * burst of doomed requests (and errors) per window switch. Backing off here,
-   * at the one place that talks to the relay, covers every window at once.
+   * in the desktop's single coordinator, covers every window at once.
    */
   private noteRelayUnavailable(source: string, error: unknown): void {
     this.relayFailures += 1;
@@ -224,7 +212,7 @@ export class AttentionAccountCoordinator {
 
   private noteRelayAvailable(): void {
     if (this.relayFailures > 0) {
-      this.options.getLogger().info?.("attention.relay_recovered", {
+      this.options.getLogger().info("attention.relay_recovered", {
         failures: this.relayFailures,
       });
     }
@@ -259,7 +247,7 @@ export class AttentionAccountCoordinator {
       const accountDeadline = new AbortController();
       const accountTimer = setTimeout(
         () => accountDeadline.abort(
-          new PushRelayUnreachableError("getAttentionSnapshot", "timeout"),
+          new PushRelayUnreachableError("timeout"),
         ),
         accountBudgetMs,
       );

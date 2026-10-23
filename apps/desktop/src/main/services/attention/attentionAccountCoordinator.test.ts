@@ -38,7 +38,7 @@ function snapshot(
 }
 
 function logger() {
-  return { warn: vi.fn() };
+  return { warn: vi.fn(), info: vi.fn() };
 }
 
 describe("AttentionAccountCoordinator", () => {
@@ -830,7 +830,7 @@ describe("AttentionAccountCoordinator", () => {
     vi.useFakeTimers();
     try {
       const reportAttentionPresence = vi.fn(async () => {
-        throw new PushRelayUnreachableError("reportAttentionPresence", "ECONNRESET");
+        throw new PushRelayUnreachableError("ECONNRESET");
       });
       const getAttentionPreferences = vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES);
       const coordinator = new AttentionAccountCoordinator({

@@ -10,23 +10,16 @@
  * which network failure it was.
  */
 
+import { isErrnoLikeCode } from "./codedError";
+
 const MAX_CAUSE_DEPTH = 8;
 
-/** errno (`ECONNRESET`), undici (`UND_ERR_SOCKET`) or Node (`ERR_SSL_…`) codes. */
-const TRANSPORT_CODE_PATTERN = /^(?:E[A-Z0-9]+|UND_ERR_[A-Z0-9_]+|ERR_[A-Z0-9_]+)$/;
-/** Electron's `net` module names the failure in its message: `net::ERR_INTERNET_DISCONNECTED`. */
-const CHROMIUM_NET_ERROR_PATTERN = /\bnet::(ERR_[A-Z0-9_]+)\b/;
-
-function codeOf(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
+/** An errno or Node code (see `isErrnoLikeCode`), or one of undici's own `UND_ERR_*`. */
+function codeOf(value: object): string | null {
   const code = (value as { code?: unknown }).code;
-  if (typeof code === "string" && TRANSPORT_CODE_PATTERN.test(code.trim())) return code.trim();
-  const message = (value as { message?: unknown }).message;
-  if (typeof message === "string") {
-    const match = CHROMIUM_NET_ERROR_PATTERN.exec(message);
-    if (match) return match[1] ?? null;
-  }
-  return null;
+  if (typeof code !== "string") return null;
+  const trimmed = code.trim();
+  return isErrnoLikeCode(trimmed) || /^UND_ERR_[A-Z0-9_]+$/.test(trimmed) ? trimmed : null;
 }
 
 /**
