@@ -405,6 +405,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     isPathActive,
     minAgeMsFor: createFinishedChatAgePolicy({
       db: options.db,
+      logger: options.logger,
       transcriptsDir: layout.transcriptsDir,
       chatTranscriptsDir: layout.chatTranscriptsDir,
     }),

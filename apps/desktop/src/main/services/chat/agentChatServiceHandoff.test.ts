@@ -31,6 +31,7 @@ import {
   waitFor,
   writeTestTranscriptEnvelopes,
   zlib,
+  dedicatedTranscriptPath,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -337,11 +338,10 @@ describe("createAgentChatService", () => {
       expect(result.session.reasoningEffort).toBe("high");
       expect(result.session.executionMode).toBe("parallel");
 
-      const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
-      expect(transcriptPath).toBeTruthy();
+      const transcriptPath = dedicatedTranscriptPath(result.session.id);
       // Wait for the async transcript write to flush (CI runners can be slow)
       await vi.waitFor(() => {
-        const transcript = fs.readFileSync(String(transcriptPath), "utf8");
+        const transcript = fs.readFileSync(transcriptPath, "utf8");
         expect(transcript).toContain("Chat handoff from previous session");
       }, { timeout: 2000, interval: 50 });
     });

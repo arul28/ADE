@@ -1,3 +1,4 @@
+import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { CompressionCandidate } from "./historyCompression";
 import { chatSessionIdOfTranscript } from "./legacyChatTranscripts";
@@ -18,6 +19,7 @@ type ChatState = { archivedAt: string | null; settledAt: string | null };
 /** The compressor's `minAgeMsFor` hook for a project's chat transcripts. */
 export function createFinishedChatAgePolicy(deps: {
   db: AdeDb;
+  logger: Logger;
   transcriptsDir: string;
   chatTranscriptsDir: string;
   now?: () => number;
@@ -25,6 +27,7 @@ export function createFinishedChatAgePolicy(deps: {
   const now = deps.now ?? Date.now;
   // One read of the session table per candidate listing, not one query per file.
   let snapshot: { takenAt: number; rows: Map<string, ChatState> } | null = null;
+  let readFailureLoggedAt = 0;
   const chatStates = (): Map<string, ChatState> => {
     if (snapshot && now() - snapshot.takenAt < SESSION_STATE_TTL_MS) return snapshot.rows;
     const rows = new Map<string, ChatState>();
@@ -43,7 +46,15 @@ export function createFinishedChatAgePolicy(deps: {
     let rows: Map<string, ChatState>;
     try {
       rows = chatStates();
-    } catch {
+    } catch (error) {
+      // Unreadable session table: every file keeps the default age. Once per
+      // snapshot window, not once per candidate file.
+      if (!readFailureLoggedAt || now() - readFailureLoggedAt >= SESSION_STATE_TTL_MS) {
+        readFailureLoggedAt = now();
+        deps.logger.warn("storage.finished_chat_age_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return null;
     }
     const state = rows.get(sessionId);
