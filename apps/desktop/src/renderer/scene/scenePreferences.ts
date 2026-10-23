@@ -1,4 +1,3 @@
-
 /**
  * What fills the window behind the top bar, the welcome screen and the new
  * chat page.
@@ -38,6 +37,8 @@ export type ScenePreferences = {
  * stand until the next bump.
  *
  * 1 — pictures ship: shuffle, a new picture on each wake, every picture in.
+ *     The default has since become `plain`; that reached existing users
+ *     through `isUntouchedShuffleDefault`, not a bump, so choices were kept.
  */
 export const SCENE_DEFAULTS_REVISION = 1;
 
