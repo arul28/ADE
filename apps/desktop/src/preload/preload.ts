@@ -3479,6 +3479,14 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     pollingBindingKey = binding.key;
     pollingGeneration = projectBindingGeneration;
     if (binding.kind === "remote" && await remoteTargetGate.isDisconnected(binding.targetId)) {
+      if (
+        currentProjectBinding?.key !== pollingBindingKey ||
+        projectBindingGeneration !== pollingGeneration
+      ) {
+        // The window switched projects during the read; poll the new one.
+        nextDelayMs = 0;
+        return;
+      }
       // Parked, not failed: polling every 2s cannot reach a machine the person
       // disconnected. A snapshot that shows it connected again resumes it.
       remoteRuntimeEventPollParked = true;

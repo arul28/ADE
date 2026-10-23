@@ -307,6 +307,8 @@ export class RemoteConnectionService {
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
   private autoconnectTimer: NodeJS.Timeout | null = null;
+  /** Strictly increasing, so a window can always tell the newer of two snapshots. */
+  private lastSnapshotAt = 0;
   private readonly inFlightStreamEvents = new Map<
     string,
     Promise<RemoteRuntimeStreamEventsResult>
@@ -779,11 +781,12 @@ export class RemoteConnectionService {
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
         };
       });
+    this.lastSnapshotAt = Math.max(Date.now(), this.lastSnapshotAt + 1);
     return {
       connections,
       connectedCount: connections.filter((entry) => entry.state === "connected")
         .length,
-      updatedAt: Date.now(),
+      updatedAt: this.lastSnapshotAt,
     };
   }
 
