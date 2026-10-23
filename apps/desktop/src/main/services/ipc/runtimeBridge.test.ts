@@ -138,6 +138,11 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     onEntryConnected: vi.fn(() => () => {}),
     onEntryEvicted: vi.fn(() => () => {}),
     onPortForwardsInvalidated: onPortForwardsInvalidatedMock,
+    hasEntry: vi.fn(() => false),
+    needsUserAction: vi.fn(() => false),
+    isLastConnectFailure: vi.fn(() => false),
+    clearConnectFailure: vi.fn(),
+    assertConnectNotBackingOff: vi.fn(),
   })),
 }));
 

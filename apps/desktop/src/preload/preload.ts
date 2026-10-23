@@ -38,6 +38,7 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { createMacDesktopBridge } from "./macDesktopPreload";
+import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
@@ -1908,14 +1909,26 @@ async function callRemoteProjectActionIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding(guardBinding);
-  const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+  const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
-  })) as RemoteRuntimeActionResult;
+  });
   checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
+
+const remoteTargetGate = createRemoteTargetGate({
+  ipcRenderer,
+  onReconnected: (targetId) => {
+    // The event pump parked while the bound machine was disconnected picks up
+    // where it stopped.
+    const binding = currentProjectBinding;
+    if (binding?.kind === "remote" && binding.targetId === targetId) {
+      resumeRemoteRuntimeEventPollAfterReconnect();
+    }
+  },
+});
 
 function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
@@ -2267,11 +2280,11 @@ async function callPinnedRuntimeAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<T> {
   if (pin.kind === "remote") {
-    const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+    const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
       request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
+    });
     return response.result as T;
   }
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -2793,12 +2806,12 @@ async function callRemoteProjectSyncIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding();
-  const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
+  const result = await remoteTargetGate.invoke<T>(IPC.remoteRuntimeCallSync, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
-  })) as T;
+  });
   checkAfterInvoke();
   return { handled: true, result };
 }
@@ -3254,6 +3267,8 @@ const subscribeLocalCursorAuthStatusEvents =
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
+/** The pump stopped because the bound machine was disconnected by the person. */
+let remoteRuntimeEventPollParked = false;
 let remoteRuntimeEventCursor = 0;
 let remoteRuntimeEventBindingKey: string | null = null;
 // The binding the pump is currently subscribed to, kept alongside its key so a
@@ -3417,9 +3432,16 @@ function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
   }, delayMs);
 }
 
+function resumeRemoteRuntimeEventPollAfterReconnect(): void {
+  if (!remoteRuntimeEventPollParked) return;
+  remoteRuntimeEventPollParked = false;
+  scheduleRemoteRuntimeEventPoll(0);
+}
+
 async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
+  remoteRuntimeEventPollParked = false;
   let nextDelayMs: number | null = null;
   let pollingBindingKey: string | null = null;
   let pollingGeneration = projectBindingGeneration;
@@ -3456,6 +3478,20 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
     pollingBindingKey = binding.key;
     pollingGeneration = projectBindingGeneration;
+    if (binding.kind === "remote" && await remoteTargetGate.isDisconnected(binding.targetId)) {
+      if (
+        currentProjectBinding?.key !== pollingBindingKey ||
+        projectBindingGeneration !== pollingGeneration
+      ) {
+        // The window switched projects during the read; poll the new one.
+        nextDelayMs = 0;
+        return;
+      }
+      // Parked, not failed: polling every 2s cannot reach a machine the person
+      // disconnected. A snapshot that shows it connected again resumes it.
+      remoteRuntimeEventPollParked = true;
+      return;
+    }
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
@@ -5371,7 +5407,7 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeActionRequest,
     ): Promise<RemoteRuntimeActionResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeCallAction, id, {
         id,
         projectId,
         request,
@@ -5381,7 +5417,7 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeStreamEventsRequest = {},
     ): Promise<RemoteRuntimeStreamEventsResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeStreamEvents, id, {
         id,
         projectId,
         request,
@@ -6506,7 +6542,7 @@ const adeBridge = {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
       const binding = await getRemoteProjectBinding({ fresh: true });
       if (binding) {
-        return ipcRenderer.invoke(IPC.remoteRuntimeListActionRegistry, {
+        return remoteTargetGate.invoke(IPC.remoteRuntimeListActionRegistry, binding.targetId, {
           id: binding.targetId,
           projectId: binding.projectId,
         });

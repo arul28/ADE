@@ -477,8 +477,14 @@ function diagnosticRemoteErrorKind(connection: Record<string, unknown>): Diagnos
   const info = recordValue(connection.lastErrorInfo);
   const failure = info?.failure;
   if (failure === "timeout") return "timeout";
-  if (failure === "unreachable") return "unreachable";
-  if (failure === "authentication" || info?.kind === "auth_required" || info?.kind === "ssh_auth") {
+  if (failure === "unreachable" || info?.kind === "unreachable") return "unreachable";
+  // A host key that does not match is the host failing to authenticate.
+  if (
+    failure === "authentication"
+    || info?.kind === "auth_required"
+    || info?.kind === "ssh_auth"
+    || info?.kind === "host_key"
+  ) {
     return "authentication";
   }
   if (failure === "pairing") return "pairing";

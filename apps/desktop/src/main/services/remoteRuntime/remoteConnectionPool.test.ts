@@ -36,6 +36,8 @@ import {
   REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
   RemoteConnectionPool,
 } from "./remoteConnectionPool";
+import { RemoteConnectionService } from "./remoteConnectionService";
+import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
@@ -1183,6 +1185,45 @@ describe("RemoteConnectionPool", () => {
     ).resolves.toMatchObject({ version: "1.0.1" });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["ssh_auth", "host_key"] as const)(
+    "stops dialing an SSH machine after a %s refusal until Try again or an edit",
+    async (kind) => {
+      bootstrapRemoteRuntimeMock.mockRejectedValue(
+        new RemoteRuntimeConnectError({ kind, message: `refused (${kind})` }),
+      );
+      let saved = target;
+      const registry = {
+        get: (id: string) => (id === saved.id ? saved : null),
+        list: () => [saved],
+        save: (input: RemoteRuntimeTarget) => (saved = { ...saved, ...input }),
+      } as unknown as RemoteTargetRegistry;
+      const pool = new RemoteConnectionPool(registry, "1.0.0");
+      const service = new RemoteConnectionService(registry, pool, {}, {} as never);
+      const poll = () => service.callAction(target.id, "project-1", { domain: "ai", action: "getStatus" });
+
+      await expect(poll()).rejects.toThrow(`refused (${kind})`);
+      // Twenty more polls: none of them dials again.
+      for (let index = 0; index < 20; index += 1) {
+        await expect(poll()).rejects.toThrow(/won't retry on its own/);
+      }
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+      expect(service.snapshot().connections[0]?.lastError).toMatch(/won't retry on its own/);
+      expect(service.snapshot().connections[0]?.lastErrorInfo?.kind).toBe(kind);
+
+      // Try again dials once.
+      await expect(service.connect(target.id, { explicit: true })).rejects.toThrow(`refused (${kind})`);
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+      await expect(poll()).rejects.toThrow(/won't retry on its own/);
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+
+      // An edit (a new user or key) lets the next poll dial.
+      service.saveTarget({ ...target, sshUser: "agent2" });
+      await expect(poll()).rejects.toThrow(`refused (${kind})`);
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(3);
+      bootstrapRemoteRuntimeMock.mockReset();
+    },
+  );
 
   it("does not reconnect a retryable request after an explicit disconnect during the request", async () => {
     const firstClient = createClient();

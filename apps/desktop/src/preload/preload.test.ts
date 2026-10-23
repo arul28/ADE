@@ -2517,6 +2517,9 @@ describe("preload Apple device input routing", () => {
         if (channel === IPC.remoteRuntimeStreamEvents) {
           return { events: [], nextCursor: 0, hasMore: false };
         }
+        if (channel === IPC.remoteRuntimeGetConnectionSnapshot) {
+          return { connections: [], connectedCount: 0, updatedAt: 1 };
+        }
         throw new Error(`unexpected IPC: ${channel}`);
       });
       const on = vi.fn();
@@ -2603,6 +2606,9 @@ describe("preload Apple device input routing", () => {
         }
         if (channel === IPC.remoteRuntimeStreamEvents) {
           return { events: [], nextCursor: 0, hasMore: false };
+        }
+        if (channel === IPC.remoteRuntimeGetConnectionSnapshot) {
+          return { connections: [], connectedCount: 0, updatedAt: 1 };
         }
         throw new Error(`unexpected IPC: ${channel}`);
       });
@@ -5386,6 +5392,75 @@ describe("preload Apple device input routing", () => {
 
       await vi.advanceTimersByTimeAsync(20_000);
       expect(streamRequests).toHaveLength(1);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends nothing to a machine main reports as disconnected, and resumes when it connects", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const snapshot = (disconnected: boolean, updatedAt: number) => ({
+        connections: [{ target: { id: "target-1" }, reconnectBlocked: disconnected ? "disconnected" : null }],
+        connectedCount: 0,
+        updatedAt,
+      });
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding };
+        if (channel === IPC.remoteRuntimeGetConnectionSnapshot) return snapshot(true, 1);
+        if (channel === IPC.remoteRuntimeStreamEvents) return { events: [], nextCursor: 0, hasMore: false };
+        if (channel === IPC.remoteRuntimeCallAction) return { result: "ok" };
+        return undefined;
+      });
+      const on = vi.fn();
+      vi.doMock("electron", () => ({
+        contextBridge: {
+          exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+            (globalThis as any).__adeBridge = value;
+          }),
+        },
+        ipcRenderer: { invoke, on, removeListener: vi.fn() },
+        webFrame: { getZoomLevel: vi.fn(() => 0), setZoomLevel: vi.fn(), getZoomFactor: vi.fn(() => 1) },
+      }));
+
+      await import("./preload");
+      const bridge = (globalThis as any).__adeBridge;
+      const remoteCalls = () => invoke.mock.calls.filter(([channel]) =>
+        channel === IPC.remoteRuntimeStreamEvents || channel === IPC.remoteRuntimeCallAction).length;
+      const unsubscribe = bridge.project.onStateEvent(vi.fn());
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // Disconnected: the bound pump parks and a direct call is refused in
+      // main's own words, without reaching main.
+      await expect(
+        bridge.remoteRuntime.callAction("target-1", "project-1", { domain: "project_config", action: "get" }),
+      ).rejects.toThrow(
+        "Error invoking remote method 'ade.remoteRuntime.callAction': Error: Remote machine was manually disconnected.",
+      );
+      expect(remoteCalls()).toBe(0);
+
+      const pushSnapshot = on.mock.calls.find(([channel]) => channel === IPC.remoteRuntimeConnectionSnapshotChanged)?.[1];
+      expect(typeof pushSnapshot).toBe("function");
+      pushSnapshot({}, snapshot(false, 2));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(invoke.mock.calls.some(([channel]) => channel === IPC.remoteRuntimeStreamEvents)).toBe(true);
+
+      // An older snapshot that arrives late does not undo the newer one.
+      pushSnapshot({}, snapshot(true, 1));
+      await expect(
+        bridge.remoteRuntime.callAction("target-1", "project-1", { domain: "project_config", action: "get" }),
+      ).resolves.toEqual({ result: "ok" });
 
       unsubscribe();
     } finally {

@@ -660,6 +660,12 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "chat.markCrossMachineHandoff",
   "file.refreshGitDecorations",
   "lane.portGetLease",
+  // Single-flighted and throttled on the host; a second run is a no-op sync.
+  "pr.reconcileOnFocus",
+  // Clears a marker; clearing it again leaves it cleared.
+  "session.clearWokeMarker",
+  // Publishes which tool a desktop has open; the same publish twice is a no-op.
+  "work_tools.setActiveTool",
 ]);
 
 // Reads that are never run again: they wait on purpose, call a model, or walk

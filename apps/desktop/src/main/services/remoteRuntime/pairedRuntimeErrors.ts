@@ -146,3 +146,42 @@ export class PairedRuntimeSshTrustRequiredError extends Error {
     this.name = "PairedRuntimeSshTrustRequiredError";
   }
 }
+
+export const REMOTE_CONNECT_STOPPED_NOTICE =
+  "ADE won't retry on its own. Fix this, then press Try again.";
+
+/**
+ * ADE refused to dial because a recent connect failed; nothing was sent. The
+ * "failed recently" text is what Sentry's expected-outcome filter matches.
+ */
+export class RemoteConnectBackoffError extends Error {
+  readonly code = "REMOTE_CONNECT_BACKOFF";
+
+  constructor(failureMessage: string, retryAtMs: number | null) {
+    const tail = retryAtMs == null
+      ? REMOTE_CONNECT_STOPPED_NOTICE
+      : `Retrying in ${Math.max(1, Math.ceil((retryAtMs - Date.now()) / 1000))}s.`;
+    super(`Remote ADE service connection failed recently (${failureMessage}). ${tail}`);
+    this.name = "RemoteConnectBackoffError";
+  }
+}
+
+/**
+ * The connection dropped while a call that may not run twice was in flight, so
+ * ADE cannot say whether the machine ran it. `reconnected` says whether the
+ * machine answered again right after: then it is reachable, and only this one
+ * call's outcome is unknown.
+ */
+export class RemoteActionOutcomeUnknownError extends Error {
+  readonly code = "REMOTE_ACTION_OUTCOME_UNKNOWN";
+
+  constructor(readonly reconnected: boolean) {
+    super(
+      "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
+        (reconnected
+          ? "ADE reconnected to the machine; retry the action if it is still needed."
+          : "ADE could not reconnect to the machine; check the destination before retrying the action."),
+    );
+    this.name = "RemoteActionOutcomeUnknownError";
+  }
+}
