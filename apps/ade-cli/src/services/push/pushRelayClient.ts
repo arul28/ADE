@@ -43,17 +43,18 @@ const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
  * The whole of one relay request: the account token, the fetch, and the one
- * forced-refresh retry after a 401, together. The default keeps the old worst
- * case (a 30s shared token refresh, then two 15s fetches) for the brain's
- * background loops, which have no caller waiting on them.
+ * forced-refresh retry after a 401, together. The background default keeps the
+ * old worst case (a 30s shared token refresh, then two 15s fetches) for the
+ * brain's loops, which have no caller waiting on them.
  */
-const DEFAULT_REQUEST_DEADLINE_MS = 60_000;
+const PUSH_RELAY_BACKGROUND_DEADLINE_MS = 60_000;
 /**
- * The same, for the account Activity routes the desktop calls behind its 30s
- * IPC timer. Each of those used to stack its own budgets past a minute, so the
- * timer always answered first; this keeps the answer, in words, under it.
+ * The same, for every route a person waits on: the account Activity and
+ * notification routes the desktop calls behind its 30s IPC timer. Each of
+ * those used to stack its own budgets past a minute, so the timer always
+ * answered first; this keeps the answer, in words, under it.
  */
-export const PUSH_RELAY_REQUEST_DEADLINE_MS = 20_000;
+export const PUSH_RELAY_FOREGROUND_DEADLINE_MS = 20_000;
 
 /** Per-call options `getAttentionSnapshot` accepts. */
 export type PushRelayCallOptions = {
@@ -294,7 +295,7 @@ export function createPushRelayClient(args: {
     const bodyString = options?.body === undefined ? "" : JSON.stringify(options.body);
     // One budget for everything below. `deadline` aborts the token wait and the
     // fetch alike; a caller's own signal shortens it, never lengthens it.
-    const deadlineMs = options?.deadlineMs ?? DEFAULT_REQUEST_DEADLINE_MS;
+    const deadlineMs = options?.deadlineMs ?? PUSH_RELAY_BACKGROUND_DEADLINE_MS;
     const deadlineAt = Date.now() + deadlineMs;
     const deadline = new AbortController();
     const deadlineTimer = setTimeout(
@@ -756,7 +757,7 @@ export function createPushRelayClient(args: {
         {
           accountAuthorized: true,
           expectedAccountUserId,
-          deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
           ...(callOptions?.signal ? { signal: callOptions.signal } : {}),
         },
       );
@@ -794,7 +795,7 @@ export function createPushRelayClient(args: {
       const response = await request("POST", "/attention/account/ack", {
         body: acknowledgment,
         accountAuthorized: true,
-        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId: expectedAccountUserId ?? undefined,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
@@ -825,7 +826,7 @@ export function createPushRelayClient(args: {
       const response = await request("POST", "/attention/account/presence", {
         body: presence,
         accountAuthorized: true,
-        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
@@ -858,6 +859,7 @@ export function createPushRelayClient(args: {
         },
         accountAuthorized: true,
         expectedAccountUserId,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
       });
       if (response.status === 429) {
         const retryAfter = Number(response.body?.retryAfterSeconds);
@@ -882,7 +884,7 @@ export function createPushRelayClient(args: {
     ): Promise<AttentionPreferences | null> {
       const response = await request("GET", "/attention/account/preferences", {
         accountAuthorized: true,
-        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
@@ -906,7 +908,7 @@ export function createPushRelayClient(args: {
       const response = await request("PUT", "/attention/account/preferences", {
         body: accountPreferences,
         accountAuthorized: true,
-        deadlineMs: PUSH_RELAY_REQUEST_DEADLINE_MS,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
@@ -939,7 +941,11 @@ export function createPushRelayClient(args: {
       const response = await request(
         "DELETE",
         `/attention/account/machines/${encodeURIComponent(trimmedMachineKey)}`,
-        { accountAuthorized: true, expectedAccountUserId },
+        {
+          accountAuthorized: true,
+          expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
+        },
       );
       // Already purged (or never published) is the desired end state, not a
       // failure — removing a machine twice must not report an error.
@@ -959,6 +965,7 @@ export function createPushRelayClient(args: {
           body: partial,
           accountAuthorized: true,
           expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         },
       );
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {

@@ -343,7 +343,6 @@ export function ActivitySettingsControls({
   const {
     account,
     busy,
-    signedOut,
     machines,
     updateAccount,
     setMachineMuted,
@@ -435,7 +434,9 @@ export function ActivitySettingsControls({
                   icon={DesktopTower}
                   label={machine.name}
                   description={
-                    machineMuted(machine.machineKey)
+                    model.loadFailed
+                      ? "Notification setting didn’t load."
+                      : machineMuted(machine.machineKey)
                       ? "Visible in Activity; never notifies."
                       : machine.online
                         ? "Online · notifies normally."
@@ -445,7 +446,7 @@ export function ActivitySettingsControls({
                     <PopoverSwitch
                       label={`Notify me about ${machine.name}`}
                       checked={!machineMuted(machine.machineKey)}
-                      disabled={signedOut}
+                      disabled={busy}
                       onChange={(enabled) =>
                         void setMachineMuted(machine.machineKey, !enabled)}
                     />
@@ -554,7 +555,7 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
 
 /** One switch per machine. Muted machines still show in Activity. */
 export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
-  const { machines, signedOut, setMachineMuted, machineMuted } = model;
+  const { machines, busy, setMachineMuted, machineMuted } = model;
   return (
     <ModernSection group="Machines" anchor="activity-machines" title="Machines" hint="Mute a machine to keep it in Activity without notifications.">
       <ModernRows>
@@ -575,14 +576,16 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
                 hint={(
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
-                    {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                    {model.loadFailed
+                      ? "Notification setting didn’t load"
+                      : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
                   </span>
                 )}
                 control={
                   <SettingsToggle
                     label={`Notify me about ${machine.name}`}
                     checked={!muted}
-                    disabled={signedOut}
+                    disabled={busy}
                     onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
                   />
                 }

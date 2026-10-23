@@ -6381,12 +6381,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const params = {
-      includeTransferReadiness: arg?.includeTransferReadiness === true,
-      forceTransferReadiness: arg?.forceTransferReadiness === true,
-    };
     const rootKey = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
-    return await syncStatusReaders.readProject(rootKey, arg, async () => {
+    return await syncStatusReaders.readProject(rootKey, arg, async (params) => {
       const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
         event,
         "sync.getStatus",
@@ -6394,11 +6390,13 @@ export function registerIpc({
         // Same read budget as the machine read: the transport clock starts
         // after the project is registered and connected, so a cold start never
         // spends it, and it expires inside the readers' overall cap.
-        (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}, {
+        (pool, rootPath) => pool.syncStatusForRoot(rootPath, params, {
           timeoutMs: LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
         }),
       );
       if (runtimeStatus.handled) return runtimeStatus.result;
+      // The in-process service reads an absent `includeTransferReadiness` as
+      // "include it", unlike the runtime, so it gets the caller's own values.
       return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
         service.getStatus({
           includeTransferReadiness: arg?.includeTransferReadiness,

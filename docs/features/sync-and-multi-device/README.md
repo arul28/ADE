@@ -1587,7 +1587,7 @@ Desktop connection UI:
   reports `degradedReason`, honors `{ force: true }` for user-initiated reads,
   and settles last-issued-wins so a fast forced read is not overwritten by an
   older shared read timing out behind it. Exports
-  `isDegradedLocalSyncSnapshot` and `localSyncStatusBackoffMs`.
+  `isDegradedSyncSnapshot` and `localSyncStatusBackoffMs`.
 - `apps/desktop/src/renderer/components/settings/useSyncConnections.ts` — the
   hook that keeps the Connections panel local-vs-remote aware. It fetches the
   binding-following `sync.getStatus` **and** the machine-level

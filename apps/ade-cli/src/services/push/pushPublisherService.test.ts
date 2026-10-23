@@ -18,7 +18,7 @@ import {
 } from "./pushRegistrationStore";
 import {
   createPushRelayClient,
-  PUSH_RELAY_REQUEST_DEADLINE_MS,
+  PUSH_RELAY_FOREGROUND_DEADLINE_MS,
   PushRelayMachineRevokedError,
   PushRelayUnreachableError,
 } from "./pushRelayClient";
@@ -4101,13 +4101,13 @@ describe("createPushRelayClient", () => {
       observedAt: "2026-07-05T00:00:00.000Z",
     });
     void report.then(settled, settled);
-    await vi.advanceTimersByTimeAsync(PUSH_RELAY_REQUEST_DEADLINE_MS);
+    await vi.advanceTimersByTimeAsync(PUSH_RELAY_FOREGROUND_DEADLINE_MS);
 
     expect(settled).toHaveBeenCalledTimes(1);
     await expect(report).rejects.toBeInstanceOf(PushRelayUnreachableError);
     await expect(report).rejects.toMatchObject({ code });
     // Under the desktop's 30s IPC timer.
-    expect(PUSH_RELAY_REQUEST_DEADLINE_MS).toBeLessThan(30_000);
+    expect(PUSH_RELAY_FOREGROUND_DEADLINE_MS).toBeLessThan(30_000);
   });
 
   it("rejects an account snapshot response that resolves after the account changes", async () => {

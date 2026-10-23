@@ -878,8 +878,9 @@ Account changes and stale machine revisions fail closed and require a refresh.
 
 Every Activity read the desktop polls answers inside the 30 s IPC timer. One
 relay request (the account token, the fetch, and the one forced retry after a
-401) shares a single 20 s deadline (`PUSH_RELAY_REQUEST_DEADLINE_MS`); the
-brain's background relay loops keep a 60 s one. A snapshot gives the account
+401) shares a single deadline: 20 s (`PUSH_RELAY_FOREGROUND_DEADLINE_MS`) on
+every route a person waits on (Activity reads and writes, machine mute and
+removal, notifications), 60 s on the brain's background loops. A snapshot gives the account
 leg 18 s, then answers from this computer's brain with whatever is left of a
 25 s budget, so a relay that hangs degrades to "this computer only" instead of
 to nothing. The renderer races a 35 s backstop above that, which only catches a

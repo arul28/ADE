@@ -5,7 +5,7 @@ import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
 import { buildMachineOnlySyncSnapshot } from "./machineOnlySyncSnapshot";
 
-type SyncStatusParams = {
+export type SyncStatusParams = {
   includeTransferReadiness: boolean;
   forceTransferReadiness: boolean;
 };
@@ -25,7 +25,8 @@ export type SyncStatusReadersOptions = {
 /** How long one degradation reason stays quiet in the log while it persists. */
 const DEGRADED_WARN_INTERVAL_MS = 60_000;
 
-function statusParams(arg?: SyncGetStatusArgs): SyncStatusParams {
+/** The one normalization of a status request: the cache key and the read both use it. */
+export function syncStatusParams(arg?: SyncGetStatusArgs): SyncStatusParams {
   return {
     includeTransferReadiness: arg?.includeTransferReadiness === true,
     forceTransferReadiness: arg?.forceTransferReadiness === true,
@@ -67,7 +68,7 @@ export function createSyncStatusReaders(options: SyncStatusReadersOptions) {
   };
 
   const readMachineUncapped = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const params = statusParams(arg);
+    const params = syncStatusParams(arg);
     if (options.readMachineFromRuntime) {
       try {
         // Machine-level call: intentionally bypasses the window's local/remote
@@ -118,15 +119,16 @@ export function createSyncStatusReaders(options: SyncStatusReadersOptions) {
   /**
    * A project's status. `rootKey` names what `read` routes to (the window's
    * local project root, or null for the machine-level fallback); reads with the
-   * same key and flags share one call. A real failure still rejects with its
+   * same key and flags share one call, and `read` gets the normalized flags
+   * the key was built from. A real failure still rejects with its
    * own reason; only running out of time is answered for.
    */
   const readProject = async (
     rootKey: string | null,
     arg: SyncGetStatusArgs | undefined,
-    read: () => Promise<SyncRoleSnapshot>,
+    read: (params: SyncStatusParams) => Promise<SyncRoleSnapshot>,
   ): Promise<SyncRoleSnapshot> => {
-    const params = statusParams(arg);
+    const params = syncStatusParams(arg);
     const key = JSON.stringify([rootKey, params.includeTransferReadiness, params.forceTransferReadiness]);
     const existing = projectReads.get(key);
     if (existing) return await existing;
@@ -134,7 +136,7 @@ export function createSyncStatusReaders(options: SyncStatusReadersOptions) {
       "This project's background service did not answer in time. ADE will check again shortly.",
     );
     const pending: Promise<SyncRoleSnapshot> = withDeadline(
-      read(),
+      read(params),
       LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
       () => deadlineError,
     ).catch((error: unknown) => {
