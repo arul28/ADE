@@ -29,6 +29,9 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   var replacedAccount: ReplacedLogin?
 
   var email: String? { nonEmpty(account?.email) }
+  /// What an account is called: its login's email, else its id. Accounts have
+  /// no names; an older host may still send a typed `label`, which is not shown.
+  var displayName: String { email ?? id }
   var plan: String? { nonEmpty(account?.plan) }
   /// The config home names a login, working or not.
   var hasLogin: Bool { signedIn || loginBroken == true }
@@ -199,17 +202,18 @@ struct ProviderAccountsClient {
     try await settings("setSettings", ["provider": provider.rawValue, "settings": ["smartBalance": enabled]])
   }
 
-  func create(_ provider: ProviderAccountProvider, label: String) async throws -> ProviderAccount {
-    try await account("create", ["provider": provider.rawValue, "label": label])
+  func create(_ provider: ProviderAccountProvider) async throws -> ProviderAccount {
+    do {
+      return try await account("create", ["provider": provider.rawValue])
+    } catch where error.localizedDescription.contains("needs a label") {
+      // A host older than nameless accounts still asks for one.
+      return try await account("create", ["provider": provider.rawValue, "label": provider.title])
+    }
   }
 
   func remove(id: String) async throws {
     struct Removed: Decodable { var removed: Bool }
     _ = try await call("providerAccounts.remove", ["id": id], as: Removed.self)
-  }
-
-  func rename(id: String, label: String) async throws -> ProviderAccount {
-    try await account("rename", ["id": id, "label": label])
   }
 
   func setDefault(id: String) async throws -> ProviderAccount {
@@ -299,11 +303,6 @@ final class ProviderAccountsStore: ObservableObject {
   }
 
   @discardableResult
-  func rename(id: String, label: String) async -> Bool {
-    await run(accountId: id) { _ = try await $0.rename(id: id, label: label) } != nil
-  }
-
-  @discardableResult
   func remove(id: String) async -> Bool {
     await run(accountId: id) { try await $0.remove(id: id) } != nil
   }
@@ -323,8 +322,8 @@ final class ProviderAccountsStore: ObservableObject {
     await run(accountId: id) { _ = try await $0.refresh(self.provider, instanceId: id) }
   }
 
-  func create(label: String) async -> ProviderAccount? {
-    await run(accountId: nil) { try await $0.create(self.provider, label: label) }
+  func create() async -> ProviderAccount? {
+    await run(accountId: nil) { try await $0.create(self.provider) }
   }
 
   func setSmartBalance(_ enabled: Bool) async {

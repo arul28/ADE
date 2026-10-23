@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowCounterClockwise,
   Check,
@@ -137,7 +137,7 @@ export function AppearanceSection() {
 
   const resetAll = () => {
     resetThemeAndChatFontDefaults();
-    // Resetting to the shuffle default is a choice, so the web client keeps Shuffle on reload instead of its Plain default.
+    // Resetting is a choice, so it is kept as is on reload rather than read as the untouched default.
     setInterfacePreferences({
       sansFont: "geist",
       monoFont: "jetbrains",
@@ -382,6 +382,7 @@ function BackgroundPicker() {
     }
   };
 
+  const hiDpi = useSyncExternalStore(subscribeHiDpi, readHiDpi);
   const pickedId = scenePrefs.mode === "image" ? scenePrefs.imageId : null;
   const usingPicture = scenePrefs.mode === "image" || scenePrefs.mode === "shuffle";
 
@@ -550,6 +551,9 @@ function BackgroundPicker() {
                     </button>
                   ))}
                 </div>
+                {scenePrefs.texture === "dots" && !hiDpi ? (
+                  <div className="ade-ap-rowhint">Halftone only shows on high-resolution (2x) screens.</div>
+                ) : null}
               </div>
               <label className="ade-ap-option">
                 <span className="kit-eyebrow">Veil</span>
@@ -878,4 +882,18 @@ function PreviewBackdrop({ scene, palette }: { scene: ActiveScene; palette: Reso
       }}
     />
   );
+}
+
+// The halftone texture draws only at 2x and above (see `styles/scene.css`).
+// Live, so dragging the window to another display updates the hint.
+const HI_DPI_QUERY = "(min-resolution: 2dppx)";
+
+function subscribeHiDpi(onChange: () => void): () => void {
+  const media = window.matchMedia?.(HI_DPI_QUERY);
+  media?.addEventListener?.("change", onChange);
+  return () => media?.removeEventListener?.("change", onChange);
+}
+
+function readHiDpi(): boolean {
+  return window.matchMedia?.(HI_DPI_QUERY).matches ?? true;
 }

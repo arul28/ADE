@@ -5,8 +5,10 @@ import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import {
+  CLI_COMMAND_ALIASES,
   CliExecutionError,
   CliUsageError,
+  VALUE_CARRIER_FLAGS,
   asString,
   automaticProjectRegistrationParams,
   connectMachineRuntimeDaemon,
@@ -51,23 +53,35 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "apple",
   "mac-desktop",
   "app-control",
+  "usage",
 ]);
+/**
+ * Commands whose own `--machine` flag means something else (a draft's sending
+ * machine, the machine `ade machines` acts on). They keep the flag.
+ */
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help", "code"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
 const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
 
 /**
- * The flag names in `args`, skipping each free-text flag's value: in
- * `--prompt --cancel` the prompt is the text "--cancel", not a flag.
+ * The flag names in `args`, skipping each value-carrying flag's value: in
+ * `--prompt --cancel` the prompt is the text "--cancel", not a flag, and a
+ * secret passed as `--value --machine` is a value too, not machine targeting.
  */
 export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
   const flags = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
     if (token === "--") break;
-    if (FREE_TEXT_VALUE_FLAGS.has(token)) { index += 1; continue; }
-    flags.add(token.split("=")[0]!);
+    const name = token.split("=")[0]!;
+    flags.add(name);
+    // `--flag=value` carries its value inline; only a bare flag owns the next
+    // token.
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) {
+      index += 1;
+    }
   }
   return flags;
 }
@@ -79,8 +93,23 @@ export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
  * global options. Unsupported commands keep their flags and fail as before.
  */
 export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
-  const primary = parsed.command[0]?.toLowerCase() ?? "";
-  if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) return parsed;
+  const typed = parsed.command[0]?.toLowerCase() ?? "";
+  const primary = CLI_COMMAND_ALIASES[typed] ?? typed;
+  if (!MACHINE_TARGETABLE_PRIMARIES.has(primary)) {
+    // Left in place, the flag would be ignored and the command would quietly
+    // answer for THIS machine, which reads as the other machine's answer.
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (!OWN_MACHINE_FLAG_PRIMARIES.has(primary) && (flags.has("--machine") || flags.has("--all-machines"))) {
+      if (typed.startsWith("-")) {
+        throw new CliUsageError("Put --machine or --all-machines after the command: ade chat list --machine <name>.");
+      }
+      throw new CliUsageError(
+        `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
+        + "Commands that run on another machine: chat, lanes, projects, usage, apple, mac-desktop, app-control.",
+      );
+    }
+    return parsed;
+  }
   // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
   // flag names the destination, so the command runs on this machine and is
   // never forwarded. The other handoff forms act on this machine's own move,
@@ -158,6 +187,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
  */
 function machineCallScopeFor(
   method: string,
+  params: JsonObject | undefined,
   options: GlobalOptions,
   localOriginUrl: () => string | null,
 ): JsonObject {
@@ -165,6 +195,14 @@ function machineCallScopeFor(
   if (method.startsWith("projects.")) return { kind: "machine" };
   const selector = options.machineProject?.trim();
   if (selector) return { kind: "project", selector };
+  if (isMachineWideAction(method, params)) {
+    // The machine's quota is the same from every project there, so a machine
+    // without this repository can still answer. Sent as a `repo` scope that
+    // allows any project: a brain older than `anyProject` still reads the repo
+    // part instead of refusing the whole scope.
+    const originUrl = localOriginUrl();
+    return originUrl ? { kind: "repo", originUrl, orAnyProject: true } : { kind: "anyProject", originUrl: null };
+  }
   const originUrl = localOriginUrl();
   if (!originUrl) {
     throw new CliUsageError(
@@ -172,6 +210,18 @@ function machineCallScopeFor(
     );
   }
   return { kind: "repo", originUrl };
+}
+
+/**
+ * Actions that answer for the whole machine (its provider quota), whichever of
+ * its projects they run in.
+ */
+const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot"]);
+
+function isMachineWideAction(method: string, params: JsonObject | undefined): boolean {
+  if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+  const { domain, action } = params.arguments;
+  return typeof domain === "string" && typeof action === "string" && MACHINE_WIDE_ACTIONS.has(`${domain}.${action}`);
 }
 
 /** The most a proof command reads back from another machine for one capture. */
@@ -222,7 +272,7 @@ export async function createMachineRemoteConnection(
   const callRemote = async (method: string, params?: JsonObject): Promise<unknown> => {
     const answer = await socketClient.request("machines.call", {
       machine,
-      scope: machineCallScopeFor(method, options, localOriginUrl),
+      scope: machineCallScopeFor(method, params, options, localOriginUrl),
       request: { method, params: withoutLocalPaths(params) },
       timeoutMs: options.timeoutMs,
       ...(options.machineClone ? { clone: true } : {}),
@@ -380,10 +430,11 @@ function isAppControlCaptureProof(params: JsonObject | undefined): boolean {
 export const MACHINE_ROW_KEY = "machine";
 const MACHINE_PROJECT_ROW_KEY = "machineProject";
 
-export type MachineListKind = "chats" | "projects" | "lanes";
+export type MachineListKind = "chats" | "projects" | "lanes" | "usageLimits";
 
 function rowsOfListValue(kind: MachineListKind, value: unknown): JsonObject[] {
   if (kind === "chats") return firstArray(value, ["sessions", "chats", "items"]);
+  if (kind === "usageLimits") return firstArray(value, ["accounts"]);
   if (kind === "projects") return firstArray(value, ["projects", "items"]);
   return firstArray(value, ["lanes", "items", "result"]);
 }
@@ -421,13 +472,13 @@ async function executePlanOnAllMachines(
   const kind = plan.machineList ?? null;
   if (!kind) {
     throw new CliUsageError(
-      "--all-machines works with `chat list`, `lanes list` and `projects list`. Use --machine <name> for one machine.",
+      "--all-machines works with `chat list`, `lanes list`, `projects list` and `usage limits`. Use --machine <name> for one machine.",
     );
   }
   const single: GlobalOptions = { ...options, allMachines: false, machine: null };
   const [roster, localProjects] = await withMachineBrain(options, async (client) => [
-    await client.request("machines.list", { includeProjects: kind !== "projects" }),
-    kind === "projects" ? [] : await client.request("projects.list", {}).catch(() => []),
+    await client.request("machines.list", { includeProjects: kind === "chats" || kind === "lanes" }),
+    kind === "chats" || kind === "lanes" ? await client.request("projects.list", {}).catch(() => []) : [],
   ] as const);
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
@@ -438,7 +489,7 @@ async function executePlanOnAllMachines(
   // The project a row came from, as that machine names it. A projects list is
   // its own project column.
   const projectNameOn = (machine: JsonObject | null): string | null => {
-    if (kind === "projects") return null;
+    if (kind === "projects" || kind === "usageLimits") return null;
     if (options.machineProject) return options.machineProject;
     if (!machine) {
       // This machine's row names its project the way every other row does:
@@ -464,10 +515,24 @@ async function executePlanOnAllMachines(
   };
   const tag = (rows: JsonObject[], machineName: string, project: string | null): JsonObject[] =>
     rows.map((row) => ({ [MACHINE_ROW_KEY]: machineName, [MACHINE_PROJECT_ROW_KEY]: project, ...row }));
+  // A usage report's provider-wide notes and the asking chat's account ride
+  // beside its rows; keep them, naming the machine a note came from.
+  const notes: string[] = [];
+  let chat: unknown = null;
+  const keepReportExtras = (value: unknown, machineName: string, local: boolean): void => {
+    if (kind !== "usageLimits" || !isRecord(value)) return;
+    if (local && isRecord(value.chat)) chat = value.chat;
+    for (const note of Array.isArray(value.notes) ? value.notes : []) {
+      if (typeof note === "string" && note.trim()) notes.push(`${machineName}: ${note.trim()}`);
+    }
+  };
   const localName = asString(machines.find((machine) => machine.isThisMachine === true)?.name) ?? THIS_MACHINE_NAME;
   const results = await Promise.all([
     executePlan(plan, single).then(
-      (value) => tag(rowsOfListValue(kind, value), localName, projectNameOn(null)),
+      (value) => {
+        keepReportExtras(value, localName, true);
+        return tag(rowsOfListValue(kind, value), localName, projectNameOn(null));
+      },
       (error) => [{ [MACHINE_ROW_KEY]: localName, unavailable: failureCause(error) }],
     ),
     ...machines
@@ -483,6 +548,7 @@ async function executePlanOnAllMachines(
         }
         try {
           const value = await executePlan(plan, { ...single, machine: asString(machine.machineKey) ?? name });
+          keepReportExtras(value, name, false);
           return tag(rowsOfListValue(kind, value), name, projectNameOn(machine));
         } catch (error) {
           return [{ [MACHINE_ROW_KEY]: name, unavailable: failureCause(error) }];
@@ -490,6 +556,7 @@ async function executePlanOnAllMachines(
       }),
   ]);
   const rows = results.flat();
+  if (kind === "usageLimits") return { readAt: null, chat, accounts: rows, notes };
   return kind === "chats" ? { sessions: rows } : kind === "projects" ? { projects: rows } : { lanes: rows };
 }
 

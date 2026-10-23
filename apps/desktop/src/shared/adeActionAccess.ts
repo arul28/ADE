@@ -406,7 +406,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getAdeUsageStats", "getCostBreakdown", "getModelCatalog", "getModelDetail", "getModelPriceOverrides",
       "getModelRoutes", "getModelSheet", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
-      "getUsageSnapshot",
+      "getUsageLimits", "getUsageSnapshot",
     ],
     write: [
       "applyAccountRollups", "consumeResetCredit", "forceRefresh", "noteQuotaDemand",
@@ -424,7 +424,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   storage: {
     read: [
-      "cleanupPreview", "getSnapshot",
+      "cleanupPreview", "deletedLaneChatsSummary", "getSnapshot",
     ],
     write: [
       "cleanup", "compressNow", "runMaintenanceNow",

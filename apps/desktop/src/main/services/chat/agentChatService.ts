@@ -375,6 +375,7 @@ import {
   claudeAccountPromptCacheEnv,
   claudeAccountStopsOnExtraUsage,
   providerInstanceEnvPatch,
+  resolveChatInstanceId,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
@@ -2488,10 +2489,10 @@ function isPersistedChatStateShape(value: unknown): value is PersistedChatState 
  *
  * Neither input alone is trustworthy, and the two fail in opposite directions.
  * The transcript records every sequence number that was actually emitted and
- * survives losing the metadata file entirely, but it stops growing once the
- * session trips `MAX_CHAT_TRANSCRIPT_BYTES` — past that point the live counter
- * keeps climbing with nothing on disk to show for it. The persisted counter
- * keeps climbing past the cap, but it is only as fresh as the last
+ * survives losing the metadata file entirely, but a transcript read from a
+ * legacy 8 MB-capped `<id>.chat.jsonl` (written by older builds) stopped
+ * growing at the cap while the live counter kept climbing. The persisted
+ * counter keeps climbing regardless, but it is only as fresh as the last
  * `persistChatState` call and is missing outright on state written by builds
  * that predate the field. Taking the larger of the two means a stale, missing
  * or truncated source can only cost a gap in the numbering; it can never hand
@@ -5091,8 +5092,8 @@ type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
+  /** Bytes in this chat's dedicated transcript (on disk at load, plus lines queued since). */
   transcriptBytesWritten: number;
-  transcriptLimitReached: boolean;
   metadataPath: string;
   laneWorktreePath: string;
   runtime: ChatRuntime | null;
@@ -5712,7 +5713,6 @@ const DEFAULT_MUSE_MODEL = getDefaultModelDescriptor("muse")?.providerModelId ??
 const MUSE_FULL_OUTPUT_MAX_BYTES = 256 * 1024;
 const DEFAULT_REASONING_EFFORT = "medium";
 
-const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES = 200 * 1024;
 /**
  * The tools ADE's PostToolUse / PostToolUseFailure hooks skip. Claude Code
@@ -13026,6 +13026,7 @@ export function createAgentChatService(args: {
         // transcript may still be restorable; an app folder is an orphan only
         // when the transcript is gone too.
         Boolean(sessionService.get(sessionId))
+        || Boolean(resolveReadableHistoryPath(path.join(chatTranscriptsDir, `${sessionId}.jsonl`)))
         || [".chat.jsonl", ".chat.jsonl.gz"].some((ext) => fs.existsSync(path.join(transcriptsDir, `${sessionId}${ext}`))));
       if (removed > 0) logger.info("agent_chat.mcp_app_orphans_removed", { removed });
     } catch (error) {
@@ -19077,6 +19078,11 @@ export function createAgentChatService(args: {
   };
 
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
+  /** On-disk bytes of a chat's dedicated transcript, plain or compressed; 0 when there is none. */
+  const dedicatedTranscriptBytesOrZero = (sessionId: string): number => {
+    const readable = resolveReadableHistoryPath(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
+    return readable ? fileSizeOrZero(readable) : 0;
+  };
 
   const safeRealpath = (p: string): string | null => {
     try { return fs.realpathSync(p); } catch { return null; }
@@ -19360,8 +19366,7 @@ export function createAgentChatService(args: {
         ?? claudeBackgroundResumeSessionId
       : null;
     // Never let a persist walk the counter backwards: this file is the only
-    // record of the numbering once the transcript stops growing at
-    // MAX_CHAT_TRANSCRIPT_BYTES.
+    // record of the numbering when the transcript is a legacy capped copy.
     const eventSequenceHighWaterMark = resolveRehydratedEventSequence(
       managed.eventSequence,
       prevPersisted?.eventSequence,
@@ -19779,7 +19784,6 @@ export function createAgentChatService(args: {
       });
     }
     if (pointerChanged) {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
       flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     }
 
@@ -20791,47 +20795,20 @@ export function createAgentChatService(args: {
     envelope: AgentChatEventEnvelope,
     options?: { deferFlush?: boolean },
   ): void => {
-    // The legacy transcript_path is byte-capped because it also backs
-    // terminal-session storage. The dedicated chat transcript is the durable
-    // replay source and must keep receiving events after that cap is reached.
-    writeChatTranscriptLine(managed.session.id, envelope, options);
-    if (managed.transcriptLimitReached) return;
-    try {
-      fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
-      const warnTailHealed = (details: { path: string; priorSize: number }) => {
-        logger.warn("agent_chat.transcript_tail_healed", details);
-      };
-      const flushOnUserMessage = envelope.event.type === "user_message" && !options?.deferFlush;
-      const rawLine = `${JSON.stringify(envelope)}\n`;
-      const chunk = Buffer.from(rawLine, "utf8");
-      const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
-      if (remaining <= 0) {
-        managed.transcriptLimitReached = true;
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
-        if (flushOnUserMessage) flushQueuedTranscriptWrite(managed.transcriptPath);
-        return;
-      }
-      let toWrite = chunk;
-      if (chunk.length > remaining) {
-        toWrite = chunk.subarray(0, remaining);
-        managed.transcriptLimitReached = true;
-      }
-      managed.transcriptBytesWritten += toWrite.length;
-      queueTranscriptWrite(managed.transcriptPath, toWrite, warnTailHealed);
-      if (managed.transcriptLimitReached) {
-        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
-      }
-      if (flushOnUserMessage) flushQueuedTranscriptWrite(managed.transcriptPath);
-    } catch {
-      // ignore transcript write failures
-    }
+    // Only the dedicated chat transcript is written. The session row's legacy
+    // `<id>.chat.jsonl` (`managed.transcriptPath`) used to receive a second,
+    // 8 MB-capped copy of every event; readers that start from the row resolve
+    // to the dedicated file (`resolveChatTranscriptReadPath`), and the storage
+    // doctor removes old copies once their content is proven to be here.
+    managed.transcriptBytesWritten += writeChatTranscriptLine(managed.session.id, envelope, options);
   };
 
+  /** Queue one event line on the dedicated transcript; returns the bytes queued (0 on failure). */
   const writeChatTranscriptLine = (
     sessionId: string,
     envelope: AgentChatEventEnvelope,
     options?: { deferFlush?: boolean },
-  ): void => {
+  ): number => {
     try {
       const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const line = `${JSON.stringify(envelope)}\n`;
@@ -20841,8 +20818,10 @@ export function createAgentChatService(args: {
       if (envelope.event.type === "user_message" && !options?.deferFlush) {
         flushQueuedTranscriptWrite(transcriptFile);
       }
+      return Buffer.byteLength(line, "utf8");
     } catch {
       // ignore chat transcript write failures
+      return 0;
     }
   };
 
@@ -21974,7 +21953,8 @@ export function createAgentChatService(args: {
       await sendMessage({
         sessionId: created.id,
         text: usageLimitHandoffPrompt({
-          accountLabel: alternate.label,
+          // The id, not the label: the label is the login's email now.
+          accountLabel: alternate.instanceId,
           title: managed.autoTitleSeed,
           task: managed.session.goal,
           summary: managed.continuitySummary,
@@ -25769,10 +25749,7 @@ export function createAgentChatService(args: {
       // One append syscall per file per chunk (instead of one forced flush per
       // seeded user message) bounds queued-write memory without the sync-write
       // storm that stalled the runtime.
-      await Promise.all([
-        flushQueuedTranscriptWrite(chatTranscriptFile),
-        flushQueuedTranscriptWrite(managed.transcriptPath),
-      ]);
+      await flushQueuedTranscriptWrite(chatTranscriptFile);
       if (start + IMPORTED_CHAT_EVENT_CHUNK_SIZE < envelopes.length) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -27546,10 +27523,7 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });
     }
@@ -27812,8 +27786,7 @@ export function createAgentChatService(args: {
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
       transcriptPath: row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
-      transcriptBytesWritten: fileSizeOrZero(row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`)),
-      transcriptLimitReached: false,
+      transcriptBytesWritten: dedicatedTranscriptBytesOrZero(sessionId),
       metadataPath: metadataPathFor(sessionId),
       laneWorktreePath: rehydratedPersonalHostCwd ?? lane.worktreePath,
       runtime: null,
@@ -27911,7 +27884,6 @@ export function createAgentChatService(args: {
     );
     managed.historyGeneration = normalizeHistoryGeneration(persisted?.historyGeneration);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
-    managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
@@ -46308,7 +46280,6 @@ export function createAgentChatService(args: {
       },
       transcriptPath: path.join(transcriptsDir, `${randomUUID()}.chat.jsonl`),
       transcriptBytesWritten: 0,
-      transcriptLimitReached: false,
       metadataPath: metadataPathFor(randomUUID()),
       laneWorktreePath: projectRoot,
       runtime: null,
@@ -48353,8 +48324,7 @@ export function createAgentChatService(args: {
         }, null),
       },
       transcriptPath,
-      transcriptBytesWritten: fileSizeOrZero(transcriptPath),
-      transcriptLimitReached: false,
+      transcriptBytesWritten: dedicatedTranscriptBytesOrZero(sessionId),
       metadataPath,
       laneWorktreePath: personalHostCwd ?? launchContext.laneWorktreePath,
       runtime: null,
@@ -48419,7 +48389,6 @@ export function createAgentChatService(args: {
       compactionEmitterState: createCompactionEmitterState(),
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
-    managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
     // Init dedicated chat transcript file for persistence
@@ -48640,10 +48609,7 @@ export function createAgentChatService(args: {
     persistChatState(managed);
     // The handoff gate re-reads the transcript from disk; flush the queued
     // settlement events so the just-terminalized turn is visible to it.
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
   };
 
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -50140,10 +50106,7 @@ export function createAgentChatService(args: {
       }
     }
     const preparedAt = Date.parse(args.capsule.createdAt);
-    await Promise.all([
-      flushQueuedTranscriptWrite(managed.transcriptPath),
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`)),
-    ]);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
     const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
       const timestamp = Date.parse(entry.timestamp);
       if (!Number.isFinite(timestamp) || timestamp <= preparedAt) return false;
@@ -64627,9 +64590,17 @@ export function createAgentChatService(args: {
       : 0;
     const snapshots = await getTrackedSubagents(trimmed);
     const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
+    // The account is extra: an unreadable registry leaves it off, logged.
+    let instanceId: string | null = null;
+    try {
+      instanceId = resolveChatInstanceId(summary.provider, summary.instanceId);
+    } catch (error) {
+      logger.warn("chat.status_account_unavailable", { sessionId: summary.sessionId, error: getErrorMessage(error) });
+    }
     return deriveChatTurnStatus({
       sessionId: summary.sessionId,
       provider: summary.provider,
+      instanceId,
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
@@ -65447,7 +65418,6 @@ export function createAgentChatService(args: {
     managed.ctoSessionStartedAt = null;
     teardownRuntime(managed, "ended_session");
     managed.deleted = true;
-    flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
     projectNotesBySession.delete(sessionId);
@@ -68023,10 +67993,7 @@ export function createAgentChatService(args: {
       managed.endedNotified = true;
       managed.ctoSessionStartedAt = null;
       clearSubagentSnapshots(trimmedSessionId);
-      await Promise.all([
-        flushQueuedTranscriptWrite(managed.transcriptPath),
-        flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`)),
-      ]);
+      await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`));
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
       clearAcceptedStartWatch(trimmedSessionId);
@@ -68298,7 +68265,6 @@ export function createAgentChatService(args: {
       if (managed?.session.status === "active") continue;
       // After a failed append, the ring is the only copy of those events.
       if (!transcriptWritesSettled(path.join(chatTranscriptsDir, `${sessionId}.jsonl`))) continue;
-      if (managed && !transcriptWritesSettled(managed.transcriptPath)) continue;
       eventHistoryBySession.delete(sessionId);
       eventHistoryTouchedAt.delete(sessionId);
     }

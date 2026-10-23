@@ -1068,6 +1068,7 @@ import type { ProjectHealthService } from "../../../../../ade-cli/src/services/p
 import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -4357,6 +4358,11 @@ export function registerIpc({
     return service.runMaintenanceNow();
   });
 
+  ipcMain.handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.deletedLaneChatsSummary();
+  });
+
   ipcMain.handle(IPC.storageCleanupPreview, async (
     _event,
     targets: StorageCleanupTarget[],
@@ -7124,10 +7130,6 @@ export function registerIpc({
     const result = await removeProviderAccount(id);
     captureProviderAccount("account_removed", "completed", provider);
     return result;
-  });
-
-  ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
-    return getMachineProviderInstanceStore().rename(providerInstanceId(arg), providerInstanceArgs(arg).label);
   });
 
   ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {

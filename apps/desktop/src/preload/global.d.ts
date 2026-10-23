@@ -169,7 +169,6 @@ import type {
   ProviderInstanceRefreshArgs,
   ProviderInstanceRemoveArgs,
   ProviderInstanceRemoveResult,
-  ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
   ProviderInstanceDismissReplacedArgs,
   ProviderLoginRefArgs,
@@ -1124,6 +1123,7 @@ import type {
 } from "../shared/types/archive";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -1359,6 +1359,7 @@ declare global {
         getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
+        deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
@@ -3988,10 +3989,6 @@ declare global {
           args: ProviderInstanceRemoveArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstanceRemoveResult>;
-        rename: (
-          args: ProviderInstanceRenameArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<ProviderInstance>;
         setDefault: (
           args: ProviderInstanceSetDefaultArgs,
           pin?: OpenProjectBinding | null,

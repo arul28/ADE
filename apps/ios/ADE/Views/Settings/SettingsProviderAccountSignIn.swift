@@ -173,7 +173,7 @@ struct ProviderAccountSignInSheet: View {
   private var header: some View {
     VStack(spacing: 10) {
       VStack(spacing: 6) {
-        Text(account.label)
+        Text(account.displayName)
           .font(.title3.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         HStack(spacing: 5) {

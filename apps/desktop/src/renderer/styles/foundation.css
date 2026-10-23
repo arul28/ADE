@@ -682,6 +682,15 @@ html[data-theme-backdrop]::after {
   opacity: var(--ade-flair-backdrop-opacity, 1);
 }
 
+/* Scanlines are a 1px line every 3px, drawn over the whole UI. At a fractional
+   display scale (Windows' 125% and 150%) the lines cannot land on whole pixels
+   and beat into moiré bands across the text, so the layer stays off there. */
+@media (min-resolution: 1.01dppx) and (max-resolution: 1.99dppx) {
+  html[data-theme-backdrop="scanlines"]::after {
+    content: none;
+  }
+}
+
 body {
   margin: 0;
   color: var(--color-fg);

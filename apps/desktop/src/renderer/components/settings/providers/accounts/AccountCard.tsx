@@ -19,7 +19,7 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { accountIdentityLine } from "./accountPresentation";
 
-export type RowMenuAction = "rename" | "signIn" | "signOut" | "remove";
+export type RowMenuAction = "signIn" | "signOut" | "remove";
 
 /** Why a card is shown the way it is; one state per card, decided by the panel. */
 export type CardState =
@@ -46,9 +46,6 @@ export function AccountCard({
   replacedNote,
   compactionControl,
   onSetClaudeSetting,
-  renaming,
-  onCommitRename,
-  onCancelRename,
 }: {
   instance: ProviderInstance;
   limitRow: AccountLimitRow | null;
@@ -67,14 +64,10 @@ export function AccountCard({
   compactionControl?: React.ReactNode;
   /** Claude only: sets one of this account's Claude settings; null restores Claude Code's own behavior. */
   onSetClaudeSetting?: (instance: ProviderInstance, patch: ClaudeAccountSettingPatch) => void;
-  renaming: boolean;
-  onCommitRename: (instance: ProviderInstance, label: string) => void;
-  onCancelRename: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
-  const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [menuView, setMenuView] = useState<MenuView>("main");
   const closeMenu = useCallback(() => {
@@ -84,7 +77,8 @@ export function AccountCard({
   const signedOut = state.kind === "signedOut";
   const isCopy = state.kind === "copy";
   const inUse = badge !== null;
-  const email = instance.account?.email ?? null;
+  // The registry's copy of the email, else the one the usage poll read.
+  const email = instance.account?.email ?? limitRow?.account?.email ?? null;
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
@@ -224,45 +218,30 @@ export function AccountCard({
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, minHeight: 26 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
-          {renaming ? (
-            <input
-              aria-label={`Rename ${instance.label}`}
-              autoFocus
-              value={draftLabel}
-              onChange={(event) => setDraftLabel(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") onCommitRename(instance, draftLabel);
-                if (event.key === "Escape") onCancelRename();
-              }}
-              onBlur={() => onCommitRename(instance, draftLabel)}
-              style={{
-                height: 24,
-                minWidth: 0,
-                padding: "0 8px",
-                fontSize: 13,
-                fontFamily: SANS_FONT,
-                color: COLORS.textPrimary,
-                background: COLORS.cardBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                borderRadius: 6,
-                outline: "none",
-              }}
-            />
-          ) : (
+          {/* An account is its login: the email, then the id that `--instance`
+              takes. Before it signs in, the id alone; the body says why. */}
+          <span
+            title={email ?? `Account id ${instance.id}`}
+            style={{
+              fontSize: 13,
+              fontWeight: 500,
+              fontFamily: SANS_FONT,
+              color: COLORS.textPrimary,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {email ?? instance.id}
+          </span>
+          {email ? (
             <span
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                fontFamily: SANS_FONT,
-                color: COLORS.textPrimary,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
+              title="Account id"
+              style={{ flex: "none", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, whiteSpace: "nowrap" }}
             >
-              {instance.label}
+              {instance.id}
             </span>
-          )}
+          ) : null}
           {badge ? <NoticeBadge tone="accent">{badge}</NoticeBadge> : null}
           {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Signed out</NoticeBadge> : null}
           {isCopy ? <NoticeBadge tone="neutral">Copy</NoticeBadge> : null}
@@ -333,7 +312,6 @@ export function AccountCard({
           >
             {menuView === "main" ? (
               <>
-                {item("rename", "Rename")}
                 {item("signIn", signedOut ? "Sign in" : "Sign in again")}
                 {compactionControl || onSetClaudeSetting ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
@@ -402,6 +380,7 @@ export function AccountCard({
           nowMs={nowMs}
           reducedMotion={reducedMotion}
           dim={signedOut}
+          hideIdentity
         />
       ) : (
         <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>

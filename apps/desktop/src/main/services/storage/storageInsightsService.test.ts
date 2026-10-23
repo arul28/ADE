@@ -110,6 +110,7 @@ describe("storageInsightsService", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     db.close();
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(adeHome, { recursive: true, force: true });
@@ -366,6 +367,159 @@ describe("storageInsightsService", () => {
     expect(journal[0]!.actions.find((action) => action.bytesReclaimed === 31)?.ledgerId).toBe("fs.tmp_staging");
     expect(journal[0]!.dbSizeDefinition).toBe("files");
     service.dispose();
+  });
+
+  it("removes a legacy chat copy only when every event in it is already in the full transcript", async () => {
+    const transcripts = path.join(projectRoot, ".ade", "transcripts");
+    const event = (id: string, n: number) => JSON.stringify({ sessionId: id, event: { type: "text", text: `event ${n}` }, sequence: n });
+    const header = (id: string) => JSON.stringify({ type: "session_init", sessionId: id, laneId: "lane" });
+    const old = new Date(Date.now() - 60 * 60_000);
+    const seed = (id: string, legacy: string, full: string | null, mtime = old) => {
+      const legacyPath = path.join(transcripts, `${id}.chat.jsonl`);
+      fs.mkdirSync(path.join(transcripts, "chat"), { recursive: true });
+      fs.writeFileSync(legacyPath, legacy);
+      fs.utimesSync(legacyPath, mtime, mtime);
+      if (full !== null) fs.writeFileSync(path.join(transcripts, "chat", `${id}.jsonl`), full);
+      return legacyPath;
+    };
+    const lines = (id: string, ns: number[]) => ns.map((n) => event(id, n)).join("\n") + "\n";
+    const cases = {
+      sameEvents: seed("same", lines("same", [1, 2, 3]), `${header("same")}\n${lines("same", [1, 2, 3])}`),
+      // The two files flushed independently, so the same events can be in another order.
+      reordered: seed("reordered", lines("reordered", [2, 1, 3]), `${header("reordered")}\n${lines("reordered", [1, 2, 3])}`),
+      // The 8 MB cap cut the last event in half and appended its notice.
+      capped: seed(
+        "capped",
+        `${lines("capped", [1])}${event("capped", 2).slice(0, 20)}\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n`,
+        `${header("capped")}\n${lines("capped", [1, 2, 3])}`,
+      ),
+      missingFromFull: seed("missing", lines("missing", [1, 2, 9]), `${header("missing")}\n${lines("missing", [1, 2])}`),
+      noFullTranscript: seed("orphan", lines("orphan", [1]), null),
+      justWritten: seed("fresh", lines("fresh", [1]), `${header("fresh")}\n${lines("fresh", [1])}`, new Date()),
+    };
+
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger, isPathActive: () => false });
+    const report = await service.runMaintenanceNow();
+    service.dispose();
+
+    const exists = Object.fromEntries(Object.entries(cases).map(([name, file]) => [name, fs.existsSync(file)]));
+    expect(exists).toEqual({
+      sameEvents: false,
+      reordered: false,
+      capped: false,
+      missingFromFull: true,
+      noFullTranscript: true,
+      justWritten: true,
+    });
+    expect(report.actions.find((action) => action.ledgerId === "fs.transcript_duplicates")?.itemsAffected).toBe(3);
+    expect(fs.readFileSync(path.join(transcripts, "chat", "missing.jsonl"), "utf8")).not.toContain("event 9");
+  });
+
+  it("removes exactly the previewed chats from deleted lanes with their ADE-started provider copies, and nothing still in use", async () => {
+    // Provider homes resolve from HOME / CLAUDE_CONFIG_DIR / CODEX_HOME / ADE_HOME: point them all at the fixture.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-provider-home-"));
+    extraPaths.push(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("ADE_HOME", path.join(home, ".ade"));
+    vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(home, ".claude"));
+    vi.stubEnv("CODEX_HOME", path.join(home, ".codex"));
+    const claudeProject = path.join(home, ".claude", "projects", "-tmp-lane");
+    const codexDay = path.join(home, ".codex", "sessions", "2026", "09", "01");
+    fs.mkdirSync(claudeProject, { recursive: true });
+    fs.mkdirSync(codexDay, { recursive: true });
+
+    const chatDir = path.join(projectRoot, ".ade", "transcripts", "chat");
+    const recordsDir = path.join(projectRoot, ".ade", "cache", "chat-sessions");
+    const old = new Date(Date.now() - 10 * 24 * 60 * 60_000);
+    const seedChat = (id: string, laneId: string, record: Record<string, unknown>) => {
+      const transcript = path.join(chatDir, `${id}.jsonl`);
+      const recordPath = path.join(recordsDir, `${id}.json`);
+      fs.mkdirSync(chatDir, { recursive: true });
+      fs.mkdirSync(recordsDir, { recursive: true });
+      fs.writeFileSync(transcript, `${JSON.stringify({ type: "session_init", sessionId: id, laneId })}\n`);
+      fs.writeFileSync(recordPath, JSON.stringify({ version: 2, sessionId: id, ...record }));
+      for (const file of [transcript, recordPath]) fs.utimesSync(file, old, old);
+      return { transcript, recordPath };
+    };
+    const claudeFile = (sdkId: string) => {
+      const file = path.join(claudeProject, `${sdkId}.jsonl`);
+      fs.writeFileSync(file, "claude session");
+      return file;
+    };
+    const lanePath = path.join(projectRoot, ".ade", "worktrees", "kept-lane");
+    seedLane(db, { id: "kept-lane", name: "Kept", worktreePath: lanePath });
+    db.run(
+      `insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status, tool_type)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      ["live-chat", "kept-lane", "Live", old.toISOString(), path.join(projectRoot, ".ade", "transcripts", "live-chat.chat.jsonl"), "idle", "claude-chat"],
+    );
+
+    const removedClaude = seedChat("gone-claude", "deleted-lane", { provider: "claude", sdkSessionId: "sdk-removed" });
+    const removedClaudeFile = claudeFile("sdk-removed");
+    fs.mkdirSync(path.join(claudeProject, "sdk-removed", "subagents"), { recursive: true });
+    fs.writeFileSync(path.join(claudeProject, "sdk-removed", "subagents", "a.jsonl"), "side");
+    // Codex names each rollout file after its thread id, a UUID.
+    const codexThread = "0a1a1a1a-1111-4111-8111-111111111111";
+    const removedCodex = seedChat("gone-codex", "deleted-lane", { provider: "codex", threadId: codexThread });
+    const removedCodexFile = path.join(codexDay, `rollout-2026-09-01T00-00-00-${codexThread}.jsonl`);
+    fs.writeFileSync(removedCodexFile, "codex rollout");
+    seedChat("gone-imported", "deleted-lane", {
+      provider: "claude",
+      sdkSessionId: "sdk-imported",
+      importedFrom: { provider: "claude", sessionId: "sdk-imported", importedAt: 1 },
+    });
+    const importedFile = claudeFile("sdk-imported");
+    seedChat("gone-shared", "deleted-lane", { provider: "claude", sdkSessionId: "sdk-in-use" });
+    const inUseFile = claudeFile("sdk-in-use");
+    fs.writeFileSync(path.join(recordsDir, "live-chat.json"), JSON.stringify({ version: 2, provider: "claude", sdkSessionId: "sdk-in-use" }));
+    const laneStillExists = seedChat("lane-kept", "kept-lane", { provider: "claude", sdkSessionId: "sdk-lane-kept" });
+    const laneKeptFile = claudeFile("sdk-lane-kept");
+
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger, isPathActive: () => false });
+    const target: StorageCleanupTarget = { kind: "deleted_lane_chats", path: chatDir };
+    const preview = await service.cleanupPreview([target]);
+    expect(preview.blocked).toEqual([]);
+    expect(preview.items).toHaveLength(1);
+    expect(preview.items[0]!.label).toBe("4 chats from deleted lanes, with Claude and Codex copies of 2");
+
+    // A chat that turns up after the preview makes the confirmation stale.
+    const late = seedChat("gone-late", "deleted-lane", { provider: "claude" });
+    expect((await service.cleanup([target], { preview })).failed[0]?.reason).toMatch(/changed after the preview/);
+    expect(fs.existsSync(removedClaude.transcript)).toBe(true);
+    fs.rmSync(late.transcript);
+    fs.rmSync(late.recordPath);
+
+    const result = await service.cleanup([target], { preview });
+    service.dispose();
+    expect(result.failed).toEqual([]);
+    expect({
+      removedClaudeTranscript: fs.existsSync(removedClaude.transcript),
+      removedClaudeRecord: fs.existsSync(removedClaude.recordPath),
+      removedClaudeSession: fs.existsSync(removedClaudeFile),
+      removedClaudeSideFolder: fs.existsSync(path.join(claudeProject, "sdk-removed")),
+      removedCodexTranscript: fs.existsSync(removedCodex.transcript),
+      removedCodexRollout: fs.existsSync(removedCodexFile),
+      importedSession: fs.existsSync(importedFile),
+      sessionALiveChatUses: fs.existsSync(inUseFile),
+      liveChatRecord: fs.existsSync(path.join(recordsDir, "live-chat.json")),
+      chatInExistingLane: fs.existsSync(laneStillExists.transcript),
+      sessionOfChatInExistingLane: fs.existsSync(laneKeptFile),
+      chatFolder: fs.existsSync(chatDir),
+    }).toEqual({
+      removedClaudeTranscript: false,
+      removedClaudeRecord: false,
+      removedClaudeSession: false,
+      removedClaudeSideFolder: false,
+      removedCodexTranscript: false,
+      removedCodexRollout: false,
+      importedSession: true,
+      sessionALiveChatUses: true,
+      liveChatRecord: true,
+      chatInExistingLane: true,
+      sessionOfChatInExistingLane: true,
+      chatFolder: true,
+    });
   });
 
   it("keeps a leftover lane folder that holds uncommitted work or commits no branch has", async () => {

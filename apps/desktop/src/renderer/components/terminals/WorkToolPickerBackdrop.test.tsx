@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { act, cleanup, render } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BACKDROP_FRAME_MS,
   BACKDROP_IDLE_FRAME_MS,
@@ -15,6 +15,14 @@ import {
   resolveBackdropSize,
 } from "./WorkToolPickerBackdrop";
 import { FRAG, UNIFORMS } from "./workToolPickerBackdropShader";
+import { getAppearanceState } from "../../state/appearanceStore";
+import { DEFAULT_SCENE_PREFERENCES } from "../../scene/scenePreferences";
+
+// These tests are about the animated mesh. The shipped default background is
+// the still `plain` one, which draws no canvas, so pick the mesh explicitly.
+beforeEach(() => {
+  getAppearanceState().setInterfacePreferences({ scene: { ...DEFAULT_SCENE_PREFERENCES, mode: "gradient" } });
+});
 
 /**
  * A WebGL context that answers every call the backdrop makes.

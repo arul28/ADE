@@ -1832,11 +1832,14 @@ actions:
 
 ## Persisted transcript
 
-Sessions persist the transcript to disk under the `.ade` layout.
-Chat replay prefers the dedicated per-session JSONL at
-`.ade/transcripts/chat/<sessionId>.jsonl`; the legacy managed transcript path
-can still exist for compatibility and may be byte-capped by the terminal/session
-storage budget. When multiple transcript candidates are present, recovery first
+Sessions persist the transcript to disk under the `.ade` layout, in one file:
+the dedicated per-session JSONL at `.ade/transcripts/chat/<sessionId>.jsonl`.
+The session row still names the legacy `.ade/transcripts/<sessionId>.chat.jsonl`
+(that column syncs to peers and older builds), but chats no longer write it.
+Readers that start from the row resolve it to the dedicated file through
+`resolveChatTranscriptReadPath`. Older builds wrote an 8 MB-capped copy there,
+which the storage doctor removes once its content is proven to be in the
+dedicated file (see storage-and-recovery). When multiple transcript candidates are present, recovery first
 prefers files that contain real chat event envelopes, then uncapped files, then
 newer readable candidates with file size only as a tie-breaker, so header-only
 or capped files do not hide compacted chat history.

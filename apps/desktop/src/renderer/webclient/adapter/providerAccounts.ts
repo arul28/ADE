@@ -37,7 +37,6 @@ export function createProviderAccountsNamespace(call: MiscCall): AdeNamespace<"p
     list: async (args) => (await cached<{ instances: ProviderInstance[] }>("list", args)).instances,
     create: (args) => live<ProviderInstanceCreateResult>("create", args),
     remove: (args) => live<ProviderInstanceRemoveResult>("remove", args),
-    rename: async (args) => instance(await live("rename", args)),
     setDefault: async (args) => instance(await live("setDefault", args)),
     dismissReplaced: async (args) => instance(await live("dismissReplaced", args)),
     signOut: async (args) => (await live<{ instance: ProviderInstance | null }>("signOut", args)).instance,

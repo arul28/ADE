@@ -364,6 +364,25 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     okExitCodes: [0, 1, 2],
   },
   {
+    name: "usage_limits",
+    title: "Usage limits",
+    description: "How much of each subscription is left on this computer, per account: percent left in each window "
+      + "(5-hour, weekly, monthly), when it resets, whether the current pace lasts to the reset, how old the reading is, "
+      + "and the account id that starts a chat on that account.",
+    properties: {
+      provider: {
+        type: "string",
+        enum: ["claude", "codex", "cursor", "copilot", "grok", "opencode", "kimi", "muse"],
+        description: "Only this provider's accounts.",
+      },
+    },
+    build: (input) => {
+      const provider = optionalWord(input, "provider");
+      if ("error" in provider) return provider;
+      return { argv: ["usage", "limits", ...(provider.value ? ["--provider", provider.value] : []), "--json"] };
+    },
+  },
+  {
     name: "chat_wait",
     title: "Wait for a chat",
     description: `Waits until a chat reaches a state (default idle), up to ${MAX_WAIT_SECONDS} seconds, then returns `

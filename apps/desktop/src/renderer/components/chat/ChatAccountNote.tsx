@@ -136,7 +136,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     detail: [
       `${providerName} account`,
       email,
-      label ? `Account: ${label}${instance?.isDefault ? " (default)" : ""}` : null,
+      instance ? `Account id: ${instance.id}${instance.isDefault ? " (default)" : ""}` : null,
       plan ? `Plan: ${plan}` : null,
       instance && instance.loginBroken ? "Signed out: this account needs a new sign-in." : null,
       sourceLine,
@@ -349,7 +349,7 @@ export function ChatAccountNote({
         <span className="flex w-3.5 shrink-0 justify-center text-fg/70">
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate" title={instance.label}>
+        <span className="min-w-0 flex-1 truncate" title={`Account id: ${instance.id}`}>
           {clean(instance.account?.email) ?? instance.label}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}

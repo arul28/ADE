@@ -219,8 +219,9 @@ import {
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { isPathInside } from "../shared/pathCompare";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { getMachineProviderInstanceStore, resolveChatInstanceId } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import { buildUsageLimitsReport } from "../../../shared/usageLimitsReport";
 import { runGit } from "../git/git";
 // The turn diff is shared with the local ipcMain handler; see chat/turnFileDiff.ts.
 export { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
@@ -4129,6 +4130,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
     getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
+    deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {
@@ -4140,6 +4142,39 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
+
+/**
+ * The usage service's own methods, plus `getUsageLimits`: the quota snapshot
+ * cut down to what an agent plans with (`ade usage limits`). It also names the
+ * account the asking chat runs on, which the usage service cannot see.
+ */
+function buildUsageDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const usage = runtime.usageTrackingService;
+  if (!usage) return null;
+  // The account mark is extra: a chat or registry that cannot be read leaves it
+  // off and says why in the log, and the limits still come back.
+  const chatAccount = async (chatSessionId: string): Promise<{ provider: string; instanceId: string } | null> => {
+    try {
+      const summary = await runtime.agentChatService?.getSessionSummary(chatSessionId);
+      const instanceId = summary ? resolveChatInstanceId(summary.provider, summary.instanceId) : null;
+      return summary && instanceId ? { provider: summary.provider, instanceId } : null;
+    } catch (error) {
+      runtime.logger.warn("usage.limits_chat_account_unavailable", { chatSessionId, error: getErrorMessage(error) });
+      return null;
+    }
+  };
+  return {
+    ...(usage as unknown as OpaqueService),
+    getUsageLimits: async (args?: { provider?: unknown; chatSessionId?: unknown }) => {
+      const chatSessionId = typeof args?.chatSessionId === "string" ? args.chatSessionId.trim() : "";
+      return buildUsageLimitsReport(usage.getUsageSnapshot(), {
+        nowMs: Date.now(),
+        provider: typeof args?.provider === "string" ? args.provider : null,
+        chat: chatSessionId ? await chatAccount(chatSessionId) : null,
+      });
+    },
+  };
+}
 
 function buildProjectHealthDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectHealthService = runtime.projectHealthService;
@@ -4192,7 +4227,7 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     jira: toService(runtime.jiraService),
     issues: toService(runtime.issueTrackerService),
-    usage: toService(runtime.usageTrackingService),
+    usage: buildUsageDomainService(runtime),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
     project_health: toService(buildProjectHealthDomainService(runtime)),

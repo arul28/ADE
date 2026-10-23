@@ -1067,6 +1067,23 @@ for each provider, mainly Claude and Codex. The wire contract is in
   explicitly. The top-bar popover keeps the per-account meter rows
   (`UsageLimitsBand` → `UsageAccountRow`), so one snapshot has a compact and a
   gauge presentation.
+- `ade usage limits` (action `usage.getUsageLimits`, pure builder
+  `shared/usageLimitsReport.ts`) is the agent-sized read of the same cached
+  snapshot, about 2 KB instead of the snapshot's ~1 MB of history. One row per
+  account: the id `ade chat create --instance` takes, each window's percent
+  left, reset, and pace (the poll's `etaHours`, counted from the reading), the
+  reading's age, a state (`ok`, `stale`, `expired`, `signed_out`, `no_reading`,
+  `error`) with a short note, banked reset credits, and two marks: the asking
+  chat's account (`chatSessionId`, resolved through the provider-instance store
+  so a chat with no recorded account reads as the default) and smart balance's
+  next pick (`balanceNext`). A window whose reset passed since the reading reads
+  full; one with no reset time keeps its fill. A provider whose check failed with
+  nothing to show still gets a row, so "could not read" is not mistaken for "not
+  signed in". It never refreshes. `--machine` / `--all-machines` read other
+  machines (see `docs/features/sync-and-multi-device/cross-machine-agents.md`),
+  the ADE MCP typed tool `usage_limits` runs it locally, and `ade chat status`
+  shows the chat's own `account`. The `ade-cli-control-plane` skill tells agents
+  to read it only when the user asks about limits.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
   the separate history path. `ade usage stats --text` prints the spend
   summary with the type and speed split and the top models;

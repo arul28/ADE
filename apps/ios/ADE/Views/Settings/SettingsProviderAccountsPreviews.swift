@@ -1,7 +1,7 @@
 import SwiftUI
 
 #if DEBUG
-/// `-adePreviewScreen accounts | account-detail | account-add | account-signin-claude |
+/// `-adePreviewScreen accounts | account-detail | account-signin-claude |
 /// account-signin-codex | account-signin-done`: the AI accounts screens from fixtures.
 enum ProviderAccountsPreviewData {
   static let accounts: [ProviderAccount] = [
@@ -68,7 +68,7 @@ enum ProviderAccountsPreviewData {
 }
 
 struct ProviderAccountsPreviewHost: View {
-  enum Screen { case list, otherMachine, detail, add, signInClaude, signInCodex, signInDone }
+  enum Screen { case list, otherMachine, detail, signInClaude, signInCodex, signInDone }
   let screen: Screen
   @State private var provider: ProviderAccountProvider = .claude
   @State private var selectedMachineId: String
@@ -134,8 +134,6 @@ struct ProviderAccountsPreviewHost: View {
       NavigationStack {
         ProviderAccountDetailPage(machine: studio, store: studio.claude, accountId: "work")
       }
-    case .add:
-      ProviderAccountAddSheet(provider: .claude) { _ in nil }
     case .signInClaude:
       ProviderAccountSignInSheet(controller: ProviderAccountSignInController(
         account: ProviderAccountsPreviewData.accounts[1],

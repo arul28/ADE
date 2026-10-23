@@ -332,7 +332,12 @@ function createMockStorageSnapshot(now: string) {
     { id: "lanes_worktrees" as const, items: lanes, safety: "review_first" as const },
     {
       id: "chats_history" as const,
-      items: [item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible")],
+      items: [
+        item("chats_history:transcripts", "Chat and terminal history", `${root}/.ade/transcripts`, 640 * MB, "compressible"),
+        item("chats_history:deleted_lane_chats", "Chats from deleted lanes", `${root}/.ade/transcripts/chat`, 412 * MB, "review_first", {
+          detail: "813 chats whose lane was deleted. ADE no longer tracks or shows them, but their files are still on this machine, in this folder:",
+        }),
+      ],
       safety: "compressible" as const,
       compressibleBytes: 410 * MB,
     },
@@ -412,6 +417,12 @@ function createMockStorageSnapshot(now: string) {
       maintenance: { lastRun: journal[0], journal },
       safeReclaimableBytes: 486 * MB,
       policyChips: {},
+      providerHistory: [
+        { provider: "claude", label: "Claude", paths: ["/Users/ada/.claude/projects"], bytes: 15_600 * MB, fileCount: 8_511, note: "Claude deletes its own sessions after 30 days unless its cleanupPeriodDays setting says otherwise." },
+        { provider: "codex", label: "Codex", paths: ["/Users/ada/.codex/sessions", "/Users/ada/.codex/archived_sessions"], bytes: 9_100 * MB, fileCount: 4_284, note: "Codex keeps every session until it is deleted." },
+        { provider: "opencode", label: "OpenCode", paths: ["/Users/ada/.local/share/opencode"], bytes: 2_600 * MB, fileCount: 34_769, note: "One database plus file snapshots, managed by OpenCode." },
+      ],
+      deletedLaneProviderCopies: { chatCount: 258, bytes: 3_900 * MB, chatSessionsDir: `${root}/.ade/cache/chat-sessions` },
     },
     lifecycle: {
       lastScanAt: daysAgo(0.1),
@@ -1203,7 +1214,7 @@ const mockProviderInstances: Array<{
   {
     id: "claude",
     provider: "claude",
-    label: "Default",
+    label: "ada.lovelace@example.com",
     configHome: "/mock/.claude",
     isDefault: true,
     createdAt: new Date(0).toISOString(),
@@ -1216,7 +1227,7 @@ const mockProviderInstances: Array<{
   {
     id: "claude-work",
     provider: "claude",
-    label: "Work",
+    label: "jo.martin@example.com",
     accentColor: "#5ba8d9",
     configHome: "/mock/.ade/provider-homes/claude/work",
     isDefault: false,
@@ -1227,7 +1238,7 @@ const mockProviderInstances: Array<{
   {
     id: "codex",
     provider: "codex",
-    label: "Default",
+    label: "dev@example.com",
     configHome: "/mock/.codex",
     isDefault: true,
     createdAt: new Date(0).toISOString(),
@@ -5923,6 +5934,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
+      deletedLaneChatsSummary: resolved({ chatCount: 813, bytes: 528 * 1024 * 1024, directory: `${MOCK_PROJECT.rootPath}/.ade/transcripts/chat` }),
       runMaintenanceNow: resolved({
         startedAt: now,
         finishedAt: now,
@@ -8795,11 +8807,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     providerInstances: {
       list: async (args?: { provider?: "claude" | "codex" }) =>
         mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),
-      create: async (args: { provider: "claude" | "codex"; label: string; accentColor?: string }) => {
+      create: async (args: { provider: "claude" | "codex"; label?: string; accentColor?: string }) => {
+        const id = `${args.provider}-${mockProviderInstances.length + 1}`;
         const instance = {
-          id: `${args.provider}-${mockProviderInstances.length + 1}`,
+          id,
           provider: args.provider,
-          label: args.label,
+          label: id,
           ...(args.accentColor ? { accentColor: args.accentColor } : {}),
           configHome: `/mock/.ade/provider-homes/${args.provider}/${mockProviderInstances.length + 1}`,
           isDefault: false,
@@ -8814,11 +8827,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const configHome = index >= 0 ? mockProviderInstances[index]!.configHome : "";
         if (index >= 0) mockProviderInstances.splice(index, 1);
         return { removed: index >= 0, configHome };
-      },
-      rename: async (args: { id: string; label: string }) => {
-        const instance = mockProviderInstanceById(args.id);
-        instance.label = args.label;
-        return instance;
       },
       setDefault: async (args: { id: string }) => {
         const instance = mockProviderInstanceById(args.id);

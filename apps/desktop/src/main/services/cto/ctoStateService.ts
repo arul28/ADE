@@ -29,6 +29,7 @@ import { createLogIntegrityService } from "../projects/logIntegrityService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
+import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 
 /**
  * Live project state sources for the per-turn block.
@@ -1153,8 +1154,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         `select transcript_path from terminal_sessions where id = ?`,
         [sessionId],
       );
-      const transcriptPath = typeof row?.transcript_path === "string" ? row.transcript_path.trim() : "";
-      if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+      const rowPath = typeof row?.transcript_path === "string" ? row.transcript_path.trim() : "";
+      // The row names the legacy file; the dedicated transcript is the complete one.
+      // A compressed transcript is not scanned (the close must not stall on a gunzip).
+      const transcriptPath = rowPath ? resolveChatTranscriptReadPath(rowPath) : "";
+      if (!transcriptPath || transcriptPath.endsWith(".gz") || !fs.existsSync(transcriptPath)) return null;
       const stat = fs.statSync(transcriptPath);
       if (stat.size > TRANSCRIPT_SCAN_MAX_BYTES) return null;
       return await countUserTurnsInTranscript(transcriptPath);
