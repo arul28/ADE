@@ -94,6 +94,13 @@ extension EnvironmentValues {
 }
 
 extension EnvironmentValues {
+  /// The wide Work layout is on its way out (the Duo was just folded): its
+  /// bars give their items back before it goes, or the outer display's tab
+  /// bar keeps them as empty glass.
+  @Entry var duoRailRetired = false
+}
+
+extension EnvironmentValues {
   /// The family of the whole Work area, set once by the wide Work root. A
   /// column inside it can be narrower than it is tall while the screen is
   /// still held landscape, so columns read this rather than their own size.
@@ -557,6 +564,7 @@ struct DuoChatRail: ViewModifier {
   let actions: DuoChatRailActions
   @Environment(\.duoLayout) private var duo
   @Environment(\.duoWorkFamily) private var family
+  @Environment(\.duoRailRetired) private var retired
   /// The column's frame (global), so the title capsule can span the chat's
   /// own top and the pane's header can start at the hinge.
   /// Horizontal extent only, in whole points: a value that moved with the
@@ -637,7 +645,9 @@ struct DuoChatRail: ViewModifier {
     // The pane's controls (the PR's ⋯, a tool's rotate…) arrive as a
     // preference; on the edge bar the header row that shows them is the
     // bar's.
-    if #available(iOS 27.1, *) {
+    if retired {
+      titled
+    } else if #available(iOS 27.1, *) {
       titled.backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
         Color.clear.toolbar { rail27(paneActions: paneActions) }
       }

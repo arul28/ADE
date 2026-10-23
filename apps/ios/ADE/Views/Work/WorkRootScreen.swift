@@ -324,6 +324,7 @@ struct WorkRootListScreen: View, Equatable {
   /// side instead of the chat being pushed over the list. Read here rather than
   /// passed down so a fold or unfold needs no navigation-path rewrite.
   @Environment(\.duoLayout) var duoLayout
+  @State private var duoRetiringWide = false
   /// Deliberately NOT observed: every value the body draws from arrives in
   /// `inputs`. Imperative code (actions, reloads) reads it directly.
   let syncService: SyncService
@@ -879,14 +880,29 @@ struct WorkRootListScreen: View, Equatable {
 
   var body: some View {
     Group {
-      if duoLayout.isWide {
+      if duoLayout.isWide || duoRetiringWide {
         duoWideBody
+          .environment(\.duoRailRetired, duoRetiringWide)
+          .opacity(duoRetiringWide ? 0 : 1)
       } else {
         duoCompactBody
       }
     }
-    .onChange(of: duoLayout.isWide, initial: true) { _, wide in
-      handleDuoWidthChange(wide)
+    .onChange(of: duoLayout.isWide, initial: true) { old, wide in
+      guard old, !wide else {
+        handleDuoWidthChange(wide)
+        return
+      }
+      // Folded: the wide columns stay one moment longer, unseen and with no
+      // bar items, so the edge bar's items leave with them. Torn down with
+      // their items still on the bar, the outer display's tab bar kept them
+      // as an empty glass capsule over the composer.
+      duoRetiringWide = true
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(120))
+        handleDuoWidthChange(false)
+        duoRetiringWide = false
+      }
     }
     #if DEBUG
     .task(id: "\(duoLayout.isWide)|\(duoPreviewSelectionKey)") {

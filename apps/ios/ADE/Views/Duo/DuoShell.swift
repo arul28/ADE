@@ -281,9 +281,12 @@ struct DuoAppTabsToolbar: ToolbarContent {
   /// rail carries the tabs, so this screen draws none (they would land in a
   /// bar under its content).
   @Environment(\.duoLayout) private var duo
+  @Environment(\.duoRailRetired) private var retired
 
   var body: some ToolbarContent {
-    if navigation.hasEdgeBar {
+    if retired {
+      // The wide layout is leaving: hand its group back first.
+    } else if navigation.hasEdgeBar {
       // Exactly the five tabs, on every screen and in every state: the rail's
       // bottom never changes shape. Activity and Settings live in the
       // screen's own ⋯ (or the Hub's), never at the rail's bottom.
