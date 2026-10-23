@@ -17427,53 +17427,77 @@ describe("ade providers accounts", () => {
 
 describe("ade usage limits", () => {
   it("falls back to the full snapshot when an older host has no getUsageLimits action", () => {
-    const plan = expectExecutePlan(buildCliPlan(["usage", "limits"]));
-    expect(plan.steps[0]).toMatchObject({
-      key: "limits",
-      params: {
-        name: "run_ade_action",
-        arguments: { domain: "usage", action: "getUsageLimits", args: {} },
-      },
-      optional: true,
-    });
-    const snapshotStep = plan.steps[1]!;
-    expect(snapshotStep.params).toMatchObject({
-      name: "run_ade_action",
-      arguments: { domain: "usage", action: "getUsageSnapshot", args: {} },
-    });
-    // A host that answered the new action skips the snapshot step.
-    expect(snapshotStep.skipWhen?.({
-      limits: { domain: "usage", action: "getUsageLimits", result: { accounts: [] } },
-    })).toBe(true);
-    // One that did not gets the same report built locally from the snapshot.
-    const report = plan.shapeResult?.({
-      limits: undefined,
-      snapshot: {
-        domain: "usage",
-        action: "getUsageSnapshot",
-        result: {
-          accounts: [{
-            id: "claude:claude-2",
-            provider: "claude",
-            instanceId: "claude-2",
-            email: "work@example.com",
-            machines: [],
-          }],
-          windows: [{
-            provider: "claude",
-            windowType: "weekly",
-            accountId: "claude:claude-2",
-            percentUsed: 40,
-            resetsAt: "2030-01-01T00:00:00.000Z",
-            resetsInMs: 1,
-          }],
-          lastPolledAt: "2026-10-23T11:55:00.000Z",
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    process.env.ADE_CHAT_SESSION_ID = "chat-1";
+    try {
+      const plan = expectExecutePlan(buildCliPlan(["usage", "limits"]));
+      expect(plan.steps[0]).toMatchObject({
+        key: "limits",
+        params: {
+          name: "run_ade_action",
+          arguments: { domain: "usage", action: "getUsageLimits", args: { chatSessionId: "chat-1" } },
         },
-      },
-    }) as { accounts: Array<{ instanceId: string | null; windows: Array<{ percentLeft: number }> }> };
-    expect(report.accounts).toHaveLength(1);
-    expect(report.accounts[0]?.instanceId).toBe("claude-2");
-    expect(report.accounts[0]?.windows[0]?.percentLeft).toBe(60);
+        optional: true,
+      });
+      const snapshotStep = plan.steps[1]!;
+      expect(snapshotStep.params).toMatchObject({
+        name: "run_ade_action",
+        arguments: { domain: "usage", action: "getUsageSnapshot", args: {} },
+      });
+      // A host that answered the new action skips the snapshot step.
+      const limitsReport = { domain: "usage", action: "getUsageLimits", result: { accounts: [] } };
+      expect(snapshotStep.skipWhen?.({ limits: limitsReport })).toBe(true);
+      // The fallback keeps the asking chat's account, as the host's own
+      // report would have.
+      const chatStep = plan.steps[2]!;
+      expect(chatStep).toMatchObject({
+        key: "chat",
+        params: {
+          name: "run_ade_action",
+          arguments: { domain: "chat", action: "getSessionSummary", argsList: ["chat-1"] },
+        },
+        optional: true,
+      });
+      expect(chatStep.skipWhen?.({ limits: limitsReport })).toBe(true);
+      // One that did not gets the same report built locally from the snapshot.
+      const report = plan.shapeResult?.({
+        limits: undefined,
+        snapshot: {
+          domain: "usage",
+          action: "getUsageSnapshot",
+          result: {
+            accounts: [{
+              id: "claude:claude-2",
+              provider: "claude",
+              instanceId: "claude-2",
+              email: "work@example.com",
+              machines: [],
+            }],
+            windows: [{
+              provider: "claude",
+              windowType: "weekly",
+              accountId: "claude:claude-2",
+              percentUsed: 40,
+              resetsAt: "2030-01-01T00:00:00.000Z",
+              resetsInMs: 1,
+            }],
+            lastPolledAt: "2026-10-23T11:55:00.000Z",
+          },
+        },
+        chat: { provider: "claude", instanceId: "claude-2" },
+      }) as {
+        chat: { provider: string; instanceId: string } | null;
+        accounts: Array<{ instanceId: string | null; thisChat: boolean; windows: Array<{ percentLeft: number }> }>;
+      };
+      expect(report.accounts).toHaveLength(1);
+      expect(report.accounts[0]?.instanceId).toBe("claude-2");
+      expect(report.accounts[0]?.windows[0]?.percentLeft).toBe(60);
+      expect(report.chat).toEqual({ provider: "claude", instanceId: "claude-2" });
+      expect(report.accounts[0]?.thisChat).toBe(true);
+    } finally {
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
   });
 });
 
@@ -17489,6 +17513,11 @@ describe("--machine targeting", () => {
     // A command whose own --machine means something else keeps its flag.
     expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
       .toBeUndefined();
+    // A value that happens to read `--machine` is a value, not targeting.
+    const secret = extractMachineTargeting(parseCliArgs(["secrets", "set", "TOKEN", "--value", "--machine"]));
+    expect(secret.command).toEqual(["secrets", "set", "TOKEN", "--value", "--machine"]);
+    expect(() => extractMachineTargeting(parseCliArgs(["secrets", "list", "--machine", "Studio"])))
+      .toThrow(/runs on this machine only/);
   });
 });
 

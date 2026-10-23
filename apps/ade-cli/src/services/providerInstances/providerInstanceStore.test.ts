@@ -511,6 +511,9 @@ describe("providerInstanceStore", () => {
     const first = store.create({ provider: "claude", label: "Work" });
     store.setLoginBroken(first.instance.id, true);
     store.remove(first.instance.id);
+    // A removed home normally blocks reuse; delete it to reach the reuse path
+    // this test is about (a home cleared outside ADE).
+    fs.rmSync(first.instance.configHome, { recursive: true, force: true });
 
     // Same label, same id: the fresh account must not inherit the old flag.
     const second = store.create({ provider: "claude", label: "Work" });
@@ -522,7 +525,7 @@ describe("providerInstanceStore", () => {
     expect(reused?.loginBroken).toBeUndefined();
   });
 
-  it("never gives an unnamed account a removed account's config home", () => {
+  it("never gives a new account a removed account's config home", () => {
     const { store } = makeStore();
 
     // No label means the next short id, and a removed account's home stays on
@@ -536,6 +539,14 @@ describe("providerInstanceStore", () => {
     const second = store.create({ provider: "claude" });
     expect(second.instance.id).toBe("claude-3");
     expect(second.instance.configHome).not.toBe(first.instance.configHome);
+
+    // A typed label from an older phone or script follows the same rule.
+    const labeled = store.create({ provider: "claude", label: "Work" });
+    expect(labeled.instance.id).toBe("work");
+    store.remove(labeled.instance.id);
+    const relabeled = store.create({ provider: "claude", label: "Work" });
+    expect(relabeled.instance.id).not.toBe("work");
+    expect(relabeled.instance.configHome).not.toBe(labeled.instance.configHome);
   });
 
   it("gives a shared login to the working default account, else the first working one", async () => {

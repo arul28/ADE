@@ -8,6 +8,7 @@ import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
   CliUsageError,
+  VALUE_CARRIER_FLAGS,
   asString,
   automaticProjectRegistrationParams,
   connectMachineRuntimeDaemon,
@@ -65,16 +66,22 @@ const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "l
 const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
 
 /**
- * The flag names in `args`, skipping each free-text flag's value: in
- * `--prompt --cancel` the prompt is the text "--cancel", not a flag.
+ * The flag names in `args`, skipping each value-carrying flag's value: in
+ * `--prompt --cancel` the prompt is the text "--cancel", not a flag, and a
+ * secret passed as `--value --machine` is a value too, not machine targeting.
  */
 export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
   const flags = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
     if (token === "--") break;
-    if (FREE_TEXT_VALUE_FLAGS.has(token)) { index += 1; continue; }
-    flags.add(token.split("=")[0]!);
+    const name = token.split("=")[0]!;
+    flags.add(name);
+    // `--flag=value` carries its value inline; only a bare flag owns the next
+    // token.
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) {
+      index += 1;
+    }
   }
   return flags;
 }

@@ -18394,14 +18394,32 @@ function buildUsagePlan(args: string[]): CliPlan {
           ...actionStep("snapshot", "usage", "getUsageSnapshot", {}),
           skipWhen: (values) => isReport(unwrapActionEnvelope(values.limits)),
         },
+        // The fallback also keeps the asking chat's account, which the host's
+        // own report would have resolved. An older host still knows the
+        // summary's `instanceId`.
+        ...(chatSessionId
+          ? [{
+            ...actionArgsListStep("chat", "chat", "getSessionSummary", [chatSessionId]),
+            optional: true,
+            skipWhen: (values: JsonObject) => isReport(unwrapActionEnvelope(values.limits)),
+          }]
+          : []),
       ],
       shapeResult: (values) => {
         const limits = unwrapActionEnvelope(values.limits);
         if (isReport(limits)) return limits;
         const snapshot = unwrapActionEnvelope(values.snapshot);
+        const summary = unwrapActionEnvelope(values.chat);
+        const chat = isRecord(summary)
+          ? {
+            provider: asString(summary.provider),
+            instanceId: asString(summary.instanceId)?.trim() ?? null,
+          }
+          : null;
         return buildUsageLimitsReport(isRecord(snapshot) ? snapshot as Partial<UsageSnapshot> : null, {
           nowMs: Date.now(),
           provider,
+          chat: chat?.provider && chat.instanceId ? { provider: chat.provider, instanceId: chat.instanceId } : null,
         });
       },
       machineList: "usageLimits",

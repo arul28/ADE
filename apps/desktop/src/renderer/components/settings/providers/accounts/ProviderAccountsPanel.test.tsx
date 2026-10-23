@@ -657,8 +657,7 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-new" });
     });
 
-    expect(await screen.findByText("this account is signed in")).toBeTruthy();
-    expect(within(sheet).getByText("arul@acme.com")).toBeTruthy();
+    expect(await screen.findByText("arul@acme.com is signed in")).toBeTruthy();
     await waitFor(() => {
       expect(harness.providerInstances.refresh).toHaveBeenCalledWith({
         provider: "claude",
@@ -759,7 +758,7 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude" });
     });
     expect(harness.providerInstances.create).not.toHaveBeenCalled();
-    expect(await screen.findByText("Claude Code is signed in")).toBeTruthy();
+    expect(await screen.findByText("arul@gmail.com is signed in")).toBeTruthy();
   });
 
   /**

@@ -21,7 +21,7 @@ import type {
   UsageWindow,
 } from "./types/usage";
 import { localUsageAccountId, usageAccountId } from "./usageAccountId";
-import { computeResetsInMs, windowLabel } from "./usageWindowPresentation";
+import { windowLabel } from "./usageWindowPresentation";
 
 export type UsageLimitsPace = {
   status: UsagePacingStatus;
@@ -124,8 +124,10 @@ function minutesBetween(fromMs: number, toMs: number): number {
 function buildWindow(window: UsageWindow, readAtMs: number | null, nowMs: number): UsageLimitsWindow {
   const resetsAt = isoOrNull(window.resetsAt);
   // A reading with no reset time keeps its fill: there is no reset to have
-  // passed. One whose reset passed since the reading is full again.
-  const hasReset = resetsAt != null && computeResetsInMs(resetsAt, nowMs) <= 0;
+  // passed. One whose reset passed after the reading is full again; a reset
+  // that happened before the reading is already reflected in the number.
+  const resetsAtMs = resetsAt == null ? null : Date.parse(resetsAt);
+  const hasReset = resetsAtMs != null && readAtMs != null && resetsAtMs > readAtMs && resetsAtMs <= nowMs;
   const used = hasReset ? 0 : clampPercent(window.percentUsed);
   const out: UsageLimitsWindow = {
     type: window.windowType,

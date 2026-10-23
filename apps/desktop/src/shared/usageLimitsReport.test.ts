@@ -45,17 +45,21 @@ describe("buildUsageLimitsReport", () => {
 
   it("reads a window whose reset passed since the reading as full again", () => {
     const report = buildUsageLimitsReport(snapshot({
+      lastPolledAt: "2026-10-23T05:00:00.000Z",
       accounts: [{ id: "claude:claude-2", provider: "claude", instanceId: "claude-2", machines: [] }],
       windows: [
-        // 92% used, but that reading is from before the reset.
+        // 92% used, but the reset happened after that reading and before now.
         { provider: "claude", windowType: "five_hour", accountId: "claude:claude-2", percentUsed: 92, resetsAt: EARLIER, resetsInMs: 0 },
         { provider: "claude", windowType: "weekly", accountId: "claude:claude-2", percentUsed: 40, resetsAt: LATER, resetsInMs: 1 },
+        // A reset before the reading is already reflected in its number.
+        { provider: "claude", windowType: "monthly", accountId: "claude:claude-2", percentUsed: 30, resetsAt: "2026-10-23T04:00:00.000Z", resetsInMs: 0 },
       ],
     }), { nowMs: NOW_MS });
 
     const [account] = report.accounts;
     const fiveHour = account?.windows.find((window) => window.type === "five_hour");
     const weekly = account?.windows.find((window) => window.type === "weekly");
+    const monthly = account?.windows.find((window) => window.type === "monthly");
     expect(fiveHour).toMatchObject({ percentLeft: 100, hasReset: true, resetsInMinutes: null });
     expect(fiveHour?.pace).toBeUndefined();
     expect(usageLimitsLeftText(fiveHour!)).toBe("100%");
@@ -63,5 +67,7 @@ describe("buildUsageLimitsReport", () => {
     // A reading whose reset has not passed keeps its fill.
     expect(weekly).toMatchObject({ percentLeft: 60 });
     expect(weekly?.hasReset).toBeUndefined();
+    expect(monthly).toMatchObject({ percentLeft: 70 });
+    expect(monthly?.hasReset).toBeUndefined();
   });
 });

@@ -301,6 +301,13 @@ export function AddProviderAccountSheet({
     ? existingInstance.account?.email?.trim() || (existingInstance.isDefault ? providerLabel : null)
     : null;
   const accountName = existingName ?? expectedEmail ?? "this account";
+  // The heading names the login that actually signed in, not the one the
+  // person expected: a restore can authorize a different account.
+  const signedInEmail = signedInAs?.trim() || null;
+  const signedInName = signedInEmail ?? accountName;
+  const expectedLoginMismatch = Boolean(
+    signedInEmail && expectedEmail && signedInEmail.toLowerCase() !== expectedEmail.toLowerCase(),
+  );
   const title = resuming
     ? `Sign in to ${existingName ?? providerLabel}`
     : `Add a ${providerLabel} account`;
@@ -508,10 +515,12 @@ export function AddProviderAccountSheet({
         >
           <CheckCircle size={40} weight="fill" style={{ color: COLORS.success }} />
           <span style={{ fontSize: 14, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-            {accountName} is signed in
+            {signedInName} is signed in
           </span>
-          {signedInAs ? (
-            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>{signedInAs}</span>
+          {expectedLoginMismatch ? (
+            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+              Signed in with {signedInEmail}, not {expectedEmail}.
+            </span>
           ) : null}
         </div>
       ) : null}

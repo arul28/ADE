@@ -569,10 +569,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     const base = slugForLabel(label);
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const candidate = attempt === 0 && !taken.has(base)
-        ? base
-        : `${base}-${randomBytes(3).toString("hex")}`;
-      if (!taken.has(candidate)) return candidate;
+      const candidate = attempt === 0 ? base : `${base}-${randomBytes(3).toString("hex")}`;
+      // The same rule as an unnamed account: a removed account's home stays on
+      // disk with its login, so a typed label (an older phone or script) must
+      // not pick that id back up either.
+      if (free(candidate)) return candidate;
     }
     return `${provider}-${randomBytes(8).toString("hex")}`;
   }
