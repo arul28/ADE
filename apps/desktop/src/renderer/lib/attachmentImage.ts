@@ -6,11 +6,12 @@ import { effectiveRuntimeBinding } from "./chatMachineRouting";
  * Read a chat attachment image as a data URL on the machine that owns it.
  *
  * One rule for every surface that shows or copies an attachment image:
- * - Read through the runtime of `pin`. No pin means the machine this window is
- *   bound to.
- * - Fall back to this computer's own reader only when the owner is this
- *   computer: a local pin, or no pin in a window bound to a local project (or
- *   to no project).
+ * - A chat that has its own reader (a personal chat, whose files are not under
+ *   any project) reads through it, and only through it.
+ * - Otherwise read once, through the runtime of `pin`. No pin means the machine
+ *   this window is bound to; with no project bound, that is this computer's
+ *   own reader. The runtime allows every folder this computer's reader does,
+ *   so a refusal there is the answer, not a cue to ask again here.
  * - Never read a remote-owned path here. That path names a file on the other
  *   machine, and on this computer it is missing or, worse, a different file.
  */
@@ -19,31 +20,32 @@ export async function readAttachmentImageDataUrl(
   pin: OpenProjectBinding | null | undefined,
   options?: {
     /**
-     * False for a path that can be rewritten in place (an image an agent
-     * viewed in its workspace). Attachments are written once under a fresh
-     * name, so they cache.
+     * Set for a path that can be rewritten in place (an image an agent
+     * viewed in its workspace): the read is cached per version, so a new view
+     * of the same path reads the file again while a remount of the same view
+     * does not. Attachments are written once under a fresh name and need none.
      */
-    cache?: boolean;
+    version?: string | null;
     /**
      * The chat's own image reader, for a chat that does not live in a project
      * runtime (a personal chat's attachment store is not under any project).
-     * Used in place of the runtime and local readers; `pin` is then ignored.
+     * Used in place of the runtime and local readers; `pin` then only names
+     * the machine in the cache key. See `useChatImageReader`.
      */
     reader?: ((path: string) => Promise<{ dataUrl: string }>) | null;
   },
 ): Promise<{ dataUrl: string }> {
+  const version = options?.version ? `\u0000${options.version}` : "";
   const reader = options?.reader;
-  if (reader) {
-    if (options?.cache === false) return reader(path);
-    return cachedRead(`chat-reader\u0000${path}`, () => reader(path));
-  }
+  // The pin names the machine a personal chat lives on: the same path on two
+  // machines is two files.
+  if (reader) return cachedRead(`chat-reader\u0000${pin?.key ?? "this-computer"}\u0000${path}${version}`, () => reader(path));
   const owner = effectiveRuntimeBinding(pin, useAppStore.getState().projectBinding);
-  if (options?.cache === false) return readUncached(path, pin, owner?.kind !== "remote");
   // One read per owner and path serves every chip that shows the attachment.
   // A virtualized transcript remounts a thumbnail each time its row scrolls
   // back into view, and each uncached read is a multi-megabyte base64 reply on
   // the runtime socket that holds up the transcript pages queued behind it.
-  const key = `${owner?.key ?? "this-computer"}\u0000${path}`;
+  const key = `${owner?.key ?? "this-computer"}\u0000${path}${version}`;
   return cachedRead(key, () => readUncached(path, pin, owner?.kind !== "remote"));
 }
 
@@ -98,18 +100,24 @@ async function readUncached(
 ): Promise<{ dataUrl: string }> {
   const runtimeRead = window.ade?.agentChat?.getImageDataUrl;
   const localRead = window.ade?.app?.getImageDataUrl;
-  if (!runtimeRead) {
-    if (ownedHere && localRead) return await localRead(path);
-    throw new Error("No image reader is available for the machine that owns this attachment.");
+  if (runtimeRead) {
+    try {
+      return await runtimeRead(path, pin ?? undefined);
+    } catch (error) {
+      // A brain from before chat images could live outside the project
+      // refuses them with this message; this computer's reader still can.
+      if (!ownedHere || !localRead || !LEGACY_RUNTIME_REFUSAL.test(errorText(error))) throw error;
+      return await localRead(path).catch(() => {
+        throw error;
+      });
+    }
   }
-  try {
-    return await runtimeRead(path, pin ?? undefined);
-  } catch (error) {
-    if (!ownedHere || !localRead) throw error;
-    // When both fail, the runtime's answer ("Path does not exist" for a
-    // cleaned-up screenshot) says why; the local reader's path refusal does not.
-    return await localRead(path).catch(() => {
-      throw error;
-    });
-  }
+  if (ownedHere && localRead) return await localRead(path);
+  throw new Error("No image reader is available for the machine that owns this attachment.");
+}
+
+const LEGACY_RUNTIME_REFUSAL = /Image path must be inside the project/;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

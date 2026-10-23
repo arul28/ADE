@@ -57,3 +57,13 @@ export function useAgentChatApi(): AgentChatApi {
 export function useChatPaneScope(): ChatPaneScope | null {
   return useContext(ChatPaneScopeContext);
 }
+
+/**
+ * The surrounding pane's own image reader, or null for a project chat (which
+ * reads through its machine's runtime). A personal chat's images live in its
+ * own store and workspace, which no project runtime, and not this window's
+ * file reader, will open. Pass it to `readAttachmentImageDataUrl` as `reader`.
+ */
+export function useChatImageReader(): ((path: string) => Promise<{ dataUrl: string }>) | null {
+  return useChatPaneScope()?.agentChat.getImageDataUrl ?? null;
+}

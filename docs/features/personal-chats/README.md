@@ -189,8 +189,9 @@ path-copy route into it, because `personalChats.call` is reachable from paired
 clients and must never read a caller-named file. Scheduled-work mutations call the same chat service methods as
 project chat after rechecking that the supplied session belongs to
 `surface: "personal"`. Terminal calls also check that the PTY was created by
-this personal scope. Attachment readback resolves real paths and refuses
-anything outside the hidden attachment store.
+this personal scope. Image readback resolves real paths and refuses
+anything outside the hidden attachment store, the artifact store and the
+scratch workspace (where the agent saves the pictures it views).
 
 Personal transcripts use the same bounded cursor pager as project chats:
 1,000 events / 256 KiB for the initial snapshot, 256 KiB older pages, and a

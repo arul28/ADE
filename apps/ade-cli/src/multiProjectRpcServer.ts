@@ -1,3 +1,4 @@
+import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import {
@@ -321,6 +322,15 @@ export type MultiProjectRpcHandlerOptions = {
    * answers the method rather than 404ing an embedder's setup screen.
    */
   providerStatus?: ProviderStatusService;
+  /**
+   * Backs `keepAwake.call`: keep-awake is this machine's power policy, so
+   * Settings reaches it with no project open. Absent on embedded runtimes,
+   * which never own the machine's power settings.
+   */
+  keepAwakeService?: Pick<
+    BrainKeepAwakeService,
+    "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
+  > | null;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
@@ -468,6 +478,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.updateImpact",
   "account.call",
   "remoteMcp.call",
+  "keepAwake.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -2513,6 +2524,33 @@ export function createMultiProjectRpcRequestHandler(
       // Settings on this computer's desktop arrives here too (it needs no project).
       const surface = isDesktopClientName(callerClientName()) ? "desktop" : "api";
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
+    }
+
+    if (method === "keepAwake.call") {
+      // The same rule as the project `keep_awake` actions: every one is
+      // CTO-only, so the desktop and the person's own clients can change the
+      // machine's power policy and a session-bound agent cannot.
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Keep-awake settings require the cto role.");
+      }
+      const keepAwake = options.keepAwakeService;
+      if (!keepAwake) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Method not found: keepAwake.call (this runtime does not manage keep-awake).");
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      const args = isRecord(params.args) ? params.args : {};
+      switch (action) {
+        case "getSnapshot":
+          return await keepAwake.getSnapshot();
+        case "setLevel":
+          return await keepAwake.setLevel(args.level);
+        case "migrateLegacyPreference":
+          return await keepAwake.migrateLegacyPreference(args.level);
+        case "fixSystemSleep":
+          return await keepAwake.fixSystemSleep();
+        default:
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown keep-awake action "${action}".`);
+      }
     }
 
     // `ade notify`: machine-wide, so it neither needs nor registers the

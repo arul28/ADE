@@ -568,6 +568,57 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  /**
+   * Keep-awake is this machine's power policy: Settings reaches it with no
+   * project registered, an agent cannot change it, and a brain that does not
+   * own it says "not found" so the desktop uses its own service instead.
+   */
+  it("serves keep-awake machine-wide, for the cto role only", async () => {
+    const snapshot = { preferences: { level: "while-away" } };
+    const keepAwakeService = {
+      getSnapshot: vi.fn(async () => snapshot),
+      setLevel: vi.fn(async () => snapshot),
+      migrateLegacyPreference: vi.fn(async () => ({ snapshot, handled: true })),
+      fixSystemSleep: vi.fn(async () => ({ ok: true })),
+    };
+    const projectRegistry = { list: () => [], findByRootPath: () => null, add: vi.fn() };
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const connect = async (role: string, service: typeof keepAwakeService | null) => {
+        const handler = createMultiProjectRpcRequestHandler({
+          serverVersion: "test",
+          projectRegistry: projectRegistry as never,
+          keepAwakeService: service as never,
+        });
+        await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity: { role } } });
+        return handler;
+      };
+      const desktop = await connect("cto", keepAwakeService);
+      await expect(desktop({ jsonrpc: "2.0", id: 2, method: "keepAwake.call", params: { action: "getSnapshot" } }))
+        .resolves.toBe(snapshot);
+      await desktop({ jsonrpc: "2.0", id: 3, method: "keepAwake.call", params: { action: "setLevel", args: { level: "while-away" } } });
+      expect(keepAwakeService.setLevel).toHaveBeenCalledWith("while-away");
+      await expect(desktop({ jsonrpc: "2.0", id: 4, method: "keepAwake.call", params: { action: "dispose" } }))
+        .rejects.toThrow(/Unknown keep-awake action/);
+      expect(projectRegistry.add).not.toHaveBeenCalled();
+      desktop.dispose();
+
+      const agent = await connect("agent", keepAwakeService);
+      await expect(agent({ jsonrpc: "2.0", id: 2, method: "keepAwake.call", params: { action: "setLevel", args: { level: "never" } } }))
+        .rejects.toThrow(/require the cto role/);
+      expect(keepAwakeService.setLevel).toHaveBeenCalledTimes(1);
+      agent.dispose();
+
+      const unmanaged = await connect("cto", null);
+      await expect(unmanaged({ jsonrpc: "2.0", id: 2, method: "keepAwake.call", params: { action: "getSnapshot" } }))
+        .rejects.toThrow(/Method not found: keepAwake\.call/);
+      unmanaged.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
+    }
+  });
+
   it("prewarms the production shared personal-chat scope only at creation", () => {
     const warmExisting = vi.spyOn(PersonalChatScope.prototype, "warmExisting")
       .mockResolvedValue();

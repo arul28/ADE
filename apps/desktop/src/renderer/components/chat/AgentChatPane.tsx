@@ -5091,7 +5091,12 @@ export function AgentChatPane({
   // The header PR pill opens the per-lane PR tools tab. Pressed state follows
   // the tab the Work pane is showing for this lane.
   const workSidebar = useWorkSidebarTool(laneId, chatRuntimePin);
-  const attachedTerminalShells = useAttachedTerminalShells(selectedSessionId, chatRuntimePin);
+  // A personal chat's shell is the Chats page's own panel, owned by the
+  // personal scope; the project terminal service has none (and with no project
+  // open there is no terminal service to ask at all).
+  const attachedTerminalShells = useAttachedTerminalShells(selectedSessionId, chatRuntimePin, {
+    enabled: !isPersonalPane,
+  });
   const hasAttachedTerminal = hasAttachedTerminalShell(attachedTerminalShells);
   const renderedSession = useMemo(
     () => (

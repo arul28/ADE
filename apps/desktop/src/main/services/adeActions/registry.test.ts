@@ -946,43 +946,50 @@ describe("runtime domain services behind the allowlist", () => {
     expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
   });
 
-  it("exposes bounded project-local image preview reads through chat actions", async () => {
-    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-chat-preview-"));
-    let outsidePath: string | null = null;
+  it("reads chat images from the project, its lanes, temp and the user's drop folders, and nowhere else", async () => {
+    const base = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-chat-preview-")));
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64");
+    const write = async (file: string, data: Buffer | string = png) => {
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(file, data);
+      return file;
+    };
+    const projectRoot = path.join(base, "project");
+    vi.spyOn(os, "tmpdir").mockReturnValue(path.join(base, "tmp"));
+    vi.spyOn(os, "homedir").mockReturnValue(path.join(base, "home"));
     try {
-      const imagePath = path.join(projectRoot, ".ade", "attachments", "image.png");
-      await fs.promises.mkdir(path.dirname(imagePath), { recursive: true });
-      await fs.promises.writeFile(
-        imagePath,
-        Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"),
-      );
-      const textPath = path.join(projectRoot, "not-image.txt");
-      await fs.promises.writeFile(textPath, "not an image");
-      outsidePath = path.join(os.tmpdir(), `outside-${Date.now()}.png`);
-      await fs.promises.writeFile(outsidePath, Buffer.from([0x89, 0x50, 0x4E, 0x47]));
+      const attachment = await write(path.join(projectRoot, ".ade", "attachments", "image.png"));
+      const textPath = await write(path.join(projectRoot, "not-image.txt"), "not an image");
+      const lane = await write(path.join(base, "lanes", "feature", "shot.png"));
+      const temp = await write(path.join(base, "tmp", "screenshot.png"));
+      const desktop = await write(path.join(base, "home", "Desktop", "Screenshot.png"));
+      const homeSecret = await write(path.join(base, "home", ".ssh", "key.png"));
+      const outside = await write(path.join(base, "outside", "secret.png"));
       const symlinkPath = path.join(projectRoot, ".ade", "attachments", "outside-link.png");
-      await fs.promises.symlink(outsidePath, symlinkPath);
+      await fs.promises.symlink(outside, symlinkPath);
 
       const runtime = {
         projectRoot,
         agentChatService: {},
+        fileService: { listWorkspaces: () => [{ rootPath: path.join(base, "lanes", "feature") }] },
       } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
       const chat = getAdeActionDomainServices(runtime).chat as {
         getImageDataUrl: (args: { path: string }) => Promise<{ dataUrl: string }>;
       } & Record<string, unknown>;
 
       expect(listAllowedAdeActionNames("chat", chat)).toContain("getImageDataUrl");
-      await expect(chat.getImageDataUrl({ path: imagePath })).resolves.toEqual(
-        expect.objectContaining({ dataUrl: expect.stringMatching(/^data:image\/png;base64,/) }),
-      );
-      await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
-      await expect(chat.getImageDataUrl({ path: outsidePath })).rejects.toThrow(/inside the project/i);
-      await expect(chat.getImageDataUrl({ path: symlinkPath })).rejects.toThrow(/inside the project|escapes root/i);
-    } finally {
-      await fs.promises.rm(projectRoot, { recursive: true, force: true });
-      if (outsidePath) {
-        await fs.promises.rm(outsidePath, { force: true });
+      for (const allowed of [attachment, ".ade/attachments/image.png", lane, temp, desktop]) {
+        await expect(chat.getImageDataUrl({ path: allowed }), allowed).resolves.toEqual(
+          expect.objectContaining({ dataUrl: expect.stringMatching(/^data:image\/png;base64,/) }),
+        );
       }
+      await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
+      for (const refused of [outside, homeSecret, symlinkPath]) {
+        await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders ADE shows chat images from/);
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await fs.promises.rm(base, { recursive: true, force: true });
     }
   });
 

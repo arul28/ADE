@@ -640,6 +640,9 @@ export function resolveWithinAllowedRoots(
   candidate: string,
   refusalMessage: string,
 ): string {
+  // A blank root is "no folder", never the working directory: `path.resolve("")`
+  // is the process's cwd, which is "/" for an app opened from Finder.
+  roots = roots.filter((root) => typeof root === "string" && root.trim().length > 0);
   const rootReals: Array<{ real: string | null; error: unknown }> = roots.map((root) => {
     try {
       return { real: realpathExisting(path.resolve(root)), error: null };

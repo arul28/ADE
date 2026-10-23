@@ -23302,6 +23302,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
     method === "remoteMcp.call" ||
+    method === "keepAwake.call" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -27004,6 +27005,7 @@ async function runServe(
       scopeRegistry,
       personalChatScope,
       providerStatus,
+      keepAwakeService,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,

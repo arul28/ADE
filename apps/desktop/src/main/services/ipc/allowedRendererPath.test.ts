@@ -59,6 +59,14 @@ describe("resolveWithinAllowedDirs", () => {
       .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
     expect(() => resolveWithinAllowedDirs([], presentFile))
       .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    // A window with no project open has a blank root. It allows nothing, not
+    // the working directory ("/" for an app opened from Finder).
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(tempRoot);
+    for (const blank of ["", "  "]) {
+      expect(() => resolveWithinAllowedDirs([blank, allowedDir], outsideFile))
+        .toThrow(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    }
+    expect(cwd).not.toHaveBeenCalled();
   });
 
   // Regression: the allowlist loop swallowed every failure and reported

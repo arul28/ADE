@@ -1,9 +1,10 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
-import type { Logger } from "../logging/logger";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
@@ -227,7 +228,7 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
-import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
@@ -719,26 +720,43 @@ async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: st
   });
 }
 
-function resolveAgentChatImagePath(projectRoot: string, rawPath: unknown): string {
+/** The refusal for an image path outside every folder a chat image can live in. */
+const AGENT_CHAT_IMAGE_PATH_REFUSAL = "Image path is outside the folders ADE shows chat images from.";
+
+/**
+ * The folders a chat image on this machine can come from: the project, each
+ * lane's worktree (a lane can live outside the project), the temp folders an
+ * agent saves screenshots to, and the user folders a person drops pictures in.
+ * The same set the desktop's own reader allows, plus lanes and the desktop, so
+ * one read on the owning machine answers for every image a chat shows.
+ */
+function agentChatImageRoots(runtime: AdeRuntime): string[] {
+  const home = os.homedir();
+  const roots = [
+    runtime.projectRoot,
+    ...(runtime.fileService?.listWorkspaces().map((workspace) => workspace.rootPath) ?? []),
+    os.tmpdir(),
+    // On macOS the temp folder is under /var/folders, but agents save to /tmp.
+    ...(process.platform === "darwin" ? ["/tmp"] : []),
+    ...(home ? ["Downloads", "Documents", "Desktop"].map((name) => path.join(home, name)) : []),
+  ];
+  return [...new Set(roots.filter((root) => typeof root === "string" && root.trim().length > 0))];
+}
+
+function resolveAgentChatImagePath(runtime: AdeRuntime, rawPath: unknown): string {
   const value = typeof rawPath === "string" ? rawPath.trim() : "";
   if (!value) throw new Error("Image path is required.");
-  try {
-    return resolvePathWithinRoot(projectRoot, value);
-  } catch (error) {
-    if (isPathEscapeError(error)) {
-      throw new Error("Image path must be inside the project.");
-    }
-    throw error;
-  }
+  // A relative path names a file in the project.
+  const candidate = path.isAbsolute(value) ? value : path.resolve(runtime.projectRoot, value);
+  return resolveWithinAllowedRoots(agentChatImageRoots(runtime), candidate, AGENT_CHAT_IMAGE_PATH_REFUSAL);
 }
 
 async function getAgentChatImageDataUrl(
-  projectRoot: string,
+  runtime: AdeRuntime,
   arg: { path?: string },
-  logger: Pick<Logger, "warn">,
 ): Promise<{ dataUrl: string }> {
-  const imagePath = resolveAgentChatImagePath(projectRoot, arg.path);
-  const { dataUrl } = await readImageFileAsDataUrl(imagePath, { logger });
+  const imagePath = resolveAgentChatImagePath(runtime, arg.path);
+  const { dataUrl } = await readImageFileAsDataUrl(imagePath, { logger: runtime.logger });
   return { dataUrl };
 }
 
@@ -1124,7 +1142,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     },
     getImageDataUrl: (args?: { path?: string }) =>
-      getAgentChatImageDataUrl(runtime.projectRoot, args ?? {}, runtime.logger),
+      getAgentChatImageDataUrl(runtime, args ?? {}),
   };
   if (typeof base.createSession === "function") {
     service.createSession = (args?: unknown) =>
