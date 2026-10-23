@@ -65,7 +65,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
 | `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
-| `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. |
+| `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. A brain failure records its `socketPath`, and the backoff counts only failures on the starting brain's own socket (a record without one is read as the primary socket's), so a desktop's isolated brain does not sleep for the service brain's crash loop. |
 | `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. `note(signature, message, meta)` and the `log` callback carry a `FailureLogMeta` bag alongside the human sentence, so the structured event and the stderr line a reader correlates share one cadence instead of drifting apart. |
 | `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is now the same `drain()`, which is what stops the failure path and the shutdown path from drifting apart the way two hand-maintained lists always did. |
 | `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
@@ -561,7 +561,12 @@ acquisition registers its own release at the point it acquires, and a failure
 drains the stack in reverse order before rethrowing. A release that throws is
 caught and logged as `runtime.teardown_step_failed`, so it can neither halt the
 drain nor overwrite the original startup error, which is the one the caller
-actually needs.
+actually needs. The drain is synchronous and closes the database last, so an
+async `dispose` keeps running after it: a release that returns a promise is not
+awaited, but its rejection is reported the same way instead of reaching the
+process as an unhandled rejection. Services whose async work can outlive the
+drain (the sync status snapshot, the PR poller and PR watch) check their
+disposed flag after each await, because the database they read next is closed.
 
 `runtime.dispose` is the same `drain()`. It used to be a hand-maintained list of
 `swallow(...)` calls parallel to the acquisitions, and a list like that drifts
