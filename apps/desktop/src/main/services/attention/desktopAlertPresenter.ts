@@ -107,9 +107,8 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   /** item + kind -> when the last state entry we handled began. */
   const handledEntryAt = new Map<string, number>();
   /**
-   * Local alerts that arrived signed in before any settings loaded. A local
-   * alert has no snapshot to bring it back (a goal outcome is not an Activity
-   * item), so it waits here and is re-checked once settings load.
+   * Alerts that arrived signed in before any settings loaded, re-checked once
+   * settings load (the age limit still applies).
    */
   let waitingForPreferences: DesktopAlert[] = [];
 
@@ -177,16 +176,15 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     const previous = handledEntryAt.get(key);
     if (previous !== undefined && Math.abs(at - previous) < SAME_ENTRY_WINDOW_MS) return;
     // Signed in but no settings loaded yet (startup, relay backing off): the
-    // chat may be muted. Not remembered: a snapshot alert comes back with the
-    // next poll, and a local one waits for `preferencesLoaded`.
+    // chat may be muted. Not remembered; it waits for `preferencesLoaded`.
+    // Snapshot alerts wait too: snapshots are deltas, so the next poll does
+    // not bring the item back.
     if (deps.isSignedIn?.() && !deps.getPreferences()) {
-      if (!alert.item) {
-        // The newest alert for a key replaces an older one still waiting.
-        waitingForPreferences = [
-          ...waitingForPreferences.filter((entry) => alertKey(entry) !== key),
-          alert,
-        ].slice(-MAX_WAITING_FOR_PREFERENCES);
-      }
+      // The newest alert for a key replaces an older one still waiting.
+      waitingForPreferences = [
+        ...waitingForPreferences.filter((entry) => alertKey(entry) !== key),
+        alert,
+      ].slice(-MAX_WAITING_FOR_PREFERENCES);
       return;
     }
     // Remembered even when not shown, so the other source cannot show it a

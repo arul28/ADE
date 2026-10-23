@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 
 import { useAccountStatus } from "../../lib/account";
 import { activityStore, useActivityStore } from "../../state/activityStore";
 import { showToast } from "../app/toast/toastStore";
+import { currentActivityAccountOwnerId } from "./useActivitySync";
 
 /**
  * One chat's notification mute, which applies on every device: the list lives
@@ -19,10 +20,6 @@ export function useSessionNotificationMute(sessionId: string): {
   const { status } = useAccountStatus();
   const ownerId = status.signedIn ? status.userId?.trim() || null : null;
   const preferences = useActivityStore((state) => state.preferences);
-  const ownerRef = useRef(ownerId);
-  useEffect(() => {
-    ownerRef.current = ownerId;
-  }, [ownerId]);
   const muted = Boolean(preferences?.mutedSessionIds?.includes(sessionId));
   const available = Boolean(
     ownerId
@@ -49,7 +46,7 @@ export function useSessionNotificationMute(sessionId: string): {
       // A different account may be signed in by now; its settings are not
       // this rollback's to touch.
       const latest = activityStore.getState().preferences;
-      if (latest && ownerRef.current === ownerId) {
+      if (latest && currentActivityAccountOwnerId() === ownerId) {
         activityStore.getState().setPreferences({
           ...latest,
           mutedSessionIds: nextMuted
