@@ -142,6 +142,8 @@ import {
   registerGithubCredentialIdentity,
   type GithubCredentialCandidate,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
+import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
+
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
 
@@ -2425,13 +2427,11 @@ export function createHeadlessGitHubService(
           query: { per_page: 100 },
         });
       } catch (error) {
-        // GitHub shows a repository's autolinks only to its admins, and answers
-        // everyone else with a bare 404 ("Not Found").
-        const status = (error as { status?: unknown }).status;
-        if (status === 404 || status === 403) {
-          throw new Error(`Only admins of ${owner}/${name} can read its GitHub autolinks.`);
-        }
-        throw error;
+        throw githubAutolinksAccessError(
+          owner,
+          name,
+          error instanceof HeadlessGithubCredentialAttemptError ? error.status : null,
+        ) ?? error;
       }
       return rows.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
     },

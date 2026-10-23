@@ -40,6 +40,7 @@ import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "..
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createComputerUseNamespace } from "./computerUse";
@@ -278,7 +279,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     events.on("githubInvalidated", async () => {
       // A computer that is reconnecting, or a project switch, ends the read;
       // the status shown stays until the next invalidation reads it again.
-      const status = await call("github.getStatus", {}, githubDisconnectedStatus()).catch(() => null);
+      const status = await call("github.getStatus", {}, githubDisconnectedStatus()).catch((error: unknown) => {
+        forwardLogToSentry("warn", "web.github_status_reread_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
       if (status) events.emit("githubStatusChanged", status);
     })
   );

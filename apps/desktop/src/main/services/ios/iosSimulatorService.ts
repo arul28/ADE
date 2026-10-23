@@ -178,6 +178,7 @@ import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaun
 import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
+import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 
 const execFile = promisify(execFileCallback);
 
@@ -189,7 +190,6 @@ const IOS_APPLICATION_PRODUCT_TYPE = "com.apple.product-type.application";
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
 const TOOL_STATUS_CACHE_MS = 10_000;
 const SIMCTL_MISSING_RECHECK_MS = 60_000;
-const SIMCTL_MISSING = /unable to find utility "simctl"/;
 const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
 const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;

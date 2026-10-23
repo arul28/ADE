@@ -102,6 +102,7 @@ import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
 } from "./githubRestPagination";
+import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -2135,13 +2136,7 @@ export function createGithubService({
         query: { per_page: 100 },
       });
     } catch (error) {
-      // GitHub shows a repository's autolinks only to its admins, and answers
-      // everyone else with a bare 404 ("Not Found").
-      const status = (error as { status?: unknown }).status;
-      if (status === 404 || status === 403) {
-        throw new Error(`Only admins of ${owner}/${name} can read its GitHub autolinks.`);
-      }
-      throw error;
+      throw githubAutolinksAccessError(owner, name, error instanceof GithubCredentialAttemptError ? error.status : null) ?? error;
     }
     return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
   };

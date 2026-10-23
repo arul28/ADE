@@ -16,6 +16,11 @@ import {
   isUnsupportedAdeActionError,
   parseCodedErrorMessage,
 } from "../codedError";
+import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
+import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
+import { SIMCTL_MISSING } from "../xcodeToolchain";
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Matched against the error message (or event text). Added from real Sentry traffic, 2026-10-14 and 2026-10-16. */
 export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
@@ -90,7 +95,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /GitHub auth is invalid or missing required access/,
   /\bAPI rate limit (?:already )?exceeded for user ID\b/,
   /\[jira:unauthenticated\]/,
-  /^Only admins of \S+ can read its GitHub autolinks\.$/,
+  GITHUB_AUTOLINKS_REFUSED,
   /^SSH authentication failed for user\(s\) /,
   /^ADE couldn't connect to this machine\. Check that ADE is open there/,
   /\bWINDOWS_DESKTOP_SIGN_IN_FAILED: Windows could not verify the password\.|^(?:invalid_argument: )?Enter a Windows user name and password\.$/,
@@ -104,13 +109,13 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bproject_data_missing: /,
   /\bProject folder not found: /,
   // A Mac with the Command Line Tools but no Xcode.
-  /unable to find utility "simctl", not a developer tool or in PATH/,
+  SIMCTL_MISSING,
   // The machine itself is out of processes or disk.
   /\bspawn \S+ EAGAIN\b/,
   /\bENOSPC: no space left on device\b/,
   // A chat waiting on the user: a recovery choice, a pending question, a turn still running.
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
-  /^Answer or decline the pending request before sending another message\./,
+  new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
   /^Wait for the current response to finish before /,
   /^This chat is still responding\. Wait for the turn to end/,
   /\bis still owned by another ADE runtime\. Stop it from that runtime/,
@@ -182,10 +187,19 @@ export function isExpectedOutcomeText(text: string): boolean {
   return Boolean(text) && EXPECTED_OUTCOME_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/**
+ * Codes `codedError` puts on an error rather than in its message, for the
+ * same expected states the text patterns name once the code crosses the wire
+ * as a `code: message` prefix.
+ */
+const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving"]);
+
 /** An answer the caller gets, worth a Sentry Log but not an issue. */
 export function isExpectedOutcome(error: unknown): boolean {
   const text = failureText(error);
   if (isExpectedOutcomeText(text)) return true;
+  const code = parseCodedErrorMessage(error).code;
+  if (code && EXPECTED_OUTCOME_CODES.has(code)) return true;
   if (text !== "fetch failed" || !(error instanceof Error)) return false;
   const causes = causeTexts(error);
   return causes !== null && isOfflineFetchFailure(text, causes);
@@ -194,15 +208,22 @@ export function isExpectedOutcome(error: unknown): boolean {
 const PROGRAMMING_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError", "EvalError"]);
 const STORAGE_FAILURE = /\bSQLite\b|\bSQLITE_|\bdatabase is (?:not open|locked)\b|\bdatabase disk image is malformed\b/i;
 
+/** System-call failures that mean the machine is in trouble, not that a path was wrong. */
+const RESOURCE_ERRNOS = new Set(["EMFILE", "ENFILE", "ENOMEM", "EIO"]);
+
 /**
  * A failure that is a defect in ADE whoever made the call: a JavaScript
- * runtime error or the project database failing. An agent's own mistakes (a
- * tab that closed, a path outside the lane, a note too long) are answers to
- * the agent; these are not.
+ * runtime error, the project database failing, or the machine running out of
+ * files, memory or I/O. An agent's own mistakes (a tab that closed, a file
+ * that does not exist, a note too long) are answers to the agent; these are
+ * not.
  */
 export function isProgrammingError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return PROGRAMMING_ERROR_NAMES.has(error.name) || STORAGE_FAILURE.test(error.message);
+  const code = (error as { code?: unknown }).code;
+  return PROGRAMMING_ERROR_NAMES.has(error.name)
+    || STORAGE_FAILURE.test(error.message)
+    || (typeof code === "string" && RESOURCE_ERRNOS.has(code));
 }
 
 export function isExpectedFailure(error: unknown): boolean {

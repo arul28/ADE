@@ -1959,11 +1959,18 @@ const CALLER_ERROR_CODES = new Set<number>([
 ]);
 
 /**
- * One Sentry issue per action and error code for a failed `ade/actions/call`.
- * The endpoint turns every failure into an `ok: false` reply, which is right
- * for the caller and left nothing behind for anyone else.
+ * Sentry for a failed `ade/actions/call`. The endpoint turns every failure
+ * into an `ok: false` reply, which is right for the caller and left nothing
+ * behind for anyone else. A defect becomes one issue per action and error
+ * code; an answer the caller already got (an expected outcome, an agent's
+ * mistake, a desktop call the desktop reports) becomes a Sentry Log.
  */
-function reportFailedAction(actionName: string, error: unknown, session: SessionState): void {
+function reportFailedAction(
+  actionName: string,
+  error: unknown,
+  session: SessionState,
+  callerReportsFailure: boolean,
+): void {
   if (isMovedAwayChatError(error)) return;
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
@@ -1974,16 +1981,22 @@ function reportFailedAction(actionName: string, error: unknown, session: Session
     logOnly("expected");
     return;
   }
-  // The desktop reports a failed call itself, with its IPC channel, so the
-  // brain's copy would be a second issue for the same failure.
-  if (isUserClientSession(session) && isDesktopClientName(session.clientName)) {
+  // A desktop window's call that the desktop reports itself, with its IPC
+  // channel (`ipcCallScope.ts`): the brain's copy would be a second issue.
+  // Calls the desktop's main process makes on its own carry no flag.
+  if (callerReportsFailure && mayUseUserOnlyActions(session)) {
     logOnly("desktop");
     return;
   }
   // An agent driving `ade` is answered with the error and fixes its call: a
   // closed tab, a device another lane owns, a note too long. Only a defect
-  // in ADE itself becomes an issue.
-  if (!isUserClientSession(session) && !isProgrammingError(error)) {
+  // in ADE itself becomes an issue. A terminal on another machine
+  // (`ade … --machine`) may be a person, whose CLI reports nothing.
+  const foreignCaller = parseForeignCallerSessionId(session.identity.chatSessionId);
+  const agentCaller = !isUserClientSession(session) && !(foreignCaller && foreignCaller.chatSessionId === null);
+  // A missing runtime service answers with `internalError`: ADE's fault, not the caller's.
+  const internalError = error instanceof JsonRpcError && error.code === JsonRpcErrorCode.internalError;
+  if (agentCaller && !internalError && !isProgrammingError(error)) {
     logOnly("agent");
     return;
   }
@@ -8856,6 +8869,7 @@ export function createAdeRpcRequestHandler(args: {
           actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
           error,
           session,
+          params.callerReportsFailure === true,
         );
         // An ADE coded error (a definitive cross-machine return refusal, …)
         // keeps its code across the wire so the caller can tell it apart;

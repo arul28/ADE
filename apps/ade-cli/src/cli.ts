@@ -10629,8 +10629,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "regenerateSessionMetadata",
           collectGenericObjectArgs(args, {
             ...(fields.length ? { fields } : {}),
-            // Like `note` and `ask`: the caller's own chat unless one is named.
-            sessionId: requireValue(sessionId ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null), "sessionId"),
+            // Like `note` and `ask`: the caller's own chat unless one is named
+            // (`--arg sessionId=…` still overrides this).
+            ...((sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim())
+              ? { sessionId: sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim() }
+              : {}),
           }),
         ),
       ],
@@ -13306,8 +13309,10 @@ function buildFilesPlan(args: string[]): CliPlan {
       steps: [listActionsStep("actions", "file")],
     };
   // A lane's workspace id is its lane id, so the shell's lane is the default.
+  // `--lane` is read once: reading it consumes it.
+  const laneId = readLaneId(args);
   const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
-    ?? readLaneId(args)
+    ?? laneId
     ?? (process.env.ADE_LANE_ID?.trim() || null);
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
@@ -13324,7 +13329,7 @@ function buildFilesPlan(args: string[]): CliPlan {
           "result",
           "file",
           "listWorkspaces",
-          collectGenericObjectArgs(args, { laneId: readLaneId(args) }),
+          collectGenericObjectArgs(args, { laneId }),
         ),
       ],
     };

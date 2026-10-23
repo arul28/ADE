@@ -6,7 +6,7 @@ import { applyMonacoTheme } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import { claimAppMenuCommands } from "../../lib/appMenuCommands";
 import { findScopeOwnsTarget, trackFindTargets } from "../../lib/findScope";
-import { loadMonaco } from "../files/v2/monacoLoader";
+import { loadMonaco } from "../../lib/monacoLoader";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;

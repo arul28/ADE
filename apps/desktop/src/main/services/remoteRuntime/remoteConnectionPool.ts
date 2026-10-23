@@ -56,6 +56,7 @@ import {
 } from "./attachmentUploadRoute";
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
+import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -945,6 +946,7 @@ export class RemoteConnectionPool {
         const value = await entry.client.call("ade/actions/call", {
           projectId,
           name: "list_ade_actions",
+          ...callerReportsFailureParam(),
           arguments: { domain: "all" },
         });
         return normalizeAdeActionRegistry(value);
@@ -989,6 +991,7 @@ export class RemoteConnectionPool {
     const params = {
       projectId,
       name: "run_ade_action",
+      ...callerReportsFailureParam(),
       arguments: {
         domain: request.domain,
         action: request.action,
@@ -1073,6 +1076,7 @@ export class RemoteConnectionPool {
     const value = await entry.client.call("ade/actions/call", {
       projectId,
       name: "stream_events",
+      ...callerReportsFailureParam(),
       arguments: {
         cursor: clampCursor(request.cursor),
         limit: clampLimit(request.limit),
