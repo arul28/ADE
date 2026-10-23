@@ -1052,6 +1052,50 @@ describe("adeRpcServer", () => {
     }
   });
 
+  // Who reports a failed action: an agent's mistake is an answer, a desktop
+  // window's call is reported by the desktop, everything else is an issue.
+  it.each([
+    ["an agent's mistake", { role: "agent", callerId: "chat-1", chatSessionId: "chat-1" }, "ade-cli", false, () => new Error("Browser tab not found: tab-1"), false],
+    ["an agent hitting an ADE defect", { role: "agent", callerId: "chat-1", chatSessionId: "chat-1" }, "ade-cli", false, () => new TypeError("Cannot read properties of undefined (reading 'id')"), true],
+    ["an agent hitting a machine out of files", { role: "agent", callerId: "chat-1", chatSessionId: "chat-1" }, "ade-cli", false, () => Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" }), true],
+    ["a person's terminal on another machine", { role: "agent", callerId: "remote:mac-mini:terminal", chatSessionId: "remote:mac-mini:terminal" }, "ade-agent-remote", false, () => new Error("Browser tab not found: tab-1"), true],
+    ["a desktop window's call the desktop reports", { role: "cto", callerId: "desktop" }, "ade-desktop-local", true, () => new Error("watcher exploded"), false],
+    ["a call the desktop's main process makes on its own", { role: "cto", callerId: "desktop" }, "ade-desktop-local", false, () => new Error("watcher exploded"), true],
+  ] as const)("a failed action from %s is an issue only when nobody else reports it", async (_label, identity, clientName, callerReportsFailure, makeError, isIssue) => {
+    const issues: unknown[] = [];
+    const logs: string[] = [];
+    connectSentry({
+      withScope(callback) {
+        callback({ setTag: () => undefined, setExtras: () => undefined, setFingerprint: () => undefined, setLevel: () => undefined });
+      },
+      captureException: (error) => { issues.push(error); },
+      addBreadcrumb: () => undefined,
+      logger: { warn: (message) => { logs.push(message); }, error: () => undefined },
+    });
+    try {
+      const { runtime } = createRuntime();
+      runtime.fileService = { watchWorkspace: vi.fn(async () => { throw makeError(); }) } as any;
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+      await initialize(handler, { ...identity }, { clientName, clientInfo: { name: clientName, version: "test" } });
+      const reply = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          ...(callerReportsFailure ? { callerReportsFailure: true } : {}),
+          arguments: { domain: "file", action: "watchWorkspace", args: { workspaceId: "ws-1" } },
+        },
+      }) as { ok?: boolean; isError?: boolean };
+
+      expect(reply.ok === false || reply.isError === true, "setup: the action failed").toBe(true);
+      expect(issues).toHaveLength(isIssue ? 1 : 0);
+      expect(logs.some((message) => message.startsWith("runtime_action.") && message.endsWith(".file.watchWorkspace"))).toBe(!isIssue);
+    } finally {
+      connectSentry(null as unknown as SentryApi);
+    }
+  });
+
   it("stops the file watches a connection still holds when that connection closes", async () => {
     const { runtime } = createRuntime();
     runtime.fileService = {

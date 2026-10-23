@@ -70,6 +70,7 @@ import {
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
+import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
@@ -340,6 +341,8 @@ function coalescedLocalRuntimeActionKey(
     arg: stableActionValue(request.arg),
     args: stableActionValue(request.args),
     argsList: stableActionValue(request.argsList),
+    // A call the desktop reports must not share a promise with one it does not.
+    callerReportsFailure: isInCapturedIpcCall(),
   });
 }
 
@@ -2279,6 +2282,7 @@ export class LocalRuntimeConnectionPool {
           {
             projectId: project.projectId,
             name: "run_ade_action",
+            ...callerReportsFailureParam(),
             arguments: {
               domain: request.domain,
               action: request.action,
@@ -2378,6 +2382,7 @@ export class LocalRuntimeConnectionPool {
     const value = await entry.client.call("ade/actions/call", {
       projectId: project.projectId,
       name: "list_ade_actions",
+      ...callerReportsFailureParam(),
       arguments: { domain: "all" },
     }, { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS });
     return normalizeAdeActionRegistry(value);
@@ -2394,6 +2399,7 @@ export class LocalRuntimeConnectionPool {
       {
         projectId: project.projectId,
         name: "stream_events",
+        ...callerReportsFailureParam(),
         arguments: {
           cursor: clampCursor(request.cursor),
           limit: clampLimit(request.limit),

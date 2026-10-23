@@ -27648,6 +27648,7 @@ export function createAgentChatService(args: {
   };
 
   const ensureManagedSession = (sessionId: string): ManagedChatSession => {
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("sessionId is required.");
     const existing = managedSessions.get(sessionId);
     if (existing) return existing;
 
@@ -70921,11 +70922,11 @@ export function createAgentChatService(args: {
           let cursor: string | undefined;
           do {
             if (signal?.aborted) break;
+            // A cursor carries its own order; OpenCode refuses the pair.
             const page = await client.message.list({
               sessionID: normalizedAgentId,
               limit: 100,
-              order: "asc",
-              ...(cursor ? { cursor } : {}),
+              ...(cursor ? { cursor } : { order: "asc" as const }),
             });
             messages.push(...page.data);
             cursor = page.cursor.next ?? undefined;

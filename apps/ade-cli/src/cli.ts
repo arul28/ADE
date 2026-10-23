@@ -2382,6 +2382,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Files
 
   File commands operate inside an ADE workspace id, usually a lane id.
+  --workspace defaults to --lane, else the shell's lane (ADE_LANE_ID).
 
     $ ade files workspaces --text                   List workspace roots
     $ ade files tree --workspace <lane> --path src  Show a workspace tree
@@ -2520,6 +2521,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
     $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+                                                    (--session <id>; defaults to $ADE_CHAT_SESSION_ID)
     $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
                                                     Also: ade chat update --title, ade lanes rename.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
@@ -10627,7 +10629,14 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "regenerateSessionMetadata",
-          withSession(fields.length ? { fields } : {}),
+          collectGenericObjectArgs(args, {
+            ...(fields.length ? { fields } : {}),
+            // Like `note` and `ask`: the caller's own chat unless one is named
+            // (`--arg sessionId=…` still overrides this).
+            ...((sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim())
+              ? { sessionId: sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim() }
+              : {}),
+          }),
         ),
       ],
     };
@@ -13301,7 +13310,12 @@ function buildFilesPlan(args: string[]): CliPlan {
       label: "file actions",
       steps: [listActionsStep("actions", "file")],
     };
-  const workspaceId = readValue(args, ["--workspace", "--workspace-id"]);
+  // A lane's workspace id is its lane id, so the shell's lane is the default.
+  // `--lane` is read once: reading it consumes it.
+  const laneId = readLaneId(args);
+  const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
+    ?? laneId
+    ?? (process.env.ADE_LANE_ID?.trim() || null);
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,
@@ -13317,7 +13331,7 @@ function buildFilesPlan(args: string[]): CliPlan {
           "result",
           "file",
           "listWorkspaces",
-          collectGenericObjectArgs(args, { laneId: readLaneId(args) }),
+          collectGenericObjectArgs(args, { laneId }),
         ),
       ],
     };

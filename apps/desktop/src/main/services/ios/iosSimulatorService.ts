@@ -178,6 +178,7 @@ import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaun
 import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
+import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 
 const execFile = promisify(execFileCallback);
 
@@ -188,6 +189,7 @@ const ADE_IOS_INSPECTOR_SNAPSHOT_PATH = path.join("Documents", "ade-inspector-el
 const IOS_APPLICATION_PRODUCT_TYPE = "com.apple.product-type.application";
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
 const TOOL_STATUS_CACHE_MS = 10_000;
+const SIMCTL_MISSING_RECHECK_MS = 60_000;
 const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
 const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
@@ -2666,10 +2668,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── per-lane devices ───────────────────────── */
 
+  // A Mac with the Command Line Tools but no Xcode has `xcrun` and no
+  // `simctl`. It has no simulators: answer that, and only look again once a
+  // minute so an Xcode install is noticed without a spawn on every poll.
+  let simctlMissingAt = 0;
   const listInstalledSimulators = async (): Promise<AppleInstalledSimulator[]> => {
     if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
-    const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "--json"], { timeoutMs: 30_000 });
-    return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
+    if (simctlMissingAt && Date.now() - simctlMissingAt < SIMCTL_MISSING_RECHECK_MS) return [];
+    try {
+      const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "--json"], { timeoutMs: 30_000 });
+      simctlMissingAt = 0;
+      return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
+    } catch (error) {
+      if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+      if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
+      simctlMissingAt = Date.now();
+      return [];
+    }
   };
 
   const laneDevices = createLaneDeviceRegistry({
@@ -2913,7 +2928,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       canTap: canControl,
       canType: canControl,
       canDrag: canControl,
-      canInspect: canControl || cachedCommandExists("xcrun"),
+      canInspect: canControl || (cachedCommandExists("xcrun") && !simctlMissingAt),
     };
   };
 

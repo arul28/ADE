@@ -618,8 +618,10 @@ export function createFileService({
     includeIgnored: boolean,
   ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
-  const resolveWorkspace = (workspaceId: string) =>
-    externalWorkspaces?.resolve(workspaceId) ?? laneService.resolveWorkspaceById(workspaceId);
+  const resolveWorkspace = (workspaceId: string) => {
+    if (typeof workspaceId !== "string" || !workspaceId.trim()) throw new Error("workspaceId is required.");
+    return externalWorkspaces?.resolve(workspaceId) ?? laneService.resolveWorkspaceById(workspaceId);
+  };
 
   const primeIgnoreCache = async (rootPath: string, relPaths: string[], includeIgnored: boolean): Promise<void> => {
     if (includeIgnored || relPaths.length === 0) return;

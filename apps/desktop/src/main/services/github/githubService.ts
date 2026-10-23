@@ -102,6 +102,7 @@ import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
 } from "./githubRestPagination";
+import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -2128,10 +2129,15 @@ export function createGithubService({
   });
 
   const listRepoAutolinks = async (owner: string, name: string): Promise<GitHubAutolink[]> => {
-    const data = await apiRequestAllPages<Record<string, unknown>>({
-      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-      query: { per_page: 100 },
-    });
+    let data: Record<string, unknown>[];
+    try {
+      data = await apiRequestAllPages<Record<string, unknown>>({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+        query: { per_page: 100 },
+      });
+    } catch (error) {
+      throw githubAutolinksAccessError(owner, name, error instanceof GithubCredentialAttemptError ? error.status : null) ?? error;
+    }
     return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
   };
 
