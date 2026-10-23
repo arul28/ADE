@@ -21,6 +21,10 @@ struct ConnectionSettingsView: View {
   /// The account's Fast permission, read over the sync host and written back
   /// from the Chat section. Off by default, like the desktop.
   @State private var fastModeEnabled = false
+  /// Orders the switch's writes and reads: an older read or a failed write must
+  /// not overwrite what the person chose last.
+  @State private var fastModeWriteGeneration = 0
+  @State private var fastModeSaving = false
 
   init(syncService: SyncService, pairingOnly: Bool = false) {
     self.syncService = syncService
@@ -58,7 +62,11 @@ struct ConnectionSettingsView: View {
       .adeNavigationGlass()
       .task {
         guard !pairingOnly else { return }
-        fastModeEnabled = await syncService.getFastModeEnabled()
+        let generation = fastModeWriteGeneration
+        let enabled = await syncService.getFastModeEnabled()
+        if generation == fastModeWriteGeneration {
+          fastModeEnabled = enabled
+        }
       }
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
@@ -211,12 +219,21 @@ struct ConnectionSettingsView: View {
               Toggle(isOn: Binding(
                 get: { fastModeEnabled },
                 set: { next in
+                  guard !fastModeSaving else { return }
+                  fastModeWriteGeneration += 1
+                  let generation = fastModeWriteGeneration
                   fastModeEnabled = next
+                  fastModeSaving = true
                   Task {
                     do {
                       try await syncService.setFastModeEnabled(next)
                     } catch {
-                      fastModeEnabled = !next
+                      if generation == fastModeWriteGeneration {
+                        fastModeEnabled = !next
+                      }
+                    }
+                    if generation == fastModeWriteGeneration {
+                      fastModeSaving = false
                     }
                   }
                 }
@@ -233,6 +250,7 @@ struct ConnectionSettingsView: View {
               }
               .toggleStyle(.switch)
               .tint(ADEColor.warning)
+              .disabled(fastModeSaving)
               .padding(ADEKit.inset)
             }
           }

@@ -3790,6 +3790,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [fastModeAllowed, setFastModeAllowed] = useState(false);
   const fastModeAllowedRef = useRef(false);
   fastModeAllowedRef.current = fastModeAllowed;
+  // Refreshing the account permission on the session poll keeps a phone-side
+  // change from leaving this terminal locked (or open) until reconnect. Once a
+  // minute is enough for a preference that changes rarely.
+  const lastFastModePolicyReadAtRef = useRef(0);
   // The model the TUI opened on; the machine's launch defaults replace it only
   // while it is still this one (see the connect path).
   const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
@@ -9751,6 +9755,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void refreshState({ hydrateHistory: false, includeLaneStatus: false }).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
+      if (Date.now() - lastFastModePolicyReadAtRef.current >= 60_000) {
+        lastFastModePolicyReadAtRef.current = Date.now();
+        void getLaunchDefaults(connection).then((defaults) => {
+          if (connectionRef.current !== connection) return;
+          const allowed = defaults?.fastModeAllowed === true;
+          setFastModeAllowed(allowed);
+          if (!allowed) {
+            setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+          }
+        }).catch(() => {
+          // Keep the last answer; the next poll retries.
+        });
+      }
     }, intervalMs);
     return () => clearInterval(timer);
   }, [chatRefreshPollActive, connection, refreshState]);
@@ -14274,6 +14291,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Launched chat, but refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`, "error");
       });
       setDraftChatMode(true);
+      // The launched chat took its Fast choice with it; the draft that remains
+      // for the next launch starts at Standard again.
+      setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
       addNotice(`Launched chat in ${lane?.name ?? "lane"}.`, "success");
       setBackgroundLaunchStatus((prev) => prev?.id === launchId ? null : prev);
     } catch (err) {

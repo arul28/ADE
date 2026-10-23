@@ -485,6 +485,18 @@ export async function verifyExplicitCursorModelSelection(
     return null;
   }
   if (selection.status !== "ok") {
+    // A default Standard (Fast simply off) that the model cannot express must
+    // not fail a cloud create the person asked for on other grounds: honor the
+    // reasoning/config they chose, and let Cursor's own catalog default for the
+    // tier stand. If Standard is the ONLY thing asked for, refusing is the
+    // honest answer: starting would bill Fast nobody requested.
+    const onlyDefaultStandard = selection.status === "partial"
+      && selection.unmet.length === 1
+      && selection.unmet[0] === "standard"
+      && input.fastModeExplicit !== true
+      && input.serviceTier == null
+      && Boolean(input.reasoningEffort?.trim() || hasCursorConfigValues(input.configValues));
+    if (onlyDefaultStandard) return selection.params;
     if (explicit) throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));
     if (selection.status === "partial" && selection.unmet.length === 1 && selection.unmet[0] === "standard") {
       throw new Error(describeCursorSdkModelSelectionFailure(input.modelSdkId, selection));

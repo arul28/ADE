@@ -29,6 +29,8 @@ let hydrateInFlight: Promise<void> | null = null;
  * stale answer over the optimistic value the person just chose.
  */
 let writeGeneration = 0;
+/** Writes currently between optimistic change and server answer. */
+let writesInFlight = 0;
 /**
  * True once the account API has answered (or a write landed through it). From
  * then on the account is the authority and a session's stamp may only tighten
@@ -59,6 +61,10 @@ export function subscribeFastModeEnabled(listener: () => void): () => void {
 
 /** Re-read the account row. Best-effort: an unavailable brain keeps the last answer. */
 export async function refreshFastModeEnabled(): Promise<void> {
+  // A read that starts while a write is in flight would see the old stored
+  // value and pass the generation check, replacing the choice under the
+  // person's finger. Skip; the next focus or boot reads the settled value.
+  if (writesInFlight > 0) return;
   const generationAtStart = writeGeneration;
   const apply = (next: boolean) => {
     if (generationAtStart !== writeGeneration) return;
@@ -108,40 +114,45 @@ export async function setFastModeEnabled(next: boolean): Promise<boolean> {
   const previous = enabled;
   const generation = ++writeGeneration;
   writeLocal(next);
+  writesInFlight += 1;
   const revert = () => {
     if (generation === writeGeneration) writeLocal(previous);
   };
-  const host = window.ade?.agentChat?.fastModePolicy;
-  if (host) {
-    try {
-      await host.set(next);
-      if (generation === writeGeneration) accountHydrated = true;
-      return true;
-    } catch {
+  try {
+    const host = window.ade?.agentChat?.fastModePolicy;
+    if (host) {
+      try {
+        await host.set(next);
+        if (generation === writeGeneration) accountHydrated = true;
+        return true;
+      } catch {
+        revert();
+        return false;
+      }
+    }
+    const api = window.ade?.accountSettings;
+    if (!api) {
       revert();
       return false;
     }
-  }
-  const api = window.ade?.accountSettings;
-  if (!api) {
+    try {
+      const result = await api.set({
+        scope: FAST_MODE_SETTING_SCOPE,
+        key: FAST_MODE_SETTING_KEY,
+        value: next,
+      });
+      if (result.ok) {
+        if (generation === writeGeneration) accountHydrated = true;
+        return true;
+      }
+    } catch {
+      // Fall through to the revert.
+    }
     revert();
     return false;
+  } finally {
+    writesInFlight -= 1;
   }
-  try {
-    const result = await api.set({
-      scope: FAST_MODE_SETTING_SCOPE,
-      key: FAST_MODE_SETTING_KEY,
-      value: next,
-    });
-    if (result.ok) {
-      if (generation === writeGeneration) accountHydrated = true;
-      return true;
-    }
-  } catch {
-    // Fall through to the revert.
-  }
-  revert();
-  return false;
 }
 
 /** Read-only subscription. The boot effect and the Settings row do the I/O. */

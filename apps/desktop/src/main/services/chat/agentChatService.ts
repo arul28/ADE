@@ -47660,7 +47660,7 @@ export function createAgentChatService(args: {
    * one); tests and embedders have none and keep Fast allowed, so their
    * behaviour is unchanged.
    */
-  const fastModeAllowed = ((): (() => boolean) => {
+  const fastModeAllowed = ((): ((options?: { fresh?: boolean }) => boolean) => {
     // Parsing the account settings cache on every turn would be wasteful: the
     // file carries every synced preference. Two cheap guards instead: a one
     // second value cache (a Work list builds hundreds of summaries, and none of
@@ -47671,12 +47671,14 @@ export function createAgentChatService(args: {
     let cached: { mtimeMs: number; size: number; value: boolean } | null = null;
     let cachedAt = 0;
     let cachedValue = false;
-    return () => {
+    return (options?: { fresh?: boolean }) => {
       if (args.readFastModeEnabled) return args.readFastModeEnabled() === true;
       const home = args.machineAdeHome?.trim();
       if (!home) return true;
       const now = Date.now();
-      if (now - cachedAt < 1_000) return cachedValue;
+      // `fresh` is for a writer that just changed the setting: a one-second
+      // cache must not make revocation look like it did not happen.
+      if (!options?.fresh && now - cachedAt < 1_000) return cachedValue;
       const file = path.join(home, "account-settings.json");
       try {
         const stat = fs.statSync(file);
@@ -70021,7 +70023,7 @@ export function createAgentChatService(args: {
    * a re-enable cannot revive a choice nobody re-asked for.
    */
   const applyFastModePolicy = (): void => {
-    if (fastModeAllowed()) return;
+    if (fastModeAllowed({ fresh: true })) return;
     for (const managed of managedSessions.values()) {
       if (managed.session.fastMode !== true) continue;
       delete managed.session.fastMode;

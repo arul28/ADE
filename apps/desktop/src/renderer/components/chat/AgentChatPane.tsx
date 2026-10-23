@@ -3041,7 +3041,10 @@ function buildLastLaunchConfig(
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
     fastMode: false,
-    cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
+    // Fast is not remembered across chats, and neither is the cloud tier that
+    // rides with it: a Cursor Cloud create from remembered state must ask for
+    // Standard, or Cursor's own fast default would bill the tier.
+    cursorCloudServiceTier: null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt,
@@ -3094,7 +3097,9 @@ function normalizeStoredLaunchConfig(
       ? value.reasoningEffort.trim()
       : null,
     fastMode: false,
-    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
+    // The remembered launch memory no longer carries a cloud tier: a new chat
+    // asks for Standard and the per-chat choice is the only way to Fast.
+    cursorCloudServiceTier: null,
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
@@ -3350,7 +3355,9 @@ function normalizeStoredComposerDraft(
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode,
     ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
-    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
+    // A cloud fast tier only belongs to a draft whose Fast is on. A draft with
+    // Fast off must not carry a stored "fast" tier forward.
+    cursorCloudServiceTier: fastMode ? readStoredCursorCloudServiceTier(value) : null,
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     attachments,
@@ -5024,6 +5031,11 @@ export function AgentChatPane({
   const fastModeAllowedForComposer = selectedSession
     ? (selectedSession.fastModeAllowed ?? true)
     : accountFastModeEnabled;
+  // A ref so permission changes do not change applyLaunchConfigToComposer's
+  // identity: that callback gates draft-content hydration, and a new identity
+  // there re-reads an older stored snapshot over pending edits.
+  const fastModeAllowedForComposerRef = useRef(fastModeAllowedForComposer);
+  fastModeAllowedForComposerRef.current = fastModeAllowedForComposer;
   const goTo = useGoTo();
   const openFastModeSetting = useCallback(() => {
     // The same "show me" path ADE Tips uses: land on the row, then ring it.
@@ -7002,6 +7014,7 @@ export function AgentChatPane({
     // the composer machine changes. It is a dependency of the composer-draft
     // hydration effect, which would otherwise re-read the persisted snapshot
     // and clobber live typing / attachments.
+    const preserveFastChoice = options?.preserveFast === true && fastModeAllowedForComposerRef.current;
     const reconciledControls = reconcileDraftModelControls(
       resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current),
       // Fast is a per-chat choice. A NEW chat starts Standard; a draft or a
@@ -7010,7 +7023,7 @@ export function AgentChatPane({
       // which case restoring it would send a request the brain refuses.
       {
         reasoningEffort: config.reasoningEffort,
-        fastMode: options?.preserveFast === true && fastModeAllowedForComposer ? config.fastMode : false,
+        fastMode: preserveFastChoice ? config.fastMode : false,
       },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
@@ -7018,7 +7031,9 @@ export function AgentChatPane({
       reconciledControls.fastMode,
       reconciledControls.fastMode ? config.fastTier ?? null : null,
     );
-    setCursorCloudServiceTier(config.cursorCloudServiceTier ?? null);
+    // The Cursor Cloud tier is part of the same Fast choice: a new chat, or a
+    // draft whose account has since forbidden Fast, asks for no fast tier.
+    setCursorCloudServiceTier(preserveFastChoice ? config.cursorCloudServiceTier ?? null : null);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -7033,7 +7048,7 @@ export function AgentChatPane({
     setMusePermissionMode(config.controls.musePermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [fastModeAllowedForComposer, setFastModeState]);
+  }, [setFastModeState]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
