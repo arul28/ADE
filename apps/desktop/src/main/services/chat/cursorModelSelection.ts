@@ -327,9 +327,10 @@ function resolveCursorSdkModelSelectionFromRows(
 /**
  * Whether the selection names anything only the catalog can turn into params.
  *
- * `fastMode: false` asks for the standard tier, so it counts. A chat never
- * passes it: `cursorSdkSelectionInputForSession` reads a chat's stored "not
- * fast" as no tier opinion at all.
+ * `fastMode: false` asks for the standard tier, so it counts. Every Cursor chat
+ * now passes it: a chat whose Fast is off has to say so, because Cursor's own
+ * catalog default is not standard (Composer 2.5 defaults to Fast, at roughly
+ * six times the price).
  */
 export function hasExplicitCursorSelection(input: CursorSdkModelSelectionInput): boolean {
   return Boolean(input.reasoningEffort?.trim())
@@ -351,9 +352,12 @@ export function cursorSdkSelectionInputForSession(
   return {
     modelSdkId,
     reasoningEffort: session.reasoningEffort,
-    // A chat stores "not fast" as `false` or as no value. Neither is a request
-    // for the standard tier, so Cursor's tier stays unset unless Fast is on.
-    fastMode: session.fastMode === true ? true : null,
+    // A chat whose Fast is off asks for the standard tier. Sending nothing
+    // left the tier to Cursor's catalog default, and Cursor's default is not
+    // always standard: Composer 2.5 ships Fast on at about six times the price,
+    // so "Fast off" in ADE was billing Fast. A model whose row declares no tier
+    // parameter ignores the request without a notice.
+    fastMode: session.fastMode === true,
     serviceTier: session.cursorCloudServiceTier ?? null,
     configValues: session.cursorConfigValues ?? null,
   };

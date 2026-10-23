@@ -1,3 +1,4 @@
+import { Sparkle } from "@phosphor-icons/react";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useChatConfigToggle } from "./useChatConfigToggle";
 
@@ -11,7 +12,13 @@ export function PromptSuggestionsSection() {
   if (onWeb) return null;
 
   return (
-    <ModernSection group="Composer" title="Next prompt" hint="A one-line guess at your next message in the empty prompt box. Tab fills it in.">
+    <ModernSection
+      group="Composer"
+      title="Next prompt"
+      hint="A one-line guess at your next message in the empty prompt box. Tab fills it in."
+      icon={<Sparkle size={16} weight="bold" />}
+      tone="teal"
+    >
       <ModernRows>
         <ModernRow
           anchor="prompt-suggestions"

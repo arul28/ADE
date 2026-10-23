@@ -1,3 +1,4 @@
+import { PuzzlePiece } from "@phosphor-icons/react";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useChatConfigToggle } from "./useChatConfigToggle";
 import "./ChatSection.css";
@@ -47,7 +48,13 @@ export function ClaudeModsSection() {
   if (onWeb) return null;
 
   return (
-    <ModernSection group="Claude mods" title="Claude mods" hint="Claude Code plugins that draw in the chat.">
+    <ModernSection
+      group="Agent behavior"
+      title="Claude mods"
+      hint="Claude Code plugins that draw in the chat."
+      icon={<PuzzlePiece size={16} weight="bold" />}
+      tone="orange"
+    >
       <ModernRows>
         <ModernRow
           anchor="claude-mods"

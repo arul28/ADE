@@ -308,6 +308,13 @@ import { IssueTrackerError } from "../issueTrackers/issueTrackerError";
 import type { IssueTrackerService } from "../../../shared/types/issueTrackers";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
+import { accountSettingsCacheValue, readAccountSettingsCacheRows } from "../account/accountSettingsCacheFile";
+import {
+  FAST_MODE_DISABLED_MESSAGE,
+  FAST_MODE_SETTING_KEY,
+  FAST_MODE_SETTING_SCOPE,
+  isFastModeEnabledSetting,
+} from "../../../shared/fastModePolicy";
 import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
 import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
@@ -6333,7 +6340,7 @@ function codexDescriptorOffersUltrafast(
   return null;
 }
 
-function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier } {
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier | null } {
   if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
     // A stored Ultrafast on a model whose catalog lacks it runs as plain Fast.
     return {
@@ -6342,18 +6349,16 @@ function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexS
         : "fast",
     };
   }
-  // Verified against a live app-server on thread/start: omitting the key inherits
-  // the user's config.toml (service_tier = "priority" -> "priority"; unset -> no
-  // tier), while an explicit null reports "default" in both cases. null is
-  // therefore a real downgrade, not a neutral "no opinion", and ADE has no UI
-  // showing service tier for the user to notice or undo it.
+  // A chat whose Fast is off asks for the standard tier explicitly.
   //
-  // Fast-off cannot mean "force default" either: fastMode is persisted only when
-  // true and rehydrated as `persisted?.fastMode === true`, so `false` is
-  // indistinguishable from never-set. Omitting is the only honest encoding of
-  // "ADE is not forcing a tier" — the app-server re-resolves per request, so a
-  // turn sent after the toggle goes off inherits the config again.
-  return {};
+  // Omitting the key made ADE defer to the user's config.toml, which may say
+  // `service_tier = "fast"` — so a chat whose control read Standard could run
+  // Fast and bill for it. That is the silent spend this exists to stop. An
+  // explicit null reports "default" (verified against a live app-server on
+  // thread/start and turn/start), which is the only encoding that means
+  // "standard" rather than "no opinion". A user who wants Fast by default can
+  // turn it on for the chat or for the account; the chat control stays honest.
+  return { serviceTier: null };
 }
 
 type CodexThreadConfigOptions = {
@@ -11162,6 +11167,13 @@ export function createAgentChatService(args: {
    * (tests, embedders) keeps them in memory only, never in someone's real home.
    */
   machineAdeHome?: string | null;
+  /**
+   * Test/embedder override for the account's Fast-mode permission. Production
+   * omits it and reads the account settings cache under `machineAdeHome`;
+   * without a home (tests, embedders) Fast stays allowed so their behaviour is
+   * unchanged. An explicit false forbids it.
+   */
+  readFastModeEnabled?: (() => boolean) | null;
   /**
    * The process's Muse quota store, shared with the usage tracker so the header
    * meter reads what this service's hosts report. Absent (tests) gets a private one.
@@ -28767,6 +28779,12 @@ export function createAgentChatService(args: {
       if (!supported) {
         delete managed.session.fastMode;
         completeInlineCodexSlash("Fast mode is not available for this model.");
+        return;
+      }
+      // The account gate: turning it off still works, turning it on does not.
+      if (!fastModeAllowed()
+        && (fastArgs === "on" || ((!fastArgs || fastArgs === "toggle") && !current))) {
+        completeInlineCodexSlash(FAST_MODE_DISABLED_MESSAGE);
         return;
       }
       if (!fastArgs || fastArgs === "toggle") {
@@ -47621,6 +47639,63 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * Whether this ADE account allows Fast mode at all.
+   *
+   * Read from the account settings cache under the machine ADE home on every
+   * question — a launch, a mode update, an inline `/fast`, a turn start — so the
+   * Settings toggle takes effect on the next action without a restart. The file
+   * is the one `accountSettingsStore` writes on every set and every sync pull.
+   *
+   * Absent or unreadable means OFF, which is the product default. A home is
+   * always present in production (the desktop main and the brain both pass
+   * one); tests and embedders have none and keep Fast allowed, so their
+   * behaviour is unchanged.
+   */
+  const fastModeAllowed = ((): (() => boolean) => {
+    // Parsing the account settings cache on every turn would be wasteful: the
+    // file carries every synced preference. Two cheap guards instead: a one
+    // second value cache (a Work list builds hundreds of summaries, and none of
+    // them should stat the disk), and an mtime/size check once that expires so
+    // the Settings toggle lands on the next action. The desktop main and the
+    // brain both read this same file, which is why neither needs the account
+    // store plumbed into its chat service.
+    let cached: { mtimeMs: number; size: number; value: boolean } | null = null;
+    let cachedAt = 0;
+    let cachedValue = false;
+    return () => {
+      if (args.readFastModeEnabled) return args.readFastModeEnabled() === true;
+      const home = args.machineAdeHome?.trim();
+      if (!home) return true;
+      const now = Date.now();
+      if (now - cachedAt < 1_000) return cachedValue;
+      const file = path.join(home, "account-settings.json");
+      try {
+        const stat = fs.statSync(file);
+        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+          cachedAt = now;
+          cachedValue = cached.value;
+          return cached.value;
+        }
+        const rows = readAccountSettingsCacheRows(home);
+        const value = rows
+          ? isFastModeEnabledSetting(
+              accountSettingsCacheValue(rows, FAST_MODE_SETTING_SCOPE, FAST_MODE_SETTING_KEY),
+            )
+          : false;
+        cached = { mtimeMs: stat.mtimeMs, size: stat.size, value };
+        cachedAt = now;
+        cachedValue = value;
+        return value;
+      } catch {
+        cached = null;
+        cachedAt = now;
+        cachedValue = false;
+        return false;
+      }
+    };
+  })();
+
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
     idempotencyKey?: string;
     /**
@@ -47704,6 +47779,21 @@ export function createAgentChatService(args: {
       requestedCursorConfigValues,
     );
     const requestedFastMode = foldedRequestedCursorFast.fastMode;
+    // The account gate. Checked before anything is written, so a refused launch
+    // leaves no session row, lane, or transcript behind. The composer never
+    // sends this while the chip is locked; a script or an older client gets a
+    // plain sentence instead of a silent downgrade.
+    //
+    // An unattended automation is the one exception: a rule left over from when
+    // Fast was allowed must not fail its 3am run. It runs Standard, and the
+    // chat's own Fast control reports Off like every other chat.
+    if (requestedFastMode === true && !fastModeAllowed()) {
+      if (!automationId?.trim()) throw new Error(FAST_MODE_DISABLED_MESSAGE);
+      logger.info("agent_chat.fast_mode_forbidden_automation", {
+        automationId,
+        automationRunId: automationRunId ?? null,
+      });
+    }
     const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
     // Passive lineage: the launching agent chat, recorded only when there is no
     // orchestration parent to carry the relation (the parent already does).
@@ -47960,7 +48050,8 @@ export function createAgentChatService(args: {
     // Fast mode is a user setting, not a model-selection side effect. Keep the
     // raw preference on the session even when the selected runtime cannot use
     // a fast service tier; runtime request builders decide whether to send it.
-    const initialFastMode = requestedFastMode === true;
+    // The account gate wins: a forbidden Fast is never stored on a new session.
+    const initialFastMode = requestedFastMode === true && fastModeAllowed();
     const initialCursorCloudServiceTier = effectiveProvider === "cursor"
       ? normalizeCursorCloudServiceTier(requestedCursorCloudServiceTier)
       : undefined;
@@ -48927,6 +49018,16 @@ export function createAgentChatService(args: {
     // A native fork resumes the source's provider thread, which lives in the
     // source account's config home, so the fork must run as that same account.
     const forkInstanceId = nativeFork ? resolveSessionInstance(managed)?.id : undefined;
+    // A handoff starts a new chat, so it starts at Standard unless the caller
+    // chose Fast for the new chat. Inheriting the source chat's Fast made a
+    // one-off Fast turn follow the work into every handoff, fork and
+    // automation without anyone asking again.
+    const handoffFastMode = args.fastMode ?? args.codexFastMode ?? false;
+    const handoffFastTier = handoffFastMode
+      ? args.fastTier !== undefined
+        ? args.fastTier === "ultrafast" ? "ultrafast" as const : null
+        : managed.session.fastTier === "ultrafast" ? "ultrafast" as const : null
+      : null;
     // The caller's runtime actor stays for the permission ceiling. A handoff
     // continues the source chat, so it passes no lineage field and records none.
     const created = await createSessionInternal({
@@ -48938,14 +49039,8 @@ export function createAgentChatService(args: {
       ...(forkInstanceId ? { instanceId: forkInstanceId } : {}),
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
-      // The tier the handoff names; a handoff that names neither Fast nor the
-      // tier keeps the source chat's.
-      ...((args.fastTier !== undefined
-        ? args.fastTier === "ultrafast"
-        : args.fastMode === undefined && args.codexFastMode === undefined && managed.session.fastTier === "ultrafast")
-        ? { fastTier: "ultrafast" as const }
-        : {}),
+      fastMode: handoffFastMode,
+      ...(handoffFastTier ? { fastTier: handoffFastTier } : {}),
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -52701,6 +52796,14 @@ export function createAgentChatService(args: {
     rerunToken?: symbol;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    // The account gate, re-read at every turn start. A chat that was already on
+    // Fast when the account switched the permission off runs Standard from here,
+    // and forgets the choice so turning the permission back on does not silently
+    // revive it. Every turn start comes through here.
+    if (managed.session.fastMode === true && !fastModeAllowed()) {
+      delete managed.session.fastMode;
+      delete managed.session.fastTier;
+    }
     // Every turn start comes through here: a send, a steer, a scheduled wake,
     // the Codex goal follow-up, `runSessionTurn`.
     assertNoRerunInFlight(managed, rerunToken);
@@ -59328,6 +59431,10 @@ export function createAgentChatService(args: {
     if (!supported) {
       delete managed.session.fastMode;
       message = "Fast mode is not available for this model.";
+    } else if (!fastModeAllowed()
+      && (fastArgs === "on" || ((!fastArgs || fastArgs === "toggle") && !current))) {
+      // The account gate: turning it off still works, turning it on does not.
+      message = FAST_MODE_DISABLED_MESSAGE;
     } else if (!fastArgs || fastArgs === "toggle") {
       const enabled = !current;
       managed.session.fastMode = enabled;
@@ -64105,10 +64212,18 @@ export function createAgentChatService(args: {
       title: row.title ?? null,
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
-      fastMode: (liveSession?.fastMode ?? persisted?.fastMode) === true,
-      ...((liveSession ? liveSession.fastMode === true && liveSession.fastTier === "ultrafast" : persisted?.fastMode === true && persisted.fastTier === "ultrafast")
+      // Effective, not stored: an account that forbids Fast reports Standard
+      // even if an older row still carries the bit, so every client's chip and
+      // every remote read agree with what the next turn will actually do.
+      fastMode: fastModeAllowed() && (liveSession?.fastMode ?? persisted?.fastMode) === true,
+      ...(fastModeAllowed()
+        && (liveSession ? liveSession.fastMode === true && liveSession.fastTier === "ultrafast" : persisted?.fastMode === true && persisted.fastTier === "ultrafast")
         ? { fastTier: "ultrafast" as const }
         : {}),
+      // The owning brain's answer to "may this account use Fast at all".
+      // Absent on an older host, which cannot enforce it; clients treat absence
+      // as allowed rather than locking a control the host would accept.
+      fastModeAllowed: fastModeAllowed(),
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
       ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
@@ -69453,7 +69568,11 @@ export function createAgentChatService(args: {
     }
 
     if (fastMode !== undefined) {
-      if (normalizeFastMode(fastMode)) {
+      // A mode update is idempotent and often comes from a client that was
+      // open before the account changed, so a forbidden Fast is dropped rather
+      // than thrown. The summary then reports the effective Standard and every
+      // client's chip renders locked.
+      if (normalizeFastMode(fastMode) && fastModeAllowed()) {
         managed.session.fastMode = true;
       } else {
         delete managed.session.fastMode;
@@ -69876,7 +69995,15 @@ export function createAgentChatService(args: {
     return session;
   };
 
-  const getLaunchDefaults = (): AgentChatLaunchDefaults | null => launchDefaults.get();
+  const getLaunchDefaults = (): AgentChatLaunchDefaults | null => {
+    const defaults = launchDefaults.get();
+    if (!defaults) return null;
+    // Every client that opens a new chat reads this, so the account's Fast
+    // permission travels with the defaults even on a phone that has no
+    // settings screen for it. `fastMode` itself is always false (the server
+    // writer guarantees it); the permission is a separate answer.
+    return { ...defaults, fastMode: false, fastModeAllowed: fastModeAllowed() };
+  };
 
   /**
    * Explicitly pre-warm a provider query for an existing chat session.

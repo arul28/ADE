@@ -1,5 +1,5 @@
 import { useEffect, useState, type ElementType, type ReactNode } from "react";
-import { CheckCircle, Command, Gauge, HandWaving, Smiley, Wallet } from "@phosphor-icons/react";
+import { Brain, CheckCircle, Command, Gauge, HandWaving, Smiley, Wallet } from "@phosphor-icons/react";
 import type { AiChatConfig } from "../../../shared/types";
 import { JEV_GROUP_CONFIG_KEY } from "../../../shared/jevSettings";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
@@ -108,7 +108,13 @@ export function SmartDecisionsSection() {
       : "ADE asks the small Jev model quick questions, for example whether a finished turn asked you something. It's free through OpenCode, with no sign-in; when that day's free allowance is out, ADE's bonus answers for signed-in ADE accounts. When Jev is slow or unavailable, ADE's built-in rules decide.";
 
   return (
-    <ModernSection group="Smart decisions" title="Smart decisions" hint="Quick calls ADE makes about your chats and prompts.">
+    <ModernSection
+      group="Agent behavior"
+      title="Smart decisions"
+      hint="Quick calls ADE makes about your chats and prompts."
+      icon={<Brain size={16} weight="bold" />}
+      tone="teal"
+    >
       <ModernRows>
         <ModernRow
           anchor="smart-decisions"

@@ -2578,6 +2578,8 @@ export type SyncRemoteCommandAction =
   | "chat.mcpAppRequest"
   | "chat.getParallelLaunchState"
   | "chat.setParallelLaunchState"
+  | "chat.getFastModeEnabled"
+  | "chat.setFastModeEnabled"
   | "chat.handoff"
   | "chat.prepareCrossMachineHandoff"
   | "chat.validateCrossMachineSource"

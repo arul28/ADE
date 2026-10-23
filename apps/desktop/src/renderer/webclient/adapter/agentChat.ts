@@ -256,6 +256,16 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
+    fastModePolicy: {
+      get: async () => {
+        const result = await call<{ enabled?: boolean } | null>("chat.getFastModeEnabled", {}, null);
+        return result?.enabled === true;
+      },
+      set: async (enabled: boolean) => {
+        await call("chat.setFastModeEnabled", { enabled }, undefined, false);
+        return enabled;
+      },
+    },
     drafts: {
       list: async (pin?: RuntimePinArg) => {
         guardPin("drafts.list", pin);

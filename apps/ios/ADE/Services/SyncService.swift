@@ -15750,6 +15750,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The account's Fast permission, over the sync host. The phone reads it with
+  /// the launch defaults too; this is the write path behind Settings › Chat.
+  func getFastModeEnabled() async -> Bool {
+    guard supportsRemoteAction("chat.getFastModeEnabled") else { return false }
+    let raw = try? await sendCommand(action: "chat.getFastModeEnabled", args: [:])
+    return (raw as? [String: Any])?["enabled"] as? Bool == true
+  }
+
+  func setFastModeEnabled(_ enabled: Bool) async throws {
+    _ = try await sendCommand(
+      action: "chat.setFastModeEnabled",
+      args: ["enabled": enabled],
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
   func moveChatSteer(sessionId: String, steerId: String, toIndex: Int) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(

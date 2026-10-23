@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { SettingsRowIcon, type SettingsTone } from "./SettingsRows";
 import "./settingsModern.css";
 
 /**
@@ -22,6 +23,8 @@ export function ModernSection({
   anchor,
   title,
   hint,
+  icon,
+  tone = "accent",
   actions,
   children,
 }: {
@@ -29,15 +32,21 @@ export function ModernSection({
   anchor?: string;
   title: string;
   hint?: ReactNode;
+  /** A tinted glyph before the heading, so a long page scans by shape. */
+  icon?: ReactNode;
+  tone?: SettingsTone | string;
   actions?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section data-settings-group={group} data-settings-anchor={anchor} id={anchor} className="ade-ap-section">
       <header className="ade-ap-head">
-        <div style={{ minWidth: 0 }}>
-          <h2>{title}</h2>
-          {hint ? <p>{hint}</p> : null}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          {icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null}
+          <div style={{ minWidth: 0 }}>
+            <h2>{title}</h2>
+            {hint ? <p>{hint}</p> : null}
+          </div>
         </div>
         {actions ? <div className="ade-ap-actions">{actions}</div> : null}
       </header>
@@ -54,20 +63,28 @@ export function ModernRow({
   anchor,
   title,
   hint,
+  icon,
+  tone = "accent",
   control,
   children,
 }: {
   anchor?: string;
   title: ReactNode;
   hint?: ReactNode;
+  /** A small tinted glyph before the title; omit on a section's only row when the section already carries one. */
+  icon?: ReactNode;
+  tone?: SettingsTone | string;
   control?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="ade-ap-rowcard" id={anchor} data-settings-anchor={anchor} style={children ? { flexWrap: "wrap" } : undefined}>
-      <div style={{ minWidth: 0, flex: "1 1 240px" }}>
-        <div className="ade-ap-rowtitle">{title}</div>
-        {hint ? <div className="ade-ap-rowhint">{hint}</div> : null}
+      <div style={{ minWidth: 0, flex: "1 1 240px", display: "flex", alignItems: "flex-start", gap: 10 }}>
+        {icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null}
+        <div style={{ minWidth: 0 }}>
+          <div className="ade-ap-rowtitle">{title}</div>
+          {hint ? <div className="ade-ap-rowhint">{hint}</div> : null}
+        </div>
       </div>
       {control ? <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>{control}</div> : null}
       {children ? <div style={{ flex: "1 0 100%", minWidth: 0 }}>{children}</div> : null}

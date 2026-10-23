@@ -30,13 +30,20 @@ enum WorkComposerPreferences {
 
   /// The most recent selection, or nil if the user has not started or changed a
   /// chat yet on this device.
+  ///
+  /// Fast is never restored: it belongs to one chat, and carrying it here made
+  /// a single Fast turn start every later New Chat on this device Fast. A
+  /// record written by an older build is decoded but its Fast bit is dropped.
   static func load() -> Selection? {
     guard let data = defaults.data(forKey: storageKey) else { return nil }
-    return try? JSONDecoder().decode(Selection.self, from: data)
+    guard var selection = try? JSONDecoder().decode(Selection.self, from: data) else { return nil }
+    selection.codexFastMode = false
+    return selection
   }
 
   /// Persists the full selection. Ignored when provider or model are blank so a
-  /// half-initialized composer can never clobber a good record.
+  /// half-initialized composer can never clobber a good record. Fast is stored
+  /// as off on purpose; see `load()`.
   static func save(_ selection: Selection) {
     let provider = selection.provider.trimmingCharacters(in: .whitespacesAndNewlines)
     let modelId = selection.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,6 +51,7 @@ enum WorkComposerPreferences {
     var normalized = selection
     normalized.provider = provider
     normalized.modelId = modelId
+    normalized.codexFastMode = false
     guard let data = try? JSONEncoder().encode(normalized) else { return }
     defaults.set(data, forKey: storageKey)
   }

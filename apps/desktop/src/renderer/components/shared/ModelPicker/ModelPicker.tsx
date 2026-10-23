@@ -137,6 +137,15 @@ export type ModelPickerProps = {
    * selected row's chip shows the reason and cannot turn Fast on.
    */
   fastModeUnavailableReason?: string | null;
+  /**
+   * Whether this ADE account allows Fast at all. False keeps the selector's
+   * Fast half out of the popover and renders a muted lightning beside the
+   * trigger that leads to Settings instead of turning anything on. Absent means
+   * allowed, which is what older surfaces and older hosts assume.
+   */
+  fastModeAllowed?: boolean;
+  /** Where the locked lightning goes: the Fast-mode row in Settings. */
+  onFastModeLocked?: () => void;
   /** Cursor Cloud's nullable three-state service-tier control. */
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
@@ -197,6 +206,8 @@ export const ModelPicker = memo(function ModelPicker({
   onFastModeToggle,
   fastModeSupported: fastModeSupportedProp,
   fastModeUnavailableReason = null,
+  fastModeAllowed = true,
+  onFastModeLocked,
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
@@ -478,12 +489,15 @@ export const ModelPicker = memo(function ModelPicker({
   // Two modes, one bit. `onFastModeChange` means the picker owns fast mode
   // (per-row affordance + trigger suffix); the deprecated `onFastModeToggle`
   // keeps the old sibling chip alive for surfaces that have not migrated yet.
-  const fastModeOn = fastMode ?? fastModeActive ?? false;
+  // A locked account reports Fast off no matter what a stored session says:
+  // the brain will not send the tier, so drawing it as on would be a lie.
+  const fastModeOn = fastModeAllowed ? (fastMode ?? fastModeActive ?? false) : false;
   // Fast that cannot run is not shown as the selection's mode.
   const fastModeSupported = fastModeUnavailableReason ? false : fastModeSupportedProp;
-  const legacyFastChip =!onFastModeChange && typeof onFastModeToggle === "function";
+  const legacyFastChip = fastModeAllowed && !onFastModeChange && typeof onFastModeToggle === "function";
   const legacyFastSupported = legacyFastChip
     && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
+  const lockedFastSupported = fastModeSupported ?? modelSupportsFastMode(selectedModel);
   const serviceTierSupported = serviceTierMode
     && (modelSupportsServiceTier(selectedModel, "fast") || modelSupportsServiceTier(selectedModel, "standard"));
 
@@ -558,7 +572,7 @@ export const ModelPicker = memo(function ModelPicker({
                 ultrafastEnabled={fastTier !== undefined}
                 effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
-                {...(!serviceTierMode && onFastModeChange ? { onFastModeChange } : {})}
+                {...(!serviceTierMode && onFastModeChange && fastModeAllowed ? { onFastModeChange } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
@@ -584,6 +598,25 @@ export const ModelPicker = memo(function ModelPicker({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
+      {!fastModeAllowed && lockedFastSupported && onFastModeLocked ? (
+        <button
+          type="button"
+          data-model-picker-fast-locked="true"
+          aria-label="Fast mode is off for your account. Open Settings to turn it on."
+          title="Fast mode is off for your account. Click to turn it on."
+          onClick={onFastModeLocked}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center rounded-md border font-sans font-semibold transition-colors",
+            compact
+              ? "ade-chat-composer-fast-toggle h-6 gap-0.5 px-1.5 text-[9px]"
+              : "h-8 gap-1 px-2 text-[11px]",
+            "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/45 hover:border-fg/[0.14] hover:bg-fg/[0.05] hover:text-muted-fg/75",
+          )}
+        >
+          <Lightning size={compact ? 10 : 13} weight="regular" />
+          <span className={cn(compact ? "ade-chat-composer-fast-label" : undefined)}>Fast</span>
+        </button>
+      ) : null}
       {legacyFastSupported ? (
         <LegacyFastModeButton
           active={fastModeOn}

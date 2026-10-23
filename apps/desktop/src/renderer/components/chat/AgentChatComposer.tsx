@@ -2337,6 +2337,9 @@ function AgentChatComposerImpl({
   effectiveReasoningEffort,
   fastMode = false,
   fastTier = null,
+  /** False locks Fast for this account: no Fast selection, and the lightning leads to Settings. */
+  fastModeAllowed = true,
+  onFastModeLocked,
   effectiveFastTier = null,
   cursorCloudServiceTier = null,
   usageViewModel = null,
@@ -2543,6 +2546,14 @@ function AgentChatComposerImpl({
    */
   effectiveReasoningEffort?: string | null;
   fastMode?: boolean;
+  /**
+   * Whether this ADE account allows Fast at all. False renders the muted
+   * lightning (which leads to Settings) and never offers the Fast half of the
+   * picker. Absent on older surfaces means allowed.
+   */
+  fastModeAllowed?: boolean;
+  /** Open Settings → Chat → Fast mode, with the "show me" ring on that row. */
+  onFastModeLocked?: () => void;
   /** Fast's tier for the selected model ("ultrafast" on Codex models that offer it). */
   fastTier?: FastTier | null;
   /**
@@ -8343,6 +8354,8 @@ function AgentChatComposerImpl({
                   fastMode={fastModeActive}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
+                  fastModeAllowed={fastModeAllowed}
+                  {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
                   {...(onParallelSlotFastModeChange
                     ? {
                         fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
@@ -8397,6 +8410,8 @@ function AgentChatComposerImpl({
                   effectiveFastTier={effectiveFastTier}
                   fastModeSupported={fastModeSupported}
                   fastModeUnavailableReason={fastModeUnavailableReason}
+                  fastModeAllowed={fastModeAllowed}
+                  {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
                   {...(cursorCloudSessionActive ? {
                     serviceTierMode: true,
                     serviceTier: cursorCloudServiceTier,

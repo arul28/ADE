@@ -3785,6 +3785,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [modelState, setModelState] = useState<AdeCodeModelState>(
     () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
   );
+  // The account's Fast permission, from the machine's launch defaults. False
+  // disables every local Fast toggle; the brain refuses the update anyway.
+  const [fastModeAllowed, setFastModeAllowed] = useState(true);
+  const fastModeAllowedRef = useRef(true);
+  fastModeAllowedRef.current = fastModeAllowed;
   // The model the TUI opened on; the machine's launch defaults replace it only
   // while it is still this one (see the connect path).
   const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
@@ -6166,8 +6171,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Draft: the interface is the user's editable Chat/CLI choice.
       interfaceMode: modelState.interfaceMode,
       interfaceEditable: true,
+      fastModeAllowed,
     }),
-    [modelState, models],
+    [modelState, models, fastModeAllowed],
   );
   // Once a session exists the interface is fixed by its type (a CLI terminal is
   // active ⇒ CLI; an SDK chat ⇒ Chat). With no committed session yet (/model on a
@@ -6188,8 +6194,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       outputStyleEditable: Boolean(activeSession?.sessionId && activeSession.provider === "claude"),
       interfaceMode: modelSetupInterfaceMode,
       interfaceEditable: modelSetupInterfaceEditable,
+      fastModeAllowed,
     }),
-    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelSetupInterfaceEditable, modelSetupInterfaceMode, modelState, models],
+    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelSetupInterfaceEditable, modelSetupInterfaceMode, modelState, models, fastModeAllowed],
   );
   const modelPickerRows = useMemo(() => {
     if (!providerLocked) return modelSetupRows;
@@ -8999,6 +9006,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // unless the user already picked a model here.
         void getLaunchDefaults(conn).then((defaults) => {
           if (!defaults) return;
+          setFastModeAllowed(defaults.fastModeAllowed ?? true);
+          if (defaults.fastModeAllowed === false) {
+            setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+          }
           setModelState((prev) => {
             if (prev.provider !== initialModelProviderRef.current.provider
               || prev.modelId !== initialModelProviderRef.current.modelId) return prev;
@@ -14677,7 +14688,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (row.kind === "codex-fast") {
-      applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+      if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       return;
     }
     if (row.kind === "output-style") {
@@ -15013,7 +15024,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
         || modelSupportsFastMode(descriptor);
       if (fastSupported) {
-        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       } else if (modelState.provider === "claude") {
         void submitPrompt("/fast");
       } else {
@@ -16132,7 +16143,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (key.downArrow) {
         if (cell === "provider") cycleProvider(1);
         else if (cell === "model") cycleModel(1);
-        else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        else if (cell === "fast") { if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode })); }
         else if (cell === "reasoning") cycleReasoning(1);
         else if (cell === "permission") cyclePermission(1);
         else if (cell === "subagents") openSubagentsPane();
@@ -17818,7 +17829,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         selectFooterControl(null);
         setPaneFocus("chat");
         setInlineRowFocus({ cell: "fast" });
-        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       });
       footerX += width;
     }
@@ -17889,7 +17900,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             const cell = inlineRowFocus.cell;
             if (cell === "provider") cycleProvider(1);
             else if (cell === "model") cycleModel(1);
-            else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+            else if (cell === "fast") { if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode })); }
             else if (cell === "reasoning") cycleReasoning(1);
             else if (cell === "permission") cyclePermission(1);
             else if (cell === "subagents") openSubagentsPane();

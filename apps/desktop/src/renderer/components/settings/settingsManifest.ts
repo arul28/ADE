@@ -594,7 +594,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "code-block-copy-position",
     scope: "account",
     web: "browser",
-    group: "Details",
+    group: "Transcript",
   },
   {
     id: "appearance.message-minimap",
@@ -604,7 +604,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "user-message-minimap",
     scope: "account",
     web: "browser",
-    group: "Details",
+    group: "Transcript",
   },
   {
     id: "appearance.drafts",
@@ -614,7 +614,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "drafts-button",
     scope: "account",
     web: "browser",
-    group: "Details",
+    group: "Composer",
   },
   {
     id: "appearance.launch-prompt",
@@ -625,6 +625,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "browser",
     group: "Composer",
+  },
+  {
+    id: "chat.fast-mode",
+    label: "Fast mode",
+    keywords: ["fast", "speed", "ultra", "ultrafast", "priority", "service tier", "spend", "cost", "account"],
+    tab: "chat",
+    anchor: "fast-mode",
+    // One row in the account store, so every computer signed into this account
+    // gets the same answer. Off by default.
+    scope: "account",
+    // The hosted web client has no account-settings store, but its chat adapter
+    // carries this one row over the sync host (`chat.*FastModeEnabled`), so the
+    // switch works there too.
+    web: "account",
+    group: "Speed & spend",
   },
   {
     id: "chat.prompt-suggestions",
@@ -647,7 +662,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.smart-chat-status",
@@ -658,7 +673,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.smart-plain-terminals",
@@ -669,7 +684,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.smart-settle-nudge",
@@ -680,7 +695,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.model-hint",
@@ -691,7 +706,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.smart-palette",
@@ -702,7 +717,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.smart-lane-emoji",
@@ -713,7 +728,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.jev-zen-credit",
@@ -724,7 +739,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     web: "hidden",
-    group: "Smart decisions",
+    group: "Agent behavior",
   },
   {
     id: "chat.claude-mods",
@@ -736,7 +751,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
-    group: "Claude mods",
+    group: "Agent behavior",
   },
   {
     id: "appearance.preview",
@@ -1057,7 +1072,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "voice-input",
     scope: "account",
     web: "hidden",
-    group: "Voice input",
+    group: "Voice",
   },
   {
     id: "chat.voice-conversations",
@@ -1067,7 +1082,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "voice-conversations",
     scope: "account",
     web: "hidden",
-    group: "Voice conversations",
+    group: "Voice",
   },
 
   // ── Lanes, Storage & cleanup, Agents ─────────────────────────────────────

@@ -676,6 +676,9 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "full-auto"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
+  /// The account's Fast permission, from the host's launch defaults. False
+  /// leaves the picker's toggle disabled; this screen never edits the account.
+  @State private var fastModeAllowed: Bool = true
   /// Copilot's context tier and Auto profile for the chat about to be created.
   @State private var copilotContextTier: String = "default"
   @State private var copilotAutoTier: String? = nil
@@ -800,7 +803,10 @@ struct WorkNewChatScreen: View {
     reasoningEffort = defaults.reasoningEffort ?? ""
     copilotContextTier = workCopilotContextTier(defaults.copilotContextTier)
     copilotAutoTier = defaults.copilotAutoTier
-    codexFastMode = defaults.fastMode ?? false
+    // Fast is opt-in per chat. The host's launch defaults no longer carry it,
+    // and an older host that still does must not seed it here.
+    codexFastMode = false
+    fastModeAllowed = defaults.fastModeAllowed ?? true
     let mode = workRuntimeMode(
       provider: defaults.provider,
       interactionMode: defaults.interactionMode,
@@ -1039,6 +1045,7 @@ struct WorkNewChatScreen: View {
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
+        fastModeAllowed: fastModeAllowed,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
         // Custom harnesses are the connected host's own; another machine's list

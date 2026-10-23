@@ -38,6 +38,11 @@ import {
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  FAST_MODE_SETTING_KEY,
+  FAST_MODE_SETTING_SCOPE,
+  isFastModeEnabledSetting,
+} from "../../../../desktop/src/shared/fastModePolicy";
 import { sessionStatusBucket } from "../../../../desktop/src/shared/sessionCanonicalState";
 import {
   CTO_HOME_SETTING_KEY,
@@ -5245,6 +5250,26 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const parsed = parseAgentChatSetParallelLaunchStateArgs(payload);
     const key = agentChatParallelLaunchStateKey(parsed.projectRoot, parsed.parentLaneId);
     db.setJson(key, parsed.state ?? null);
+  });
+  // The account's Fast permission, for clients with no account-settings bridge
+  // (the hosted web client). The desktop and the phone read it from the launch
+  // defaults; this pair is the narrow write path that keeps the row editable
+  // from a browser too. The brain enforces the same row on every launch.
+  register("chat.getFastModeEnabled", { viewerAllowed: true }, async () => ({
+    enabled: args.accountSettingsStore
+      ? isFastModeEnabledSetting(
+          args.accountSettingsStore.get(FAST_MODE_SETTING_SCOPE, FAST_MODE_SETTING_KEY),
+        )
+      : false,
+  }));
+  register("chat.setFastModeEnabled", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const store = requireService(
+      args.accountSettingsStore,
+      "Account settings are not available on this machine.",
+    );
+    const enabled = (payload as { enabled?: unknown } | null)?.enabled === true;
+    store.set(FAST_MODE_SETTING_SCOPE, FAST_MODE_SETTING_KEY, enabled);
+    return { ok: true, enabled };
   });
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(

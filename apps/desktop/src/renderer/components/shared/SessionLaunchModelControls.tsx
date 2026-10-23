@@ -1,9 +1,12 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
+import { useFastModeEnabled } from "../../lib/fastModePolicy";
+import { useGoTo } from "../onboarding/spotlight/useGoTo";
+import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import {
   applyClaudePermissionSelection,
   applyCodexPresetToControls,
@@ -305,6 +308,20 @@ export function SessionLaunchModelControls({
   const patchNative = useCallback((nativeControls: NativeControlState) => {
     onChange({ nativeControls });
   }, [onChange]);
+  const fastModeAllowed = useFastModeEnabled();
+  const goTo = useGoTo();
+  const openFastModeSetting = useCallback(() => {
+    goTo("/settings?tab=chat#fast-mode");
+    showSpotlight({
+      spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
+      waitMs: 5_000,
+    });
+  }, [goTo]);
+  // A launch form restored from a time Fast was allowed starts Standard, so
+  // the create never carries a choice the account would refuse.
+  useEffect(() => {
+    if (!fastModeAllowed && config.fastMode) onChange({ fastMode: false });
+  }, [fastModeAllowed, config.fastMode, onChange]);
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
   const activePreset = useMemo(() => {
     const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
@@ -337,9 +354,11 @@ export function SessionLaunchModelControls({
         // endpoint from a launch are listed as unavailable, with the reason.
         harnessLaunchMode={config.sessionType === "cli" ? "cli" : "chat"}
         {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
-        fastMode={config.fastMode}
+        fastMode={fastModeAllowed ? config.fastMode : false}
         onFastModeChange={(fastMode) => onChange({ fastMode })}
         fastModeSupported={batchLaunchSupportsFastMode(config.modelId)}
+        fastModeAllowed={fastModeAllowed}
+        {...(!fastModeAllowed ? { onFastModeLocked: openFastModeSetting } : {})}
         disabled={disabled}
       />
       <ReasoningEffortPicker

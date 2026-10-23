@@ -1166,7 +1166,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -2117,7 +2121,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -4857,6 +4865,8 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var modelId: String
   var reasoningEffort: String?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var interactionMode: String?
   var permissionMode: String?
   var claudePermissionMode: String?

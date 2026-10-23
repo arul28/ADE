@@ -18,6 +18,9 @@ struct ConnectionSettingsView: View {
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
+  /// The account's Fast permission, read over the sync host and written back
+  /// from the Chat section. Off by default, like the desktop.
+  @State private var fastModeEnabled = false
 
   init(syncService: SyncService, pairingOnly: Bool = false) {
     self.syncService = syncService
@@ -53,6 +56,10 @@ struct ConnectionSettingsView: View {
         }
       }
       .adeNavigationGlass()
+      .task {
+        guard !pairingOnly else { return }
+        fastModeEnabled = await syncService.getFastModeEnabled()
+      }
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -196,6 +203,36 @@ struct ConnectionSettingsView: View {
             ADESettingsLink(title: "AI accounts", symbol: "person.2") {
               SettingsProviderAccountsPage(syncService: syncService)
             }
+          }
+        }
+        ADESettingsSection("Chat") {
+          ADESettingsRows {
+            Toggle(isOn: Binding(
+              get: { fastModeEnabled },
+              set: { next in
+                fastModeEnabled = next
+                Task {
+                  do {
+                    try await syncService.setFastModeEnabled(next)
+                  } catch {
+                    fastModeEnabled = !next
+                  }
+                }
+              }
+            )) {
+              VStack(alignment: .leading, spacing: 3) {
+                Text("Allow Fast mode")
+                  .font(.system(size: 16, weight: .medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Text("Roughly 2× standard, up to 8× for Ultrafast. Off until you turn it on here; every new chat still starts at Standard.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .toggleStyle(.switch)
+            .tint(ADEColor.warning)
+            .padding(ADEKit.inset)
           }
         }
         ADESettingsSection("About") {
