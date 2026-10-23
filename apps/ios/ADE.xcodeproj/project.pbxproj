@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DV1000000000000000000001 /* LiveInspectModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000001 /* LiveInspectModels.swift */; };
+		DV1000000000000000000002 /* LiveInspectGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000002 /* LiveInspectGeometry.swift */; };
+		DV1000000000000000000003 /* LiveInspectStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000003 /* LiveInspectStage.swift */; };
+		DV1000000000000000000004 /* DuoChatRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000004 /* DuoChatRail.swift */; };
+		DV1000000000000000000005 /* DuoHomeWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000005 /* DuoHomeWidgets.swift */; };
+		DV1000000000000000000006 /* DuoLanesSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000006 /* DuoLanesSplit.swift */; };
+		DV1000000000000000000007 /* DuoSplitPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000007 /* DuoSplitPreviews.swift */; };
 		DU1000000000000000000001 /* DuoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000001 /* DuoLayout.swift */; };
 		DU1000000000000000000002 /* DuoShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000002 /* DuoShell.swift */; };
 		DU1000000000000000000003 /* DuoHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000003 /* DuoHome.swift */; };
@@ -479,6 +486,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		DV0000000000000000000001 /* LiveInspectModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectModels.swift; path = ADE/Views/Duo/LiveInspectModels.swift; sourceTree = "<group>"; };
+		DV0000000000000000000002 /* LiveInspectGeometry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectGeometry.swift; path = ADE/Views/Duo/LiveInspectGeometry.swift; sourceTree = "<group>"; };
+		DV0000000000000000000003 /* LiveInspectStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectStage.swift; path = ADE/Views/Duo/LiveInspectStage.swift; sourceTree = "<group>"; };
+		DV0000000000000000000004 /* DuoChatRail.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoChatRail.swift; path = ADE/Views/Duo/DuoChatRail.swift; sourceTree = "<group>"; };
+		DV0000000000000000000005 /* DuoHomeWidgets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoHomeWidgets.swift; path = ADE/Views/Duo/DuoHomeWidgets.swift; sourceTree = "<group>"; };
+		DV0000000000000000000006 /* DuoLanesSplit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoLanesSplit.swift; path = ADE/Views/Duo/DuoLanesSplit.swift; sourceTree = "<group>"; };
+		DV0000000000000000000007 /* DuoSplitPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoSplitPreviews.swift; path = ADE/Views/Duo/DuoSplitPreviews.swift; sourceTree = "<group>"; };
 		DU0000000000000000000001 /* DuoLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoLayout.swift; path = ADE/Views/Duo/DuoLayout.swift; sourceTree = "<group>"; };
 		DU0000000000000000000002 /* DuoShell.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoShell.swift; path = ADE/Views/Duo/DuoShell.swift; sourceTree = "<group>"; };
 		DU0000000000000000000003 /* DuoHome.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoHome.swift; path = ADE/Views/Duo/DuoHome.swift; sourceTree = "<group>"; };
@@ -960,6 +974,13 @@
 		DU0000000000000000000GRP /* Duo */ = {
 			isa = PBXGroup;
 			children = (
+				DV0000000000000000000001 /* LiveInspectModels.swift */,
+				DV0000000000000000000002 /* LiveInspectGeometry.swift */,
+				DV0000000000000000000003 /* LiveInspectStage.swift */,
+				DV0000000000000000000004 /* DuoChatRail.swift */,
+				DV0000000000000000000005 /* DuoHomeWidgets.swift */,
+				DV0000000000000000000006 /* DuoLanesSplit.swift */,
+				DV0000000000000000000007 /* DuoSplitPreviews.swift */,
 				DU0000000000000000000001 /* DuoLayout.swift */,
 				DU0000000000000000000002 /* DuoShell.swift */,
 				DU0000000000000000000003 /* DuoHome.swift */,
@@ -1938,6 +1959,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DV1000000000000000000001 /* LiveInspectModels.swift in Sources */,
+				DV1000000000000000000002 /* LiveInspectGeometry.swift in Sources */,
+				DV1000000000000000000003 /* LiveInspectStage.swift in Sources */,
+				DV1000000000000000000004 /* DuoChatRail.swift in Sources */,
+				DV1000000000000000000005 /* DuoHomeWidgets.swift in Sources */,
+				DV1000000000000000000006 /* DuoLanesSplit.swift in Sources */,
+				DV1000000000000000000007 /* DuoSplitPreviews.swift in Sources */,
 				DU1000000000000000000001 /* DuoLayout.swift in Sources */,
 				DU1000000000000000000002 /* DuoShell.swift in Sources */,
 				DU1000000000000000000003 /* DuoHome.swift in Sources */,
