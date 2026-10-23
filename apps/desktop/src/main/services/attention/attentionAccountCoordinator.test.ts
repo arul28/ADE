@@ -9,6 +9,8 @@ import {
   DEFAULT_ATTENTION_PREFERENCES,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
+import { IPC } from "../../../shared/ipc";
+import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import {
   ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS,
   ATTENTION_IPC_BUDGET_MS,
@@ -819,8 +821,8 @@ describe("AttentionAccountCoordinator", () => {
         scope: "machine",
         availability: { state: "degraded", recovery: "retry" },
       });
-      // Under the 30s IPC timer that used to answer first.
-      expect(ATTENTION_IPC_BUDGET_MS).toBeLessThan(30_000);
+      // Under the IPC timer that used to answer first.
+      expect(ATTENTION_IPC_BUDGET_MS).toBeLessThan(ipcInvokeTimeoutMs(IPC.attentionGetSnapshot));
     } finally {
       vi.useRealTimers();
     }
