@@ -65,6 +65,9 @@ struct ADEFlatSectionHeader<Trailing: View>: View {
     }
     .textCase(nil)
     .frame(minHeight: 22)
+    // The rows' own 16pt, also where a narrow list (a split pane) would
+    // otherwise drop the header's margin to zero.
+    .listRowInsets(EdgeInsets(top: 0, leading: ADEFlat.rowInsets.leading, bottom: 0, trailing: ADEFlat.rowInsets.trailing))
   }
 }
 

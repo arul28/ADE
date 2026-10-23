@@ -427,6 +427,10 @@ extension WorkChatSessionView {
       WorkProofCountLink(count: artifacts.count, onOpen: { openProofDrawer(.turn(artifacts)) })
       Spacer(minLength: 0)
     }
+    // The link keeps a 44pt tap target; drawn on its own row that target
+    // plus the thread's row gap left the line ~60pt under the turn's meta
+    // line, reading as orphaned. Let the target overlap the gap instead.
+    .padding(.vertical, -16)
   }
 
   /// Opens the proof drawer, narrowed to `focus` when a thread link names the

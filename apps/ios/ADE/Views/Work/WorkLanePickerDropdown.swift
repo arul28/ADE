@@ -158,7 +158,9 @@ struct WorkLanePickerDropdown: View {
     // Solid kit surface, as the Hub composer's destination control: the lane's
     // colour stays on its mark.
     .adeKitPill()
-    .frame(maxWidth: 300)
+    // Leading: the pill sits right after the machine pill, never centred in
+    // the room it was offered.
+    .frame(maxWidth: 300, alignment: .leading)
     .fixedSize(horizontal: false, vertical: true)
     .contentShape(Capsule(style: .continuous))
   }

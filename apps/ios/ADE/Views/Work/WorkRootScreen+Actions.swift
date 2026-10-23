@@ -769,6 +769,13 @@ extension WorkRootListScreen {
     // A pending-sync row has no synced session to open yet.
     guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
+    // Wide display: the chat opens in the column beside the list instead of
+    // over it. Selecting twice is harmless — the route id only changes when it
+    // is a different chat.
+    if duoLayout.isWide {
+      duoSelectSession(session)
+      return
+    }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
@@ -816,9 +823,29 @@ extension WorkRootListScreen {
     navigationMutationPending = false
     selectedSessionTransitionId = request.sessionId
     var fresh = NavigationPath()
-    fresh.append(WorkSessionRoute(sessionId: request.sessionId))
+    // A lane on another machine (the Lanes dashboard's chat rows) opens its
+    // chat through that machine, exactly like tapping its Work row does.
+    let remoteChat: WorkChatCrossProjectContext? = request.laneId.map(isWorkRemoteLaneId) == true
+      ? syncService.remoteMachineChat(sessionId: request.sessionId).map { remote in
+        WorkChatCrossProjectContext(
+          projectId: remote.projectId,
+          projectRootPath: remote.rootPath.isEmpty ? nil : remote.rootPath,
+          displayName: "",
+          machineKey: remote.machineKey
+        )
+      }
+      : nil
+    let route = WorkSessionRoute(sessionId: request.sessionId, remoteChat: remoteChat)
+    if duoLayout.isWide {
+      duoComposeRoute = nil
+      duoSelectedRoute = route
+    } else {
+      fresh.append(route)
+    }
     path = fresh
-    syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    if remoteChat == nil {
+      syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
+    }
     // The chat is open: clear the request now, which also stops the outside-tap
     // watchdog. The acknowledgement below can take as long as the relay's
     // timeout, and holding the request across it let the watchdog close a chat

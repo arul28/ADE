@@ -14,7 +14,30 @@ let workChatComposerChipRowHeight: CGFloat = 32
 let workChatFloatingBadgeRowBottomPadding: CGFloat = 6
 /// Space between the composer card and the bottom safe-area edge.
 let workChatComposerBottomGap: CGFloat = 4
+
+private struct WorkCompactEdgeRailKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// The phone layout is on a display with a vertical edge rail (the Duo's
+  /// closed outer display, upright): the chat's composer lines up with the
+  /// rail's last capsule, as it does on the inner display.
+  var workCompactEdgeRail: Bool {
+    get { self[WorkCompactEdgeRailKey.self] }
+    set { self[WorkCompactEdgeRailKey.self] = newValue }
+  }
+}
 let workChatColumnCoordinateSpace = "work-chat-column"
+
+/// DEBUG screenshots only: `-adePreviewReconnecting` shows the reconnecting
+/// notice on a live chat, so its place above the prompt box can be checked
+/// without cutting the machine's connection.
+#if DEBUG
+let workChatPreviewForcesReconnecting = ProcessInfo.processInfo.arguments.contains("-adePreviewReconnecting")
+#else
+let workChatPreviewForcesReconnecting = false
+#endif
 /// How much of the transcript's empty tail (tail row + row spacing) may sit
 /// under the bottom chrome.
 let workChatTranscriptTailTuck: CGFloat = 18
@@ -26,6 +49,22 @@ func workChatRectsNearlyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
+
+/// The composer ⋯'s Attach Issue, handed down to the composer's menu.
+struct WorkChatAttachIssueAction {
+  let run: () -> Void
+}
+
+private struct WorkChatAttachIssueKey: EnvironmentKey {
+  static let defaultValue: WorkChatAttachIssueAction? = nil
+}
+
+extension EnvironmentValues {
+  var workChatAttachIssue: WorkChatAttachIssueAction? {
+    get { self[WorkChatAttachIssueKey.self] }
+    set { self[WorkChatAttachIssueKey.self] = newValue }
+  }
+}
 
 struct WorkChatOlderHistoryLoadResult {
   let succeeded: Bool
@@ -668,6 +707,9 @@ struct WorkChatSessionView: View {
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   var scheduledWorkSnapshotsRenderSignature: Int = 0
   var onOpenChatInfo: (() -> Void)? = nil
+  /// What the Chat info pill says, or nil when it should not show: only while
+  /// a subagent or background work is running, or proof was filed.
+  var chatInfoPill: WorkChatInfoPillModel? = nil
   /// Fork the current Claude thread in this lane (session-quota card).
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
@@ -726,8 +768,31 @@ struct WorkChatSessionView: View {
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
   /// Approve or deny a pending batch move projected onto this caller chat.
   var crossMachineBatchMoveApprovalActions: WorkCrossMachineBatchMoveApprovalActions? = nil
+  /// The wide display's tools column. When set, a lane tool chip opens the
+  /// chip's tool as a pane tab instead of a full-screen cover, and the chip's
+  /// own poll is the pane's only state source. Nil on every pushed chat.
+  var duoPane: DuoWorkPaneModel? = nil
+  /// A book-folded Duo chat keeps its composer to the trailing page.
+  @Environment(\.duoComposerLeadingInset) private var duoComposerLeadingInset
+  @Environment(\.workCompactEdgeRail) private var workCompactEdgeRail
+  @Environment(\.duoLayout) private var composerDuoLayout
+  /// A short window (a phone or the Duo's outer display held landscape): the
+  /// chrome under the thread takes one row less (the send notice joins the
+  /// pill row instead of standing on its own above it).
+  @Environment(\.verticalSizeClass) private var composerVerticalSizeClass
+  /// The tools pane is open beside this chat. Its tools are then in the pane's
+  /// toolbar, so the composer drops its lane tool chips (never the chat's own).
+  var duoPaneOpen = false
+  /// Hands the lane tool chips up to the destination's header menus.
+  var toolsRelay: WorkChatToolsRelay? = nil
+  /// Attach a Linear issue to this chat, from the composer's ⋯ (as on
+  /// desktop). Nil when the host cannot.
+  var onAttachIssue: (() -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
+  /// Compact first for the next send: nil follows the offer's own default.
+  /// Lives here, not in the composer, so its pill can ride the one pill row.
+  @State private var compactFirstChoice: Bool? = nil
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
   /// records it counted. Dismissing the drawer clears it, so every other way
   /// in opens on everything.
@@ -1077,7 +1142,7 @@ struct WorkChatSessionView: View {
     if sendWillQueueIsReconnect, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
     }
-    if transportHealth == .connecting {
+    if transportHealth == .connecting || workChatPreviewForcesReconnecting {
       return "Reconnecting… Your draft is safe."
     }
     if !canSendMessages {
@@ -1090,17 +1155,11 @@ struct WorkChatSessionView: View {
     return "Answer the waiting prompt above, or decline it before sending another message."
   }
 
-  /// How many items the Chat Info sheet would show. Drives both the badge's
-  /// count and whether it exists at all.
-  var composerBadgeChatInfoCount: Int {
-    workChatInfoItemCount(
-      subagents: subagentSnapshots,
-      scheduledWork: scheduledWorkSnapshots
-    )
-  }
-
+  /// The Chat info pill: shown only while something is going on (a subagent
+  /// or background work running, or proof filed), not for every chat that
+  /// ever had a subagent.
   var showsComposerChatInfoBadge: Bool {
-    inputLockMessage == nil && composerBadgeChatInfoCount > 0 && onOpenChatInfo != nil
+    inputLockMessage == nil && chatInfoPill != nil && onOpenChatInfo != nil
   }
 
   var showsComposerPrBadge: Bool {
@@ -1127,60 +1186,105 @@ struct WorkChatSessionView: View {
     showsComposerThreadCommentsChip && workThreadCommentsHaveSendable(threadComments)
   }
 
-  /// Whether the floating badge row is on screen. The row is part of the
+  /// Whether the floating pill row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
-      || showsComposerThreadCommentsChip
+      || showsComposerThreadCommentsChip || showsComposerCompactFirstPill
   }
 
-  /// Chat-info / PR / lane tool badges: small glass capsules sitting just
-  /// above the composer, with the jump-to-latest button at the right end of
-  /// the same line. The thread scrolls behind them.
+  /// Compact first, once the prompt cache has expired (desktop's chip).
+  var showsComposerCompactFirstPill: Bool {
+    guard inputLockMessage == nil, onSendWithCompaction != nil,
+          let offer = composerCompactFirstOffer else { return false }
+    return offer.isEligible(at: Date())
+  }
+
+  /// The floating pills (desktop's floating previews), one row directly above
+  /// the composer, on every device: a pill per running lane tool, Chat info
+  /// while something is going on, the chat's PR, and its thread comments.
+  /// A pill opens exactly what the matching ⋯ item opens; on a wide display
+  /// that is the tools pane beside the thread, and the pill of what the pane
+  /// shows renders selected. The row scrolls sideways when it overflows and
+  /// never narrows the prompt box.
   @ViewBuilder
   var composerBadgeChipRow: some View {
-    let chatInfoCount = composerBadgeChatInfoCount
-    let chips = HStack(spacing: 8) {
-      // First: it is the one chip that changes what the next send carries.
-      if showsComposerThreadCommentsChip {
-        WorkThreadCommentsChip(comments: threadComments) {
-          ADEHaptics.light()
-          threadCommentsSheetPresented = true
+    DuoPaneSelectionReader(pane: duoPane) { selected in
+      let chips = HStack(spacing: 8) {
+        // First: the chips that change what the next send carries.
+        if showsComposerCompactFirstPill, let offer = composerCompactFirstOffer {
+          WorkCompactFirstPill(offer: offer, choice: $compactFirstChoice, inRow: true)
         }
-      }
-      if showsComposerChatInfoBadge, let onOpenChatInfo {
-        WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
-      }
-      if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
-        WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
-        if let prWatch, let onSetPrWatch {
-          WorkChatPrWatchChip(model: prWatch, onSelect: onSetPrWatch)
-        }
-      }
-      if showsComposerLaneToolChips {
-        ForEach(laneTools.chips) { chip in
-          WorkLaneToolChipView(chip: chip) {
+        if showsComposerThreadCommentsChip {
+          WorkThreadCommentsChip(comments: threadComments) {
             ADEHaptics.light()
-            laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+            threadCommentsSheetPresented = true
+          }
+        }
+        if showsComposerLaneToolChips {
+          ForEach(laneTools.chips) { chip in
+            WorkLaneToolChipView(chip: chip, isSelected: pillSelection(chip.duoToolTab, selected)) {
+              ADEHaptics.light()
+              if let duoPane {
+                // Wide display: the tool opens beside the thread, seeded from
+                // the state this chip is already showing; tapped again, away.
+                if selected == chip.duoToolTab {
+                  duoPane.close()
+                } else {
+                  duoPane.open(
+                    chip: chip,
+                    tools: laneTools,
+                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false,
+                    origin: .bottomLeading
+                  )
+                }
+              } else {
+                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+              }
+            }
+          }
+        }
+        if showsComposerChatInfoBadge, let chatInfoPill, let onOpenChatInfo {
+          WorkChatInfoActivePopup(model: chatInfoPill, isSelected: pillSelection(.chatInfo, selected)) {
+            if selected == .chatInfo { duoPane?.close() } else { onOpenChatInfo() }
+          }
+        }
+        if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
+          WorkChatPrActivePopup(badge: prBadge, isSelected: pillSelection(.pr, selected)) {
+            if selected == .pr { duoPane?.close() } else { onOpenPrDetails() }
           }
         }
       }
-    }
-    // The common case fits, and a plain HStack leaves the rest of the
-    // row non-interactive — important now that the row floats over the
-    // transcript, since a full-width horizontal ScrollView would swallow
-    // vertical drags in that band. A row that overflows (chat info, PR and
-    // several lane tools on a narrow phone) gets the scroller, and then the
-    // band is genuinely its own.
-    ViewThatFits(in: .horizontal) {
-      chips
-      ScrollView(.horizontal, showsIndicators: false) {
-        chips.padding(.trailing, 8)
+      // The common case fits, and a plain HStack leaves the rest of the
+      // row non-interactive — important now that the row floats over the
+      // transcript, since a full-width horizontal ScrollView would swallow
+      // vertical drags in that band. A row that overflows gets the scroller,
+      // and then the band is genuinely its own.
+      ViewThatFits(in: .horizontal) {
+        chips
+        ScrollView(.horizontal, showsIndicators: false) {
+          chips.padding(.trailing, 40)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        // More pills past the edge fade out rather than being cut mid-pill.
+        .mask {
+          HStack(spacing: 0) {
+            Color.black
+            // Wide enough that the cut pill reads as fading, not clipped.
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+              .frame(width: 48)
+          }
+        }
       }
-      .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(height: workChatComposerChipRowHeight, alignment: .leading)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .frame(height: workChatComposerChipRowHeight, alignment: .leading)
+  }
+
+  /// Nil on the phone (a pill opens a sheet); on a wide display, whether the
+  /// pane shows this pill's surface.
+  private func pillSelection(_ tab: DuoToolTab, _ selected: DuoToolTab?) -> Bool? {
+    duoPane == nil ? nil : selected == tab
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -1621,7 +1725,9 @@ struct WorkChatSessionView: View {
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
   var composerInset: some View {
-    VStack(spacing: 10) {
+    let queueRecovery = workAvailableQueueRecovery(from: transcript)
+    let pillRow = composerPillRowContent(hasBannersAbove: composerHasBanners(queueRecovery: queueRecovery))
+    return VStack(spacing: 10) {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
@@ -1689,30 +1795,16 @@ struct WorkChatSessionView: View {
         )
       }
 
-      if let composerFeedback {
-        Text(composerFeedback)
-          .font(.caption2)
-          .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
-          .multilineTextAlignment(.center)
-          .padding(.horizontal, 10)
-          .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 5)
-          .background(
-            Group {
-              if sessionStatus == "awaiting-input" {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                  .fill(ADEColor.warning.opacity(0.08))
-              }
-            }
-          )
-          // Floats over the thread like every other control: its own glass,
-          // no band behind the composer stack.
-          .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .frame(maxWidth: .infinity, alignment: .center)
+      // With pills to show, a notice sits above their row; without, it is the
+      // row's leading end. Either way the jump-to-latest button keeps its
+      // place directly above the prompt box.
+      if pillRow.noticeAbove, let composerFeedback {
+        composerFeedbackNotice(composerFeedback)
       }
 
       consolidatedPendingStripSection
 
-      if let recovery = workAvailableQueueRecovery(from: transcript),
+      if let recovery = queueRecovery,
          let onRestoreCancelledQueue {
         WorkQueueRecoveryBanner(
           recovery: recovery,
@@ -1788,10 +1880,16 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
+      if pillRow.shown {
+        composerPillRow(noticeInline: pillRow.noticeInline)
+          .transition(.opacity)
+      }
+
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         contextMeter: composerContextMeter,
         compactFirstOffer: composerCompactFirstOffer,
+        compactFirstChoice: $compactFirstChoice,
         onCompactContext: { [onSend, $errorMessage] in
           Task { @MainActor in
             // Most send failures set their own message; the rest (a send
@@ -1853,6 +1951,17 @@ struct WorkChatSessionView: View {
         hasSendableThreadComments: hasSendableThreadComments,
         sendGate: crossMachineSendGate
       )
+      .overlay(alignment: .topTrailing) {
+        // No row to sit in: the button floats where the row would be, over
+        // the thread, without reserving the band.
+        if !pillRow.shown, jumpToLatestVisible {
+          // An explicit offset rather than an alignment guide: the guide was
+          // dropped through the conditional overlay content and left the
+          // button sitting on top of the composer's send button.
+          jumpToLatestButton
+            .offset(y: -(WorkJumpToLatestPill.diameter + 10))
+        }
+      }
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
     // A prompt left open when the chat goes away would strand its send
@@ -2010,7 +2119,32 @@ struct WorkChatSessionView: View {
         // keyboard (like the composer) is just more bottom inset. A keyboard
         // show/hide is then an inset change, which re-pins a following reader
         // and leaves everyone else's offset untouched.
+        // In the Duo's wide column the header is the rail's glass title
+        // capsule, and the thread scrolls under it the same way.
         .ignoresSafeArea(edges: [.top, .bottom])
+        // The top's soft scroll edge: the thread fades out under the floating
+        // header capsules instead of sliding under them at full strength, and
+        // is fully clear where the first message rests.
+        .mask {
+          VStack(spacing: 0) {
+            LinearGradient(
+              stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .clear, location: 0.45),
+                .init(color: .black, location: 1),
+              ],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+            .frame(height: transcriptTopInset)
+            Color.black
+          }
+          .ignoresSafeArea()
+        }
+        // A readable line length on a wide window (an iPad without a second
+        // column, CTO): the thread and its composer stay one centred column.
+        .frame(maxWidth: workChatReadableWidth)
+        .frame(maxWidth: .infinity)
         // The proxy reports the layout frame; the bands the transcript was
         // allowed to grow into (header + status bar above, home indicator or
         // keyboard below) come back as its safe-area insets.
@@ -2031,6 +2165,7 @@ struct WorkChatSessionView: View {
         }
 
       bottomChrome
+        .frame(maxWidth: workChatReadableWidth)
         .onGeometryChange(for: CGFloat.self) { proxy in
           proxy.frame(in: .named(workChatColumnCoordinateSpace)).minY
         } action: { minY in
@@ -2068,39 +2203,44 @@ struct WorkChatSessionView: View {
   }
   #endif
 
-  /// Everything that floats over the bottom of the thread: the badge chips (and
-  /// the jump-to-latest button in line with them), then the composer stack.
+  /// Everything that floats over the bottom of the thread: the composer
+  /// stack, whose last rows are the pill row (with the jump-to-latest button
+  /// at its trailing end) and the prompt box.
   private var bottomChrome: some View {
-    VStack(spacing: workChatFloatingBadgeRowBottomPadding) {
-      if showsComposerBadgeChips {
-        HStack(spacing: 8) {
-          composerBadgeChipRow
-          if jumpToLatestVisible {
-            jumpToLatestButton
-          }
-        }
-        .padding(.horizontal, compactComposer ? 12 : 16)
-        .transition(.opacity)
+    composerInset
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.bottom, workChatComposerBottomGap)
+      .padding(.leading, duoComposerLeadingInset)
+      // Held landscape on the Duo, the prompt box's bottom lines up with the
+      // bottom of the edge bar's last capsule.
+      .duoEdgeBarAlignedBottom(contentBottomPadding: workChatComposerBottomGap)
+      // The closed outer display's rail: the same line, from the window's
+      // bottom edge rather than the home indicator's safe area.
+      .padding(.bottom, compactRailAligned ? DuoEdgeBar.bottomInset - workChatComposerBottomGap : 0)
+      .ignoresSafeArea(.container, edges: compactRailAligned ? .bottom : [])
+      .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
+      .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
+      // A soft scroll edge under the floating chrome: the thread fades out
+      // above the pills and is gone behind and below the prompt box, instead
+      // of reading through the glass (no slab, no hard line).
+      .background(alignment: .bottom) {
+        LinearGradient(
+          stops: [
+            .init(color: workChatCanvasBackground.opacity(0), location: 0),
+            .init(color: workChatCanvasBackground.opacity(0.82), location: 0.3),
+            .init(color: workChatCanvasBackground, location: 0.6),
+          ],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+        .padding(.top, -28)
+        .ignoresSafeArea(.container, edges: .bottom)
+        .allowsHitTesting(false)
       }
+  }
 
-      composerInset
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .overlay(alignment: .topTrailing) {
-      // No chip row to sit in: the button floats the same distance above the
-      // composer, where the row would have been, without reserving the band.
-      if !showsComposerBadgeChips, jumpToLatestVisible {
-        // An explicit offset rather than an alignment guide: the guide was
-        // dropped through the conditional overlay content and left the button
-        // sitting on top of the composer's send button.
-        jumpToLatestButton
-          .padding(.trailing, compactComposer ? 12 : 16)
-          .offset(y: -(WorkJumpToLatestPill.diameter + workChatFloatingBadgeRowBottomPadding))
-      }
-    }
-    .padding(.bottom, workChatComposerBottomGap)
-    .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
-    .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
+  private var compactRailAligned: Bool {
+    workCompactEdgeRail && !composerDuoLayout.hasEdgeBar
   }
 
   var jumpToLatestVisible: Bool {
@@ -2115,10 +2255,104 @@ struct WorkChatSessionView: View {
     .transition(.scale(scale: 0.6).combined(with: .opacity))
   }
 
+  /// What the row directly above the prompt box carries.
+  struct ComposerPillRowContent {
+    /// The row is on screen (it is part of the bottom chrome, so the
+    /// transcript's bottom inset covers it).
+    var shown: Bool
+    /// The send notice is the row's leading end (no pills to show).
+    var noticeInline: Bool
+    /// The send notice sits above the row (the pills take it).
+    var noticeAbove: Bool
+  }
+
+  /// The row holds the pills, or the send notice when there are none, and
+  /// always the jump-to-latest button at its trailing end. With neither
+  /// pills nor a notice the button floats in the row's place over the
+  /// thread — unless banners (a question, queued steers) stand there, which
+  /// it must not cover, so the row is kept for it.
+  func composerPillRowContent(hasBannersAbove: Bool) -> ComposerPillRowContent {
+    let hasNotice = composerFeedback != nil
+    let chips = showsComposerBadgeChips
+    let short = composerVerticalSizeClass == .compact
+    return ComposerPillRowContent(
+      shown: chips || hasNotice || (jumpToLatestVisible && hasBannersAbove),
+      noticeInline: (!chips || short) && hasNotice,
+      noticeAbove: chips && hasNotice && !short
+    )
+  }
+
+  /// Something stands between the thread and the pill row.
+  func composerHasBanners(queueRecovery: WorkQueueRecoveryModel?) -> Bool {
+    if composerGoal != nil || !pendingSteers.isEmpty || primaryPendingInput != nil { return true }
+    if queueRecovery != nil && onRestoreCancelledQueue != nil { return true }
+    let context = chatSummaryContext
+    if context.usageLimitResume != nil { return true }
+    if let record = context.crossMachineHandoff, workCrossMachineHandoffCardModel(record) != nil { return true }
+    if let approval = context.crossMachineBatchApproval, !approval.batchId.isEmpty { return true }
+    return context.spawnKind == .subagent
+      && !(context.orchestrationParentSessionId ?? "").isEmpty
+      && context.subagentTakeoverPromptShownAt == nil
+      && (onTakeOverSubagent != nil || onKeepReportingSubagent != nil)
+  }
+
+  /// The pills (or the send notice), then the jump-to-latest button.
+  @ViewBuilder
+  func composerPillRow(noticeInline: Bool) -> some View {
+    HStack(alignment: .center, spacing: 8) {
+      if showsComposerBadgeChips {
+        // Short windows: the notice leads the pills on their one row.
+        if noticeInline, let composerFeedback {
+          composerFeedbackNotice(composerFeedback, inline: true)
+        }
+        composerBadgeChipRow
+      } else if noticeInline, let composerFeedback {
+        composerFeedbackNotice(composerFeedback)
+      } else {
+        Spacer(minLength: 0)
+      }
+      if jumpToLatestVisible {
+        jumpToLatestButton
+      }
+    }
+    .frame(minHeight: workChatComposerChipRowHeight)
+  }
+
+  /// "Reconnecting… Your draft is safe." and the other send notices: a small
+  /// glass caption at the leading edge.
+  func composerFeedbackNotice(_ text: String, inline: Bool = false) -> some View {
+    Text(text)
+      .font(.caption2)
+      .lineLimit(inline ? 1 : nil)
+      .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
+      .multilineTextAlignment(.leading)
+      .padding(.horizontal, 10)
+      .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 5)
+      .background(
+        Group {
+          if sessionStatus == "awaiting-input" {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(ADEColor.warning.opacity(0.08))
+          }
+        }
+      )
+      // Floats over the thread like every other control: its own glass,
+      // no band behind the composer stack.
+      .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .frame(maxWidth: inline ? 260 : .infinity, alignment: .leading)
+      .layoutPriority(inline ? 1 : 0)
+  }
+
   /// Band the header covers at the top of the transcript: the status bar and
   /// header the transcript grew under.
   var transcriptTopInset: CGFloat {
-    max(9, transcriptSafeInsets.top.rounded() + 6)
+    // The Duo column's thread starts under a native bar, whose scroll-edge
+    // effect softens the first few points; the first message starts clear of it.
+    // A phone held landscape reports no top band, yet the header's capsules
+    // still float there: start the thread below them so the first message
+    // can scroll clear (it sat under the title).
+    let floatingHeader: CGFloat = duoPane == nil && transcriptSafeInsets.top < 30 ? 62 : 0
+    return max(duoPane == nil ? 9 : 22, transcriptSafeInsets.top.rounded() + 6, floatingHeader)
   }
 
   /// Band the composer stack (chips included) covers at the bottom: the
@@ -2409,6 +2643,7 @@ struct WorkChatSessionView: View {
         timelineScrollHandlers(chatColumn)
       )
       .modifier(laneToolsPresenter)
+      .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
     )
   }
 
@@ -2418,7 +2653,9 @@ struct WorkChatSessionView: View {
       model: laneTools,
       laneId: session.laneId,
       chatSessionId: session.id,
-      enabled: !isPersonalChat
+      enabled: !isPersonalChat,
+      duoPane: duoPane,
+      relay: toolsRelay
     )
     #if DEBUG
     presenter.preview = previewLaneTools
@@ -2600,6 +2837,10 @@ func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFlo
 /// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
 /// the agent prose — no card, no gradient. Light mode keeps the app's warm
 /// paper tone so the chat doesn't look out of place there.
+/// The widest the thread and composer get: past it, lines are too long to
+/// read (desktop caps its chat column the same way).
+let workChatReadableWidth: CGFloat = 760
+
 let workChatCanvasBackground = Color(uiColor: UIColor { traits in
   traits.userInterfaceStyle == .dark
     ? UIColor(red: 0x0f / 255.0, green: 0x0f / 255.0, blue: 0x11 / 255.0, alpha: 1)
@@ -2661,6 +2902,7 @@ private struct WorkChatComposerCard: View {
   /// The context meter rides the composer, as on desktop.
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
+  @Binding var compactFirstChoice: Bool?
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2709,6 +2951,7 @@ private struct WorkChatComposerCard: View {
       chatSummary: chatSummary,
       contextMeter: contextMeter,
       compactFirstOffer: compactFirstOffer,
+      compactFirstChoice: $compactFirstChoice,
       onCompactContext: onCompactContext,
       sessionId: sessionId,
       isPersonalChat: isPersonalChat,
@@ -2745,9 +2988,12 @@ private struct WorkChatComposerCard: View {
 }
 
 private struct WorkChatComposerDraftInput: View {
+  @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
+  @Binding var compactFirstChoice: Bool?
   let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
@@ -2796,7 +3042,6 @@ private struct WorkChatComposerDraftInput: View {
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
-  @State private var compactFirstChoice: Bool? = nil
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   /// Set by a tap on an image or file pill; the tray opens that preview.
@@ -2821,6 +3066,43 @@ private struct WorkChatComposerDraftInput: View {
   /// Mode the failed send used, so Retry repeats that send rather than
   /// silently downgrading an interrupt to a staged message.
   @State private var lastSendMode: WorkActiveSendMode = .queue
+  /// True while this composer is the one on screen. An inspect handoff with no
+  /// session id (a viewer opened outside a chat) goes to the visible chat of
+  /// its lane, and only that one.
+  @State private var isOnScreen = false
+
+  /// Takes an inspect handoff into this draft: the picture becomes a ready
+  /// attachment and the packet is appended to the text. Nothing is sent.
+  private func acceptLiveInspectHandoff(_ handoff: LiveInspectComposerHandoff) {
+    let chatId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let handoffChatId = handoff.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let matchesChat = !handoffChatId.isEmpty && handoffChatId == chatId
+    let matchesVisibleLane = handoffChatId.isEmpty
+      && isOnScreen
+      && !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && handoff.laneId == laneId
+    guard matchesChat || matchesVisibleLane else { return }
+
+    if attachmentsAvailable,
+       let attachment = workChatInputAttachment(
+         from: handoff.image,
+         filename: "inspect-\(UUID().uuidString.prefix(8)).jpg"
+       ) {
+      var next = inputAttachments
+      next.removeAll { $0.filename == "attachment-limit" }
+      if next.count < workChatInputAttachmentLimit {
+        next.append(attachment)
+        inputAttachments = next
+      }
+    }
+
+    let text = handoff.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !text.isEmpty {
+      draftState.text = draftState.trimmedText.isEmpty ? text : draftState.text + "\n\n" + text
+    }
+    if composerCollapsed { applyFold(.expand) }
+    ADEHaptics.success()
+  }
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -3073,7 +3355,9 @@ private struct WorkChatComposerDraftInput: View {
   /// re-lays the whole draft out on a background hop that lands outside the
   /// animation, which is what made a long draft fold in steps. The folded card
   /// clips the same measured field instead (`collapsed:` below).
-  private var composerMaxLines: Int { 6 }
+  /// Fewer lines before the field scrolls in a short window, so a long
+  /// draft never takes the thread's whole height.
+  private var composerMaxLines: Int { verticalSizeClass == .compact ? 3 : 6 }
 
   /// The app's one prompt box (`ADEGlassComposerCard`): folded to
   /// [⋯][one-line field][send/stop], unfolded on focus to the field plus the
@@ -3082,11 +3366,8 @@ private struct WorkChatComposerDraftInput: View {
     // Spacing 0: the pill carries its own gap, so a pill that is not yet
     // eligible (its timeline draws nothing) leaves no band above the card.
     VStack(alignment: .leading, spacing: 0) {
-      // Compact first floats above the prompt box, as on desktop, instead of
-      // taking width from the send row.
-      if !isDictating, let compactFirstOffer, onSendWithCompaction != nil {
-        WorkCompactFirstPill(offer: compactFirstOffer, choice: $compactFirstChoice)
-      }
+      // Compact first is a pill in the chat's one pill row above this box
+      // (`composerBadgeChipRow`).
       if !isDictating, let pendingSettingsLabel = chatSummary.pendingSettingsLabel {
         WorkPendingSettingsChip(label: pendingSettingsLabel)
       }
@@ -3185,6 +3466,15 @@ private struct WorkChatComposerDraftInput: View {
       guard request.sessionId == sessionId else { return }
       draftState.applySceneReply(request.text)
     }
+    // Inspect's Send hands the annotated picture and its element packet here:
+    // this chat's composer takes them when the handoff names this chat, or when
+    // it names only this lane and this is the chat on screen.
+    .onReceive(NotificationCenter.default.publisher(for: .liveInspectComposerHandoff)) { notification in
+      guard let handoff = notification.object as? LiveInspectComposerHandoff else { return }
+      acceptLiveInspectHandoff(handoff)
+    }
+    .onAppear { isOnScreen = true }
+    .onDisappear { isOnScreen = false }
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
@@ -3334,8 +3624,20 @@ private struct WorkChatComposerDraftInput: View {
       // The render context already carries this: its `runtimeMode` is
       // `workInitialRuntimeMode` of the summary it was built from.
       runtimeMode: chatSummary.runtimeMode,
-      extraMenuContent: AnyView(stopAndSendSettingsMenu)
+      extraMenuContent: AnyView(composerExtraMenuContent)
     )
+  }
+
+  @ViewBuilder
+  private var composerExtraMenuContent: some View {
+    stopAndSendSettingsMenu
+    if let onAttachIssue {
+      Section {
+        Button(action: onAttachIssue.run) {
+          Label("Attach Issue", systemImage: "link.badge.plus")
+        }
+      }
+    }
   }
 
   /// Mirrors `providerSupportsStopModeChoice` on desktop: every provider gets

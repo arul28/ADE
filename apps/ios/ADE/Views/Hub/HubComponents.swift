@@ -1,228 +1,491 @@
+import PhotosUI
 import SwiftUI
+import UIKit
 
-// Visual building blocks for the all-projects hub: the top bar, project cards
+// Visual building blocks for the all-projects hub: the toolbar, project cards
 // (collapsible) with their lanes (collapsible) and chat rows, and the
 // empty/connecting states. The bottom composer lives in HubComposerDrawer.swift.
 
-// MARK: - Top bar
+// MARK: - Toolbar
 
-/// The hub's calm top bar, like desktop's: the brand mark, the machines chip
-/// (with a menu), then quiet round icon buttons that all share
-/// `ADEKitCircleIcon` with the Activity bell. Neutral glyphs; colour only on
-/// the attention badges.
-struct HubTopBar: View {
-  @EnvironmentObject private var syncService: SyncService
-  let onAdd: () -> Void
-  var chatsAvailable: Bool = false
-  var chatsAttentionCount: Int = 0
+/// What the Hub's toolbar buttons do and show. One value for every form of
+/// the toolbar, so the phone, the outer display and the inner display's edge
+/// bar can never disagree about a badge or an action.
+struct HubToolbarActions {
+  var chatsAvailable = false
+  var chatsAttentionCount = 0
+  var onAdd: () -> Void = {}
   var onOpenChats: () -> Void = {}
+  var onOpenActivity: () -> Void = {}
+  var onOpenSettings: () -> Void = {}
+}
 
-  var body: some View {
-    HStack(spacing: 6) {
-      // A fixed frame: left flexible, the HStack squeezed the wordmark to a
-      // speck beside the chip.
-      Image("BrandMark")
-        .resizable()
-        .renderingMode(.original)
-        .interpolation(.high)
-        .aspectRatio(contentMode: .fit)
-        .frame(width: 44, height: 24)
-        .accessibilityLabel("ADE")
+/// The Hub's header on the Duo's inner display held landscape, where the right
+/// page's bar is the edge bar: the same items, glyphs and grouping as
+/// `HubHeaderRow` (the header everywhere else), split between the pages.
+///
+/// - `.rail`: the rail's top belongs to the right page, so Activity and Chats
+///   (which open there) head it; nothing sits at its bottom. The Hub is above
+///   every project, so it never carries the app tabs.
+/// - `.projectsPage`: the projects page's header keeps Settings and Add (the
+///   caller adds the title).
+struct HubToolbar: ToolbarContent {
+  enum Form { case rail, projectsPage }
 
-      HubConnectionPill()
-        .layoutPriority(1)
+  let form: Form
+  let actions: HubToolbarActions
 
-      Spacer(minLength: 0)
-
-      // The hub was the one root without a bell, which made the phone's home
-      // screen the only place you could not see that something needed you.
-      ActivityBellButton()
-
-      Button(action: onAdd) {
-        ADEKitCircleIcon(systemImage: "plus")
+  var body: some ToolbarContent {
+    switch form {
+    case .rail:
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        HubActivityToolbarButton(action: actions.onOpenActivity)
+        chatsButton
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Add project")
-
-      Button {
-        syncService.settingsPresented = true
-      } label: {
-        ADEKitCircleIcon(systemImage: "gearshape")
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Settings")
-
-      // Chats live behind a top-bar icon (right of the gear) instead of a large
-      // card in the list (M13). A small badge surfaces chats awaiting input.
-      Button(action: onOpenChats) {
-        ADEKitCircleIcon(
-          systemImage: "bubble.left.and.bubble.right",
-          emphasized: chatsAttentionCount > 0,
-          badge: chatsAvailable && chatsAttentionCount > 0 ? "\(chatsAttentionCount)" : nil
-        )
-        .opacity(chatsAvailable ? 1 : 0.45)
-      }
-      .buttonStyle(.plain)
-      .disabled(!chatsAvailable)
-      .accessibilityLabel(chatsAttentionCount > 0
-        ? "Chats, \(chatsAttentionCount) awaiting input"
-        : "Chats")
-      .accessibilityHint("Opens conversations that are not linked to a project.")
+    case .projectsPage:
+      ToolbarItem(placement: .topBarTrailing) { settingsButton }
+      ToolbarSpacer(.fixed, placement: .topBarTrailing)
+      ToolbarItem(placement: .topBarTrailing) { addButton }
     }
-    .padding(.horizontal, 16)
-    .padding(.top, 6)
-    .padding(.bottom, 10)
+  }
+
+  private var addButton: some View {
+    Button(action: actions.onAdd) {
+      Label("Add project", systemImage: "plus")
+    }
+    .tint(ADEColor.textPrimary)
+    .accessibilityHint("Adds a project from one of your machines.")
+  }
+
+  private var settingsButton: some View {
+    Button(action: actions.onOpenSettings) {
+      Label("Settings", systemImage: "gearshape")
+    }
+    .tint(ADEColor.textPrimary)
+  }
+
+  // Chats live behind a toolbar button rather than a card in the list (M13);
+  // the badge counts chats awaiting input.
+  private var chatsButton: some View {
+    Button(action: actions.onOpenChats) {
+      Label("Chats", systemImage: "bubble.left.and.bubble.right")
+    }
+    .badge(actions.chatsAvailable ? actions.chatsAttentionCount : 0)
+    .tint(ADEColor.textPrimary)
+    .disabled(!actions.chatsAvailable)
+    .accessibilityLabel(actions.chatsAttentionCount > 0
+      ? "Chats, \(actions.chatsAttentionCount) awaiting input"
+      : "Chats")
+    .accessibilityHint("Opens conversations that are not linked to a project.")
   }
 }
 
-/// The machines chip: a status dot and the machine name (or "N machines"),
-/// with a plain menu that lists every machine and opens connection settings.
-struct HubConnectionPill: View {
+extension View {
+  /// The Hub's single stack keeps its header across the top. The Duo's closed
+  /// outer display would otherwise turn the bar into a vertical rail along its
+  /// curved edge, which put the header's icons in a column of their own and
+  /// cost the grid, the filters and the composer that width.
+  @ViewBuilder
+  func hubHeaderStaysOnTop() -> some View {
+    #if compiler(>=6.4)
+    if #available(iOS 27.1, *) {
+      toolbarVerticalBehavior(.disabled)
+    } else {
+      self
+    }
+    #else
+    self
+    #endif
+  }
+}
+
+/// The Hub's header as a row of its own: the title (the ADE mark with the
+/// machines) on the left, then Activity, Chats and Settings in one glass group
+/// and Add on its own — the same items, glyphs and grouping as `HubToolbar`.
+/// Used wherever the Hub's header is not an edge-bar toolbar, so it can sit
+/// under the status bar and span the screen instead of sharing the status
+/// bar's row: the phone, the Duo's outer display, the inner display held
+/// upright, an iPad.
+struct HubHeaderRow<Title: View>: View {
+  let actions: HubToolbarActions
+  @ViewBuilder var title: () -> Title
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+
+  static var height: CGFloat { 48 }
+
+  var body: some View {
+    GlassEffectContainer(spacing: 12) {
+      HStack(spacing: 12) {
+        // On a narrow phone the machine's name truncates; the icons have
+        // fixed frames and keep theirs.
+        title()
+          .frame(height: Self.height)
+          .padding(.horizontal, 10)
+          .glassEffect(.regular.interactive(), in: .capsule)
+        Spacer(minLength: 0)
+        HStack(spacing: 0) {
+          icon("bell", badge: drawer.unreadCount, action: actions.onOpenActivity)
+            .accessibilityLabel(
+              drawer.unreadCount > 0
+                ? "Activity, \(drawer.unreadCount) \(drawer.unreadCount == 1 ? "item needs" : "items need") you"
+                : "Activity"
+            )
+            .accessibilityHint("Opens the Activity drawer.")
+          icon(
+            "bubble.left.and.bubble.right",
+            badge: actions.chatsAvailable ? actions.chatsAttentionCount : 0,
+            action: actions.onOpenChats
+          )
+          .disabled(!actions.chatsAvailable)
+          .accessibilityLabel(actions.chatsAttentionCount > 0
+            ? "Chats, \(actions.chatsAttentionCount) awaiting input"
+            : "Chats")
+          .accessibilityHint("Opens conversations that are not linked to a project.")
+          icon("gearshape", action: actions.onOpenSettings)
+            .accessibilityLabel("Settings")
+        }
+        .padding(.horizontal, 4)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        icon("plus", action: actions.onAdd)
+          .glassEffect(.regular.interactive(), in: .circle)
+          .accessibilityLabel("Add project")
+          .accessibilityHint("Adds a project from one of your machines.")
+      }
+    }
+    .frame(height: Self.height)
+  }
+
+  private func icon(_ symbol: String, badge: Int = 0, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 19, weight: .regular))
+        .frame(width: Self.height, height: Self.height)
+        .contentShape(Rectangle())
+        .overlay(alignment: .topTrailing) {
+          if badge > 0 {
+            Text(badge > 99 ? "99+" : "\(badge)")
+              .font(.caption2.weight(.semibold).monospacedDigit())
+              .foregroundStyle(.white)
+              .padding(.horizontal, 5)
+              .frame(minWidth: 18, minHeight: 18)
+              .background(Color.red, in: Capsule())
+              .offset(x: -2, y: 4)
+              .accessibilityHidden(true)
+          }
+        }
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(ADEColor.textPrimary)
+  }
+}
+
+extension View {
+  /// For the Hub's column whose last view is the composer: on a display with
+  /// a home indicator the composer's box sits as far above the bottom edge as
+  /// a bottom bar does (the edge bar's concentric inset) instead of on top of
+  /// the whole safe area, and the list above it runs down to meet it. The
+  /// keyboard still pushes the column up.
+  func hubComposerAtScreenBottom() -> some View {
+    modifier(HubComposerScreenBottom())
+  }
+
+  /// Keeps a header row out of the status bar, and off the screen's top edge
+  /// where there is no status bar. Some displays (the Duo's) draw the clock
+  /// beside the navigation bar's row, inside the top safe area's height; a
+  /// row of our own goes under it instead.
+  func hubHeaderClearsStatusBar() -> some View {
+    modifier(HubStatusBarClearance())
+  }
+}
+
+@MainActor
+private func hubKeyWindowScene() -> UIWindowScene? {
+  let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+  return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+}
+
+private struct HubComposerScreenBottom: ViewModifier {
+  /// What the display keeps at the bottom: a home indicator (the column runs
+  /// past it), and on the Duo's outer display held landscape the camera in
+  /// the bottom-trailing corner, which the composer's end keeps clear of.
+  private struct Bottom: Equatable {
+    var homeIndicator = false
+    var cornerCamera = false
+  }
+
+  @State private var bottom = Bottom()
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.bottom, bottom.homeIndicator ? max(0, DuoEdgeBar.bottomInset - HubInlineComposer.bottomPadding) : 0)
+      .environment(\.hubComposerCornerClearance, bottom.cornerCamera ? HubComposerScreenBottom.cameraClearance : 0)
+      .ignoresSafeArea(.container, edges: bottom.homeIndicator ? .bottom : [])
+      .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+        guard let window = hubKeyWindowScene()?.windows.first else { return }
+        let inset = window.safeAreaInsets.bottom
+        let landscape = window.bounds.width > window.bounds.height
+        // Held landscape an iPhone's home indicator takes ~21pt; a far deeper
+        // bottom inset is the outer display's camera, in its corner.
+        let next = Bottom(
+          homeIndicator: inset > DuoEdgeBar.bottomInset,
+          cornerCamera: landscape && inset > 60
+        )
+        if next != bottom { bottom = next }
+      }
+  }
+
+  /// From the screen's trailing edge to clear of the outer display's camera,
+  /// held landscape (measured: the camera spans ~32–68pt in from the edge).
+  static let cameraClearance: CGFloat = 64
+}
+
+private struct HubComposerCornerClearanceKey: EnvironmentKey {
+  static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+  /// How far the composer's trailing end stays in from its column's edge,
+  /// clear of a camera in the screen's bottom corner (`hubComposerAtScreenBottom`).
+  var hubComposerCornerClearance: CGFloat {
+    get { self[HubComposerCornerClearanceKey.self] }
+    set { self[HubComposerCornerClearanceKey.self] = newValue }
+  }
+}
+
+/// The composer, its trailing end kept clear of a camera in the screen's
+/// bottom corner.
+struct HubComposerClearsCorner<Content: View>: View {
+  @ViewBuilder var content: () -> Content
+  @Environment(\.hubComposerCornerClearance) private var clearance
+
+  var body: some View {
+    content().padding(.trailing, clearance)
+  }
+}
+
+private struct HubStatusBarClearance: ViewModifier {
+  @State private var clearance: CGFloat = 0
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.top, clearance)
+      .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+        let status = hubKeyWindowScene()?.statusBarManager?.statusBarFrame ?? .zero
+        let underStatus = status.isEmpty ? 0 : status.maxY - frame.minY
+        let offEdge = 8 - frame.minY
+        let next = max(0, underStatus, offEdge)
+        if abs(next - clearance) > 0.5 { clearance = next }
+      }
+  }
+}
+
+/// Activity, badged with what needs the user. Its own view so the badge
+/// follows the drawer without redrawing the screen that hosts it.
+struct HubActivityToolbarButton: View {
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Label("Activity", systemImage: "bell")
+    }
+    // Monochrome, like the rest of the bar; colour is for the badge.
+    .tint(ADEColor.textPrimary)
+    .badge(drawer.unreadCount)
+    .accessibilityLabel(
+      drawer.unreadCount > 0
+        ? "Activity, \(drawer.unreadCount) \(drawer.unreadCount == 1 ? "item needs" : "items need") you"
+        : "Activity"
+    )
+    .accessibilityHint("Opens the Activity drawer.")
+  }
+}
+
+/// The signed-in account's picture. Opens Settings, where the account lives.
+struct HubAccountButton: View {
+  let identity: AccountIdentity
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      AccountAvatar(identity: identity)
+        .scaleEffect(34.0 / 44.0)
+        .frame(width: 34, height: 34)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Account: \(identity.displayName)")
+    .accessibilityHint("Opens Settings.")
+  }
+}
+
+// MARK: - Connection
+
+/// What the Hub's title says about the connection: the machine (or how many),
+/// its state, and a project switching in.
+struct HubConnectionStatus: Equatable {
+  var tone: ADEKitTone
+  var label: String
+  var spokenState: String
+  /// A project switching in replaces the label with progress.
+  var switchingProjectName: String?
+
+  var accessibilityLabel: String {
+    if let switchingProjectName { return "Opening \(switchingProjectName)" }
+    return "Machine connection: \(label), \(spokenState)"
+  }
+}
+
+@MainActor
+func hubConnectionStatus(
+  syncService: SyncService,
+  machineFleet: MachineFleet,
+  account: AccountService
+) -> HubConnectionStatus {
+  let health = syncService.connectionHealth
+  let tone: ADEKitTone = switch health.transport {
+  case .connected: health.load == .strained ? .warn : .ok
+  case .connecting: .warn
+  case .unreachable: .crit
+  case .disconnected: .neutral
+  }
+  let transportWord = switch health.transport {
+  case .connected: "Connected"
+  case .connecting: "Connecting…"
+  case .unreachable: "Unreachable"
+  case .disconnected: "Offline"
+  }
+  let spokenState = switch health.transport {
+  case .connected: "connected"
+  case .connecting: "connecting"
+  case .unreachable: "unreachable"
+  case .disconnected: "offline"
+  }
+  // The machine we're attached to, or — while an attempt is in flight or has
+  // just failed — the one that attempt targeted.
+  let machineName = syncConnectionSubjectMachineName(
+    transport: health.transport,
+    attemptMachineName: syncService.connectAttemptTarget.flatMap {
+      accountMachinePresentationName(
+        hostIdentity: $0.machineIdentity,
+        fallback: $0.machineName,
+        machines: account.machines
+      )
+    },
+    hostDisplayName: syncService.focusedMachineAccountName
+  )
+  // Above one live machine the title counts them instead of naming one; only
+  // while the primary is attached, so a connect in flight or a failure names
+  // the machine it is about.
+  let liveCount = (health.transport == .connected ? 1 : 0)
+    + machineFleet.machines.filter { $0.state == .live }.count
+  let label = health.transport == .connected && liveCount > 1
+    ? "\(liveCount) machines"
+    : machineName ?? transportWord
+  let switching = syncService.isProjectSwitching
+    ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
+    : nil
+  return HubConnectionStatus(
+    tone: tone,
+    label: label,
+    spokenState: spokenState,
+    switchingProjectName: switching
+  )
+}
+
+/// The Hub's title: the brand, then the connection, as one toolbar item whose
+/// menu lists every machine and opens connection settings.
+struct HubConnectionMenu: View {
+  let status: HubConnectionStatus
+  let machines: [DuoHomeMachine]
+  let onOpenSettings: () -> Void
+
+  var body: some View {
+    Menu {
+      HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
+    } label: {
+      // A narrow phone gives the machine's name the room: the wordmark goes
+      // before the name truncates ("ADE • Arul…").
+      ViewThatFits(in: .horizontal) {
+        labelRow(showsBrand: true)
+        labelRow(showsBrand: false)
+      }
+    }
+    .accessibilityLabel(status.accessibilityLabel)
+    .accessibilityHint("Shows your machines and connection settings.")
+  }
+
+  private func labelRow(showsBrand: Bool) -> some View {
+      HStack(spacing: 8) {
+        if showsBrand {
+          Image("BrandMark")
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 38, height: 21)
+            .accessibilityHidden(true)
+        }
+        Group {
+          if let switching = status.switchingProjectName {
+            HStack(spacing: 6) {
+              ProgressView().controlSize(.mini)
+              Text("Opening \(switching)…")
+            }
+            .id("switching")
+          } else {
+            HStack(spacing: 6) {
+              ADEKitDot(tone: status.tone, size: 7)
+              Text(status.label)
+            }
+            .id("machine")
+          }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .transition(.opacity)
+      }
+      .padding(.horizontal, 6)
+      .animation(.easeInOut(duration: 0.25), value: status.switchingProjectName)
+  }
+}
+
+/// The machine list the Hub's connection menu (and the Duo rail's Machines
+/// button) shows: each machine with its state, then connection settings.
+struct HubMachinesMenuContent: View {
+  let machines: [DuoHomeMachine]
+  let onOpenSettings: () -> Void
+
+  var body: some View {
+    Section("Machines") {
+      ForEach(machines) { machine in
+        Button(action: onOpenSettings) {
+          Text(machine.name)
+          Text(machine.summary)
+          Image(systemName: machineSymbol(machineKey: machine.isFocused ? nil : machine.id, name: machine.name))
+        }
+      }
+    }
+    Button(action: onOpenSettings) {
+      Label("Connection settings", systemImage: "gearshape")
+    }
+  }
+}
+
+/// `HubConnectionMenu` over the live connection and fleet.
+struct HubLiveConnectionMenu: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
   @ObservedObject private var account = AccountService.shared
 
-  /// Machines with a live link right now: the primary one plus the fleet's.
-  /// Above one, the pill counts them instead of naming just the primary.
-  private var liveMachineCount: Int {
-    let primary = syncService.connectionHealth.transport == .connected ? 1 : 0
-    return primary + machineFleet.machines.filter { $0.state == .live }.count
-  }
-
-  private var tone: ADEKitTone {
-    let health = syncService.connectionHealth
-    switch health.transport {
-    case .connected: return health.load == .strained ? .warn : .ok
-    case .connecting: return .warn
-    case .unreachable: return .crit
-    case .disconnected: return .neutral
-    }
-  }
-
-  /// The machine this pill should name: the one we're attached to, or — while
-  /// an attempt is in flight or has just failed — the one that attempt targeted.
-  private var machineName: String? {
-    syncConnectionSubjectMachineName(
-      transport: syncService.connectionHealth.transport,
-      attemptMachineName: syncService.connectAttemptTarget.flatMap {
-        accountMachinePresentationName(
-          hostIdentity: $0.machineIdentity,
-          fallback: $0.machineName,
-          machines: account.machines
-        )
-      },
-      hostDisplayName: syncService.focusedMachineAccountName
+  var body: some View {
+    HubConnectionMenu(
+      status: hubConnectionStatus(syncService: syncService, machineFleet: machineFleet, account: account),
+      machines: duoHomeMachines(syncService: syncService, fleet: machineFleet),
+      onOpenSettings: { syncService.settingsPresented = true }
     )
   }
-
-  private var transportWord: String {
-    switch syncService.connectionHealth.transport {
-    case .connected: return "Connected"
-    case .connecting: return "Connecting…"
-    case .unreachable: return "Unreachable"
-    case .disconnected: return "Offline"
-    }
-  }
-
-  private var label: String {
-    // Only while the primary is attached: a connect in flight or a failure
-    // names the machine it is about.
-    if syncService.connectionHealth.transport == .connected, liveMachineCount > 1 {
-      return "\(liveMachineCount) machines"
-    }
-    return machineName ?? transportWord
-  }
-
-  private var connectionAccessibilityLabel: String {
-    let state = switch syncService.connectionHealth.transport {
-    case .connected: "connected"
-    case .connecting: "connecting"
-    case .unreachable: "unreachable"
-    case .disconnected: "offline"
-    }
-    return "Machine connection: \(label), \(state)"
-  }
-
-  /// Name of the project currently switching in, if any — drives the progress
-  /// crossfade in the chip during a switch.
-  private var switchingProjectName: String? {
-    guard syncService.isProjectSwitching else { return nil }
-    return syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
-  }
-
-  private func fleetStateWord(_ state: MachineFleet.MachineState) -> String {
-    switch state {
-    case .live: return "Live"
-    case .connecting: return "Connecting"
-    case .offline: return "Offline"
-    case .paused: return "Paused"
-    case .inactive: return "Inactive"
-    case .needsUpdate: return "Needs update"
-    case .needsAttention: return "Needs attention"
-    }
-  }
-
-  var body: some View {
-    Menu {
-      Section("Machines") {
-        Button {
-          syncService.settingsPresented = true
-        } label: {
-          Text(syncService.focusedMachineDisplayName)
-          Text(transportWord)
-          Image(systemName: machineSymbol(machineKey: nil, name: syncService.focusedMachineDisplayName))
-        }
-        ForEach(machineFleet.machines) { machine in
-          Button {
-            syncService.settingsPresented = true
-          } label: {
-            Text(machine.name)
-            Text(fleetStateWord(machine.state))
-            Image(systemName: machineSymbol(machineKey: machine.machineKey, name: machine.name))
-          }
-        }
-      }
-      Button {
-        syncService.settingsPresented = true
-      } label: {
-        Label("Connection settings", systemImage: "gearshape")
-      }
-    } label: {
-      Group {
-        if let switching = switchingProjectName {
-          // Switch in flight: the chip shows progress and crossfades the
-          // opening project's name in (Extras).
-          HStack(spacing: 6) {
-            ProgressView().controlSize(.mini)
-            Text("Opening \(switching)…")
-              .lineLimit(1)
-          }
-          .id("switching")
-          .transition(.opacity)
-        } else {
-          HStack(spacing: 6) {
-            ADEKitDot(tone: tone, size: 7)
-            Text(label)
-              .lineLimit(1)
-          }
-          .id("machine")
-          .transition(.opacity)
-        }
-      }
-      .font(.system(size: 13, weight: .semibold))
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 9)
-      .frame(height: 34)
-      .adeKitChrome(in: Capsule())
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .animation(.easeInOut(duration: 0.25), value: switchingProjectName)
-    .accessibilityLabel(switchingProjectName.map { "Opening \($0)" } ?? connectionAccessibilityLabel)
-    .accessibilityHint("Shows your machines and connection settings.")
-  }
 }
-
 
 // MARK: - Project card
 
@@ -782,6 +1045,240 @@ struct HubProjectCard: View, Equatable {
   }
 }
 
+// MARK: - Project grid
+
+/// The Hub's projects as a grid of square-ish tiles: two across on a phone and
+/// the closed Duo, three (or more, as width allows) on the Duo's projects page
+/// and an iPad. A tile opens its project; the Hub shows no lanes or chats.
+enum HubProjectGridMetrics {
+  /// The narrowest a tile gets before the grid drops a column.
+  static let minTileWidth: CGFloat = 128
+  static let spacing: CGFloat = 12
+  static let tileHeight: CGFloat = 138
+  /// A short screen (a phone held landscape): icon and name on one line.
+  static let shortTileHeight: CGFloat = 96
+
+  static var columns: [GridItem] {
+    [GridItem(.adaptive(minimum: minTileWidth), spacing: spacing, alignment: .top)]
+  }
+}
+
+/// One project as a grid tile, modelled on desktop's project cards: its icon,
+/// the machines it is on (a chip, when the user has more than one machine),
+/// its name (two lines at most), how its agents stand (the coloured per-state
+/// counts), its lane count, and the open chevron. Tapping the tile opens the
+/// project, the only way to its lanes and chats. Long-press for Open, Change
+/// icon…, Move to top, Copy path, and Remove from list.
+struct HubProjectTile: View, Equatable {
+  let presentation: HubProjectPresentation
+  /// "Arul’s Mac Studio" or "2 machines": spoken, and the long-press menu's
+  /// header. nil when the user has one machine.
+  var machineLabel: String?
+  /// How many machines the project is on; the chip shows the count, which
+  /// never truncates in a narrow tile. 0 hides it.
+  var machineCount = 0
+  /// The project's machines can store a new icon (`projectIcon` feature).
+  var canChangeIcon = false
+  var canMoveToTop = true
+  let onOpenProject: () -> Void
+  /// A picked image, already a small PNG, for every machine the project is on.
+  let onChangeIcon: (Data) -> Void
+  let onMoveToTop: () -> Void
+  let onForget: () -> Void
+
+  @State private var iconPickerShown = false
+  @State private var pickedIcon: PhotosPickerItem?
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+  private var isShort: Bool { verticalSizeClass == .compact }
+  private var tileHeight: CGFloat { isShort ? HubProjectGridMetrics.shortTileHeight : HubProjectGridMetrics.tileHeight }
+  private var project: MobileProjectSummary { presentation.project }
+  private var rootPath: String? {
+    let path = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return path?.isEmpty == false ? path : nil
+  }
+
+  var body: some View {
+    Button(action: onOpenProject) {
+      VStack(alignment: .leading, spacing: 0) {
+        if isShort {
+          // A short screen (a phone held landscape): icon and name share the
+          // first line, so two rows of tiles fit above the composer.
+          HStack(alignment: .center, spacing: 8) {
+            HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 26)
+            Text(project.displayName)
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if machineLabel != nil, machineCount > 0 {
+              HubProjectMachineChip(count: machineCount)
+            }
+          }
+        } else {
+          HStack(alignment: .top, spacing: 6) {
+            HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
+            Spacer(minLength: 4)
+            if machineLabel != nil, machineCount > 0 {
+              HubProjectMachineChip(count: machineCount)
+            }
+          }
+          // The name right under the icon and the counts pinned to the
+          // bottom: a name that wraps to two lines no longer pushes its
+          // tile's counts below its neighbours' (the content overflowed the
+          // fixed height).
+          Text(project.displayName)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+        }
+        Spacer(minLength: 0)
+        // Bound to a local because `stateCounts` walks the whole lane tree.
+        let stateCounts = presentation.stateCounts
+        HStack(alignment: .lastTextBaseline, spacing: 6) {
+          VStack(alignment: .leading, spacing: 3) {
+            if stateCounts.isEmpty {
+              Text("No agents")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(ADEColor.textMuted)
+            } else {
+              HubStateSummary(counts: stateCounts, fitsWidth: true)
+            }
+            Text(presentation.metaLine)
+              .font(.system(size: 11))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+          Spacer(minLength: 4)
+          if presentation.isSwitching {
+            ProgressView().controlSize(.small)
+          } else {
+            ADESettingsChevron()
+          }
+        }
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, minHeight: tileHeight, maxHeight: tileHeight, alignment: .topLeading)
+      .adeKitCard(padding: nil)
+      .overlay {
+        // The accent marks the one selected thing: the project open on the phone.
+        if presentation.isActive {
+          RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+            .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
+        }
+      }
+      .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
+      .contentShape(RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(tileSpokenLabel)
+    .accessibilityHint("Opens the project.")
+    .contextMenu {
+      if let machineLabel {
+        Section("On \(machineLabel)") {}
+      }
+      Button(action: onOpenProject) {
+        Label("Open", systemImage: "arrow.up.forward.app")
+      }
+      if canChangeIcon {
+        Button { iconPickerShown = true } label: {
+          Label("Change icon…", systemImage: "photo")
+        }
+      }
+      if canMoveToTop {
+        Button(action: onMoveToTop) {
+          Label("Move to top", systemImage: "arrow.up.to.line")
+        }
+      }
+      if let rootPath {
+        Button {
+          UIPasteboard.general.string = rootPath
+        } label: {
+          Label("Copy path", systemImage: "doc.on.doc")
+        }
+      }
+      Divider()
+      Button(role: .destructive, action: onForget) {
+        Label("Remove from list", systemImage: "trash")
+      }
+    }
+    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
+    .onChange(of: pickedIcon) { _, item in
+      guard let item else { return }
+      pickedIcon = nil
+      Task {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let png = hubProjectIconPNG(from: data) else { return }
+        onChangeIcon(png)
+      }
+    }
+  }
+
+  private var tileSpokenLabel: String {
+    var parts = [project.displayName]
+    if let machineLabel { parts.append("on \(machineLabel)") }
+    if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
+    parts.append(presentation.metaLine)
+    return parts.joined(separator: ", ")
+  }
+
+  static func == (lhs: HubProjectTile, rhs: HubProjectTile) -> Bool {
+    lhs.presentation == rhs.presentation
+      && lhs.machineLabel == rhs.machineLabel
+      && lhs.machineCount == rhs.machineCount
+      && lhs.canChangeIcon == rhs.canChangeIcon
+      && lhs.canMoveToTop == rhs.canMoveToTop
+  }
+}
+
+/// How many machines a project is on, as a quiet chip: a computer glyph and
+/// the count. The names are in the long-press menu and the spoken label.
+struct HubProjectMachineChip: View {
+  let count: Int
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: count > 1 ? "macbook.and.iphone" : "desktopcomputer")
+        .font(.system(size: 10, weight: .semibold))
+      Text("\(count)")
+        .font(.caption2.weight(.semibold))
+        .monospacedDigit()
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 7)
+    .padding(.vertical, 3)
+    .background(ADEKit.track, in: Capsule())
+    .fixedSize()
+    .accessibilityHidden(true)
+  }
+}
+
+/// A picked photo as a project icon: square-cropped from the centre, at most
+/// 512 points, as PNG — well under the 2 MB a host accepts inline, and the
+/// same format every machine already renders.
+func hubProjectIconPNG(from data: Data) -> Data? {
+  guard let image = UIImage(data: data) else { return nil }
+  let side = min(image.size.width, image.size.height)
+  guard side > 0 else { return nil }
+  let target = min(512, side)
+  let format = UIGraphicsImageRendererFormat()
+  format.scale = 1
+  let renderer = UIGraphicsImageRenderer(size: CGSize(width: target, height: target), format: format)
+  let scale = target / side
+  let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  return renderer.pngData { _ in
+    image.draw(in: CGRect(
+      x: (target - drawSize.width) / 2,
+      y: (target - drawSize.height) / 2,
+      width: drawSize.width,
+      height: drawSize.height
+    ))
+  }
+}
+
 struct HubProjectIcon: View {
   let iconDataUrl: String?
   let isActive: Bool
@@ -904,6 +1401,10 @@ struct HubChatRow: View, Equatable {
   let onOpen: () -> Void
   let onArchive: () -> Void
   let onDelete: () -> Void
+  /// A phone-width column (every iPhone, the Duo's outer display): the state
+  /// shows as its glyph alone, so the chat's name gets the room. The word is
+  /// still spoken (see the row's accessibility label).
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   var body: some View {
     // Provider logo and chat name on the leading edge; state and time together
@@ -934,7 +1435,7 @@ struct HubChatRow: View, Equatable {
         // whole group is what stops a long chat name from eating the state —
         // the title's flexible frame above is the only child allowed to give.
         HStack(spacing: 5) {
-          if let status = row.boardState.label {
+          if horizontalSizeClass != .compact, let status = row.boardState.label {
             Text(status)
               .font(.system(size: 11, weight: .medium))
               .foregroundStyle(activityToneColor(row.boardState.tone))
@@ -1025,6 +1526,35 @@ struct HubEmptyProjectsCard: View {
   }
 }
 
+// MARK: - Centered page
+
+/// A page whose content is centered on the whole screen, not the safe area.
+/// The Duo's status and camera column sits on one side only, so centering
+/// inside the safe area pushed everything off to the other side; symmetric
+/// margins as wide as the larger inset keep content clear of both edges. The
+/// content gets at least the page's height, so `Spacer`s inside it center it
+/// vertically, and it scrolls when it does not fit.
+struct HubCenteredPage<Content: View>: View {
+  var maxWidth: CGFloat = 480
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    GeometryReader { geometry in
+      let sideInset = max(geometry.safeAreaInsets.leading, geometry.safeAreaInsets.trailing)
+      ScrollView {
+        content()
+          .frame(maxWidth: maxWidth)
+          .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+          .padding(.horizontal, 22 + sideInset)
+      }
+      .scrollIndicators(.hidden)
+      .scrollBounceBehavior(.basedOnSize)
+      .ignoresSafeArea(.container, edges: .horizontal)
+    }
+  }
+}
+
+
 // MARK: - No-machine state (preserves the old project hub landing)
 
 struct HubNoMachineState: View {
@@ -1033,80 +1563,105 @@ struct HubNoMachineState: View {
   var onConnectSuccess: () -> Void = {}
 
   var body: some View {
-    GeometryReader { geometry in
-      ScrollView {
-        VStack(spacing: 0) {
-          Image("BrandMark")
-            .resizable()
-            .renderingMode(.original)
-            .interpolation(.high)
-            .aspectRatio(contentMode: .fit)
-            .frame(maxWidth: 220)
-            .frame(height: 108)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 88)
-            .accessibilityLabel("ADE")
+    // One column, centered on the whole screen on every display (the
+    // Duo's fold included), as the sign-in page is.
+    HubCenteredPage {
+      VStack(spacing: 0) {
+        Spacer(minLength: 24)
+      VStack(spacing: 0) {
+        Image("BrandMark")
+          .resizable()
+          .renderingMode(.original)
+          .interpolation(.high)
+          .aspectRatio(contentMode: .fit)
+          .frame(maxWidth: 200)
+          .frame(height: 96)
+          .accessibilityLabel("ADE")
 
-          HStack(spacing: 7) {
-            ADEKitDot(tone: syncService.connectionState == .error ? .crit : .neutral, size: 7)
-            Text(statusText)
-              .font(.system(size: 13, weight: .medium))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          .padding(.horizontal, 12)
-          .frame(height: 30)
-          .background(ADEKit.track, in: Capsule())
-          .padding(.top, 24)
+        Text(headline)
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .multilineTextAlignment(.center)
+          .padding(.top, 28)
 
-          if syncService.tailscaleOffHintVisible {
-            ADETailscaleOffHintCard()
-              .padding(.top, 22)
-          }
+        Text(message)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 360)
+          .padding(.top, 6)
 
-          // Between the no-machine badge and the Connect button: one-tap cards for
-          // machines that are online right now — on your account or previously
-          // paired — so a phone can jump back in without opening Settings (M4).
-          HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
+        if syncService.tailscaleOffHintVisible {
+          ADETailscaleOffHintCard()
             .padding(.top, 22)
-
-          Spacer(minLength: 40)
-
-          VStack(spacing: 12) {
-            if hasSavedMachine {
-              Button {
-                Task { await syncService.reconnectIfPossible(userInitiated: true) }
-              } label: {
-                Label("Reconnect", systemImage: "arrow.clockwise")
-              }
-              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-
-              Button {
-                syncService.settingsPresented = true
-              } label: {
-                Text("Connection settings")
-                  .font(.system(size: 14, weight: .medium))
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .frame(minHeight: 44)
-                  .contentShape(Rectangle())
-              }
-              .buttonStyle(.plain)
-            } else {
-              Button {
-                syncService.settingsPresented = true
-              } label: {
-                Label("Connect Machine", systemImage: "link")
-              }
-              .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-            }
-          }
-          .padding(.bottom, 56)
         }
-        .frame(maxWidth: 520)
-        .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .top)
-        .padding(.horizontal, 22)
       }
-      .scrollIndicators(.hidden)
+        .padding(.bottom, 32)
+      VStack(spacing: 24) {
+        // One-tap cards for machines that are online right now — on your
+        // account or previously paired — so a phone can jump back in
+        // without opening Settings.
+        HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
+
+        VStack(spacing: 4) {
+          if hasSavedMachine {
+            Button {
+              Task { await syncService.reconnectIfPossible(userInitiated: true) }
+            } label: {
+              Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+
+            Button("Connection Settings") {
+              syncService.settingsPresented = true
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(minHeight: 44)
+          } else {
+            Button {
+              syncService.settingsPresented = true
+            } label: {
+              Label("Connect a Computer", systemImage: "link")
+            }
+            .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          }
+        }
+        .frame(maxWidth: 360)
+      }
+        Spacer(minLength: 24)
+      }
     }
+    .toolbar {
+      if let identity = account.identity {
+        ToolbarItem(placement: .topBarTrailing) {
+          HubAccountButton(identity: identity) {
+            syncService.settingsPresented = true
+          }
+        }
+        .sharedBackgroundVisibility(.hidden)
+      }
+    }
+  }
+
+  private var headline: String {
+    switch syncService.connectionState {
+    case .error:
+      return statusText
+    default:
+      return hasSavedMachine ? statusText : "Connect a computer"
+    }
+  }
+
+  private var message: String {
+    if syncService.connectionState == .error {
+      return "Check that ADE is running on it and that both are online."
+    }
+    if hasSavedMachine {
+      return "Reconnect to pick up your projects, lanes and chats where you left them."
+    }
+    return "ADE runs your agents on your computer. Pair this phone to follow and steer them from anywhere."
   }
 
   /// A machine is "saved" when a pairing credential still exists for it —

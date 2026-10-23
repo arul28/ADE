@@ -988,6 +988,15 @@ export type SyncFeatureFlags = {
   projectActions: {
     enabled: boolean;
   };
+  /**
+   * The host answers `project_set_icon_request`. Older hosts omit it; a
+   * client hides "Change icon…" for a project on such a machine.
+   */
+  projectIcon?: {
+    enabled: true;
+    /** Largest icon file the request may carry, in bytes. */
+    maxBytes: number;
+  };
   changesetAck: {
     enabled: boolean;
   };
@@ -1268,6 +1277,31 @@ export type SyncProjectForgetResultPayload = {
   message?: string | null;
   projectId?: string | null;
   rootPath?: string | null;
+};
+
+/**
+ * Sets a registered project's icon from a picked image (a phone's photo
+ * library). The bytes travel inline, so they are capped at
+ * `REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES`; the host stores them in the project
+ * the way a desktop's "Change icon…" does, so every device shows the new icon
+ * from the next project catalog on.
+ */
+export type SyncProjectSetIconRequestPayload = {
+  projectId?: string | null;
+  rootPath?: string | null;
+  /** Picked file's name; only its extension and base name are used. */
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+};
+
+export type SyncProjectSetIconResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  projectId?: string | null;
+  rootPath?: string | null;
+  /** The thumbnail every device's catalog now carries, when it rendered. */
+  iconDataUrl?: string | null;
 };
 
 export type SyncProjectOpenRequestPayload = {
@@ -2938,6 +2972,10 @@ export type SyncRemoteCommandAction =
   | "macDesktop.start"
   | "macDesktop.stop"
   | "macDesktop.stopPrivate"
+  // One accessibility observation of the lane's screen plus a phone-sized
+  // element list, for a viewer's frozen "Inspect" mode. Read-only; the PNG is
+  // read separately with `workTools.readObservationPreview`.
+  | "macDesktop.observe"
   // A trusted viewer's Stop for the lane's Windows screen on either seat
   // (private or the user's main desktop). Never a Mac lane's display.
   | "macDesktop.stopSeat"
@@ -2957,6 +2995,9 @@ export type SyncRemoteCommandAction =
   | "appControl.status"
   | "appControl.streamSubscribe"
   | "appControl.streamUnsubscribe"
+  // One host-side hit-test for a viewer's frozen inspect view. Read-only and
+  // viewer-allowed like the rest of the App Control mirror.
+  | "appControl.inspectPoint"
   // Apple device environment. `apple.status` and `apple.streamTicket` are
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
@@ -3076,6 +3117,8 @@ export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_
 export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
 export type SyncProjectForgetRequestEnvelope = SyncEnvelopeWithPayload<"project_forget_request", SyncProjectForgetRequestPayload>;
 export type SyncProjectForgetResultEnvelope = SyncEnvelopeWithPayload<"project_forget_result", SyncProjectForgetResultPayload>;
+export type SyncProjectSetIconRequestEnvelope = SyncEnvelopeWithPayload<"project_set_icon_request", SyncProjectSetIconRequestPayload>;
+export type SyncProjectSetIconResultEnvelope = SyncEnvelopeWithPayload<"project_set_icon_result", SyncProjectSetIconResultPayload>;
 export type SyncProjectBrowseRequestEnvelope = SyncEnvelopeWithPayload<"project_browse_request", ProjectBrowseInput>;
 export type SyncProjectBrowseResultEnvelope = SyncEnvelopeWithPayload<"project_browse_result", SyncProjectBrowseResultPayload>;
 export type SyncProjectDefaultParentDirRequestEnvelope = SyncEnvelopeWithPayload<"project_default_parent_dir_request", Record<string, never>>;
@@ -3190,6 +3233,8 @@ export type SyncEnvelope =
   | SyncProjectSwitchResultEnvelope
   | SyncProjectForgetRequestEnvelope
   | SyncProjectForgetResultEnvelope
+  | SyncProjectSetIconRequestEnvelope
+  | SyncProjectSetIconResultEnvelope
   | SyncProjectBrowseRequestEnvelope
   | SyncProjectBrowseResultEnvelope
   | SyncProjectDefaultParentDirRequestEnvelope

@@ -124,6 +124,9 @@ struct PrChecksSections: View {
   let deployments: [PrDeployment]
   let canRerun: Bool
   let onRerun: () -> Void
+  /// The Duo's check list beside the check: a row selects its check instead
+  /// of pushing the check page.
+  var selection: Binding<String?>? = nil
 
   @State private var passedExpanded = false
 
@@ -164,19 +167,32 @@ struct PrChecksSections: View {
           // summary must not read green while one is missing.
           let missing = missingRequired.count
           let icon = headlineIcon(failing: headline.failing, running: headline.running, missing: missing)
-          HStack(spacing: 8) {
-            Image(systemName: icon.symbol)
-              .foregroundStyle(icon.tint)
-              .font(.system(size: 13, weight: .semibold))
-            Text(missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text)
-              .font(.subheadline.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-            Spacer(minLength: 8)
-            if canRerun && headline.failing > 0 {
-              Button("Re-run", action: onRerun)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(ADEColor.accent)
-                .buttonStyle(.plain)
+          let tally = missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text
+          let showsRerun = canRerun && headline.failing > 0
+          // The tally on one line with Re-run beside it while that fits; in a
+          // narrow column (the Duo's check list, a phone) Re-run goes under
+          // the tally instead of squeezing it into three short lines.
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+              headlineGlyph(icon)
+              Text(tally)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .fixedSize()
+              Spacer(minLength: 8)
+              if showsRerun { rerunButton }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+              headlineGlyph(icon)
+              VStack(alignment: .leading, spacing: 6) {
+                Text(tally)
+                  .font(.subheadline.weight(.medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .fixedSize(horizontal: false, vertical: true)
+                if showsRerun { rerunButton }
+              }
+              Spacer(minLength: 0)
             }
           }
           .adeFlatRow(separator: .hidden)
@@ -245,6 +261,20 @@ struct PrChecksSections: View {
 
   /// The summary line's glyph: failing beats running beats a required check
   /// that never reported; all clear is green (muted when no CI ran).
+  private func headlineGlyph(_ icon: (symbol: String, tint: Color)) -> some View {
+    Image(systemName: icon.symbol)
+      .foregroundStyle(icon.tint)
+      .font(.system(size: 13, weight: .semibold))
+  }
+
+  private var rerunButton: some View {
+    Button("Re-run", action: onRerun)
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(ADEColor.accent)
+      .buttonStyle(.plain)
+      .fixedSize()
+  }
+
   private func headlineIcon(failing: Int, running: Int, missing: Int) -> (symbol: String, tint: Color) {
     if failing > 0 { return ("xmark.circle.fill", ADEColor.danger) }
     if running > 0 { return ("clock.fill", ADEColor.warning) }
@@ -252,13 +282,26 @@ struct PrChecksSections: View {
     return ("checkmark.circle.fill", isNotRun ? ADEColor.textMuted : ADEColor.success)
   }
 
+  @ViewBuilder
   private func row(_ check: PrCheck) -> some View {
-    NavigationLink {
-      PrCheckPage(check: check, match: prActionJob(for: check, in: actionRuns))
-    } label: {
-      PrCheckRow(check: check)
+    if let selection {
+      Button {
+        selection.wrappedValue = check.id
+      } label: {
+        PrCheckRow(check: check)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .adeFlatRow()
+      .listRowBackground(selection.wrappedValue == check.id ? ADEColor.accent.opacity(0.12) : Color.clear)
+    } else {
+      NavigationLink {
+        PrCheckPage(check: check, match: prActionJob(for: check, in: actionRuns))
+      } label: {
+        PrCheckRow(check: check)
+      }
+      .adeFlatRow()
     }
-    .adeFlatRow()
   }
 }
 
@@ -327,6 +370,21 @@ struct PrCheckPage: View {
   let check: PrCheck
   let match: (run: PrActionRun, job: PrActionJob)?
 
+  var body: some View {
+    List {
+      PrCheckDetailSections(check: check, match: match)
+    }
+    .adeFlatList()
+    .navigationTitle(check.name)
+    .navigationBarTitleDisplayMode(.inline)
+  }
+}
+
+/// One check's sections: status and timing, the Actions job's steps, the log.
+struct PrCheckDetailSections: View {
+  let check: PrCheck
+  let match: (run: PrActionRun, job: PrActionJob)?
+
   private var logURL: URL? {
     if let raw = check.detailsUrl, let url = URL(string: raw) { return url }
     if let match, let url = URL(string: match.run.htmlUrl) { return url }
@@ -334,7 +392,7 @@ struct PrCheckPage: View {
   }
 
   var body: some View {
-    List {
+    Group {
       Section {
         VStack(alignment: .leading, spacing: 6) {
           PrCheckRow(check: check)
@@ -384,8 +442,5 @@ struct PrCheckPage: View {
         }
       }
     }
-    .adeFlatList()
-    .navigationTitle(check.name)
-    .navigationBarTitleDisplayMode(.inline)
   }
 }

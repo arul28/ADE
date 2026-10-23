@@ -6289,6 +6289,65 @@ function registerMacDesktopRemoteCommands({
         laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
       })));
 
+    // Frozen inspect from a phone or the hosted web viewer: one accessibility
+    // observation plus its screenshot, projected small. No image rides back —
+    // the client reads the PNG through `workTools.readObservationPreview` with
+    // the `screenshotPath` here, which is the same root the Work tools pane
+    // already serves. Element frames are the driver's GLOBAL points, so the
+    // lane display's origin is subtracted here: a viewer draws the frame over
+    // its own copy of the picture, which starts at the display's corner.
+    register("macDesktop.observe", { viewerAllowed: true }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.observe requires laneId.");
+      const requestedLimit = typeof payload.limit === "number" && Number.isFinite(payload.limit)
+        ? Math.round(payload.limit)
+        : null;
+      const limit = Math.max(1, Math.min(200, requestedLimit ?? 200));
+      const observation = await macDesktopService.observe({ laneId, limit, map: false });
+      const status = await macDesktopService.getStatus({ laneId });
+      const origin = status.display?.origin ?? { x: 0, y: 0 };
+      return {
+        observation: {
+          id: observation.id,
+          laneId: observation.laneId,
+          capturedAt: observation.capturedAt,
+          screenshotPath: observation.screenshotPath,
+          display: {
+            width: observation.display.width,
+            height: observation.display.height,
+            scale: observation.display.scale,
+            originX: origin.x,
+            originY: origin.y,
+          },
+          windows: observation.windows.map((window) => ({
+            id: window.id,
+            appName: window.appName,
+            title: window.title,
+          })),
+          elements: observation.elements.map((element) => ({
+            index: element.index,
+            role: element.role,
+            subrole: element.subrole,
+            title: element.title,
+            label: element.label,
+            value: element.value,
+            identifier: element.identifier,
+            enabled: element.enabled,
+            focused: element.focused,
+            frame: {
+              x: element.frame.x - origin.x,
+              y: element.frame.y - origin.y,
+              width: element.frame.width,
+              height: element.frame.height,
+            },
+          })),
+          elementCount: observation.elementCount,
+          truncated: observation.truncated,
+          truncatedReason: observation.truncatedReason ?? null,
+          caption: observation.caption,
+        },
+      };
+    });
+
     register("macDesktop.start", {
       viewerAllowed: false,
       controllerAllowed: true,
@@ -6496,6 +6555,56 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
       laneId: asTrimmedString(payload.laneId) ?? null,
       chatSessionId: asTrimmedString(payload.chatSessionId) ?? null,
     }));
+  // Frozen inspect from a phone or the hosted web viewer: one host-side
+  // hit-test at a viewport point, answered with the element and the screen
+  // geometry its frame is in. Read-only and small — the viewer already holds
+  // the frame it tapped, so no screenshot rides back (`includeScreenshot` is
+  // forced off in the stream). Coordinates are viewport CSS px, the same space
+  // `appControl.click` takes; screenshot px would land low and right on a
+  // downscaled screencast frame.
+  register("appControl.inspectPoint", { viewerAllowed: true }, async (payload) => {
+    const x = typeof payload.x === "number" && Number.isFinite(payload.x) ? payload.x : null;
+    const y = typeof payload.y === "number" && Number.isFinite(payload.y) ? payload.y : null;
+    if (x == null) throw new Error("appControl.inspectPoint requires a numeric x.");
+    if (y == null) throw new Error("appControl.inspectPoint requires a numeric y.");
+    const result = await stream.inspectPoint({
+      laneId: requireString(payload.laneId, "appControl.inspectPoint requires laneId."),
+      x,
+      y,
+      coordinateSpace: "viewport",
+      includeScreenshot: false,
+    });
+    const item = result.item;
+    const metadata = item?.metadata ?? {};
+    return {
+      source: result.source,
+      item: item
+        ? {
+          id: item.id,
+          provider: item.provider,
+          componentId: item.componentId,
+          sourceFile: item.sourceFile,
+          sourceLine: item.sourceLine,
+          // Screenshot pixels at the host's own capture size; the reply's
+          // `screen.scaleX` and viewport size convert them to the frozen frame.
+          frame: item.frame,
+          selectedAt: item.selectedAt,
+          label: asTrimmedString(metadata.label),
+          value: asTrimmedString(metadata.value),
+          role: asTrimmedString(metadata.role),
+          tagName: asTrimmedString(metadata.tagName),
+          selector: asTrimmedString(metadata.selector),
+          testId: asTrimmedString(metadata.testId),
+          sourceConfidence: asTrimmedString(metadata.sourceConfidence),
+        }
+        : null,
+      snapshot: {
+        screen: result.snapshot.screen,
+        url: result.snapshot.url,
+        title: result.snapshot.title,
+      },
+    };
+  });
   register("appControl.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
     const sink = context.appControlStream;
     if (!sink) throw new Error("appControl.streamSubscribe requires a live sync connection.");

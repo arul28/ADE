@@ -5,6 +5,12 @@ struct LaneDiffScreen: View {
   @EnvironmentObject private var syncService: SyncService
 
   let request: LaneDiffRequest
+  /// The Duo's git column: the diff replaces the git list in place, with a
+  /// back button of its own, instead of opening as a sheet.
+  var inline = false
+  /// A diff already in hand (fixture screens); skips the read.
+  var initialDiff: FileDiff? = nil
+  var onClose: (() -> Void)? = nil
 
   @State private var diff: FileDiff?
   @State private var editedText = ""
@@ -19,10 +25,122 @@ struct LaneDiffScreen: View {
   }
 
   var body: some View {
-    NavigationStack {
+    if inline {
       VStack(spacing: 0) {
-        ScrollView {
-          VStack(spacing: 14) {
+        inlineHeader
+        diffContent
+      }
+      .adeScreenBackground()
+      .task { await loadReportingErrors() }
+    } else {
+      NavigationStack {
+        diffContent
+          .adeScreenBackground()
+          .adeNavigationGlass()
+          .navigationTitle(request.title)
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+              saveButton
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+              if request.path != nil {
+                Button("Files") { openInFiles() }
+              }
+            }
+          }
+          .task { await loadReportingErrors() }
+      }
+    }
+  }
+
+  /// Back to the git list, the file, and Save / Files, at the column's top.
+  private var inlineHeader: some View {
+    HStack(spacing: 10) {
+      Button {
+        onClose?()
+      } label: {
+        Label("Changes", systemImage: "chevron.left")
+          .font(.subheadline.weight(.semibold))
+      }
+      .buttonStyle(.borderless)
+      Spacer(minLength: 8)
+      saveButton
+        .buttonStyle(.borderless)
+      if request.path != nil {
+        Button("Files", systemImage: "folder") { openInFiles() }
+          .labelStyle(.iconOnly)
+          .buttonStyle(.borderless)
+      }
+    }
+    .padding(.horizontal, 16)
+    .frame(height: 44)
+  }
+
+  @ViewBuilder
+  private var saveButton: some View {
+    if request.mode == "unstaged", let path = request.path, side == "modified", let d = diff, d.isBinary != true {
+      Button {
+        Task { await saveEditedFile(path: path) }
+      } label: {
+        if isSaving {
+          ProgressView()
+            .tint(ADEColor.accent)
+        } else {
+          Text("Save")
+        }
+      }
+      .disabled(isSaving || !canEditDiff)
+    }
+  }
+
+  private func openInFiles() {
+    guard let path = request.path else { return }
+    Task {
+      do {
+        let workspaces = try await syncService.listWorkspaces()
+        guard let workspace = workspaces.first(where: { $0.laneId == request.laneId }) else {
+          ADEHaptics.error()
+          errorMessage = "Workspace not found for lane \(request.laneId)."
+          return
+        }
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: request.laneId,
+          relativePath: path
+        )
+        if !inline { dismiss() }
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  @MainActor
+  private func loadReportingErrors() async {
+    if let initialDiff {
+      diff = initialDiff
+      editedText = initialDiff.modified.text
+      return
+    }
+    do {
+      try await load()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private var diffContent: some View {
+      // The file, the side picker, then the text taking the rest of the
+      // column (a scroll view around the header split the height in two and
+      // left a band of empty space above a short diff).
+      VStack(spacing: 0) {
+          VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
               Text(request.title)
                 .font(.system(size: 14.5, weight: .semibold))
@@ -52,8 +170,7 @@ struct LaneDiffScreen: View {
               )
             }
           }
-          .padding(16)
-        }
+          .padding(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
 
         if let diff {
           if diff.isBinary == true {
@@ -98,6 +215,7 @@ struct LaneDiffScreen: View {
               .adeKitCard(padding: nil)
               .disabled(side == "original" || !canEditDiff)
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
           }
@@ -105,66 +223,11 @@ struct LaneDiffScreen: View {
           Spacer()
           ProgressView()
           Spacer()
+        } else {
+          Spacer(minLength: 0)
         }
       }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle(request.title)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          if request.mode == "unstaged", let path = request.path, side == "modified", let d = diff, d.isBinary != true {
-            Button {
-              Task { await saveEditedFile(path: path) }
-            } label: {
-              if isSaving {
-                ProgressView()
-                  .tint(ADEColor.accent)
-              } else {
-                Text("Save")
-              }
-            }
-            .disabled(isSaving || !canEditDiff)
-          }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          if let path = request.path {
-            Button("Files") {
-              Task {
-                do {
-                  let workspaces = try await syncService.listWorkspaces()
-                  guard let workspace = workspaces.first(where: { $0.laneId == request.laneId }) else {
-                    ADEHaptics.error()
-                    errorMessage = "Workspace not found for lane \(request.laneId)."
-                    return
-                  }
-                  syncService.requestedFilesNavigation = FilesNavigationRequest(
-                    workspaceId: workspace.id,
-                    laneId: request.laneId,
-                    relativePath: path
-                  )
-                  dismiss()
-                } catch {
-                  ADEHaptics.error()
-                  errorMessage = error.localizedDescription
-                }
-              }
-            }
-          }
-        }
-      }
-      .task {
-        do {
-          try await load()
-        } catch {
-          ADEHaptics.error()
-          errorMessage = error.localizedDescription
-        }
-      }
-    }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 
   @MainActor

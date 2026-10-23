@@ -49,10 +49,10 @@ struct SettingsPinSheet: View {
       VStack(alignment: .leading, spacing: 18) {
         VStack(alignment: .leading, spacing: 4) {
           Text(noPairingCode ? "No pairing code set" : "Enter pairing PIN")
-            .font(.system(size: 22, weight: .semibold))
+            .font(.title2.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("Connecting to \(preset.hostDisplayName)")
-            .font(.system(size: 14))
+            .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
@@ -90,10 +90,25 @@ struct SettingsPinSheet: View {
         footerButtons
       }
       .padding(.horizontal, 20)
-      .padding(.vertical, 24)
+      .padding(.top, 8)
+      .padding(.bottom, 24)
+      // A keypad-sized column wherever the sheet is wide.
+      .frame(maxWidth: 440)
+      .frame(maxWidth: .infinity)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button(role: .cancel) {
+            if isSubmitting {
+              isSubmitting = false
+              syncService.disconnect(clearCredentials: false)
+            }
+            dismiss()
+          }
+        }
+      }
       .interactiveDismissDisabled(isSubmitting)
       .overlay {
         if didConnect { ConnectSuccessBeat() }
@@ -145,20 +160,10 @@ struct SettingsPinSheet: View {
 
   // MARK: - Footer
 
+  /// One primary action; Cancel is the sheet's toolbar button.
   @ViewBuilder
   private var footerButtons: some View {
-    HStack(spacing: 10) {
-      Button {
-        if isSubmitting {
-          isSubmitting = false
-          syncService.disconnect(clearCredentials: false)
-        }
-        dismiss()
-      } label: {
-        Text("Cancel")
-      }
-      .buttonStyle(ADEKitButtonStyle(wide: true))
-
+    Group {
       if noPairingCode {
         Button {
           onNeedsPinSetup(setupRoute)

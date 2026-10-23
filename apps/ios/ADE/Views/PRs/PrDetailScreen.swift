@@ -3,6 +3,7 @@ import UIKit
 
 struct PrDetailView: View {
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.duoLayout) private var duoLayout
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
@@ -16,6 +17,14 @@ struct PrDetailView: View {
   /// Called after a lane was made or linked on another machine, so the list
   /// reads that machine again and this screen gets its new link.
   let onRemoteLinksChanged: (@MainActor () async -> Void)?
+  /// Shown inside another screen's surface (a chat's PR, in the Duo's tools
+  /// pane) rather than pushed: the phone layout at the pane's width, with no
+  /// toolbar of its own (the pane sits in the chat's navigation stack, whose
+  /// toolbar is the chat's). Its title and ⋯ go to the pane's header row.
+  var embedded = false
+  /// Embedded only: the host's own control beside the ⋯ in the pane header
+  /// (the chat's PR watch).
+  var embeddedHeaderAccessory: AnyView?
 
   init(
     prId: String,
@@ -391,19 +400,6 @@ struct PrDetailView: View {
     [.overview, .files, .checks]
   }
 
-  private func tabLabel(_ tab: PrDetailTab) -> String {
-    switch tab {
-    case .files:
-      let count = snapshot?.files.count ?? 0
-      return count > 0 ? "Files \(count)" : "Files"
-    case .checks:
-      let count = snapshot?.checks.count ?? 0
-      return count > 0 ? "Checks \(count)" : "Checks"
-    default:
-      return "Overview"
-    }
-  }
-
   private var displayedState: String {
     isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state)
   }
@@ -421,88 +417,15 @@ struct PrDetailView: View {
 
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.prDetailBody)
-    List {
-      if isAwaitingInitialPrDetail {
-        Section {
-          PrFlatDetailHeaderSkeleton()
-            .adeFlatRow(separator: .hidden)
-        }
-      } else if isPrDetailUnavailable {
-        Section {
-          ADEFlatInlineNotice(
-            message: isLive
-              ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
-              : "Reconnect to your computer to load \(unavailablePrLabel).",
-            retry: { Task { await retryPrDetailLoad() } }
-          )
-          .adeFlatRow(separator: .hidden)
-        }
+    Group {
+      // One detail everywhere (desktop's structure); only the chrome around
+      // it follows where it is shown.
+      if embedded {
+        embeddedDetail
       } else {
-        Section {
-          detailHeader
-            .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
-          if let errorMessage, !syncService.connectionState.isHostUnreachable {
-            ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await retryPrDetailLoad() } })
-              .adeFlatRow(separator: .hidden)
-          }
-          if !unavailableDetailParts.isEmpty {
-            ADEFlatInlineNotice(
-              message: "Could not refresh \(unavailableDetailParts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")). This is partial, not empty.",
-              retry: { Task { await retryPrDetailLoad() } }
-            )
-            .adeFlatRow(separator: .hidden)
-          }
-          Picker("Section", selection: $selectedTab) {
-            ForEach(visibleTabs) { tab in
-              Text(tabLabel(tab)).tag(tab)
-            }
-          }
-          .pickerStyle(.segmented)
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-        }
-
-        switch selectedTab {
-        case .overview, .activity:
-          PrOverviewSections(
-            description: cleanedDescription,
-            digest: digest,
-            threadsById: threadsById,
-            canAct: canRunPrActions,
-            onReply: { threadId, body in replyToThread(threadId: threadId, body: body) },
-            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) },
-            isLoading: isAwaitingPrSnapshot
-          )
-        case .files:
-          PrFilesSections(
-            files: snapshot?.files ?? [],
-            isLoading: isRefreshingSnapshot || (!hasLoadedLiveSidecars && isLive),
-            // Files reads the focused machine only, so a lane of another
-            // machine cannot open there yet.
-            canOpenFiles: !currentPr.laneId.isEmpty && !isWorkRemoteLaneId(currentPr.laneId),
-            onOpenFile: { file in Task { await openFileInFiles(file) } },
-            onCopyPath: copyFilePath
-          )
-        case .checks:
-          PrChecksSections(
-            checks: snapshot?.checks ?? [],
-            overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
-            checksReason: snapshot?.status?.checksReason ?? currentPr.checksReason,
-            missingRequired: snapshot?.status?.checksMissingRequired ?? currentPr.checksMissingRequired ?? [],
-            actionRuns: actionRuns,
-            deployments: deployments,
-            canRerun: canRerunChecks && canRunPrActions,
-            onRerun: rerunChecks
-          )
-        }
+        unifiedDetail(context: duoLayout.isWide ? .column : .phone)
       }
     }
-    .adeFlatList()
-    .listSectionSpacing(.compact)
-    .contentMargins(.bottom, 16, for: .scrollContent)
-    // Rows scrolled under the clock and the floating back/actions buttons
-    // with nothing between them.
-    .scrollEdgeEffectStyle(.hard, for: .top)
-    .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail")
     .onAppear { openTiming.opened() }
     .onChange(of: snapshot != nil) { _, loaded in
       if loaded { openTiming.mark("prDetail.snapshot") }
@@ -511,39 +434,17 @@ struct PrDetailView: View {
       if loaded { openTiming.mark("prDetail.ready") }
     }
     .adeAnalyticsScreen(.pullRequestDetail)
-    .navigationTitle("")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar(.visible, for: .navigationBar)
-    .toolbar {
-      if !isAwaitingInitialPrDetail && !isPrDetailUnavailable {
-        ToolbarItem(placement: .principal) {
-          PrFlatDetailNavTitle(
-            number: displayedPrNumber ?? currentPr.githubPrNumber,
-            author: snapshot?.detail?.author.login ?? githubItem?.author,
-            authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
-            state: displayedState
-          )
-        }
-        .sharedBackgroundVisibility(.hidden)
-      }
-      ToolbarItem(placement: .topBarTrailing) {
-        moreMenu
-      }
-    }
-    .safeAreaInset(edge: .bottom) {
-      if hasPrDetailData {
-        nextStepBar
-      }
-    }
     .adeToast($toast)
-    .refreshable {
-      await reload(refreshRemote: true)
-    }
     // `isLive` is in the key so a reconnect reads the detail again.
     .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision):\(isLive)") {
       // Seed from the warm cache first so the first frame has content and, when
       // the entry is fresh, the sidecar fan-out below is skipped.
       seedFromWarmCacheIfNeeded()
+      #if DEBUG
+      // `duo-work-pr` fixture: the seeded cache is all there is; no host to
+      // reload from, and a reload would replace it with "unavailable".
+      if WorkRootPreviewFixture.active != nil, hasSeededFromWarmCache, hasPrDetailData { return }
+      #endif
       // Webhooks bump the projection revision; once the freshness window lapses
       // that bump refreshes threads, activity and checks as well.
       let needLiveSidecars = shouldFetchPrDetailLiveSidecars(
@@ -552,6 +453,47 @@ struct PrDetailView: View {
       ) || !syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow)
       await reload(includeLiveSidecars: needLiveSidecars)
     }
+    .modifier(PrDetailPresentations(view: self))
+  }
+
+  /// The detail inside a pane: its title and ⋯ go to the pane's header row.
+  private var embeddedDetail: some View {
+    unifiedDetail(context: .pane)
+      .duoPaneHeader(status: embeddedStatus) {
+        if let embeddedHeaderAccessory { embeddedHeaderAccessory }
+        // The PR's actions, at the trailing end of the pane's header row.
+        DuoPaneActionMenu(title: "Pull request actions", systemImage: "ellipsis") {
+          moreMenuItems
+        }
+      }
+  }
+
+  /// "#1304 · Open · arul28", the pane header's line under its title.
+  private var embeddedStatus: String? {
+    guard !isAwaitingInitialPrDetail, !isPrDetailUnavailable else { return nil }
+    var parts: [String] = []
+    if let number = displayedPrNumber ?? (currentPr.githubPrNumber > 0 ? currentPr.githubPrNumber : nil) {
+      parts.append("#\(number)")
+    }
+    parts.append(lanePrStateLabel(displayedState))
+    if let author = snapshot?.detail?.author.login ?? githubItem?.author, !author.isEmpty {
+      parts.append(author)
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  /// The sheets and confirmations both layouts present. A modifier so the
+  /// body's type stays small enough to type-check quickly.
+  fileprivate struct PrDetailPresentations: ViewModifier {
+    let view: PrDetailView
+
+    func body(content: Content) -> some View {
+      view.presentations(content)
+    }
+  }
+
+  fileprivate func presentations<Content: View>(_ content: Content) -> some View {
+    content
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
         .environmentObject(syncService)
@@ -701,27 +643,6 @@ struct PrDetailView: View {
     }
   }
 
-  private var detailHeader: some View {
-    PrFlatDetailHeader(
-      createdAt: githubItem?.createdAt ?? currentPr.createdAt,
-      updatedAt: githubItem?.updatedAt ?? currentPr.updatedAt,
-      title: currentPr.title,
-      baseBranch: currentPr.baseBranch,
-      headBranch: currentPr.headBranch,
-      laneName: laneName,
-      ghostLaneName: (githubItem?.detached ?? pr?.detached)?.laneName,
-      machineName: machineContext.machineName(forLaneId: currentPr.laneId),
-      stackLabel: stackLabel,
-      onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane,
-      onOpenStack: currentPr.linkedGroupId.map { groupId in { openStack(groupId: groupId, groupName: currentPr.linkedGroupName) } }
-        ?? (nativeStackMembership != nil ? { openGitHub(urlString: currentPr.githubUrl) } : nil),
-      canCreateLane: canAutoMapCurrentPr && githubItem != nil,
-      canLinkLane: canMapCurrentPr,
-      onCreateLane: presentCreateLane,
-      onLinkLane: { if let githubItem { laneLinkItem = githubItem } }
-    )
-  }
-
   /// Creating a lane names its machine first when there is more than one.
   private func presentCreateLane() {
     if machineContext.createMachines.count > 1, let githubItem {
@@ -733,13 +654,13 @@ struct PrDetailView: View {
 
   // MARK: - ⋯ menu
 
-  private var moreMenu: some View {
+  @ViewBuilder
+  private var moreMenuItems: some View {
     let state = displayedState
     let isOpen = state == "open" || state == "draft"
     let step = nextStep
     let canDraft = canRunPrActions && syncService.supportsRemoteAction("prs.setDraft")
     let canAutoMerge = canRunPrActions && syncService.supportsRemoteAction("prs.setAutoMerge")
-    return Menu {
       if isOpen {
         Section {
           Button { editorSheet = .comment } label: { Label("Comment", systemImage: "text.bubble") }
@@ -848,10 +769,6 @@ struct PrDetailView: View {
           }
         }
       }
-    } label: {
-      Image(systemName: "ellipsis")
-        .accessibilityLabel("Pull request actions")
-    }
   }
 
   private func copy(_ value: String, _ message: String) {
@@ -859,83 +776,6 @@ struct PrDetailView: View {
     ADEHaptics.success()
     toast = ADEToastMessage(text: message)
   }
-
-  // MARK: - Next-step bar
-
-  private var nextStepBar: some View {
-    let step = nextStep
-    return PrNextStepFlatBar(
-      step: step,
-      isBusy: isDetailBusy,
-      busyLabel: detailBusyLabel,
-      onTapText: {
-        switch step.kind {
-        case .checksFailing, .checksPending: selectedTab = .checks
-        default: selectedTab = .overview
-        }
-      },
-      // A merged or closed PR's state is in the list row already; an open
-      // one's merge gate is only known once its snapshot arrives.
-      mergeStatus: step.kind == .merged || step.kind == .closed ? .known : mergeStatusPresence
-    ) {
-      nextStepPrimary(step)
-    }
-  }
-
-  @ViewBuilder
-  private func nextStepPrimary(_ step: PrNextStep) -> some View {
-    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
-      if isCurrentPrDraft {
-        Button("Stack on GitHub") { openGitHub(urlString: currentPr.githubUrl) }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-          .disabled(currentPr.githubUrl.isEmpty)
-      } else {
-        // GitHub merges a stack as one unit, so the method choice and the
-        // confirm live in one dialog that names how many PRs merge.
-        Button {
-          ADEHaptics.light()
-          stackMergeConfirmationPresented = true
-        } label: {
-          Text(stackMergeCount > 1 ? "Merge \(stackMergeCount) PRs" : "Merge").font(.subheadline.weight(.semibold))
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.success)
-        .disabled(isDetailBusy)
-      }
-    } else if let primary = step.primary, nextStepAvailable(primary) {
-      if primary == .merge {
-        // A merge always names its method: one tap opens the choice, a second
-        // commits to it.
-        Menu {
-          ForEach(PrMergeMethodOption.allCases) { method in
-            Button(method.title) {
-              mergeMethod = method
-              ADEHaptics.success()
-              mergeCurrentPr()
-            }
-          }
-        } label: {
-          Text("Merge").font(.subheadline.weight(.semibold))
-        }
-        .menuStyle(.button)
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.success)
-        .disabled(isDetailBusy)
-      } else {
-        Button {
-          ADEHaptics.light()
-          runNextStep(primary)
-        } label: {
-          Text(nextStepLabel(primary)).font(.subheadline.weight(.semibold)).lineLimit(1)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(primary == .deleteBranch ? ADEColor.danger : ADEColor.accent)
-        .disabled(isDetailBusy)
-      }
-    }
-  }
-  // MARK: - Sticky action bar
 
   // MARK: - Next step (desktop Merge card parity)
 
@@ -1545,6 +1385,153 @@ struct PrDetailView: View {
     UIPasteboard.general.string = file.filename
     toast = ADEToastMessage(text: "Path copied")
   }
+
+  // MARK: - The detail
+
+  /// `PrDuoDetail` over this screen's state and actions, in every context.
+  /// Before the first load lands it draws its loading or unavailable state
+  /// itself, so the chrome around it never changes under the reader.
+  private func unifiedDetail(context: PrDetailContext) -> some View {
+    PrDuoDetail(
+      model: duoModel,
+      actions: duoActions,
+      tab: $selectedTab,
+      mergeMethod: $mergeMethod,
+      context: context,
+      header: {
+        PrFlatDetailHeader(
+          createdAt: githubItem?.createdAt ?? currentPr.createdAt,
+          updatedAt: githubItem?.updatedAt ?? currentPr.updatedAt,
+          title: currentPr.title,
+          baseBranch: currentPr.baseBranch,
+          headBranch: currentPr.headBranch,
+          laneName: laneName,
+          ghostLaneName: (githubItem?.detached ?? pr?.detached)?.laneName,
+          machineName: machineContext.machineName(forLaneId: currentPr.laneId),
+          stackLabel: stackLabel,
+          onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane,
+          onOpenStack: currentPr.linkedGroupId.map { groupId in { openStack(groupId: groupId, groupName: currentPr.linkedGroupName) } }
+            ?? (nativeStackMembership != nil ? { openGitHub(urlString: currentPr.githubUrl) } : nil),
+          canCreateLane: canAutoMapCurrentPr && githubItem != nil,
+          canLinkLane: canMapCurrentPr,
+          onCreateLane: presentCreateLane,
+          onLinkLane: { if let githubItem { laneLinkItem = githubItem } },
+          showsTitle: false
+        )
+      },
+      overflow: { moreMenuItems }
+    )
+  }
+
+  private var detailPhase: PrDuoPhase {
+    if isAwaitingInitialPrDetail { return .loading }
+    if isPrDetailUnavailable {
+      return .unavailable(isLive
+        ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
+        : "Reconnect to your computer to load \(unavailablePrLabel).")
+    }
+    return .ready
+  }
+
+  private var duoModel: PrDuoDetailModel {
+    let step = nextStep
+    let state = displayedState
+    var notices: [PrDuoNotice] = []
+    if let errorMessage, !syncService.connectionState.isHostUnreachable {
+      notices.append(PrDuoNotice(id: "error", message: errorMessage, isError: true))
+    }
+    if !unavailableDetailParts.isEmpty {
+      let parts = unavailableDetailParts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")
+      notices.append(PrDuoNotice(id: "partial", message: "Could not refresh \(parts). This is partial, not empty.", isError: false))
+    }
+    var mergedSummary: String?
+    if state == "merged" {
+      let by = currentPr.mergedBy.map { " by \($0.login)" } ?? ""
+      let at = prCompactRelativeTime(currentPr.mergedAt)
+      mergedSummary = "Merged into \(currentPr.baseBranch)\(by)\(at.isEmpty ? "" : " · \(at) ago")"
+    }
+    return PrDuoDetailModel(
+      title: currentPr.title,
+      number: displayedPrNumber ?? currentPr.githubPrNumber,
+      state: state,
+      author: snapshot?.detail?.author.login ?? githubItem?.author,
+      description: cleanedDescription,
+      digest: digest,
+      threadsById: threadsById,
+      isLoadingDescription: isAwaitingPrSnapshot,
+      notices: notices,
+      files: snapshot?.files ?? [],
+      filesLoading: isRefreshingSnapshot || (!hasLoadedLiveSidecars && isLive),
+      // Files reads the focused machine only, so a lane of another machine
+      // cannot open there yet.
+      canOpenFiles: !currentPr.laneId.isEmpty && !isWorkRemoteLaneId(currentPr.laneId),
+      checks: snapshot?.checks ?? [],
+      overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
+      checksReason: snapshot?.status?.checksReason ?? currentPr.checksReason,
+      missingRequired: snapshot?.status?.checksMissingRequired ?? currentPr.checksMissingRequired ?? [],
+      actionRuns: actionRuns,
+      deployments: deployments,
+      canRerun: canRerunChecks && canRunPrActions,
+      step: step,
+      mergeStatus: step.kind == .merged || step.kind == .closed ? .known : mergeStatusPresence,
+      busyLabel: detailBusyLabel,
+      canAct: canRunPrActions,
+      canComment: canRunPrActions && canAddComment,
+      canReview: canRunPrActions && (state == "open" || state == "draft"),
+      canEditMetadata: canUpdateCurrentPrMetadata,
+      detail: snapshot?.detail,
+      reviews: snapshot?.reviews ?? [],
+      stack: nativeStackMembership.map { PrDuoStackMerge(position: $0.position, size: $0.size, count: stackMergeCount) },
+      isDraft: isCurrentPrDraft,
+      mergedSummary: mergedSummary,
+      canArchiveLane: !currentPr.laneId.isEmpty && canRunPrActions,
+      canMergeAnyway: canRunPrActions
+        && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass),
+      canOpenGitHub: canOpenCurrentPrInGitHub,
+      phase: detailPhase
+    )
+  }
+
+  private var duoActions: PrDuoDetailActions {
+    PrDuoDetailActions(
+      refresh: { await reload(refreshRemote: true) },
+      retry: { Task { await retryPrDetailLoad() } },
+      reply: { threadId, body in replyToThread(threadId: threadId, body: body) },
+      resolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) },
+      openFile: { file in Task { await openFileInFiles(file) } },
+      copyPath: copyFilePath,
+      rerun: rerunChecks,
+      runStep: runNextStep,
+      stepLabel: nextStepLabel,
+      stepAvailable: nextStepAvailable,
+      merge: { mergeCurrentPr() },
+      mergeAnyway: { mergeAnywayConfirmationPresented = true },
+      stackMerge: { stackMergeConfirmationPresented = true },
+      archiveLane: {
+        cleanupChoice = .archive
+        cleanupConfirmationPresented = true
+      },
+      comment: { body in
+        commentInput = body
+        submitComment()
+      },
+      review: { event, body in
+        runPrAction("Submitting review", success: "Review submitted") {
+          try await syncService.submitPullRequestReview(prId: effectivePrId, event: event.rawValue, body: body)
+        }
+      },
+      requestReviewers: { logins in
+        reviewerInput = logins.joined(separator: ",")
+        requestReviewers()
+      },
+      setLabels: { labels in
+        runPrAction("Updating labels", success: "Labels updated") {
+          try await syncService.setPullRequestLabels(prId: effectivePrId, labels: labels)
+        }
+      },
+      openGitHub: { openGitHub(urlString: currentPr.githubUrl) }
+    )
+  }
 }
 
 private struct PrSingleLineEditSheet: View {
@@ -1694,5 +1681,1006 @@ private final class PrLandOutcomeBox {
       return "Merged \(numbers.count) stacked PRs"
     }
     return "Merged"
+  }
+}
+
+// MARK: - Duo column
+
+/// What the Duo's PR column shows. Built by `PrDetailView` from its loaded
+/// state, and by the fixtures from fixture data.
+struct PrDuoDetailModel {
+  var title: String
+  var number: Int
+  var state: String
+  var author: String?
+  var description: String
+  var digest: PrConversationDigest
+  var threadsById: [String: PrReviewThread]
+  var isLoadingDescription = false
+  var notices: [PrDuoNotice] = []
+  var files: [PrFile]
+  var filesLoading = false
+  var canOpenFiles: Bool
+  var checks: [PrCheck]
+  var overallChecksStatus: String?
+  var checksReason: String?
+  var missingRequired: [String] = []
+  var actionRuns: [PrActionRun]
+  var deployments: [PrDeployment] = []
+  var canRerun: Bool
+  var step: PrNextStep
+  var mergeStatus: PrMergeStatusPresence = .known
+  var busyLabel: String?
+  var canAct: Bool
+  var canComment: Bool
+  var canReview: Bool
+  var canEditMetadata: Bool
+  var detail: PrDetail?
+  var reviews: [PrReview]
+  var stack: PrDuoStackMerge?
+  var isDraft = false
+  var mergedSummary: String?
+  var canArchiveLane: Bool
+  var canMergeAnyway: Bool
+  var canOpenGitHub: Bool
+  /// Loading and unavailable draw inside the same view, so its chrome (the
+  /// edge bar above all) is the same from the first frame.
+  var phase: PrDuoPhase = .ready
+
+  /// "#1367 · arul28": beside the state pill under the title.
+  var metaLine: String {
+    (["#\(number)"] + [author].compactMap { $0 }.filter { !$0.isEmpty })
+      .joined(separator: " · ")
+  }
+
+  /// "#1367 · Merged · arul28"
+  var subtitle: String {
+    let stateTitle: String
+    switch state {
+    case "merged": stateTitle = "Merged"
+    case "closed": stateTitle = "Closed"
+    case "draft": stateTitle = "Draft"
+    default: stateTitle = "Open"
+    }
+    return (["#\(number)", stateTitle] + [author].compactMap { $0 }.filter { !$0.isEmpty })
+      .joined(separator: " · ")
+  }
+
+  var failingChecks: Int {
+    checks.filter { prCheckConclusionKind($0) == .failure }.count
+  }
+}
+
+struct PrDuoNotice: Identifiable, Equatable {
+  let id: String
+  let message: String
+  let isError: Bool
+}
+
+/// What the Duo's PR column does, as the screen's own actions.
+struct PrDuoDetailActions {
+  var refresh: () async -> Void
+  var retry: () -> Void
+  var reply: (_ threadId: String, _ body: String) -> Void
+  var resolve: (_ threadId: String, _ resolved: Bool) -> Void
+  var openFile: (PrFile) -> Void
+  var copyPath: (PrFile) -> Void
+  var rerun: () -> Void
+  var runStep: (PrNextStepAction) -> Void
+  var stepLabel: (PrNextStepAction) -> String
+  var stepAvailable: (PrNextStepAction) -> Bool
+  var merge: () -> Void
+  var mergeAnyway: () -> Void
+  var stackMerge: () -> Void
+  var archiveLane: () -> Void
+  var comment: (String) -> Void
+  var review: (PrReviewEventOption, String?) -> Void
+  var requestReviewers: ([String]) -> Void
+  var setLabels: ([String]) -> Void
+  var openGitHub: () -> Void
+}
+
+/// Where a PR's detail is shown. One view draws all three; only the chrome
+/// around it changes.
+enum PrDetailContext: Equatable {
+  /// Pushed on a phone (and the Duo's closed display): the navigation bar
+  /// carries back and ⋯.
+  case phone
+  /// The PRs tab's detail column on a wide screen (the Duo's inner display,
+  /// an iPad). Held landscape on the Duo its toolbar is the edge bar, whose
+  /// top carries the push ticks; ⋯ sits beside the title.
+  case column
+  /// Inside a Work chat's tools pane: no toolbar of its own (the chat's stack
+  /// owns the bar) and no ticks; the title and ⋯ are the pane header's.
+  case pane
+}
+
+/// Whether the detail has a PR to draw yet.
+enum PrDuoPhase: Equatable {
+  case loading
+  case unavailable(String)
+  case ready
+}
+
+/// A tap on a push tick: scroll the thread to that push.
+private struct PrTickScrollRequest: Equatable {
+  let itemId: String
+  let nonce: Int
+}
+
+/// One PR, as desktop lays it out (`PrDetailPane`) and Apple draws it: the
+/// title block, the branch and lane line and Overview / Files / Checks stay
+/// at the top; the thread scrolls under them. Desktop's floating dock (Merge,
+/// Comment, Reviewers, Labels, Assignees) floats over the Overview's bottom
+/// trailing corner, a column of glass bubbles where there is height, a row
+/// along the bottom on a phone. Each opens desktop's card as a popover.
+///
+/// The push ticks (desktop's timeline rail) sit on the thread's trailing
+/// edge, except held landscape on the Duo's PRs tab, where they are the top
+/// of the edge bar.
+///
+/// Files and Checks use the width in a column: list beside the diff or the
+/// check, one per page when book-folded, top and bottom halves held portrait.
+/// On a phone and in a pane they are lists that push.
+struct PrDuoDetail<Header: View, Overflow: View>: View {
+  let model: PrDuoDetailModel
+  let actions: PrDuoDetailActions
+  @Binding var tab: PrDetailTab
+  @Binding var mergeMethod: PrMergeMethodOption
+  let context: PrDetailContext
+  @ViewBuilder let header: () -> Header
+  @ViewBuilder let overflow: () -> Overflow
+
+  @Environment(\.duoSplit) private var split
+  @Environment(\.duoLayout) private var duo
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+  @Environment(\.dismiss) private var dismiss
+  @State private var dock: PrDuoDock?
+  @State private var commentDraft = ""
+  @State private var reviewerDraft = ""
+  @State private var labelDraft = ""
+  @State private var selectedFile: String?
+  @State private var selectedCheck: String?
+  @State private var activePush: String?
+  @State private var scrollRequest: PrTickScrollRequest?
+  @State private var overviewSize: CGSize = .zero
+  /// The Duo's closed display, held upright: its rail runs beside the PR.
+  @State private var compactEdgeRail = false
+
+  init(
+    model: PrDuoDetailModel,
+    actions: PrDuoDetailActions,
+    tab: Binding<PrDetailTab>,
+    mergeMethod: Binding<PrMergeMethodOption>,
+    context: PrDetailContext = .column,
+    initialDock: PrDuoDock? = nil,
+    @ViewBuilder header: @escaping () -> Header,
+    @ViewBuilder overflow: @escaping () -> Overflow
+  ) {
+    self.model = model
+    self.actions = actions
+    _tab = tab
+    _mergeMethod = mergeMethod
+    self.context = context
+    self.header = header
+    self.overflow = overflow
+    self.initialDock = initialDock
+  }
+
+  /// A card to open once the column is on screen (fixtures). A popover asked
+  /// for before its anchor is laid out never shows.
+  private let initialDock: PrDuoDock?
+
+  /// Outside a split (a sheet) the column is narrow: lay it out as portrait.
+  private var family: DuoFamily { split?.family ?? .tall }
+
+  private var isReady: Bool { model.phase == .ready }
+
+  private var ticks: [PrDigestPushTick] { prDigestPushTicks(model.digest) }
+
+  /// Held landscape on the Duo, the PRs tab's ticks are the top of the edge
+  /// bar: the rail top belongs to what is on the right.
+  private var ticksInRail: Bool { context == .column && duo.hasEdgeBar }
+
+  /// Elsewhere they ride the thread's trailing edge, as on desktop; a pane
+  /// has the chat's controls around it and leaves them out.
+  private var ticksInContent: Bool { context != .pane && !ticksInRail && ticks.count > 1 }
+
+  /// A column of bubbles where there is height and width for it (a column, a
+  /// tall pane); a row along the bottom on a phone or a short pane.
+  private var dockIsVertical: Bool {
+    switch context {
+    // Beside the Duo's edge bar the bubbles stand in a column off the rail;
+    // everywhere else (an iPad, the Duo upright) the same row along the
+    // bottom the phone has, so the PR reads the same on every device.
+    case .column: return duo.hasEdgeBar
+    case .phone: return false
+    case .pane: return overviewSize.height >= 440 && overviewSize.width >= 420
+    }
+  }
+
+  var body: some View {
+    switch context {
+    case .pane:
+      page
+    case .phone, .column:
+      page
+        .toolbar { toolbarItems }
+        .toolbar(controlsInTitleRow ? .hidden : .automatic, for: .navigationBar)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+  }
+
+  /// A phone held landscape has little height: back and ⋯ join the title's
+  /// row instead of taking a bar of their own above it. (The Duo's closed
+  /// display keeps them at the edge bar's top.)
+  private var controlsInTitleRow: Bool {
+    // The PRs tab on a phone is the split folded to one column: a column
+    // context, with the same little height.
+    (context == .phone || (context == .column && !duo.isWide))
+      && verticalSizeClass == .compact && !duo.hasEdgeBar
+  }
+
+  private var page: some View {
+    content
+      .safeAreaBar(edge: .top, spacing: 0) { headerBar }
+      // A soft edge under the header: a hard one drew a band across the page.
+      .scrollEdgeEffectStyle(.soft, for: .top)
+      .overlay(alignment: .topTrailing) {
+        if ticksInRail, !ticks.isEmpty {
+          railTicks
+        }
+      }
+      .background(ADEColor.pageBackground)
+      .onGeometryChange(for: Bool.self) { proxy in
+        workDisplayHasEdgeRail(proxy)
+      } action: { hasRail in
+        if compactEdgeRail != hasRail { compactEdgeRail = hasRail }
+      }
+      // Files wants both pages for the list and the diff: the PR list folds
+      // behind the sidebar toggle while it is open.
+      .onChange(of: tab == .files && context == .column, initial: true) { _, files in
+        split?.setDetailWantsFullWidth(files)
+      }
+      .onDisappear { split?.setDetailWantsFullWidth(false) }
+      .task {
+        guard let initialDock else { return }
+        try? await Task.sleep(for: .milliseconds(700))
+        dock = initialDock
+      }
+  }
+
+  // MARK: Header
+
+  /// The title block, the branch and lane line, and the tabs: pinned, with
+  /// the thread scrolling under them behind the system's scroll edge.
+  private var headerBar: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if context != .pane {
+        titleBlock
+      }
+      if isReady {
+        header()
+      }
+      tabPicker
+    }
+    .padding(.horizontal, 16)
+    // Held landscape there is no top bar over the column: the title's first
+    // line sits on the list column's title row.
+    .padding(.top, context == .pane ? 2 : (context == .column && duo.hasEdgeBar ? 34 : (controlsInTitleRow ? 2 : 6)))
+    .padding(.bottom, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var titleBlock: some View {
+    HStack(alignment: .top, spacing: 12) {
+      if controlsInTitleRow {
+        Button {
+          if context == .column, let split {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { split.toggleList() }
+          } else {
+            dismiss()
+          }
+        } label: {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 16, weight: .semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Back")
+      }
+      // Held landscape the edge bar drops a leading item, so the way back to
+      // a folded list (Files takes both pages) sits beside the title.
+      if ticksInRail, let split, split.listCollapsible {
+        Button {
+          withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { split.toggleList() }
+        } label: {
+          Image(systemName: "sidebar.left")
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel(split.listShown ? "Hide list" : "Show list")
+      }
+      VStack(alignment: .leading, spacing: 6) {
+        if model.title.isEmpty {
+          ADESkeletonView(width: 240, height: 18, cornerRadius: 4)
+        } else {
+          Text(model.title)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(controlsInTitleRow ? 1 : 3)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .accessibilityAddTraits(.isHeader)
+        }
+        HStack(spacing: 8) {
+          PrStatePill(state: model.state)
+          Text(model.metaLine)
+            .font(.subheadline)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      // Held landscape the column's bar is the edge bar, whose top is the
+      // ticks, so ⋯ sits beside the title; with a normal bar (an iPad, the
+      // Duo upright) it is the bar's trailing item, as on the phone.
+      if (context == .column && duo.hasEdgeBar) || controlsInTitleRow {
+        Menu {
+          overflow()
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Pull request actions")
+      }
+    }
+  }
+
+  /// Overview / Files / Checks. Checks carries its failing count.
+  private var tabPicker: some View {
+    Picker("Section", selection: Binding(
+      get: { tab == .activity ? .overview : tab },
+      set: { next in
+        guard next != tab else { return }
+        ADEHaptics.light()
+        dock = nil
+        tab = next
+      }
+    )) {
+      Text(PrDetailTab.overview.title).tag(PrDetailTab.overview)
+      Text(model.files.isEmpty ? PrDetailTab.files.title : "\(PrDetailTab.files.title) \(model.files.count)")
+        .tag(PrDetailTab.files)
+      Text(model.failingChecks > 0 ? "\(PrDetailTab.checks.title) · \(model.failingChecks)" : PrDetailTab.checks.title)
+        .tag(PrDetailTab.checks)
+    }
+    .pickerStyle(.segmented)
+    // Across the column, like Lanes' Overview | Git: one style for a
+    // detail's sections.
+    .frame(maxWidth: .infinity)
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    switch tab {
+    case .overview, .activity:
+      overview
+    case .files:
+      files
+    case .checks:
+      checks
+    }
+  }
+
+  // MARK: Overview
+
+  private var overview: some View {
+    ScrollViewReader { proxy in
+      List {
+        Section {
+          switch model.phase {
+          case .loading:
+            PrFlatDetailHeaderSkeleton()
+              .adeFlatRow(separator: .hidden)
+          case .unavailable(let message):
+            ADEFlatInlineNotice(message: message, retry: actions.retry)
+              .adeFlatRow(separator: .hidden)
+          case .ready:
+            ForEach(model.notices) { notice in
+              Group {
+                if notice.isError {
+                  ADEFlatInlineNotice(message: notice.message, tint: ADEColor.danger, retry: actions.retry)
+                } else {
+                  ADEFlatInlineNotice(message: notice.message, retry: actions.retry)
+                }
+              }
+              .adeFlatRow(separator: .hidden)
+            }
+          }
+        }
+        if isReady {
+          PrOverviewSections(
+            description: model.description,
+            digest: model.digest,
+            threadsById: model.threadsById,
+            canAct: model.canAct,
+            onReply: actions.reply,
+            onResolve: actions.resolve,
+            isLoading: model.isLoadingDescription
+          )
+        }
+      }
+      .adeFlatList()
+      .listSectionSpacing(.compact)
+      // Rows scroll clear of the dock's row along the bottom.
+      .contentMargins(.bottom, isReady && !dockIsVertical ? 84 : 24, for: .scrollContent)
+      .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail-\(context)")
+      .refreshable { await actions.refresh() }
+      // The ticks and a column of bubbles keep a strip of their own on the
+      // trailing edge, so neither ever covers a row.
+      .safeAreaInset(edge: .trailing, spacing: 0) { trailingStrip }
+      .overlay(alignment: .bottom) {
+        if isReady && !dockIsVertical {
+          rowDock
+            // Beside the edge bar (a Work chat's pane, the PRs tab, the
+            // closed display) the row's capsules end on the rail's bottom
+            // line, level with the composer (8 = the row's own pad).
+            .duoEdgeBarAlignedBottom(contentBottomPadding: 8)
+            // The closed display's rail: the same line, from the window's
+            // bottom edge (a Work chat's composer does the same).
+            .padding(.bottom, compactEdgeRail && !duo.hasEdgeBar ? DuoEdgeBar.bottomInset - 8 : 0)
+            .ignoresSafeArea(.container, edges: compactEdgeRail && !duo.hasEdgeBar ? .bottom : [])
+        }
+      }
+      .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
+        overviewSize = size
+      }
+      .onChange(of: scrollRequest) { _, request in
+        guard let request else { return }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
+          proxy.scrollTo(request.itemId, anchor: .top)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var trailingStrip: some View {
+    let showsDock = isReady && dockIsVertical
+    if ticksInContent || showsDock {
+      VStack(spacing: 0) {
+        if ticksInContent {
+          PrPushTickRail(ticks: ticks, activeId: activePush, onSelect: selectTick)
+            .padding(.top, 8)
+        }
+        Spacer(minLength: 12)
+        if showsDock {
+          columnDock
+            // The last bubble's bottom on the rail's bottom line.
+            .duoEdgeBarAlignedBottom()
+        }
+      }
+      .frame(width: showsDock ? 44 : 26)
+      // Clear of the rows' trailing chevrons and times, so the bubbles do
+      // not read as part of a row.
+      .padding(.leading, showsDock ? 16 : 4)
+      .padding(.trailing, showsDock ? 14 : 6)
+    }
+  }
+
+  /// Held landscape on the Duo the ticks take the rail's top. The system bar
+  /// only draws buttons (a custom view item is lifted out of the rail as a
+  /// loose bubble), so the ticks are drawn into the rail's own strip, where
+  /// its top group would sit: the same width, the same 24pt inset from the
+  /// display's edge, from under the status items down to above the tabs.
+  /// From the window's top to the top of the rail's top group (measured on
+  /// the inner display, under the clock and the connection status).
+  private static var railTopInset: CGFloat { 124 }
+
+  private var railTicks: some View {
+    PrPushTickRail(ticks: ticks, activeId: activePush, inBar: true, onSelect: selectTick)
+      .padding(.horizontal, 5)
+      .glassEffect(.regular, in: Capsule(style: .continuous))
+      .padding(.top, Self.railTopInset)
+      .padding(.trailing, DuoEdgeBar.bottomInset)
+      .ignoresSafeArea(.container, edges: [.top, .trailing])
+  }
+
+  private func selectTick(_ tick: PrDigestPushTick) {
+    activePush = tick.id
+    let nonce = (scrollRequest?.nonce ?? 0) + 1
+    if tab == .overview || tab == .activity {
+      scrollRequest = PrTickScrollRequest(itemId: tick.itemId, nonce: nonce)
+    } else {
+      // The thread has to be on screen before it can scroll.
+      dock = nil
+      tab = .overview
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(250))
+        scrollRequest = PrTickScrollRequest(itemId: tick.itemId, nonce: nonce)
+      }
+    }
+  }
+
+  // MARK: The dock
+
+  private static var bubbleItems: [PrDuoDock] { PrDuoDock.allCases.filter { $0 != .merge } }
+
+  /// Desktop's dock: Merge first (its ring the merge state), then Comment,
+  /// Reviewers, Labels, Assignees, stacked up from the bottom trailing corner.
+  private var columnDock: some View {
+    GlassEffectContainer(spacing: 10) {
+      VStack(spacing: 10) {
+        bubble(.merge)
+        ForEach(Self.bubbleItems) { item in
+          bubble(item)
+        }
+      }
+    }
+  }
+
+  /// The dock as a row along the bottom: the merge state spelled out, then
+  /// the other bubbles.
+  private var rowDock: some View {
+    GlassEffectContainer(spacing: 8) {
+      HStack(spacing: 6) {
+        mergeCapsule
+        ForEach(Self.bubbleItems) { item in
+          bubble(item, size: 40)
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
+    // The thread fades out under the row, so no line reads through the glass:
+    // solid by the capsules' top, a soft edge above them.
+    .background(alignment: .bottom) {
+      LinearGradient(
+        stops: [
+          .init(color: ADEColor.pageBackground.opacity(0), location: 0),
+          .init(color: ADEColor.pageBackground.opacity(0.9), location: 0.22),
+          .init(color: ADEColor.pageBackground, location: 0.36),
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+      // From above the capsules' top to the screen's bottom edge: solid by
+      // the time the capsules start, so no row reads through their glass.
+      .frame(height: 96)
+      .ignoresSafeArea(edges: .bottom)
+      .allowsHitTesting(false)
+    }
+  }
+
+  private var mergeHeadline: String {
+    if let busy = model.busyLabel { return busy }
+    switch model.mergeStatus {
+    case .known: return model.step.headline
+    case .checking: return "Checking merge status…"
+    case .unavailable: return "Merge status unavailable"
+    }
+  }
+
+  private var mergeCapsule: some View {
+    let ring = prDuoMergeRingColor(model.step, mergeStatus: model.mergeStatus)
+    return Button {
+      toggle(.merge)
+    } label: {
+      HStack(spacing: 8) {
+        if model.busyLabel != nil || model.mergeStatus == .checking {
+          ProgressView().controlSize(.small)
+        } else {
+          Image(systemName: "arrow.triangle.merge")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ring)
+        }
+        Text(mergeHeadline)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .minimumScaleFactor(0.85)
+        Spacer(minLength: 0)
+      }
+      .padding(.leading, 12)
+      .padding(.trailing, 10)
+      .frame(maxWidth: .infinity, minHeight: 40)
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .glassEffect(.regular.tint(ring.opacity(0.12)).interactive(), in: Capsule())
+    .modifier(cardPopover(.merge))
+    .accessibilityLabel("Merge: \(mergeHeadline)")
+  }
+
+  private func bubble(_ item: PrDuoDock, size: CGFloat = 44) -> some View {
+    let isOpen = dock == item
+    return Button {
+      toggle(item)
+    } label: {
+      Group {
+        if item == .merge {
+          PrDuoMergeBubbleLabel(ring: prDuoMergeRingColor(model.step, mergeStatus: model.mergeStatus))
+        } else {
+          Image(systemName: item.symbol)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(isOpen ? ADEColor.accent : ADEColor.textPrimary)
+        }
+      }
+      .frame(width: size, height: size)
+      .contentShape(Circle())
+      // The count is part of the label, so it draws above the bubble's
+      // glass; as a sibling overlay the merged glass covered half of it.
+      .overlay(alignment: .topTrailing) {
+        let count = badgeCount(item)
+        if count > 0 {
+          Text(verbatim: "\(count)")
+            .font(.system(size: 10, weight: .bold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(ADEColor.accent, in: Capsule())
+            .offset(x: 3, y: -3)
+            .allowsHitTesting(false)
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .glassEffect(.regular.interactive(), in: Circle())
+    .modifier(cardPopover(item))
+    .accessibilityLabel(item == .merge ? "Merge: \(mergeHeadline)" : item.title)
+    .accessibilityValue(badgeCount(item) > 0 ? "\(badgeCount(item))" : "")
+  }
+
+  /// Each bubble opens its own card, its arrow on that bubble: beside a
+  /// column of bubbles, above a row of them.
+  private func cardPopover(_ item: PrDuoDock) -> PrDockCardPopover<some View> {
+    PrDockCardPopover(
+      isPresented: Binding(
+        get: { dock == item },
+        set: { shown in if !shown, dock == item { dock = nil } }
+      ),
+      arrowEdge: dockIsVertical ? .trailing : .bottom
+    ) {
+      card(item)
+    }
+  }
+
+  private func badgeCount(_ item: PrDuoDock) -> Int {
+    switch item {
+    case .reviewers: return reviewers.count
+    case .labels: return model.detail?.labels.count ?? 0
+    case .assignees: return model.detail?.assignees.count ?? 0
+    case .merge, .comment: return 0
+    }
+  }
+
+  // MARK: Toolbar
+
+  @ToolbarContentBuilder
+  private var toolbarItems: some ToolbarContent {
+    switch context {
+    case .phone:
+      ToolbarItem(placement: .topBarTrailing) {
+        Menu {
+          overflow()
+        } label: {
+          Image(systemName: "ellipsis")
+            .accessibilityLabel("Pull request actions")
+        }
+      }
+    case .column, .pane:
+      if !duo.hasEdgeBar {
+        DuoSplitListToggle(split: split)
+      }
+      if context == .column && !duo.hasEdgeBar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu {
+            overflow()
+          } label: {
+            Image(systemName: "ellipsis")
+              .accessibilityLabel("Pull request actions")
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: Files
+
+  @ViewBuilder
+  private var files: some View {
+    // The phone lays the tab out as the wide column does held portrait: the
+    // list over the diff. Only a chat's pane keeps a list that pushes.
+    // Loading or empty, the list says so on its own.
+    if context != .pane, !model.files.isEmpty {
+      DuoLocalFoldReader { fold, size in
+        // A phone held landscape has the width and not the height: side by
+        // side, like the wide column.
+        if family == .wide || (context == .phone && size.width > size.height) {
+          let listWidth: CGFloat = {
+            if case .sideBySide(let rect) = fold, rect.minX > 220 { return rect.minX }
+            return min(300, size.width * 0.4)
+          }()
+          HStack(spacing: 0) {
+            filesList(selecting: true).frame(width: listWidth)
+            DuoSeam(axis: .vertical, foldRect: sideBySideRect(fold))
+            diffPane.frame(maxWidth: .infinity)
+          }
+        } else {
+          let top: CGFloat = {
+            if case .stacked(let rect) = fold, rect.minY > 160 { return rect.minY }
+            // A short list takes only its own height; a long one stops at
+            // 40% and scrolls, so the diff keeps the rest.
+            return min(size.height * 0.4, filesListHeight)
+          }()
+          VStack(spacing: 0) {
+            filesList(selecting: true).frame(height: top)
+            DuoSeam(axis: .horizontal, foldRect: stackedRect(fold))
+            diffPane.frame(maxHeight: .infinity)
+          }
+        }
+      }
+      // The file list and the diff scroll to the screen's bottom edge, like
+      // the Overview; stopping at the home-indicator inset left a hard cut.
+      .ignoresSafeArea(.container, edges: .bottom)
+      .onAppear { selectFirstFileIfNeeded() }
+      .onChange(of: model.files.map(\.filename)) { _, _ in selectFirstFileIfNeeded() }
+    } else {
+      filesList(selecting: false)
+    }
+  }
+
+  private func filesList(selecting: Bool) -> some View {
+    List {
+      PrFilesSections(
+        files: model.files,
+        isLoading: model.filesLoading,
+        canOpenFiles: model.canOpenFiles,
+        onOpenFile: actions.openFile,
+        onCopyPath: actions.copyPath,
+        selection: selecting ? $selectedFile : nil
+      )
+    }
+    .adeFlatList()
+    // Folder groups sit close together: the compact default left a gap
+    // taller than a row above each folder header.
+    .listSectionSpacing(4)
+    .contentMargins(.bottom, 24, for: .scrollContent)
+    .refreshable { await actions.refresh() }
+  }
+
+  /// The file list's own height: the summary row, a header per folder and a
+  /// row per file, plus its bottom margin.
+  private var filesListHeight: CGFloat {
+    let folders = prFileFolderGroups(model.files).count
+    return 44 + CGFloat(folders) * 30 + CGFloat(model.files.count) * 46 + 24
+  }
+
+  private var currentFile: PrFile? {
+    model.files.first { $0.filename == selectedFile } ?? model.files.first
+  }
+
+  @ViewBuilder
+  private var diffPane: some View {
+    if let file = currentFile {
+      ScrollView(.vertical) {
+        PrFileDiffContent(file: file)
+          .padding(.bottom, 24)
+      }
+      .id(file.filename)
+      // Long diff lines scroll inside their own rows; clip them to the column
+      // so none of them runs under the edge bar.
+      .clipped()
+      .background(ADEColor.pageBackground)
+    } else {
+      ContentUnavailableView("No file selected", systemImage: "doc.text")
+    }
+  }
+
+  private func selectFirstFileIfNeeded() {
+    if selectedFile == nil || !model.files.contains(where: { $0.filename == selectedFile }) {
+      selectedFile = model.files.first?.filename
+    }
+  }
+
+  // MARK: Checks
+
+  @ViewBuilder
+  private var checks: some View {
+    if context == .column {
+      DuoLocalFoldReader { fold, size in
+        // Beside the check only when both fit; a single page pushes it.
+        if family == .wide, size.width >= 460 {
+          let listWidth = min(300, size.width * 0.45)
+          HStack(spacing: 0) {
+            checksList(selecting: true).frame(width: listWidth)
+            DuoSeam(axis: .vertical, foldRect: sideBySideRect(fold))
+            checkPane.frame(maxWidth: .infinity)
+          }
+        } else {
+          checksList(selecting: false)
+        }
+      }
+      .ignoresSafeArea(.container, edges: .bottom)
+      .onAppear { selectFirstCheckIfNeeded() }
+      .onChange(of: model.checks.map(\.id)) { _, _ in selectFirstCheckIfNeeded() }
+    } else {
+      checksList(selecting: false)
+    }
+  }
+
+  private func checksList(selecting: Bool) -> some View {
+    List {
+      PrChecksSections(
+        checks: model.checks,
+        overallChecksStatus: model.overallChecksStatus,
+        checksReason: model.checksReason,
+        missingRequired: model.missingRequired,
+        actionRuns: model.actionRuns,
+        deployments: model.deployments,
+        canRerun: model.canRerun,
+        onRerun: actions.rerun,
+        selection: selecting ? $selectedCheck : nil
+      )
+    }
+    .adeFlatList()
+    .listSectionSpacing(.compact)
+    .contentMargins(.bottom, 24, for: .scrollContent)
+    .refreshable { await actions.refresh() }
+  }
+
+  @ViewBuilder
+  private var checkPane: some View {
+    if let check = model.checks.first(where: { $0.id == selectedCheck }) {
+      List {
+        PrCheckDetailSections(check: check, match: prActionJob(for: check, in: model.actionRuns))
+      }
+      .adeFlatList()
+      .id(check.id)
+    } else {
+      ContentUnavailableView("No check selected", systemImage: "checkmark.seal")
+    }
+  }
+
+  /// The first failing check, else the first running one, else the first.
+  private func selectFirstCheckIfNeeded() {
+    guard selectedCheck == nil || !model.checks.contains(where: { $0.id == selectedCheck }) else { return }
+    let kinds: [PrCheckConclusionKind] = [.failure, .pending, .success, .neutral]
+    for kind in kinds {
+      if let check = model.checks.first(where: { prCheckConclusionKind($0) == kind }) {
+        selectedCheck = check.id
+        return
+      }
+    }
+    selectedCheck = nil
+  }
+
+  private func sideBySideRect(_ fold: DuoFold) -> CGRect? {
+    if case .sideBySide(let rect) = fold { return rect }
+    return nil
+  }
+
+  private func stackedRect(_ fold: DuoFold) -> CGRect? {
+    if case .stacked(let rect) = fold { return rect }
+    return nil
+  }
+
+  // MARK: Cards
+
+  private var reviewers: [PrDuoReviewer] {
+    prDuoReviewers(detail: model.detail, reviews: model.reviews)
+  }
+
+  private func toggle(_ item: PrDuoDock) {
+    ADEHaptics.light()
+    dock = dock == item ? nil : item
+  }
+
+  /// A confirmation can only present once the card has gone.
+  private func afterClosingCard(_ action: @escaping () -> Void) {
+    dock = nil
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(400))
+      action()
+    }
+  }
+
+  private func runStep(_ action: PrNextStepAction) {
+    switch action {
+    case .deleteBranch:
+      afterClosingCard { actions.runStep(.deleteBranch) }
+    case .requestReview:
+      dock = .reviewers
+    case .fixChecks:
+      dock = nil
+      tab = .checks
+    case .addressFeedback, .fixThreads:
+      dock = nil
+      tab = .overview
+    default:
+      actions.runStep(action)
+    }
+  }
+
+  @ViewBuilder
+  private func card(_ item: PrDuoDock) -> some View {
+    switch item {
+    case .merge:
+      PrDuoMergeCard(
+        step: model.step,
+        mergeStatus: model.mergeStatus,
+        busyLabel: model.busyLabel,
+        stack: model.stack,
+        isDraft: model.isDraft,
+        mergedSummary: model.mergedSummary,
+        method: $mergeMethod,
+        canMergeAnyway: model.canMergeAnyway,
+        canArchiveLane: model.canArchiveLane,
+        label: actions.stepLabel,
+        isAvailable: actions.stepAvailable,
+        onRun: runStep,
+        onMerge: actions.merge,
+        onMergeAnyway: { afterClosingCard(actions.mergeAnyway) },
+        onStackMerge: { afterClosingCard(actions.stackMerge) },
+        onArchiveLane: { afterClosingCard(actions.archiveLane) },
+        onChip: { chip in
+          switch chip.id {
+          case "checks": runStep(.fixChecks)
+          case "threads", "review": runStep(.fixThreads)
+          default: break
+          }
+        }
+      )
+    case .comment:
+      PrDuoCommentCard(
+        canReview: model.canReview,
+        canComment: model.canComment,
+        isBusy: model.busyLabel != nil,
+        draft: $commentDraft,
+        onComment: { body in
+          actions.comment(body)
+          commentDraft = ""
+          dock = nil
+        },
+        onReview: { event, body in
+          actions.review(event, body)
+          dock = nil
+        }
+      )
+    case .reviewers:
+      PrDuoReviewersCard(
+        reviewers: reviewers,
+        canRequest: model.canAct,
+        draft: $reviewerDraft,
+        onRequest: actions.requestReviewers
+      )
+    case .labels:
+      PrDuoLabelsCard(
+        labels: model.detail?.labels ?? [],
+        canEdit: model.canEditMetadata,
+        draft: $labelDraft,
+        onSet: actions.setLabels
+      )
+    case .assignees:
+      PrDuoAssigneesCard(assignees: model.detail?.assignees ?? [])
+    }
+  }
+}
+
+private struct PrDockCardPopover<Card: View>: ViewModifier {
+  @Binding var isPresented: Bool
+  let arrowEdge: Edge
+  @ViewBuilder let card: () -> Card
+
+  func body(content: Content) -> some View {
+    content.popover(isPresented: $isPresented, arrowEdge: arrowEdge) { card() }
   }
 }

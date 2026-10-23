@@ -4,12 +4,21 @@ import UIKit
 struct LaneDetailScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.duoLayout) private var duoLayout
   @EnvironmentObject var syncService: SyncService
 
   let laneId: String
   let initialSnapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]
   let transitionNamespace: Namespace.ID?
+  /// False when the screen is a split column's detail: there is nothing to go
+  /// back to in that column.
+  let showsBackButton: Bool
+  /// Shown inside another surface (the Work tools pane) rather than as a
+  /// screen of its own: it must not hide the root tab bar around it.
+  let embedded: Bool
+  /// The machine the lane lives on, for the Duo's subtitle and dashboard.
+  let machineName: String?
   let onRefreshRoot: @MainActor () async -> Void
 
   @State private(set) var detail: LaneDetailPayload?
@@ -48,6 +57,8 @@ struct LaneDetailScreen: View {
   @State private var copiedLinkNotice: String?
   @State private var showRescueSheet = false
   @State private var rescueLaneName = ""
+  /// The Duo's git column shows this diff in place of the git list.
+  @State private var inlineDiffRequest: LaneDiffRequest?
 
   init(
     laneId: String,
@@ -55,12 +66,18 @@ struct LaneDetailScreen: View {
     allLaneSnapshots: [LaneListSnapshot],
     transitionNamespace: Namespace.ID? = nil,
     initialSection: LaneDetailSection = .git,
+    showsBackButton: Bool = true,
+    embedded: Bool = false,
+    machineName: String? = nil,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
     self.initialSnapshot = initialSnapshot
     self.allLaneSnapshots = allLaneSnapshots
     self.transitionNamespace = transitionNamespace
+    self.showsBackButton = showsBackButton
+    self.embedded = embedded
+    self.machineName = machineName
     self.onRefreshRoot = onRefreshRoot
   }
 
@@ -79,41 +96,13 @@ struct LaneDetailScreen: View {
   }
 
   var body: some View {
-    Group {
-      if let detail {
-        VStack(spacing: 10) {
-          detailBannerStack
-          if let conflictState = detail.conflictState, conflictState.inProgress {
-            conflictSection(conflictState: conflictState)
-              .padding(.horizontal, 16)
-          }
-          gitActionsPane(detail: detail)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-      } else {
-        ScrollView {
-          VStack(spacing: 12) {
-            detailBannerStack
-            if let detailEmptyStatePresentation {
-              detailEmptyStateCard(detailEmptyStatePresentation)
-            }
-          }
-          .padding(EdgeInsets(top: 4, leading: 16, bottom: 16, trailing: 16))
-        }
-        .scrollBounceBehavior(.basedOnSize)
-      }
-    }
-    .adeScreenBackground()
-    .navigationTitle("")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar(.hidden, for: .navigationBar)
-    .toolbar(.hidden, for: .tabBar)
-    .adeRootTabBarHidden()
-    .adeAnalyticsScreen(.laneDetail)
-    .safeAreaInset(edge: .top, spacing: 0) {
-      laneDetailTopBar
-    }
+    // One design on every display: the header over Overview | Git, the
+    // controls in the toolbar (the edge bar held landscape on the Duo, the
+    // navigation bar on a phone), pushed on a phone and a split's detail on
+    // the inner display and an iPad.
+    duoBody
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
+    .adeAnalyticsScreen(.laneDetail)
     .onAppear {
       ScrollDiagnostics.shared.enter(.laneDetail)
       openTiming.opened()
@@ -132,6 +121,21 @@ struct LaneDetailScreen: View {
         await loadDetail(refreshRemote: false)
       }
     }
+    .modifier(LaneDetailReloadAndPresentations(screen: self))
+  }
+
+  /// The keyed reload and the sheets and alerts both layouts present. A
+  /// modifier so the body's type stays small enough to type-check quickly.
+  fileprivate struct LaneDetailReloadAndPresentations: ViewModifier {
+    let screen: LaneDetailScreen
+
+    func body(content: Content) -> some View {
+      screen.reloadAndPresentations(content)
+    }
+  }
+
+  fileprivate func reloadAndPresentations<Content: View>(_ content: Content) -> some View {
+    content
     .task(id: laneDetailProjectionReloadKey) {
       // The opening load owns the first read, and reads again itself if
       // this key moved while it ran.
@@ -153,7 +157,6 @@ struct LaneDetailScreen: View {
       lastLaneDetailLocalReload = Date()
       await loadDetail(refreshRemote: false)
     }
-    .refreshable { await loadDetail(refreshRemote: true) }
     .sheet(item: $selectedDiffRequest) { request in
       LaneDiffScreen(request: request)
     }
@@ -237,91 +240,6 @@ struct LaneDetailScreen: View {
     .padding(.top, 4)
   }
 
-  private var laneDetailTopBar: some View {
-    HStack(spacing: 0) {
-      Button {
-        dismiss()
-      } label: {
-        Image(systemName: "chevron.left")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 36, height: 32)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Back to lanes")
-
-      // The lane's name sits in the bar row (it was a separate large-title
-      // row under an otherwise empty bar).
-      HStack(spacing: 7) {
-        WorkLaneLogoMark(
-          color: laneSurfaceTint(forHex: currentSnapshot.lane.color).text ?? ADEColor.accent,
-          laneIcon: currentSnapshot.lane.icon,
-          emoji: currentSnapshot.lane.emoji,
-          size: 14
-        )
-        Text(currentSnapshot.lane.name)
-          .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-      }
-      .padding(.leading, 2)
-      .accessibilityElement(children: .combine)
-      .accessibilityAddTraits(.isHeader)
-
-      Spacer(minLength: 8)
-
-      Menu {
-        // The lane's pull request, or making one: the step after the work.
-        if let pr = lanePullRequests.first(where: { $0.state == "open" || $0.state == "draft" }) ?? lanePullRequests.first {
-          Button {
-            openPullRequest(pr)
-          } label: {
-            Label("Open PR #\(pr.githubPrNumber)", systemImage: "arrow.triangle.pull")
-          }
-        } else if currentSnapshot.lane.laneType != "primary", currentSnapshot.lane.archivedAt == nil {
-          Button {
-            syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
-          } label: {
-            Label("Create pull request", systemImage: "plus.square.on.square")
-          }
-          .disabled(!canRunLiveActions)
-        }
-        Divider()
-        Button {
-          copyLaneLink()
-        } label: {
-          Label("Copy ADE lane link", systemImage: "link")
-        }
-        Button {
-          copyBranchLink()
-        } label: {
-          Label("Copy branch link", systemImage: "arrow.triangle.branch")
-        }
-        Divider()
-        Button {
-          managePresented = true
-        } label: {
-          Label("Manage lane", systemImage: "slider.horizontal.3")
-        }
-      } label: {
-        Image(systemName: "ellipsis")
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 36, height: 32)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Lane options")
-    }
-    .padding(.horizontal, 10)
-    .padding(.bottom, 2)
-    .background {
-      ADEColor.pageBackground.opacity(0.98)
-        .ignoresSafeArea(edges: .top)
-        .allowsHitTesting(false)
-    }
-  }
-
   @ViewBuilder
   private func gitActionsPane(detail: LaneDetailPayload) -> some View {
     LaneDetailGitActionsPane(
@@ -389,14 +307,14 @@ struct LaneDetailScreen: View {
         Task { await performConfirmedFileAction(.restoreAllStaged(files)) }
       },
       onOpenDiff: { file, staged in
-        selectedDiffRequest = LaneDiffRequest(
+        openDiff(LaneDiffRequest(
           laneId: laneId,
           path: file.path,
           mode: staged ? "staged" : "unstaged",
           compareRef: nil,
           compareTo: nil,
           title: (file.path as NSString).lastPathComponent
-        )
+        ))
       },
       onOpenFiles: { file in
         Task { await openFiles(path: file.path) }
@@ -447,17 +365,101 @@ struct LaneDetailScreen: View {
         ? { try await syncService.fetchBranchChanges(laneId: laneId) }
         : nil,
       onOpenBranchDiff: { file in
-        selectedDiffRequest = LaneDiffRequest(
+        openDiff(LaneDiffRequest(
           laneId: laneId,
           path: file.path,
           mode: "branch",
           compareRef: nil,
           compareTo: nil,
           title: (file.path as NSString).lastPathComponent
-        )
+        ))
       }
     )
-    .padding(.horizontal, 16)
+  }
+
+  /// A file's diff, in place of the git list (its back control returns).
+  private func openDiff(_ request: LaneDiffRequest) {
+    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { inlineDiffRequest = request }
+  }
+
+  // MARK: - Duo
+
+  private var duoPullRequest: PullRequestListItem? {
+    lanePullRequests.first { $0.state == "open" || $0.state == "draft" } ?? lanePullRequests.first
+  }
+
+  private var canCreateDuoPullRequest: Bool {
+    canRunLiveActions && currentSnapshot.lane.laneType != "primary" && currentSnapshot.lane.archivedAt == nil
+  }
+
+  /// `LaneDuoDetailLayout` over this screen's state: the dashboard, and the
+  /// git column (banners, then the git pane or a diff in its place).
+  private var duoBody: some View {
+    LaneDuoDetailLayout(
+      snapshot: currentSnapshot,
+      machineName: machineName,
+      pullRequest: duoPullRequest,
+      canCreatePullRequest: canCreateDuoPullRequest,
+      onOpenPullRequest: openPullRequest,
+      onCreatePullRequest: {
+        syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+      },
+      onRefresh: { Task { await loadDetail(refreshRemote: true) } },
+      onStackGraph: { showStackGraph = true },
+      onOpenFiles: { Task { await openFiles() } },
+      onManage: { managePresented = true },
+      onCopyLaneLink: copyLaneLink,
+      onCopyBranchLink: copyBranchLink,
+      forcesGit: inlineDiffRequest != nil
+    ) {
+      LaneDuoDashboard(
+        snapshot: currentSnapshot,
+        detail: detail,
+        machineName: machineName,
+        pullRequests: lanePullRequests,
+        canCreatePullRequest: canCreateDuoPullRequest,
+        onOpenPullRequest: openPullRequest,
+        onCreatePullRequest: {
+          syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+        },
+        onOpenChat: { chat in
+          syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: chat.sessionId, laneId: laneId)
+        },
+        onOpenLane: { id in syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: id) },
+        onStackGraph: { showStackGraph = true }
+      )
+      .refreshable { await loadDetail(refreshRemote: true) }
+    } git: {
+      if let inlineDiffRequest {
+        LaneDiffScreen(request: inlineDiffRequest, inline: true) {
+          withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { self.inlineDiffRequest = nil }
+        }
+        .id(inlineDiffRequest.id)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+      } else if let detail {
+        VStack(spacing: 10) {
+          detailBannerStack
+          if let conflictState = detail.conflictState, conflictState.inProgress {
+            conflictSection(conflictState: conflictState)
+              .padding(.horizontal, 16)
+          }
+          gitActionsPane(detail: detail)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .refreshable { await loadDetail(refreshRemote: true) }
+        }
+      } else {
+        ScrollView {
+          VStack(spacing: 12) {
+            detailBannerStack
+            if let detailEmptyStatePresentation {
+              detailEmptyStateCard(detailEmptyStatePresentation)
+            }
+          }
+          .padding(EdgeInsets(top: 4, leading: 16, bottom: 16, trailing: 16))
+        }
+        .scrollBounceBehavior(.basedOnSize)
+      }
+    }
   }
 
   private var suggestedRescueLaneName: String {

@@ -1,7 +1,6 @@
 import Foundation
 
 enum FilesRoute: Hashable {
-  case directory(workspaceId: String, parentPath: String)
   case editor(workspaceId: String, relativePath: String, focusLine: Int?)
 }
 
@@ -151,6 +150,9 @@ struct FilesDiffRenderState {
 }
 
 let filesDetailRefreshMinimumInterval: TimeInterval = 0.75
+/// How long after reading a file a projection bump is taken as the echo of
+/// that read's own cache write.
+let filesDetailQuietInterval: TimeInterval = 5
 
 func filesDetailRefreshDelay(
   hasLoadedBlob: Bool,
@@ -195,6 +197,35 @@ func filesPartialPreviewLimit(blob: SyncFileBlob, focusLine: Int? = nil) -> File
     title: "Only the start of this file loaded",
     message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to read the rest."
   )
+}
+
+/// The part of a partial file the viewer draws: the start the machine sent,
+/// cut to the inline preview's own line and size caps at a line break.
+func filesPartialPreviewPrefix(_ content: String) -> String {
+  let utf8 = content.utf8
+  var lines = 0
+  var lastBreak = utf8.startIndex
+  var index = utf8.startIndex
+  var bytes = 0
+  while index != utf8.endIndex, bytes < filesTextPreviewByteLimit {
+    let byte = utf8[index]
+    index = utf8.index(after: index)
+    bytes += 1
+    if byte == 0x0A {
+      lastBreak = index
+      lines += 1
+      if lines >= filesTextPreviewLineLimit { break }
+    }
+  }
+  // The whole start fits: keep it as is (its last line may be cut short by
+  // the machine, which the notice above it says).
+  if index == utf8.endIndex { return content }
+  return String(content[..<lastBreak])
+}
+
+/// Lines the viewer can show of a partial file (see `filesPartialPreviewPrefix`).
+func filesPartialPreviewLineCount(_ content: String) -> Int {
+  filesEstimatedLineCount(filesPartialPreviewPrefix(content))
 }
 
 func filesOmittedPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {

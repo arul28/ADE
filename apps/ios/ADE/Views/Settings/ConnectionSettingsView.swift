@@ -8,6 +8,7 @@ struct ConnectionSettingsView: View {
   let pairingOnly: Bool
 
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.duoLayout) private var duo
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   @StateObject private var presentationModel = SettingsConnectionPresentationModel()
@@ -38,31 +39,52 @@ struct ConnectionSettingsView: View {
   }
 
   var body: some View {
-    NavigationStack {
-      Group {
-        if pairingOnly {
-          ScrollView {
-            pairingOnlyGroup
-              .padding(.horizontal, 16)
-              .padding(.top, 8)
-              .padding(.bottom, 36)
-          }
-          .background(ADEColor.pageBackground.ignoresSafeArea())
-        } else {
-          settingsList
-        }
+    // The Duo's inner display gets Apple Settings' two columns: this list on
+    // the left, the page a row opens on the right. Everywhere else it is the
+    // one pushed stack it has always been.
+    if duo.isWide && !pairingOnly {
+      DuoSettingsSplit(onClose: { dismiss() }) {
+        settingsChrome(settingsList, includesClose: false)
+      } landing: {
+        connectionLandingPage
       }
+    } else {
+      NavigationStack {
+        settingsChrome(
+          Group {
+            if pairingOnly {
+              ScrollView {
+                pairingOnlyGroup
+                  .padding(.horizontal, 16)
+                  .padding(.top, 8)
+                  .padding(.bottom, 36)
+              }
+              .background(ADEColor.pageBackground.ignoresSafeArea())
+            } else {
+              settingsList
+            }
+          }
+        )
+      }
+    }
+  }
+
+  /// The title, close button, sheets and observers the settings root carries,
+  /// whichever column layout hosts it.
+  /// `includesClose: false` for the Duo's two columns, which put the close
+  /// button on the page column instead (see `DuoSettingsSplit`).
+  private func settingsChrome<Content: View>(_ content: Content, includesClose: Bool = true) -> some View {
+    content
       .adeNavigationGlass()
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 13, weight: .semibold))
+        if includesClose {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) {
+              dismiss()
+            }
+            .accessibilityLabel("Close settings")
           }
-          .accessibilityLabel("Close settings")
         }
       }
       .sheet(item: $presentedSheet) { route in
@@ -134,7 +156,6 @@ struct ConnectionSettingsView: View {
         syncService.requestedPairingQrNavigation = nil
         handleScannedPairingCode(request.raw)
       }
-    }
   }
 
   /// Pairing-only entry point (from the no-account gate): connection status +
@@ -143,19 +164,7 @@ struct ConnectionSettingsView: View {
   private var pairingOnlyGroup: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       ADESettingsSection("Connection") {
-        SettingsConnectionHeader(
-          snapshot: presentationModel.connectionSnapshot,
-          onDisconnect: { syncService.disconnectForUserConnectionChange() },
-          onReconnect: {
-            Task { await syncService.reconnectForUserConnectionChange() }
-          },
-          onPairWithPin: {
-            if let host = syncService.accountPairingPinFallbackHost {
-              pinPreset = .discover(host)
-            }
-          },
-          onWake: wakeAsleepMachine
-        )
+        connectionHeader
       }
 
       SettingsPairingSection(
@@ -163,6 +172,34 @@ struct ConnectionSettingsView: View {
         presentedSheet: $presentedSheet
       )
     }
+  }
+
+  /// The two-column window's first page: the page title already says
+  /// "Connection", so the card stands without a section heading.
+  private var connectionLandingPage: some View {
+    ADESettingsPage(title: "Connection") {
+      connectionHeader
+      SettingsPairingSection(
+        snapshot: presentationModel.pairingSnapshot,
+        presentedSheet: $presentedSheet
+      )
+    }
+  }
+
+  private var connectionHeader: some View {
+    SettingsConnectionHeader(
+      snapshot: presentationModel.connectionSnapshot,
+      onDisconnect: { syncService.disconnectForUserConnectionChange() },
+      onReconnect: {
+        Task { await syncService.reconnectForUserConnectionChange() }
+      },
+      onPairWithPin: {
+        if let host = syncService.accountPairingPinFallbackHost {
+          pinPreset = .discover(host)
+        }
+      },
+      onWake: wakeAsleepMachine
+    )
   }
 
   private var settingsList: some View {
@@ -284,7 +321,6 @@ struct ConnectionSettingsView: View {
         pinPreset = .discover(host)
       }
       .environmentObject(syncService)
-      .presentationDetents([.medium, .large])
 
     case .scan:
       SettingsPairingScannerSheet { payload in

@@ -5,6 +5,10 @@ import AVKit
 enum WorkSessionNavigationChrome {
   case pushedDetail
   case embedded
+  /// A chat shown in a wide display's detail column: the same glass header as a
+  /// pushed chat, but Back clears the column's selection and the root tab bar
+  /// stays visible.
+  case column
 }
 
 extension WorkSessionNavigationChrome: Equatable {}
@@ -257,6 +261,8 @@ struct WorkSessionDestinationView: View {
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
   @Environment(\.dismiss) var dismiss
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.duoLayout) private var duoLayout
+  @Environment(\.duoWorkFamily) private var duoWorkFamily
 
   let sessionId: String
   let initialOpeningPrompt: String?
@@ -296,6 +302,24 @@ struct WorkSessionDestinationView: View {
   /// `showsLaneActions` and `compactComposer` so none of the three drifts into
   /// standing for the others.
   var liveRedirectOnlySends = false
+  /// The Work tab's tools column, when this chat is shown in a wide display's
+  /// detail column. Nil for every pushed chat, so phone layouts never mount it.
+  var duoPane: DuoWorkPaneModel?
+  /// Mirrors `duoPane?.isOpen` so the equatable gate below re-lays out when the
+  /// pane opens or closes (the model itself is not Equatable).
+  var duoPaneOpen = false
+  /// Wide column only: whether the sessions column is showing beside this chat,
+  /// so the header's sidebar toggle can name what it will do.
+  var duoShowsSidebar = false
+  /// Wide column only: shows or hides the sessions column. This is the header's
+  /// leading control; a split has nothing to go back to, so there is no chevron.
+  var onDuoToggleSidebar: (() -> Void)?
+  /// Wide column only: empties the column when the chat is deleted.
+  var onDuoBack: (() -> Void)?
+  /// The CTO thread on a wide display: its settings page for the pane beside
+  /// it. Set, the rail carries the CTO's buttons (Chat Info, CTO Settings)
+  /// instead of a Work chat's, and the header leads with the way to the Hub.
+  var duoCtoSettings: (() -> AnyView)?
 
   @MainActor
   init(
@@ -316,7 +340,13 @@ struct WorkSessionDestinationView: View {
     personalChat: Bool = false,
     personalChatMachineKey: String? = nil,
     compactComposer: Bool = false,
-    liveRedirectOnlySends: Bool = false
+    liveRedirectOnlySends: Bool = false,
+    duoPane: DuoWorkPaneModel? = nil,
+    duoPaneOpen: Bool = false,
+    duoShowsSidebar: Bool = false,
+    onDuoToggleSidebar: (() -> Void)? = nil,
+    onDuoBack: (() -> Void)? = nil,
+    duoCtoSettings: (() -> AnyView)? = nil
   ) {
     let initStart = CACurrentMediaTime()
     defer { ScrollDiagnostics.shared.record(.destinationInit, since: initStart) }
@@ -339,6 +369,12 @@ struct WorkSessionDestinationView: View {
     self.personalChatMachineKey = personalChatMachineKey
     self.compactComposer = compactComposer
     self.liveRedirectOnlySends = liveRedirectOnlySends
+    self.duoPane = duoPane
+    self.duoPaneOpen = duoPaneOpen
+    self.duoShowsSidebar = duoShowsSidebar
+    self.onDuoToggleSidebar = onDuoToggleSidebar
+    self.onDuoBack = onDuoBack
+    self.duoCtoSettings = duoCtoSettings
 
     _session = State(initialValue: initialSession)
     _chatSummary = State(initialValue: initialChatSummary)
@@ -362,6 +398,19 @@ struct WorkSessionDestinationView: View {
         _threadModel = State(initialValue: sync.chatThreadRegistry.model(for: key))
       }
     }
+    #if DEBUG
+    // `duo-work*` fixtures: no machine streams this chat, so the wide column
+    // shows the preview transcript instead of the connecting frame.
+    if WorkRootPreviewFixture.active != nil, DuoWorkPreviewState.sessionId != nil,
+       SyncService.shared?.chatThreadKey(for: sessionId) == nil {
+      _threadModel = State(initialValue: DuoWorkPreviewState.plain
+        ? workPreviewDuoPlainThreadModel(sessionId: sessionId)
+        : workPreviewDuoThreadModel(sessionId: sessionId))
+      if !DuoWorkPreviewState.plain {
+        _artifacts = State(initialValue: workPreviewDuoArtifacts())
+      }
+    }
+    #endif
   }
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
@@ -390,6 +439,9 @@ struct WorkSessionDestinationView: View {
   }
 
   @State var session: TerminalSessionSummary?
+  /// The wide chat column's width, in whole points: whether the chat's PR
+  /// fits beside its title in the header.
+  @State var duoColumnWidth: CGFloat = 0
   @State var chatSummary: AgentChatSessionSummary?
   @State var chatSummaryRefreshGeneration = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
@@ -417,6 +469,9 @@ struct WorkSessionDestinationView: View {
   /// another client refreshes the summary's approval banner.
   @State var crossMachineBatchApprovalCardsSignature = ""
   @State var artifacts: [ComputerUseArtifactSummary] = []
+  /// The lane tool chips the chat view polls, handed up for the header's
+  /// Tools menus (phone ⋯, Duo rail, iPad toolbar).
+  @StateObject var toolsRelay = WorkChatToolsRelay()
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   /// Post-send reconciliation runs behind the composer rather than in front of
   /// it, so `sending` can drop the moment the host accepts the message. Chained
@@ -705,33 +760,624 @@ struct WorkSessionDestinationView: View {
   var sessionHeaderTrailingControls: some View {
     if let session, isChatSession(session) {
       HStack(spacing: 8) {
-        WorkChatHeaderMenu(
-          model: headerMenuModel(session),
-          onShowChatInfo: { Task { await prepareChatInfoPresentation() } },
-          onShowProof: { artifactDrawerPresented = true },
-          onViewPrDetails: { presentChatPrDetails() },
-          onOpenPrsTab: { openLaneOpenPr() },
-          onOpenGitHub: { openLanePrOnGitHub() },
-          onCopyPrLink: { copyLanePrLink() },
-          onOpenPrCreation: { openPrCreationInPrsTab() },
-          onOpenLane: { openSessionLane() },
-          onRename: { presentSessionRename() },
-          onDelete: { Task { await deleteCurrentChatSession() } },
-          onCopySessionId: { copyCurrentSessionId() },
-          onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
-          onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
-          onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } },
-          onAttachIssue: {
-            ADEHaptics.light()
-            syncService.linearPaneAttachSessionId = session.id
-            syncService.linearPanePresented = true
-          }
-        )
-        .equatable()
+        sessionHeaderMenu(session, toolbarLabel: false)
       }
     } else {
       EmptyView()
     }
+  }
+
+  /// The same three parts as the ⋯, as rail buttons (the Duo's outer display).
+  @ViewBuilder
+  var sessionRailControls: some View {
+    if let session, isChatSession(session) {
+      WorkChatRailButtons(
+        model: headerMenuModel(session),
+        session: session,
+        onShowChatInfo: { showChatInfo() },
+        onOpenTool: { openChatTool($0) },
+        onCreatePullRequest: { presentCreateLanePr() },
+        onOpenLane: { openSessionLane() },
+        onRename: { presentSessionRename() },
+        onDelete: { Task { await deleteCurrentChatSession() } },
+        onCopySessionId: { copyCurrentSessionId() },
+        onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+        onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+        onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } }
+      )
+    }
+  }
+
+  /// The phone's ⋯: Chat Info, Tools ▸, then the chat's actions.
+  func sessionHeaderMenu(_ session: TerminalSessionSummary, toolbarLabel: Bool) -> some View {
+    WorkChatHeaderMenu(
+      model: headerMenuModel(session),
+      session: session,
+      onShowChatInfo: { showChatInfo() },
+      onOpenTool: { openChatTool($0) },
+      onCreatePullRequest: { presentCreateLanePr() },
+      onOpenLane: { openSessionLane() },
+      onRename: { presentSessionRename() },
+      onDelete: { Task { await deleteCurrentChatSession() } },
+      onCopySessionId: { copyCurrentSessionId() },
+      onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+      onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+      onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } }
+    )
+    .equatable()
+  }
+
+  // MARK: - Wide display: tools beside this chat
+
+  /// Whether this chat can put its tools in the wide display's third column.
+  /// True for the whole wide column, open or closed: a menu item opens the pane
+  /// on its tab rather than presenting a sheet over the thread.
+  private var duoUsesPane: Bool {
+    duoPane != nil
+  }
+
+  /// The lane every pane tool acts on, resolved the same way the header menu
+  /// resolves it.
+  private var duoToolLaneId: String {
+    session?.laneId ?? initialSession?.laneId ?? ""
+  }
+
+  /// The PR badge chip's own condition: a PR the chat can show, not merely a
+  /// lane that could have one.
+  private var duoHasPullRequest: Bool {
+    duoPanePrTag != nil || duoPanePr != nil || duoPanePrSummary != nil
+  }
+
+  @ViewBuilder
+  private var duoToolsPane: some View {
+    if let duoPane {
+      DuoToolsPane(model: duoPane) { tab, seed in
+        duoToolContent(tab, seed: seed)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func duoToolContent(_ tab: DuoToolTab, seed: DuoToolSeed) -> some View {
+    switch tab {
+    case .simulator:
+      duoSimulatorContent(seed)
+    case .macDesktop:
+      if seed.macDesktopStream {
+        MacDesktopViewer(
+          laneId: duoToolLaneId,
+          initialState: seed.macDesktop,
+          chatSessionId: sessionId,
+          embedded: true
+        )
+      } else {
+        duoLaneToolSheet(.macDesktop)
+      }
+    case .appControl:
+      if seed.appControlStream {
+        AppControlViewer(
+          laneId: duoToolLaneId,
+          initialState: seed.appControl,
+          chatSessionId: sessionId,
+          embedded: true
+        )
+      } else {
+        duoLaneToolSheet(.appControl)
+      }
+    case .browser:
+      duoLaneToolSheet(.browser)
+    case .pr:
+      chatPullRequestView(embedded: true)
+    case .createPr:
+      chatCreatePrWizard(embedded: true)
+    case .proof:
+      duoProofContent
+    case .chatInfo:
+      chatInfoDetailsContent(sections: .all, embedded: true)
+    case .ctoSettings:
+      if let duoCtoSettings {
+        duoCtoSettings()
+      }
+    }
+  }
+
+  /// The sheet-shaped lane tools, embedded: no Done (the pane closes), same
+  /// content and same poll.
+  private func duoLaneToolSheet(_ tool: WorkToolsSheet.Tool) -> some View {
+    WorkToolsSheet(laneId: duoToolLaneId, tool: tool, embedded: true)
+  }
+
+  /// The same viewer the chip opened before, seeded with the status the chip
+  /// was already showing. Watching stays the default; the 0.6 s press-and-hold
+  /// before Control is the viewer's own and is untouched by living in a pane.
+  @ViewBuilder
+  private func duoSimulatorContent(_ seed: DuoToolSeed) -> some View {
+    Group {
+      #if DEBUG
+      if WorkRootPreviewFixture.active != nil {
+        AppleDeviceViewer(
+          laneId: duoToolLaneId,
+          chatSessionId: sessionId,
+          initialStatus: seed.appleStatus,
+          embedded: true,
+          preview: AppleDeviceViewerPreview(
+            status: WorkProofPreviewData.toolChipsAppleStatus,
+            mode: .watching
+          )
+        )
+      } else {
+        AppleDeviceViewer(
+          laneId: duoToolLaneId,
+          chatSessionId: sessionId,
+          initialStatus: seed.appleStatus,
+          embedded: true
+        )
+      }
+      #else
+      AppleDeviceViewer(
+        laneId: duoToolLaneId,
+        chatSessionId: sessionId,
+        initialStatus: seed.appleStatus,
+        embedded: true
+      )
+      #endif
+    }
+  }
+
+  private var duoProofContent: some View {
+    WorkProofSheet(
+      artifacts: artifacts,
+      transcript: transcript,
+      artifactContent: $artifactContent,
+      isRefreshing: artifactRefreshInFlight,
+      refreshError: artifactRefreshError,
+      onRefresh: { await refreshArtifacts(force: true) },
+      onLoadArtifact: { artifact, intent in
+        // A chat on another machine reads its artifacts from that machine.
+        if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
+          await SyncFleetTaskRoute.$chat.withValue(remote) {
+            await loadArtifactContent(artifact, intent)
+          }
+        } else {
+          await loadArtifactContent(artifact, intent)
+        }
+      },
+      embedded: true
+    )
+  }
+
+  /// Chat Info over this chat's own transcript snapshot. Shared by the sheet and
+  /// the pane so the two can never show different rosters.
+  @ViewBuilder
+  private var chatInfoDetailsContent: some View {
+    chatInfoDetailsContent(sections: .all, embedded: false)
+  }
+
+  @ViewBuilder
+  private func chatInfoDetailsContent(sections: WorkChatInfoSections, embedded: Bool) -> some View {
+    let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
+    WorkChatInfoDetailsSheet(
+      sections: sections,
+      sessionId: sessionId,
+      subagentSnapshots: subagentSnapshots,
+      scheduledWorkSnapshots: scheduledWorkSnapshots,
+      scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
+      nextWakeAt: composerChatSummary?.nextWakeAt,
+      provider: subagentProvider,
+      expandedTaskIds: $expandedSubagentDetailIds,
+      sessionModel: composerChatSummary?.model,
+      sourceRefs: threadSnapshot.sourceRefs,
+      omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
+      taskList: threadSnapshot.taskList,
+      onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
+      onSelect: handleSubagentSelection,
+      onCancelScheduledWork: scheduledWorkCancelAction,
+      onSetScheduledWorkPaused: scheduledWorkPauseAction,
+      onStopTask: stopTaskAction,
+      proof: personalChat ? [] : artifacts,
+      onShowProof: personalChat ? nil : {
+        if duoUsesPane {
+          duoPane?.open(.proof)
+        } else {
+          // The proof drawer replaces this sheet.
+          chatInfoPresented = false
+          Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            artifactDrawerPresented = true
+          }
+        }
+      },
+      embedded: embedded
+    )
+  }
+
+  /// The chat's pull request, as the PRs tab shows it (Overview / Files /
+  /// Checks, merge controls), loaded through the PRs domain exactly as that
+  /// tab loads it. The chat's own PR surfaces stay around it: the switcher
+  /// between the PRs this chat links, and its PR watch. With no PR yet, the
+  /// chat's own page offers to create or link one.
+  @ViewBuilder
+  private func chatPullRequestView(embedded: Bool) -> some View {
+    if let prId = chatPullRequestId {
+      if embedded {
+        chatPrDetailView(prId: prId, embedded: true)
+          .id(prId)
+      } else {
+        NavigationStack {
+          chatPrDetailView(prId: prId, embedded: false)
+            .toolbar {
+              ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { prDetailsPresented = false }
+              }
+              ToolbarItem(placement: .topBarTrailing) {
+                chatPullRequestAccessory
+              }
+            }
+        }
+        .id(prId)
+      }
+    } else {
+      chatPrDetailsContent(embedded: embedded)
+    }
+  }
+
+  private func chatPrDetailView(prId: String, embedded: Bool) -> PrDetailView {
+    var detail = PrDetailView(prId: prId, transitionNamespace: nil, availableLanes: lanes)
+    detail.embedded = embedded
+    detail.embeddedHeaderAccessory = embedded ? AnyView(chatPullRequestAccessory) : nil
+    return detail
+  }
+
+  /// The id the PRs tab knows the chat's PR by.
+  private var chatPullRequestId: String? {
+    let id = (duoPanePr?.id ?? duoPanePrSummary?.id)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return id?.isEmpty == false ? id : nil
+  }
+
+  /// The chat's own controls beside the PR: which linked PR (when it links
+  /// several), and Watch / Ship.
+  @ViewBuilder
+  private var chatPullRequestAccessory: some View {
+    Group {
+      if laneChatPrs.count > 1 {
+        DuoPaneActionMenu(title: "Switch pull request", systemImage: "arrow.triangle.swap") {
+          Picker("Pull request", selection: Binding(
+            get: { duoPanePr?.id ?? "" },
+            set: { selectChatPr($0) }
+          )) {
+            ForEach(laneChatPrs) { pr in
+              Text("#\(pr.githubPrNumber) \(pr.title)").tag(pr.id)
+            }
+          }
+        }
+      }
+      if let watch = duoPanePrWatch {
+        DuoPaneRowOnly {
+          WorkChatPrWatchChip(model: watch) { mode in Task { await setPrChatWatch(mode: mode) } }
+        }
+      }
+    }
+  }
+
+  /// The phone's PR sheet: the PRs tab's detail at full height, or the
+  /// chat's own create/link page (a medium sheet) when there is no PR yet.
+  @ViewBuilder
+  private var chatPullRequestSheet: some View {
+    if chatPullRequestId != nil {
+      chatPullRequestView(embedded: false)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    } else {
+      chatPrDetailsContent
+        .presentationDetents([.height(500), .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+  }
+
+  /// The PR summary the header menu's "View PR details" shows, shared by its
+  /// sheet and the pane.
+  private var chatPrDetailsContent: some View {
+    chatPrDetailsContent(embedded: false)
+  }
+
+  private func chatPrDetailsContent(embedded: Bool) -> some View {
+    WorkChatPrDetailsSheet(
+      tag: duoPanePrTag,
+      pr: duoPanePr,
+      summary: duoPanePrSummary,
+      snapshot: prDetailsSnapshot,
+      laneColor: headerMenuLaneColor,
+      canCreate: canCreatePullRequestForHeaderLane,
+      createBlockedReason: createPullRequestBlockedReason,
+      isRefreshing: prDetailsRefreshing,
+      errorMessage: prDetailsError,
+      onRefresh: {
+        Task { await refreshChatPrDetails(force: true) }
+      },
+      onCreate: {
+        presentCreateLanePr()
+      },
+      onOpenPrsTab: {
+        // The DISPLAYED PR decides, not the lane's resolved one: a PR this
+        // chat linked from another lane shows in the switcher while
+        // `lanePrTag` stays nil, and branching on the lane tag sent the
+        // user to the creation flow instead of to the PR they picked.
+        if duoPanePrTag == nil {
+          openPrCreationInPrsTab()
+        } else {
+          openLaneOpenPr()
+        }
+      },
+      onOpenGitHub: openLanePrOnGitHub,
+      linkedPrs: laneChatPrs,
+      selectedPrId: duoPanePr?.id,
+      onSelectPr: { selectChatPr($0) },
+      stackOffer: visibleChatStackOffer,
+      linkablePrs: chatPrLinkableCatalog,
+      canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      linkBusy: chatPrLinkBusy,
+      onLinkStack: { Task { await linkChatStackOffer() } },
+      onDismissStackOffer: {
+        if let offer = visibleChatStackOffer {
+          dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+        }
+      },
+      onLinkPr: { prId, allowCrossLane in
+        Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+      },
+      onUnlink: { Task { await unlinkCurrentChatPr() } },
+      embedded: embedded,
+      prWatch: embedded ? duoPanePrWatch : nil,
+      onSetPrWatch: embedded ? { mode in Task { await setPrChatWatch(mode: mode) } } : nil
+    )
+  }
+
+  /// The PR trio, with the fixture's own PR in DEBUG screenshot runs (the
+  /// fixture host has no synced PR rows for the resolver to find).
+  private var duoPanePrTag: LanePrTag? {
+    #if DEBUG
+    if let preview = DuoWorkPreviewState.pr { return preview.tag }
+    #endif
+    return chatDisplayPrTag
+  }
+
+  private var duoPanePr: PullRequestListItem? {
+    #if DEBUG
+    if let preview = DuoWorkPreviewState.pr { return preview.pr }
+    #endif
+    return chatDisplayPr
+  }
+
+  /// The PR page's Watch / Ship control, with the fixture's own watch in
+  /// DEBUG screenshot runs (no host to read the watch from).
+  private var duoPanePrWatch: WorkChatPrWatchModel? {
+    #if DEBUG
+    if let preview = DuoWorkPreviewState.pr, chatPrWatchModel == nil {
+      return WorkChatPrWatchModel(
+        prNumber: preview.tag.githubPrNumber,
+        mode: "watch",
+        holding: false,
+        lastToldAt: nil,
+        lastToldSummary: nil,
+        armedByAgent: false,
+        busy: false,
+        error: nil,
+        unknown: false
+      )
+    }
+    #endif
+    return chatPrWatchModel
+  }
+
+  private var duoPanePrSummary: PrSummary? {
+    #if DEBUG
+    if DuoWorkPreviewState.pr != nil { return nil }
+    #endif
+    return chatDisplayPrSummary
+  }
+
+  /// Opening a menu item that lives in the pane must not also present its
+  /// sheet. `origin` is the corner the pane grows from: the pill row's
+  /// (bottom-leading) or the toolbar's (top-trailing).
+  private func showChatInfo(origin: UnitPoint = .topTrailing) {
+    if duoUsesPane {
+      duoPane?.open(.chatInfo, origin: origin)
+      refreshChatInfoSnapshots()
+      Task { await refreshRemoteSubagentSnapshots() }
+    } else {
+      Task { await prepareChatInfoPresentation() }
+    }
+  }
+
+  private func showProof() {
+    if duoUsesPane {
+      duoPane?.open(.proof)
+    } else {
+      artifactDrawerPresented = true
+    }
+  }
+
+  private func showPrDetails(origin: UnitPoint = .topTrailing) {
+    if duoUsesPane {
+      duoPane?.open(.pr, origin: origin)
+      Task { await refreshChatPrDetails(force: true) }
+    } else {
+      presentChatPrDetails()
+    }
+  }
+
+  /// A Tools menu item or a tile: the tool beside the thread on a wide
+  /// display, its sheet or viewer on the phone (exactly what its pill opens).
+  private func openChatTool(_ tab: DuoToolTab, origin: UnitPoint = .topTrailing) {
+    switch tab {
+    case .pr:
+      showPrDetails(origin: origin)
+    case .createPr:
+      presentCreateLanePr()
+    case .chatInfo:
+      showChatInfo(origin: origin)
+    case .proof:
+      showProof()
+    case .ctoSettings:
+      duoPane?.open(.ctoSettings, origin: origin)
+    case .simulator, .macDesktop, .appControl, .browser:
+      if let duoPane {
+        duoPane.open(tab, origin: origin)
+      } else if let chip = toolsRelay.chips.first(where: { $0.duoToolTab == tab }) {
+        toolsRelay.open(chip)
+      }
+    }
+  }
+
+  /// The running tools, as the Tools menus list them.
+  private var chatToolMenuItems: [WorkChatToolMenuItem] {
+    toolsRelay.chips.map { WorkChatToolMenuItem(tab: $0.duoToolTab, detail: $0.displayLabel) }
+  }
+
+  /// What the Chat Info pill says: agents or background work running now,
+  /// else the proof filed. Nil when neither, so the pill only shows while
+  /// something is going on.
+  private var chatInfoPillModel: WorkChatInfoPillModel? {
+    let runningAgents = workChatInfoSubagents(subagentSnapshots).filter { $0.status == .running }.count
+    let runningBackground = workChatInfoBackgroundItems(scheduledWorkSnapshots).filter {
+      $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "running"
+    }.count
+    return WorkChatInfoPillModel(
+      running: runningAgents + runningBackground,
+      proof: personalChat ? 0 : artifacts.count
+    )
+  }
+
+  /// The stacked layout's top half with nothing open: what can open there.
+  private var duoToolTiles: some View {
+    var tiles = toolsRelay.chips.map { DuoToolTiles.Tile(tab: $0.duoToolTab, detail: $0.displayLabel) }
+    let current = session ?? initialSession
+    if current.map(isChatSession) ?? false {
+      let count = workChatInfoItemCount(subagents: subagentSnapshots, scheduledWork: scheduledWorkSnapshots)
+      tiles.append(DuoToolTiles.Tile(tab: .chatInfo, detail: count > 0 ? "\(count) agents and jobs" : nil))
+    }
+    if showsLaneActions && !personalChat && duoHasPullRequest {
+      tiles.append(DuoToolTiles.Tile(
+        tab: .pr,
+        detail: (duoPanePrTag?.githubPrNumber ?? duoPanePr?.githubPrNumber).map { "#\($0)" }
+      ))
+    }
+    return DuoToolTiles(tiles: tiles) { tab in openChatTool(tab) }
+  }
+
+  /// The wide column's subtitle: lane · model · machine, the three facts that
+  /// tell two chats with the same title apart.
+  private var duoChatSubtitle: String? {
+    let current = session ?? initialSession
+    var parts: [String] = []
+    // The CTO's lane is a stand-in named "CTO": the title already says it.
+    if duoCtoSettings == nil,
+       let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
+      parts.append(lane)
+    }
+    let model = shortModelLabel(composerChatSummary?.model)
+    if !model.isEmpty { parts.append(model) }
+    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  /// The wide chat's toolbar: Chat Info, Tools and ⋯, drawn from the same
+  /// menu model as the phone's ⋯ (DuoWorkSplit.swift).
+  private func duoChatRail(_ pane: DuoWorkPaneModel) -> DuoChatRail {
+    let current = session ?? initialSession
+    let menu = current.map(headerMenuModel) ?? WorkChatHeaderMenuModel(
+      chatInfoCount: 0,
+      artifactCount: 0,
+      showsLaneActions: false,
+      prTag: nil,
+      prGitHubUrlAvailable: false,
+      prLinkCopied: false,
+      laneAvailable: false,
+      createPrBlockedReason: nil,
+      sessionPinned: false,
+      sessionIdCopied: false,
+      sessionDeepLinkCopied: false,
+      showsProof: false,
+      showsPinAction: false,
+      showsSessionLink: false
+    )
+    let isChat = current.map(isChatSession) ?? false
+    return DuoChatRail(
+      pane: pane,
+      model: DuoChatRailModel(
+        title: sessionDestinationNavigationTitle,
+        subtitle: duoChatSubtitle,
+        provider: composerChatSummary?.provider ?? current?.toolType,
+        menu: menu,
+        session: current,
+        isChat: isChat,
+        prBadge: duoPrLabelInHeader ? chatPrBadgeModel : nil
+      ),
+      showsSidebarButton: !duoShowsSidebar && onDuoToggleSidebar != nil,
+      actions: DuoChatRailActions(
+        onToggleSidebar: onDuoToggleSidebar,
+        onChatInfo: { showChatInfo() },
+        onOpenTool: { openChatTool($0) },
+        onCreatePullRequest: { presentCreateLanePr() },
+        onOpenLane: { openSessionLane() },
+        onRename: { presentSessionRename() },
+        onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } },
+        onCopySessionId: { copyCurrentSessionId() },
+        onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+        onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+        onDelete: { Task { await deleteCurrentChatSession() } },
+        onOpenCtoSettings: duoCtoSettings == nil ? nil : { openChatTool(.ctoSettings) }
+      )
+    )
+  }
+
+  /// The chat's PR as a badge (the pill above the composer, or the header
+  /// label), or nil when the chat shows none.
+  private var chatPrBadgeModel: WorkChatPrBadgeModel? {
+    guard WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).rendersPrBadge else { return nil }
+    return workChatPrBadgeModel(
+      tag: duoPanePrTag,
+      pr: duoPanePr,
+      summary: duoPanePrSummary,
+      linkedCount: laneChatPrs.count
+    )
+  }
+
+  /// The PR shows as a label in the chat's header while the chat has the room
+  /// for it: held landscape on the Duo, alone on the right (no pane beside
+  /// it). Squeezed (pane open, upright, iPad, phone) it is the pill instead.
+  private var duoPrLabelInHeader: Bool {
+    duoPane != nil && duoLayout.hasEdgeBar && !duoPaneOpen && duoWorkFamily != .tall
+      && duoColumnWidth >= DuoWorkMetrics.headerPrMinColumnWidth
+  }
+
+  /// DEBUG screenshots only: opens the fixture's tool tab once the chat is up.
+  private var duoPanePreviewKey: String {
+    #if DEBUG
+    "\(sessionId)|\(duoPaneOpen)|\(duoPane?.toolTabs.count ?? 0)"
+    #else
+    ""
+    #endif
+  }
+
+  private func openDuoPreviewTabIfNeeded() {
+    #if DEBUG
+    guard WorkRootPreviewFixture.active != nil,
+          let tab = DuoWorkPreviewState.tab,
+          DuoWorkPreviewState.openedSessions.insert(sessionId).inserted
+    else { return }
+    if tab == .chatInfo { refreshChatInfoSnapshots() }
+    if duoPane != nil {
+      duoPane?.open(tab)
+    } else {
+      // The phone layout: the sheet the pill opens, once the push has landed.
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(900))
+        openChatTool(tab)
+      }
+    }
+    #endif
   }
 
   private func headerMenuModel(_ session: TerminalSessionSummary) -> WorkChatHeaderMenuModel {
@@ -763,8 +1409,29 @@ struct WorkSessionDestinationView: View {
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
       ),
       // Optional on mobile: an older host has no restart, and the item hides.
-      showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id)
+      showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id),
+      tools: personalChat ? [] : chatToolMenuItems,
+      hasPullRequest: showsLaneActions && !personalChat && duoHasPullRequest,
+      canCreatePullRequest: showsLaneActions && !personalChat && !duoHasPullRequest
+        && canCreatePullRequestForHeaderLane,
+      actionsKey: chatActionsKey(session)
     )
+  }
+
+  /// Everything the shared actions list draws from the session, so an open
+  /// ⋯ is rebuilt when (and only when) one of its items would change.
+  private func chatActionsKey(_ session: TerminalSessionSummary) -> String {
+    let summary = composerChatSummary
+    let muted = pushNotificationService.prefs.mutedSessionIds.contains(session.id)
+    var parts: [String] = [session.id, session.title, session.status]
+    parts.append(session.pinned ? "pinned" : "-")
+    parts.append(session.isSnoozed() ? "snoozed" : "-")
+    parts.append(session.settledAt ?? "-")
+    parts.append(session.attentionRequestedAt ?? "-")
+    parts.append(String(describing: summary?.spawnKind))
+    parts.append(summary?.orchestrationParentSessionId ?? "-")
+    parts.append(muted ? "muted" : "-")
+    return parts.joined(separator: "|")
   }
 
   /// Follows the switcher: "Open on GitHub" must open the PR on screen, not the
@@ -809,8 +1476,16 @@ struct WorkSessionDestinationView: View {
 
   @ViewBuilder
   private var chatCreatePrWizardSheet: some View {
+    chatCreatePrWizard(embedded: false)
+    .presentationDetents([.large])
+    .presentationDragIndicator(.visible)
+    .presentationContentInteraction(.scrolls)
+  }
+
+  /// The create-PR form: a sheet on the phone, the pane on a wide display.
+  private func chatCreatePrWizard(embedded: Bool) -> some View {
     let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
-    CreatePrWizardView(
+    var wizard = CreatePrWizardView(
       lanes: lanes,
       createCapabilities: prCreateCapabilities,
       initialLaneId: laneId.isEmpty ? nil : laneId,
@@ -818,10 +1493,10 @@ struct WorkSessionDestinationView: View {
       onCreateSingle: handleChatCreateSinglePr,
       onCreateIntegration: { _ in false }
     )
-    .environmentObject(syncService)
-    .presentationDetents([.large])
-    .presentationDragIndicator(.visible)
-    .presentationContentInteraction(.scrolls)
+    wizard.embedded = embedded
+    return wizard
+      .environmentObject(syncService)
+      .task { await loadPrCreateCapabilitiesIfNeeded() }
   }
 
   var sessionDestinationZoomTransitionId: String? {
@@ -898,13 +1573,131 @@ struct WorkSessionDestinationView: View {
     }
   }
 
-  /// Type-erased in two places on purpose. Written as one chain, these ~40
-  /// modifiers over the chat view are a single nested generic type, and the
-  /// Swift runtime builds its metadata on the main thread the first time a
-  /// chat opens: seconds on a phone (Sentry ADE-IOS-R/S). `AnyView` breaks
-  /// the chain into small types; the identity of each piece is stable.
+  /// The chat column is type-erased in two places on purpose
+  /// (`chatColumnBody`, `chatColumnPresentations`). Written as one chain, its
+  /// ~40 modifiers are a single nested generic type, and the Swift runtime
+  /// builds its metadata on the main thread the first time a chat opens:
+  /// seconds on a phone (Sentry ADE-IOS-R/S). `AnyView` breaks the chain into
+  /// small types; the identity of each piece is stable.
   var body: some View {
-    AnyView(sessionDestinationPresentations)
+    Group {
+      if let duoPane {
+        // The wide Work detail column: ONE stack around the thread and the
+        // tools pane, so its toolbar is the rail along the Duo's curved edge
+        // and nothing inside it declares toolbar items of its own
+        // (DuoWorkSplit.swift).
+        NavigationStack {
+          DuoWorkChatPaneSplit(
+            isOpen: duoPaneOpen,
+            origin: duoPane.origin,
+            showsIdle: duoCtoSettings == nil,
+            chat: { chatColumnBody },
+            tools: { duoToolsPane },
+            idle: { duoToolTiles }
+          )
+          // The fold between thread and pane is empty space; it shows the
+          // page, not the stack's default white.
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { width in
+            if duoColumnWidth != width { duoColumnWidth = width }
+          }
+          .modifier(duoChatRail(duoPane))
+        }
+      } else {
+        // Every pushed chat, the CTO composer and the hub quick look keep
+        // today's hierarchy exactly.
+        chatColumnBody
+      }
+    }
+    .task(id: duoPanePreviewKey) { openDuoPreviewTabIfNeeded() }
+    // The shell folds its sidebar away while the tools column is up, and only
+    // while this chat is the one on screen. The destination's own lifetime is
+    // the right clock: leaving the chat or the tab clears it, and coming back
+    // re-asserts it from the pane's state.
+    .onAppear { syncDuoShellSidebar() }
+    .onDisappear { DuoShellChrome.shared.setSidebarPreferredHidden(false) }
+    .onChange(of: duoPaneOpen) { _, _ in syncDuoShellSidebar() }
+  }
+
+  private func syncDuoShellSidebar() {
+    DuoShellChrome.shared.setSidebarPreferredHidden(duoUsesPane && duoPaneOpen)
+  }
+
+  /// The chat as it has always been: header chrome, transcript, composer, and
+  /// the sheets those surfaces present. A wide display only changes where it
+  /// sits, never what it is.
+  private var chatColumnPresentations: some View {
+    AnyView(sessionDestinationRoot)
+      .workSessionNavigationChrome(
+        // The wide column's chrome is the rail around the split (`body`).
+        mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
+        title: sessionDestinationNavigationTitle,
+        subtitle: sessionDestinationNavigationSubtitle,
+        leadingSymbol: "sidebar.left",
+        leadingLabel: duoShowsSidebar ? "Hide chats" : "Show chats",
+        leadingIdentifier: "Duo.Work.SidebarToggle",
+        // A split column has no stack to pop: the leading control is the
+        // sidebar toggle, and only the delete path uses `onDuoBack`.
+        onBack: duoUsesPane ? onDuoToggleSidebar : onDuoBack,
+        railControls: { AnyView(sessionRailControls) },
+        trailingControls: { sessionHeaderTrailingControls }
+      )
+      // No zoom navigation transition here: a zoom-pushed screen closes on a
+      // downward swipe, so pulling down at the top of the thread (to load
+      // older messages) closed the chat. Back is the button or the edge swipe.
+      .adeAnalyticsScreen(.workSession)
+      .sheet(item: $fullscreenImage) { image in
+        WorkFullscreenImageView(image: image)
+      }
+      .sheet(isPresented: $chatInfoPresented) {
+        chatInfoDetailsContent
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+          .task {
+            await refreshRemoteSubagentSnapshots()
+          }
+      }
+      .sheet(isPresented: $createPrPresented) {
+        chatCreatePrWizardSheet
+      }
+      .sheet(isPresented: $prDetailsPresented, onDismiss: {
+        if createPrAfterDetailsDismiss {
+          createPrAfterDetailsDismiss = false
+          createPrPresented = true
+        }
+      }) {
+        chatPullRequestSheet
+      }
+      .task(id: prChatWatchTaskKey) {
+        await refreshPrChatWatch()
+      }
+      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
+        Button("Cancel", role: .cancel) {}
+        Button("Stop and restart", role: .destructive) {
+          Task { await restartAgentSession(stopFirst: true) }
+        }
+      } message: {
+        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
+      }
+      .alert("Rename session", isPresented: $sessionActionRenamePresented) {
+        TextField("Title", text: $sessionActionRenameText)
+        Button("Cancel", role: .cancel) {
+          sessionActionRenameText = ""
+        }
+        Button("Save") {
+          let title = sessionActionRenameText
+          Task { await submitCurrentSessionRename(title) }
+        }
+      } message: {
+        Text("Give this session a clearer title for search, pinning, and activity tracking.")
+      }
+  }
+
+  /// Type-erased in two places on purpose (see `body`): written as one chain,
+  /// these ~40 modifiers are one nested generic type whose metadata the Swift
+  /// runtime builds on the main thread the first time a chat opens.
+  private var chatColumnBody: some View {
+    AnyView(chatColumnPresentations)
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
@@ -1116,132 +1909,6 @@ struct WorkSessionDestinationView: View {
       }
   }
 
-  private var sessionDestinationPresentations: some View {
-    AnyView(sessionDestinationRoot)
-      .workSessionNavigationChrome(
-        mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
-        title: sessionDestinationNavigationTitle,
-        subtitle: sessionDestinationNavigationSubtitle,
-        trailingControls: { sessionHeaderTrailingControls }
-      )
-      // No zoom navigation transition here: a zoom-pushed screen closes on a
-      // downward swipe, so pulling down at the top of the thread (to load
-      // older messages) closed the chat. Back is the button or the edge swipe.
-      .adeAnalyticsScreen(.workSession)
-      .sheet(item: $fullscreenImage) { image in
-        WorkFullscreenImageView(image: image)
-      }
-      .sheet(isPresented: $chatInfoPresented) {
-        // Folded off the main actor by the thread engine, like the timeline.
-        let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
-        WorkChatInfoDetailsSheet(
-          sessionId: sessionId,
-          subagentSnapshots: subagentSnapshots,
-          scheduledWorkSnapshots: scheduledWorkSnapshots,
-          scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
-          nextWakeAt: composerChatSummary?.nextWakeAt,
-          provider: subagentProvider,
-          expandedTaskIds: $expandedSubagentDetailIds,
-          sessionModel: composerChatSummary?.model,
-          sourceRefs: threadSnapshot.sourceRefs,
-          omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
-          taskList: threadSnapshot.taskList,
-          onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
-          onSelect: handleSubagentSelection,
-          onCancelScheduledWork: scheduledWorkCancelAction,
-          onSetScheduledWorkPaused: scheduledWorkPauseAction,
-          onStopTask: stopTaskAction
-        )
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .task {
-          await refreshRemoteSubagentSnapshots()
-        }
-      }
-      .sheet(isPresented: $createPrPresented) {
-        chatCreatePrWizardSheet
-      }
-      .sheet(isPresented: $prDetailsPresented, onDismiss: {
-        if createPrAfterDetailsDismiss {
-          createPrAfterDetailsDismiss = false
-          createPrPresented = true
-        }
-      }) {
-        WorkChatPrDetailsSheet(
-          tag: chatDisplayPrTag,
-          pr: chatDisplayPr,
-          summary: chatDisplayPrSummary,
-          snapshot: prDetailsSnapshot,
-          laneColor: headerMenuLaneColor,
-          canCreate: canCreatePullRequestForHeaderLane,
-          createBlockedReason: createPullRequestBlockedReason,
-          isRefreshing: prDetailsRefreshing,
-          errorMessage: prDetailsError,
-          onRefresh: {
-            Task { await refreshChatPrDetails(force: true) }
-          },
-          onCreate: {
-            presentCreateLanePr()
-          },
-          onOpenPrsTab: {
-            // The DISPLAYED PR decides, not the lane's resolved one: a PR this
-            // chat linked from another lane shows in the switcher while
-            // `lanePrTag` stays nil, and branching on the lane tag sent the
-            // user to the creation flow instead of to the PR they picked.
-            if chatDisplayPrTag == nil {
-              openPrCreationInPrsTab()
-            } else {
-              openLaneOpenPr()
-            }
-          },
-          onOpenGitHub: openLanePrOnGitHub,
-          linkedPrs: laneChatPrs,
-          selectedPrId: chatDisplayPr?.id,
-          onSelectPr: { selectChatPr($0) },
-          stackOffer: visibleChatStackOffer,
-          linkablePrs: chatPrLinkableCatalog,
-          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          linkBusy: chatPrLinkBusy,
-          onLinkStack: { Task { await linkChatStackOffer() } },
-          onDismissStackOffer: {
-            if let offer = visibleChatStackOffer {
-              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
-            }
-          },
-          onLinkPr: { prId, allowCrossLane in
-            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
-          },
-          onUnlink: { Task { await unlinkCurrentChatPr() } }
-        )
-        .presentationDetents([.height(500), .large])
-        .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-      }
-      .task(id: prChatWatchTaskKey) {
-        await refreshPrChatWatch()
-      }
-      .alert("Stop the turn and restart?", isPresented: $restartStopTurnConfirmPresented) {
-        Button("Cancel", role: .cancel) {}
-        Button("Stop and restart", role: .destructive) {
-          Task { await restartAgentSession(stopFirst: true) }
-        }
-      } message: {
-        Text("The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.")
-      }
-      .alert("Rename session", isPresented: $sessionActionRenamePresented) {
-        TextField("Title", text: $sessionActionRenameText)
-        Button("Cancel", role: .cancel) {
-          sessionActionRenameText = ""
-        }
-        Button("Save") {
-          let title = sessionActionRenameText
-          Task { await submitCurrentSessionRename(title) }
-        }
-      } message: {
-        Text("Give this session a clearer title for search, pinning, and activity tracking.")
-      }
-  }
-
   /// Foreign Hub open → owning project committed. The switch tears the socket
   /// and clears chat subscriptions; clearing the scope map alone would leave
   /// this session unsubscribed. Rebind onto the active-project stream.
@@ -1337,13 +2004,25 @@ struct WorkSessionDestinationView: View {
     return sessionDestinationRootContent
   }
 
+  /// In the Duo's detail column the terminal has no stack to pop: its
+  /// leading control brings the sessions list back, as a chat's does.
+  private var terminalLeadingControl: TerminalLeadingControl {
+    guard duoUsesPane else { return .back }
+    if duoShowsSidebar { return .none }
+    guard let onDuoToggleSidebar else { return .none }
+    return .showChats {
+      ADEHaptics.light()
+      onDuoToggleSidebar()
+    }
+  }
+
   @ViewBuilder
   private var sessionDestinationRootContent: some View {
     if let session {
       if isChatSession(session) {
         chatSessionDestinationRoot(for: session)
       } else {
-        TerminalSessionScreen(session: session)
+        TerminalSessionScreen(session: session, leading: terminalLeadingControl)
           .environmentObject(syncService)
       }
     } else {
@@ -1365,7 +2044,7 @@ struct WorkSessionDestinationView: View {
     if let threadModel {
       // Keyed on the engine too: a Hub activation moves the chat to another
       // scope's engine, and the transcript view's scroll state belongs to one.
-      makeWorkChatSessionView(for: session, thread: threadModel)
+      duoFixtureChatView(makeWorkChatSessionView(for: session, thread: threadModel))
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
       connectingFrame
@@ -1431,6 +2110,20 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  /// `duo-work*` fixtures: the chat's lane tools come from the fixture, so its
+  /// chips and the pane's live tabs show without a machine.
+  private func duoFixtureChatView(_ view: WorkChatSessionView) -> WorkChatSessionView {
+    #if DEBUG
+    var view = view
+    if WorkRootPreviewFixture.active != nil, DuoWorkPreviewState.sessionId != nil, view.previewLaneTools == nil {
+      view.previewLaneTools = DuoWorkPreviewState.laneTools
+    }
+    return view
+    #else
+    return view
+    #endif
+  }
+
   private func makeWorkChatSessionView(
     for session: TerminalSessionSummary,
     thread: ChatThreadModel
@@ -1439,19 +2132,13 @@ struct WorkSessionDestinationView: View {
     let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     let shouldSteer = hostReachable && sessionStatus == "active"
     let prPolicy = WorkChatLanePrPolicy(showsLaneActions: showsLaneActions)
-    let chatPrBadge: WorkChatPrBadgeModel? = prPolicy.rendersPrBadge
-      ? workChatPrBadgeModel(
-          tag: chatDisplayPrTag,
-          pr: chatDisplayPr,
-          summary: chatDisplayPrSummary,
-          linkedCount: laneChatPrs.count
-        )
-      : nil
-    let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { presentChatPrDetails() } : nil
-    let prWatchModel: WorkChatPrWatchModel? = chatPrBadge == nil ? nil : chatPrWatchModel
-    let setPrWatchAction: ((String?) -> Void)? = prWatchModel == nil
-      ? nil
-      : { mode in Task { await setPrChatWatch(mode: mode) } }
+    // In the header (held landscape, chat alone on the right) or as the pill
+    // above the composer: never both.
+    let chatPrBadge: WorkChatPrBadgeModel? = duoPrLabelInHeader ? nil : chatPrBadgeModel
+    let openPrDetails: (() -> Void)? = prPolicy.rendersPrBadge ? { showPrDetails(origin: .bottomLeading) } : nil
+    // PR watch lives inside the PR view, not as a pill of its own.
+    let prWatchModel: WorkChatPrWatchModel? = nil
+    let setPrWatchAction: ((String?) -> Void)? = nil
     // Codex goal controls, host-gated per command like desktop's panel.
     let setCodexGoalAction: ((String) -> Void)? = syncService.supportsChatRemoteAction("chat.setCodexGoal", sessionId: session.id)
       ? { objective in Task { await setCodexGoal(objective: objective) } }
@@ -1679,7 +2366,8 @@ struct WorkSessionDestinationView: View {
       // all live in the Chat Info sheet. Timeline-row selection stays scoped
       // to the parent chat, so nested transcript state cannot accidentally
       // fetch from itself.
-      onOpenChatInfo: { Task { await prepareChatInfoPresentation() } },
+      onOpenChatInfo: { showChatInfo(origin: .bottomLeading) },
+      chatInfoPill: chatInfoPillModel,
       onForkChatInLane: {
         let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1736,7 +2424,17 @@ struct WorkSessionDestinationView: View {
       onUpdateThreadComment: updateThreadCommentAction,
       onDeleteThreadComment: deleteThreadCommentAction,
       crossMachineHandoffActions: crossMachineHandoffActions,
-      crossMachineBatchMoveApprovalActions: crossMachineBatchMoveApprovalActions
+      crossMachineBatchMoveApprovalActions: crossMachineBatchMoveApprovalActions,
+      duoPane: duoPane,
+      duoPaneOpen: duoPaneOpen,
+      toolsRelay: toolsRelay,
+      onAttachIssue: personalChat || !syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+        ? nil
+        : {
+          ADEHaptics.light()
+          syncService.linearPaneAttachSessionId = session.id
+          syncService.linearPanePresented = true
+        }
     )
   }
 
@@ -2708,6 +3406,10 @@ extension WorkSessionDestinationView: Equatable {
       && (lhs.transitionNamespace == nil) == (rhs.transitionNamespace == nil)
       && lhs.isLive == rhs.isLive
       && lhs.navigationChrome == rhs.navigationChrome
+      && lhs.duoPaneOpen == rhs.duoPaneOpen
+      && lhs.duoShowsSidebar == rhs.duoShowsSidebar
+      && (lhs.onDuoToggleSidebar == nil) == (rhs.onDuoToggleSidebar == nil)
+      && (lhs.onDuoBack == nil) == (rhs.onDuoBack == nil)
       && lhs.showsLaneActions == rhs.showsLaneActions
       // `compactComposer` is passed down to the composer like the other two
       // surface flags, so leaving it out let the render gate swallow a change
@@ -2726,11 +3428,33 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   @Environment(\.dismiss) private var dismiss
   @Environment(\.layoutDirection) private var layoutDirection
   @State private var contentWidth: CGFloat = 0
+  /// The display carries the tabs on a vertical edge rail (the Duo's closed
+  /// outer display). Hiding the tab bar there does not hide the rail; it left
+  /// an empty glass capsule floating under the composer.
+  @State private var displayHasEdgeRail = false
+  /// The display has a rail along its trailing edge in either orientation
+  /// (the Duo's outer display: upright, or held sideways with its camera
+  /// column on the right).
+  @State private var displayHasSideRail = false
 
   let mode: WorkSessionNavigationChrome
   let title: String
   let subtitle: String?
+  /// Overrides Back for `.column` and any other mode that supplies one. Nil
+  /// keeps the pushed-detail dismiss.
+  let onBack: (() -> Void)?
+  /// Symbol, spoken label and accessibility id for `.column`'s leading control.
+  /// The pushed detail always keeps the back chevron.
+  let leadingSymbol: String
+  let leadingLabel: String
+  let leadingIdentifier: String
+  /// The header's trailing controls as separate buttons for the edge rail's
+  /// top, used where the display has one (the Duo's outer display, upright).
+  let railControls: (() -> AnyView)?
   let trailingControls: () -> TrailingControls
+
+  /// The trailing controls live on the rail, not in the header.
+  private var controlsOnRail: Bool { displayHasSideRail && railControls != nil }
 
   @ViewBuilder
   func body(content: Content) -> some View {
@@ -2746,6 +3470,16 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         .onPreferenceChange(WorkSessionNavigationChromeWidthPreferenceKey.self) { width in
           contentWidth = width
         }
+        .onGeometryChange(for: Bool.self) { proxy in
+          workDisplayHasEdgeRail(proxy)
+        } action: { hasRail in
+          if displayHasEdgeRail != hasRail { displayHasEdgeRail = hasRail }
+        }
+        .onGeometryChange(for: Bool.self) { proxy in
+          workDisplayHasSideRail(proxy)
+        } action: { hasRail in
+          if displayHasSideRail != hasRail { displayHasSideRail = hasRail }
+        }
         // Keep the edge gesture pass-through: vertical scrolls and row gestures
         // still reach the chat, while the helper only dismisses true edge swipes.
         .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
@@ -2757,14 +3491,46 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
           WorkChatGlassHeader(
             title: title,
             subtitle: subtitle,
-            onBack: { dismiss() },
-            trailingControls: trailingControls
+            onBack: {
+              if let onBack {
+                onBack()
+              } else {
+                dismiss()
+              }
+            },
+            trailingControls: { Group { if !controlsOnRail { trailingControls() } } }
           )
         }
         .navigationTitle("")
-        .toolbar(.hidden, for: .tabBar)
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        // With a rail, the bar's trailing items are the rail's top (the
+        // header keeps back and the title); without one the bar stays hidden.
+        .toolbar {
+          if controlsOnRail, let railControls {
+            ToolbarItemGroup(placement: .topBarTrailing) { railControls() }
+          }
+        }
+        .toolbar(displayHasEdgeRail ? .automatic : .hidden, for: .tabBar)
+        .toolbar(controlsOnRail ? .automatic : .hidden, for: .navigationBar)
         .adeRootTabBarHidden()
+    case .column:
+      content
+        // Floats over the thread exactly as the pushed header does; only the
+        // leading control and the tab bar differ. A split has no stack to pop,
+        // so the leading control is the sidebar toggle, never a chevron.
+        .safeAreaInset(edge: .top, spacing: 0) {
+          WorkChatGlassHeader(
+            title: title,
+            subtitle: subtitle,
+            onBack: { onBack?() },
+            trailingControls: trailingControls,
+            leadingSymbol: leadingSymbol,
+            leadingLabel: leadingLabel,
+            leadingIdentifier: leadingIdentifier
+          )
+        }
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
     case .embedded:
       content
     }
@@ -2799,6 +3565,11 @@ extension View {
     mode: WorkSessionNavigationChrome,
     title: String,
     subtitle: String? = nil,
+    leadingSymbol: String = "chevron.left",
+    leadingLabel: String = "Back",
+    leadingIdentifier: String = "Work.Chat.Header.Back",
+    onBack: (() -> Void)? = nil,
+    railControls: (() -> AnyView)? = nil,
     @ViewBuilder trailingControls: @escaping () -> TrailingControls
   ) -> some View {
     modifier(
@@ -2806,6 +3577,11 @@ extension View {
         mode: mode,
         title: title,
         subtitle: subtitle,
+        onBack: onBack,
+        leadingSymbol: leadingSymbol,
+        leadingLabel: leadingLabel,
+        leadingIdentifier: leadingIdentifier,
+        railControls: railControls,
         trailingControls: trailingControls
       )
     )
@@ -2829,15 +3605,20 @@ struct WorkChatGlassHeader<TrailingControls: View>: View {
   let subtitle: String?
   let onBack: () -> Void
   let trailingControls: () -> TrailingControls
+  /// The leading control. A pushed chat is a back chevron; a split column swaps
+  /// in the sidebar toggle, because there is nothing to go back to.
+  var leadingSymbol = "chevron.left"
+  var leadingLabel = "Back"
+  var leadingIdentifier = "Work.Chat.Header.Back"
 
   var body: some View {
     HStack(alignment: .center, spacing: 8) {
       Button(action: onBack) {
-        WorkChatGlassCircleLabel(systemName: "chevron.left", glyphSize: 18)
+        WorkChatGlassCircleLabel(systemName: leadingSymbol, glyphSize: 18)
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Back")
-      .accessibilityIdentifier("Work.Chat.Header.Back")
+      .accessibilityLabel(leadingLabel)
+      .accessibilityIdentifier(leadingIdentifier)
 
       titleCapsule
         .layoutPriority(1)

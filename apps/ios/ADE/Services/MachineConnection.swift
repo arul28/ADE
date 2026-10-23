@@ -46,6 +46,8 @@ final class MachineConnection {
   private(set) var supportsChatLogV2 = false
   private(set) var supportsChatHistoryPaging = false
   private(set) var supportsChatHistoryPageBySequence = false
+  /// The host answers `project_set_icon_request`.
+  private(set) var supportsProjectIcon = false
   private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// Host display name from the last hello.
   private(set) var hostName: String?
@@ -272,6 +274,7 @@ final class MachineConnection {
     supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
     supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
+    supportsProjectIcon = featureEnabled("projectIcon", "project_icon")
     chunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
     maxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
     compressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
@@ -461,7 +464,8 @@ final class MachineConnection {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result":
+    case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result",
+         "project_set_icon_result":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "roster_snapshot":
       guard let snapshot = machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self) else { return }
@@ -542,6 +546,29 @@ final class MachineConnection {
     guard let requestId, let request = pending.removeValue(forKey: requestId) else { return }
     request.timeoutTask.cancel()
     request.continuation.resume(with: result)
+  }
+
+  /// Store a project's icon on this machine (its own project id and root), the
+  /// way the desktop's icon editor does. The roster is asked again after, so
+  /// the card shows the new icon.
+  func setProjectIcon(projectId: String?, rootPath: String?, png: Data) async throws {
+    let raw = try await request(
+      type: "project_set_icon_request",
+      payload: mobileProjectSetIconPayload(projectId: projectId, rootPath: rootPath, png: png),
+      timeoutNanoseconds: 20_000_000_000,
+      timeoutMessage: "Timed out changing the project icon."
+    )
+    guard let result = machineConnectionDecode(raw, as: MobileProjectSetIconResultPayload.self) else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "The machine sent an unreadable answer.",
+      ])
+    }
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The machine could not change the icon.",
+      ])
+    }
+    requestRosterSnapshot()
   }
 
   /// Run a remote command on this machine, scoped to a project. Never queued:

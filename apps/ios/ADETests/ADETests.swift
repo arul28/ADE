@@ -2692,17 +2692,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testHubFirstConnectExpandsOnlyActiveProject() {
-    XCTAssertEqual(
-      hubProjectIdsCollapsedByDefault([
-        (id: "active", isActive: true),
-        (id: "other", isActive: false),
-        (id: "third", isActive: false),
-      ]),
-      Set(["other", "third"])
-    )
-  }
-
   func testSettingsVersionLabelIncludesMarketingAndBuildVersions() {
     XCTAssertEqual(
       settingsVersionLabel(marketingVersion: "1.2.24", build: "243"),

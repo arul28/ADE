@@ -41,6 +41,9 @@ struct PrFilesSections: View {
   let canOpenFiles: Bool
   let onOpenFile: (PrFile) -> Void
   let onCopyPath: (PrFile) -> Void
+  /// The Duo's file list beside the diff: a row selects its file instead of
+  /// pushing the diff page.
+  var selection: Binding<String?>? = nil
 
   var body: some View {
     let groups = prFileFolderGroups(files)
@@ -60,7 +63,7 @@ struct PrFilesSections: View {
         } else {
           HStack(spacing: 6) {
             Text(verbatim: "\(files.count.formatted(.number)) file\(files.count == 1 ? "" : "s")")
-              .font(.adeMono(12, weight: .medium))
+              .font(.footnote.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
             Text("·").foregroundStyle(ADEColor.textMuted)
             PrDiffStat(
@@ -76,18 +79,36 @@ struct PrFilesSections: View {
       ForEach(groups) { group in
         Section {
           ForEach(group.files) { entry in
-            NavigationLink {
-              PrFileDiffPage(
-                files: files,
-                initialIndex: entry.index,
-                canOpenFiles: canOpenFiles,
-                onOpenFile: onOpenFile,
-                onCopyPath: onCopyPath
-              )
-            } label: {
-              PrFileRow(file: entry.file)
+            if let selection {
+              Button {
+                selection.wrappedValue = entry.file.filename
+              } label: {
+                PrFileRow(file: entry.file)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+              .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+              .listRowBackground(selection.wrappedValue == entry.file.filename ? ADEColor.accent.opacity(0.12) : Color.clear)
+              .contextMenu {
+                if canOpenFiles {
+                  Button { onOpenFile(entry.file) } label: { Label("Open in Files", systemImage: "folder") }
+                }
+                Button { onCopyPath(entry.file) } label: { Label("Copy path", systemImage: "doc.on.doc") }
+              }
+            } else {
+              NavigationLink {
+                PrFileDiffPage(
+                  files: files,
+                  initialIndex: entry.index,
+                  canOpenFiles: canOpenFiles,
+                  onOpenFile: onOpenFile,
+                  onCopyPath: onCopyPath
+                )
+              } label: {
+                PrFileRow(file: entry.file)
+              }
+              .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
-            .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
           }
         } header: {
           // Paths keep their case: the header is the folder, verbatim.
@@ -156,31 +177,8 @@ struct PrFileDiffPage: View {
     Group {
       if let file {
         ScrollView(.vertical) {
-          VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-              HStack(spacing: 8) {
-                Text(verbatim: fileStatusLabel(file.status))
-                  .font(.adeMono(12, weight: .bold))
-                  .foregroundStyle(fileStatusTint(file.status))
-                Text(prFileName(file.filename))
-                  .font(.headline)
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(2)
-                Spacer(minLength: 8)
-                PrDiffStat(additions: file.additions, deletions: file.deletions, size: 12)
-              }
-              Text(verbatim: file.previousFilename.map { "\($0) → \(file.filename)" } ?? file.filename)
-                .font(.adeMono(11))
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(2)
-                .truncationMode(.middle)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            Rectangle().fill(ADEFlat.hairline).frame(height: 0.5)
-            PrFlatDiffBody(file: file)
-          }
-          .padding(.bottom, 80)
+          PrFileDiffContent(file: file)
+            .padding(.bottom, 80)
         }
         .id(file.filename)
       } else {
@@ -240,9 +238,43 @@ struct PrFileDiffPage: View {
   }
 }
 
+/// One file's diff with its name, status, stat and path above it.
+struct PrFileDiffContent: View {
+  let file: PrFile
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 8) {
+          Text(verbatim: fileStatusLabel(file.status))
+            .font(.adeMono(12, weight: .bold))
+            .foregroundStyle(fileStatusTint(file.status))
+          Text(prFileName(file.filename))
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+          Spacer(minLength: 8)
+          PrDiffStat(additions: file.additions, deletions: file.deletions, size: 12)
+        }
+        Text(verbatim: file.previousFilename.map { "\($0) → \(file.filename)" } ?? file.filename)
+          .font(.adeMono(11))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(2)
+          .truncationMode(.middle)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 12)
+      Rectangle().fill(ADEFlat.hairline).frame(height: 0.5)
+      PrFlatDiffBody(file: file)
+    }
+  }
+}
+
 /// A unified diff, edge to edge: line numbers, then the line on a tinted band.
 struct PrFlatDiffBody: View {
   let file: PrFile
+  /// The visible width, so every band reaches the edge however short its line.
+  @State private var viewportWidth: CGFloat = 0
 
   private var language: FilesLanguage {
     FilesLanguage.detect(languageId: nil, filePath: file.filename)
@@ -262,6 +294,7 @@ struct PrFlatDiffBody: View {
           }
           .padding(.vertical, 6)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
       }
     } else {
       ADEFlatInlineNotice(
@@ -295,7 +328,7 @@ struct PrFlatDiffBody: View {
     .fixedSize(horizontal: true, vertical: false)
     .padding(.horizontal, 10)
     .padding(.vertical, 1.5)
-    .frame(minWidth: UIScreen.main.bounds.width, alignment: .leading)
+    .frame(minWidth: viewportWidth, alignment: .leading)
     .background(background(line.kind))
   }
 

@@ -351,8 +351,9 @@ struct WorkSessionTypeSwitcher: View {
   var onUserSelect: ((WorkNewSessionMode) -> Void)? = nil
 
   var body: some View {
-    // The kit segmented track (`.kit-seg`): quiet track, the selection raised.
-    HStack(spacing: 2) {
+    // Desktop's start-mode switch (`ModeSwitcherPills`): a capsule track with
+    // a capsule thumb under the selection.
+    HStack(spacing: 4) {
       ForEach(WorkNewSessionMode.allCases) { mode in
         let isSelected = selection == mode
         Button {
@@ -373,10 +374,12 @@ struct WorkSessionTypeSwitcher: View {
           .frame(minHeight: 30)
           .background {
             if isSelected {
-              ADEKitSegmentThumb()
+              Capsule(style: .continuous)
+                .fill(ADEKit.surface)
+                .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
             }
           }
-          .contentShape(Rectangle())
+          .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(mode.title)
@@ -384,7 +387,8 @@ struct WorkSessionTypeSwitcher: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .adeKitSegmentTrack()
+    .padding(3)
+    .background(ADEKit.track, in: Capsule(style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Session type")
   }
@@ -673,6 +677,8 @@ struct WorkNewChatScreen: View {
   @State private var busy: Bool = false
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
+  /// The page is on a display with a vertical edge bar (see `body`).
+  @State private var displayHasEdgeRail = false
   @State private var runtimeMode: String = "full-auto"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
@@ -940,8 +946,9 @@ struct WorkNewChatScreen: View {
       VStack(spacing: 8) {
         // Pinned: the lane picker must stay reachable no matter how tall the
         // composer grows or whether the keyboard is up.
+        // Left-aligned in one row, on the prompt box's own left edge.
         laneSelector
-          .padding(.horizontal, 20)
+          .padding(.horizontal, 10)
 
         if let autoCreateStatus, busy {
           HStack(spacing: 8) {
@@ -972,6 +979,9 @@ struct WorkNewChatScreen: View {
         composerBar
       }
       .padding(.bottom, 4)
+      // Held landscape on the Duo, the prompt box's bottom lines up with the
+      // edge bar's last capsule.
+      .duoEdgeBarAlignedBottom(contentBottomPadding: 4)
       .onGeometryChange(for: CGFloat.self) { proxy in
         proxy.size.height
       } action: { height in
@@ -994,15 +1004,31 @@ struct WorkNewChatScreen: View {
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
     .adeAnalyticsScreen(.workNewChat)
+    // On a display whose bar runs down a curved edge (the Duo's closed outer
+    // display), the system back button lands in that strip beside the prompt
+    // box; Back belongs at the top. Every other phone keeps the system button.
+    .onGeometryChange(for: Bool.self) { proxy in
+      workDisplayHasEdgeRail(proxy)
+    } action: { hasRail in
+      if displayHasEdgeRail != hasRail { displayHasEdgeRail = hasRail }
+    }
+    .navigationBarBackButtonHidden(displayHasEdgeRail)
+    .modifier(WorkNewChatTopBackButton(shown: displayHasEdgeRail) { dismiss() })
     .toolbar {
+      // The busy spinner rides beside the switcher, in the same item: a
+      // trailing item declared only while busy left an empty glass circle
+      // over the composer when it went away (the edge bar does not drop a
+      // removed item), and an always-declared empty one draws the circle too.
       ToolbarItem(placement: .principal) {
         WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
           WorkNewSessionModePreferences.save(mode, projectId: activeProjectId)
         })
-      }
-      ToolbarItem(placement: .topBarTrailing) {
-        if busy {
-          ProgressView().controlSize(.small)
+        .overlay(alignment: .trailing) {
+          if busy {
+            ProgressView()
+              .controlSize(.small)
+              .offset(x: 28)
+          }
         }
       }
     }
@@ -2040,8 +2066,7 @@ private struct WorkNewChatComposerBar: View {
           ),
           provider: provider,
           modelId: modelId,
-          runtimeMode: runtimeMode,
-          extraMenuContent: AnyView(sessionSettingsMenu)
+          runtimeMode: runtimeMode
         )
       },
       controls: {
@@ -2069,7 +2094,7 @@ private struct WorkNewChatComposerBar: View {
         }
       }
     )
-    .padding(.horizontal, 16)
+    .padding(.horizontal, 10)
     .workChatAttachmentPicker(
       isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $attachments,
@@ -2082,29 +2107,6 @@ private struct WorkNewChatComposerBar: View {
       attachments: $attachments,
       onDismiss: {}
     )
-  }
-
-  /// Model and access in the ⋯ menu too, like the chat's folded composer:
-  /// the controls row that normally shows them is hidden while folded.
-  @ViewBuilder
-  private var sessionSettingsMenu: some View {
-    Section {
-      Button {
-        onOpenModelPicker()
-      } label: {
-        Label("Model · \(modelName)", systemImage: "cpu")
-      }
-      if runtimeOptions.count > 1 {
-        Picker(selection: Binding(get: { runtimeMode }, set: { runtimeMode = $0 })) {
-          ForEach(runtimeOptions, id: \.id) { option in
-            Text(option.title).tag(option.id)
-          }
-        } label: {
-          Label("Access · \(workRuntimeModeLabel(provider: provider, mode: runtimeMode))", systemImage: "lock.shield")
-        }
-        .pickerStyle(.menu)
-      }
-    }
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph
@@ -2121,6 +2123,41 @@ private struct WorkNewChatComposerBar: View {
     }
   }
 
+}
+
+/// Back as a top-leading item that stays in the top row (never moves into a
+/// vertical edge bar). Only where the system back button would land there.
+private struct WorkNewChatTopBackButton: ViewModifier {
+  let shown: Bool
+  let action: () -> Void
+
+  func body(content: Content) -> some View {
+    if !shown {
+      content
+    } else {
+      #if compiler(>=6.4)
+      if #available(iOS 27.1, *) {
+        content.toolbar {
+          ToolbarItem(placement: .topBarLeading) { button }
+            .axisBehavior(.horizontalOnly)
+        }
+      } else {
+        content.toolbar {
+          ToolbarItem(placement: .topBarLeading) { button }
+        }
+      }
+      #else
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { button }
+      }
+      #endif
+    }
+  }
+
+  private var button: some View {
+    Button("Back", systemImage: "chevron.left", action: action)
+      .accessibilityIdentifier("Work.NewChat.Back")
+  }
 }
 
 struct WorkNewChatRoute: Hashable {

@@ -19,6 +19,7 @@ struct LinearLaunchDestination: View {
 /// button and by `ade://linear-issue/<IDENT>` deep links. Active-project scoped.
 struct LinearPaneSheet: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.duoLayout) private var duo
   @StateObject private var store: LinearPaneStore
   @State private var path: [LinearRoute] = []
   @State private var started = false
@@ -27,9 +28,27 @@ struct LinearPaneSheet: View {
   @State private var justConnectedOrg: String?
   @State private var attachError: String?
   @State private var attachingIssue = false
+  /// The chat a pane's "Attach issue" attaches to. Nil defers to the global
+  /// sheet's own attach target.
+  private let attachSessionId: String?
+  /// Shown inside the Work tools pane rather than as a sheet: no close button
+  /// of its own, and attaching does not close a sheet that is not there.
+  private let embedded: Bool
 
-  init(syncService: SyncService) {
+  init(
+    syncService: SyncService,
+    attachSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
+    self.attachSessionId = attachSessionId
+    self.embedded = embedded
+  }
+
+  /// The chat "Attach issue" targets. Explicit in the pane; the global sheet
+  /// reads the presentation state it was opened with.
+  private var effectiveAttachSessionId: String? {
+    attachSessionId ?? syncService.linearPaneAttachSessionId
   }
 
   private var isDisconnected: Bool {
@@ -37,31 +56,7 @@ struct LinearPaneSheet: View {
   }
 
   var body: some View {
-    NavigationStack(path: $path) {
-      Group {
-        if isDisconnected {
-          connectPrompt
-        } else {
-          LinearIssueListScreen(
-            store: store,
-            onClose: close,
-            onAttachIssue: syncService.linearPaneAttachSessionId == nil ? nil : { issue in
-              Task { await attachIssue(issue) }
-            }
-          )
-        }
-      }
-      .navigationDestination(for: LinearRoute.self) { route in
-        switch route {
-        case let .issue(issue):
-          LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
-        case let .launch(issue, laneOnly):
-          LinearLaunchDestination(issue: issue, laneOnly: laneOnly)
-        case .connection:
-          LinearConnectionScreen(store: store)
-        }
-      }
-    }
+    paneBody
     .tint(LinearBrand.primaryBright)
     .alert("Couldn't attach issue", isPresented: Binding(
       get: { attachError != nil },
@@ -80,6 +75,56 @@ struct LinearPaneSheet: View {
     .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, id in
       guard id != nil else { return }
       Task { await consumePendingDeepLink() }
+    }
+  }
+
+  /// The Duo's inner display, held landscape, gets desktop's three panes
+  /// (views rail, issues, detail) in place of the pushed stack. The Work tools
+  /// pane's copy stays one column.
+  @ViewBuilder
+  private var paneBody: some View {
+    if duo.isWide && !embedded && !isDisconnected {
+      DuoLinearWindow(store: store, path: $path, onClose: close) {
+        issueList
+      } destination: { route in
+        routeDestination(route)
+      }
+    } else {
+      NavigationStack(path: $path) {
+        Group {
+          if isDisconnected {
+            connectPrompt
+          } else {
+            issueList
+          }
+        }
+        .navigationDestination(for: LinearRoute.self) { route in
+          routeDestination(route)
+        }
+      }
+    }
+  }
+
+  private var issueList: some View {
+    LinearIssueListScreen(
+      store: store,
+      onClose: close,
+      showsClose: !embedded,
+      onAttachIssue: effectiveAttachSessionId == nil ? nil : { issue in
+        Task { await attachIssue(issue) }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private func routeDestination(_ route: LinearRoute) -> some View {
+    switch route {
+    case let .issue(issue):
+      LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+    case let .launch(issue, laneOnly):
+      LinearLaunchDestination(issue: issue, laneOnly: laneOnly)
+    case .connection:
+      LinearConnectionScreen(store: store)
     }
   }
 
@@ -127,11 +172,13 @@ struct LinearPaneSheet: View {
     .navigationTitle("Linear")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button { close() } label: {
-          Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+      if !embedded {
+        ToolbarItem(placement: .topBarLeading) {
+          Button { close() } label: {
+            Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+          }
+          .accessibilityLabel("Close Linear")
         }
-        .accessibilityLabel("Close Linear")
       }
       ToolbarItem(placement: .topBarTrailing) {
         NavigationLink(value: LinearRoute.connection) {
@@ -143,19 +190,27 @@ struct LinearPaneSheet: View {
   }
 
   private func close() {
+    // Inside the pane there is no sheet to dismiss; the pane's close owns that.
+    guard !embedded else { return }
     syncService.linearPanePresented = false
     syncService.linearPaneAttachSessionId = nil
   }
 
   private func attachIssue(_ issue: NormalizedLinearIssue) async {
-    guard let sessionId = syncService.linearPaneAttachSessionId else { return }
+    guard let sessionId = effectiveAttachSessionId else { return }
     guard !attachingIssue else { return }
     attachingIssue = true
     defer { attachingIssue = false }
     do {
       try await syncService.attachLinearIssueToChat(chatSessionId: sessionId, issue: issue)
       ADEHaptics.success()
-      close()
+      if embedded {
+        // Stay on the list and let it show the issue as attached; closing would
+        // leave the pane with nothing behind it.
+        store.refreshAttachedIssueIds()
+      } else {
+        close()
+      }
     } catch {
       attachError = error.localizedDescription
     }

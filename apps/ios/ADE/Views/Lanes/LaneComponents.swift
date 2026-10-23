@@ -265,45 +265,41 @@ struct LaneStackCard: View, Equatable {
     )
   }
 
-  /// One row of the lanes panel (`.kit-row`), text first, with a lane's own
-  /// marks: the lane glyph and name in the lane's colour, the branch line
-  /// below, and the lane's live chats as one status mark on the trailing edge
-  /// (the desktop lane sidebar row).
+  /// One row of the lanes list: the lane glyph in the lane's colour, the
+  /// name (up to two lines), one quiet line of facts under it (its PR or
+  /// branch, ahead/behind, uncommitted changes), and the lane's chats as one
+  /// status mark on the trailing edge. Chips are kept out of the row so a
+  /// narrow column still reads cleanly.
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.laneRowBody)
-    HStack(alignment: .center, spacing: 11) {
+    HStack(alignment: .top, spacing: 11) {
       laneGlyphTile
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .center, spacing: 6) {
+        .padding(.top, 1)
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
           Text(snapshot.lane.name)
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 16, weight: .semibold))
             // The glyph carries the lane colour; the name stays readable (a
             // yellow or pale name on the light page failed contrast).
             .foregroundStyle(machine?.isLive == false ? ADEColor.textSecondary : ADEColor.textPrimary)
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-          laneTypeBadge
           if isPinned {
             Image(systemName: "pin.fill")
-              .font(.system(size: 9, weight: .semibold))
+              .font(.system(size: 10, weight: .semibold))
               .foregroundStyle(ADEColor.textMuted)
+              .accessibilityHidden(true)
           }
           Spacer(minLength: 4)
-          if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
-            Image(systemName: devicePresenceSymbol(for: devices))
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
-          }
           runtimeMark
         }
-        detailLine
+        metaLine
       }
     }
     .padding(.leading, ADEKit.inset)
     .padding(.trailing, 12)
-    .padding(.vertical, 11)
+    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .overlay(alignment: .leading) {
       // An open lane (in the tray above) keeps a thin bar in its colour.
@@ -349,82 +345,53 @@ struct LaneStackCard: View, Equatable {
     }
   }
 
-  /// Muted facts about the lane: where it lives, its branch, its PR and git
-  /// state. Nothing is drawn for a clean, level lane.
-  private var detailLine: some View {
-    HStack(spacing: 6) {
-      if let machine, showsMachineChip {
-        HStack(spacing: 3) {
-          Image(systemName: machine.symbol)
-            .font(.system(size: 9, weight: .semibold))
-          Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
-            .font(.caption2.weight(.semibold))
-            .lineLimit(1)
-        }
-        .foregroundStyle(ADEColor.textSecondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(ADEKit.track, in: Capsule(style: .continuous))
-        .fixedSize()
-      }
-      HStack(spacing: 3) {
-        Image(systemName: "arrow.triangle.branch")
-          .font(.system(size: 9, weight: .regular))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.8))
-        Text(normalizedPrBranchName(snapshot.lane.branchRef))
-          .font(.system(.caption2, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
-      .frame(minWidth: 0, alignment: .leading)
-      .layoutPriority(-1)
-      if let pullRequest {
-        LanePrTagChip(tag: pullRequest)
-          .fixedSize()
-      }
-      gitState
-    }
-  }
-
-  @ViewBuilder
-  private var gitState: some View {
+  /// One line of muted facts, joined with dots: the machine (only where the
+  /// list mixes machines and no section header names it), Archived/Primary,
+  /// the PR ("Merged #1601", in its state's colour), ahead/behind, "edited"
+  /// for uncommitted changes, and the branch when there is no PR. Truncates as
+  /// one line, at the branch.
+  private var metaLine: some View {
     let status = snapshot.lane.status
-    let linkedIssue = primaryLaneLinearIssue(for: snapshot.lane)?.identifier
-    if status.dirty || status.ahead > 0 || status.behind > 0 || snapshot.lane.childCount > 0 || linkedIssue != nil {
-      HStack(spacing: 5) {
-        if status.dirty {
-          Circle()
-            .fill(ADEColor.warning.opacity(0.85))
-            .frame(width: 5, height: 5)
-        }
-        if status.ahead > 0 {
-          laneCount(symbol: "arrow.up", count: status.ahead)
-        }
-        if status.behind > 0 {
-          laneCount(symbol: "arrow.down", count: status.behind)
-        }
-        if snapshot.lane.childCount > 0 {
-          laneCount(symbol: "square.stack.3d.up", count: snapshot.lane.childCount)
-        }
-        if let linkedIssue {
-          Text(linkedIssue)
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      }
+    var parts: [Text] = []
+    if let machine, showsMachineChip {
+      parts.append(Text(machine.isLive ? machine.name : "\(machine.name), not live"))
+    }
+    if snapshot.lane.archivedAt != nil {
+      parts.append(Text("Archived"))
+    } else if snapshot.lane.laneType == "primary",
+              snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
+      parts.append(Text("Primary"))
+    }
+    if let pullRequest {
+      parts.append(
+        Text(verbatim: "\(pullRequest.state.capitalized) #\(String(pullRequest.githubPrNumber))")
+          .foregroundStyle(lanePullRequestTint(pullRequest.state))
+      )
+    }
+    if status.ahead > 0 || status.behind > 0 {
+      var counts = Text("")
+      if status.ahead > 0 { counts = counts + Text(verbatim: "↑\(String(status.ahead))") }
+      if status.ahead > 0 && status.behind > 0 { counts = counts + Text(verbatim: " ") }
+      if status.behind > 0 { counts = counts + Text(verbatim: "↓\(String(status.behind))") }
+      parts.append(counts.monospacedDigit())
+    }
+    if status.dirty {
+      parts.append(Text("edited").foregroundStyle(ADEColor.warning))
+    }
+    // The branch goes last: it is the long part, and the line truncates at
+    // its end rather than losing the counts.
+    if pullRequest == nil {
+      parts.append(Text(verbatim: normalizedPrBranchName(snapshot.lane.branchRef)))
+    }
+    var line = Text("")
+    for (index, part) in parts.enumerated() {
+      line = index == 0 ? part : line + Text("  ·  ") + part
+    }
+    return line
+      .font(.footnote)
       .foregroundStyle(ADEColor.textMuted)
-      .fixedSize()
-    }
-  }
-
-  private func laneCount(symbol: String, count: Int) -> some View {
-    HStack(spacing: 1) {
-      Image(systemName: symbol)
-        .font(.caption2.weight(.bold))
-      Text("\(count)")
-        .font(.caption2.monospacedDigit())
-    }
+      .lineLimit(1)
+      .truncationMode(.tail)
   }
 
   private var laneTint: LaneSurfaceTint {
@@ -433,19 +400,6 @@ struct LaneStackCard: View, Equatable {
 
   private var laneLabelColor: Color {
     laneTint.text ?? ADEColor.textPrimary
-  }
-
-  @ViewBuilder
-  private var laneTypeBadge: some View {
-    if snapshot.lane.archivedAt != nil {
-      ADEKitTag(text: "Archived")
-    } else if snapshot.lane.laneType == "primary",
-              snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
-      // A primary lane named "Primary" already says so.
-      ADEKitTag(text: "Primary")
-    } else {
-      EmptyView()
-    }
   }
 
   private var stackCardAccessibilityLabel: String {
@@ -620,6 +574,529 @@ struct LaneChoiceList<Item: Identifiable, Row: View>: View {
           Rectangle().fill(ADEKit.rule).frame(height: 0.75)
         }
         row(item)
+      }
+    }
+  }
+}
+
+// MARK: - Duo: lane dashboard and the two-page detail
+
+/// One lane's detail on the Duo's inner display (and an iPad): ONE column,
+/// since there is no room for desktop's three. A clear header (the lane's
+/// name, branch and machine, and its state), then a segmented control between
+/// the lane's Overview (the dashboard) and Git (the phone's lane detail: its
+/// changes, branch, stashes and history, with the commit and sync actions).
+/// The column's controls are toolbar items, so held landscape they ride the
+/// edge bar.
+struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
+  enum Section: String, CaseIterable, Identifiable {
+    case overview = "Overview"
+    case git = "Git"
+    var id: String { rawValue }
+  }
+
+  let snapshot: LaneListSnapshot
+  let machineName: String?
+  /// The lane's open (else latest) pull request.
+  let pullRequest: PullRequestListItem?
+  let canCreatePullRequest: Bool
+  let onOpenPullRequest: (PullRequestListItem) -> Void
+  let onCreatePullRequest: () -> Void
+  let onRefresh: () -> Void
+  let onStackGraph: () -> Void
+  let onOpenFiles: () -> Void
+  let onManage: () -> Void
+  let onCopyLaneLink: () -> Void
+  let onCopyBranchLink: () -> Void
+  /// Set when something in the lane asks for Git (a diff opening).
+  var forcesGit = false
+  @ViewBuilder let dashboard: () -> Dashboard
+  @ViewBuilder let git: () -> Git
+
+  @Environment(\.duoSplit) private var split
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+  @State private var section: Section = .overview
+
+  @Environment(\.dismiss) private var dismiss
+
+  /// A pushed lane in a short window (the Duo's outer display or an iPhone
+  /// held landscape). Any trailing toolbar item there joins the outer
+  /// display's rail, and the rail then folds its five tabs down to the
+  /// current one. So the way back is the top bar's leading item and the
+  /// lane's actions are one ⋯ in the header, and the rail keeps the tabs.
+  private var isShort: Bool { verticalSizeClass == .compact && split == nil }
+
+  var body: some View {
+    withToolbar(
+      VStack(spacing: 0) {
+        // 16pt sides, the git pane's and the dashboard's, so the header, the
+        // segmented control and the cards share one left and right edge.
+        header
+          .padding(.horizontal, 16)
+          .padding(.top, 6)
+        Picker("Section", selection: $section) {
+          ForEach(Section.allCases) { option in
+            Text(option.rawValue).tag(option)
+          }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        Group {
+          switch section {
+          case .overview: dashboard()
+          case .git: git()
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      }
+    )
+    .navigationTitle("")
+    .navigationBarTitleDisplayMode(.inline)
+    .adeScreenBackground()
+    .onChange(of: forcesGit, initial: true) { _, forces in
+      if forces { section = .git }
+    }
+  }
+
+  /// The lane's glyph and name, its branch and machine, and one line of state:
+  /// its PR, ahead/behind, uncommitted changes.
+  private var header: some View {
+    let lane = snapshot.lane
+    let tint = laneSurfaceTint(forHex: lane.color).text ?? ADEColor.accent
+    return HStack(alignment: .top, spacing: 12) {
+      WorkLaneLogoMark(color: tint, laneIcon: lane.icon, emoji: lane.emoji, size: 20)
+        .frame(width: 28, height: 28)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(lane.name)
+          .font(.title3.weight(.bold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .accessibilityAddTraits(.isHeader)
+        (Text(verbatim: lane.branchRef).font(.subheadline.monospaced())
+          + Text(verbatim: machineName.map { $0.isEmpty ? "" : "  ·  \($0)" } ?? "").font(.subheadline))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        stateLine
+      }
+      Spacer(minLength: 0)
+      if isShort {
+        Menu {
+          pullRequestButton
+          Button("Open in Files", systemImage: "folder", action: onOpenFiles)
+          Button("Manage lane", systemImage: "slider.horizontal.3", action: onManage)
+          Divider()
+          overflowItems
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Lane options")
+      }
+    }
+  }
+
+  private var stateLine: some View {
+    let status = snapshot.lane.status
+    var parts: [Text] = []
+    if let pullRequest {
+      parts.append(
+        Text(verbatim: "PR #\(String(pullRequest.githubPrNumber)) · \(pullRequest.state.capitalized)")
+          .foregroundStyle(lanePullRequestTint(pullRequest.state))
+      )
+    }
+    if status.ahead == 0 && status.behind == 0 {
+      parts.append(Text("Up to date with base"))
+    } else {
+      parts.append(Text([
+        status.ahead > 0 ? "\(status.ahead) ahead" : nil,
+        status.behind > 0 ? "\(status.behind) behind" : nil,
+      ].compactMap { $0 }.joined(separator: ", ")))
+    }
+    parts.append(status.dirty
+      ? Text("Uncommitted changes").foregroundStyle(ADEColor.warning)
+      : Text("Clean"))
+    var line = Text("")
+    for (index, part) in parts.enumerated() {
+      line = index == 0 ? part : line + Text("  ·  ") + part
+    }
+    return line
+      .font(.footnote)
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(2)
+  }
+
+  @ViewBuilder
+  private func withToolbar<Content: View>(_ content: Content) -> some View {
+    if isShort {
+      content
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("Back", systemImage: "chevron.left") { dismiss() }
+              .accessibilityLabel("Back to lanes")
+          }
+        }
+    } else {
+      #if compiler(>=6.4)
+      if #available(iOS 27.0, *) {
+        content.toolbar {
+          DuoSplitListToggle(split: split)
+          ToolbarItem(placement: .topBarPinnedTrailing) { pullRequestButton }
+            .visibilityPriority(.high)
+          commonItems
+          ToolbarOverflowMenu { overflowItems }
+        }
+      } else {
+        content.toolbar {
+          DuoSplitListToggle(split: split)
+          ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
+          commonItems
+          ToolbarItem(placement: .topBarTrailing) {
+            Menu { overflowItems } label: { Image(systemName: "ellipsis") }
+              .accessibilityLabel("Lane options")
+          }
+        }
+      }
+      #else
+      content.toolbar {
+        DuoSplitListToggle(split: split)
+        ToolbarItem(placement: .topBarTrailing) { pullRequestButton }
+        commonItems
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu { overflowItems } label: { Image(systemName: "ellipsis") }
+            .accessibilityLabel("Lane options")
+        }
+      }
+      #endif
+    }
+  }
+
+  @ViewBuilder
+  private var pullRequestButton: some View {
+    if let pullRequest {
+      Button("PR #\(pullRequest.githubPrNumber)", systemImage: "arrow.triangle.pull") {
+        onOpenPullRequest(pullRequest)
+      }
+    } else {
+      Button("Create pull request", systemImage: "plus.square.on.square", action: onCreatePullRequest)
+        .disabled(!canCreatePullRequest)
+    }
+  }
+
+  /// PR, Files and Manage on the bar; Refresh (pull to refresh does it too)
+  /// and the stack graph in ⋯. Six glyphs crowded the bar, and the stack's
+  /// layers glyph was the Lanes tab's own.
+  @ToolbarContentBuilder
+  private var commonItems: some ToolbarContent {
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Open in Files", systemImage: "folder", action: onOpenFiles)
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      Button("Manage lane", systemImage: "slider.horizontal.3", action: onManage)
+    }
+  }
+
+  @ViewBuilder
+  private var overflowItems: some View {
+    Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+    Button("Stack graph", systemImage: "point.3.connected.trianglepath.dotted", action: onStackGraph)
+    Divider()
+    Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
+    Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)
+  }
+}
+
+/// Desktop's lane dashboard: who the lane is, its pull request, the chats and
+/// CLIs working in it, its changes, its stack and its history, as inset
+/// grouped sections. Rows open their targets (a chat opens in Work).
+struct LaneDuoDashboard: View {
+  let snapshot: LaneListSnapshot
+  let detail: LaneDetailPayload?
+  let machineName: String?
+  let pullRequests: [PullRequestListItem]
+  let canCreatePullRequest: Bool
+  let onOpenPullRequest: (PullRequestListItem) -> Void
+  let onCreatePullRequest: () -> Void
+  let onOpenChat: (AgentChatSessionSummary) -> Void
+  let onOpenLane: (String) -> Void
+  let onStackGraph: () -> Void
+
+  private var lane: LaneSummary { snapshot.lane }
+
+  var body: some View {
+    List {
+      identitySection
+      pullRequestSection
+      sessionsSection
+      changesSection
+      stackSection
+      historySection
+    }
+    .listStyle(.insetGrouped)
+    .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground)
+    .listSectionSpacing(.compact)
+    // Right under the column's segmented control: no grouped-list gap above.
+    .contentMargins(.top, 4, for: .scrollContent)
+    .contentMargins(.bottom, 24, for: .scrollContent)
+    // The same 16pt sides as the header and the segmented control above
+    // (the grouped list's own margins ran its cards ~14pt further right),
+    // and clear of the edge bar held landscape.
+    .duoInsetGroupedMargins()
+  }
+
+  // MARK: Identity
+
+  private var identitySection: some View {
+    Section {
+      // The column's header already names the lane and its branch.
+      if let machineName, !machineName.isEmpty {
+        LabeledContent("Machine", value: machineName)
+      }
+      LabeledContent("Base") {
+        Text(verbatim: lane.baseRef).font(.adeMono(13))
+      }
+      LabeledContent("Upstream", value: upstreamText)
+      LabeledContent("Working tree", value: lane.status.dirty ? "Uncommitted changes" : "Clean")
+      if snapshot.runtime.sessionCount > 0 {
+        LabeledContent("Sessions", value: runtimeText)
+      }
+    }
+    .font(.subheadline)
+  }
+
+  private var upstreamText: String {
+    if let sync = detail?.syncStatus, !sync.hasUpstream { return "Not pushed" }
+    let ahead = detail?.syncStatus?.ahead ?? lane.status.ahead
+    let behind = detail?.syncStatus?.behind ?? lane.status.behind
+    if ahead == 0 && behind == 0 { return "Up to date" }
+    return [ahead > 0 ? "\(ahead) ahead" : nil, behind > 0 ? "\(behind) behind" : nil]
+      .compactMap { $0 }
+      .joined(separator: " · ")
+  }
+
+  private var runtimeText: String {
+    let runtime = snapshot.runtime
+    var parts: [String] = []
+    if runtime.runningCount > 0 { parts.append("\(runtime.runningCount) running") }
+    if runtime.awaitingInputCount > 0 { parts.append("\(runtime.awaitingInputCount) waiting") }
+    if parts.isEmpty { parts.append("\(runtime.sessionCount) idle") }
+    return parts.joined(separator: " · ")
+  }
+
+  // MARK: Pull request
+
+  @ViewBuilder
+  private var pullRequestSection: some View {
+    Section("Pull request") {
+      if pullRequests.isEmpty {
+        Button(action: onCreatePullRequest) {
+          Label("Create pull request", systemImage: "plus.square.on.square")
+        }
+        .disabled(!canCreatePullRequest)
+      } else {
+        ForEach(pullRequests.prefix(3)) { pr in
+          Button {
+            onOpenPullRequest(pr)
+          } label: {
+            PrRowCard(pr: pr)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+    }
+  }
+
+  // MARK: Sessions
+
+  @ViewBuilder
+  private var sessionsSection: some View {
+    let chats = (detail?.chatSessions ?? [])
+      .sorted { $0.lastActivityAt > $1.lastActivityAt }
+    let terminals = (detail?.sessions ?? [])
+      .filter { $0.status == "running" }
+    if !chats.isEmpty || !terminals.isEmpty {
+      Section {
+        ForEach(chats.prefix(8)) { chat in
+          Button {
+            onOpenChat(chat)
+          } label: {
+            HStack(spacing: 10) {
+              Circle()
+                .fill(sessionTint(chat.status))
+                .frame(width: 8, height: 8)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(chat.title?.isEmpty == false ? chat.title! : "Chat")
+                  .font(.subheadline)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                Text(verbatim: chat.model.isEmpty ? chat.provider : chat.model)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .lineLimit(1)
+              }
+              Spacer(minLength: 8)
+              Text(prCompactRelativeTime(chat.lastActivityAt))
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+        }
+        ForEach(terminals.prefix(4)) { terminal in
+          HStack(spacing: 10) {
+            Image(systemName: "terminal")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 8)
+            Text(terminal.title)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(terminal.toolType ?? "shell")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+      } header: {
+        Text("Chats and CLIs")
+      }
+    }
+  }
+
+  private func sessionTint(_ status: String) -> Color {
+    switch status.lowercased() {
+    case "running", "active", "working": return ADEColor.success
+    case "awaiting_input", "waiting", "needs_input": return ADEColor.warning
+    case "error", "failed": return ADEColor.danger
+    default: return ADEColor.textMuted
+    }
+  }
+
+  // MARK: Changes
+
+  @ViewBuilder
+  private var changesSection: some View {
+    let staged = detail?.diffChanges?.staged ?? []
+    let unstaged = detail?.diffChanges?.unstaged ?? []
+    let all = staged + unstaged
+    let additions = all.reduce(0) { $0 + ($1.additions ?? 0) }
+    let deletions = all.reduce(0) { $0 + ($1.deletions ?? 0) }
+    Section {
+      // The font on the rows, not the section: on the section it shrank the
+      // "Changes" header below the other sections' headers.
+      Group {
+        if all.isEmpty {
+          Text("No uncommitted changes")
+            .foregroundStyle(ADEColor.textSecondary)
+        } else {
+          LabeledContent("Staged", value: fileCount(staged.count))
+          LabeledContent("Unstaged", value: fileCount(unstaged.count))
+          LabeledContent("Lines") {
+            PrDiffStat(additions: additions, deletions: deletions, size: 12)
+          }
+        }
+      }
+      .font(.subheadline)
+    } header: {
+      Text("Changes")
+    }
+  }
+
+  private func fileCount(_ count: Int) -> String {
+    "\(count) file\(count == 1 ? "" : "s")"
+  }
+
+  // MARK: Stack
+
+  @ViewBuilder
+  private var stackSection: some View {
+    let chain = detail?.stackChain ?? []
+    let children = detail?.children ?? []
+    if chain.count > 1 || !children.isEmpty {
+      Section {
+        ForEach(chain) { item in
+          Button {
+            if item.laneId != lane.id { onOpenLane(item.laneId) }
+          } label: {
+            HStack(spacing: 8) {
+              Image(systemName: item.laneId == lane.id ? "smallcircle.filled.circle" : "circle")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(item.laneId == lane.id ? ADEColor.accent : ADEColor.textMuted)
+              Text(item.laneName)
+                .font(.subheadline.weight(item.laneId == lane.id ? .semibold : .regular))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Spacer(minLength: 8)
+              if item.status.ahead > 0 || item.status.behind > 0 {
+                Text("↑\(item.status.ahead) ↓\(item.status.behind)")
+                  .font(.adeMono(11))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+            .padding(.leading, CGFloat(item.depth) * 14)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+        }
+        ForEach(children) { child in
+          Button {
+            onOpenLane(child.id)
+          } label: {
+            Label(child.name, systemImage: "arrow.turn.down.right")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+          }
+          .buttonStyle(.plain)
+        }
+      } header: {
+        HStack {
+          Text("Stack")
+          Spacer()
+          Button("Graph", action: onStackGraph)
+            .font(.caption.weight(.semibold))
+            .textCase(nil)
+        }
+      }
+    }
+  }
+
+  // MARK: History
+
+  @ViewBuilder
+  private var historySection: some View {
+    let commits = detail?.recentCommits ?? []
+    if !commits.isEmpty {
+      Section("History") {
+        ForEach(commits.prefix(8)) { commit in
+          VStack(alignment: .leading, spacing: 3) {
+            Text(commit.subject)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(2)
+            HStack(spacing: 6) {
+              Text(verbatim: commit.shortSha)
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.accent)
+              Text("\(commit.authorName) · \(prCompactRelativeTime(commit.authoredAt))")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+              if !commit.pushed {
+                Text("not pushed")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.warning)
+              }
+            }
+          }
+        }
       }
     }
   }

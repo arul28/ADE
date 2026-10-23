@@ -6,6 +6,7 @@ import {
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";
 
 export {
+  decodeProjectIconUpload,
   importProjectIconBytes,
   removeProjectIconOverride,
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";

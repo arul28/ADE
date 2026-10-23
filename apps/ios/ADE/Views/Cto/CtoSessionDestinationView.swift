@@ -14,13 +14,38 @@ struct CtoSessionDestinationView: View {
   @EnvironmentObject private var syncService: SyncService
 
   var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
+  /// A wide display: the thread with Work's chat chrome (title pill, rail,
+  /// pane at the hinge), its settings in that pane.
+  var duoPane: DuoWorkPaneModel? = nil
+  var duoPaneOpen = false
+  var title = "CTO"
+  var duoSettings: (() -> AnyView)? = nil
 
   @State private var state: LoadState = .loading
   @State private var ensureTask: Task<Void, Never>?
   @State private var ensured = false
 
   var body: some View {
-    content
+    Group {
+      if duoPane != nil, case .ready = state {
+        // The thread builds its own stack (its toolbar is the rail).
+        content
+      } else if duoPane != nil {
+        // Loading or failed on a wide display: still a stack, so the rail
+        // keeps the way back to the Hub and the app tabs.
+        NavigationStack {
+          content
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+              DuoHubBackToolbarItem()
+              DuoAppTabsToolbar()
+            }
+        }
+      } else {
+        content
+      }
+    }
       .adeScreenBackground()
       .adeNavigationGlass()
       .tint(ADEColor.ctoAccent)
@@ -55,7 +80,10 @@ struct CtoSessionDestinationView: View {
         // The CTO never queues: new input redirects the running turn. The host
         // enforces this (steer queue cap of zero on the identity session); this
         // keeps the composer menu from offering a wait it would not honor.
-        liveRedirectOnlySends: true
+        liveRedirectOnlySends: true,
+        duoPane: duoPane,
+        duoPaneOpen: duoPaneOpen,
+        duoCtoSettings: duoSettings
       )
       .environmentObject(syncService)
     }
@@ -107,7 +135,7 @@ struct CtoSessionDestinationView: View {
     }
   }
 
-  private var navigationTitle: String { "CTO" }
+  private var navigationTitle: String { title }
 
   private var isLive: Bool {
     let workStatus = syncService.status(for: .work)
@@ -184,6 +212,10 @@ private extension View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .adeRootTabBarHidden()
+    case .column:
+      // A column chat keeps the root tabs and has no stack to push a title
+      // onto; the Work header already names it.
+      self
     case .embedded:
       self
     }

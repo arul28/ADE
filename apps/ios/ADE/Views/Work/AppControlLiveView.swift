@@ -12,6 +12,11 @@ struct AppControlStreamFrame {
   var width: Int
   var height: Int
   var image: UIImage
+  /// What turns a point on this frame into a CSS viewport point for the host's
+  /// hit-test. Present from a host that sends the frame's own geometry.
+  var scaleX: Double?
+  var viewportWidth: Double?
+  var viewportHeight: Double?
 
   /// Ceiling on one frame's bytes. The host caps the screencast at 1600×1000
   /// JPEG, which lands far under this; the cap bounds a malformed payload.
@@ -29,7 +34,10 @@ struct AppControlStreamFrame {
       sessionId: envelope.sessionId,
       width: envelope.width > 0 ? envelope.width : Int(image.size.width * image.scale),
       height: envelope.height > 0 ? envelope.height : Int(image.size.height * image.scale),
-      image: image.preparingForDisplay() ?? image
+      image: image.preparingForDisplay() ?? image,
+      scaleX: envelope.scaleX,
+      viewportWidth: envelope.viewportWidth,
+      viewportHeight: envelope.viewportHeight
     )
   }
 }
@@ -59,6 +67,11 @@ final class AppControlLiveSession: ObservableObject {
   @Published private(set) var image: UIImage?
   @Published private(set) var pictureWidth: Int?
   @Published private(set) var pictureHeight: Int?
+  /// The last frame's own geometry, kept with the picture so a frozen inspect
+  /// view can turn a tap back into a CSS viewport point. Nil from older hosts.
+  @Published private(set) var frameScaleX: Double?
+  @Published private(set) var frameViewportWidth: Double?
+  @Published private(set) var frameViewportHeight: Double?
 
   private var lastSeq = -1
   private var isStarting = false
@@ -147,6 +160,9 @@ final class AppControlLiveSession: ObservableObject {
       pictureWidth = frame.width
       pictureHeight = frame.height
     }
+    if let scaleX = frame.scaleX, scaleX > 0 { frameScaleX = scaleX }
+    if let width = frame.viewportWidth, width > 0 { frameViewportWidth = width }
+    if let height = frame.viewportHeight, height > 0 { frameViewportHeight = height }
     phase = .live
   }
 
@@ -521,6 +537,12 @@ func appControlStatusLabel(_ status: String) -> String {
 /// (`MacDesktopViewerOrientation`, `livePictureZoom`).
 struct AppControlViewer: View {
   let laneId: String
+  /// The chat this viewer was opened from, so an inspect handoff goes back to
+  /// the right composer. Nil for a viewer opened without a chat.
+  var chatSessionId: String?
+  /// A column in a split, not a full-screen cover: no close button of its own
+  /// and no window-wide dark preference (the pane scopes dark itself).
+  var embedded = false
 
   private static let refreshInterval: Duration = .seconds(3)
 
@@ -532,30 +554,68 @@ struct AppControlViewer: View {
   @State private var loaded: Bool
   @State private var session: AppControlLiveSession?
   @State private var orientation = MacDesktopViewerOrientation()
+  /// The frozen inspect view, over everything, until its Close resumes the
+  /// live subscription.
+  @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-  init(laneId: String, initialState: WorkToolsAppControlState?) {
+  init(
+    laneId: String,
+    initialState: WorkToolsAppControlState?,
+    chatSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.embedded = embedded
     _appControl = State(initialValue: initialState)
     _loaded = State(initialValue: initialState != nil)
   }
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
+      // In the tools pane the picture sits on the pane's own background.
+      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
       VStack(spacing: 0) {
-        controls
+        // In the Work tools pane these are the pane's toolbar items instead.
+        if !embedded {
+          controls
+        }
         // The stage fills the space between the controls and the footer, and
         // a zoomed picture may use all of it.
         stage
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .livePictureViewport()
-        if !compactHeight {
+        if !compactHeight && !embedded {
           footer
         }
       }
+      if let inspect, !embedded {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+          .transition(.opacity)
+          .zIndex(2)
+      }
     }
-    .preferredColorScheme(.dark)
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    // In the Duo's tools pane the frozen inspector takes the whole screen: it
+    // has its own bar and a picture | inspector split across the fold, and
+    // drawn inside the pane its stack would take over the chat's title and
+    // rail.
+    .fullScreenCover(isPresented: Binding(
+      get: { embedded && inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+      }
+    }
+    .preferredColorScheme(embedded ? nil : .dark)
+    .modifier(AppControlPaneChrome(
+      enabled: embedded,
+      subtitle: appControl.map { appControlIsLive($0) ? "Watching · Live" : "Watching · Off" } ?? appControlTagLabel,
+      session: syncService.supportsViewerRemoteAction("appControl.inspectPoint") ? session : nil,
+      onInspect: { beginInspect() }
+    ))
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -579,11 +639,17 @@ struct AppControlViewer: View {
 
   private var controls: some View {
     HStack(spacing: 14) {
-      controlButton(systemName: "xmark", label: "Close") {
-        stopSession()
-        dismiss()
+      // In a pane the pane's close button is the way out.
+      if !embedded {
+        controlButton(systemName: "xmark", label: "Close") {
+          stopSession()
+          dismiss()
+        }
       }
       Spacer(minLength: 0)
+      if syncService.supportsViewerRemoteAction("appControl.inspectPoint"), let session {
+        AppControlInspectButton(session: session) { beginInspect() }
+      }
       if rotates {
         controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
       }
@@ -636,22 +702,26 @@ struct AppControlViewer: View {
       if loaded {
         stageMessage("No app is attached in this lane.")
       } else {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
     } else if let session {
-      AppControlLivePicture(session: session, live: appControlIsLive(appControl), zoomable: true, inCard: false)
-        .padding(.horizontal, 12)
+      // In the pane: the card style (a window's rounded corners, readable
+      // waiting text on the pane's background), lifted by a soft shadow.
+      AppControlLivePicture(session: session, live: appControlIsLive(appControl), zoomable: true, inCard: embedded)
+        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
+        .padding(.horizontal, embedded ? 16 : 12)
+        .padding(.vertical, embedded ? 16 : 0)
     } else if syncService.connectionState != .connected {
       stageMessage("Waiting for the connection to your Mac…")
     } else {
-      ProgressView().tint(.white)
+      ProgressView().tint(embedded ? nil : .white)
     }
   }
 
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(.white.opacity(0.85))
+      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
@@ -701,6 +771,7 @@ struct AppControlViewer: View {
 
   private func updateLifecycle() {
     let shouldRun = isLiveCapable
+      && inspect == nil
       && scenePhase == .active
       && syncService.connectionState == .connected
     if shouldRun {
@@ -722,5 +793,90 @@ struct AppControlViewer: View {
     guard let current = session else { return }
     current.stop(using: syncService)
     session = nil
+  }
+
+  // MARK: - Inspect
+
+  /// Freezes the last frame, then stops the subscription. The app itself keeps
+  /// running on the Mac — only the stream stops, which is what makes a hit-test
+  /// a still picture rather than one that moves under the finger.
+  private func beginInspect() {
+    guard inspect == nil, let session, let image = session.image else { return }
+    ADEHaptics.light()
+    let model = LiveInspectMarkupModel(surface: .appControl, laneId: laneId, chatSessionId: chatSessionId)
+    model.begin(
+      plan: .appControl(
+        image: image,
+        scaleX: session.frameScaleX.map { CGFloat($0) },
+        viewportWidth: session.frameViewportWidth.map { CGFloat($0) },
+        viewportHeight: session.frameViewportHeight.map { CGFloat($0) }
+      ),
+      using: syncService
+    )
+    inspect = model
+    stopSession()
+  }
+
+  private func exitInspect() {
+    guard inspect != nil else { return }
+    inspect = nil
+    updateLifecycle()
+  }
+}
+
+/// Shows the viewer's Inspect control only once there is a frame to freeze.
+/// Its own view so the frame's arrival re-renders the button, not the viewer.
+private struct AppControlInspectButton: View {
+  @ObservedObject var session: AppControlLiveSession
+  let action: () -> Void
+
+  var body: some View {
+    if session.image != nil {
+      Button {
+        ADEHaptics.light()
+        action()
+      } label: {
+        macDesktopViewerControlLabel(systemName: "viewfinder")
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Inspect")
+      .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+    }
+  }
+}
+
+/// The App Control viewer's controls in the Work tools pane's header, and its
+/// Live/Off tag as the header's status line. Off (the full-screen viewer),
+/// it changes nothing.
+private struct AppControlPaneChrome: ViewModifier {
+  let enabled: Bool
+  let subtitle: String
+  let session: AppControlLiveSession?
+  let onInspect: () -> Void
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content
+        .duoPaneHeader(status: subtitle) {
+          if let session {
+            AppControlInspectToolbarButton(session: session, action: onInspect)
+          }
+        }
+    } else {
+      content
+    }
+  }
+}
+
+/// Inspect, as a pane header action, once there is a frame to freeze. Its own view so
+/// the frame's arrival re-renders the item, not the viewer.
+private struct AppControlInspectToolbarButton: View {
+  @ObservedObject var session: AppControlLiveSession
+  let action: () -> Void
+
+  var body: some View {
+    DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder", action: action)
+      .disabled(session.image == nil)
+    .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
   }
 }

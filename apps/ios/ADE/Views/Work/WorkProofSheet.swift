@@ -157,6 +157,9 @@ struct WorkProofSheet: View {
   /// Narrowed to the records a thread link counted; its chip clears it.
   var focus: WorkProofDrawerFocus? = nil
   var onClearFocus: () -> Void = {}
+  /// Shown inside a split column rather than as a sheet: the pane owns closing,
+  /// so the nav bar's Done would be a dead control.
+  var embedded = false
 
   @Environment(\.dismiss) private var dismiss
   @State private var viewerRequest: WorkProofViewerRequest?
@@ -191,40 +194,87 @@ struct WorkProofSheet: View {
   var body: some View {
     let groups = self.groups
     let ordered = self.ordered(groups)
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          if let focus {
-            focusChip(focus)
+    if embedded {
+      // In the Duo's tools pane: no stack of its own (it would take over the
+      // chat's title and rail), so search is an inline field over the list.
+      proofList(groups)
+        .safeAreaInset(edge: .top, spacing: 0) {
+          WorkInlineSearchField(text: $query, prompt: "Search proof")
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+        .refreshable {
+          await onRefresh()
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .fullScreenCover(item: $viewerRequest) { request in
+          WorkProofViewer(
+            artifacts: ordered,
+            artifactContent: artifactContent,
+            initialArtifactId: request.id,
+            onLoadArtifact: onLoadArtifact
+          )
+        }
+    } else {
+      NavigationStack {
+        proofList(groups)
+          .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search proof")
+          .refreshable {
+            await onRefresh()
           }
-          Picker("Show", selection: $tab) {
-            ForEach(WorkProofSheetTab.allCases) { option in
-              Text(option.rawValue).tag(option)
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle("Proof")
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { dismiss() }
             }
           }
-          .pickerStyle(.segmented)
+          .fullScreenCover(item: $viewerRequest) { request in
+            WorkProofViewer(
+              artifacts: ordered,
+              artifactContent: artifactContent,
+              initialArtifactId: request.id,
+              onLoadArtifact: onLoadArtifact
+            )
+          }
+      }
+    }
+  }
 
-          if groups.isEmpty {
-            if filtered && !artifacts.isEmpty {
-              Text("No proof matches.")
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 40)
-            } else {
-              emptyRow
-            }
+  private func proofList(_ groups: [WorkProofDrawerGroup]) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        if let focus {
+          focusChip(focus)
+        }
+        Picker("Show", selection: $tab) {
+          ForEach(WorkProofSheetTab.allCases) { option in
+            Text(option.rawValue).tag(option)
+          }
+        }
+        .pickerStyle(.segmented)
+
+        if groups.isEmpty {
+          if filtered && !artifacts.isEmpty {
+            Text("No proof matches.")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(maxWidth: .infinity)
+              .padding(.top, 40)
           } else {
-            ForEach(groups) { group in
-              VStack(alignment: .leading, spacing: 8) {
-                groupHeader(group)
-                VStack(alignment: .leading, spacing: 12) {
-                  ForEach(workProofGridRows(group.inAnswer + group.other)) { row in
-                    HStack(alignment: .top, spacing: 10) {
-                      ForEach(row.items) { item in gridItem(item) }
-                      if row.items.count == 1, case .single = row.items[0] {
-                        Color.clear.frame(maxWidth: .infinity)
-                      }
+            emptyRow
+          }
+        } else {
+          ForEach(groups) { group in
+            VStack(alignment: .leading, spacing: 8) {
+              groupHeader(group)
+              VStack(alignment: .leading, spacing: 12) {
+                ForEach(workProofGridRows(group.inAnswer + group.other)) { row in
+                  HStack(alignment: .top, spacing: 10) {
+                    ForEach(row.items) { item in gridItem(item) }
+                    if row.items.count == 1, case .single = row.items[0] {
+                      Color.clear.frame(maxWidth: .infinity)
                     }
                   }
                 }
@@ -232,29 +282,9 @@ struct WorkProofSheet: View {
             }
           }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 24)
       }
-      .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search proof")
-      .refreshable {
-        await onRefresh()
-      }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle("Proof")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-      }
-      .fullScreenCover(item: $viewerRequest) { request in
-        WorkProofViewer(
-          artifacts: ordered,
-          artifactContent: artifactContent,
-          initialArtifactId: request.id,
-          onLoadArtifact: onLoadArtifact
-        )
-      }
+      .padding(.horizontal, 16)
+      .padding(.bottom, 24)
     }
   }
 
@@ -544,45 +574,18 @@ struct WorkProofViewer: View {
             }
         }
       }
-      // Dots, whenever there is somewhere to swipe to. Opened from a row, the
-      // viewer used to look like a single-artifact screen — nothing said the
-      // other five captures were one swipe away. `.interactive` keeps them out
-      // of the way of the capture until the page actually moves.
+      // Dots, whenever there is somewhere to swipe to. `.interactive` keeps
+      // them out of the way of the capture until the page actually moves.
       .tabViewStyle(.page(indexDisplayMode: artifacts.count > 1 ? .automatic : .never))
       .indexViewStyle(.page(backgroundDisplayMode: .interactive))
-      // The bar floats over the capture rather than shortening the screen it is
-      // centred in: a tall screenshot was laid out below the bar and then
-      // centred in what was left, which pushed its top edge under the title.
-      .ignoresSafeArea(edges: .top)
-      .background(Color.black.ignoresSafeArea())
-      .navigationTitle(currentTitle)
-      .navigationBarTitleDisplayMode(.inline)
-      .adeNavigationGlass()
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { dismiss() }
-        }
-        // Dots say "there are more"; the count says WHICH — past about eight
-        // captures the dots stop being countable and this is the only thing
-        // that still tells you where you are in the run.
-        if artifacts.count > 1 {
-          ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-              Text(currentTitle)
-                .font(.headline)
-                .foregroundStyle(Color.white)
-                .lineLimit(1)
-                .truncationMode(.tail)
-              Text("\(position) of \(artifacts.count)")
-                .font(.caption2)
-                .foregroundStyle(Color.white.opacity(0.6))
-            }
-            .accessibilityElement(children: .combine)
-          }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          shareControl
-        }
+      // The caption says which capture this is, and where it sits in the run
+      // (past about eight the dots stop being countable).
+      .workMediaViewerChrome(
+        caption: currentTitle,
+        detail: artifacts.count > 1 ? "\(position) of \(artifacts.count)" : nil,
+        onDone: { dismiss() }
+      ) {
+        shareControl
       }
     }
   }
@@ -617,11 +620,9 @@ private struct WorkProofPage: View {
 
       switch content {
       case .image(let image):
-        // All edges: the capture is centred on the whole screen and the
-        // translucent bar sits over it, which is how every photo viewer on
-        // this platform behaves.
+        // Fitted inside the safe area: Done, Share, the caption and (held
+        // landscape on the Duo) the edge bar never sit over the capture.
         WorkProofZoomableImage(image: image)
-          .ignoresSafeArea()
           .accessibilityLabel(WorkProofRowModel(artifact: artifact).accessibilityLabel)
       case .video(let url), .remoteURL(let url):
         WorkProofVideoPage(url: url, isVideo: workArtifactIsVideo(artifact))
@@ -751,5 +752,38 @@ struct WorkProofZoomableImage: UIViewRepresentable {
       )
       scrollView.zoom(to: rect, animated: true)
     }
+  }
+}
+
+/// A search field drawn inline, for a list that lives inside another screen's
+/// navigation stack (the Duo's tools pane), where `.searchable` would put the
+/// field in that screen's bar. Same look as the system field.
+struct WorkInlineSearchField: View {
+  @Binding var text: String
+  let prompt: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .foregroundStyle(.secondary)
+      TextField(prompt, text: $text)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.search)
+      if !text.isEmpty {
+        Button {
+          text = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+    }
+    .font(.body)
+    .padding(.horizontal, 12)
+    .frame(height: 38)
+    .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
   }
 }
