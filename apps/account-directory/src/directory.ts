@@ -15,7 +15,9 @@ import {
   type PairingProofBroker,
 } from "./pairingGrants";
 import { boundedDisplayText } from "./displayText";
+import { cloudflareTransientKind, logCloudflareTransient, transientUnavailableResponse } from "./cloudflareTransient";
 import { logDirectoryLifecycle, logDirectoryRefusal } from "./logging";
+import { scrubString } from "./sentryScrub";
 import { trustedHttpsOrigin } from "./trustedOrigin";
 
 export type { ActivityRelayOptions } from "./activityRelay";
@@ -1269,6 +1271,16 @@ export async function handleRequest(
   if (requestOrigin && routeAccount(url.pathname) && !corsOrigin) {
     return finish(text("origin not allowed", 403));
   }
-  const response = await handleRequestCore(request, env, options, correlationId);
+  let response: Response;
+  try {
+    response = await handleRequestCore(request, env, options, correlationId);
+  } catch (error) {
+    // D1 restarting under Cloudflare: answer 503 with Retry-After (and the
+    // browser's CORS headers) so the client retries, instead of a bare 500.
+    const transient = cloudflareTransientKind(error);
+    if (!transient) throw error;
+    logCloudflareTransient("ade-account-directory", transient, scrubString(url.pathname), error);
+    response = transientUnavailableResponse();
+  }
   return finish(response, Boolean(corsOrigin));
 }

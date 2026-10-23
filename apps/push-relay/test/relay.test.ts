@@ -1206,6 +1206,69 @@ describe("push relay", () => {
     expect(db.rateCounters.get(`budget:${today}`)?.count).toBe(101);
   });
 
+  // D1 has short Cloudflare-side outages. Reads and the budget reservation are
+  // retried through them; what still fails is a 503 the client retries, and a
+  // real query error still surfaces as one.
+  describe("when D1 fails", () => {
+    const failing = (pattern: string, failures: number, message: string) => {
+      const prepare = db.prepare.bind(db);
+      let left = failures;
+      vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+        const statement = prepare(sql);
+        if (sql.includes(pattern)) {
+          const first = statement.first.bind(statement);
+          statement.first = (async () => {
+            if (left > 0) {
+              left -= 1;
+              throw new Error(message, { cause: new Error(message.replace(/^D1_ERROR: /, "")) });
+            }
+            return first();
+          }) as typeof statement.first;
+        }
+        return statement;
+      });
+    };
+    const settle = async (requests: Array<Promise<Response>>) => {
+      const settled = Promise.all(requests.map((request) => request.then(
+        async (response) => ({ status: response.status, retryAfter: response.headers.get("retry-after") }),
+        (error: Error) => ({ thrown: error.message }),
+      )));
+      await vi.runAllTimersAsync();
+      return await settled;
+    };
+    const hit = (ip: string) => handleRequest(
+      ipRequest(`/machines/${"d".repeat(40)}/devices`, ip, { method: "GET" }),
+      makeEnv(db, undefined),
+    );
+
+    it.each([
+      ["a read blip is retried", "from machines", 1, "D1_ERROR: internal error; reference = 0f3a9c", { status: 401, retryAfter: null }],
+      ["a reset outlasting the retries is a 503", "from machines", 99, "D1_ERROR: Internal error in D1 DB storage caused object to be reset; reference = r", { status: 503, retryAfter: "5" }],
+      ["an overloaded database outlasting the retries is a 503", "from machines", 99, "D1_ERROR: D1 DB is overloaded. Requests queued for too long.", { status: 503, retryAfter: "5" }],
+      ["a query error is not retried or hidden", "from machines", 1, "D1_ERROR: no such column: secret", { thrown: "D1_ERROR: no such column: secret" }],
+    ] as const)("%s", async (_label, pattern, failures, message, expected) => {
+      vi.useFakeTimers();
+      try {
+        failing(pattern, failures, message);
+        // An unknown machine is a 401: the request ran to its real answer.
+        expect(await settle([hit("6.6.6.1")])).toEqual([expected]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps every request waiting on a budget reservation through a blip", async () => {
+      vi.useFakeTimers();
+      try {
+        failing("insert into rate_counters", 1, "D1_ERROR: Internal error in D1 DB storage caused object to be reset; reference = n");
+        const results = await settle(Array.from({ length: 5 }, (_, index) => hit(`6.6.7.${index}`)));
+        expect(results).toEqual(Array.from({ length: 5 }, () => ({ status: 401, retryAfter: null })));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("does not carry yesterday's budget into today when a flush straddles UTC midnight", async () => {
     vi.useFakeTimers();
     try {
