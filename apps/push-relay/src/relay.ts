@@ -24,6 +24,14 @@ import {
   recordDailyBudget,
 } from "./spendGuards";
 
+import {
+  cloudflareTransientKind,
+  logCloudflareTransient,
+  retryD1Reads,
+  transientUnavailableResponse,
+} from "./cloudflareTransient";
+import { scrubString } from "./sentryScrub";
+
 export { resetSpendGuardsForTests } from "./spendGuards";
 
 export type PushRelayEnv = {
@@ -1122,7 +1130,30 @@ function withAccountCors(response: Response, origin: string): Response {
   });
 }
 
+/**
+ * The Worker's entry. D1 has short Cloudflare-side outages that come in bursts
+ * ("internal error", "object to be reset", "overloaded"): every read-only
+ * statement is retried through them, and a request that still hits one is
+ * answered 503 with Retry-After instead of an unhandled 500. Every ADE client
+ * already retries a 5xx from the relay.
+ */
 export async function handleRequest(request: Request, env: PushRelayEnv): Promise<Response> {
+  try {
+    return await routeRequest(request, { ...env, DB: retryD1Reads(env.DB) });
+  } catch (error) {
+    const kind = cloudflareTransientKind(error);
+    if (!kind) throw error;
+    const url = new URL(request.url);
+    logCloudflareTransient("ade-push-relay", kind, scrubString(url.pathname), error);
+    const response = transientUnavailableResponse();
+    const origin = request.headers.get("origin");
+    return url.pathname.startsWith("/attention/account/") && origin && trustedWebClientOrigin(env) === origin
+      ? withAccountCors(response, origin)
+      : response;
+  }
+}
+
+async function routeRequest(request: Request, env: PushRelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     const accountAuth = inspectAttentionAuthConfiguration(env);

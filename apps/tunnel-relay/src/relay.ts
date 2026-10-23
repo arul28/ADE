@@ -1,5 +1,11 @@
 import { TunnelDurableObject } from "./tunnelDo";
+import {
+  fetchDurableObject,
+  logCloudflareTransient,
+  transientUnavailableResponse,
+} from "./cloudflareTransient";
 import type { SentryEnv } from "./sentry";
+import { scrubString } from "./sentryScrub";
 
 export type TunnelRelayEnv = SentryEnv & {
   /** Durable Object namespace; one instance per machineKey via idFromName. */
@@ -297,8 +303,13 @@ export function mcpEndpointObjectName(endpointKey: string): string {
 async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Promise<string | null> {
   const cached = endpointCache.get(endpointKey);
   if (cached) return cached;
-  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey)));
-  const response = await stub.fetch(`https://relay.internal${MCP_ENDPOINT_PATH}`);
+  const id = env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey));
+  const result = await fetchDurableObject(
+    () => env.TUNNEL.get(id),
+    new Request(`https://relay.internal${MCP_ENDPOINT_PATH}`),
+  );
+  if ("transient" in result) throw new TransientDurableObjectError(result.transient, result.error);
+  const response = result.response;
   if (!response.ok) return null;
   const machineKey = ((await response.json()) as { machineKey?: unknown }).machineKey;
   if (typeof machineKey !== "string" || !validKey(machineKey)) return null;
@@ -307,7 +318,45 @@ async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Pro
   return machineKey;
 }
 
+/** A Durable Object call that hit a Cloudflare transient failure and was not recovered. */
+class TransientDurableObjectError extends Error {
+  constructor(readonly kind: string, readonly original: unknown) {
+    super(`Durable Object transient failure: ${kind}`);
+  }
+}
+
+/**
+ * Durable Objects restart under Cloudflare now and then ("storage is no longer
+ * accessible", "instance is no longer active", "internal error; reference =
+ * …"). A request that can be sent twice gets one more try on a fresh stub
+ * (`fetchDurableObject`); anything still failing, including every WebSocket
+ * upgrade, is answered 503 with Retry-After instead of an unhandled 500. The
+ * brain's control socket and the phone both reconnect on a failed upgrade with
+ * their usual backoff, whatever its status.
+ */
 export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
+  try {
+    return await routeRequest(request, env);
+  } catch (error) {
+    if (!(error instanceof TransientDurableObjectError)) throw error;
+    const url = new URL(request.url);
+    logCloudflareTransient("ade-tunnel-relay", error.kind, scrubString(url.pathname), error.original);
+    const mcp = (routeTunnelPath(url.pathname) ?? routeMcpPath(url))?.kind === "mcp";
+    return transientUnavailableResponse(mcp ? MCP_CORS_HEADERS : {});
+  }
+}
+
+async function forwardToObject(
+  getStub: () => DurableObjectStub,
+  request: Request,
+  options: { replayable?: boolean } = {},
+): Promise<Response> {
+  const result = await fetchDurableObject(getStub, request, options);
+  if ("transient" in result) throw new TransientDurableObjectError(result.transient, result.error);
+  return result.response;
+}
+
+async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     const { id, tag, timestamp } = env.CF_VERSION_METADATA;
@@ -332,7 +381,9 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
         { status: 404, headers: { "cache-control": "no-store", ...MCP_CORS_HEADERS } },
       );
     }
-    return env.TUNNEL.get(env.TUNNEL.idFromName(machineKey)).fetch(request);
+    // An MCP call is forwarded to the brain and may run a tool: never sent twice.
+    const id = env.TUNNEL.idFromName(machineKey);
+    return await forwardToObject(() => env.TUNNEL.get(id), request);
   }
 
   // Every route is scoped to a single machine → a single Durable Object
@@ -344,6 +395,10 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
   const locationHint = route.kind === "claim" || route.kind === "host"
     ? locationHintForGeo((request as { cf?: RequestPlacementGeo | null }).cf)
     : undefined;
-  const stub = locationHint ? env.TUNNEL.get(id, { locationHint }) : env.TUNNEL.get(id);
-  return stub.fetch(request);
+  // A claim stores the secret first-writer-wins, so sending it twice is safe.
+  return await forwardToObject(
+    () => (locationHint ? env.TUNNEL.get(id, { locationHint }) : env.TUNNEL.get(id)),
+    request,
+    { replayable: route.kind === "claim" },
+  );
 }

@@ -1,26 +1,31 @@
 #!/usr/bin/env node
-// The four Cloudflare Workers each carry a copy of `src/sentryScrub.ts`: what
-// they remove before an event, breadcrumb or span goes to Sentry. Worker
-// sources stay self-contained, so the file is copied rather than shared, and
-// a copy that drifts is a privacy hole in one Worker. This fails when they
-// differ. Change all four together.
+// The four Cloudflare Workers each carry a copy of `src/sentryScrub.ts` (what
+// they remove before an event, breadcrumb or span goes to Sentry) and of
+// `src/cloudflareTransient.ts` (which Cloudflare failures they retry, answer
+// 503 and group in Sentry). Worker sources stay self-contained, so the files
+// are copied rather than shared, and a scrubber copy that drifts is a privacy
+// hole in one Worker. This fails when they differ. Change all four together.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workers = ["account-directory", "push-relay", "tunnel-relay", "webhook-relay"];
-const read = (worker) =>
-  fs.readFileSync(path.join(repoRoot, "apps", worker, "src", "sentryScrub.ts"), "utf8").replace(/\r\n/g, "\n");
+const files = ["sentryScrub.ts", "cloudflareTransient.ts"];
+const read = (worker, file) =>
+  fs.readFileSync(path.join(repoRoot, "apps", worker, "src", file), "utf8").replace(/\r\n/g, "\n");
 
 const [reference, ...others] = workers;
-const expected = read(reference);
-const drifted = others.filter((worker) => read(worker) !== expected);
-if (drifted.length > 0) {
+let failed = false;
+for (const file of files) {
+  const expected = read(reference, file);
+  const drifted = others.filter((worker) => read(worker, file) !== expected);
+  if (drifted.length === 0) continue;
+  failed = true;
   console.error(
-    `apps/{${drifted.join(",")}}/src/sentryScrub.ts differ from apps/${reference}/src/sentryScrub.ts. `
-      + "The Worker scrubbers are one file kept in four places: make all four identical.",
+    `apps/{${drifted.join(",")}}/src/${file} differ from apps/${reference}/src/${file}. `
+      + "It is one file kept in four places: make all four identical.",
   );
-  process.exit(1);
 }
-console.log(`Worker Sentry scrubbers identical across ${workers.length} Workers.`);
+if (failed) process.exit(1);
+console.log(`Worker ${files.join(" and ")} identical across ${workers.length} Workers.`);

@@ -4,6 +4,7 @@ import {
   type ApnsSendResult,
 } from "./apns";
 import { handleAccountSettingsRoute } from "./accountSettings";
+import { withCloudflareRetry } from "./cloudflareTransient";
 import { handleAccountVaultRoute } from "./accountVault";
 import {
   AttentionAuthVerificationUnavailableError,
@@ -2281,13 +2282,14 @@ async function refreshActivityMachinePresence(
   // Presence runs every 30 s per machine. When the link already belongs to
   // this user, touch only unindexed columns: one billed row instead of the
   // upsert's two (setting `user_id`, even unchanged, rewrites its index).
-  const touched = await env.DB.prepare(`
+  // Both writes set fixed values, so a retry after a Cloudflare blip lands the same row.
+  const touched = await withCloudflareRetry(() => env.DB.prepare(`
     update attention_machine_links
        set machine_name = ?, last_seen_at = ?
      where machine_key = ? and user_id = ?
-  `).bind(args.machineName, args.now, args.machineKey, args.userId).run();
+  `).bind(args.machineName, args.now, args.machineKey, args.userId).run());
   if ((touched.meta?.changes ?? 0) > 0) return;
-  await env.DB.prepare(`
+  await withCloudflareRetry(() => env.DB.prepare(`
     insert into attention_machine_links(
       machine_key, user_id, machine_name, last_seen_at, linked_at,
       legacy_devices_imported_at
@@ -2302,7 +2304,7 @@ async function refreshActivityMachinePresence(
     args.machineName,
     args.now,
     args.now,
-  ).run();
+  ).run());
 }
 
 async function activityItemsForMachine(
@@ -3031,13 +3033,14 @@ async function handlePresence(
     observedAt,
     visibleItemIds,
   };
-  await env.DB.prepare(`
+  // Last write wins on one row, so a retry after a Cloudflare blip is safe.
+  await withCloudflareRetry(() => env.DB.prepare(`
     insert into attention_presence(user_id, device_id, payload_json, observed_at)
     values (?, ?, ?, ?)
     on conflict(user_id, device_id) do update set
       payload_json = excluded.payload_json,
       observed_at = excluded.observed_at
-  `).bind(userId, deviceId, JSON.stringify(stored), observedAt).run();
+  `).bind(userId, deviceId, JSON.stringify(stored), observedAt).run());
   return json({ ok: true, observedAt });
 }
 

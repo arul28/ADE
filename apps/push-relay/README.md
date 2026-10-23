@@ -254,7 +254,17 @@ in the dashboard (Workers → **ade-push-relay** → Logs) and stream live via
 `npx wrangler tail ade-push-relay`. Event kinds: `rate_limited`,
 `budget_exceeded`, `auth_failed` (with `reason`: unknown machine / bad
 signature / stale timestamp), `apns_error` (APNs `status` + `reason` — why a
-push failed), `claim_conflict`.
+push failed), `claim_conflict`, `cloudflare_transient` (`transient`: the kind of
+D1 outage a request hit).
+
+D1 has short Cloudflare-side outages that come in bursts ("internal error;
+reference = …", "object to be reset", "overloaded"). Every read-only statement
+is retried through them (three tries, about a second in all;
+`src/cloudflareTransient.ts`), and so are the few writes that are safe to run
+twice: the budget reservation (a duplicate only runs the count ahead) and the
+presence upserts. A request that still hits one gets `503` with `Retry-After: 5`
+and a `cloudflare_transient` log line instead of an unhandled 500, and it is not
+sent to Sentry.
 
 ## Deploy
 

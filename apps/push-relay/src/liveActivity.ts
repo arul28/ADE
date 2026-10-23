@@ -553,17 +553,37 @@ export async function deliverAccountLiveActivity(
     preferencesRow,
   ] = await Promise.all([
       accountActivityContentState(env, userId),
+      // Each device's Live Activity state and update token ride along (both
+      // keyed by user, device and activity, so at most one row each) instead
+      // of two more reads per device.
       env.DB.prepare(`
         select device.device_id, device.apns_token, device.push_to_start_token,
           device.bundle_id, device.aps_environment, device.preferences_json,
-          device.generation, ownership.ownership_epoch
+          device.generation, ownership.ownership_epoch,
+          state.started as activity_started,
+          state.fingerprint as activity_fingerprint,
+          state.updated_at as activity_updated_at,
+          token.token as activity_token
         from attention_devices as device
         join attention_device_ownership as ownership
           on ownership.device_id = device.device_id
           and ownership.user_id = device.user_id
           and ownership.active = 1
+        left join attention_activity_state as state
+          on state.user_id = device.user_id
+          and state.device_id = device.device_id
+          and state.activity_id = ?
+        left join attention_activity_tokens as token
+          on token.user_id = device.user_id
+          and token.device_id = device.device_id
+          and token.activity_id = ?
         where device.user_id = ? and device.lease_expires_at > ?
-      `).bind(userId, new Date().toISOString()).all<OwnedAttentionDeviceRow>(),
+      `).bind(activityId, activityId, userId, new Date().toISOString()).all<OwnedAttentionDeviceRow & {
+        activity_started: number | null;
+        activity_fingerprint: string | null;
+        activity_updated_at: string | null;
+        activity_token: string | null;
+      }>(),
       env.DB
         .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
         .bind(userId)
@@ -579,17 +599,7 @@ export async function deliverAccountLiveActivity(
     // registered device row is still owned by this exact account epoch.
     if (!Number.isSafeInteger(ownershipEpoch) || ownershipEpoch <= 0) continue;
     const override = resolveActivityDevicePreferences(device, preferences);
-    const state = await env.DB.prepare(`
-      select started, fingerprint, updated_at
-      from attention_activity_state
-      where user_id = ? and device_id = ? and activity_id = ?
-      limit 1
-    `).bind(userId, device.device_id, activityId).first<{
-      started: number;
-      fingerprint: string | null;
-      updated_at: string | null;
-    }>();
-    const started = state?.started === 1;
+    const started = device.activity_started === 1;
     const liveActivitiesEnabled = preferenceBoolean(
       override,
       accountPreferences,
@@ -624,12 +634,12 @@ export async function deliverAccountLiveActivity(
       `${transitionFingerprint}:${hideDetails ? "private" : "public"}:owner:${ownershipEpoch}`;
     const deviceFingerprint = `${urgentFingerprint}|${countsFingerprint}`;
     if (deviceCount === 0 && !started) continue;
-    if (deviceCount > 0 && started && state?.fingerprint === deviceFingerprint) continue;
+    if (deviceCount > 0 && started && device.activity_fingerprint === deviceFingerprint) continue;
     if (
       deviceCount > 0
       && started
-      && state?.fingerprint?.split("|")[0] === urgentFingerprint
-      && Date.now() - Date.parse(state.updated_at ?? "") < LIVE_ACTIVITY_COUNT_REFRESH_MS
+      && device.activity_fingerprint?.split("|")[0] === urgentFingerprint
+      && Date.now() - Date.parse(device.activity_updated_at ?? "") < LIVE_ACTIVITY_COUNT_REFRESH_MS
     ) {
       // Only the working, waiting or done counts moved, and the last push was
       // recent. The next publish after the window sends the settled numbers.
@@ -640,21 +650,13 @@ export async function deliverAccountLiveActivity(
     let deviceToken: string | null;
     if (deviceCount === 0) {
       event = "end";
-      const token = await env.DB
-        .prepare("select token from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ? limit 1")
-        .bind(userId, device.device_id, activityId)
-        .first<{ token: string }>();
-      deviceToken = token?.token ?? null;
+      deviceToken = device.activity_token;
     } else if (!started) {
       event = "start";
       deviceToken = device.push_to_start_token;
     } else {
       event = "update";
-      const token = await env.DB
-        .prepare("select token from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ? limit 1")
-        .bind(userId, device.device_id, activityId)
-        .first<{ token: string }>();
-      deviceToken = token?.token ?? null;
+      deviceToken = device.activity_token;
     }
     if (!deviceToken) {
       if (event === "end") {
