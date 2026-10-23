@@ -100,11 +100,19 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
 - **Modes.** `plain` (the theme's flat background: no picture, no mesh),
   `gradient` (the theme's animated mesh), `image` (one picture) or `shuffle` (a
   picture from the library, changed on launch, wake, hourly or daily). The
-  shipped desktop default is shuffle, a new picture on each wake, every picture
-  included. The hosted web client defaults to `plain`, chosen at read time and
-  never persisted; a pick made there (`choiceMade`) stands. Bumping `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts`
-  puts every user back on that default once; use it only for a deliberate
-  product reset.
+  shipped default on every client is `plain`; a picture is something the user
+  turns on. A saved preference that is still the old untouched shuffle default
+  reads as `plain`; a pick (`choiceMade`) or a tuned look stands. A picture the
+  user turns on starts with a 30% veil. Bumping `SCENE_DEFAULTS_REVISION` in
+  `scenePreferences.ts` puts every user back on the default once; use it only
+  for a deliberate product reset.
+- **Fine textures need a 2x screen.** The Halftone texture (0.75px dots on a
+  3px grid) draws only at `min-resolution: 2dppx`. Below that a dot cannot be
+  drawn: it snaps to a hard 1px grid at 1x and to moiré bands at 125% and 150%,
+  which reads as stripes across the whole UI. Settings shows a hint when
+  Halftone is picked on such a screen. The Phosphor theme's scanlines layer,
+  drawn over the UI, is off at fractional scales (1.01–1.99 dppx) for the same
+  reason. Any new repeating pattern finer than a few pixels needs the same gate.
 - **Pictures.** Bundled pictures are `public/scenes/*.jpg`, listed in
   `sceneLibrary.ts`. Users add their own; they are re-encoded to at most 3840px
   JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in sync.

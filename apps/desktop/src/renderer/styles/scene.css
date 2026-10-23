@@ -47,11 +47,15 @@
 
 /* A halftone screen: fine dark dots on a 3px grid. It turns a soft, upscaled
    picture into something that reads as deliberate print, like the dithered
-   art it borrows from. Window-aligned, so slices of it line up. */
-.ade-scene-frame[data-texture="dots"] .ade-scene-texture {
-  background-image: radial-gradient(rgb(0 0 0 / 36%) 0.75px, transparent 1.15px);
-  background-size: 3px 3px;
-  mix-blend-mode: multiply;
+   art it borrows from. Window-aligned, so slices of it line up.
+   Only on 2x screens: below that a 0.75px dot cannot be drawn, so it snaps to
+   a hard 1px line every 3px (1x) or beats into moiré bands (1.25x, 1.5x). */
+@media (min-resolution: 2dppx) {
+  .ade-scene-frame[data-texture="dots"] .ade-scene-texture {
+    background-image: radial-gradient(rgb(0 0 0 / 36%) 0.75px, transparent 1.15px);
+    background-size: 3px 3px;
+    mix-blend-mode: multiply;
+  }
 }
 
 .ade-scene-frame[data-texture="grain"] .ade-scene-texture {
