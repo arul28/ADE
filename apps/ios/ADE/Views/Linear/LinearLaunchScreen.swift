@@ -55,6 +55,9 @@ struct LinearLaunchScreen: View {
   @State private var modelName: String
   @State private var reasoningEffort: String
   @State private var codexFastMode: Bool
+  /// The account's Fast permission, read with the host's launch defaults. False
+  /// disables the picker's Fast switch; this screen never edits the account.
+  @State private var fastModeAllowed = true
   @State private var runtimeMode: String
   @State private var kickoff: String
   @State private var selectedModelOption: WorkModelOption?
@@ -123,6 +126,11 @@ struct LinearLaunchScreen: View {
     }
     .scrollContentBackground(.hidden)
     .background(ADEColor.pageBackground.ignoresSafeArea())
+    .task {
+      if let defaults = await syncService.fetchChatLaunchDefaults() {
+        fastModeAllowed = defaults.fastModeAllowed ?? true
+      }
+    }
     .navigationTitle(laneOnly ? "New lane · \(issue.identifier)" : "Launch \(issue.identifier)")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -143,6 +151,7 @@ struct LinearLaunchScreen: View {
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
+        fastModeAllowed: fastModeAllowed,
         cursorAvailabilityMode: sessionType == .cli ? .cli : .chat,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
@@ -277,7 +286,7 @@ struct LinearLaunchScreen: View {
       provider: provider,
       modelId: modelId,
       reasoningEffort: reasoningEffort,
-      codexFastMode: codexFastMode,
+      codexFastMode: fastModeAllowed && codexFastMode,
       runtimeMode: runtimeMode,
       kickoff: kickoff.trimmingCharacters(in: .whitespacesAndNewlines)
     )
@@ -324,7 +333,7 @@ struct LinearLaunchScreen: View {
           initialInput: cfg.kickoff,
           modelId: cfg.modelId,
           reasoningEffort: cfg.reasoningEffort.isEmpty ? nil : cfg.reasoningEffort,
-          fastMode: fastSupported ? cfg.codexFastMode : nil,
+          fastMode: fastSupported && fastModeAllowed ? cfg.codexFastMode : nil,
           cols: 48,
           rows: 24
         )

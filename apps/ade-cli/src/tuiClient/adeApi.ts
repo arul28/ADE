@@ -810,19 +810,33 @@ export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSl
   return discoverAllProjectSlashCommands(workspaceRoot);
 }
 
-/** The machine's last-used chat model and settings; null when none or an older brain. */
-export async function getLaunchDefaults(connection: AdeCodeConnection): Promise<AgentChatLaunchDefaults | null> {
+export type LaunchDefaultsRead =
+  | { ok: true; defaults: AgentChatLaunchDefaults | null }
+  | { ok: false };
+
+/**
+ * The machine's last-used chat model and settings, or why it could not be read.
+ *
+ * `ok: true, defaults: null` means the host answered with no saved defaults
+ * (a fresh machine or an older brain); `ok: false` means the request itself
+ * failed. Callers that synchronize a permission must keep the last answer on a
+ * failure instead of treating it as a denial.
+ */
+export async function readLaunchDefaults(connection: AdeCodeConnection): Promise<LaunchDefaultsRead> {
   try {
     const value = await connection.action<unknown>("chat", "getLaunchDefaults", {});
     // Only a well-formed record counts; anything else (an older brain, a
     // proxy's default reply) leaves the TUI on its own last choice.
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: true, defaults: null };
     const record = value as Partial<AgentChatLaunchDefaults>;
-    return typeof record.modelId === "string" && record.modelId.trim() && typeof record.provider === "string"
-      ? record as AgentChatLaunchDefaults
-      : null;
+    return {
+      ok: true,
+      defaults: typeof record.modelId === "string" && record.modelId.trim() && typeof record.provider === "string"
+        ? record as AgentChatLaunchDefaults
+        : null,
+    };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 

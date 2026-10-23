@@ -973,6 +973,49 @@ directive so resumed/continued sessions keep the same boundary.
 
 #### Provider service tiers (Fast Mode)
 
+**Fast is account-gated, off by default.** One row in the account settings
+store (`chat.fastModeEnabled`, scope `all`) says whether this ADE account may
+use a faster service tier at all. Absent or unreadable is **off**: a fresh
+machine, a signed-out install and a stale cache all lock it rather than
+accidentally allowing a paid tier. The brain reads the account settings cache
+under the machine ADE home on every create, update, `/fast` and turn start
+(behind a one-second value cache, so a Work list does not stat the file per
+row), so the Settings toggle takes effect without a restart. The desktop main
+and the brain both read the same file; no service plumbing or account
+round-trip sits on the hot path.
+
+This is a permission, not a default. With it on, every new chat still starts
+**Standard** and Fast is a per-chat choice. Nothing remembers Fast from one chat
+to the next: the machine launch defaults write `fastMode: false`, the renderer's
+last-launch snapshot and draft hydration force it off, the TUI's project memory
+and iOS's `WorkComposerPreferences` drop it, and a handoff no longer inherits it
+from the source chat. A restored draft or a failed launch keeps the choice made
+for that same attempt.
+
+Every client is told the answer, so no surface has to guess: the session summary
+carries `fastModeAllowed`, and `chat.getLaunchDefaults` carries it for a new
+chat. Absent means an older host that cannot enforce the permission, which
+clients treat as allowed. On desktop and web a false value locks the model
+picker's Fast half and draws the composer's lightning muted; clicking it opens
+Settings → Chat → Fast mode, where the "show me" spotlight rings the row. The
+phone draws the same muted bolt, disables the picker's Fast switch, and offers
+the switch in Settings › Chat; the hosted web client reaches the same row over
+the sync host (`chat.getFastModeEnabled` / `chat.setFastModeEnabled`), because
+its account-settings adapter has no brain to write. `ade code` answers `/fast`
+with the same sentence. Only the Settings row explains the cost; there is no
+banner and no repeated "Fast is disabled" copy.
+
+An explicit request while it is off is refused, not silently downgraded:
+`ade chat create --fast` and `ade chat handoff --fast` answer
+`FAST_MODE_DISABLED_MESSAGE`. The one exception is an automation
+(`automationId` set): a rule written when Fast was allowed must not fail its
+unattended run, so it runs Standard and the chat reports Off like any other.
+`updateSession` drops a forbidden Fast instead of throwing, because mode updates
+are idempotent and often come from a client that was open before the account
+changed. A live chat that already had Fast loses it at its next turn start and
+forgets the stored bit, so turning the permission back on does not silently
+revive a choice nobody remembers making.
+
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional
 service tiers a model accepts (`"fast"` from every provider catalog, and
 `"ultrafast"` only from a Codex catalog). The composer's
@@ -985,10 +1028,14 @@ clients.
 
 Codex forwards Fast as `serviceTier: "fast"` on every `turn/start` and
 `thread/start` JSON-RPC call — `"ultrafast"` instead when the stored tier is
-Ultrafast and the model is not known to lack it — and **omits the key entirely**
-when Fast is off so the user's `config.toml` `service_tier` resolves — an
-explicit `null` reports `"default"`, which is a real downgrade ADE has no UI
-for. See [Provider config ownership](#provider-config-ownership). Claude Fable and Opus descriptors advertise
+Ultrafast and the model is not known to lack it — and sends an **explicit
+`null`** when Fast is off. The null reports `"default"`, which is the only
+encoding that forces standard: omitting the key let a user's
+`config.toml` `service_tier = "fast"` run a chat whose control read Standard.
+ADE handles Codex's `/fast` inline, so this does not stomp a native toggle.
+Cursor sends `fastMode: false` whenever the chat's Fast is off, because Cursor's
+own catalog default is not standard (Composer 2.5 defaults to Fast at roughly
+six times the price). Claude Fable and Opus descriptors advertise
 `serviceTiers: ["fast"]`; Claude chat sends the effective flag through
 the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
 pass `--settings '{"fastMode":true|false}'` so ADE can explicitly

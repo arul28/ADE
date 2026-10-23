@@ -19,7 +19,12 @@ export function readChatLaunchDefaults(adeHome: string): AgentChatLaunchDefaults
     const parsed = JSON.parse(fs.readFileSync(chatLaunchDefaultsPath(adeHome), "utf8")) as Partial<AgentChatLaunchDefaults>;
     if (parsed?.version !== 1 || typeof parsed.modelId !== "string" || !parsed.modelId.trim()) return null;
     if (typeof parsed.provider !== "string" || typeof parsed.updatedAt !== "string") return null;
-    return parsed as AgentChatLaunchDefaults;
+    // Fast is opted into per chat, never carried into the next one. Files
+    // written before that rule still hold `fastMode: true`, so strip it on the
+    // way out: every client (desktop, iOS, TUI, web) reads through here, and
+    // none of them may seed a new chat with Fast because a previous chat used
+    // it. The field stays on the shape for older clients that still parse it.
+    return { ...parsed, fastMode: false } as AgentChatLaunchDefaults;
   } catch {
     return null;
   }
@@ -98,7 +103,11 @@ export function launchDefaultsFromSession(session: AgentChatSession, now = new D
     provider: session.provider,
     modelId,
     reasoningEffort: session.reasoningEffort ?? null,
-    fastMode: session.fastMode === true,
+    // A chat's Fast choice belongs to that chat. Remembering it here made one
+    // Fast turn start every later new chat Fast — the accidental spend this
+    // file would otherwise spread across every surface. Fast is now opt-in per
+    // chat, and the field is kept only so older readers still find a boolean.
+    fastMode: false,
     executionMode: session.executionMode ?? null,
     interactionMode: session.interactionMode ?? null,
     permissionMode: session.permissionMode ?? null,

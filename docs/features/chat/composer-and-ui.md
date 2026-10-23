@@ -1042,7 +1042,15 @@ chat pane mount, which happens either way.
   mode is a property of a *model*, so the toggle lives on the model row inside
   the shared `ModelPicker` rather than as a separate composer chip — every
   surface that mounts the picker gets it, and the composer toolbar keeps one
-  control where it used to spend two. The row chip renders whenever that
+  control where it used to spend two.
+  **The account gate comes first.** When the account has not allowed Fast
+  (`fastModeAllowed === false`), the popover offers no per-row chip at all and
+  the picker draws a muted lightning beside the trigger. That lightning is not
+  a toggle: clicking it opens Settings → Chat → Fast mode and rings that row
+  with the "show me" spotlight. No banner, toast or repeated "Fast is disabled"
+  copy — the muted glyph and the Settings row are the whole story. The composer
+  never sends `fastMode: true` while locked; the brain refuses it anyway.
+  The row chip renders whenever that
   descriptor advertises `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows,
   GPT-5.6, and older fast-capable Codex entries) *and* the caller supplied
   `onFastModeChange`. Fast is one bit per surface but it belongs to the model

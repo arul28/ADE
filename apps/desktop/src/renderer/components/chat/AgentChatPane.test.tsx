@@ -3557,7 +3557,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("hydrates a draft chat from the last launched config before first send", async () => {
+  it("starts a draft at Standard even when the last launched config used Fast", async () => {
     const { create } = installAdeMocks({ sessions: [] });
     const launchConfigKey = [
       "ade.chat.lastLaunchConfig.v1",
@@ -3592,7 +3592,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
-    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
     expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
     expect(screen.getByRole("button", { name: "Codex permission mode" }).textContent).toContain("Full");
 
@@ -3604,7 +3604,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.5",
         reasoningEffort: "xhigh",
-        fastMode: true,
+        fastMode: false,
         permissionMode: "full-auto",
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
@@ -3613,7 +3613,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("prefers the newest session config over a stored launch snapshot", async () => {
+  it("prefers the newest session model and effort but starts at Standard", async () => {
     const previous = buildSession("previous-session", {
       status: "idle",
       reasoningEffort: "high",
@@ -3658,7 +3658,7 @@ describe("AgentChatPane submit recovery", () => {
     const approvalButton = await screen.findByRole("button", { name: "Codex permission mode" });
     await waitFor(async () => {
       expect(approvalButton.textContent).toContain("Full");
-      expect((await findModelTrigger()).textContent).toMatch(/Fast/);
+      expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
       expect(screen.getByLabelText("Reasoning effort").textContent).toContain("HI");
     });
 
@@ -3670,7 +3670,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.5",
         reasoningEffort: "high",
-        fastMode: true,
+        fastMode: false,
         permissionMode: "full-auto",
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
@@ -9999,8 +9999,8 @@ describe("AgentChatPane submit recovery", () => {
     }));
   });
 
-  it("uses the Cursor fast model alias when launching a fast Work draft CLI session", async () => {
-    const { modelId, fastAlias } = seedFastCursorRuntimeModelCatalog();
+  it("does not revive a stored Fast for a Cursor Work draft CLI session", async () => {
+    const { modelId } = seedFastCursorRuntimeModelCatalog();
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
@@ -10046,10 +10046,10 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run Cursor in fast mode." } });
+    fireEvent.change(textbox, { target: { value: "Run Cursor in standard mode." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
@@ -10061,12 +10061,12 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
       provider: "cursor",
-      model: fastAlias,
-      initialPrompt: expect.stringContaining("Run Cursor in fast mode."),
+      model: modelId.replace(/^cursor\//, ""),
+      initialPrompt: expect.stringContaining("Run Cursor in standard mode."),
     }));
   });
 
-  it("uses the OpenCode fast variant when launching a fast Work draft CLI session", async () => {
+  it("does not revive a stored Fast for an OpenCode Work draft CLI session", async () => {
     const modelId = seedFastOpenCodeRuntimeModelCatalog();
     installAdeMocks({ sessions: [] });
     useAppStore.setState({
@@ -10113,10 +10113,10 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run OpenCode in fast mode." } });
+    fireEvent.change(textbox, { target: { value: "Run OpenCode in standard mode." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
@@ -10128,8 +10128,8 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
       provider: "opencode",
-      fastMode: true,
-      initialPrompt: expect.stringContaining("Run OpenCode in fast mode."),
+      fastMode: false,
+      initialPrompt: expect.stringContaining("Run OpenCode in standard mode."),
     }));
   });
 
@@ -10200,8 +10200,8 @@ describe("AgentChatPane submit recovery", () => {
     }));
   });
 
-  it("uses the concrete Cursor CLI variant for Work draft reasoning and fast controls", async () => {
-    const { modelId, concreteModel } = seedReasoningCursorRuntimeModelCatalog();
+  it("does not revive a stored Fast for a concrete Cursor CLI variant", async () => {
+    const { modelId } = seedReasoningCursorRuntimeModelCatalog();
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
@@ -10247,8 +10247,10 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
+
     const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run Cursor with medium fast thinking." } });
+    fireEvent.change(textbox, { target: { value: "Run Cursor with medium standard thinking." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
@@ -10260,9 +10262,9 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
       provider: "cursor",
-      model: concreteModel,
+      model: "claude-opus-4-7-thinking-medium",
       reasoningEffort: "medium",
-      initialPrompt: expect.stringContaining("Run Cursor with medium fast thinking."),
+      initialPrompt: expect.stringContaining("Run Cursor with medium standard thinking."),
     }));
   });
 

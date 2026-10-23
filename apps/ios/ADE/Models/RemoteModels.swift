@@ -1190,7 +1190,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -2141,7 +2145,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -2190,6 +2198,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case reasoningEffort
     case codexFastMode
     case fastMode
+    case fastModeAllowed
     case executionMode
     case permissionMode
     case interactionMode
@@ -2239,6 +2248,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
     codexFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
     fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
+    fastModeAllowed = try container.decodeIfPresent(Bool.self, forKey: .fastModeAllowed)
     executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
     permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
     interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
@@ -4887,6 +4897,8 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var modelId: String
   var reasoningEffort: String?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var interactionMode: String?
   var permissionMode: String?
   var claudePermissionMode: String?

@@ -282,6 +282,8 @@ struct WorkChatSummaryRenderContext: Equatable {
   let modelId: String?
   let reasoningEffort: String
   let effectiveFastMode: Bool
+  /// The account's Fast permission, from the host. False locks the bolt.
+  let fastModeAllowed: Bool
   let runtimeMode: String
   /// False while the summary is a roster stand-in: its access mode is unknown.
   let accessModeKnown: Bool
@@ -339,6 +341,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelId = nil
       self.reasoningEffort = ""
       self.effectiveFastMode = false
+      self.fastModeAllowed = true
       self.accessModeKnown = false
       self.runtimeMode = ""
       self.cursorCloudAgentId = nil
@@ -383,6 +386,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelId = summary.modelId
     self.reasoningEffort = summary.reasoningEffort ?? ""
     self.effectiveFastMode = summary.effectiveFastMode
+    self.fastModeAllowed = summary.effectiveFastModeAllowed
     self.accessModeKnown = summary.rosterDerived != true
     self.runtimeMode = workInitialRuntimeMode(summary)
     self.cursorCloudAgentId = summary.cursorCloudAgentId
@@ -2588,6 +2592,7 @@ struct WorkChatSessionView: View {
             currentProvider: chatSummaryContext.provider,
             currentReasoningEffort: chatSummaryContext.reasoningEffort,
             currentCodexFastMode: chatSummaryContext.effectiveFastMode,
+            fastModeAllowed: chatSummaryContext.fastModeAllowed,
             lanes: lanes,
             commandScope: isPersonalChat ? .personal : .project,
             personalMachineKey: personalMachineKey,

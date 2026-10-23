@@ -10,6 +10,9 @@ struct WorkSessionHandoffSubject: Identifiable, Equatable {
   let modelId: String
   let reasoningEffort: String
   var fastMode: Bool = false
+  /// The account's Fast permission for the destination; false keeps the handoff
+  /// at Standard even when the source chat was Fast.
+  var fastModeAllowed: Bool = true
 }
 
 /// Providers whose chat can fork in place. Mirrors `HANDOFF_FORK_PROVIDERS`
@@ -188,7 +191,7 @@ struct WorkLocalHandoffSheet: View {
     _provider = State(initialValue: subject.provider)
     _mode = State(initialValue: workProviderSupportsHandoffFork(subject.provider) ? "fork" : "brief")
     _reasoningEffort = State(initialValue: subject.reasoningEffort)
-    _fastMode = State(initialValue: subject.fastMode)
+    _fastMode = State(initialValue: subject.fastMode && subject.fastModeAllowed)
   }
 
   private var forkSupported: Bool { workProviderSupportsHandoffFork(subject.provider) }
@@ -253,6 +256,7 @@ struct WorkLocalHandoffSheet: View {
           currentProvider: provider,
           currentReasoningEffort: reasoningEffort,
           currentCodexFastMode: fastMode,
+          fastModeAllowed: subject.fastModeAllowed,
           isBusy: false,
           modelFilter: mode == "fork"
             ? { [sourceProvider = subject.provider] option in
@@ -283,7 +287,7 @@ struct WorkLocalHandoffSheet: View {
         mode: mode,
         handoffNote: trimmed.isEmpty ? nil : trimmed,
         reasoningEffort: settingsPicked && !reasoningEffort.isEmpty ? reasoningEffort : nil,
-        fastMode: settingsPicked ? fastMode : nil
+        fastMode: settingsPicked && subject.fastModeAllowed ? fastMode : nil
       )
       ADEHaptics.success()
       busy = false

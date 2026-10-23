@@ -122,7 +122,10 @@ export function modelMemoryFromState(state: AdeCodeModelState): AdeCodeModelMemo
 export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCodeProviderSettingsMemory {
   return {
     reasoningEffort: state.reasoningEffort,
-    fastMode: state.fastMode,
+    // Fast is a per-chat choice. The project memory seeds the NEXT chat, so
+    // remembering Fast here made one Fast turn start every later `ade code`
+    // chat Fast. The current chat keeps its own state; this copy is always off.
+    fastMode: false,
     interfaceMode: state.interfaceMode,
     permissionMode: state.permissionMode,
     interactionMode: state.interactionMode,
@@ -149,7 +152,7 @@ export function providerSettingsPatchFromMemory(
 ): Partial<AdeCodeModelState> {
   return {
     reasoningEffort: memory.reasoningEffort,
-    fastMode: memory.fastMode,
+    fastMode: false,
     permissionMode: memory.permissionMode as AdeCodeModelState["permissionMode"],
     interactionMode: memory.interactionMode as AdeCodeModelState["interactionMode"],
     claudePermissionMode: memory.claudePermissionMode as AdeCodeModelState["claudePermissionMode"],
@@ -206,7 +209,9 @@ export function modelMemoryFromLaunchDefaults(
     model: defaults.modelId,
     displayName,
     reasoningEffort: defaults.reasoningEffort ?? null,
-    fastMode: defaults.fastMode === true,
+    // Even an older brain that still records `fastMode: true` in the launch
+    // defaults must not start this chat Fast. Fast is opt-in per chat.
+    fastMode: false,
     permissionMode: defaults.permissionMode ?? fallback.permissionMode,
     interactionMode: defaults.interactionMode ?? fallback.interactionMode,
     claudePermissionMode: defaults.claudePermissionMode ?? fallback.claudePermissionMode,
@@ -623,6 +628,8 @@ export function buildSetupRows(args: {
   interfaceMode: AdeCodeInterfaceMode;
   /** False once a session exists — interface is fixed by the session type. */
   interfaceEditable: boolean;
+  /** The account's Fast permission; false disables the Fast row. */
+  fastModeAllowed?: boolean;
 }): SetupPaneRow[] {
   const efforts = modelReasoningEfforts(args.modelState, args.models);
   const copilotAuto = args.modelState.provider === "copilot" && isCopilotAutoModel(args.modelState.modelId);
@@ -701,9 +708,9 @@ export function buildSetupRows(args: {
   rows.push({
     kind: "codex-fast",
     label: "Fast mode",
-    value: fastSupported && args.modelState.fastMode ? "on" : "off",
-    detail: "on · off",
-    disabled: !fastSupported,
+    value: fastSupported && args.fastModeAllowed !== false && args.modelState.fastMode ? "on" : "off",
+    detail: args.fastModeAllowed === false ? "off · account" : "on · off",
+    disabled: !fastSupported || args.fastModeAllowed === false,
     cyclable: true,
   });
   if (args.modelState.provider === "claude") {

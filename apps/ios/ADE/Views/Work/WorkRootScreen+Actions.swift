@@ -1239,7 +1239,8 @@ extension WorkRootListScreen {
       provider: provider,
       modelId: summary?.modelId ?? summary?.model ?? "",
       reasoningEffort: summary?.reasoningEffort ?? "",
-      fastMode: summary?.fastMode == true
+      fastMode: summary?.fastMode == true,
+      fastModeAllowed: summary?.effectiveFastModeAllowed ?? true
     )
   }
 
@@ -1262,7 +1263,8 @@ extension WorkRootListScreen {
         reasoningEffort: subject.reasoningEffort,
         runtimeMode: summary.map(workInitialRuntimeMode) ?? "",
         busy: canonical == .running || canonical == .starting,
-        fastMode: summary?.fastMode == true
+        fastMode: summary?.fastMode == true,
+        fastModeAllowed: summary?.effectiveFastModeAllowed ?? true
       )
     case .removeAuto:
       let ids = autoHandoffRuleIdsBySession[session.id] ?? []

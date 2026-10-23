@@ -23,6 +23,7 @@ struct CtoSettingsScreen: View {
   @State private var errorMessage: String?
   @State private var showingIdentityEditor = false
   @State private var showingModelPicker = false
+  @State private var fastModeAllowed = true
   @State private var modelUpdateInFlight = false
   @State private var ctoSession: AgentChatSessionSummary?
 
@@ -95,6 +96,9 @@ struct CtoSettingsScreen: View {
       .tint(ADEColor.ctoAccent)
       .refreshable { await reload() }
       .task {
+        if let defaults = await syncService.fetchChatLaunchDefaults() {
+          fastModeAllowed = defaults.fastModeAllowed ?? true
+        }
         guard snapshot == nil else {
           // Still refresh the side data (Linear, memory) even if identity was
           // seeded from the parent snapshot.
@@ -116,7 +120,8 @@ struct CtoSettingsScreen: View {
           currentModelId: currentModelId,
           currentProvider: currentProvider,
           currentReasoningEffort: currentReasoningEffort,
-          currentCodexFastMode: currentFastMode,
+          currentCodexFastMode: fastModeAllowed && currentFastMode,
+          fastModeAllowed: fastModeAllowed,
           lanes: [],
           commandScope: .project,
           isBusy: modelUpdateInFlight,
